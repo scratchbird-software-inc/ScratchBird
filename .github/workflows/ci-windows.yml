@@ -36,6 +36,7 @@ jobs:
             python3 project/tools/release/public_packaging_history_gate.py || status=1
             python3 project/tools/release/github_actions_static_gate.py || status=1
             python3 project/tools/release/public_private_reference_scan.py || status=1
+            python3 project/tools/release/implementation_maturity_gate.py || status=1
             python3 -m unittest discover -s project/tests/repository_policy -p 'test_*.py' || status=1
             exit "$status"
           } 2>&1 | tee build/ci-logs/windows-static/static-policy.log

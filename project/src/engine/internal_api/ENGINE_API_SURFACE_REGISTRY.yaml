@@ -21,6 +21,7 @@ schema_fields:
   - header
   - implementation
   - implementation_status
+  - implementation_maturity
   - default_diagnostic
   - cluster_only
   - accepts_names
@@ -42,6 +43,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -61,6 +63,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -80,6 +83,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -99,6 +103,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -118,6 +123,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -137,6 +143,7 @@ operations:
     header: agents/agent_action_hooks_api.hpp
     implementation: agents/agent_action_hooks_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -156,6 +163,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -175,6 +183,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -194,6 +203,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -213,6 +223,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -232,6 +243,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -251,6 +263,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -270,6 +283,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -289,6 +303,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -308,6 +323,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -327,6 +343,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -346,6 +363,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -365,6 +383,7 @@ operations:
     header: agents/agent_management_api.hpp
     implementation: agents/agent_management_api.cpp
     implementation_status: fail_closed_cluster_mapping_unavailable
+    implementation_maturity: routing
     default_diagnostic: SB_AGENT_CLUSTER.AUTHORITY_REQUIRED
     cluster_only: true
     requires_security_context: true
@@ -384,6 +403,7 @@ operations:
     header: artifacts/artifact_api.hpp
     implementation: artifacts/artifact_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -403,6 +423,7 @@ operations:
     header: artifacts/artifact_api.hpp
     implementation: artifacts/artifact_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -422,6 +443,7 @@ operations:
     header: artifacts/artifact_api.hpp
     implementation: artifacts/artifact_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -441,6 +463,7 @@ operations:
     header: artifacts/artifact_api.hpp
     implementation: artifacts/artifact_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -460,6 +483,7 @@ operations:
     header: artifacts/artifact_api.hpp
     implementation: artifacts/artifact_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -478,6 +502,7 @@ operations:
     authority_domain: import_execution
     closure_slice: PID-010
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
@@ -498,6 +523,7 @@ operations:
     authority_domain: import_checkpoint_recovery
     closure_slice: PID-009
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
@@ -518,6 +544,7 @@ operations:
     authority_domain: import_reject_policy
     closure_slice: PID-008
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
@@ -552,6 +579,7 @@ operations:
     descriptor_binding: exact_generation_only_no_nearest_or_latest_fallback
     closure_slice: PID-007
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     transaction_effect: read
     security_class: object_authorized
@@ -588,6 +616,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -610,6 +639,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -629,6 +659,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -648,6 +679,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -667,6 +699,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -686,6 +719,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -707,6 +741,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -726,6 +761,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -745,6 +781,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -764,6 +801,7 @@ operations:
     header: ddl/drop_api.hpp
     implementation: ddl/drop_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -783,6 +821,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -802,6 +841,7 @@ operations:
     header: ddl/alter_api.hpp
     implementation: ddl/alter_api.cpp
     implementation_status: exact_profile_refusal
+    implementation_maturity: routing
     default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
     cluster_only: false
     requires_security_context: true
@@ -821,6 +861,7 @@ operations:
     header: ddl/drop_api.hpp
     implementation: ddl/drop_api.cpp
     implementation_status: exact_profile_refusal
+    implementation_maturity: routing
     default_diagnostic: PROFILE.BUILTIN_PROFILE_UNAVAILABLE
     cluster_only: false
     requires_security_context: true
@@ -840,6 +881,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -859,6 +901,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -875,9 +918,10 @@ operations:
     result_type: EngineAlterFunctionResult
     family: ddl
     authority_domain: catalog_ddl
-    header: internal_api/sblr_ddl_alter_function_coordinator.hpp
-    implementation: internal_api/sblr_ddl_alter_function_coordinator.cpp
+    header: sblr_ddl_alter_function_coordinator.hpp
+    implementation: sblr_ddl_alter_function_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -897,6 +941,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -913,9 +958,10 @@ operations:
     result_type: EngineCreatePackageResult
     family: ddl
     authority_domain: catalog_ddl
-    header: internal_api/sblr_ddl_create_package_coordinator.hpp
-    implementation: internal_api/sblr_ddl_create_package_coordinator.cpp
+    header: sblr_ddl_create_package_coordinator.hpp
+    implementation: sblr_ddl_create_package_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -932,9 +978,10 @@ operations:
     result_type: EngineDropPackageResult
     family: ddl
     authority_domain: catalog_ddl
-    header: internal_api/sblr_ddl_drop_package_coordinator.hpp
-    implementation: internal_api/sblr_ddl_drop_package_coordinator.cpp
+    header: sblr_ddl_drop_package_coordinator.hpp
+    implementation: sblr_ddl_drop_package_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -954,6 +1001,7 @@ operations:
     header: ddl/alter_api.hpp
     implementation: ddl/alter_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -973,6 +1021,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -992,6 +1041,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1008,9 +1058,10 @@ operations:
     result_type: EngineDropProcedureResult
     family: ddl
     authority_domain: catalog_ddl
-    header: internal_api/sblr_ddl_drop_procedure_coordinator.hpp
-    implementation: internal_api/sblr_ddl_drop_procedure_coordinator.cpp
+    header: sblr_ddl_drop_procedure_coordinator.hpp
+    implementation: sblr_ddl_drop_procedure_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1030,6 +1081,7 @@ operations:
     header: ddl/create_api.hpp
     implementation: ddl/create_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1049,6 +1101,7 @@ operations:
     header: ddl/alter_api.hpp
     implementation: ddl/alter_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1068,6 +1121,7 @@ operations:
     header: ddl/alter_api.hpp
     implementation: ddl/alter_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1087,6 +1141,7 @@ operations:
     header: ddl/drop_api.hpp
     implementation: ddl/drop_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1106,6 +1161,7 @@ operations:
     header: ddl/drop_api.hpp
     implementation: ddl/drop_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1125,6 +1181,7 @@ operations:
     header: ddl/comment_api.hpp
     implementation: ddl/comment_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1144,6 +1201,7 @@ operations:
     header: dml/insert_api.hpp
     implementation: dml/insert_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1163,6 +1221,7 @@ operations:
     header: dml/select_api.hpp
     implementation: dml/select_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1182,6 +1241,7 @@ operations:
     header: dml/update_api.hpp
     implementation: dml/update_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1201,6 +1261,7 @@ operations:
     header: dml/delete_api.hpp
     implementation: dml/delete_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1220,6 +1281,7 @@ operations:
     header: dml/merge_api.hpp
     implementation: dml/merge_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1239,6 +1301,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1258,6 +1321,7 @@ operations:
     header: query/predicate_api.hpp
     implementation: query/predicate_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1277,6 +1341,7 @@ operations:
     header: query/projection_api.hpp
     implementation: query/projection_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1296,6 +1361,7 @@ operations:
     header: query/projection_api.hpp
     implementation: query/projection_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1315,6 +1381,7 @@ operations:
     header: query/plan_api.hpp
     implementation: query/plan_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1334,6 +1401,7 @@ operations:
     header: transaction/transaction_api.hpp
     implementation: transaction/transaction_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1353,6 +1421,7 @@ operations:
     header: transaction/transaction_api.hpp
     implementation: transaction/transaction_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1372,6 +1441,7 @@ operations:
     header: transaction/transaction_api.hpp
     implementation: transaction/transaction_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1391,6 +1461,7 @@ operations:
     header: transaction/transaction_api.hpp
     implementation: transaction/transaction_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1410,6 +1481,7 @@ operations:
     header: transaction/transaction_api.hpp
     implementation: transaction/transaction_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1429,6 +1501,7 @@ operations:
     header: transaction/savepoint_api.hpp
     implementation: transaction/savepoint_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1448,6 +1521,7 @@ operations:
     header: transaction/savepoint_api.hpp
     implementation: transaction/savepoint_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1467,6 +1541,7 @@ operations:
     header: transaction/savepoint_api.hpp
     implementation: transaction/savepoint_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1486,6 +1561,7 @@ operations:
     header: catalog/name_resolution_api.hpp
     implementation: catalog/name_resolution_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1505,6 +1581,7 @@ operations:
     header: catalog/name_resolution_api.hpp
     implementation: catalog/name_resolution_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1524,6 +1601,7 @@ operations:
     header: catalog/catalog_lookup_api.hpp
     implementation: catalog/catalog_lookup_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1543,6 +1621,7 @@ operations:
     header: catalog/schema_tree_api.hpp
     implementation: catalog/schema_tree_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1562,6 +1641,7 @@ operations:
     header: catalog/descriptor_api.hpp
     implementation: catalog/descriptor_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1581,6 +1661,7 @@ operations:
     header: catalog/catalog_lookup_api.hpp
     implementation: catalog/catalog_lookup_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1600,6 +1681,7 @@ operations:
     header: security/identity_api.hpp
     implementation: security/identity_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1619,6 +1701,7 @@ operations:
     header: security/identity_api.hpp
     implementation: security/identity_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1638,6 +1721,7 @@ operations:
     header: security/grant_api.hpp
     implementation: security/grant_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1657,6 +1741,7 @@ operations:
     header: security/grant_api.hpp
     implementation: security/grant_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1676,6 +1761,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1695,6 +1781,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1714,6 +1801,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1733,6 +1821,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1752,6 +1841,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1771,6 +1861,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1790,6 +1881,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1809,6 +1901,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1828,6 +1921,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1847,6 +1941,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1866,6 +1961,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1885,6 +1981,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1904,6 +2001,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1923,6 +2021,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1942,6 +2041,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1961,6 +2061,7 @@ operations:
     header: security/security_principal_lifecycle.hpp
     implementation: security/security_principal_lifecycle.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -1980,6 +2081,7 @@ operations:
     header: security/visibility_api.hpp
     implementation: security/visibility_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -1999,6 +2101,7 @@ operations:
     header: security/policy_api.hpp
     implementation: security/policy_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2018,6 +2121,7 @@ operations:
     header: security/deep_enforcement_api.hpp
     implementation: security/deep_enforcement_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2041,6 +2145,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2064,6 +2169,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2087,6 +2193,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2108,6 +2215,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2129,6 +2237,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2150,6 +2259,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2171,6 +2281,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2192,6 +2303,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2213,6 +2325,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2234,6 +2347,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2255,6 +2369,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2276,6 +2391,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2297,6 +2413,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2318,6 +2435,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2339,6 +2457,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2360,6 +2479,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2379,6 +2499,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2398,6 +2519,7 @@ operations:
     header: observability/show_api.hpp
     implementation: observability/show_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2419,6 +2541,7 @@ operations:
     header: observability/metrics_api.hpp
     implementation: observability/metrics_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2440,6 +2563,7 @@ operations:
     header: observability/explain_api.hpp
     implementation: observability/explain_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2459,6 +2583,7 @@ operations:
     header: management/config_api.hpp
     implementation: management/config_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2478,6 +2603,7 @@ operations:
     header: management/config_api.hpp
     implementation: management/config_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2497,6 +2623,7 @@ operations:
     header: management/config_api.hpp
     implementation: management/config_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2516,6 +2643,7 @@ operations:
     header: management/management_api.hpp
     implementation: management/management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2535,6 +2663,7 @@ operations:
     header: management/management_api.hpp
     implementation: management/management_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2554,6 +2683,7 @@ operations:
     header: management/support_bundle_api.hpp
     implementation: management/support_bundle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2573,6 +2703,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2594,6 +2725,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -2615,6 +2747,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2636,6 +2769,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2657,6 +2791,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2678,6 +2813,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2697,6 +2833,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2716,6 +2853,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2735,6 +2873,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2754,6 +2893,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2773,6 +2913,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2792,6 +2933,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2811,6 +2953,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2830,6 +2973,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2849,6 +2993,7 @@ operations:
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2868,6 +3013,7 @@ operations:
     header: cluster/cluster_inspect_api.hpp
     implementation: cluster/cluster_inspect_api.cpp
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
     cluster_only: true
     requires_security_context: false
@@ -2887,6 +3033,7 @@ operations:
     header: cluster/cluster_inspect_api.hpp
     implementation: cluster/cluster_inspect_api.cpp
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
     cluster_only: true
     requires_security_context: false
@@ -2906,6 +3053,7 @@ operations:
     header: cluster/cluster_control_api.hpp
     implementation: cluster/cluster_control_api.cpp
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
     cluster_only: true
     requires_security_context: false
@@ -2927,6 +3075,7 @@ operations:
     header: cluster_provider/cluster_provider.hpp
     implementation: cluster_provider/no_cluster_provider.cpp;cluster_provider_stub/stub_cluster_provider.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -2945,6 +3094,7 @@ operations:
     authority_domain: cluster_remote_participant_insert
     closure_slice: PID-013
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
@@ -2965,6 +3115,7 @@ operations:
     authority_domain: cluster_insert_route_fence
     closure_slice: PID-012
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     requires_transaction_context: true
     requires_security_context: true
     accepts_names: false
@@ -2986,6 +3137,7 @@ operations:
     header: cluster/placement_api.hpp
     implementation: cluster/placement_api.cpp
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
     cluster_only: true
     requires_security_context: false
@@ -3005,6 +3157,7 @@ operations:
     header: cluster/replication_api.hpp
     implementation: cluster/replication_api.cpp
     implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
     cluster_only: true
     requires_security_context: false
@@ -3024,6 +3177,7 @@ operations:
     header: extensibility/udr_api.hpp
     implementation: extensibility/udr_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3043,6 +3197,7 @@ operations:
     header: extensibility/udr_api.hpp
     implementation: extensibility/udr_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3062,6 +3217,7 @@ operations:
     header: extensibility/udr_api.hpp
     implementation: extensibility/udr_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3081,6 +3237,7 @@ operations:
     header: extensibility/udr_api.hpp
     implementation: extensibility/udr_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3100,6 +3257,7 @@ operations:
     header: extensibility/udr_api.hpp
     implementation: extensibility/udr_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3119,6 +3277,7 @@ operations:
     header: extensibility/parser_package_api.hpp
     implementation: extensibility/parser_package_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3138,6 +3297,7 @@ operations:
     header: extensibility/llvm_api.hpp
     implementation: extensibility/llvm_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3157,6 +3317,7 @@ operations:
     header: extensibility/gpu_api.hpp
     implementation: extensibility/gpu_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3176,6 +3337,7 @@ operations:
     header: nosql/document_api.hpp
     implementation: nosql/document_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3195,6 +3357,7 @@ operations:
     header: nosql/document_api.hpp
     implementation: nosql/document_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3214,6 +3377,7 @@ operations:
     header: nosql/document_api.hpp
     implementation: nosql/document_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3233,6 +3397,7 @@ operations:
     header: nosql/document_api.hpp
     implementation: nosql/document_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3252,6 +3417,7 @@ operations:
     header: nosql/graph_api.hpp
     implementation: nosql/graph_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3271,6 +3437,7 @@ operations:
     header: nosql/key_value_api.hpp
     implementation: nosql/key_value_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3290,6 +3457,7 @@ operations:
     header: nosql/key_value_api.hpp
     implementation: nosql/key_value_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3309,6 +3477,7 @@ operations:
     header: nosql/key_value_api.hpp
     implementation: nosql/key_value_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3328,6 +3497,7 @@ operations:
     header: nosql/key_value_api.hpp
     implementation: nosql/key_value_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3347,6 +3517,7 @@ operations:
     header: nosql/key_value_api.hpp
     implementation: nosql/key_value_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3366,6 +3537,7 @@ operations:
     header: nosql/time_series_api.hpp
     implementation: nosql/time_series_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3385,6 +3557,7 @@ operations:
     header: nosql/nosql_family_maintenance_api.hpp
     implementation: nosql/nosql_family_maintenance_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3404,6 +3577,7 @@ operations:
     header: nosql/nosql_statistics_api.hpp
     implementation: nosql/nosql_statistics_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3423,6 +3597,7 @@ operations:
     header: nosql/nosql_backpressure_debt_api.hpp
     implementation: nosql/nosql_backpressure_debt_api.cpp
     implementation_status: physical_provider_implemented
+    implementation_maturity: physical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: true
@@ -3442,6 +3617,7 @@ operations:
     header: nosql/vector_api.hpp
     implementation: nosql/vector_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3461,6 +3637,7 @@ operations:
     header: nosql/search_api.hpp
     implementation: nosql/search_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3480,6 +3657,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3499,6 +3677,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3518,6 +3697,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3537,6 +3717,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3556,6 +3737,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3575,6 +3757,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3594,6 +3777,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3613,6 +3797,7 @@ operations:
     header: query/expression_api.hpp
     implementation: query/expression_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     requires_security_context: false
@@ -3634,6 +3819,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3653,6 +3839,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3672,6 +3859,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3691,6 +3879,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3710,6 +3899,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3729,6 +3919,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3748,6 +3939,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3767,6 +3959,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3786,6 +3979,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3805,6 +3999,7 @@ operations:
     header: notification/notification_api.hpp
     implementation: notification/notification_api.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3826,6 +4021,7 @@ operations:
     header: sblr_ddl_drop_table_coordinator.hpp
     implementation: sblr_ddl_drop_table_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3847,6 +4043,7 @@ operations:
     header: sblr_ddl_drop_index_coordinator.hpp
     implementation: sblr_ddl_drop_index_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3868,6 +4065,7 @@ operations:
     header: sblr_ddl_alter_trigger_coordinator.hpp
     implementation: sblr_ddl_alter_trigger_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3889,6 +4087,7 @@ operations:
     header: sblr_ddl_alter_type_coordinator.hpp
     implementation: sblr_ddl_alter_type_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3910,6 +4109,7 @@ operations:
     header: sblr_ddl_alter_domain_coordinator.hpp
     implementation: sblr_ddl_alter_domain_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3931,6 +4131,7 @@ operations:
     header: sblr_ddl_alter_view_coordinator.hpp
     implementation: sblr_ddl_alter_view_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3952,6 +4153,7 @@ operations:
     header: sblr_ddl_drop_sequence_coordinator.hpp
     implementation: sblr_ddl_drop_sequence_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3973,6 +4175,7 @@ operations:
     header: sblr_ddl_refresh_materialized_view_coordinator.hpp
     implementation: sblr_ddl_refresh_materialized_view_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -3994,6 +4197,7 @@ operations:
     header: sblr_ddl_drop_materialized_view_coordinator.hpp
     implementation: sblr_ddl_drop_materialized_view_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4015,6 +4219,7 @@ operations:
     header: sblr_ddl_drop_type_coordinator.hpp
     implementation: sblr_ddl_drop_type_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4036,6 +4241,7 @@ operations:
     header: sblr_ddl_drop_function_coordinator.hpp
     implementation: sblr_ddl_drop_function_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4057,6 +4263,7 @@ operations:
     header: sblr_ddl_alter_package_coordinator.hpp
     implementation: sblr_ddl_alter_package_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4078,6 +4285,7 @@ operations:
     header: sblr_ddl_alter_procedure_coordinator.hpp
     implementation: sblr_ddl_alter_procedure_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4099,6 +4307,7 @@ operations:
     header: sblr_ddl_drop_trigger_coordinator.hpp
     implementation: sblr_ddl_drop_trigger_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4120,6 +4329,7 @@ operations:
     header: sblr_system_config_set_coordinator.hpp
     implementation: sblr_system_config_set_coordinator.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: routing
     default_diagnostic: SB_ENGINE_API_OK
     cluster_only: false
     accepts_names: false
@@ -4136,9 +4346,10 @@ operations:
     result_type: SblrDdlCreateFdwResultV1
     family: catalog-ddl
     authority_domain: bound_fdw_catalog_mutation
-    header: sblr_ddl_create_fdw_runtime.hpp
-    implementation: sblr_ddl_create_fdw_runtime.cpp
+    header: engine/sblr/sblr_ddl_create_fdw_runtime.hpp
+    implementation: engine/sblr/sblr_ddl_create_fdw_runtime.cpp
     implementation_status: behavior_implemented
+    implementation_maturity: codec_contract
     default_diagnostic: DDL.CREATE_FDW_FAILED
     cluster_only: false
     accepts_names: false

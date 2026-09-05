@@ -89,18 +89,22 @@ int main(int argc, char** argv) {
   const auto api_ops = ReadApiOperations(registry);
   const auto entries = ReadMatrix(matrix);
   const std::set<std::string> allowed_statuses = {
-      "mapped_ready", "mapped_contract_only", "not_sblr_callable", "cluster_deferred",
-      "requires_executor_expression_support", "requires_optimizer_support", "behavior_implemented"};
+      "mapped_ready", "not_sblr_callable", "cluster_provider_boundary_mapped", "mapped_refusal",
+      "internal_engine_api_only", "cluster_fail_closed_mapped", "sblr_callable"};
+  const std::set<std::string> allowed_maturities = {
+      "codec_contract", "routing", "logical_implementation", "physical_implementation",
+      "durability_proven", "production_qualified"};
   const std::set<std::string> required_fields = {
       "sblr_operation", "opcode_status", "api_operation_id", "api_function_name", "request_type", "result_type",
-      "required_transaction_context", "required_descriptor_inputs", "bound_object_uuid_inputs", "result_shape",
-      "diagnostic_mapping", "evidence_mapping", "security_authority_family", "current_implementation_status",
+      "required_transaction_context", "result_shape", "diagnostic_mapping", "evidence_mapping",
+      "current_implementation_status", "implementation_maturity",
       "executor_readiness_status"};
   std::set<std::string> matrix_ops;
   std::size_t missing_fields = 0;
   std::size_t unknown_statuses = 0;
+  std::size_t unknown_maturities = 0;
   std::size_t mapped_ready = 0;
-  std::size_t cluster_deferred = 0;
+  std::size_t cluster_mapped = 0;
   for (const auto& entry : entries) {
     for (const auto& field : required_fields) {
       if (Field(entry, field).empty()) { ++missing_fields; }
@@ -108,23 +112,28 @@ int main(int argc, char** argv) {
     matrix_ops.insert(Field(entry, "api_operation_id"));
     const auto status = Field(entry, "executor_readiness_status");
     if (!allowed_statuses.contains(status)) { ++unknown_statuses; }
+    if (!allowed_maturities.contains(Field(entry, "implementation_maturity"))) { ++unknown_maturities; }
     if (status == "mapped_ready") { ++mapped_ready; }
-    if (status == "cluster_deferred") { ++cluster_deferred; }
+    if (status == "cluster_provider_boundary_mapped" || status == "cluster_fail_closed_mapped") {
+      ++cluster_mapped;
+    }
   }
   std::size_t missing_api_ops = 0;
   for (const auto& op : api_ops) {
     if (!matrix_ops.contains(op)) { ++missing_api_ops; }
   }
-  const bool ok = !api_ops.empty() && entries.size() == api_ops.size() && missing_fields == 0 && unknown_statuses == 0 &&
-                  missing_api_ops == 0 && mapped_ready >= 58 && cluster_deferred == 5;
+  const bool ok = !api_ops.empty() && entries.size() == api_ops.size() && missing_fields == 0 &&
+                  unknown_statuses == 0 && unknown_maturities == 0 &&
+                  missing_api_ops == 0 && mapped_ready >= 100 && cluster_mapped >= 8;
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
   std::cout << "  \"api_operations\": " << api_ops.size() << ",\n";
   std::cout << "  \"matrix_entries\": " << entries.size() << ",\n";
   std::cout << "  \"mapped_ready\": " << mapped_ready << ",\n";
-  std::cout << "  \"cluster_deferred\": " << cluster_deferred << ",\n";
+  std::cout << "  \"cluster_mapped\": " << cluster_mapped << ",\n";
   std::cout << "  \"missing_fields\": " << missing_fields << ",\n";
   std::cout << "  \"unknown_statuses\": " << unknown_statuses << ",\n";
+  std::cout << "  \"unknown_maturities\": " << unknown_maturities << ",\n";
   std::cout << "  \"missing_api_ops\": " << missing_api_ops << "\n";
   std::cout << "}\n";
   return ok ? 0 : 1;

@@ -552,6 +552,7 @@ def check_signal_job_topology(
         "public_packaging_history_gate.py",
         "github_actions_static_gate.py",
         "public_private_reference_scan.py",
+        "implementation_maturity_gate.py",
         "python3 -m unittest discover -s project/tests/repository_policy",
         "if: always()",
         "actions/upload-artifact@v4",

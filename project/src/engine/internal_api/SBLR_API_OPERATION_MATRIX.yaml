@@ -3,6 +3,16 @@ matrix:
   name: sblr_api_operation_matrix
   status: current_stage_ready
   authority: engine
+  maturity_authority: implementation_maturity
+  maturity_order_low_to_high:
+    - codec_contract
+    - routing
+    - logical_implementation
+    - physical_implementation
+    - durability_proven
+    - production_qualified
+  runtime_suffix_is_execution_evidence: false
+  durability_requires_restart_boundary_evidence: true
 entries:
   - sblr_operation: SBLR_AGENT_REQUEST_PAGE_PREALLOCATION
     opcode_status: opcode_registered
@@ -20,6 +30,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_FDW
     opcode_status: opcode_registered
@@ -41,6 +52,9 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: bound_fdw_catalog_mutation
     current_implementation_status: behavior_implemented
+    implementation_maturity: codec_contract
+    codec_component: engine/sblr/sblr_ddl_create_fdw_runtime.cpp
+    codec_component_role: request_descriptor_result_codec
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_REQUEST_PAGE_RELOCATION
     opcode_status: opcode_registered
@@ -58,6 +72,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_REQUEST_FILESPACE_GROWTH
     opcode_status: opcode_registered
@@ -75,6 +90,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_NOTIFY_FILESPACE_SHRINK_READINESS
     opcode_status: opcode_registered
@@ -92,6 +108,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_REQUEST_INDEX_DELTA_MERGE
     opcode_status: opcode_registered
@@ -109,6 +126,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENT_REQUEST_INDEX_REBUILD_OR_SHADOW_BUILD
     opcode_status: opcode_registered
@@ -126,6 +144,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_LIST
     opcode_status: opcode_registered
@@ -143,6 +162,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_SHOW
     opcode_status: opcode_registered
@@ -160,6 +180,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_START
     opcode_status: opcode_registered
@@ -177,6 +198,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_STOP
     opcode_status: opcode_registered
@@ -194,6 +216,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_PAUSE
     opcode_status: opcode_registered
@@ -211,6 +234,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_RESUME
     opcode_status: opcode_registered
@@ -228,6 +252,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_CONFIGURE
     opcode_status: opcode_registered
@@ -245,6 +270,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_RUN
     opcode_status: opcode_registered
@@ -262,6 +288,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_DRY_RUN
     opcode_status: opcode_registered
@@ -279,6 +306,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_AGENTS_OVERRIDE
     opcode_status: opcode_registered
@@ -296,6 +324,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SYS_AGENTS
     opcode_status: opcode_registered
@@ -313,6 +342,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CLUSTER_SYS_AGENTS
     opcode_status: opcode_registered
@@ -330,6 +360,7 @@ entries:
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     current_implementation_status: fail_closed_cluster_mapping_unavailable
+    implementation_maturity: routing
     executor_readiness_status: cluster_fail_closed_mapped
   - sblr_operation: SBLR_ARTIFACT_EXPORT_CATALOG
     opcode_status: opcode_registered
@@ -347,6 +378,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_ARTIFACT_IMPORT_CATALOG
     opcode_status: opcode_registered
@@ -364,6 +396,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT
     opcode_status: not_manifest_listed
@@ -381,6 +414,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
     notes:
       - Direct internal API behavior is implemented, but Core does not allocate this external Git control term a canonical SBLR identity.
@@ -401,6 +435,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
     notes:
       - Direct internal API behavior is implemented, but Core does not allocate this external Git control term a canonical SBLR identity.
@@ -421,6 +456,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_artifact
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
     notes:
       - Direct internal API behavior is implemented, but Core does not allocate this external Git control term a canonical SBLR identity.
@@ -447,6 +483,7 @@ entries:
     closure_slice: PID-010
     implementation_status: behavior_implemented
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - SBLR import execution envelopes must contain canonical rows target UUID source/format envelope reject policy and checkpoint policy.
@@ -474,6 +511,7 @@ entries:
     closure_slice: PID-009
     implementation_status: behavior_implemented
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - SBLR import checkpoint envelopes must declare checkpoint mode intervals checkpoint target UUID resume policy replay policy and failure action.
@@ -501,6 +539,7 @@ entries:
     closure_slice: PID-008
     implementation_status: behavior_implemented
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - SBLR import reject envelopes must declare reject mode payload policy resume policy limits and any reject target UUID.
@@ -561,6 +600,7 @@ entries:
     closure_slice: PID-007
     implementation_status: behavior_implemented
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - SBLR ingress carries exactly one 24-byte descriptor reference into the immutable engine-bound import descriptor registry; code zero defaults and symbolic aliases are forbidden.
@@ -583,6 +623,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - Catalog namespace descriptor only within an already-open database context.
@@ -604,6 +645,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_TABLE
     opcode_status: opcode_registered
@@ -622,6 +664,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_INDEX
     opcode_status: opcode_registered
@@ -640,6 +683,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_TRIGGER
     opcode_status: opcode_registered
@@ -658,6 +702,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_FUNCTION
     opcode_status: opcode_registered
@@ -676,6 +721,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_PACKAGE
     opcode_status: opcode_registered
@@ -694,6 +740,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_PACKAGE
     opcode_status: opcode_registered
@@ -712,6 +759,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_SEQUENCE
     opcode_status: opcode_registered
@@ -730,6 +778,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_MATERIALIZED_VIEW
     opcode_status: opcode_registered
@@ -748,6 +797,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_TYPE
     opcode_status: opcode_registered
@@ -766,6 +816,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_TYPE
     opcode_status: opcode_registered
@@ -784,6 +835,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_PROCEDURE
     opcode_status: opcode_registered
@@ -802,6 +854,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_PROCEDURE
     opcode_status: opcode_registered
@@ -820,6 +873,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_TABLE
     opcode_status: opcode_registered
@@ -838,6 +892,11 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/database_lifecycle/ipar_ddl_publication_result_gate.cpp
+    codec_component: engine/sblr/sblr_ddl_create_table_runtime.cpp
+    codec_component_role: request_descriptor_result_codec
+    execution_path: "engine/sblr/sblr_dispatch.cpp -> engine/internal_api/ddl/EngineCreateTable"
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_INDEX
     opcode_status: opcode_registered
@@ -856,6 +915,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector;index_descriptor_and_mga_table_visibility
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_INDEX_TEMPLATE
     opcode_status: opcode_registered
@@ -873,6 +933,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector;index_template_descriptor_and_name_registry
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_STATISTICS
     opcode_status: opcode_registered
@@ -890,6 +951,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_DOMAIN
     opcode_status: opcode_registered
@@ -908,6 +970,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_VIEW
     opcode_status: opcode_registered
@@ -926,6 +989,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_DOMAIN
     opcode_status: opcode_registered
@@ -944,6 +1008,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_SEQUENCE
     opcode_status: opcode_registered
@@ -962,6 +1027,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_SEQUENCE
     opcode_status: opcode_registered
@@ -980,6 +1046,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_REFRESH_MATERIALIZED_VIEW
     opcode_status: opcode_registered
@@ -998,6 +1065,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_MATERIALIZED_VIEW
     opcode_status: opcode_registered
@@ -1016,6 +1084,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_TYPE
     opcode_status: opcode_registered
@@ -1034,6 +1103,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_VIEW
     opcode_status: opcode_registered
@@ -1052,6 +1122,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_VIEW
     opcode_status: opcode_registered
@@ -1070,6 +1141,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_SCHEMA
     opcode_status: opcode_registered
@@ -1088,6 +1160,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: exact_profile_refusal
+    implementation_maturity: routing
     executor_readiness_status: mapped_refusal
   - sblr_operation: SBLR_DDL_ALTER_TABLE
     opcode_status: opcode_registered
@@ -1106,6 +1179,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: exact_profile_refusal
+    implementation_maturity: routing
     executor_readiness_status: mapped_refusal
   - sblr_operation: SBLR_DDL_CREATE_SYNONYM
     opcode_status: opcode_registered
@@ -1123,6 +1197,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CONSTRAINT_CREATE
     opcode_status: opcode_registered
@@ -1140,6 +1215,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_FUNCTION
     opcode_status: opcode_registered
@@ -1158,6 +1234,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_FUNCTION
     opcode_status: opcode_registered
@@ -1176,6 +1253,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_PACKAGE
     opcode_status: opcode_registered
@@ -1194,6 +1272,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CREATE_TRIGGER
     opcode_status: opcode_registered
@@ -1212,6 +1291,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_PROCEDURE
     opcode_status: opcode_registered
@@ -1230,6 +1310,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_TRIGGER
     opcode_status: opcode_registered
@@ -1248,6 +1329,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_ALTER_OBJECT
     opcode_status: opcode_registered
@@ -1265,6 +1347,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CONSTRAINT_ALTER
     opcode_status: opcode_registered
@@ -1282,6 +1365,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_DROP_OBJECT
     opcode_status: opcode_registered
@@ -1299,6 +1383,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_CONSTRAINT_DROP
     opcode_status: opcode_registered
@@ -1316,6 +1401,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DDL_COMMENT_ON
     opcode_status: opcode_registered
@@ -1333,6 +1419,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_INSERT_ROWS
     opcode_status: opcode_registered
@@ -1350,6 +1437,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: row_storage_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_SELECT_ROWS
     opcode_status: opcode_registered
@@ -1367,6 +1455,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: row_storage_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_UPDATE_ROWS
     opcode_status: opcode_registered
@@ -1384,6 +1473,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: row_storage_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_DELETE_ROWS
     opcode_status: opcode_registered
@@ -1401,6 +1491,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: row_storage_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_DML_MERGE_ROWS
     opcode_status: opcode_registered
@@ -1418,6 +1509,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: row_storage_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_BIND_EXPRESSION
     opcode_status: opcode_registered
@@ -1435,6 +1527,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: binding_planning
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_BIND_PREDICATE
     opcode_status: opcode_registered
@@ -1452,6 +1545,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: binding_planning
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_BIND_PROJECTION
     opcode_status: opcode_registered
@@ -1469,6 +1563,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: binding_planning
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_EVALUATE_PROJECTION
     opcode_status: opcode_registered
@@ -1487,6 +1582,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: expression_runtime
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_PLAN_OPERATION
     opcode_status: opcode_registered
@@ -1504,6 +1600,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: binding_planning
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TXN_BEGIN
     opcode_status: opcode_registered
@@ -1522,6 +1619,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TRANSACTION_SET_CHARACTERISTICS
     opcode_status: opcode_registered
@@ -1539,6 +1637,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TXN_COMMIT
     opcode_status: opcode_registered
@@ -1557,6 +1656,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TXN_ROLLBACK
     opcode_status: opcode_registered
@@ -1575,6 +1675,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TRANSACTION_PREPARE
     opcode_status: opcode_registered
@@ -1592,6 +1693,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TRANSACTION_CREATE_SAVEPOINT
     opcode_status: opcode_registered
@@ -1609,6 +1711,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TRANSACTION_RELEASE_SAVEPOINT
     opcode_status: opcode_registered
@@ -1626,6 +1729,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT
     opcode_status: opcode_registered
@@ -1643,6 +1747,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: local_transaction_mga
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_RESOLVE_NAME
     opcode_status: opcode_registered
@@ -1660,6 +1765,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_MAP_UUID_TO_NAME
     opcode_status: opcode_registered
@@ -1677,6 +1783,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_LOOKUP_OBJECT
     opcode_status: opcode_registered
@@ -1694,6 +1801,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_LIST_CHILDREN
     opcode_status: opcode_registered
@@ -1711,6 +1819,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_GET_DESCRIPTOR
     opcode_status: opcode_registered
@@ -1728,6 +1837,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_CATALOG_GET_DEPENDENCIES
     opcode_status: opcode_registered
@@ -1745,6 +1855,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: catalog_visibility
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_CREATE_IDENTITY
     opcode_status: opcode_registered
@@ -1762,6 +1873,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_ALTER_IDENTITY
     opcode_status: opcode_registered
@@ -1779,6 +1891,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_GRANT_RIGHT
     opcode_status: opcode_registered
@@ -1796,6 +1909,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_REVOKE_RIGHT
     opcode_status: opcode_registered
@@ -1813,6 +1927,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_PRIVILEGE_GRANT
     opcode_status: opcode_registered
@@ -1830,6 +1945,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SEC_CREATE_ROLE
     opcode_status: opcode_registered
@@ -1847,6 +1963,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SEC_CREATE_GROUP
     opcode_status: opcode_registered
@@ -1864,6 +1981,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_MEMBERSHIP_GRANT
     opcode_status: opcode_registered
@@ -1881,6 +1999,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_MEMBERSHIP_REVOKE
     opcode_status: opcode_registered
@@ -1898,6 +2017,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_PRIVILEGE_REVOKE
     opcode_status: opcode_registered
@@ -1915,6 +2035,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_SESSION_SET_ROLE
     opcode_status: opcode_registered
@@ -1932,6 +2053,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_PRINCIPAL_CREATE
     opcode_status: opcode_registered
@@ -1949,6 +2071,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_PRINCIPAL_ALTER
     opcode_status: opcode_registered
@@ -1966,6 +2089,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_CREATE
     opcode_status: opcode_registered
@@ -1983,6 +2107,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_ALTER
     opcode_status: opcode_registered
@@ -2000,6 +2125,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_ATTACH
     opcode_status: opcode_registered
@@ -2017,6 +2143,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_ACTIVATE
     opcode_status: opcode_registered
@@ -2034,6 +2161,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_DEACTIVATE
     opcode_status: opcode_registered
@@ -2051,6 +2179,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_VALIDATE
     opcode_status: opcode_registered
@@ -2068,6 +2197,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_POLICY_SHOW
     opcode_status: opcode_registered
@@ -2085,6 +2215,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_SECURITY_EVALUATE_VISIBILITY
     opcode_status: opcode_registered
@@ -2102,6 +2233,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_EVALUATE_POLICY
     opcode_status: opcode_registered
@@ -2119,6 +2251,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SECURITY_EVALUATE_DEEP_ENFORCEMENT
     opcode_status: opcode_registered
@@ -2136,6 +2269,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_security
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: sblr_callable
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_VERSION
     opcode_status: opcode_registered
@@ -2156,6 +2290,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DATABASE
     opcode_status: opcode_registered
@@ -2176,6 +2311,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_SYSTEM
     opcode_code: 0x0D08
@@ -2196,6 +2332,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_CATALOG
     opcode_status: opcode_registered
@@ -2214,6 +2351,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_SESSIONS
     opcode_status: opcode_registered
@@ -2232,6 +2370,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_TRANSACTIONS
     opcode_status: opcode_registered
@@ -2250,6 +2389,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_LOCKS
     opcode_status: opcode_registered
@@ -2268,6 +2408,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_STATEMENTS
     opcode_status: opcode_registered
@@ -2286,6 +2427,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_JOBS
     opcode_status: opcode_registered
@@ -2304,6 +2446,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_MANAGEMENT
     opcode_status: opcode_registered
@@ -2322,6 +2465,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS
     opcode_status: opcode_registered
@@ -2340,6 +2484,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DIAGNOSTICS_EXTENDED
     opcode_status: opcode_registered
@@ -2358,6 +2503,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_ARCHIVE_REPLICATION
     opcode_status: opcode_registered
@@ -2376,6 +2522,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED
     opcode_status: opcode_registered
@@ -2394,6 +2541,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_FILESPACE_EXTENDED
     opcode_status: opcode_registered
@@ -2412,6 +2560,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE
     opcode_status: opcode_registered
@@ -2430,6 +2579,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_ACCELERATION
     opcode_status: opcode_registered
@@ -2447,6 +2597,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED
     opcode_status: opcode_registered
@@ -2464,6 +2615,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_SHOW_METRICS
     opcode_status: opcode_registered
@@ -2482,6 +2634,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_OBSERVABILITY_EXPLAIN_OPERATION
     opcode_status: opcode_registered
@@ -2500,6 +2653,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: observability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_MANAGEMENT_INSPECT_CONFIG
     opcode_status: opcode_registered
@@ -2517,6 +2671,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_MANAGEMENT_SET_CONFIG
     opcode_status: opcode_registered
@@ -2534,6 +2689,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_MANAGEMENT_RESET_CONFIG
     opcode_status: opcode_registered
@@ -2551,6 +2707,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_MANAGEMENT_INSPECT_RUNTIME
     opcode_status: opcode_registered
@@ -2568,6 +2725,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_MANAGEMENT_CONTROL_RUNTIME
     opcode_status: opcode_registered
@@ -2585,6 +2743,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_MANAGEMENT_PREPARE_SUPPORT_BUNDLE
     opcode_status: opcode_registered
@@ -2602,6 +2761,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: management_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: not_sblr_callable
   - sblr_operation: SBLR_SYSTEM_CONFIG_SET
     opcode_status: opcode_registered
@@ -2620,6 +2780,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: sysarch_management
     current_implementation_status: behavior_implemented
+    implementation_maturity: routing
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_CREATE_DATABASE
     opcode_status: opcode_registered
@@ -2640,6 +2801,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_OPEN_DATABASE
     opcode_status: opcode_registered
@@ -2661,6 +2823,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_ATTACH_DATABASE
     opcode_status: opcode_registered
@@ -2682,6 +2845,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_DETACH_DATABASE
     opcode_status: opcode_registered
@@ -2703,6 +2867,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_ENTER_MAINTENANCE
     opcode_status: opcode_registered
@@ -2724,6 +2889,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_EXIT_MAINTENANCE
     opcode_status: opcode_registered
@@ -2745,6 +2911,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_ENTER_RESTRICTED_OPEN
     opcode_status: opcode_registered
@@ -2765,6 +2932,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_EXIT_RESTRICTED_OPEN
     opcode_status: opcode_registered
@@ -2785,6 +2953,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_INSPECT_DATABASE
     opcode_status: opcode_registered
@@ -2805,6 +2974,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_VERIFY_DATABASE
     opcode_status: opcode_registered
@@ -2825,6 +2995,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_REPAIR_DATABASE
     opcode_status: opcode_registered
@@ -2845,6 +3016,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     diagnostic_ownership: engine.lifecycle.refusal.repair_plan_missing
   - sblr_operation: SBLR_LIFECYCLE_SHUTDOWN_DATABASE
@@ -2866,6 +3038,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_SHUTDOWN_FORCE
     opcode_status: opcode_registered
@@ -2886,6 +3059,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     diagnostic_ownership: engine.lifecycle.refusal.force_not_explicit
   - sblr_operation: SBLR_LIFECYCLE_SHUTDOWN_ACKNOWLEDGE
@@ -2907,6 +3081,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_LIFECYCLE_DROP_DATABASE
     opcode_status: opcode_registered
@@ -2927,6 +3102,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     diagnostic_ownership: engine.lifecycle.refusal.drop_blocked
   - sblr_operation: SBLR_CLUSTER_INSPECT_STATE
@@ -2945,6 +3121,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: private_cluster_authority
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_CLUSTER_INSPECT_ROUTING_PLAN
     opcode_status: opcode_registered
@@ -2962,6 +3139,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: private_cluster_authority
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_CLUSTER_CONTROL_CLUSTER
     opcode_status: opcode_registered
@@ -2979,6 +3157,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: private_cluster_authority
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_CLUSTER_INSPECT_PROVIDER
     opcode_status: opcode_registered
@@ -3003,6 +3182,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_capability_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
     notes:
       - Provider-info is a compile-time boundary probe and is intentionally available in both no-cluster and cluster-enabled builds.
@@ -3030,6 +3210,7 @@ entries:
     closure_slice: PID-013
     implementation_status: compile_gated_provider_boundary_fail_closed
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
     notes:
       - Remote participant insert envelopes must carry remote request UUID target UUIDs route epoch participant UUID policy snapshot finality service idempotency key retry policy and canonical rows.
@@ -3058,6 +3239,7 @@ entries:
     closure_slice: PID-012
     implementation_status: compile_gated_provider_boundary_fail_closed
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
     notes:
       - Route-fence validation is mandatory before any subsequent remote participant insert request.
@@ -3079,6 +3261,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: private_cluster_authority
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_CLUSTER_INSPECT_REPLICATION
     opcode_status: opcode_registered
@@ -3096,6 +3279,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: private_cluster_authority
     current_implementation_status: compile_gated_provider_boundary_fail_closed
+    implementation_maturity: routing
     executor_readiness_status: cluster_provider_boundary_mapped
   - sblr_operation: SBLR_EXTENSIBILITY_REGISTER_UDR_PACKAGE
     opcode_status: opcode_registered
@@ -3113,6 +3297,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_LOAD_UDR_PACKAGE
     opcode_status: opcode_registered
@@ -3130,6 +3315,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_UNLOAD_UDR_PACKAGE
     opcode_status: opcode_registered
@@ -3147,6 +3333,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_INSPECT_UDR_PACKAGES
     opcode_status: opcode_registered
@@ -3164,6 +3351,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_inspect
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_UDR_INVOKE
     opcode_status: opcode_registered
@@ -3181,6 +3369,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_invocation
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE
     opcode_status: opcode_registered
@@ -3198,6 +3387,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_COMPILE_LLVM_MODULE
     opcode_status: opcode_registered
@@ -3215,6 +3405,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY
     opcode_status: opcode_registered
@@ -3232,6 +3423,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: extension_control
     current_implementation_status: behavior_implemented_policy_gated_no_hardware_release_claim
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_DOCUMENT_INSERT
     opcode_status: opcode_registered
@@ -3249,6 +3441,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_DOCUMENT_FIND
     opcode_status: opcode_registered
@@ -3266,6 +3459,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_072_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_DOCUMENT_UPDATE
     opcode_status: opcode_registered
@@ -3283,6 +3478,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_DOCUMENT_DELETE
     opcode_status: opcode_registered
@@ -3300,6 +3496,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_GRAPH_QUERY
     opcode_status: opcode_registered
@@ -3317,6 +3514,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_KEY_VALUE_GET
     opcode_status: opcode_registered
@@ -3334,6 +3532,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_KEY_VALUE_PUT
     opcode_status: opcode_registered
@@ -3351,6 +3550,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_KEY_VALUE_MULTIGET
     opcode_status: opcode_registered
@@ -3368,6 +3568,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_071_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_KEY_VALUE_PIPELINE
     opcode_status: opcode_registered
@@ -3385,6 +3587,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_071_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_KEY_VALUE_ATOMIC_PROGRAM
     opcode_status: opcode_registered
@@ -3402,6 +3606,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_071_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_TIME_SERIES_APPEND
     opcode_status: opcode_registered
@@ -3419,6 +3625,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/performance/optimizer_deficiency_odf_113_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_FAMILY_MAINTENANCE_PLAN
     opcode_status: retired_non_core
@@ -3437,6 +3645,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/concurrency/optimizer_deficiency_odf_117_gate.cpp
     executor_readiness_status: internal_engine_api_only
   - sblr_operation: SBLR_NOSQL_STATISTICS_ADVISOR_PLAN
     opcode_status: retired_non_core
@@ -3455,6 +3665,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_078_gate.cpp
     executor_readiness_status: internal_engine_api_only
   - sblr_operation: SBLR_NOSQL_BACKPRESSURE_DEBT_PLAN
     opcode_status: opcode_registered
@@ -3472,6 +3684,8 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: physical_implementation
+    maturity_evidence: project/tests/optimizer/optimizer_deficiency_odf_079_gate.cpp
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_VECTOR_SEARCH
     opcode_status: opcode_registered
@@ -3489,6 +3703,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_NOSQL_SEARCH_QUERY
     opcode_status: opcode_registered
@@ -3506,6 +3721,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: non_sql_surface
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_CAST_VALUE
     opcode_status: opcode_registered
@@ -3523,6 +3739,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_EXTRACT_VALUE
     opcode_status: opcode_registered
@@ -3540,6 +3757,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_SET_OPERATION
     opcode_status: opcode_registered
@@ -3557,6 +3775,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_APPLY_NUMERIC_OPERATION
     opcode_status: opcode_registered
@@ -3574,6 +3793,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE
     opcode_status: opcode_registered
@@ -3591,6 +3811,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY
     opcode_status: opcode_registered
@@ -3608,6 +3829,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: datatype_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_VALIDATE_DOMAIN_VALUE
     opcode_status: opcode_registered
@@ -3625,6 +3847,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: domain_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_QUERY_INVOKE_DOMAIN_METHOD
     opcode_status: opcode_registered
@@ -3642,6 +3865,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: domain_descriptor
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
 
   # SEARCH_KEY: EVN_IMPL_005_SBLR_EVENT_DISPATCH
@@ -3662,6 +3886,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_ALTER
     opcode_status: opcode_registered
@@ -3680,6 +3905,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_DROP
     opcode_status: opcode_registered
@@ -3698,6 +3924,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_LISTEN
     opcode_status: opcode_registered
@@ -3716,6 +3943,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_UNLISTEN
     opcode_status: opcode_registered
@@ -3734,6 +3962,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_NOTIFY
     opcode_status: opcode_registered
@@ -3752,6 +3981,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_SUBSCRIPTION_LIST
     opcode_status: opcode_registered
@@ -3770,6 +4000,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_DELIVERY_POLL
     opcode_status: opcode_registered
@@ -3788,6 +4019,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_DELIVERY_ACK
     opcode_status: opcode_registered
@@ -3806,6 +4038,7 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready
   - sblr_operation: SBLR_EVENT_CHANNEL_UNLISTEN_ALL
     opcode_status: opcode_registered
@@ -3824,4 +4057,5 @@ entries:
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: event_notification_policy
     current_implementation_status: behavior_implemented
+    implementation_maturity: logical_implementation
     executor_readiness_status: mapped_ready

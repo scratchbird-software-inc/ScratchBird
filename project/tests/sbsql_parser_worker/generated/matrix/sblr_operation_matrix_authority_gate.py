@@ -33,8 +33,18 @@ REQUIRED_IMPL_FIELDS = (
     "diagnostic_mapping",
     "evidence_mapping",
     "current_implementation_status",
+    "implementation_maturity",
     "executor_readiness_status",
 )
+
+MATURITY_LEVELS = {
+    "codec_contract",
+    "routing",
+    "logical_implementation",
+    "physical_implementation",
+    "durability_proven",
+    "production_qualified",
+}
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -85,6 +95,11 @@ def validate_impl_row_semantics(operation_id: str, impl: dict[str, Any], errors:
     status = str(impl.get("current_implementation_status", ""))
     readiness = impl.get("executor_readiness_status")
     opcode_status = impl.get("opcode_status")
+    maturity = impl.get("implementation_maturity")
+    if maturity not in MATURITY_LEVELS:
+        errors.append(f"{operation_id} has unsupported implementation maturity {maturity}")
+    if ("fail_closed" in status or status == "exact_profile_refusal") and maturity != "routing":
+        errors.append(f"{operation_id} refusal/provider boundary must remain at routing maturity")
     if opcode_status == "retired_non_core":
         if status != "behavior_implemented":
             errors.append(
@@ -196,17 +211,24 @@ def main() -> int:
 
     validate_public_snapshot_text(spec_text, opcode_registry_text, entries, errors)
 
-    api_ops = {
-        row.get("operation_id")
+    api_rows = {
+        row.get("operation_id"): row
         for row in (api_registry.get("operations") or [])
         if isinstance(row, dict) and isinstance(row.get("operation_id"), str)
     }
+    api_ops = set(api_rows)
     if api_ops != set(impl_by_operation):
         errors.append(
             "engine API surface registry and SBLR implementation matrix operation sets differ: "
             f"api_only={sorted(api_ops - set(impl_by_operation))[:20]} "
             f"matrix_only={sorted(set(impl_by_operation) - api_ops)[:20]}"
         )
+    for operation_id, impl_row in impl_by_operation.items():
+        api_row = api_rows.get(operation_id, {})
+        if api_row.get("implementation_maturity") != impl_row.get("implementation_maturity"):
+            errors.append(
+                f"{operation_id} implementation maturity differs between engine registry and SBLR matrix"
+            )
 
     if errors:
         print("sblr_operation_matrix_authority_gate=failed", file=sys.stderr)

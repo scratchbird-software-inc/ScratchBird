@@ -23,9 +23,11 @@ struct OperationSeen {
   bool header = false;
   bool implementation = false;
   bool implementation_status = false;
+  bool implementation_maturity = false;
   std::string header_path;
   std::string implementation_path;
   std::string status;
+  std::string maturity;
 };
 
 std::string Trim(std::string value) {
@@ -128,6 +130,9 @@ int main(int argc, char** argv) {
     } else if (StartsWith(trimmed, "implementation_status:")) {
       current.implementation_status = !ValueAfterColon(trimmed).empty();
       current.status = ValueAfterColon(trimmed);
+    } else if (StartsWith(trimmed, "implementation_maturity:")) {
+      current.implementation_maturity = !ValueAfterColon(trimmed).empty();
+      current.maturity = ValueAfterColon(trimmed);
     }
   }
   if (in_operation) {
@@ -137,17 +142,22 @@ int main(int argc, char** argv) {
   std::size_t missing_fields = 0;
   std::size_t missing_files = 0;
   std::size_t unknown_statuses = 0;
+  std::size_t unknown_maturities = 0;
   const std::set<std::string> allowed_statuses = {
       "stubbed_fail_closed", "contract_defined", "vertical_slice_implemented", "current_stage_complete",
       "cluster_placeholder_fail_closed", "deferred_by_architecture", "behavior_implemented",
       "compile_gated_provider_boundary_fail_closed", "fail_closed_cluster_mapping_unavailable",
-      "physical_provider_implemented"};
+      "physical_provider_implemented", "exact_profile_refusal"};
+  const std::set<std::string> allowed_maturities = {
+      "codec_contract", "routing", "logical_implementation", "physical_implementation",
+      "durability_proven", "production_qualified"};
   for (const auto& op : operations) {
     if (!(op.operation_id && op.function_name && op.request_type && op.result_type && op.header &&
-          op.implementation && op.implementation_status)) {
+          op.implementation && op.implementation_status && op.implementation_maturity)) {
       ++missing_fields;
     }
     if (!allowed_statuses.contains(op.status)) { ++unknown_statuses; }
+    if (!allowed_maturities.contains(op.maturity)) { ++unknown_maturities; }
     for (const auto& header_path : SplitRegistryPaths(op.header_path)) {
       if (!IsRegistryFile(registry_roots, header_path)) ++missing_files;
     }
@@ -157,13 +167,15 @@ int main(int argc, char** argv) {
       }
     }
   }
-  const bool ok = !operations.empty() && missing_fields == 0 && missing_files == 0 && unknown_statuses == 0;
+  const bool ok = !operations.empty() && missing_fields == 0 && missing_files == 0 &&
+                  unknown_statuses == 0 && unknown_maturities == 0;
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
   std::cout << "  \"operations\": " << operations.size() << ",\n";
   std::cout << "  \"missing_fields\": " << missing_fields << ",\n";
   std::cout << "  \"missing_files\": " << missing_files << ",\n";
-  std::cout << "  \"unknown_statuses\": " << unknown_statuses << "\n";
+  std::cout << "  \"unknown_statuses\": " << unknown_statuses << ",\n";
+  std::cout << "  \"unknown_maturities\": " << unknown_maturities << "\n";
   std::cout << "}\n";
   return ok ? 0 : 1;
 }

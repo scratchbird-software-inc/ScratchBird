@@ -2,6 +2,13 @@
 
 ScratchBird is an early beta public source-review release.
 
+Every public engine/API capability has an explicit implementation maturity in
+`project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml`. The meanings,
+promotion evidence, and current summary are documented in
+`project/docs/public_api/IMPLEMENTATION_MATURITY.md`. In particular, an SBLR
+`*_runtime.cpp` file may only implement a wire codec or descriptor carrier; its
+filename is not evidence that the named operation executes or persists state.
+
 ## Public Release Scope
 
 - The public repository is focused on the single-node open-core engine and public test/review surface.
