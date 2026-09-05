@@ -273,6 +273,17 @@ void RequireNoLeak(const api::EngineApiResult& result, std::string_view secret) 
           "P4 protected material leaked through diagnostic/result evidence");
 }
 
+void RequireProviderFailClosed(
+    const api::EngineAuthenticateProviderResult& result,
+    std::string_view diagnostic_code,
+    std::string_view message) {
+  Require(!result.ok && !result.authenticated &&
+              HasDiagnostic(result, diagnostic_code),
+          message);
+  Require(!HasEvidence(result, "auth_provider_authenticated"),
+          "P4 fail-closed provider published authentication evidence");
+}
+
 void WriteAuthStore(const std::filesystem::path& database_path) {
   api::EngineSecurityCreatePrincipalRequest request;
   request.context = Context(database_path);
@@ -392,7 +403,7 @@ api::EngineAuthenticateProviderRequest ProviderAuthRequest(
 }
 
 void AddProviderPayload(api::EngineApiRequest* request, std::string payload) {
-  request->option_envelopes.push_back("adapter_mode:live");
+  request->option_envelopes.push_back("adapter_mode:contract");
   request->option_envelopes.push_back("provider_payload:" + std::move(payload));
 }
 
@@ -521,23 +532,27 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
   peer.option_envelopes.push_back("provider_lifecycle_state:healthy");
   const auto peer_without_os_evidence = api::EngineAuthenticateProvider(peer);
   Require(!peer_without_os_evidence.ok &&
-              HasDiagnostic(peer_without_os_evidence, "SECURITY.AUTHENTICATION.FAILED"),
+              HasDiagnostic(peer_without_os_evidence, "SECURITY.CREDENTIAL_INVALID"),
           "P4 PEER authentication without OS credential verification was accepted");
 
   peer.option_envelopes.push_back("so_peercred_verified:true");
-  const auto peer_with_os_evidence = api::EngineAuthenticateProvider(peer);
-  Require(peer_with_os_evidence.ok && peer_with_os_evidence.authenticated,
-          "P4 PEER authentication with verified OS credential evidence was rejected");
+  const auto peer_with_forged_os_evidence = api::EngineAuthenticateProvider(peer);
+  Require(!peer_with_forged_os_evidence.ok &&
+              HasDiagnostic(peer_with_forged_os_evidence,
+                            "SECURITY.CREDENTIAL_INVALID"),
+          "P4 PEER authentication accepted caller-supplied OS credential evidence");
 
   auto ident = ProviderAuthRequest(database_path, "ident", "local-peer-user");
   const auto ident_without_os_evidence = api::EngineAuthenticateProvider(ident);
   Require(!ident_without_os_evidence.ok &&
-              HasDiagnostic(ident_without_os_evidence, "SECURITY.AUTHENTICATION.FAILED"),
+              HasDiagnostic(ident_without_os_evidence, "SECURITY.CREDENTIAL_INVALID"),
           "P4 ident authentication without OS credential verification was accepted");
   ident.option_envelopes.push_back("ucred_verified:true");
-  const auto ident_with_os_evidence = api::EngineAuthenticateProvider(ident);
-  Require(ident_with_os_evidence.ok && ident_with_os_evidence.authenticated,
-          "P4 ident authentication with verified OS credential evidence was rejected");
+  const auto ident_with_forged_os_evidence = api::EngineAuthenticateProvider(ident);
+  Require(!ident_with_forged_os_evidence.ok &&
+              HasDiagnostic(ident_with_forged_os_evidence,
+                            "SECURITY.CREDENTIAL_INVALID"),
+          "P4 ident authentication accepted caller-supplied OS credential evidence");
 
   api::EngineEvaluatePolicyRequest policy;
   policy.context = Context(database_path);
@@ -621,8 +636,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
   AddProviderPayload(&ldap,
                      "user=alice;password=ldapSecretP4;endpoint=ldaps.example;starttls=true;bind=allow;groups=APP;path=cn-alice");
   const auto ldap_result = api::EngineAuthenticateProvider(ldap);
-  Require(ldap_result.ok && ldap_result.authenticated,
-          "P4 LDAP StartTLS provider evidence was rejected");
+  RequireProviderFailClosed(ldap_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 LDAP text evidence authenticated without a trusted verifier");
   RequireNoLeak(ldap_result, "ldapSecretP4");
 
   auto kerberos = ProviderAuthRequest(database_path, "kerberos");
@@ -633,8 +648,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                          std::string(kHexProof) + ";exp=" +
                          std::string(kFutureExpiryMs) + ";pac_groups=APP");
   const auto kerberos_result = api::EngineAuthenticateProvider(kerberos);
-  Require(kerberos_result.ok && kerberos_result.authenticated,
-          "P4 Kerberos/GSSAPI provider evidence was rejected");
+  RequireProviderFailClosed(kerberos_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 Kerberos text evidence authenticated without a trusted verifier");
 
   auto oidc = ProviderAuthRequest(database_path, "oidc");
   AddDependency(&oidc, "oidc_jwt_client");
@@ -643,8 +658,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";groups=APP;validator=jwks;assertion=oidcSecretAssertion");
   const auto oidc_result = api::EngineAuthenticateProvider(oidc);
-  Require(oidc_result.ok && oidc_result.authenticated,
-          "P4 OIDC/JWT validator evidence was rejected");
+  RequireProviderFailClosed(oidc_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 OIDC text evidence authenticated without a trusted verifier");
   RequireNoLeak(oidc_result, "oidcSecretAssertion");
 
   auto oidc_missing_validator = ProviderAuthRequest(database_path, "oidc");
@@ -654,7 +669,7 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";groups=APP");
   const auto oidc_denied = api::EngineAuthenticateProvider(oidc_missing_validator);
-  Require(!oidc_denied.ok && HasDiagnostic(oidc_denied, "SECURITY.AUTHENTICATION.FAILED"),
+  Require(!oidc_denied.ok && HasDiagnostic(oidc_denied, "SECURITY.AUTH_SOURCE_UNAVAILABLE"),
           "P4 OIDC/JWT without validator boundary was accepted");
 
   auto saml = ProviderAuthRequest(database_path, "saml");
@@ -664,8 +679,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                          std::string(kFutureExpiryMs) + ";signature=" +
                          std::string(kHexProof) + ";attributes=groups;assertion=samlSecretAssertion");
   const auto saml_result = api::EngineAuthenticateProvider(saml);
-  Require(saml_result.ok && saml_result.authenticated,
-          "P4 SAML validator evidence was rejected");
+  RequireProviderFailClosed(saml_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 SAML text evidence authenticated without a trusted verifier");
   RequireNoLeak(saml_result, "samlSecretAssertion");
 
   auto radius = ProviderAuthRequest(database_path, "radius");
@@ -675,8 +690,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                      "user=alice;authenticator=" + std::string(kHexProof) +
                          ";result=accept;attribute=group;shared_secret_handle=secretRef");
   const auto radius_result = api::EngineAuthenticateProvider(radius);
-  Require(radius_result.ok && radius_result.authenticated,
-          "P4 policy-enabled RADIUS Access-Request evidence was rejected");
+  RequireProviderFailClosed(radius_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 RADIUS text evidence authenticated without a trusted verifier");
 
   auto webauthn = ProviderAuthRequest(database_path, "fido2");
   webauthn.option_envelopes.push_back("webauthn_policy_enabled:true");
@@ -686,8 +701,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                          std::string(kFutureExpiryMs) + ";signature=" +
                          std::string(kHexProof));
   const auto webauthn_result = api::EngineAuthenticateProvider(webauthn);
-  Require(webauthn_result.ok && webauthn_result.authenticated,
-          "P4 WebAuthn/FIDO2 provider evidence was rejected");
+  RequireProviderFailClosed(webauthn_result, "SECURITY.MFA_REQUIRED",
+                            "P4 WebAuthn text evidence authenticated without a trusted verifier");
 
   auto factor_chain = ProviderAuthRequest(database_path, "mfa");
   factor_chain.option_envelopes.push_back("factor_chain_policy_enabled:true");
@@ -696,8 +711,8 @@ void TestFederatedDirectoryAndMfaProviders(const std::filesystem::path& database
                      "primary_auth_context_uuid=authctx;factor_policy_uuid=policy;factor_results=allow;challenge_transcript_hash=" +
                          std::string(kHexProof) + ";subject=alice");
   const auto factor_chain_result = api::EngineAuthenticateProvider(factor_chain);
-  Require(factor_chain_result.ok && factor_chain_result.authenticated,
-          "P4 MFA factor_chain provider evidence was rejected");
+  RequireProviderFailClosed(factor_chain_result, "SECURITY.MFA_REQUIRED",
+                            "P4 factor-chain text evidence authenticated without a trusted verifier");
 }
 
 void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& database_path) {
@@ -708,8 +723,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                      "subject=alice;san=alice.example;chain=trusted;revoked=false;eku=clientAuth;fingerprint=" +
                          std::string(kHexProof) + ";groups=APP");
   const auto certificate_result = api::EngineAuthenticateProvider(certificate);
-  Require(certificate_result.ok && certificate_result.authenticated,
-          "P4 mTLS certificate provider evidence was rejected");
+  RequireProviderFailClosed(certificate_result, "SECURITY.CREDENTIAL_INVALID",
+                            "P4 mTLS text evidence authenticated without a trusted verifier");
 
   auto pam = ProviderAuthRequest(database_path, "pam");
   pam.option_envelopes.push_back("pam_policy_enabled:true");
@@ -717,8 +732,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
   AddProviderPayload(&pam,
                      "user=alice;service=scratchbird;module=unix;password=pamSecretP4;prompt=hidden;account=allow;session=open");
   const auto pam_result = api::EngineAuthenticateProvider(pam);
-  Require(pam_result.ok && pam_result.authenticated,
-          "P4 policy-enabled PAM provider evidence was rejected");
+  RequireProviderFailClosed(pam_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 PAM text evidence authenticated without a trusted verifier");
   RequireNoLeak(pam_result, "pamSecretP4");
 
   auto remote = ProviderAuthRequest(database_path, "remote_security_database");
@@ -729,8 +744,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";groups=APP");
   const auto remote_result = api::EngineAuthenticateProvider(remote);
-  Require(remote_result.ok && remote_result.authenticated,
-          "P4 remote ScratchBird security database evidence was rejected");
+  RequireProviderFailClosed(remote_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 remote-security text evidence authenticated without a trusted verifier");
   RequireNoLeak(remote_result, "remoteSecretP4");
 
   auto cluster = ProviderAuthRequest(database_path, "cluster_security");
@@ -744,8 +759,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
           "P4 cluster security provider was accepted without cluster authority");
   cluster.context.cluster_authority_available = true;
   const auto cluster_result = api::EngineAuthenticateProvider(cluster);
-  Require(cluster_result.ok && cluster_result.authenticated,
-          "P4 cluster security provider with cluster authority evidence was rejected");
+  RequireProviderFailClosed(cluster_result, "PROCESS.CLUSTER_PATH_ABSENT",
+                            "P4 cluster text evidence authenticated without a trusted verifier");
 
   auto spiffe = ProviderAuthRequest(database_path, "spiffe");
   AddDependency(&spiffe, "spiffe_svid_or_workload_oidc");
@@ -754,8 +769,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";service_group=APP");
   const auto spiffe_result = api::EngineAuthenticateProvider(spiffe);
-  Require(spiffe_result.ok && spiffe_result.authenticated,
-          "P4 workload SPIFFE identity evidence was rejected");
+  RequireProviderFailClosed(spiffe_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 SPIFFE text evidence authenticated without a trusted verifier");
 
   auto managed = ProviderAuthRequest(database_path, "managed_identity");
   AddDependency(&managed, "spiffe_svid_or_workload_oidc");
@@ -764,16 +779,16 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";service_group=APP");
   const auto managed_result = api::EngineAuthenticateProvider(managed);
-  Require(managed_result.ok && managed_result.authenticated,
-          "P4 managed workload identity evidence was rejected");
+  RequireProviderFailClosed(managed_result, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                            "P4 managed-identity text evidence authenticated without a trusted verifier");
 
   auto bearer = ProviderAuthRequest(database_path, "bearer_token");
   AddProviderPayload(&bearer,
                      "token_id=tok1;proof=" + std::string(kHexProof) +
                          ";exp=" + std::string(kFutureExpiryMs) + ";subject=alice;token=topSecretBearer");
   const auto bearer_result = api::EngineAuthenticateProvider(bearer);
-  Require(bearer_result.ok && bearer_result.authenticated,
-          "P4 bearer token evidence was rejected");
+  RequireProviderFailClosed(bearer_result, "SECURITY.CREDENTIAL_INVALID",
+                            "P4 bearer-token text evidence authenticated without a trusted verifier");
   RequireNoLeak(bearer_result, "topSecretBearer");
 
   auto revoked = bearer;
@@ -783,7 +798,7 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                     ";exp=" + std::string(kFutureExpiryMs) +
                     ";subject=alice;revoked=true;token=topSecretBearer");
   const auto revoked_result = api::EngineAuthenticateProvider(revoked);
-  Require(!revoked_result.ok && HasDiagnostic(revoked_result, "SECURITY.TOKEN_REVOKED"),
+  Require(!revoked_result.ok && HasDiagnostic(revoked_result, "SECURITY.CREDENTIAL_INVALID"),
           "P4 revoked bearer token was accepted");
   RequireNoLeak(revoked_result, "topSecretBearer");
 
@@ -792,8 +807,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                      "key_id=key1;proof=" + std::string(kHexProof) +
                          ";generation=2;subject=alice;groups=APP;api_secret=topSecretApiKey");
   const auto api_key_result = api::EngineAuthenticateProvider(api_key);
-  Require(api_key_result.ok && api_key_result.authenticated,
-          "P4 API key/authkey token evidence was rejected");
+  RequireProviderFailClosed(api_key_result, "SECURITY.CREDENTIAL_INVALID",
+                            "P4 API-key text evidence authenticated without a trusted verifier");
   RequireNoLeak(api_key_result, "topSecretApiKey");
 
   auto proxy = ProviderAuthRequest(database_path, "proxy_assertion");
@@ -805,8 +820,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
                          std::string(kFutureExpiryMs) + ";sig=" +
                          std::string(kHexProof) + ";groups=APP;assertion=topSecretProxyAssertion");
   const auto proxy_result = api::EngineAuthenticateProvider(proxy);
-  Require(proxy_result.ok && proxy_result.authenticated,
-          "P4 proxy assertion provider evidence was rejected");
+  RequireProviderFailClosed(proxy_result, "SECURITY.CHANNEL_BINDING_REQUIRED",
+                            "P4 proxy text evidence authenticated without a trusted verifier");
   RequireNoLeak(proxy_result, "topSecretProxyAssertion");
 
   auto token_refresh = ProviderAuthRequest(database_path, "token_refresh");
@@ -836,8 +851,8 @@ void TestWorkloadProxyTokenAndRefreshProviders(const std::filesystem::path& data
   custom.option_envelopes.push_back("plugin_timeout_policy:present");
   custom.option_envelopes.push_back("plugin_memory_policy:present");
   const auto custom_result = api::EngineAuthenticateProvider(custom);
-  Require(custom_result.ok && custom_result.authenticated,
-          "P4 registered custom C++ auth plugin evidence was rejected");
+  RequireProviderFailClosed(custom_result, "SECURITY.AUTH_PLUGIN_INVALID",
+                            "P4 plugin text evidence authenticated without a trusted verifier");
   RequireNoLeak(custom_result, "customSecretP4");
 }
 

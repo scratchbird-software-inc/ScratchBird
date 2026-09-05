@@ -7,4 +7,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("saml"); auto auth_r=EngineAuthenticateProvider(auth); auto bad=Request<EngineAuthenticateProviderRequest>("saml"); bad.option_envelopes.push_back("freshness:stale"); auto bad_r=EngineAuthenticateProvider(bad); return Finish({{"saml_auth",auth_r.ok},{"stale_assertion_rejected",!bad_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto unavailable = Request<EngineAuthenticateProviderRequest>("saml");
+  unavailable.option_envelopes.push_back("dependency:saml_xmlsig:available");
+  const auto unavailable_r = EngineAuthenticateProvider(unavailable);
+  auto stale = unavailable;
+  stale.option_envelopes.push_back("freshness:stale");
+  EngineAuthenticateProviderResult stale_r;
+  {
+    ScopedTrustedProviderResult trusted_result;
+    stale_r = EngineAuthenticateProvider(stale);
+  }
+  return Finish({
+      {"saml_unavailable",
+       HasDiagnostic(unavailable_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "saml_validator_required")},
+      {"stale_assertion_rejected",
+       HasDiagnostic(stale_r, "SECURITY.AUTHENTICATION.FAILED",
+                     "stale_or_replayed_provider_evidence")},
+  });
+}

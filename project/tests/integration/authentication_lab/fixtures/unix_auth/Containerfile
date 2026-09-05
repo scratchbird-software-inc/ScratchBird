@@ -1,0 +1,18 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+ARG DEBIAN_IMAGE=debian:13.1-slim
+FROM ${DEBIAN_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpam-modules pamtester python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 alice \
+    && printf 'alice:alice-password\n' | chpasswd
+
+COPY scratchbird.pam /etc/pam.d/scratchbird
+COPY peer_server.py peer_client.py /opt/scratchbird/
+RUN chmod 0644 /etc/pam.d/scratchbird /opt/scratchbird/*.py
+
+ENTRYPOINT ["python3", "/opt/scratchbird/peer_server.py", "/run/scratchbird-auth/peer.sock"]

@@ -7,4 +7,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("radius"); auto auth_r=EngineAuthenticateProvider(auth); auto explain=Request<EngineExplainMembershipRequest>("radius"); auto exp_r=EngineExplainMembership(explain); return Finish({{"radius_auth",auth_r.ok},{"radius_no_path",!exp_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto authentication = Request<EngineAuthenticateProviderRequest>("radius");
+  authentication.option_envelopes.push_back("radius_policy_enabled:true");
+  authentication.option_envelopes.push_back(
+      "dependency:radius_client:available");
+  const auto authentication_r = EngineAuthenticateProvider(authentication);
+  auto explain = Request<EngineExplainMembershipRequest>("radius");
+  const auto explain_r = EngineExplainMembership(explain);
+  return Finish({
+      {"radius_unavailable",
+       HasDiagnostic(authentication_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "radius_policy_and_dependency_required")},
+      {"radius_no_path",
+       HasDiagnostic(explain_r, "SECURITY.GROUP.EXTERNAL_UNSYNCED",
+                     "membership_path_not_explainable:radius")},
+  });
+}

@@ -7,4 +7,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto ok=Request<EngineAuthenticateProviderRequest>("certificate_mtls"); auto ok_r=EngineAuthenticateProvider(ok); auto nogroup=Request<EngineAuthenticateProviderRequest>("certificate_mtls"); nogroup.option_envelopes={"provider:certificate_mtls","credential:valid","fixture:success","principal:cert-subject"}; auto no_r=EngineAuthenticateProvider(nogroup); return Finish({{"mtls_ok",ok_r.ok},{"group_materialization_required",!no_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto unavailable =
+      Request<EngineAuthenticateProviderRequest>("certificate_mtls");
+  unavailable.option_envelopes.push_back("dependency:tls_x509:available");
+  unavailable.option_envelopes.push_back("channel_binding:verified");
+  const auto unavailable_r = EngineAuthenticateProvider(unavailable);
+
+  auto no_groups = unavailable;
+  RemoveOption(&no_groups, "groups:materialized");
+  EngineAuthenticateProviderResult no_groups_r;
+  {
+    ScopedTrustedProviderResult trusted_result;
+    no_groups_r = EngineAuthenticateProvider(no_groups);
+  }
+  return Finish({
+      {"mtls_unavailable",
+       HasDiagnostic(unavailable_r, "SECURITY.CREDENTIAL_INVALID",
+                     "certificate_evidence_required")},
+      {"group_materialization_required",
+       HasDiagnostic(no_groups_r, "SECURITY.GROUP.EXTERNAL_UNSYNCED",
+                     "internal_group_materialization_required")},
+  });
+}

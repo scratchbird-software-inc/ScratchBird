@@ -7,4 +7,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto metrics=Request<EngineInspectAuthProviderMetricsRequest>("ldap_ad"); auto met_r=EngineInspectAuthProviderMetrics(metrics); auto denied=Request<EngineInspectAuthProviderMetricsRequest>("ldap_ad"); denied.context=ContextWithoutRights({"deny:OBS_METRICS_READ_FAMILY"}); auto den_r=EngineInspectAuthProviderMetrics(denied); return Finish({{"metrics",met_r.ok&&met_r.metrics_available},{"metrics_denied",!den_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto metrics = Request<EngineInspectAuthProviderMetricsRequest>("ldap_ad");
+  const auto metrics_r = EngineInspectAuthProviderMetrics(metrics);
+  auto denied = metrics;
+  denied.context =
+      ContextWithoutRights({"deny:OBS_METRICS_READ_FAMILY"});
+  const auto denied_r = EngineInspectAuthProviderMetrics(denied);
+  return Finish({
+      {"metrics", metrics_r.ok && metrics_r.metrics_available},
+      {"metrics_denied",
+       HasDiagnostic(denied_r, "SECURITY.AUTHORIZATION.DENIED",
+                     "OBS_METRICS_READ_FAMILY")},
+  });
+}

@@ -1,0 +1,13 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+alice Cleartext-Password := "alice-password"
+    Reply-Message := "ScratchBird authentication lab accept",
+    Class := "database-users"
+
+admin-alice Cleartext-Password := "admin-alice-password"
+    Reply-Message := "ScratchBird authentication lab administrator accept",
+    Class := "database-admins"
+
+disabled-alice Auth-Type := Reject
+    Reply-Message := "ScratchBird authentication lab deliberate rejection"

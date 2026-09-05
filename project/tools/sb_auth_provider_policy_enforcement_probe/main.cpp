@@ -7,4 +7,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto policy=Request<EngineReloadAuthProviderPolicyRequest>("ldap_ad"); auto policy_r=EngineReloadAuthProviderPolicy(policy); auto disabled=Request<EngineReloadAuthProviderPolicyRequest>("ldap_ad"); disabled.option_envelopes.push_back("provider_enabled:false"); auto dis_r=EngineReloadAuthProviderPolicy(disabled); auto cluster=Request<EngineReloadAuthProviderPolicyRequest>("ldap_ad"); cluster.option_envelopes.push_back("cluster_policy:true"); auto cl_r=EngineReloadAuthProviderPolicy(cluster); return Finish({{"policy_reload",policy_r.ok&&policy_r.reloaded},{"disabled_denied",!dis_r.ok},{"cluster_fail_closed",!cl_r.ok&&cl_r.cluster_authority_required}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto policy = Request<EngineReloadAuthProviderPolicyRequest>("ldap_ad");
+  const auto policy_r = EngineReloadAuthProviderPolicy(policy);
+  auto disabled = policy;
+  disabled.option_envelopes.push_back("provider_enabled:false");
+  const auto disabled_r = EngineReloadAuthProviderPolicy(disabled);
+  auto cluster = policy;
+  cluster.option_envelopes.push_back("cluster_policy:true");
+  const auto cluster_r = EngineReloadAuthProviderPolicy(cluster);
+  return Finish({
+      {"policy_reload", policy_r.ok && policy_r.reloaded},
+      {"disabled_denied",
+       HasDiagnostic(disabled_r, "SECURITY.AUTHORITY.INVALID",
+                     "provider_policy_disabled")},
+      {"cluster_fail_closed",
+       cluster_r.cluster_authority_required &&
+           HasDiagnostic(cluster_r, "SECURITY.CLUSTER.AUTHORITY_REQUIRED",
+                         "cluster_provider_policy_unavailable")},
+  });
+}

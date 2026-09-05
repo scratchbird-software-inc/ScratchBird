@@ -1,0 +1,284 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+name: ${SB_AUTH_LAB_PROJECT_NAME:-scratchbird-auth-lab}
+
+x-log-policy: &log-policy
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  keycloak:
+    profiles: [core]
+    image: ${SB_AUTH_LAB_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.7.3}
+    command: [start-dev, --import-realm]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: scratchbird-admin-password
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_KEYCLOAK_PORT:-18080}:8080"
+    volumes:
+      - ./fixtures/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test: [CMD-SHELL, "exec 3<>/dev/tcp/127.0.0.1/9000"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [keycloak.scratchbird.test]
+
+  openldap:
+    profiles: [core]
+    image: ${SB_AUTH_LAB_OPENLDAP_IMAGE:-bitnamilegacy/openldap:2.6.10-debian-12-r4}
+    environment:
+      LDAP_ROOT: dc=scratchbird,dc=test
+      LDAP_ADMIN_USERNAME: admin
+      LDAP_ADMIN_PASSWORD: scratchbird-admin-password
+      LDAP_SKIP_DEFAULT_TREE: "yes"
+      LDAP_CUSTOM_LDIF_DIR: /ldifs
+      LDAP_ENABLE_TLS: "yes"
+      LDAP_TLS_CERT_FILE: /pki/ldap.crt
+      LDAP_TLS_KEY_FILE: /pki/ldap.key
+      LDAP_TLS_CA_FILE: /pki/ca.crt
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_LDAP_PORT:-1389}:1389"
+      - "127.0.0.1:${SB_AUTH_LAB_LDAPS_PORT:-1636}:1636"
+    volumes:
+      - ./fixtures/openldap:/ldifs:ro
+      - ./generated/pki:/pki:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          ldapsearch -x -H ldap://127.0.0.1:1389
+          -D cn=admin,dc=scratchbird,dc=test
+          -w scratchbird-admin-password
+          -b dc=scratchbird,dc=test -s base dn >/dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [ldap.scratchbird.test]
+
+  radius:
+    profiles: [core]
+    image: ${SB_AUTH_LAB_RADIUS_IMAGE:-freeradius/freeradius-server:3.2.10-alpine}
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_RADIUS_AUTH_PORT:-18120}:1812/udp"
+      - "127.0.0.1:${SB_AUTH_LAB_RADIUS_ACCT_PORT:-18130}:1813/udp"
+    volumes:
+      - ./fixtures/freeradius/clients.conf:/etc/raddb/clients.conf:ro
+      - ./fixtures/freeradius/authorize:/etc/raddb/mods-config/files/authorize:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          printf 'User-Name = alice\nUser-Password = alice-password\n'
+          | /opt/bin/radclient -x 127.0.0.1 auth scratchbird-radius-secret
+          | grep -q 'Access-Accept'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [radius.scratchbird.test]
+
+  mtls:
+    profiles: [core]
+    image: ${SB_AUTH_LAB_NGINX_IMAGE:-nginx:1.29.8-alpine}
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_MTLS_PORT:-18443}:443"
+    volumes:
+      - ./fixtures/mtls/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./generated/pki:/pki:ro
+    healthcheck:
+      test: [CMD-SHELL, "nginx -t >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [mtls.scratchbird.test]
+
+  proxy-assertion:
+    profiles: [core]
+    build:
+      context: ./fixtures/proxy_assertion
+      dockerfile: Containerfile
+      args:
+        PYTHON_IMAGE: ${SB_AUTH_LAB_PYTHON_IMAGE:-python:3.13.7-alpine}
+    environment:
+      SB_AUTH_LAB_PROXY_KEY: scratchbird-proxy-test-key
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_PROXY_PORT:-18081}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [proxy.scratchbird.test]
+
+  toxiproxy:
+    profiles: [core]
+    image: ${SB_AUTH_LAB_TOXIPROXY_IMAGE:-ghcr.io/shopify/toxiproxy:2.12.0}
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_TOXIPROXY_API_PORT:-18474}:8474"
+      - "127.0.0.1:${SB_AUTH_LAB_OIDC_FAULT_PORT:-28080}:28080"
+      - "127.0.0.1:${SB_AUTH_LAB_LDAP_FAULT_PORT:-21389}:21389"
+      - "127.0.0.1:${SB_AUTH_LAB_MTLS_FAULT_PORT:-28443}:28443"
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [toxiproxy.scratchbird.test]
+
+  samba-ad:
+    profiles: [enterprise]
+    cap_add:
+      - SYS_ADMIN
+    build:
+      context: ./fixtures/samba_ad
+      dockerfile: Containerfile
+      args:
+        DEBIAN_IMAGE: ${SB_AUTH_LAB_DEBIAN_IMAGE:-debian:13.1-slim}
+    hostname: dc1.scratchbird.test
+    environment:
+      SAMBA_REALM: SCRATCHBIRD.TEST
+      SAMBA_DOMAIN: SCRATCHBIRD
+      SAMBA_ADMIN_PASSWORD: ScratchBird-Admin-Password1!
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_AD_DNS_PORT:-1053}:53/tcp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_DNS_PORT:-1053}:53/udp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_KERBEROS_PORT:-1088}:88/tcp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_KERBEROS_PORT:-1088}:88/udp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_LDAP_PORT:-2389}:389"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_SMB_PORT:-1445}:445"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_KPASSWD_PORT:-1464}:464/tcp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_KPASSWD_PORT:-1464}:464/udp"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_LDAPS_PORT:-2636}:636"
+      - "127.0.0.1:${SB_AUTH_LAB_AD_GC_PORT:-32680}:3268"
+    healthcheck:
+      test: [CMD-SHELL, "samba-tool user show alice >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [dc1.scratchbird.test]
+
+  unix-auth:
+    profiles: [enterprise]
+    build:
+      context: ./fixtures/unix_auth
+      dockerfile: Containerfile
+      args:
+        DEBIAN_IMAGE: ${SB_AUTH_LAB_DEBIAN_IMAGE:-debian:13.1-slim}
+    volumes:
+      - unix-auth-runtime:/run/scratchbird-auth
+    healthcheck:
+      test: [CMD, python3, /opt/scratchbird/peer_client.py, /run/scratchbird-auth/peer.sock]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *log-policy
+    networks: [auth-lab]
+
+  selenium:
+    profiles: [browser]
+    image: ${SB_AUTH_LAB_SELENIUM_IMAGE:-selenium/standalone-chromium:4.48.0-20260905}
+    shm_size: 2gb
+    environment:
+      SE_NODE_MAX_SESSIONS: "2"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+    ports:
+      - "127.0.0.1:${SB_AUTH_LAB_SELENIUM_PORT:-14444}:4444"
+    logging: *log-policy
+    networks: [auth-lab]
+
+  spire-server:
+    profiles: [workload]
+    image: ${SB_AUTH_LAB_SPIRE_SERVER_IMAGE:-ghcr.io/spiffe/spire-server:1.11.2}
+    command: [-config, /etc/spire/server/server.conf]
+    volumes:
+      - ./fixtures/spire/server.conf:/etc/spire/server/server.conf:ro
+      - spire-server-data:/var/lib/spire/server
+      - spire-server-socket:/run/spire/server/private
+    healthcheck:
+      test:
+        - CMD
+        - /opt/spire/bin/spire-server
+        - healthcheck
+        - -socketPath
+        - /run/spire/server/private/api.sock
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *log-policy
+    networks:
+      auth-lab:
+        aliases: [spire-server.scratchbird.test]
+
+  spire-agent:
+    profiles: [workload]
+    image: ${SB_AUTH_LAB_SPIRE_AGENT_IMAGE:-ghcr.io/spiffe/spire-agent:1.11.2}
+    command:
+      - -config
+      - /etc/spire/agent/agent.conf
+      - -joinToken
+      - ${SB_AUTH_LAB_SPIRE_JOIN_TOKEN:-not-bootstrapped}
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    volumes:
+      - ./fixtures/spire/agent.conf:/etc/spire/agent/agent.conf:ro
+      - ./generated/spire:/run/spire/bootstrap:ro
+      - spire-agent-data:/var/lib/spire/agent
+      - spire-agent-socket:/run/spire/agent/public
+    healthcheck:
+      test:
+        - CMD
+        - /opt/spire/bin/spire-agent
+        - healthcheck
+        - -socketPath
+        - /run/spire/agent/public/api.sock
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: *log-policy
+    networks: [auth-lab]
+
+networks:
+  auth-lab:
+    driver: bridge
+    internal: false
+
+volumes:
+  unix-auth-runtime:
+  spire-server-data:
+  spire-server-socket:
+  spire-agent-data:
+  spire-agent-socket:

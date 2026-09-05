@@ -1,0 +1,18 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+ARG DEBIAN_IMAGE=debian:13.1-slim
+FROM ${DEBIAN_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       krb5-user ldap-utils python3-samba samba samba-ad-dc samba-ad-provision \
+       samba-dsdb-modules samba-vfs-modules smbclient winbind \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY entrypoint.sh /usr/local/bin/scratchbird-samba-entrypoint
+RUN chmod 0755 /usr/local/bin/scratchbird-samba-entrypoint
+
+EXPOSE 53/tcp 53/udp 88/tcp 88/udp 389/tcp 445/tcp 464/tcp 464/udp 636/tcp 3268/tcp
+ENTRYPOINT ["/usr/local/bin/scratchbird-samba-entrypoint"]

@@ -7,4 +7,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("pam"); auto auth_r=EngineAuthenticateProvider(auth); auto bad=Request<EngineAuthenticateProviderRequest>("pam"); bad.option_envelopes.push_back("fixture_fail:true"); auto bad_r=EngineAuthenticateProvider(bad); return Finish({{"pam_auth",auth_r.ok},{"pam_failure_rejected",!bad_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto unavailable = Request<EngineAuthenticateProviderRequest>("pam");
+  unavailable.option_envelopes.push_back("pam_policy_enabled:true");
+  unavailable.option_envelopes.push_back("dependency:pam:available");
+  const auto unavailable_r = EngineAuthenticateProvider(unavailable);
+  auto failure = unavailable;
+  failure.option_envelopes.push_back("fixture_fail:true");
+  EngineAuthenticateProviderResult failure_r;
+  {
+    ScopedTrustedProviderResult trusted_result;
+    failure_r = EngineAuthenticateProvider(failure);
+  }
+  return Finish({
+      {"pam_unavailable",
+       HasDiagnostic(unavailable_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "pam_policy_and_dependency_required")},
+      {"pam_failure_rejected",
+       HasDiagnostic(failure_r, "SECURITY.AUTHENTICATION.FAILED",
+                     "provider_fixture_failed")},
+  });
+}

@@ -1,0 +1,128 @@
+{
+  "realm": "scratchbird",
+  "enabled": true,
+  "displayName": "ScratchBird Authentication Lab",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 600,
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA256",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "webAuthnPolicyRpEntityName": "ScratchBird Authentication Lab",
+  "webAuthnPolicySignatureAlgorithms": ["ES256", "RS256"],
+  "webAuthnPolicyRpId": "keycloak.scratchbird.test",
+  "webAuthnPolicyUserVerificationRequirement": "required",
+  "roles": {
+    "realm": [
+      {"name": "scratchbird-user"},
+      {"name": "scratchbird-admin"}
+    ]
+  },
+  "groups": [
+    {"name": "database-users"},
+    {"name": "database-admins"},
+    {
+      "name": "nested",
+      "subGroups": [
+        {"name": "analytics"}
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "scratchbird-cli",
+      "name": "ScratchBird OIDC test client",
+      "protocol": "openid-connect",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "scratchbird-client-secret",
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://127.0.0.1/*", "http://localhost/*"],
+      "webOrigins": ["http://127.0.0.1", "http://localhost"],
+      "protocolMappers": [
+        {
+          "name": "scratchbird-groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "urn:scratchbird:test:saml",
+      "name": "ScratchBird SAML test service provider",
+      "protocol": "saml",
+      "enabled": true,
+      "redirectUris": ["http://127.0.0.1/saml/*", "http://localhost/saml/*"],
+      "attributes": {
+        "saml.assertion.signature": "true",
+        "saml.server.signature": "true",
+        "saml_force_name_id_format": "false",
+        "saml_name_id_format": "username"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Tester",
+      "email": "alice@scratchbird.test",
+      "credentials": [
+        {"type": "password", "value": "alice-password", "temporary": false}
+      ],
+      "realmRoles": ["scratchbird-user"],
+      "groups": ["/database-users", "/nested/analytics"]
+    },
+    {
+      "username": "admin-alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Admin",
+      "lastName": "Alice",
+      "email": "admin-alice@scratchbird.test",
+      "credentials": [
+        {"type": "password", "value": "admin-alice-password", "temporary": false}
+      ],
+      "realmRoles": ["scratchbird-user", "scratchbird-admin"],
+      "groups": ["/database-users", "/database-admins"]
+    },
+    {
+      "username": "mfa-alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "MFA",
+      "lastName": "Alice",
+      "email": "mfa-alice@scratchbird.test",
+      "credentials": [
+        {"type": "password", "value": "mfa-alice-password", "temporary": false}
+      ],
+      "requiredActions": ["CONFIGURE_TOTP"],
+      "realmRoles": ["scratchbird-user"],
+      "groups": ["/database-users"]
+    },
+    {
+      "username": "disabled-alice",
+      "enabled": false,
+      "emailVerified": true,
+      "email": "disabled-alice@scratchbird.test",
+      "credentials": [
+        {"type": "password", "value": "disabled-alice-password", "temporary": false}
+      ],
+      "realmRoles": ["scratchbird-user"]
+    }
+  ]
+}

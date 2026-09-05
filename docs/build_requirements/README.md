@@ -72,3 +72,25 @@ Every support-eligible platform must prove before support is claimed:
 
 External cluster-provider proof only when the closed cluster library is supplied
 outside the public core tree.
+
+## Optional Authentication Provider Lab
+
+External authentication-provider integration tests additionally require Docker
+Engine 24 or newer, Docker Compose v2.20 or newer, Bash 5, curl, and OpenSSL 3.
+The core profile should have 4 CPU threads, 6 GiB available memory, and 8 GiB
+free disk space. The full Samba AD, browser, and SPIRE profile should have 8 CPU
+threads, 12 GiB memory, and 15 GiB free disk space.
+
+The lab is opt-in and does not affect ordinary builds:
+
+```bash
+cmake -S project -B build/auth-lab \
+  -DSB_BUILD_AUTHENTICATION_LAB_TESTS=ON \
+  -DSB_AUTHENTICATION_LAB_PROFILE=core
+ctest --test-dir build/auth-lab --output-on-failure -L authentication_lab
+```
+
+See
+[`project/docs/testing/AUTHENTICATION_PROVIDER_TEST_LAB.md`](../../project/docs/testing/AUTHENTICATION_PROVIDER_TEST_LAB.md)
+for the complete service inventory, provider matrix, host requirements, native
+Windows and hardware-MFA requirements, and evidence checklist.

@@ -7,4 +7,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("ldap_ad"); auto auth_r=EngineAuthenticateProvider(auth); auto sync=Request<EngineSyncExternalGroupsRequest>("ldap_ad"); auto sync_r=EngineSyncExternalGroups(sync); auto explain=Request<EngineExplainMembershipRequest>("ldap_ad"); auto exp_r=EngineExplainMembership(explain); return Finish({{"ldap_auth",auth_r.ok},{"ldap_sync",sync_r.ok&&sync_r.materialized},{"ldap_explain",exp_r.ok&&exp_r.explainable}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto authentication = Request<EngineAuthenticateProviderRequest>("ldap_ad");
+  authentication.option_envelopes.push_back(
+      "dependency:ldap_client:available");
+  const auto authentication_r = EngineAuthenticateProvider(authentication);
+  auto sync = Request<EngineSyncExternalGroupsRequest>("ldap_ad");
+  const auto sync_r = EngineSyncExternalGroups(sync);
+  auto explain = Request<EngineExplainMembershipRequest>("ldap_ad");
+  const auto explain_r = EngineExplainMembership(explain);
+  return Finish({
+      {"ldap_unavailable",
+       HasDiagnostic(authentication_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "ldap_starttls_verifier_required")},
+      {"ldap_sync", sync_r.ok && sync_r.materialized},
+      {"ldap_explain", explain_r.ok && explain_r.explainable},
+  });
+}

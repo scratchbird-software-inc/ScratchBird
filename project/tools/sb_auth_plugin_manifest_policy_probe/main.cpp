@@ -7,4 +7,40 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto sig=Request<EngineRegisterAuthProviderRequest>("oidc_jwt"); sig.option_envelopes.push_back("signature_valid:false"); auto sig_r=EngineRegisterAuthProvider(sig); auto dep=Request<EngineRegisterAuthProviderRequest>("ldap_ad"); dep.option_envelopes.push_back("missing_dependency:true"); auto dep_r=EngineRegisterAuthProvider(dep); auto abi=Request<EngineRegisterAuthProviderRequest>("saml"); abi.option_envelopes.push_back("abi_supported:false"); auto abi_r=EngineRegisterAuthProvider(abi); auto stale=Request<EngineRegisterAuthProviderRequest>("radius"); stale.option_envelopes.push_back("stale_implementation:true"); auto stale_r=EngineRegisterAuthProvider(stale); return Finish({{"signature_rejected",!sig_r.ok},{"dependency_rejected",!dep_r.ok},{"abi_rejected",!abi_r.ok},{"stale_rejected",!stale_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto signature = Request<EngineRegisterAuthProviderRequest>("oidc_jwt");
+  signature.option_envelopes.push_back(
+      "dependency:oidc_jwt_client:available");
+  signature.option_envelopes.push_back("signature_valid:false");
+  const auto signature_r = EngineRegisterAuthProvider(signature);
+
+  auto dependency = Request<EngineRegisterAuthProviderRequest>("ldap_ad");
+  dependency.option_envelopes.push_back("missing_dependency:true");
+  const auto dependency_r = EngineRegisterAuthProvider(dependency);
+
+  auto abi = Request<EngineRegisterAuthProviderRequest>("saml");
+  abi.option_envelopes.push_back("dependency:saml_xmlsig:available");
+  abi.option_envelopes.push_back("abi_supported:false");
+  const auto abi_r = EngineRegisterAuthProvider(abi);
+
+  auto stale = Request<EngineRegisterAuthProviderRequest>("radius");
+  stale.option_envelopes.push_back("stale_implementation:true");
+  const auto stale_r = EngineRegisterAuthProvider(stale);
+
+  return Finish({
+      {"signature_rejected",
+       HasDiagnostic(signature_r, "SECURITY.UDR.TRUST_DENIED",
+                     "signature_or_provenance_failed")},
+      {"dependency_rejected",
+       HasDiagnostic(dependency_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "provider_dependency_missing:ldap_client")},
+      {"abi_rejected",
+       HasDiagnostic(abi_r, "SECURITY.AUTHORITY.INVALID",
+                     "unsupported_provider_abi")},
+      {"stale_rejected",
+       HasDiagnostic(stale_r, "SECURITY.AUTHORITY.INVALID",
+                     "stale_provider_implementation")},
+  });
+}

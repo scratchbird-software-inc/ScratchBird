@@ -7,4 +7,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("workload_identity"); auto auth_r=EngineAuthenticateProvider(auth); auto nogroup=Request<EngineAuthenticateProviderRequest>("workload_identity"); nogroup.option_envelopes={"provider:workload_identity","principal:spiffe://example/service"}; auto no_r=EngineAuthenticateProvider(nogroup); return Finish({{"workload_auth",auth_r.ok},{"service_mapping_required",!no_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto unavailable =
+      Request<EngineAuthenticateProviderRequest>("workload_identity");
+  unavailable.option_envelopes.push_back(
+      "dependency:spiffe_svid_or_workload_oidc:available");
+  const auto unavailable_r = EngineAuthenticateProvider(unavailable);
+  auto no_mapping = unavailable;
+  RemoveOption(&no_mapping, "groups:materialized");
+  EngineAuthenticateProviderResult no_mapping_r;
+  {
+    ScopedTrustedProviderResult trusted_result;
+    no_mapping_r = EngineAuthenticateProvider(no_mapping);
+  }
+  return Finish({
+      {"workload_unavailable",
+       HasDiagnostic(unavailable_r, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                     "workload_identity_validator_required")},
+      {"service_mapping_required",
+       HasDiagnostic(no_mapping_r, "SECURITY.GROUP.EXTERNAL_UNSYNCED",
+                     "internal_group_materialization_required")},
+  });
+}

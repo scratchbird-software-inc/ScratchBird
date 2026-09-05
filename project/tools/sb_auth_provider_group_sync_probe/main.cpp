@@ -7,4 +7,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto sync=Request<EngineSyncExternalGroupsRequest>("ldap_ad"); auto sync_r=EngineSyncExternalGroups(sync); auto explain=Request<EngineExplainMembershipRequest>("ldap_ad"); auto exp_r=EngineExplainMembership(explain); auto token=Request<EngineExplainMembershipRequest>("oidc_jwt"); auto tok_r=EngineExplainMembership(token); return Finish({{"sync",sync_r.ok},{"explain",exp_r.ok},{"effective_only_rejected",!tok_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto sync = Request<EngineSyncExternalGroupsRequest>("ldap_ad");
+  const auto sync_r = EngineSyncExternalGroups(sync);
+  auto explain = Request<EngineExplainMembershipRequest>("ldap_ad");
+  const auto explain_r = EngineExplainMembership(explain);
+  auto token = Request<EngineExplainMembershipRequest>("oidc_jwt");
+  const auto token_r = EngineExplainMembership(token);
+  return Finish({
+      {"sync", sync_r.ok && sync_r.materialized},
+      {"explain", explain_r.ok && explain_r.explainable},
+      {"effective_only_rejected",
+       HasDiagnostic(token_r, "SECURITY.GROUP.EXTERNAL_UNSYNCED",
+                     "membership_path_not_explainable:oidc_jwt")},
+  });
+}

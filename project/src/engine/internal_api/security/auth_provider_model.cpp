@@ -10,7 +10,8 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "metric_producer.hpp"
-#include "security/auth_provider_live_adapter.hpp"
+#include "security/auth_provider_contract_adapter.hpp"
+#include "security/auth_provider_trusted_result.hpp"
 
 #include <algorithm>
 #include <array>
@@ -38,7 +39,7 @@ struct AuthFamilyRegistryEntry {
   bool policy_gated;
   bool guarded;
   bool channel_binding_required;
-  bool live_evidence_required;
+  bool trusted_provider_result_required;
   bool group_materialization_required;
   bool dependency_required;
   const char* dependency;
@@ -56,8 +57,8 @@ constexpr std::array<AuthFamilyRegistryEntry, 29> kAuthFamilyRegistry = {{
     {"internal_server_authority", true, false, false, false, false, false, false, false, false, "", "", "SECURITY.NO_AUTHORITY", "server_authority_evidence_required"},
     {"remote_security_database", true, false, false, false, false, true, true, true, true, "remote_scratchbird_security", "", "SECURITY.AUTH_SOURCE_UNAVAILABLE", "remote_security_database_unavailable"},
     {"cluster_security", true, false, false, false, false, true, true, true, false, "", "", "PROCESS.CLUSTER_PATH_ABSENT", "cluster_security_authority_unavailable"},
-    {"peer", true, false, false, false, false, false, false, false, false, "", "", "SECURITY.CREDENTIAL_INVALID", "os_peer_credential_verification_required"},
-    {"ident", true, false, false, false, false, false, false, false, false, "", "", "SECURITY.CREDENTIAL_INVALID", "os_peer_credential_verification_required"},
+    {"peer", true, false, false, false, false, false, true, false, false, "", "", "SECURITY.CREDENTIAL_INVALID", "os_peer_credential_verification_required"},
+    {"ident", true, false, false, false, false, false, true, false, false, "", "", "SECURITY.CREDENTIAL_INVALID", "os_peer_credential_verification_required"},
     {"certificate_mtls", true, false, false, false, false, true, true, true, true, "tls_x509", "", "SECURITY.CREDENTIAL_INVALID", "certificate_evidence_required"},
     {"ldap_ad", true, false, false, false, false, false, true, true, true, "ldap_client", "", "SECURITY.AUTH_SOURCE_UNAVAILABLE", "ldap_starttls_verifier_required"},
     {"kerberos_pac", true, false, false, false, false, true, true, true, true, "gssapi_krb5", "", "SECURITY.AUTH_SOURCE_UNAVAILABLE", "kerberos_gssapi_verifier_required"},
@@ -149,13 +150,6 @@ bool HasFreshness(const EngineApiRequest& request) {
   return !AuthProviderOptionPresent(request, "freshness:stale") &&
          !AuthProviderOptionBool(request, "expired:", false) &&
          !AuthProviderOptionBool(request, "replayed:", false);
-}
-
-bool HasVerifiedOsPeerCredential(const EngineApiRequest& request) {
-  return AuthProviderOptionBool(request, "os_peer_credential_verified:", false) ||
-         AuthProviderOptionBool(request, "so_peercred_verified:", false) ||
-         AuthProviderOptionBool(request, "getpeereid_verified:", false) ||
-         AuthProviderOptionBool(request, "ucred_verified:", false);
 }
 
 bool HasVerifiedChannelBinding(const EngineApiRequest& request) {
@@ -690,14 +684,31 @@ AuthProviderDecision AuthenticateWithProvider(const EngineApiRequest& request) {
   }
   const auto parser_gate = ValidateParserPolicyAttachment(request, family);
   if (!parser_gate.ok) { return parser_gate; }
-  const auto live = ValidateAuthProviderLiveEvidence(request);
-  if (live.evaluated && !live.ok) { return Fail(request, live.diagnostic.code, live.diagnostic.detail); }
-  if (registry_entry->live_evidence_required && !live.evaluated &&
-      !AuthProviderOptionBool(request, "allow_fixture:", false)) {
-    return Fail(request, registry_entry->fail_closed_code, registry_entry->fail_closed_detail);
+  const auto contract = ValidateAuthProviderContractEvidence(request);
+  if (contract.evaluated && !contract.ok) {
+    return Fail(request, contract.diagnostic.code, contract.diagnostic.detail);
+  }
+  const auto trusted = InvokeTrustedAuthProvider(request);
+  if (registry_entry->trusted_provider_result_required && !trusted.has_value()) {
+    auto decision = Fail(request, registry_entry->fail_closed_code,
+                         registry_entry->fail_closed_detail);
+    decision.evidence.insert(decision.evidence.end(), contract.evidence.begin(),
+                             contract.evidence.end());
+    for (const auto& row : contract.rows) {
+      AddRow(&decision, row.first, row.second);
+    }
+    decision.evidence.push_back(
+        {"auth_provider_trusted_result", "unavailable"});
+    AddRow(&decision, "trusted_provider_result", "unavailable");
+    return decision;
+  }
+  if (trusted.has_value() &&
+      (!trusted->authenticated() || trusted->provider_family() != family)) {
+    return Fail(request, "SECURITY.AUTHENTICATION.FAILED",
+                "trusted_provider_result_invalid");
   }
   std::string principal = AuthProviderOptionValue(request, "principal:");
-  if (principal.empty() && live.authenticated) { principal = live.principal; }
+  if (trusted.has_value()) { principal = trusted->principal(); }
   if (principal.empty()) { return Fail(request, "SECURITY.AUTHENTICATION.REQUEST_INVALID", "principal_claim_required"); }
   const auto plaintext = AuthProviderNoPlaintextDiagnostic(request);
   if (plaintext.error) { return Fail(request, plaintext.code, plaintext.detail); }
@@ -705,14 +716,8 @@ AuthProviderDecision AuthenticateWithProvider(const EngineApiRequest& request) {
   if (AuthProviderOptionPresent(request, "credential:invalid") || AuthProviderOptionBool(request, "fixture_fail:", false)) {
     return Fail(request, "SECURITY.AUTHENTICATION.FAILED", "provider_fixture_failed");
   }
-  if ((BaseFamily(family) == "peer") && !HasVerifiedOsPeerCredential(request)) {
-    return Fail(request, "SECURITY.AUTHENTICATION.FAILED", "os_peer_credential_verification_required");
-  }
-  const bool fixture_success =
-      HasFixtureSuccess(request) &&
-      (!registry_entry->live_evidence_required ||
-       AuthProviderOptionBool(request, "allow_fixture:", false));
-  if (!fixture_success && !live.authenticated && BaseFamily(family) != "peer" &&
+  const bool fixture_success = HasFixtureSuccess(request);
+  if (!fixture_success && !trusted.has_value() && BaseFamily(family) != "peer" &&
       family != "token_refresh_reauth" && family != "internal_server_authority") {
     return Fail(request, "SECURITY.AUTHENTICATION.FAILED", "credential_evidence_required");
   }
@@ -720,15 +725,16 @@ AuthProviderDecision AuthenticateWithProvider(const EngineApiRequest& request) {
       AuthProviderOptionBool(request, "downgrade_attempt:", false)) {
     return Fail(request, "SECURITY.AUTHENTICATION.FAILED", "scram_downgrade_denied");
   }
-  if ((family == "webauthn" || family == "factor_chain") && !AuthProviderOptionPresent(request, "mfa:present") &&
-      !live.mfa_verified) {
+  if ((family == "webauthn" || family == "factor_chain") &&
+      !AuthProviderOptionPresent(request, "mfa:present") &&
+      (!trusted.has_value() || !trusted->mfa_verified())) {
     return Fail(request, "SECURITY.MFA_REQUIRED", "mfa_evidence_required");
   }
   if (MaterializationRequired(family) &&
       AuthProviderOptionBool(request, "require_group_sync:", true) &&
       !AuthProviderOptionPresent(request, "groups:materialized") &&
       !AuthProviderOptionBool(request, "groups_materialized:", false) &&
-      !live.groups_materialized) {
+      (!trusted.has_value() || !trusted->groups_materialized())) {
     return Fail(request, "SECURITY.GROUP.EXTERNAL_UNSYNCED", "internal_group_materialization_required");
   }
   auto decision = Ok(request, "authenticated");
@@ -740,9 +746,19 @@ AuthProviderDecision AuthenticateWithProvider(const EngineApiRequest& request) {
   AddRow(&decision, "provider_family", family);
   AddRow(&decision, "principal", principal);
   AddRow(&decision, "group_authority", (family == "ldap_ad") ? "explainable" : (MaterializationRequired(family) ? "effective_materialized" : "none"));
-  if (live.evaluated) {
-    decision.evidence.insert(decision.evidence.end(), live.evidence.begin(), live.evidence.end());
-    for (const auto& row : live.rows) { AddRow(&decision, row.first, row.second); }
+  if (contract.evaluated) {
+    decision.evidence.insert(decision.evidence.end(), contract.evidence.begin(),
+                             contract.evidence.end());
+    for (const auto& row : contract.rows) {
+      AddRow(&decision, row.first, row.second);
+    }
+  }
+  if (trusted.has_value()) {
+    decision.evidence.insert(decision.evidence.end(), trusted->evidence().begin(),
+                             trusted->evidence().end());
+    for (const auto& row : trusted->rows()) {
+      AddRow(&decision, row.first, row.second);
+    }
   }
   return decision;
 }

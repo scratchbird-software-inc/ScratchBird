@@ -1462,7 +1462,7 @@ option(SB_BUILD_AUTH_PROVIDER_GROUP_SYNC_PROBE "Build the authentication provide
 option(SB_BUILD_AUTH_PROVIDER_POLICY_ENFORCEMENT_PROBE "Build the authentication provider policy enforcement probe" OFF)
 option(SB_BUILD_AUTH_PROVIDER_AUDIT_METRICS_PROBE "Build the authentication provider audit/metrics probe" OFF)
 option(SB_BUILD_AUTH_PLUGIN_SBLR_API_PROBE "Build the authentication provider SBLR/API dispatch probe" OFF)
-option(SB_BUILD_AUTH_PROVIDER_LIVE_ADAPTER_PROBE "Build the authentication provider live adapter probe" OFF)
+option(SB_BUILD_AUTH_PROVIDER_CONTRACT_ADAPTER_PROBE "Build the authentication provider contract-only adapter probe" OFF)
 
 set(SB_BUILD_SECURITY_SYSTEM_PROBES OFF)
 if(SB_BUILD_SECURITY_AUTHORITY_PROBE
@@ -1555,7 +1555,7 @@ if(SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES
    OR SB_BUILD_AUTH_PROVIDER_POLICY_ENFORCEMENT_PROBE
    OR SB_BUILD_AUTH_PROVIDER_AUDIT_METRICS_PROBE
    OR SB_BUILD_AUTH_PLUGIN_SBLR_API_PROBE
-   OR SB_BUILD_AUTH_PROVIDER_LIVE_ADAPTER_PROBE)
+   OR SB_BUILD_AUTH_PROVIDER_CONTRACT_ADAPTER_PROBE)
   set(SB_BUILD_AUTH_PROVIDER_PLUGIN_PROBES ON)
 endif()
 
@@ -1573,6 +1573,11 @@ if(SB_BUILD_AUTH_PROVIDER_PLUGIN_PROBES AND NOT TARGET sb_core_resources)
 endif()
 if(SB_BUILD_AUTH_PROVIDER_PLUGIN_PROBES AND NOT TARGET sb_engine_internal_api)
   add_subdirectory(src/engine/internal_api)
+endif()
+if(SB_BUILD_AUTH_PROVIDER_PLUGIN_PROBES)
+  target_compile_definitions(sb_engine_internal_api PUBLIC
+    SCRATCHBIRD_AUTH_PROVIDER_TESTING=1
+  )
 endif()
 if((SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES OR SB_BUILD_AUTH_PLUGIN_SBLR_API_PROBE) AND NOT TARGET sb_engine_sblr)
   add_subdirectory(src/engine/sblr)
@@ -1641,8 +1646,8 @@ endif()
 if(SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES OR SB_BUILD_AUTH_PLUGIN_SBLR_API_PROBE)
   add_subdirectory(tools/sb_auth_plugin_sblr_api_probe)
 endif()
-if(SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES OR SB_BUILD_AUTH_PROVIDER_LIVE_ADAPTER_PROBE)
-  add_subdirectory(tools/sb_auth_provider_live_adapter_probe)
+if(SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES OR SB_BUILD_AUTH_PROVIDER_CONTRACT_ADAPTER_PROBE)
+  add_subdirectory(tools/sb_auth_provider_contract_adapter_probe)
 endif()
 if(SB_BUILD_AUTH_PROVIDER_PLUGIN_COMPLETION_PROBES OR SB_BUILD_AUTH_PROVIDER_DEPENDENCY_INVENTORY_PROBE)
   add_subdirectory(tools/sb_auth_provider_dependency_inventory_probe)
@@ -2664,6 +2669,13 @@ option(SB_BUILD_SERVER "Build the standalone sb_server executable product skelet
 option(SB_BUILD_SERVER_BOUNDARY_GUARD "Build the sb_server forbidden dependency boundary guard" OFF)
 option(SB_BUILD_SERVER_EVENT_NOTIFICATIONS "Build sb_server event notification routing support" OFF)
 option(SB_BUILD_DATABASE_LIFECYCLE_TESTS "Build database lifecycle contract/registry CTest gates" OFF)
+option(SB_BUILD_AUTHENTICATION_LAB_TESTS
+  "Enroll the disposable external authentication-provider container lab in CTest"
+  OFF)
+set(SB_AUTHENTICATION_LAB_PROFILE "core" CACHE STRING
+  "Authentication lab CTest profile: core, enterprise, browser, workload, or full")
+set_property(CACHE SB_AUTHENTICATION_LAB_PROFILE PROPERTY STRINGS
+  core enterprise browser workload full)
 if(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
   set(SB_BUILD_SERVER ON CACHE BOOL
     "Build server core for public release correctness startup gates" FORCE)
@@ -3767,6 +3779,14 @@ endif()
 
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/database_lifecycle/CMakeLists.txt")
   add_subdirectory(tests/database_lifecycle)
+endif()
+
+if(SB_BUILD_AUTHENTICATION_LAB_TESTS)
+  if(NOT SB_AUTHENTICATION_LAB_PROFILE MATCHES "^(core|enterprise|browser|workload|full)$")
+    message(FATAL_ERROR
+      "SB_AUTHENTICATION_LAB_PROFILE must be core, enterprise, browser, workload, or full")
+  endif()
+  add_subdirectory(tests/integration/authentication_lab)
 endif()
 
 if((SB_BUILD_AGENT_RUNTIME_PROBES OR SB_BUILD_DATABASE_LIFECYCLE_TESTS OR SB_BUILD_TESTS)

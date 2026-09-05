@@ -7,4 +7,34 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto good=Request<EngineRegisterAuthProviderRequest>("ldap_ad"); auto good_r=EngineRegisterAuthProvider(good); auto dup=Request<EngineRegisterAuthProviderRequest>("ldap_ad"); dup.option_envelopes.push_back("duplicate_provider_uuid:true"); auto dup_r=EngineRegisterAuthProvider(dup); auto unknown=Request<EngineRegisterAuthProviderRequest>("unknown"); auto unk_r=EngineRegisterAuthProvider(unknown); auto disabled=Request<EngineRegisterAuthProviderRequest>("ldap_ad"); disabled.option_envelopes.push_back("provider:disabled"); auto dis_r=EngineRegisterAuthProvider(disabled); return Finish({{"registered",good_r.ok&&good_r.admitted},{"duplicate_rejected",!dup_r.ok},{"unknown_rejected",!unk_r.ok},{"disabled_rejected",!dis_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto good = Request<EngineRegisterAuthProviderRequest>("ldap_ad");
+  good.option_envelopes.push_back("dependency:ldap_client:available");
+  const auto good_r = EngineRegisterAuthProvider(good);
+
+  auto duplicate = good;
+  duplicate.option_envelopes.push_back("duplicate_provider_uuid:true");
+  const auto duplicate_r = EngineRegisterAuthProvider(duplicate);
+
+  auto unknown = Request<EngineRegisterAuthProviderRequest>("unknown");
+  const auto unknown_r = EngineRegisterAuthProvider(unknown);
+
+  auto disabled = good;
+  disabled.option_envelopes.push_back("provider:disabled");
+  const auto disabled_r = EngineRegisterAuthProvider(disabled);
+
+  return Finish({
+      {"registered", good_r.ok && good_r.admitted},
+      {"duplicate_rejected",
+       HasDiagnostic(duplicate_r, "SECURITY.AUTHORITY.INVALID",
+                     "duplicate_provider_uuid")},
+      {"unknown_rejected",
+       HasDiagnostic(unknown_r, "SECURITY.AUTHORITY.INVALID",
+                     "unknown_provider_family:unknown")},
+      {"disabled_rejected",
+       HasDiagnostic(disabled_r, "SECURITY.UDR.TRUST_DENIED",
+                     "provider_disabled_or_trust_reject")},
+  });
+}

@@ -1,0 +1,74 @@
+dn: dc=scratchbird,dc=test
+objectClass: dcObject
+objectClass: organization
+dc: scratchbird
+o: ScratchBird Authentication Lab
+
+dn: ou=people,dc=scratchbird,dc=test
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=scratchbird,dc=test
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=people,dc=scratchbird,dc=test
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+cn: Alice Tester
+sn: Tester
+givenName: Alice
+uid: alice
+uidNumber: 10001
+gidNumber: 10001
+homeDirectory: /home/alice
+loginShell: /bin/false
+mail: alice@scratchbird.test
+userPassword: alice-password
+
+dn: uid=admin-alice,ou=people,dc=scratchbird,dc=test
+objectClass: inetOrgPerson
+objectClass: posixAccount
+cn: Admin Alice
+sn: Alice
+uid: admin-alice
+uidNumber: 10002
+gidNumber: 10002
+homeDirectory: /home/admin-alice
+loginShell: /bin/false
+mail: admin-alice@scratchbird.test
+userPassword: admin-alice-password
+
+dn: uid=disabled-alice,ou=people,dc=scratchbird,dc=test
+objectClass: inetOrgPerson
+objectClass: posixAccount
+cn: Disabled Alice
+sn: Alice
+uid: disabled-alice
+uidNumber: 10003
+gidNumber: 10003
+homeDirectory: /home/disabled-alice
+loginShell: /bin/false
+userPassword: {CRYPT}!
+
+dn: cn=database-users,ou=groups,dc=scratchbird,dc=test
+objectClass: groupOfNames
+cn: database-users
+member: uid=alice,ou=people,dc=scratchbird,dc=test
+member: uid=admin-alice,ou=people,dc=scratchbird,dc=test
+
+dn: cn=database-admins,ou=groups,dc=scratchbird,dc=test
+objectClass: groupOfNames
+cn: database-admins
+member: uid=admin-alice,ou=people,dc=scratchbird,dc=test
+
+dn: cn=analytics,ou=groups,dc=scratchbird,dc=test
+objectClass: groupOfNames
+cn: analytics
+member: uid=alice,ou=people,dc=scratchbird,dc=test
+
+dn: cn=nested-groups,ou=groups,dc=scratchbird,dc=test
+objectClass: groupOfNames
+cn: nested-groups
+member: cn=analytics,ou=groups,dc=scratchbird,dc=test

@@ -486,8 +486,9 @@ add_library(sb_engine_internal_api
   security/audit_api.cpp
   security/auth_challenge_api.cpp
   security/auth_credential_api.cpp
-  security/auth_provider_live_adapter.cpp
+  security/auth_provider_contract_adapter.cpp
   security/auth_provider_model.cpp
+  security/auth_provider_trusted_result.cpp
   security/auth_provider_observability_api.cpp
   security/auth_provider_plugin_api.cpp
   security/auth_provider_policy_api.cpp

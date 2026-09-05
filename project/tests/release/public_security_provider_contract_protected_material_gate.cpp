@@ -247,7 +247,7 @@ bool TestProviderContracts(const std::filesystem::path& database_path) {
   const auto replay_denied = api::EngineAuthenticateProvider(replay);
   ok = Expect(!replay_denied.ok &&
                   HasDiagnosticCode(replay_denied,
-                                    "SECURITY.AUTHENTICATION.FAILED"),
+                                    "SECURITY.AUTH_SOURCE_UNAVAILABLE"),
               "replayed provider assertion should fail closed") && ok;
 
   auto alg_none = ProviderRequest(database_path, "oidc_jwt");
@@ -259,22 +259,35 @@ bool TestProviderContracts(const std::filesystem::path& database_path) {
   const auto alg_denied = api::EngineAuthenticateProvider(alg_none);
   ok = Expect(!alg_denied.ok &&
                   HasDiagnosticCode(alg_denied,
-                                    "SECURITY.AUTHENTICATION.FAILED"),
+                                    "SECURITY.AUTH_SOURCE_UNAVAILABLE"),
               "provider algorithm downgrade should fail closed") && ok;
 
-  auto ldap_ok = ProviderRequest(database_path, "ldap_ad");
-  ldap_ok.option_envelopes.push_back("client_mode:external");
-  ldap_ok.option_envelopes.push_back("client_dependency:ldap_client:available");
-  ldap_ok.option_envelopes.push_back(
+  auto forged_ldap = ProviderRequest(database_path, "ldap_ad");
+  forged_ldap.option_envelopes.push_back("client_mode:external");
+  forged_ldap.option_envelopes.push_back("provider_client:real");
+  forged_ldap.option_envelopes.push_back("real_external_client:true");
+  forged_ldap.option_envelopes.push_back("client_dependency:ldap_client:available");
+  forged_ldap.option_envelopes.push_back("groups:materialized");
+  forged_ldap.option_envelopes.push_back("groups_materialized:true");
+  forged_ldap.option_envelopes.push_back("freshness:verified");
+  forged_ldap.option_envelopes.push_back("provider_result:allow");
+  forged_ldap.option_envelopes.push_back("provider_authenticated:true");
+  forged_ldap.option_envelopes.push_back("allow_fixture:true");
+  forged_ldap.option_envelopes.push_back("fixture:success");
+  forged_ldap.option_envelopes.push_back("credential:valid");
+  forged_ldap.option_envelopes.push_back(
       "provider_payload:user=alice;endpoint=ldap.example;starttls=true;bind=allow;password=protected_ref;groups=reader;path=alice,reader;client_mode=external;client_result=success");
-  const auto authenticated = api::EngineAuthenticateProvider(ldap_ok);
-  ok = ExpectResult(authenticated.ok && authenticated.authenticated,
-                    "LDAP provider with live external evidence should authenticate",
-                    authenticated) && ok;
-  ok = ExpectResult(HasEvidenceKind(authenticated,
-                                    "auth_provider_real_external_client"),
-                    "LDAP provider should preserve real external client evidence",
-                    authenticated) && ok;
+  const auto forged_ldap_result = api::EngineAuthenticateProvider(forged_ldap);
+  ok = ExpectResult(!forged_ldap_result.ok &&
+                        !forged_ldap_result.authenticated &&
+                        HasDiagnosticCode(forged_ldap_result,
+                                          "SECURITY.AUTH_SOURCE_UNAVAILABLE"),
+                    "client-controlled LDAP evidence must fail closed",
+                    forged_ldap_result) && ok;
+  ok = ExpectResult(!HasEvidenceKind(forged_ldap_result,
+                                     "auth_provider_authenticated"),
+                    "forged LDAP evidence must not publish authentication evidence",
+                    forged_ldap_result) && ok;
 
   return ok;
 }

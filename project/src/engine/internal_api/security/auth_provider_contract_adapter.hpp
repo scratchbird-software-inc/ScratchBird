@@ -16,24 +16,21 @@
 
 namespace scratchbird::engine::internal_api {
 
-// SEARCH_KEY: SB_ENGINE_INTERNAL_API_AUTH_PROVIDER_LIVE_ADAPTER
-// Engine-owned normalized provider-evidence validation for non-fixture auth providers.
-// External adapters normalize their provider-specific results into provider_payload.
-struct AuthProviderLiveEvidenceResult {
+// SEARCH_KEY: SB_ENGINE_INTERNAL_API_AUTH_PROVIDER_CONTRACT_ADAPTER
+// Validates only the bounded syntax of an untrusted provider request envelope.
+// This type deliberately carries no authentication decision or principal.
+// Authentication requires a separate opaque result from a trusted provider
+// implementation; no such production provider boundary is registered yet.
+struct AuthProviderContractEvidenceResult {
   bool evaluated = false;
   bool ok = false;
-  bool authenticated = false;
-  bool groups_materialized = false;
-  bool membership_explainable = false;
-  bool mfa_verified = false;
   std::string provider_family;
-  std::string principal;
-  std::string credential_kind;
   EngineApiDiagnostic diagnostic;
   std::vector<std::pair<std::string, std::string>> rows;
   std::vector<EngineEvidenceReference> evidence;
 };
 
-AuthProviderLiveEvidenceResult ValidateAuthProviderLiveEvidence(const EngineApiRequest& request);
+AuthProviderContractEvidenceResult ValidateAuthProviderContractEvidence(
+    const EngineApiRequest& request);
 
 }  // namespace scratchbird::engine::internal_api

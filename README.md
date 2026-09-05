@@ -108,6 +108,12 @@ See `RELEASE_TERMS.md` and `KNOWN_LIMITATIONS.md` for release terminology and cu
 
 Documentation in this repository may include generated material, implementation notes, manifests, test descriptions, and work-in-progress developer documentation.
 
+External authentication-provider testing uses the opt-in disposable container
+lab documented in
+[`project/docs/testing/AUTHENTICATION_PROVIDER_TEST_LAB.md`](project/docs/testing/AUTHENTICATION_PROVIDER_TEST_LAB.md).
+That document distinguishes service-fixture availability from complete
+ScratchBird end-to-end provider validation.
+
 Generated documentation should be treated as technical reference material, not as a polished user manual. Where documentation and source behavior disagree, source code, tests, and current release notes should be treated as the basis for review.
 
 ## Security

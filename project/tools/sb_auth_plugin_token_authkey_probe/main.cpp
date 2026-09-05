@@ -7,4 +7,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../auth_provider_probe_common/probe_common.hpp"
-int main(){using namespace sb_auth_probe; auto auth=Request<EngineAuthenticateProviderRequest>("token_api_key"); auto auth_r=EngineAuthenticateProvider(auth); auto revoke=Request<EngineRevokeTokenRequest>("token_api_key"); auto rev_r=EngineRevokeToken(revoke); auto unsync=Request<EngineAuthenticateProviderRequest>("token_api_key"); unsync.option_envelopes.clear(); unsync.option_envelopes={"provider:token_api_key","credential:valid","fixture:success","principal:alice"}; auto unsync_r=EngineAuthenticateProvider(unsync); return Finish({{"token_auth",auth_r.ok},{"revoked",rev_r.ok&&rev_r.revoked},{"unsynced_rejected",!unsync_r.ok}});}
+
+int main() {
+  using namespace sb_auth_probe;
+  auto authentication =
+      Request<EngineAuthenticateProviderRequest>("token_api_key");
+  const auto authentication_r = EngineAuthenticateProvider(authentication);
+
+  auto revoke = Request<EngineRevokeTokenRequest>("token_api_key");
+  const auto revoke_r = EngineRevokeToken(revoke);
+
+  auto unsynchronized =
+      Request<EngineAuthenticateProviderRequest>("token_api_key");
+  RemoveOption(&unsynchronized, "groups:materialized");
+  EngineAuthenticateProviderResult unsynchronized_r;
+  {
+    ScopedTrustedProviderResult trusted_result;
+    unsynchronized_r = EngineAuthenticateProvider(unsynchronized);
+  }
+
+  return Finish({
+      {"token_unavailable",
+       HasDiagnostic(authentication_r, "SECURITY.CREDENTIAL_INVALID",
+                     "token_api_key_evidence_required")},
+      {"revoked", revoke_r.ok && revoke_r.revoked},
+      {"unsynced_rejected",
+       HasDiagnostic(unsynchronized_r,
+                     "SECURITY.GROUP.EXTERNAL_UNSYNCED",
+                     "internal_group_materialization_required")},
+  });
+}
