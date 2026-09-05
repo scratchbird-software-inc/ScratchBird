@@ -86,7 +86,6 @@ PUBLIC_CONTRACT_SNAPSHOT = "public_contract_snapshot"
 
 PUBLIC_PROFILE_DECLARED_GATE_ALIASES: dict[str, tuple[str, ...]] = {
     "dpc_soak_leak_resource_stability_gate": (
-        "public_release_soak_gate",
         "agent_enterprise_soak_performance_gate",
         "engine_listener_support_bundle_conformance",
         "engine_listener_owner_lifecycle_artifact_conformance",
@@ -118,7 +117,6 @@ PUBLIC_PROFILE_DECLARED_GATE_ALIASES: dict[str, tuple[str, ...]] = {
 
 SOAK_PUBLIC_PROFILE_GATE_ALIASES: dict[str, tuple[str, ...]] = {
     "dpc_soak_leak_resource_stability_gate": (
-        "public_release_soak_gate",
         "agent_enterprise_soak_performance_gate",
     ),
 }
@@ -468,23 +466,24 @@ CRASH_FAULT_CAMPAIGN_ROWS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "row_id": "public_cross_cutting_crash_matrix",
-        "fault_surface": "public_release_crash_matrix",
-        "critical_transition": "public_pcr_115_crash_fault_matrix_and_gate",
-        "expected_result": "public_matrix_rows_cover_crash_reopen_fault_injection_mga_authority_fail_closed",
-        "gate": "public_crash_fault_matrix",
-        "mga_authority": "public_matrix_mga_authority_drift_refused",
+        "row_id": "public_cross_cutting_crash_source_contract",
+        "fault_surface": "public_release_crash_source_contract",
+        "critical_transition": "public_pcr_115_crash_fault_source_contract_inventory",
+        "expected_result": "public_source_contract_rows_inventory_crash_reopen_fault_injection_and_mga_authority_requirements",
+        "gate": "public_crash_fault_source_contract_matrix",
+        "mga_authority": "public_source_contract_requires_mga_authority_drift_refusal",
+        "proof_class": "crash_fault_source_contract_coverage_inventory",
         "evidence_files": {
-            "tests/fault_injection/public_crash_fault_matrix.py": (
-                "PUBLIC_CRASH_FAULT_MATRIX",
-                "faults_fail_closed",
-                "mga_authority_drift_refused",
-                "crash_reopen_rows_required",
+            "tests/fault_injection/public_crash_fault_source_contract_matrix.py": (
+                "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX",
+                "runtime_fault_injected",
+                "mga_authority_drift_source_contract_required",
+                "crash_reopen_coverage_rows_required",
             ),
-            "tests/release/public_crash_fault_gate.py": (
-                "PUBLIC_CRASH_FAULT_GATE",
+            "tests/release/public_crash_fault_source_contract_gate.py": (
+                "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_GATE",
                 "matrix_row_coverage_incomplete",
-                "public_crash_fault_matrix",
+                "public_crash_fault_source_contract_matrix",
                 "agent_fault_injection_gate",
             ),
         },
@@ -1017,20 +1016,20 @@ FUZZ_PROPERTY_BOUNDARY_ROWS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "row_id": "durable_codec_fuzz_boundary",
+        "row_id": "durable_codec_fuzz_coverage_inventory",
         "boundary_surface": "durable_engine_codecs",
-        "boundary_kind": "engine_binary_text_codec_fuzz",
+        "boundary_kind": "engine_binary_text_codec_fuzz_coverage_inventory",
         "property_invariant": "catalog_datatype_index_repair_archive_backup_and_cluster_codecs_reject_malformed_bounds_checksum_version_and_authority_inputs",
         "behavior_gates": (
-            "public_durable_codec_fuzz",
             "public_codec_property_gate",
             "public_datatype_binary_descriptor_integrity_gate",
         ),
         "evidence_files": {
-            "tests/fuzz/public_durable_codec_fuzz.py": (
-                "PUBLIC_DURABLE_CODEC_FUZZ",
-                "malformed_inputs_fail_closed",
-                "authority_refusals_are_required",
+            "tests/fuzz/public_durable_codec_fuzz_coverage_inventory.py": (
+                "PUBLIC_DURABLE_CODEC_FUZZ_COVERAGE_INVENTORY",
+                "generated_or_mutated_inputs_executed",
+                "malformed_input_refusal_contract_required",
+                "authority_refusal_contract_required",
                 "surface_count",
             ),
             "tests/release/public_codec_property_gate.cpp": (
@@ -1588,18 +1587,17 @@ SOAK_CERTIFICATION_LABEL_REQUIRED_GATES = {
     "ceic_093_reliability_security_suite_gate",
     "dpc_soak_leak_resource_stability_gate",
     "memory_sanitizer_soak_concurrency_gate",
-    "public_release_soak_gate",
-    "public_release_soak_lane",
 }
 
 SOAK_CERTIFICATION_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "row_id": "bounded_public_release_soak_lane",
-        "surface": "bounded_soak",
+        "row_id": "bounded_public_release_soak_coverage_inventory",
+        "surface": "bounded_soak_coverage_inventory",
         "certification_policy": (
-            "bounded developer and release soak lanes must execute through CTest, "
-            "cap time and iteration budgets, retain diagnostic artifacts, and "
-            "cover memory pressure, concurrent transactions, cleanup, index "
+            "the source-contract inventory identifies bounded developer and release "
+            "workload gates; actual soak certification requires those gates to execute "
+            "through CTest with time and iteration budgets, retained diagnostic "
+            "artifacts, memory pressure, concurrent transactions, cleanup, index "
             "maintenance, backup forward, agents, and support bundle generation"
         ),
         "required_lanes": (
@@ -1613,21 +1611,20 @@ SOAK_CERTIFICATION_ROWS: tuple[dict[str, Any], ...] = (
             "support_bundle_generation",
         ),
         "behavior_gates": (
-            "public_release_soak_lane",
-            "public_release_soak_gate",
             "memory_sanitizer_soak_concurrency_gate",
         ),
         "required_labels": ("ELER-081", "ELER-GATE-081", "ELER-102", "ELER-GATE-102"),
         "evidence_files": {
-            "tests/soak/public_release_soak_lane.py": (
-                "PUBLIC_RELEASE_SOAK_LANE",
-                "total_time_budget_seconds",
-                "unbounded_soak_required_for_gate",
+            "tests/soak/public_release_soak_coverage_inventory.py": (
+                "PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY",
+                "sustained_workload_executed",
+                "total_referenced_time_budget_seconds",
+                "unbounded_soak_required_for_inventory",
                 "support_bundle_generation",
             ),
-            "tests/release/public_release_soak_gate.py": (
+            "tests/release/public_release_soak_coverage_inventory_gate.py": (
                 "REQUIRED_ROWS",
-                "soak_lane_budget_unbounded",
+                "soak_inventory_referenced_budget_unbounded",
                 "memory_sanitizer_soak_concurrency_gate",
             ),
             "tests/concurrency/memory_sanitizer_soak_concurrency_gate.cpp": (
@@ -3176,7 +3173,7 @@ ENTERPRISE_DOCUMENTATION_ROWS: tuple[dict[str, Any], ...] = (
             "project/tests/release/CMakeLists.txt": (
                 "public_release_version_metadata_gate",
                 "public_upgrade_migration_gate",
-                "public_crash_fault_gate",
+                "public_crash_fault_source_contract_gate",
             ),
             "project/tests/database_lifecycle/CMakeLists.txt": (
                 "database_lifecycle_shutdown_conformance",
@@ -4771,15 +4768,13 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "Cross-cutting crash and fault campaign",
         (
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
-            "tests/fault_injection/public_crash_fault_matrix.py",
+            "tests/fault_injection/public_crash_fault_source_contract_matrix.py",
             "tests/fault_injection/transaction_inventory_publish_fault_conformance.cpp",
-            "tests/release/public_crash_fault_gate.py",
+            "tests/release/public_crash_fault_source_contract_gate.py",
         ),
         (
             "engine_listener_crash_fault_campaign_gate",
             "transaction_inventory_publish_fault_conformance",
-            "public_crash_fault_matrix",
-            "public_crash_fault_gate",
         ),
         True,
         True,
@@ -4827,15 +4822,13 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "qa+performance",
         "Bounded enterprise soak lane",
         (
-            "tests/soak/public_release_soak_lane.py",
-            "tests/release/public_release_soak_gate.py",
+            "tests/soak/public_release_soak_coverage_inventory.py",
+            "tests/release/public_release_soak_coverage_inventory_gate.py",
             "tests/concurrency/memory_sanitizer_soak_concurrency_gate.cpp",
             "tests/database_lifecycle/dpc_soak_leak_resource_stability_gate.cpp",
         ),
         (
             "engine_listener_soak_certification_gate",
-            "public_release_soak_lane",
-            "public_release_soak_gate",
             "memory_sanitizer_soak_concurrency_gate",
             "dpc_soak_leak_resource_stability_gate",
         ),
@@ -4886,14 +4879,13 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "security+storage+listener",
         "Fuzzing and property testing suite",
         (
-            "tests/fuzz/public_durable_codec_fuzz.py",
+            "tests/fuzz/public_durable_codec_fuzz_coverage_inventory.py",
             "tests/manager/protocol_fuzz_gate.cpp",
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
             "tests/release/public_codec_property_gate.cpp",
         ),
         (
             "engine_listener_fuzz_property_invariant_suite_gate",
-            "public_durable_codec_fuzz",
             "public_codec_property_gate",
             "sbmn_manager_protocol_fuzz_gate",
         ),
@@ -6215,7 +6207,7 @@ def validate_crash_fault_campaign(project_root: Path,
         for test in ctest_json_tests(build_root)
         if isinstance(test, dict)
     }
-    required_secondary_gates = {"public_crash_fault_gate"}
+    required_secondary_gates = {"public_crash_fault_source_contract_gate"}
     rows: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     seen_surfaces: set[str] = set()
@@ -6276,8 +6268,18 @@ def validate_crash_fault_campaign(project_root: Path,
                 "source_sha256": sha256_text("|".join(source_hashes)),
                 "required_token_count": str(required_token_count),
                 "required_token_sha256": sha256_text("|".join(token_hashes)),
-                "proof_class": "behavioral_crash_fault_gate_with_tokenized_source_evidence",
-                "linux_result": "linux_crash_fault_campaign_proven_cross_platform_pending",
+                "proof_class": str(
+                    campaign_row.get(
+                        "proof_class",
+                        "behavioral_crash_fault_gate_with_tokenized_source_evidence",
+                    )
+                ),
+                "linux_result": (
+                    "source_contract_coverage_inventory_passed"
+                    if campaign_row.get("proof_class")
+                    == "crash_fault_source_contract_coverage_inventory"
+                    else "linux_crash_fault_campaign_proven_cross_platform_pending"
+                ),
                 "product_completion_claim": "false",
             }
         )
@@ -6297,7 +6299,7 @@ def validate_crash_fault_campaign(project_root: Path,
         "listener_owner_lifecycle",
         "listener_management",
         "listener_support_bundle",
-        "public_release_crash_matrix",
+        "public_release_crash_source_contract",
     }
     missing_surfaces = sorted(required_surfaces - seen_surfaces)
     if missing_surfaces:
@@ -7102,7 +7104,7 @@ def validate_soak_certification(project_root: Path,
         if isinstance(test, dict)
     }
     required_surfaces = {
-        "bounded_soak",
+        "bounded_soak_coverage_inventory",
         "long_duration_profiles",
         "high_concurrency_pressure",
         "crash_fault_security_negative",

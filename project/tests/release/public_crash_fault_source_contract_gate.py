@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Validate PCR-115 public crash/fault release-gate wiring."""
+"""Validate PCR-115 public crash/fault source-contract inventory wiring."""
 
 from __future__ import annotations
 
@@ -15,17 +15,18 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
 
-# PUBLIC_CRASH_FAULT_GATE
+# PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_GATE
 
 REQUIRED_RELEASE_CMAKE_TOKENS = (
-    "NAME public_crash_fault_matrix",
-    "NAME public_crash_fault_gate",
+    "NAME public_crash_fault_source_contract_matrix",
+    "NAME public_crash_fault_source_contract_gate",
     "PCR-GATE-115",
-    "public_crash_fault_gate",
+    "public_crash_fault_source_contract_gate",
 )
 
 REQUIRED_EXISTING_GATES = (
@@ -47,9 +48,12 @@ REQUIRED_AGENT_CMAKE_TOKENS = (
     "agent_action_dispatch_idempotency_gate",
 )
 
+REQUIRED_INVENTORY_LABELS = {"source_contract", "coverage_inventory", "evidence_gate"}
+FORBIDDEN_BEHAVIOR_LABELS = {"fuzz", "fault_injection", "crash_reopen", "soak"}
+
 
 def fail(message: str) -> None:
-    print(f"public_crash_fault_gate=fail:{message}", file=sys.stderr)
+    print(f"public_crash_fault_source_contract_gate=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -69,21 +73,42 @@ def require_tokens(text: str, context: str, tokens: tuple[str, ...]) -> None:
         fail(f"missing_tokens:{context}:{','.join(missing)}")
 
 
+def require_inventory_labels(cmake_text: str, test_name: str) -> None:
+    match = re.search(
+        rf"set_tests_properties\({re.escape(test_name)}\s+PROPERTIES\s+"
+        r'LABELS\s+"([^"]+)"',
+        cmake_text,
+        re.DOTALL,
+    )
+    if not match:
+        fail(f"missing_test_labels:{test_name}")
+    labels = set(match.group(1).split(";"))
+    missing = sorted(REQUIRED_INVENTORY_LABELS - labels)
+    forbidden = sorted(FORBIDDEN_BEHAVIOR_LABELS & labels)
+    if missing:
+        fail(f"missing_inventory_labels:{test_name}:{','.join(missing)}")
+    if forbidden:
+        fail(f"forbidden_behavior_labels:{test_name}:{','.join(forbidden)}")
+
+
 def load_matrix(project_root: Path) -> Any:
     matrix_dir = project_root / "tests" / "fault_injection"
     sys.path.insert(0, str(matrix_dir))
     try:
-        import public_crash_fault_matrix  # type: ignore
+        import public_crash_fault_source_contract_matrix  # type: ignore
     except Exception as exc:  # pragma: no cover - reported by gate output.
         fail(f"matrix_import_failed:{exc}")
-    return public_crash_fault_matrix
+    return public_crash_fault_source_contract_matrix
 
 
 def validate_matrix(evidence: dict[str, Any]) -> None:
     if evidence.get("gate") != "PCR-GATE-115":
         fail("matrix_gate_mismatch")
-    if evidence.get("marker") != "PUBLIC_CRASH_FAULT_MATRIX":
+    if evidence.get("marker") != "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX":
         fail("matrix_marker_missing")
+    execution = evidence.get("execution")
+    if not isinstance(execution, dict) or any(execution.values()):
+        fail("matrix_must_not_claim_runtime_crash_or_fault_execution")
     rows = evidence.get("rows")
     if not isinstance(rows, list) or len(rows) < 9:
         fail("matrix_row_coverage_incomplete")
@@ -127,6 +152,11 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     require_tokens(release_cmake,
                    "tests/release/CMakeLists.txt",
                    REQUIRED_RELEASE_CMAKE_TOKENS + REQUIRED_EXISTING_GATES)
+    for test_name in (
+        "public_crash_fault_source_contract_matrix",
+        "public_crash_fault_source_contract_gate",
+    ):
+        require_inventory_labels(release_cmake, test_name)
 
     agent_cmake = read_required(
         project_root / "tests" / "agents" / "CMakeLists.txt",
@@ -139,7 +169,8 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "gate": "PCR-GATE-115",
-        "marker": "PUBLIC_CRASH_FAULT_GATE",
+        "marker": "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_GATE",
+        "artifact_class": "source_contract_gate",
         "matrix_sha256": sha256_text(
             json.dumps(matrix_evidence, sort_keys=True)
         ),
@@ -162,7 +193,7 @@ def main() -> int:
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
     print(
-        "public_crash_fault_gate=passed "
+        "public_crash_fault_source_contract_gate=passed "
         f"rows={evidence['matrix_row_count']} output={output.name}"
     )
     return 0

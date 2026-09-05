@@ -152,8 +152,12 @@ write-admission fencing, operator-required state, or corruption fail-closed
 detection. Silent inconsistency is not an accepted outcome.
 
 Public proof anchors: `engine_listener_crash_fault_campaign_gate`,
-`engine_listener_crash_recovery_certification_gate`,
-`public_crash_fault_gate`.
+`engine_listener_crash_recovery_certification_gate`.
+
+The non-behavioral source-coverage anchor is
+`public_crash_fault_source_contract_gate`; it inventories required crash and
+fault contracts but does not inject a fault, terminate a process, or reopen
+durable state.
 
 ## DOC_SECURITY_MODEL
 

@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Cross-cutting crash/fault coverage matrix for PCR-115."""
+"""Inventory cross-cutting crash/fault source contracts for PCR-115."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import sys
 from typing import Any
 
 
-# PUBLIC_CRASH_FAULT_MATRIX
+# PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX
 
 MATRIX_ROWS: tuple[dict[str, Any], ...] = (
     {
@@ -181,7 +181,7 @@ MATRIX_ROWS: tuple[dict[str, Any], ...] = (
 
 
 def fail(message: str) -> None:
-    print(f"public_crash_fault_matrix=fail:{message}", file=sys.stderr)
+    print(f"public_crash_fault_source_contract_matrix=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -238,13 +238,19 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "gate": "PCR-GATE-115",
-        "marker": "PUBLIC_CRASH_FAULT_MATRIX",
+        "marker": "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX",
+        "artifact_class": "source_contract_matrix",
+        "execution": {
+            "runtime_fault_injected": False,
+            "process_terminated": False,
+            "durable_state_reopened": False,
+        },
         "policy": {
             "deterministic": True,
             "private_docs_required": False,
-            "faults_fail_closed": True,
-            "mga_authority_drift_refused": True,
-            "crash_reopen_rows_required": True,
+            "fault_refusal_source_contract_required": True,
+            "mga_authority_drift_source_contract_required": True,
+            "crash_reopen_coverage_rows_required": True,
         },
         "row_count": len(rows),
         "rows": rows,
@@ -263,7 +269,7 @@ def main() -> int:
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
     print(
-        "public_crash_fault_matrix=passed "
+        "public_crash_fault_source_contract_matrix=passed "
         f"rows={evidence['row_count']} output={output.name}"
     )
     return 0

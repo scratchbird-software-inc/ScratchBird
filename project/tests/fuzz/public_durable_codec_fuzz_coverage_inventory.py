@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Deterministic public durable-codec fuzz coverage gate for PCR-114."""
+"""Inventory durable-codec fuzz and property coverage for PCR-114."""
 
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
 
-# PUBLIC_DURABLE_CODEC_FUZZ
+# PUBLIC_DURABLE_CODEC_FUZZ_COVERAGE_INVENTORY
 
 SURFACES: tuple[dict[str, Any], ...] = (
     {
@@ -184,15 +185,18 @@ SURFACES: tuple[dict[str, Any], ...] = (
 RELEASE_CMAKE_TOKENS = (
     "add_executable(public_codec_property_gate",
     "NAME public_codec_property_gate",
-    "NAME public_durable_codec_fuzz",
+    "NAME public_durable_codec_fuzz_coverage_inventory",
     "PCR-GATE-114",
     "PUBLIC_RELEASE_CORRECTNESS_BUILD_TARGETS",
     "public_codec_property_gate",
 )
 
+REQUIRED_INVENTORY_LABELS = {"source_contract", "coverage_inventory", "evidence_gate"}
+FORBIDDEN_BEHAVIOR_LABELS = {"fuzz", "fault_injection", "crash_reopen", "soak"}
+
 
 def fail(message: str) -> None:
-  print(f"public_durable_codec_fuzz=fail:{message}", file=sys.stderr)
+  print(f"public_durable_codec_fuzz_coverage_inventory=fail:{message}", file=sys.stderr)
   raise SystemExit(1)
 
 
@@ -214,12 +218,33 @@ def require_tokens(text: str, relative: str, tokens: tuple[str, ...]) -> list[st
   return list(tokens)
 
 
+def require_inventory_labels(cmake_text: str, test_name: str) -> None:
+  match = re.search(
+      rf"set_tests_properties\({re.escape(test_name)}\s+PROPERTIES\s+"
+      r'LABELS\s+"([^"]+)"',
+      cmake_text,
+      re.DOTALL,
+  )
+  if not match:
+    fail(f"missing_test_labels:{test_name}")
+  labels = set(match.group(1).split(";"))
+  missing = sorted(REQUIRED_INVENTORY_LABELS - labels)
+  forbidden = sorted(FORBIDDEN_BEHAVIOR_LABELS & labels)
+  if missing:
+    fail(f"missing_inventory_labels:{test_name}:{','.join(missing)}")
+  if forbidden:
+    fail(f"forbidden_behavior_labels:{test_name}:{','.join(forbidden)}")
+
+
 def build_evidence(project_root: Path) -> dict[str, Any]:
   if project_root.name != "project" or not project_root.is_dir():
     fail("project_root_must_be_project_directory")
 
   cmake_text = require_file(project_root, "tests/release/CMakeLists.txt")
   require_tokens(cmake_text, "tests/release/CMakeLists.txt", RELEASE_CMAKE_TOKENS)
+  require_inventory_labels(
+      cmake_text, "public_durable_codec_fuzz_coverage_inventory"
+  )
 
   surface_records: list[dict[str, Any]] = []
   for surface in SURFACES:
@@ -245,13 +270,18 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
   return {
       "schema_version": 1,
       "gate": "PCR-GATE-114",
-      "marker": "PUBLIC_DURABLE_CODEC_FUZZ",
+      "marker": "PUBLIC_DURABLE_CODEC_FUZZ_COVERAGE_INVENTORY",
+      "artifact_class": "coverage_inventory",
+      "execution": {
+          "generated_or_mutated_inputs_executed": False,
+          "target_process_invoked": False,
+      },
       "policy": {
           "deterministic": True,
           "random_seed_required": False,
           "private_docs_required": False,
-          "malformed_inputs_fail_closed": True,
-          "authority_refusals_are_required": True,
+          "malformed_input_refusal_contract_required": True,
+          "authority_refusal_contract_required": True,
       },
       "surface_count": len(surface_records),
       "surfaces": surface_records,
@@ -271,7 +301,7 @@ def main() -> int:
   output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
   print(
-      "public_durable_codec_fuzz=passed "
+      "public_durable_codec_fuzz_coverage_inventory=passed "
       f"surfaces={evidence['surface_count']} output={output.name}"
   )
   return 0

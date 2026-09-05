@@ -1513,58 +1513,58 @@ set_tests_properties(public_codec_property_gate PROPERTIES
 )
 
 add_test(
-  NAME public_durable_codec_fuzz
+  NAME public_durable_codec_fuzz_coverage_inventory
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/../fuzz/public_durable_codec_fuzz.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/../fuzz/public_durable_codec_fuzz_coverage_inventory.py
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --output ${CMAKE_CURRENT_BINARY_DIR}/public_durable_codec_fuzz/public_durable_codec_fuzz.json
+          --output ${CMAKE_CURRENT_BINARY_DIR}/public_durable_codec_fuzz_coverage_inventory/public_durable_codec_fuzz_coverage_inventory.json
 )
-set_tests_properties(public_durable_codec_fuzz PROPERTIES
-  LABELS "public_release_correctness;public_durable_codec_fuzz;PCR-GATE-114;PCR-114;ELER-104;ELER-GATE-104;durable_codec;fuzz;property;bounds;checksum;version;authority_refusal;fail_closed"
+set_tests_properties(public_durable_codec_fuzz_coverage_inventory PROPERTIES
+  LABELS "public_release_correctness;PCR-GATE-114;PCR-114;ELER-104;ELER-GATE-104;durable_codec;source_contract;coverage_inventory;evidence_gate;property;bounds;checksum;version;authority_refusal;fail_closed"
 )
 
 add_test(
-  NAME public_crash_fault_matrix
+  NAME public_crash_fault_source_contract_matrix
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/../fault_injection/public_crash_fault_matrix.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/../fault_injection/public_crash_fault_source_contract_matrix.py
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --output ${CMAKE_CURRENT_BINARY_DIR}/public_crash_fault_matrix/public_crash_fault_matrix.json
+          --output ${CMAKE_CURRENT_BINARY_DIR}/public_crash_fault_source_contract_matrix/public_crash_fault_source_contract_matrix.json
 )
-set_tests_properties(public_crash_fault_matrix PROPERTIES
-  LABELS "public_release_correctness;public_crash_fault_matrix;PCR-GATE-115;PCR-115;ELER-080;ELER-GATE-080;crash_reopen;fault_injection;mga_authority;fail_closed"
+set_tests_properties(public_crash_fault_source_contract_matrix PROPERTIES
+  LABELS "public_release_correctness;public_crash_fault_source_contract_matrix;PCR-GATE-115;PCR-115;ELER-080;ELER-GATE-080;source_contract;coverage_inventory;evidence_gate;mga_authority;fail_closed"
 )
 
 add_test(
-  NAME public_crash_fault_gate
+  NAME public_crash_fault_source_contract_gate
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/public_crash_fault_gate.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_crash_fault_source_contract_gate.py
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --output ${CMAKE_CURRENT_BINARY_DIR}/public_crash_fault_gate/public_crash_fault_gate.json
+          --output ${CMAKE_CURRENT_BINARY_DIR}/public_crash_fault_source_contract_gate/public_crash_fault_source_contract_gate.json
 )
-set_tests_properties(public_crash_fault_gate PROPERTIES
-  LABELS "public_release_correctness;public_crash_fault_gate;PCR-GATE-115;PCR-115;ELER-080;ELER-GATE-080;crash_reopen;fault_injection;mga_authority;fail_closed"
+set_tests_properties(public_crash_fault_source_contract_gate PROPERTIES
+  LABELS "public_release_correctness;public_crash_fault_source_contract_gate;PCR-GATE-115;PCR-115;ELER-080;ELER-GATE-080;source_contract;coverage_inventory;evidence_gate;mga_authority;fail_closed"
 )
 
 add_test(
-  NAME public_release_soak_lane
+  NAME public_release_soak_coverage_inventory
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/../soak/public_release_soak_lane.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/../soak/public_release_soak_coverage_inventory.py
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --output ${CMAKE_CURRENT_BINARY_DIR}/public_release_soak_lane/public_release_soak_lane.json
+          --output ${CMAKE_CURRENT_BINARY_DIR}/public_release_soak_coverage_inventory/public_release_soak_coverage_inventory.json
 )
-set_tests_properties(public_release_soak_lane PROPERTIES
-  LABELS "public_release_correctness;public_release_soak_lane;PCR-GATE-116;PCR-116;ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;soak;bounded;concurrency;diagnostics;fail_closed;linux_proof"
+set_tests_properties(public_release_soak_coverage_inventory PROPERTIES
+  LABELS "public_release_correctness;PCR-GATE-116;PCR-116;ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;source_contract;coverage_inventory;evidence_gate;concurrency;diagnostics;fail_closed"
 )
 
 add_test(
-  NAME public_release_soak_gate
+  NAME public_release_soak_coverage_inventory_gate
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/public_release_soak_gate.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_release_soak_coverage_inventory_gate.py
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --output ${CMAKE_CURRENT_BINARY_DIR}/public_release_soak_gate/public_release_soak_gate.json
+          --output ${CMAKE_CURRENT_BINARY_DIR}/public_release_soak_coverage_inventory_gate/public_release_soak_coverage_inventory_gate.json
 )
-set_tests_properties(public_release_soak_gate PROPERTIES
-  LABELS "public_release_correctness;public_release_soak_gate;PCR-GATE-116;PCR-116;ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;soak;bounded;concurrency;diagnostics;fail_closed;linux_proof"
+set_tests_properties(public_release_soak_coverage_inventory_gate PROPERTIES
+  LABELS "public_release_correctness;PCR-GATE-116;PCR-116;ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;source_contract;coverage_inventory;evidence_gate;concurrency;diagnostics;fail_closed"
 )
 
 add_executable(public_index_provider_evidence_split_gate

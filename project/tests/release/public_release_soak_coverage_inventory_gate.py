@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Validate PCR-116 bounded public release soak lane wiring."""
+"""Validate PCR-116 public release soak coverage-inventory wiring."""
 
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
 
-# PUBLIC_RELEASE_SOAK_GATE
+# PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY_GATE
 
 REQUIRED_ROWS = {
     "memory_pressure",
@@ -33,10 +34,10 @@ REQUIRED_ROWS = {
 }
 
 REQUIRED_RELEASE_CMAKE_TOKENS = (
-    "NAME public_release_soak_lane",
-    "NAME public_release_soak_gate",
+    "NAME public_release_soak_coverage_inventory",
+    "NAME public_release_soak_coverage_inventory_gate",
     "PCR-GATE-116",
-    "public_release_soak_gate",
+    "public_release_soak_coverage_inventory_gate",
     "public_memory_pressure_executor_gate",
     "public_transaction_inventory_lock_table_gate",
     "public_transaction_savepoint_limbo_cleanup_gate",
@@ -53,9 +54,12 @@ REQUIRED_CONCURRENCY_CMAKE_TOKENS = (
     "MMCH_MEMORY_SANITIZER_SOAK_CONCURRENCY",
 )
 
+REQUIRED_INVENTORY_LABELS = {"source_contract", "coverage_inventory", "evidence_gate"}
+FORBIDDEN_BEHAVIOR_LABELS = {"fuzz", "fault_injection", "crash_reopen", "soak"}
+
 
 def fail(message: str) -> None:
-    print(f"public_release_soak_gate=fail:{message}", file=sys.stderr)
+    print(f"public_release_soak_coverage_inventory_gate=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -75,46 +79,67 @@ def require_tokens(text: str, context: str, tokens: tuple[str, ...]) -> None:
         fail(f"missing_tokens:{context}:{','.join(missing)}")
 
 
-def load_lane(project_root: Path) -> Any:
-    lane_dir = project_root / "tests" / "soak"
-    sys.path.insert(0, str(lane_dir))
+def require_inventory_labels(cmake_text: str, test_name: str) -> None:
+    match = re.search(
+        rf"set_tests_properties\({re.escape(test_name)}\s+PROPERTIES\s+"
+        r'LABELS\s+"([^"]+)"',
+        cmake_text,
+        re.DOTALL,
+    )
+    if not match:
+        fail(f"missing_test_labels:{test_name}")
+    labels = set(match.group(1).split(";"))
+    missing = sorted(REQUIRED_INVENTORY_LABELS - labels)
+    forbidden = sorted(FORBIDDEN_BEHAVIOR_LABELS & labels)
+    if missing:
+        fail(f"missing_inventory_labels:{test_name}:{','.join(missing)}")
+    if forbidden:
+        fail(f"forbidden_behavior_labels:{test_name}:{','.join(forbidden)}")
+
+
+def load_inventory(project_root: Path) -> Any:
+    inventory_dir = project_root / "tests" / "soak"
+    sys.path.insert(0, str(inventory_dir))
     try:
-        import public_release_soak_lane  # type: ignore
+        import public_release_soak_coverage_inventory  # type: ignore
     except Exception as exc:  # pragma: no cover - reported by gate output.
-        fail(f"soak_lane_import_failed:{exc}")
-    return public_release_soak_lane
+        fail(f"soak_inventory_import_failed:{exc}")
+    return public_release_soak_coverage_inventory
 
 
-def validate_lane(evidence: dict[str, Any]) -> None:
+def validate_inventory(evidence: dict[str, Any]) -> None:
     if evidence.get("gate") != "PCR-GATE-116":
-        fail("soak_lane_gate_mismatch")
-    if evidence.get("marker") != "PUBLIC_RELEASE_SOAK_LANE":
-        fail("soak_lane_marker_missing")
+        fail("soak_inventory_gate_mismatch")
+    if evidence.get("marker") != "PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY":
+        fail("soak_inventory_marker_missing")
+    execution = evidence.get("execution")
+    if not isinstance(execution, dict) or any(execution.values()):
+        fail("soak_inventory_must_not_claim_workload_execution")
     rows = evidence.get("rows")
     if not isinstance(rows, list):
-        fail("soak_lane_rows_missing")
+        fail("soak_inventory_rows_missing")
     observed = {row.get("row_id") for row in rows if isinstance(row, dict)}
     missing = sorted(REQUIRED_ROWS - observed)
     if missing:
-        fail("soak_lane_missing_rows:" + ",".join(missing))
-    if evidence.get("total_time_budget_seconds", 0) > 360:
-        fail("soak_lane_budget_unbounded")
+        fail("soak_inventory_missing_rows:" + ",".join(missing))
+    if evidence.get("total_referenced_time_budget_seconds", 0) > 360:
+        fail("soak_inventory_referenced_budget_unbounded")
     for row in rows:
-        if row.get("time_budget_seconds", 0) <= 0:
-            fail(f"soak_lane_unbounded_time:{row.get('row_id')}")
-        if row.get("iteration_limit", 0) <= 0:
-            fail(f"soak_lane_unbounded_iterations:{row.get('row_id')}")
+        if row.get("referenced_time_budget_seconds", 0) <= 0:
+            fail(f"soak_inventory_unbounded_referenced_time:{row.get('row_id')}")
+        if row.get("referenced_iteration_limit", 0) <= 0:
+            fail(f"soak_inventory_unbounded_referenced_iterations:{row.get('row_id')}")
         if not row.get("artifact"):
-            fail(f"soak_lane_missing_artifact:{row.get('row_id')}")
+            fail(f"soak_inventory_missing_artifact:{row.get('row_id')}")
 
 
 def build_evidence(project_root: Path) -> dict[str, Any]:
     if project_root.name != "project" or not project_root.is_dir():
         fail("project_root_must_be_project_directory")
 
-    lane_module = load_lane(project_root)
-    lane_evidence = lane_module.build_evidence(project_root)
-    validate_lane(lane_evidence)
+    inventory_module = load_inventory(project_root)
+    inventory_evidence = inventory_module.build_evidence(project_root)
+    validate_inventory(inventory_evidence)
 
     release_cmake = read_required(
         project_root / "tests" / "release" / "CMakeLists.txt",
@@ -123,6 +148,11 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     require_tokens(release_cmake,
                    "tests/release/CMakeLists.txt",
                    REQUIRED_RELEASE_CMAKE_TOKENS)
+    for test_name in (
+        "public_release_soak_coverage_inventory",
+        "public_release_soak_coverage_inventory_gate",
+    ):
+        require_inventory_labels(release_cmake, test_name)
 
     concurrency_cmake = read_required(
         project_root / "tests" / "concurrency" / "CMakeLists.txt",
@@ -135,13 +165,16 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "gate": "PCR-GATE-116",
-        "marker": "PUBLIC_RELEASE_SOAK_GATE",
-        "lane_sha256": sha256_text(json.dumps(lane_evidence, sort_keys=True)),
-        "lane_row_count": lane_evidence["row_count"],
-        "lane_total_time_budget_seconds": lane_evidence[
-            "total_time_budget_seconds"
+        "marker": "PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY_GATE",
+        "artifact_class": "coverage_inventory_gate",
+        "inventory_sha256": sha256_text(
+            json.dumps(inventory_evidence, sort_keys=True)
+        ),
+        "inventory_row_count": inventory_evidence["row_count"],
+        "inventory_total_referenced_time_budget_seconds": inventory_evidence[
+            "total_referenced_time_budget_seconds"
         ],
-        "lane": lane_evidence,
+        "inventory": inventory_evidence,
     }
 
 
@@ -157,9 +190,9 @@ def main() -> int:
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
     print(
-        "public_release_soak_gate=passed "
-        f"rows={evidence['lane_row_count']} "
-        f"budget={evidence['lane_total_time_budget_seconds']}s "
+        "public_release_soak_coverage_inventory_gate=passed "
+        f"rows={evidence['inventory_row_count']} "
+        f"referenced_budget={evidence['inventory_total_referenced_time_budget_seconds']}s "
         f"output={output.name}"
     )
     return 0

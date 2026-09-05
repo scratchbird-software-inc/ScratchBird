@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Bounded public release soak lane for PCR-116."""
+"""Inventory bounded public release soak coverage for PCR-116."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import sys
 from typing import Any
 
 
-# PUBLIC_RELEASE_SOAK_LANE
+# PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY
 
 SOAK_ROWS: tuple[dict[str, Any], ...] = (
     {
@@ -166,7 +166,7 @@ SOAK_ROWS: tuple[dict[str, Any], ...] = (
 
 
 def fail(message: str) -> None:
-    print(f"public_release_soak_lane=fail:{message}", file=sys.stderr)
+    print(f"public_release_soak_coverage_inventory=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -215,8 +215,8 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
             {
                 "row_id": row_id,
                 "gate": row["gate"],
-                "time_budget_seconds": row["time_budget_seconds"],
-                "iteration_limit": row["iteration_limit"],
+                "referenced_time_budget_seconds": row["time_budget_seconds"],
+                "referenced_iteration_limit": row["iteration_limit"],
                 "artifact": row["artifact"],
                 "file_count": len(file_records),
                 "files": file_records,
@@ -226,16 +226,23 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "gate": "PCR-GATE-116",
-        "marker": "PUBLIC_RELEASE_SOAK_LANE",
+        "marker": "PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY",
+        "artifact_class": "coverage_inventory",
+        "execution": {
+            "sustained_workload_executed": False,
+            "referenced_gates_invoked": False,
+        },
         "policy": {
-            "bounded": True,
             "deterministic": True,
             "private_docs_required": False,
-            "diagnostic_artifacts_required": True,
-            "unbounded_soak_required_for_gate": False,
+            "referenced_workloads_must_be_bounded": True,
+            "diagnostic_artifact_contract_required": True,
+            "unbounded_soak_required_for_inventory": False,
         },
         "row_count": len(rows),
-        "total_time_budget_seconds": sum(row["time_budget_seconds"] for row in rows),
+        "total_referenced_time_budget_seconds": sum(
+            row["referenced_time_budget_seconds"] for row in rows
+        ),
         "rows": rows,
     }
 
@@ -252,8 +259,9 @@ def main() -> int:
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n",
                       encoding="utf-8")
     print(
-        "public_release_soak_lane=passed "
-        f"rows={evidence['row_count']} budget={evidence['total_time_budget_seconds']}s "
+        "public_release_soak_coverage_inventory=passed "
+        f"rows={evidence['row_count']} "
+        f"referenced_budget={evidence['total_referenced_time_budget_seconds']}s "
         f"output={output.name}"
     )
     return 0

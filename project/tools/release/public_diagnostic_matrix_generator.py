@@ -275,7 +275,7 @@ MATRIX_ROWS: tuple[dict[str, str], ...] = (
         "compatibility_status": "fail_closed_stable",
         "source_path": "src/core/index/index_bulk_publish_recovery.cpp",
         "source_token": "SB-INDEX-BULK-PUBLISH-RECOVERY-CANDIDATE-MISSING",
-        "public_test_path": "tests/fault_injection/public_crash_fault_matrix.py",
+        "public_test_path": "tests/fault_injection/public_crash_fault_source_contract_matrix.py",
         "public_test_token": "index_update",
     },
     {
