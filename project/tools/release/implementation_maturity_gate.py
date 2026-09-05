@@ -18,6 +18,20 @@ import re
 import sys
 
 
+EVIDENCE_CLASSIFICATION = "repository_policy"
+PROTECTED_REGRESSION = (
+    "public capability maturity is inferred from legacy status text, source "
+    "filenames, or missing restart-boundary evidence"
+)
+CLAIM_EXCLUSIONS = (
+    "behavioral_test_pass",
+    "crash_proof",
+    "fuzz_execution",
+    "sanitizer_qualification",
+    "durability_proof",
+)
+
+
 MATURITY_LEVELS = (
     "codec_contract",
     "routing",

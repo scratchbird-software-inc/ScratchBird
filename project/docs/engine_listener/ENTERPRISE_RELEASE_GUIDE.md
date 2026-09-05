@@ -155,7 +155,7 @@ Public proof anchors: `engine_listener_crash_fault_campaign_gate`,
 `engine_listener_crash_recovery_certification_gate`.
 
 The non-behavioral source-coverage anchor is
-`public_crash_fault_source_contract_gate`; it inventories required crash and
+`public_crash_fault_source_contract_matrix`; it inventories required crash and
 fault contracts but does not inject a fault, terminate a process, or reopen
 durable state.
 

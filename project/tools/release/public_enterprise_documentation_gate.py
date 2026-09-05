@@ -135,7 +135,7 @@ DOC_ROWS: tuple[dict[str, Any], ...] = (
         "doc_tokens": ("Recovery is certified", "Silent inconsistency is not an accepted outcome"),
         "evidence": (
             (ENTERPRISE_CMAKE, ("engine_listener_crash_fault_campaign_gate", "engine_listener_crash_recovery_certification_gate")),
-            (RELEASE_CMAKE, ("public_crash_fault_source_contract_gate",)),
+            (RELEASE_CMAKE, ("public_crash_fault_source_contract_matrix",)),
         ),
     },
     {

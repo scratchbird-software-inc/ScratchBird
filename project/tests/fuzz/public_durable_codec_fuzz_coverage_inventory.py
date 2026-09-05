@@ -22,6 +22,19 @@ from typing import Any
 
 # PUBLIC_DURABLE_CODEC_FUZZ_COVERAGE_INVENTORY
 
+EVIDENCE_CLASSIFICATION = "evidence_inventory"
+PROTECTED_REGRESSION = (
+    "durable codec malformed-input and authority-refusal coverage declarations "
+    "disappear or stop naming their owning tests"
+)
+CLAIM_EXCLUSIONS = (
+    "behavioral_test_pass",
+    "crash_proof",
+    "fuzz_execution",
+    "sanitizer_qualification",
+    "durability_proof",
+)
+
 SURFACES: tuple[dict[str, Any], ...] = (
     {
         "surface": "catalog_page_body",
@@ -191,8 +204,19 @@ RELEASE_CMAKE_TOKENS = (
     "public_codec_property_gate",
 )
 
-REQUIRED_INVENTORY_LABELS = {"source_contract", "coverage_inventory", "evidence_gate"}
-FORBIDDEN_BEHAVIOR_LABELS = {"fuzz", "fault_injection", "crash_reopen", "soak"}
+REQUIRED_INVENTORY_LABELS = {
+    "evidence_inventory",
+    "source_token_check",
+    "non_behavioral",
+}
+FORBIDDEN_BEHAVIOR_LABELS = {
+    "repository_policy",
+    "source_contract",
+    "fuzz",
+    "fault_injection",
+    "crash_reopen",
+    "soak",
+}
 
 
 def fail(message: str) -> None:
@@ -272,6 +296,9 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
       "gate": "PCR-GATE-114",
       "marker": "PUBLIC_DURABLE_CODEC_FUZZ_COVERAGE_INVENTORY",
       "artifact_class": "coverage_inventory",
+      "evidence_classification": EVIDENCE_CLASSIFICATION,
+      "protected_regression": PROTECTED_REGRESSION,
+      "claim_exclusions": list(CLAIM_EXCLUSIONS),
       "execution": {
           "generated_or_mutated_inputs_executed": False,
           "target_process_invoked": False,
@@ -302,7 +329,8 @@ def main() -> int:
                     encoding="utf-8")
   print(
       "public_durable_codec_fuzz_coverage_inventory=passed "
-      f"surfaces={evidence['surface_count']} output={output.name}"
+      f"class={EVIDENCE_CLASSIFICATION} surfaces={evidence['surface_count']} "
+      f"output={output.name}"
   )
   return 0
 

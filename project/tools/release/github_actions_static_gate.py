@@ -12,10 +12,25 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 from pathlib import Path
 import re
 import sys
+
+
+EVIDENCE_CLASSIFICATION = "repository_policy"
+PROTECTED_REGRESSION = (
+    "public CI topology or source-token classification changes allow static "
+    "checks to be reported as behavioral release evidence"
+)
+CLAIM_EXCLUSIONS = (
+    "behavioral_test_pass",
+    "crash_proof",
+    "fuzz_execution",
+    "sanitizer_qualification",
+    "durability_proof",
+)
 
 
 REQUIRED_WORKFLOWS = {
@@ -399,6 +414,138 @@ def check_ci_support_scripts(repo_root: Path) -> None:
         require_token(handoff_source, token, handoff.name)
 
 
+def source_metadata(path: Path) -> dict[str, object]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    metadata: dict[str, object] = {}
+    wanted = {
+        "EVIDENCE_CLASSIFICATION",
+        "PROTECTED_REGRESSION",
+        "CLAIM_EXCLUSIONS",
+    }
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in wanted:
+            metadata[target.id] = ast.literal_eval(node.value)
+    return metadata
+
+
+def check_source_token_classification(repo_root: Path) -> None:
+    """Keep non-behavioral source checks out of runtime evidence."""
+
+    classified = {
+        "public_durable_codec_fuzz_coverage_inventory": (
+            Path("project/tests/fuzz/public_durable_codec_fuzz_coverage_inventory.py"),
+            "evidence_inventory",
+        ),
+        "public_crash_fault_source_contract_matrix": (
+            Path("project/tests/fault_injection/public_crash_fault_source_contract_matrix.py"),
+            "source_contract",
+        ),
+        "public_release_soak_coverage_inventory": (
+            Path("project/tests/soak/public_release_soak_coverage_inventory.py"),
+            "evidence_inventory",
+        ),
+    }
+    required_exclusions = {
+        "behavioral_test_pass",
+        "crash_proof",
+        "fuzz_execution",
+        "sanitizer_qualification",
+        "durability_proof",
+    }
+    regressions: set[str] = set()
+    release_cmake_path = repo_root / "project/tests/release/CMakeLists.txt"
+    release_cmake = release_cmake_path.read_text(encoding="utf-8")
+    classes = {"repository_policy", "source_contract", "evidence_inventory"}
+    forbidden_behavior = {"fuzz", "fault_injection", "crash_reopen", "soak"}
+
+    repository_policy_checks = (
+        Path("project/tools/release/github_actions_static_gate.py"),
+        Path("project/tools/release/implementation_maturity_gate.py"),
+    )
+    for relative_path in repository_policy_checks:
+        metadata = source_metadata(repo_root / relative_path)
+        if metadata.get("EVIDENCE_CLASSIFICATION") != "repository_policy":
+            fail(f"repository_policy_classification_invalid:{relative_path}")
+        regression = metadata.get("PROTECTED_REGRESSION")
+        if not isinstance(regression, str) or len(regression.strip()) < 40:
+            fail(f"repository_policy_protected_regression_missing:{relative_path}")
+        if regression in regressions:
+            fail(f"source_token_protected_regression_duplicated:{relative_path}")
+        regressions.add(regression)
+        exclusions = metadata.get("CLAIM_EXCLUSIONS")
+        if not isinstance(exclusions, tuple) or set(exclusions) != required_exclusions:
+            fail(f"repository_policy_claim_exclusions_invalid:{relative_path}")
+
+    for test_name, (relative_path, expected_class) in classified.items():
+        path = repo_root / relative_path
+        if not path.is_file():
+            fail(f"classified_source_token_check_missing:{relative_path}")
+        metadata = source_metadata(path)
+        if metadata.get("EVIDENCE_CLASSIFICATION") != expected_class:
+            fail(f"source_token_classification_invalid:{test_name}")
+        regression = metadata.get("PROTECTED_REGRESSION")
+        if not isinstance(regression, str) or len(regression.strip()) < 40:
+            fail(f"source_token_protected_regression_missing:{test_name}")
+        if regression in regressions:
+            fail(f"source_token_protected_regression_duplicated:{test_name}")
+        regressions.add(regression)
+        exclusions = metadata.get("CLAIM_EXCLUSIONS")
+        if not isinstance(exclusions, tuple) or set(exclusions) != required_exclusions:
+            fail(f"source_token_claim_exclusions_invalid:{test_name}")
+
+        labels_match = re.search(
+            rf"set_tests_properties\({re.escape(test_name)}\s+PROPERTIES\s+"
+            r'LABELS\s+"([^"]+)"',
+            release_cmake,
+            re.DOTALL,
+        )
+        if labels_match is None:
+            fail(f"source_token_ctest_labels_missing:{test_name}")
+        labels = set(labels_match.group(1).split(";"))
+        if labels & classes != {expected_class}:
+            fail(f"source_token_ctest_classification_not_exact:{test_name}")
+        for required in ("source_token_check", "non_behavioral"):
+            if required not in labels:
+                fail(f"source_token_ctest_label_missing:{test_name}:{required}")
+        overlap = sorted(labels & forbidden_behavior)
+        if overlap:
+            fail(f"source_token_behavior_label_forbidden:{test_name}:{','.join(overlap)}")
+
+    retired_wrappers = (
+        "public_crash_fault_source_contract_gate",
+        "public_release_soak_coverage_inventory_gate",
+    )
+    inspected = [
+        release_cmake,
+        (repo_root / "project/tests/engine_listener_enterprise/CMakeLists.txt").read_text(encoding="utf-8"),
+        (repo_root / "project/tests/engine_listener_enterprise/engine_listener_enterprise_gate.py").read_text(encoding="utf-8"),
+        (repo_root / "project/docs/engine_listener/ENTERPRISE_RELEASE_GUIDE.md").read_text(encoding="utf-8"),
+    ]
+    for retired in retired_wrappers:
+        if any(retired in text for text in inspected):
+            fail(f"redundant_source_token_wrapper_retained:{retired}")
+
+    evidence_doc = (
+        repo_root / "project/docs/testing/EVIDENCE_REPORTING.md"
+    ).read_text(encoding="utf-8")
+    position = -1
+    for evidence_class in (
+        "runtime_observable_behavior",
+        "durable_reopen_verification",
+        "process_level_verification",
+        "model_property_testing",
+        "static_contract",
+        "source_token_check",
+    ):
+        next_position = evidence_doc.find(f"`{evidence_class}`")
+        if next_position <= position:
+            fail(f"evidence_reporting_order_invalid:{evidence_class}")
+        position = next_position
+
+
 def check_critical_path_review_policy(repo_root: Path) -> None:
     """Keep critical ownership, trusted execution, and merge policy intact."""
 
@@ -553,6 +700,9 @@ def check_signal_job_topology(
         "github_actions_static_gate.py",
         "public_private_reference_scan.py",
         "implementation_maturity_gate.py",
+        "public_durable_codec_fuzz_coverage_inventory.py",
+        "public_crash_fault_source_contract_matrix.py",
+        "public_release_soak_coverage_inventory.py",
         "python3 -m unittest discover -s project/tests/repository_policy",
         "if: always()",
         "actions/upload-artifact@v4",
@@ -590,11 +740,13 @@ def check_signal_job_topology(
 
     unit_block = blocks["unit-runtime-tests"]
     process_block = blocks["process-integration-tests"]
+    require_token(text, 'SB_CI_SOURCE_TOKEN_LABELS: "^source_token_check$"', rel)
     for block in (unit_block, process_block):
         require_token(block, "run_ctest_chunks.py", rel)
         require_token(block, f"--preset {preset}", rel)
         require_token(block, '--include-label "$SB_CI_RELEASE_LABELS"', rel)
     require_token(unit_block, '--exclude-label "$SB_CI_PROCESS_LABELS"', rel)
+    require_token(unit_block, '--exclude-label "$SB_CI_SOURCE_TOKEN_LABELS"', rel)
     require_token(process_block, '--require-label "$SB_CI_PROCESS_LABELS"', rel)
 
     aggregate = blocks[aggregate_job]
@@ -609,6 +761,20 @@ def check_signal_job_topology(
         require_token(aggregate, f"- {required}", rel)
         require_token(aggregate, f"${{{{ needs.{required}.result }}}}", rel)
     require_token(aggregate, 'if [ "$result" != success ]', rel)
+    evidence_order = (
+        "runtime_observable.unit-runtime-tests",
+        "durable_reopen=not-separately-qualified",
+        "process_level.process-integration-tests",
+        "model_property=not-separately-qualified",
+        "static_contract.static-policy",
+        "source_token=included-in-static-policy-non-behavioral",
+    )
+    position = -1
+    for token in evidence_order:
+        next_position = aggregate.find(token)
+        if next_position <= position:
+            fail(f"release_evidence_order_invalid:{rel}:{token}")
+        position = next_position
 
 
 def check_push_to_main_trigger(text: str, rel: str) -> None:
@@ -1500,6 +1666,7 @@ def main() -> int:
     check_mkdtemp_header_contract(repo_root)
     check_native_installer_admission_contract(repo_root)
     check_ci_support_scripts(repo_root)
+    check_source_token_classification(repo_root)
     check_critical_path_review_policy(repo_root)
     check_workflow_inventory(workflow_root)
     for name, tokens in REQUIRED_WORKFLOWS.items():

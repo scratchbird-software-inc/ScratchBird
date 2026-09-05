@@ -480,12 +480,6 @@ CRASH_FAULT_CAMPAIGN_ROWS: tuple[dict[str, Any], ...] = (
                 "mga_authority_drift_source_contract_required",
                 "crash_reopen_coverage_rows_required",
             ),
-            "tests/release/public_crash_fault_source_contract_gate.py": (
-                "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_GATE",
-                "matrix_row_coverage_incomplete",
-                "public_crash_fault_source_contract_matrix",
-                "agent_fault_injection_gate",
-            ),
         },
     },
 )
@@ -1621,11 +1615,6 @@ SOAK_CERTIFICATION_ROWS: tuple[dict[str, Any], ...] = (
                 "total_referenced_time_budget_seconds",
                 "unbounded_soak_required_for_inventory",
                 "support_bundle_generation",
-            ),
-            "tests/release/public_release_soak_coverage_inventory_gate.py": (
-                "REQUIRED_ROWS",
-                "soak_inventory_referenced_budget_unbounded",
-                "memory_sanitizer_soak_concurrency_gate",
             ),
             "tests/concurrency/memory_sanitizer_soak_concurrency_gate.cpp": (
                 "constexpr int kThreads = 8",
@@ -3173,7 +3162,7 @@ ENTERPRISE_DOCUMENTATION_ROWS: tuple[dict[str, Any], ...] = (
             "project/tests/release/CMakeLists.txt": (
                 "public_release_version_metadata_gate",
                 "public_upgrade_migration_gate",
-                "public_crash_fault_source_contract_gate",
+                "public_crash_fault_source_contract_matrix",
             ),
             "project/tests/database_lifecycle/CMakeLists.txt": (
                 "database_lifecycle_shutdown_conformance",
@@ -4770,7 +4759,6 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
             "tests/fault_injection/public_crash_fault_source_contract_matrix.py",
             "tests/fault_injection/transaction_inventory_publish_fault_conformance.cpp",
-            "tests/release/public_crash_fault_source_contract_gate.py",
         ),
         (
             "engine_listener_crash_fault_campaign_gate",
@@ -4823,7 +4811,6 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "Bounded enterprise soak lane",
         (
             "tests/soak/public_release_soak_coverage_inventory.py",
-            "tests/release/public_release_soak_coverage_inventory_gate.py",
             "tests/concurrency/memory_sanitizer_soak_concurrency_gate.cpp",
             "tests/database_lifecycle/dpc_soak_leak_resource_stability_gate.cpp",
         ),
@@ -6207,7 +6194,7 @@ def validate_crash_fault_campaign(project_root: Path,
         for test in ctest_json_tests(build_root)
         if isinstance(test, dict)
     }
-    required_secondary_gates = {"public_crash_fault_source_contract_gate"}
+    required_secondary_gates: set[str] = set()
     rows: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     seen_surfaces: set[str] = set()

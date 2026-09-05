@@ -21,6 +21,19 @@ from typing import Any
 
 # PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX
 
+EVIDENCE_CLASSIFICATION = "source_contract"
+PROTECTED_REGRESSION = (
+    "required crash/fault refusal and MGA-authority contract cases disappear "
+    "from the public release source surface"
+)
+CLAIM_EXCLUSIONS = (
+    "behavioral_test_pass",
+    "crash_proof",
+    "fuzz_execution",
+    "sanitizer_qualification",
+    "durability_proof",
+)
+
 MATRIX_ROWS: tuple[dict[str, Any], ...] = (
     {
         "row_id": "create_sync",
@@ -240,6 +253,9 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
         "gate": "PCR-GATE-115",
         "marker": "PUBLIC_CRASH_FAULT_SOURCE_CONTRACT_MATRIX",
         "artifact_class": "source_contract_matrix",
+        "evidence_classification": EVIDENCE_CLASSIFICATION,
+        "protected_regression": PROTECTED_REGRESSION,
+        "claim_exclusions": list(CLAIM_EXCLUSIONS),
         "execution": {
             "runtime_fault_injected": False,
             "process_terminated": False,
@@ -270,7 +286,8 @@ def main() -> int:
                       encoding="utf-8")
     print(
         "public_crash_fault_source_contract_matrix=passed "
-        f"rows={evidence['row_count']} output={output.name}"
+        f"class={EVIDENCE_CLASSIFICATION} rows={evidence['row_count']} "
+        f"output={output.name}"
     )
     return 0
 

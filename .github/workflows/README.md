@@ -8,12 +8,13 @@ required signal succeeded.
 
 Each platform workflow contains these jobs:
 
-- `static-policy` runs repository, release-policy, and public/private-boundary
-  checks without depending on compilation.
+- `static-policy` runs repository, release-policy, public/private-boundary, and
+  explicitly classified source-token inventory checks without depending on
+  compilation. These results are non-behavioral.
 - `build` configures and compiles without depending on static policy. It uploads
   a compressed, one-day bounded build handoff for downstream jobs.
 - `unit-runtime-tests` restores that build and runs release tests that are not
-  classified as process or integration tests.
+  classified as process/integration or source-token tests.
 - `process-integration-tests` restores the same build and runs release tests
   carrying at least one process/integration label.
 - `packaging` restores the build and independently verifies the staged public
@@ -28,6 +29,13 @@ integration partition currently recognizes the exact labels `integration`,
 `database_lifecycle_server_route`. The unit/runtime partition excludes that
 same set, so the partitions are non-overlapping. `run_ctest_chunks.py` refuses
 an empty selection and records the selected and excluded inventories.
+
+Release summaries report runtime-observable results first, then any separately
+qualified durable/reopen evidence, process-level results, model/property
+results, static contracts, and source-token checks. Build and packaging remain
+separate delivery signals. A source-token pass cannot be reported as runtime,
+crash, fuzz, sanitizer, or durability evidence; see
+`project/docs/testing/EVIDENCE_REPORTING.md`.
 
 The configured build handoff is derived from CTest's selected release
 inventory. It contains CTest/install metadata, the production object graph,

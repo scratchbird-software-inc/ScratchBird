@@ -13,7 +13,15 @@ CTest names and labels describe behavior that the test itself executes:
 - `soak`: a workload executes for a sustained duration or iteration budget.
 
 Tests that only read source files, require tokens, hash artifacts, or inventory
-coverage use `source_contract`, `coverage_inventory`, and `evidence_gate`
-instead. Their filenames and output schemas must state that they do not execute
-the stronger behavior. Directory placement indicates the subject being
-inventoried, not proof that every file in that directory is behavioral.
+coverage use exactly one of `repository_policy`, `source_contract`, or
+`evidence_inventory`, plus `source_token_check` and `non_behavioral`. They do
+not carry `fuzz`, `fault_injection`, `crash_reopen`, `soak`, or sanitizer
+qualification labels. Their filenames and output schemas must state that they
+do not execute the stronger behavior. Directory placement indicates the
+subject being inventoried, not proof that every file in that directory is
+behavioral.
+
+Evidence is reported in descending order of strength: runtime observable
+behavior, durable/reopen verification, process-level verification,
+model/property testing, static contract checks, then source-token checks. See
+`../docs/testing/EVIDENCE_REPORTING.md` for the reporting and promotion rules.

@@ -32,6 +32,7 @@ concurrency:
 env:
   SB_CI_RELEASE_LABELS: "^(public_release_correctness|engine_listener_enterprise)$"
   SB_CI_PROCESS_LABELS: "^(integration|e2e|live_server|process_kill|database_lifecycle_server_route)$"
+  SB_CI_SOURCE_TOKEN_LABELS: "^source_token_check$"
   SB_MACOS_CTEST_PLATFORM_EXCLUDE: "^(linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd)$"
 
 jobs:
@@ -53,6 +54,9 @@ jobs:
             python3 project/tools/release/github_actions_static_gate.py || status=1
             python3 project/tools/release/public_private_reference_scan.py || status=1
             python3 project/tools/release/implementation_maturity_gate.py || status=1
+            python3 project/tests/fuzz/public_durable_codec_fuzz_coverage_inventory.py --project-root project --output build/ci-logs/macos-static/fuzz-coverage-inventory.json || status=1
+            python3 project/tests/fault_injection/public_crash_fault_source_contract_matrix.py --project-root project --output build/ci-logs/macos-static/crash-fault-source-contract.json || status=1
+            python3 project/tests/soak/public_release_soak_coverage_inventory.py --project-root project --output build/ci-logs/macos-static/soak-coverage-inventory.json || status=1
             python3 -m unittest discover -s project/tests/repository_policy -p 'test_*.py' || status=1
             exit "$status"
           } 2>&1 | tee build/ci-logs/macos-static/static-policy.log
@@ -239,6 +243,7 @@ jobs:
             --preset public-release-macos --chunk-count 8 --timeout 900 \
             --include-label "$SB_CI_RELEASE_LABELS" \
             --exclude-label "$SB_CI_PROCESS_LABELS" \
+            --exclude-label "$SB_CI_SOURCE_TOKEN_LABELS" \
             --exclude-label "$SB_MACOS_CTEST_PLATFORM_EXCLUDE" \
             --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}-unit-runtime
       - name: Stage macOS unit-runtime proof
@@ -890,6 +895,6 @@ jobs:
           elif [ "$UNIVERSAL_RESULT" != success ] && [ "$UNIVERSAL_RESULT" != skipped ]; then
             status=1
           fi
-          printf 'static-policy=%s\nbuild=%s\nunit-runtime-tests=%s\nprocess-integration-tests=%s\npackaging=%s\nmacos-universal-artifact=%s\n' \
-            "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT" "$UNIVERSAL_RESULT"
+          printf 'runtime_observable.unit-runtime-tests=%s\ndurable_reopen=not-separately-qualified\nprocess_level.process-integration-tests=%s\nmodel_property=not-separately-qualified\nstatic_contract.static-policy=%s\nsource_token=included-in-static-policy-non-behavioral\nbuild=%s\npackaging=%s\nmacos-universal-artifact=%s\n' \
+            "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$PACKAGING_RESULT" "$UNIVERSAL_RESULT"
           exit "$status"

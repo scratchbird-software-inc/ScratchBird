@@ -21,6 +21,19 @@ from typing import Any
 
 # PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY
 
+EVIDENCE_CLASSIFICATION = "evidence_inventory"
+PROTECTED_REGRESSION = (
+    "bounded soak coverage declarations lose required workload, budget, "
+    "iteration, or diagnostic-artifact entries"
+)
+CLAIM_EXCLUSIONS = (
+    "behavioral_test_pass",
+    "crash_proof",
+    "fuzz_execution",
+    "sanitizer_qualification",
+    "durability_proof",
+)
+
 SOAK_ROWS: tuple[dict[str, Any], ...] = (
     {
         "row_id": "memory_pressure",
@@ -228,6 +241,9 @@ def build_evidence(project_root: Path) -> dict[str, Any]:
         "gate": "PCR-GATE-116",
         "marker": "PUBLIC_RELEASE_SOAK_COVERAGE_INVENTORY",
         "artifact_class": "coverage_inventory",
+        "evidence_classification": EVIDENCE_CLASSIFICATION,
+        "protected_regression": PROTECTED_REGRESSION,
+        "claim_exclusions": list(CLAIM_EXCLUSIONS),
         "execution": {
             "sustained_workload_executed": False,
             "referenced_gates_invoked": False,
@@ -260,7 +276,7 @@ def main() -> int:
                       encoding="utf-8")
     print(
         "public_release_soak_coverage_inventory=passed "
-        f"rows={evidence['row_count']} "
+        f"class={EVIDENCE_CLASSIFICATION} rows={evidence['row_count']} "
         f"referenced_budget={evidence['total_referenced_time_budget_seconds']}s "
         f"output={output.name}"
     )

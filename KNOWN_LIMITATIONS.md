@@ -9,6 +9,11 @@ promotion evidence, and current summary are documented in
 `*_runtime.cpp` file may only implement a wire codec or descriptor carrier; its
 filename is not evidence that the named operation executes or persists state.
 
+Source-token and coverage-inventory checks are static policy signals, not
+runtime evidence. Their classifications, claim exclusions, and the required
+strongest-to-weakest reporting order are documented in
+`project/docs/testing/EVIDENCE_REPORTING.md`.
+
 ## Public Release Scope
 
 - The public repository is focused on the single-node open-core engine and public test/review surface.

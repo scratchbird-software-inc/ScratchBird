@@ -196,7 +196,6 @@ sb_add_engine_listener_enterprise_gate(
 )
 set(_engine_listener_soak_certification_depends
   public_release_soak_coverage_inventory
-  public_release_soak_coverage_inventory_gate
   memory_sanitizer_soak_concurrency_gate
   agent_enterprise_soak_performance_gate
   ceic_093_reliability_security_suite_gate
@@ -952,7 +951,6 @@ sb_set_engine_listener_registered_dependencies(
 sb_set_engine_listener_registered_dependencies(
   engine_listener_soak_certification_gate
   public_release_soak_coverage_inventory
-  public_release_soak_coverage_inventory_gate
   memory_sanitizer_soak_concurrency_gate
   dpc_soak_leak_resource_stability_gate
   agent_enterprise_soak_performance_gate
