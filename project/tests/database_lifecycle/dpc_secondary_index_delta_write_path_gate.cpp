@@ -11,7 +11,9 @@
 #include "dml/insert_api.hpp"
 #include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "local_transaction_store.hpp"
 #include "secondary_index_delta_ledger.hpp"
+#include "transaction/local_commit_publication.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -247,6 +249,33 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                           context,
                           Index(fixture, context, fixture.unique_index_uuid, "id", true)),
                       "DPC-022 unique index metadata append failed");
+  const auto ready = api::RunLocalCommitPageBarrier(context);
+  Require(ready.ok && !ready.manifest_sha256.empty(),
+          "DPC-022 local commit page barrier did not publish durable evidence");
+  const auto active_inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.database_path.string());
+  Require(active_inventory.ok(), "DPC-022 active inventory reload failed");
+  const auto retryable = api::ClassifyLocalCommitPublicationForRecovery(
+      context, active_inventory.inventory);
+  Require(retryable.ok &&
+              retryable.recovery_class ==
+                  api::LocalCommitPublicationRecoveryClass::retryable_unpublished,
+          "DPC-022 pre-inventory publication was not classified as retryable and invisible");
+
+  api::EnginePrepareTransactionRequest prepare;
+  prepare.context = context;
+  RequireOk(api::EnginePrepareTransaction(prepare),
+            "DPC-022 metadata transaction prepare failed");
+  const auto prepared_inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.database_path.string());
+  Require(prepared_inventory.ok(), "DPC-022 prepared inventory reload failed");
+  const auto prepared_publication =
+      api::ClassifyLocalCommitPublicationForRecovery(
+          context, prepared_inventory.inventory);
+  Require(prepared_publication.ok &&
+              prepared_publication.recovery_class ==
+                  api::LocalCommitPublicationRecoveryClass::in_doubt,
+          "DPC-022 prepared metadata transaction did not retain its durable publication set");
   Commit(context);
   return fixture;
 }
@@ -437,9 +466,23 @@ void ValidateDeferredInsertAndCommitState() {
   records = RecordsForTx(ledger, context.local_transaction_id);
   Require(records.size() == 1, "DPC-022 committed deferred insert lost its delta");
   Require(records.front().commit_state ==
-              idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge &&
-              records.front().delta.committed,
-          "DPC-022 commit did not mark deferred insert delta committed_premerge");
+              idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
+              !records.front().delta.committed,
+          "DPC-022 commit performed a correctness-critical post-inventory delta rewrite");
+
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.database_path.string());
+  Require(inventory.ok(), "DPC-022 committed inventory reload failed");
+  const auto publication = api::ClassifyLocalCommitPublicationForRecovery(
+      context, inventory.inventory);
+  Require(publication.ok &&
+              publication.recovery_class ==
+                  api::LocalCommitPublicationRecoveryClass::committed_by_inventory,
+          "DPC-022 transaction publication manifest was not committed by inventory authority");
+  Require(!publication.artifacts.empty(),
+          "DPC-022 transaction publication manifest omitted durability domains");
+  Require(!publication.mutations.empty(),
+          "DPC-022 transaction publication manifest omitted final-net mutations");
 }
 
 void ValidateDeferredUpdateAndRollbackCleanup() {

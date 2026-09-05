@@ -14,6 +14,7 @@
 #include "dml/constraint_enforcement.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
+#include "transaction/local_commit_publication.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "transaction_inventory.hpp"
@@ -1821,10 +1822,12 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     return trace_and_return(std::move(result));
   }
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
+  const bool prepared_commit =
+      committing_entry->state == TransactionState::prepared;
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
   CommitDurabilityBatchDecision durability_batch;
-  if (!read_only_commit) {
+  if (!read_only_commit && !prepared_commit) {
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
     mark_phase("validate_deferred_constraints");
     if (deferred_constraints.error) {
@@ -1885,10 +1888,41 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     result.evidence.push_back({"engine_finality_known", "true"});
     AppendIparFaultEvidence(&result.evidence,
                             "commit_fence",
-                            "rollback_required_before_inventory_commit");
+                            "transaction_remains_open_retry_or_explicit_rollback");
     return trace_and_return(std::move(result));
   }
   mark_phase("fault_point_check");
+  LocalCommitPublicationResult publication_barrier;
+  if (!read_only_commit) {
+    if (committing_entry->state == TransactionState::prepared) {
+      const auto classified = ClassifyLocalCommitPublicationForRecovery(
+          request.context, loaded.inventory);
+      if (classified.ok &&
+          classified.recovery_class ==
+              LocalCommitPublicationRecoveryClass::in_doubt) {
+        publication_barrier.ok = true;
+        publication_barrier.diagnostic = classified.diagnostic;
+        publication_barrier.manifest_sha256 = classified.manifest_sha256;
+        publication_barrier.publication_generation =
+            classified.publication_generation;
+        publication_barrier.mutations = classified.mutations;
+        publication_barrier.artifacts = classified.artifacts;
+      } else {
+        publication_barrier.diagnostic = classified.diagnostic;
+      }
+    } else {
+      publication_barrier = RunLocalCommitPageBarrier(request.context);
+    }
+    mark_phase("local_commit_page_barrier");
+    if (!publication_barrier.ok) {
+      auto result = MakeTxnError<EngineCommitTransactionResult>(
+          request.context, operation_id, publication_barrier.diagnostic);
+      ClassifyCommitRefusalBeforeInventoryMutation(&result, &*committing_entry);
+      result.evidence.push_back({"local_commit_page_barrier", "blocked"});
+      result.evidence.push_back({"transaction_remains_open", "true"});
+      return trace_and_return(std::move(result));
+    }
+  }
   const auto committed = CommitLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
   mark_phase("commit_local_transaction");
   if (!committed.ok()) {
@@ -1918,39 +1952,6 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   RevokePublishedSnapshotVectorsForTransaction(
       committed.entry.identity.transaction_uuid,
       committed.entry.identity.local_id);
-  // DPC_DEFERRED_INDEX_WRITE_PATH
-  const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
-      request.context,
-      request.context.local_transaction_id);
-  mark_phase("commit_secondary_index_deltas");
-  if (committed_deltas.error) {
-    auto result = MakeTxnError<EngineCommitTransactionResult>(
-        request.context,
-        operation_id,
-        MakeEngineApiDiagnostic(
-            "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE",
-            "transaction.commit.post_inventory_secondary_failure",
-            "mga_finality_state=committed_by_engine_inventory;secondary_diagnostic=" +
-                committed_deltas.code + ";secondary_detail=" + committed_deltas.detail,
-            true));
-    result.local_transaction_id = committed.entry.identity.local_id.value;
-    result.transaction_uuid.canonical = UuidToString(committed.entry.identity.transaction_uuid.value);
-    static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
-    static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
-    result.commit_finality_state = "committed_post_inventory_secondary_failure";
-    result.engine_finality_known = true;
-    result.post_inventory_secondary_failure = true;
-    result.evidence.push_back({"mga_finality_state", "committed_by_engine_inventory"});
-    result.evidence.push_back({"post_inventory_secondary_failure", "true"});
-    result.evidence.push_back({"parser_finality", "false"});
-    AppendIparTransactionBoundaryTelemetry(
-        &result.evidence,
-        "commit_post_inventory_secondary_failure",
-        1,
-        1,
-        DirtyPagesFencedForCommit(read_only_commit, durability_batch));
-    return trace_and_return(std::move(result));
-  }
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
   result.local_transaction_id = committed.entry.identity.local_id.value;
   result.transaction_uuid.canonical = UuidToString(committed.entry.identity.transaction_uuid.value);
@@ -1963,6 +1964,15 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   result.evidence.push_back({"mga_finality_state", "committed_by_engine_inventory"});
   result.evidence.push_back({"engine_finality_known", "true"});
   result.evidence.push_back({"post_inventory_secondary_failure", "false"});
+  result.evidence.push_back({"local_commit_page_barrier",
+                             read_only_commit ? "no_effect" : "complete"});
+  result.evidence.push_back({"local_commit_publication_manifest_sha256",
+                             publication_barrier.manifest_sha256});
+  result.evidence.push_back({"local_commit_publication_artifact_count",
+                             std::to_string(publication_barrier.artifacts.size())});
+  result.evidence.push_back({"local_commit_publication_mutation_count",
+                             std::to_string(publication_barrier.mutations.size())});
+  result.evidence.push_back({"transaction_inventory_finality_authority", "true"});
   result.evidence.push_back({"transaction_read_only", read_only_commit ? "true" : "false"});
   result.evidence.push_back({"temporary_on_commit_deleted_rows", std::to_string(temporary_deleted_rows)});
   result.evidence.push_back({"temporary_on_commit_reclaimed_large_values",
@@ -2170,12 +2180,31 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     result.evidence.push_back({"engine_finality_known", "true"});
     AppendIparFaultEvidence(&result.evidence,
                             "commit_fence",
-                            "rollback_required_before_inventory_commit");
+                            "transaction_remains_open_retry_or_explicit_rollback");
     trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
     WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
     return result;
   }
   mark_phase("fault_point_check");
+
+  LocalCommitPublicationResult publication_barrier;
+  if (request.statement_succeeded && !read_only_finalize) {
+    publication_barrier = RunLocalCommitPageBarrier(request.context);
+    mark_phase("local_commit_page_barrier");
+    if (!publication_barrier.ok) {
+      auto result = MakeTxnError<EngineAutocommitBoundaryResult>(
+          request.context, operation_id, publication_barrier.diagnostic);
+      result.commit_finality_state = "refused_before_inventory_commit";
+      result.engine_finality_known = true;
+      result.post_inventory_secondary_failure = false;
+      result.evidence.push_back({"mga_finality_state", "not_committed_by_engine_inventory"});
+      result.evidence.push_back({"local_commit_page_barrier", "blocked"});
+      result.evidence.push_back({"transaction_remains_open", "true"});
+      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
+      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
+      return result;
+    }
+  }
 
   LocalTransactionInventory finalized_inventory = loaded.inventory;
   TransactionInventoryEntry finalized_entry;
@@ -2340,6 +2369,17 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   result.evidence.push_back({"autocommit_boundary_inventory_io",
                              "single_load_single_persist"});
   result.evidence.push_back({"parser_finality", "false"});
+  result.evidence.push_back({"local_commit_page_barrier",
+                             !request.statement_succeeded || read_only_finalize
+                                 ? "no_effect"
+                                 : "complete"});
+  result.evidence.push_back({"local_commit_publication_manifest_sha256",
+                             publication_barrier.manifest_sha256});
+  result.evidence.push_back({"local_commit_publication_artifact_count",
+                             std::to_string(publication_barrier.artifacts.size())});
+  result.evidence.push_back({"local_commit_publication_mutation_count",
+                             std::to_string(publication_barrier.mutations.size())});
+  result.evidence.push_back({"transaction_inventory_finality_authority", "true"});
   AppendIparTransactionBoundaryTelemetry(
       &result.evidence,
       request.statement_succeeded ? "autocommit_commit_and_begin"
@@ -2370,26 +2410,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
   mark_phase("shape_autocommit_result");
 
-  if (request.statement_succeeded) {
-    const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
-        request.context,
-        request.context.local_transaction_id);
-    mark_phase("commit_secondary_index_deltas");
-    if (committed_deltas.error) {
-      result.ok = false;
-      result.diagnostics.push_back(MakeEngineApiDiagnostic(
-          "SBWP.COMMIT.POST_INVENTORY_SECONDARY_FAILURE",
-          "transaction.commit.post_inventory_secondary_failure",
-          "mga_finality_state=committed_by_engine_inventory;secondary_diagnostic=" +
-              committed_deltas.code + ";secondary_detail=" + committed_deltas.detail,
-          true));
-      result.commit_finality_state = "committed_post_inventory_secondary_failure";
-      result.post_inventory_secondary_failure = true;
-      result.evidence.push_back({"post_inventory_secondary_failure", "true"});
-    } else {
-      result.evidence.push_back({"post_inventory_secondary_failure", "false"});
-    }
-  } else if (!read_only_finalize) {
+  if (!request.statement_succeeded && !read_only_finalize) {
     const auto rolled_back_deltas = RollbackMgaSecondaryIndexDeltaLedgerTransaction(
         request.context,
         request.context.local_transaction_id);
@@ -2737,6 +2758,45 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
           request, operation_id, loaded.inventory, false)) {
     return *policy_error;
   }
+  const auto exact_identity =
+      FindExactTransactionIdentity(loaded.inventory, request.context);
+  if (!exact_identity.entry.has_value()) {
+    return MakeTxnError<EnginePrepareTransactionResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(
+            operation_id, exact_identity.refusal_reason));
+  }
+  const bool read_only_prepare =
+      exact_identity.entry->state == TransactionState::read_only_active;
+  LocalCommitPublicationResult publication_barrier;
+  if (!read_only_prepare) {
+    const auto deferred_constraints =
+        ValidateDeferredTransactionConstraints(request.context);
+    if (deferred_constraints.error) {
+      return MakeTxnError<EnginePrepareTransactionResult>(
+          request.context, operation_id, deferred_constraints);
+    }
+    std::uint64_t temporary_deleted_rows = 0;
+    std::uint64_t temporary_reclaimed_large_values = 0;
+    const auto temporary_cleanup = ApplyMgaTemporaryOnCommitActions(
+        request.context,
+        request.context.local_transaction_id,
+        &temporary_deleted_rows,
+        &temporary_reclaimed_large_values);
+    if (temporary_cleanup.error) {
+      return MakeTxnError<EnginePrepareTransactionResult>(
+          request.context, operation_id, temporary_cleanup);
+    }
+    publication_barrier = RunLocalCommitPageBarrier(request.context);
+    if (!publication_barrier.ok) {
+      auto result = MakeTxnError<EnginePrepareTransactionResult>(
+          request.context, operation_id, publication_barrier.diagnostic);
+      result.evidence.push_back({"local_commit_page_barrier", "blocked"});
+      result.evidence.push_back({"transaction_remains_open", "true"});
+      return result;
+    }
+  }
   LocalPreparePolicy policy;
   policy.require_evidence_before_prepared_success = true;
   const auto prepared = PrepareLocalTransactionDurable(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), policy);
@@ -2755,6 +2815,13 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.evidence.push_back({"transaction_state", "prepared"});
+  result.evidence.push_back({"local_commit_page_barrier",
+                             read_only_prepare ? "no_effect" : "complete"});
+  result.evidence.push_back({"local_commit_publication_manifest_sha256",
+                             publication_barrier.manifest_sha256});
+  result.evidence.push_back({"local_commit_publication_mutation_count",
+                             std::to_string(publication_barrier.mutations.size())});
+  result.evidence.push_back({"transaction_inventory_finality_authority", "true"});
   return result;
 }
 

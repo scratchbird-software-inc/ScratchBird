@@ -16801,6 +16801,24 @@ EngineApiDiagnostic CommitMgaSecondaryIndexDeltaLedgerTransaction(
   if (local_transaction_id == 0) {
     return OkDiagnostic();
   }
+  // Compatibility cleanup only.  This marker is derived from durable MGA
+  // inventory finality and can never lead it or participate in commit success.
+  const auto inventory = LoadLocalTransactionInventoryFromDatabase(
+      context.database_path);
+  if (!inventory.ok()) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.secondary_index_delta_ledger",
+        "transaction_inventory_unavailable_for_derived_promotion");
+  }
+  const auto transaction = LookupLocalTransaction(
+      inventory.inventory, MakeLocalTransactionId(local_transaction_id));
+  if (!transaction.ok() ||
+      (transaction.entry.state != TransactionState::committed &&
+       transaction.entry.state != TransactionState::archived)) {
+    return MakeInvalidRequestDiagnostic(
+        "mga.secondary_index_delta_ledger",
+        "committed_inventory_finality_required_for_derived_promotion");
+  }
   auto loaded = LoadSecondaryIndexDeltaLedgerFromPath(context);
   if (!loaded.ok) { return loaded.diagnostic; }
   bool changed = false;
@@ -17007,10 +17025,22 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
                        result.throttle_or_refusal_reason);
       return result;
     }
+    const auto transaction = state.transactions.find(
+        record.delta.local_transaction_id);
+    const bool inventory_committed =
+        transaction != state.transactions.end() &&
+        (transaction->second == "committed" || transaction->second == "archived");
+    const bool recoverably_committed =
+        (record.commit_state ==
+             idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge &&
+         record.delta.committed) ||
+        (record.commit_state ==
+             idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
+         inventory_committed);
     const bool eligible =
-        record.commit_state == idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge &&
-        record.delta.committed &&
-        record.delta.local_transaction_id <= request.authoritative_cleanup_horizon_local_transaction_id;
+        recoverably_committed &&
+        record.delta.local_transaction_id <=
+            request.authoritative_cleanup_horizon_local_transaction_id;
     if (!eligible) {
       ++result.retained_count;
       continue;
@@ -17022,7 +17052,9 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
       result.throttle_or_refusal_reason = "resource_governor_throttled";
       continue;
     }
-    staged_delta_ledger.deltas.push_back(record.delta);
+    auto staged_delta = record.delta;
+    staged_delta.committed = true;
+    staged_delta_ledger.deltas.push_back(std::move(staged_delta));
     processed_record_indexes.push_back(i);
   }
 
@@ -17118,6 +17150,7 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
   for (std::size_t index : processed_record_indexes) {
     loaded_ledger.ledger.records[index].commit_state =
         idx::SecondaryIndexDeltaLedgerCommitState::merged_cleaned;
+    loaded_ledger.ledger.records[index].delta.committed = true;
   }
   const auto written = WriteSecondaryIndexDeltaLedger(context, loaded_ledger.ledger);
   if (written.error) {
@@ -17296,15 +17329,26 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
                         "precommit delta has no durable MGA transaction inventory entry");
         }
         if (IsDpc025CommittedTerminal(lookup.entry.state)) {
-          staged.commit_state =
-              idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge;
-          staged.delta.committed = true;
-          ++result.promoted_count;
-          changed = true;
+          ++result.committed_premerge_count;
+          ++result.retained_count;
+          result.recovery_class =
+              "committed_premerge_requires_overlay_merge";
+          result.recovery_action = "apply_overlay_then_merge";
+          if (request.repair_enabled) {
+            staged.commit_state =
+                idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge;
+            staged.delta.committed = true;
+            ++result.promoted_count;
+            changed = true;
+          }
         } else if (IsDpc025RolledBackTerminal(lookup.entry.state)) {
-          keep_record = false;
-          ++result.removed_count;
-          changed = true;
+          if (request.repair_enabled) {
+            keep_record = false;
+            ++result.removed_count;
+            changed = true;
+          } else {
+            ++result.retained_count;
+          }
         } else {
           ++result.retained_count;
         }
@@ -17709,12 +17753,23 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
         idx::SecondaryIndexDeltaLedgerCommitState::merged_cleaned) {
       continue;
     }
+    auto visible_delta = record.delta;
     if (record.commit_state ==
-        idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
+            idx::SecondaryIndexDeltaLedgerCommitState::precommit_uncommitted &&
         record.delta.local_transaction_id != context.local_transaction_id) {
-      continue;
+      const auto transaction = state.transactions.find(
+          record.delta.local_transaction_id);
+      if (transaction == state.transactions.end() ||
+          (transaction->second != "committed" &&
+           transaction->second != "archived")) {
+        continue;
+      }
+      // The durable transaction inventory is finality authority.  The
+      // precommit marker is recoverable classification evidence and does not
+      // require a correctness-critical post-inventory rewrite.
+      visible_delta.committed = true;
     }
-    overlay_ledger.deltas.push_back(record.delta);
+    overlay_ledger.deltas.push_back(std::move(visible_delta));
     has_relevant_delta = true;
   }
 

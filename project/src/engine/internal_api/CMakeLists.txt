@@ -513,6 +513,7 @@ add_library(sb_engine_internal_api
   security/visibility_api.cpp
   storage/storage_management_api.cpp
   transaction/savepoint_api.cpp
+  transaction/local_commit_publication.cpp
   transaction/transaction_inspect_api.cpp
   transaction/transaction_api.cpp
   ../sblr/sblr_runtime.cpp

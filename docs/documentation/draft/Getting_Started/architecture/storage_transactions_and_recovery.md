@@ -66,6 +66,22 @@ Visibility rules affect newly inserted rows, updated rows, deleted rows, catalog
 
 ## Commit And Reopen
 
+Before a writable local transaction can be recorded as committed, SBcore runs
+one local commit publication barrier across the database page file and every
+present database-owned sidecar durability domain. The barrier validates
+recoverable secondary-index delta state, synchronizes the participating
+artifacts, and durably seals a transaction publication manifest. Only after
+that succeeds may SBcore persist the committed transaction-inventory entry and
+admit the changes to normal visibility.
+
+The publication manifest is classification evidence, not a write-ahead log and
+not transaction-finality authority. On reopen, the durable MGA transaction
+inventory classifies the entire sealed set as committed, rolled back,
+retryable, or in doubt. A barrier failure returns
+`SB_DIAG_MGA_PD_COMMIT_PAGE_BARRIER_BLOCKED` and leaves the transaction open;
+the caller may retry commit or explicitly roll back. Parser state and derived
+index-maintenance flags cannot declare a transaction committed.
+
 A practical first durability check is a commit-and-reopen test:
 
 1. Create or open a disposable database.

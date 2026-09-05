@@ -11,6 +11,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "local_transaction_store.hpp"
 #include "secondary_index_delta_ledger.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -457,6 +458,17 @@ void TestCommitFenceFault() {
   RequireFault(result, "SB-IPAR-P7-06-COMMIT-FENCE-INJECTED", "commit_fence");
   Require(result.commit_finality_state == "refused_before_inventory_commit",
           "IPAR-P7-06 commit fence finality state changed");
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(
+      fixture.database_path.string());
+  Require(inventory.ok(), "IPAR-P7-06 commit fence inventory reload failed");
+  const auto transaction = scratchbird::transaction::mga::LookupLocalTransaction(
+      inventory.inventory,
+      scratchbird::transaction::mga::MakeLocalTransactionId(
+          context.local_transaction_id));
+  Require(transaction.ok() &&
+              transaction.entry.state ==
+                  scratchbird::transaction::mga::TransactionState::active,
+          "IPAR-P7-06 failed prepublication barrier did not leave transaction open");
   Rollback(context);
   VerifyRollbackLeavesNoVisibleRows(fixture);
 }
