@@ -1,0 +1,54 @@
+# ScratchBird critical-path owners.
+#
+# The executable policy is .github/critical-path-reviewers.json. Keep these
+# entries synchronized with it. Before public beta, Dalton is the sole owner
+# and the independent-review gate is advisory. Herb0t and moloquin are planned
+# reviewers but are intentionally not code owners until they receive write
+# access and the public-beta review policy is explicitly activated.
+
+# Storage
+/project/src/storage/ @DaltonCalford
+/project/src/engine/internal_api/storage/ @DaltonCalford
+/project/tests/conformance/storage/ @DaltonCalford
+
+# Transactions and MGA
+/project/src/transaction/ @DaltonCalford
+/project/src/engine/internal_api/transaction/ @DaltonCalford
+/project/tests/conformance/transactions/ @DaltonCalford
+/project/tests/conformance/mga/ @DaltonCalford
+/project/tests/mga_transaction_regression/ @DaltonCalford
+
+# Engine internal APIs
+/project/src/engine/internal_api/ @DaltonCalford
+/project/include/scratchbird/engine/ @DaltonCalford
+/project/tests/engine_public_abi/ @DaltonCalford
+
+# Security and authentication
+/project/src/engine/internal_api/security/ @DaltonCalford
+/project/resources/policy-packs/ @DaltonCalford
+/project/tests/security/ @DaltonCalford
+/project/tests/conformance/security/ @DaltonCalford
+/project/tests/integration/authentication_lab/ @DaltonCalford
+
+# Optimizer
+/project/src/core/optimizer/ @DaltonCalford
+/project/src/engine/optimizer/ @DaltonCalford
+/project/tests/optimizer/ @DaltonCalford
+/project/tests/query_optimizer_window/ @DaltonCalford
+
+# Parser and binder
+/project/src/parser_dummy/ @DaltonCalford
+/project/src/parsers/ @DaltonCalford
+/project/src/wire/parser_server_ipc/ @DaltonCalford
+/project/tests/parser_family_isolation/ @DaltonCalford
+/project/tests/sbsql_parser_worker/ @DaltonCalford
+/project/tools/sb_parser_gen/ @DaltonCalford
+
+# CI and release policy. These entries intentionally come last because the
+# CODEOWNERS file itself is protected by this ownership rule.
+/.github/ @DaltonCalford
+/project/CMakePresets.json @DaltonCalford
+/project/cmake/ @DaltonCalford
+/project/tools/ci/ @DaltonCalford
+/project/tools/installers/ @DaltonCalford
+/project/tools/release/ @DaltonCalford

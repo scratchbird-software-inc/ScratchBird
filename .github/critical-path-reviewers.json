@@ -1,0 +1,99 @@
+{
+  "schema": "scratchbird.critical_path_review_policy.v1",
+  "enforcement_mode": "advisory",
+  "release_phase": "pre_public_beta",
+  "current_authority": ["DaltonCalford"],
+  "planned_independent_reviewers": ["Herb0t", "moloquin"],
+  "status_context": "critical-path/independent-review",
+  "minimum_approvals_per_domain": 1,
+  "domains": [
+    {
+      "name": "storage",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/storage/**",
+        "project/src/engine/internal_api/storage/**",
+        "project/tests/conformance/storage/**",
+        "project/tools/sb_storage_foundation_probe/**",
+        "project/tools/sb_datatype_storage_backup_replication_probe/**"
+      ]
+    },
+    {
+      "name": "transactions",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/transaction/**",
+        "project/src/engine/internal_api/transaction/**",
+        "project/src/engine/internal_api/*transaction*",
+        "project/tests/conformance/transactions/**",
+        "project/tests/conformance/mga/**",
+        "project/tests/mga_transaction_regression/**",
+        "project/tools/sb_*transaction*"
+      ]
+    },
+    {
+      "name": "engine-internal-api",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/engine/internal_api/**",
+        "project/include/scratchbird/engine/**",
+        "project/tests/engine_public_abi/**"
+      ]
+    },
+    {
+      "name": "security",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/**/*auth*",
+        "project/src/**/*credential*",
+        "project/src/**/*privilege*",
+        "project/src/**/*security*",
+        "project/resources/policy-packs/**",
+        "project/tests/security/**",
+        "project/tests/conformance/security/**",
+        "project/tests/integration/authentication_lab/**",
+        "project/tools/*auth*",
+        "project/tools/*security*"
+      ]
+    },
+    {
+      "name": "optimizer",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/core/optimizer/**",
+        "project/src/engine/optimizer/**",
+        "project/tests/optimizer/**",
+        "project/tests/query_optimizer_window/**",
+        "project/tools/sb_optimizer_*"
+      ]
+    },
+    {
+      "name": "parser-binder",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        "project/src/parser_dummy/**",
+        "project/src/parsers/**",
+        "project/src/wire/parser_server_ipc/**",
+        "project/tests/parser_family_isolation/**",
+        "project/tests/sbsql_parser_worker/**",
+        "project/tools/sb_parser_gen/**"
+      ]
+    },
+    {
+      "name": "ci-release",
+      "owners": ["DaltonCalford"],
+      "paths": [
+        ".github/CODEOWNERS",
+        ".github/critical-path-reviewers.json",
+        ".github/pull_request_template.md",
+        ".github/rulesets/**",
+        ".github/workflows/**",
+        "project/CMakePresets.json",
+        "project/cmake/**",
+        "project/tools/ci/**",
+        "project/tools/installers/**",
+        "project/tools/release/**"
+      ]
+    }
+  ]
+}

@@ -29,9 +29,49 @@ concurrency:
   group: macos-ci-${{ github.ref }}-${{ inputs.architecture || 'all' }}
   cancel-in-progress: true
 
+env:
+  SB_CI_RELEASE_LABELS: "^(public_release_correctness|engine_listener_enterprise)$"
+  SB_CI_PROCESS_LABELS: "^(integration|e2e|live_server|process_kill|database_lifecycle_server_route)$"
+  SB_MACOS_CTEST_PLATFORM_EXCLUDE: "^(linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd)$"
+
 jobs:
-  public-release-macos:
-    name: Public release macOS build and CTest (${{ matrix.arch }})
+  static-policy:
+    name: macOS repository and static policy
+    if: ${{ github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Repository and static release gates
+        run: |
+          mkdir -p build/ci-logs/macos-static
+          set -o pipefail
+          {
+            status=0
+            python3 project/tools/release/public_packaging_history_gate.py || status=1
+            python3 project/tools/release/github_actions_static_gate.py || status=1
+            python3 project/tools/release/public_private_reference_scan.py || status=1
+            python3 -m unittest discover -s project/tests/repository_policy -p 'test_*.py' || status=1
+            exit "$status"
+          } 2>&1 | tee build/ci-logs/macos-static/static-policy.log
+      - name: Stage macOS static-policy proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/macos-static \
+            --output-root build/failure-proofs/macos-static
+      - name: Upload macOS static-policy proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-macos-static-policy-proof
+          path: build/failure-proofs/macos-static
+          if-no-files-found: error
+          retention-days: 14
+
+  build:
+    name: macOS configure and compile (${{ matrix.arch }})
     if: ${{ github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
@@ -39,10 +79,6 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
       HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
-      SB_MACOS_CTEST_INCLUDE_LABEL: "public_release_correctness|engine_listener_enterprise"
-      SB_MACOS_CTEST_EXCLUDE_LABEL: "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
-      SB_INCLUDE_SYSTEM_PACKAGES: ${{ inputs.include_system_packages && 'true' || 'false' }}
-
     strategy:
       fail-fast: false
       matrix:
@@ -69,74 +105,23 @@ jobs:
       - name: Checkout
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         uses: actions/checkout@v4
-
-      - name: Install base build dependencies
+      - name: Install macOS release dependencies
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: |
-          time brew install \
-            cmake \
-            ninja \
-            pkg-config
-
-      - name: Install release library dependencies
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: |
-          time brew install \
-            openssl@3 \
-            boost \
-            icu4c \
-            libxml2 \
-            lz4 \
-            zstd
-
-      - name: Install LLVM dependency
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: time brew install llvm
-
-      - name: Install spatial driver and test dependencies
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: |
-          time brew install \
-            geos \
-            proj \
-            googletest \
-            unixodbc
-
+        run: bash project/tools/ci/install_macos_release_dependencies.sh
       - name: Expose Homebrew dependency roots
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: |
-          {
-            echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)"
-            echo "ICU_ROOT=$(brew --prefix icu4c)"
-            echo "BOOST_ROOT=$(brew --prefix boost)"
-            echo "LIBXML2_ROOT=$(brew --prefix libxml2)"
-            echo "LLVM_DIR=$(brew --prefix llvm)/lib/cmake/llvm"
-            echo "SB_LLVM_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib"
-            echo "SB_LLVM_RUNTIME_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib"
-            echo "ODBC_ROOT=$(brew --prefix unixodbc)"
-            echo "SB_LLVM_MIN_MAJOR=22"
-            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3);$(brew --prefix icu4c);$(brew --prefix libxml2);$(brew --prefix boost);$(brew --prefix llvm);$(brew --prefix unixodbc)"
-            echo "PATH=$(brew --prefix llvm)/bin:$PATH"
-            echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix unixodbc)/lib/pkgconfig:$PKG_CONFIG_PATH"
-          } >> "$GITHUB_ENV"
-
-      - name: Static release gates
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: |
-          python3 project/tools/release/public_packaging_history_gate.py
-          python3 project/tools/release/github_actions_static_gate.py
-          python3 project/tools/release/public_private_reference_scan.py
-
+        run: bash project/tools/ci/export_macos_release_environment.sh
       - name: Verify external Homebrew LLVM runtime
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         run: |
           test -f "$SB_LLVM_RUNTIME_LIBRARY"
           python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$SB_LLVM_RUNTIME_LIBRARY"
-
       - name: Configure
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
         run: |
+          mkdir -p ../build/ci-logs/macos-${{ matrix.arch }}-build
+          set -o pipefail
           cmake --preset public-release-macos \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
@@ -146,160 +131,262 @@ jobs:
             -DSB_LLVM_LIBRARY="$SB_LLVM_LIBRARY" \
             -DSB_LLVM_RUNTIME_LIBRARY="$SB_LLVM_RUNTIME_LIBRARY" \
             -DSB_LLVM_MIN_MAJOR="$SB_LLVM_MIN_MAJOR" \
-            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
-
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
+            2>&1 | tee ../build/ci-logs/macos-${{ matrix.arch }}-build/configure.log
       - name: Build
-        id: build
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
-        run: cmake --build --preset public-release-macos
-
-      - name: Prepare CTest chunks
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        working-directory: project
-        timeout-minutes: 120
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
-            --dry-run
-
-      - name: CTest chunk 1 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
+          set -o pipefail
+          cmake --build --preset public-release-macos \
+            2>&1 | tee ../build/ci-logs/macos-${{ matrix.arch }}-build/build.log
+      - name: Stage bounded configured macOS build handoff
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 1 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 2 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
+          python3 project/tools/ci/stage_ci_build_handoff.py \
+            --test-dir build/public-release-macos \
+            --platform macos \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --exclude-label "$SB_MACOS_CTEST_PLATFORM_EXCLUDE" \
+            --output-root "build/ci-handoff/macos-${{ matrix.arch }}"
+      - name: Archive configured macOS build handoff
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 2 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 3 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
+          mkdir -p build/ci-artifacts
+          set -o pipefail
+          tar -cf - -C "build/ci-handoff/macos-${{ matrix.arch }}" . | \
+            zstd -T0 -3 --long=27 \
+              -o "build/ci-artifacts/public-release-macos-${{ matrix.arch }}.tar.zst"
+      - name: Upload configured macOS build
+        uses: actions/upload-artifact@v4
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-configured-build
+          path: build/ci-artifacts/public-release-macos-${{ matrix.arch }}.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Stage macOS compile proof
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 3 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/macos-${{ matrix.arch }}-build \
+            --source build/public-release-macos/Testing \
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-build
+      - name: Upload macOS compile proof
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-compile-proof
+          path: build/failure-proofs/macos-${{ matrix.arch }}-build
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: CTest chunk 4 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
+  unit-runtime-tests:
+    name: macOS unit and runtime tests (${{ matrix.arch }})
+    needs: build
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    steps:
+      - name: Architecture filter
+        id: arch_filter
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 4 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 5 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
+          requested="${{ inputs.architecture || 'all' }}"
+          if [ "$requested" = "all" ] || [ "$requested" = "${{ matrix.arch }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/checkout@v4
+      - name: Download configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-configured-build
+          path: build/ci-artifacts
+      - name: Install macOS release dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/install_macos_release_dependencies.sh
+      - name: Expose Homebrew dependency roots
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/export_macos_release_environment.sh
+      - name: Restore configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
         run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 5 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 6 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
-        run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 6 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 7 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
-        run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 7 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: CTest chunk 8 of 8
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
-        continue-on-error: true
-        working-directory: project
-        timeout-minutes: 30
-        run: |
-          python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --chunk-index 8 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}
-
-      - name: Finalize CTest chunks
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' && steps.build.outcome == 'success' }}
+          set -o pipefail
+          zstd -dc "build/ci-artifacts/public-release-macos-${{ matrix.arch }}.tar.zst" | tar -xf -
+      - name: Run macOS unit and runtime partition
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
         working-directory: project
         run: |
           python3 tools/ci/run_ctest_chunks.py \
-            --preset public-release-macos \
-            --chunk-count 8 \
-            --timeout 900 \
-            --include-label "$SB_MACOS_CTEST_INCLUDE_LABEL" \
-            --exclude-label "$SB_MACOS_CTEST_EXCLUDE_LABEL" \
-            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }} \
-            --finalize
+            --preset public-release-macos --chunk-count 8 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --exclude-label "$SB_CI_PROCESS_LABELS" \
+            --exclude-label "$SB_MACOS_CTEST_PLATFORM_EXCLUDE" \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}-unit-runtime
+      - name: Stage macOS unit-runtime proof
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/macos-${{ matrix.arch }}-unit-runtime \
+            --source build/public-release-macos/Testing \
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-unit-runtime
+      - name: Upload macOS unit-runtime proof
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-unit-runtime-proof
+          path: build/failure-proofs/macos-${{ matrix.arch }}-unit-runtime
+          if-no-files-found: error
+          retention-days: 14
+
+  process-integration-tests:
+    name: macOS process and integration tests (${{ matrix.arch }})
+    needs: build
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    steps:
+      - name: Architecture filter
+        id: arch_filter
+        run: |
+          requested="${{ inputs.architecture || 'all' }}"
+          if [ "$requested" = "all" ] || [ "$requested" = "${{ matrix.arch }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/checkout@v4
+      - name: Download configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-configured-build
+          path: build/ci-artifacts
+      - name: Install macOS release dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/install_macos_release_dependencies.sh
+      - name: Expose Homebrew dependency roots
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/export_macos_release_environment.sh
+      - name: Restore configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          set -o pipefail
+          zstd -dc "build/ci-artifacts/public-release-macos-${{ matrix.arch }}.tar.zst" | tar -xf -
+      - name: Run macOS process and integration partition
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        working-directory: project
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-macos --chunk-count 4 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --require-label "$SB_CI_PROCESS_LABELS" \
+            --exclude-label "$SB_MACOS_CTEST_PLATFORM_EXCLUDE" \
+            --output-root ../build/ctest-chunks/macos-${{ matrix.arch }}-process-integration
+      - name: Stage macOS process-integration proof
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/macos-${{ matrix.arch }}-process-integration \
+            --source build/public-release-macos/Testing \
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-process-integration
+      - name: Upload macOS process-integration proof
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-process-integration-proof
+          path: build/failure-proofs/macos-${{ matrix.arch }}-process-integration
+          if-no-files-found: error
+          retention-days: 14
+
+  packaging:
+    name: macOS package and installer verification (${{ matrix.arch }})
+    needs: build
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+      SB_INCLUDE_SYSTEM_PACKAGES: ${{ inputs.include_system_packages && 'true' || 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+            cmake_arch: x86_64
+          - arch: arm64
+            runner: macos-15
+            cmake_arch: arm64
+    steps:
+      - name: Architecture filter
+        id: arch_filter
+        run: |
+          requested="${{ inputs.architecture || 'all' }}"
+          if [ "$requested" = "all" ] || [ "$requested" = "${{ matrix.arch }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping ${{ matrix.arch }} because requested architecture is $requested."
+          fi
+      - name: Checkout
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/checkout@v4
+      - name: Download configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-${{ matrix.arch }}-configured-build
+          path: build/ci-artifacts
+      - name: Install macOS release dependencies
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/install_macos_release_dependencies.sh
+      - name: Expose Homebrew dependency roots
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: bash project/tools/ci/export_macos_release_environment.sh
+      - name: Restore configured macOS build
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          set -o pipefail
+          zstd -dc "build/ci-artifacts/public-release-macos-${{ matrix.arch }}.tar.zst" | tar -xf -
+      - name: Verify external Homebrew LLVM runtime
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          test -f "$SB_LLVM_RUNTIME_LIBRARY"
+          python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$SB_LLVM_RUNTIME_LIBRARY"
 
       - name: Verify staged public bundle
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
@@ -609,24 +696,23 @@ jobs:
             echo "launchd_default_state=disabled_not_loaded"
           } > "$proof_root/macos-system-identity.txt"
 
-      - name: Stage macOS textual build proof
+      - name: Stage macOS packaging proof
         if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         run: |
           log_input="build/macos-log-input/${{ matrix.arch }}"
           mkdir -p "$log_input"
           log show --last 5m --style compact > "$log_input/system-log-last-5m.txt" || true
           python3 project/tools/release/stage_textual_failure_proof.py \
-            --source build/public-release-macos/Testing \
-            --source build/ctest-chunks/macos-${{ matrix.arch }} \
+            --source build/install-smoke \
             --source "$log_input" \
-            --output-root build/failure-proofs/macos-${{ matrix.arch }}-build
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-packaging
 
-      - name: Upload macOS build proof
+      - name: Upload macOS packaging proof
         uses: actions/upload-artifact@v4
         if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         with:
-          name: scratchbird-macos-${{ matrix.arch }}-build-proof
-          path: build/failure-proofs/macos-${{ matrix.arch }}-build
+          name: scratchbird-macos-${{ matrix.arch }}-packaging-proof
+          path: build/failure-proofs/macos-${{ matrix.arch }}-packaging
           if-no-files-found: warn
           retention-days: 14
 
@@ -666,8 +752,8 @@ jobs:
 
   macos-universal-artifact:
     name: macOS universal QA artifact
-    needs: public-release-macos
-    if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.architecture == 'all') }}
+    needs: packaging
+    if: ${{ always() && needs.packaging.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.architecture == 'all') }}
     runs-on: macos-15
     timeout-minutes: 60
 
@@ -730,6 +816,22 @@ jobs:
           archive="$(ls build/public-installers/macos-universal/scratchbird-macos-universal-*.tar.gz | head -n 1)"
           project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-universal-tar
 
+      - name: Stage universal macOS packaging proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/install-smoke/macos-universal-tar \
+            --output-root build/failure-proofs/macos-universal-packaging
+
+      - name: Upload universal macOS packaging proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-macos-universal-packaging-proof
+          path: build/failure-proofs/macos-universal-packaging
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload universal macOS QA artifact
         uses: actions/upload-artifact@v4
         if: success()
@@ -738,3 +840,55 @@ jobs:
           path: build/public-installers/macos-universal
           if-no-files-found: error
           retention-days: 14
+
+  public-release-macos:
+    name: Public release macOS build and CTest (${{ matrix.arch }})
+    needs:
+      - static-policy
+      - build
+      - unit-runtime-tests
+      - process-integration-tests
+      - packaging
+      - macos-universal-artifact
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_MACOS_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x86_64
+          - arm64
+    steps:
+      - name: Architecture filter
+        id: arch_filter
+        run: |
+          requested="${{ inputs.architecture || 'all' }}"
+          if [ "$requested" = all ] || [ "$requested" = "${{ matrix.arch }}" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Fail-closed macOS release decision
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        env:
+          STATIC_POLICY_RESULT: ${{ needs.static-policy.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          UNIT_RUNTIME_RESULT: ${{ needs.unit-runtime-tests.result }}
+          PROCESS_INTEGRATION_RESULT: ${{ needs.process-integration-tests.result }}
+          PACKAGING_RESULT: ${{ needs.packaging.result }}
+          UNIVERSAL_RESULT: ${{ needs.macos-universal-artifact.result }}
+          UNIVERSAL_REQUIRED: ${{ github.event_name != 'workflow_dispatch' || inputs.architecture == 'all' }}
+        run: |
+          status=0
+          for result in "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT"; do
+            if [ "$result" != success ]; then status=1; fi
+          done
+          if [ "$UNIVERSAL_REQUIRED" = true ]; then
+            if [ "$UNIVERSAL_RESULT" != success ]; then status=1; fi
+          elif [ "$UNIVERSAL_RESULT" != success ] && [ "$UNIVERSAL_RESULT" != skipped ]; then
+            status=1
+          fi
+          printf 'static-policy=%s\nbuild=%s\nunit-runtime-tests=%s\nprocess-integration-tests=%s\npackaging=%s\nmacos-universal-artifact=%s\n' \
+            "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT" "$UNIVERSAL_RESULT"
+          exit "$status"

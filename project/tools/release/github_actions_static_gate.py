@@ -12,23 +12,35 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import re
 import sys
 
 
 REQUIRED_WORKFLOWS = {
+    "critical-path-review.yml": (
+        "pull_request_target:",
+        "pull_request_review:",
+        "statuses: write",
+        "github.event.repository.default_branch",
+        "persist-credentials: false",
+        "critical_path_review_gate.py",
+        "--publish-status",
+    ),
     "ci-linux.yml": (
         "workflow_dispatch:",
         "cmake --preset public-release-linux",
-        "ctest --preset public-release-linux",
+        "run_ctest_chunks.py",
+        "--preset public-release-linux",
         "verify_public_release_bundle.py",
         "public_packaging_history_gate.py",
     ),
     "ci-windows.yml": (
         "workflow_dispatch:",
         "cmake --preset public-release-windows",
-        "ctest --preset public-release-windows",
+        "run_ctest_chunks.py",
+        "--preset public-release-windows",
         "verify_public_release_bundle.py",
         "public_packaging_history_gate.py",
     ),
@@ -244,7 +256,9 @@ def check_failure_uploads_are_textual(text: str, rel: str) -> None:
     # associated a staging step's raw build path with the following textual
     # proof upload.  Each candidate here is exactly one YAML step instead.
     for candidate in re.finditer(
-        r"(?ms)^      - name: [^\n]+\n(?:(?!^      - name:).)*", text
+        r"(?ms)^      - name: [^\n]+\n"
+        r"(?:(?!^      - name:|^  [A-Za-z0-9_-]+:\s*$).)*",
+        text,
     ):
         step = candidate.group(0)
         if "uses: actions/upload-artifact@v4" not in step:
@@ -331,6 +345,271 @@ def workflow_job_block(text: str, job_name: str, rel: str) -> str:
     return match.group(0)
 
 
+def check_ci_support_scripts(repo_root: Path) -> None:
+    scripts = {
+        "install_linux_release_dependencies.sh": (
+            "ninja-build",
+            "clang-tidy-18",
+            "cppcheck",
+            "g++-mingw-w64-x86-64",
+            "/tmp/llvm.sh 23",
+            "libllvm23",
+            "zstd",
+        ),
+        "install_macos_release_dependencies.sh": (
+            "brew install",
+            "boost",
+            "llvm",
+            "googletest",
+            "unixodbc",
+        ),
+        "export_macos_release_environment.sh": (
+            "BOOST_ROOT=$(brew --prefix boost)",
+            "SB_LLVM_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib",
+            "SB_LLVM_RUNTIME_LIBRARY=$(brew --prefix llvm)/lib/libLLVM.dylib",
+            "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3)",
+        ),
+    }
+    script_root = repo_root / "project" / "tools" / "ci"
+    for name, tokens in scripts.items():
+        path = script_root / name
+        if not path.is_file():
+            fail(f"ci_support_script_missing:{name}")
+        source = path.read_text(encoding="utf-8")
+        for token in tokens:
+            require_token(source, token, name)
+
+    chunk_runner = script_root / "run_ctest_chunks.py"
+    require_token(
+        chunk_runner.read_text(encoding="utf-8"),
+        '"--require-label"',
+        chunk_runner.name,
+    )
+    handoff = script_root / "stage_ci_build_handoff.py"
+    if not handoff.is_file():
+        fail(f"ci_support_script_missing:{handoff.name}")
+    handoff_source = handoff.read_text(encoding="utf-8")
+    for token in (
+        "scratchbird.ci_configured_build_handoff.v1",
+        "CTestTestfile.cmake",
+        "NATIVE_EXECUTABLES",
+        '"--include-label"',
+        '"src", "libraries"',
+    ):
+        require_token(handoff_source, token, handoff.name)
+
+
+def check_critical_path_review_policy(repo_root: Path) -> None:
+    """Keep critical ownership, trusted execution, and merge policy intact."""
+
+    github_root = repo_root / ".github"
+    policy_path = github_root / "critical-path-reviewers.json"
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"critical_review_policy_invalid:{exc}")
+    if policy.get("schema") != "scratchbird.critical_path_review_policy.v1":
+        fail("critical_review_policy_schema_invalid")
+    if policy.get("enforcement_mode") != "advisory":
+        fail("pre_beta_critical_review_policy_not_advisory")
+    if policy.get("release_phase") != "pre_public_beta":
+        fail("critical_review_release_phase_invalid")
+    if policy.get("current_authority") != ["DaltonCalford"]:
+        fail("pre_beta_current_authority_invalid")
+    if set(policy.get("planned_independent_reviewers", [])) != {
+        "Herb0t",
+        "moloquin",
+    }:
+        fail("planned_independent_reviewer_inventory_invalid")
+    if policy.get("minimum_approvals_per_domain") != 1:
+        fail("critical_review_minimum_approval_invalid")
+    if policy.get("status_context") != "critical-path/independent-review":
+        fail("critical_review_status_context_invalid")
+    expected_domains = {
+        "storage",
+        "transactions",
+        "engine-internal-api",
+        "security",
+        "optimizer",
+        "parser-binder",
+        "ci-release",
+    }
+    domains = policy.get("domains")
+    if not isinstance(domains, list):
+        fail("critical_review_domains_invalid")
+    actual_domains = {
+        domain.get("name") for domain in domains if isinstance(domain, dict)
+    }
+    if actual_domains != expected_domains:
+        fail("critical_review_domain_inventory_invalid")
+    for domain in domains:
+        if not domain.get("owners") or not domain.get("paths"):
+            fail(f"critical_review_domain_incomplete:{domain.get('name')}")
+        if domain.get("owners") != ["DaltonCalford"]:
+            fail(f"pre_beta_critical_review_owner_invalid:{domain.get('name')}")
+
+    required_files = {
+        github_root / "CODEOWNERS": (
+            "@DaltonCalford",
+            "/project/src/storage/",
+            "/project/src/transaction/",
+            "/project/src/engine/internal_api/",
+            "/project/src/core/optimizer/",
+            "/project/src/parsers/",
+            "/.github/",
+        ),
+        github_root / "pull_request_template.md": (
+            "## Invariants manually reviewed",
+            "## Runtime tests executed",
+            "## Remaining uncertainty",
+            "Invariants reviewed:",
+            "Runtime evidence reviewed:",
+        ),
+        github_root / "rulesets" / "main-critical-path.json": (
+            '"enforcement": "disabled"',
+            '"dismiss_stale_reviews_on_push": true',
+            '"require_code_owner_review": true',
+            '"require_last_push_approval": true',
+            '"required_approving_review_count": 1',
+            '"critical-path/independent-review"',
+            '"Public release Linux build and CTest"',
+            '"Public release Windows build and CTest"',
+            '"Public release macOS build and CTest (x86_64)"',
+            '"Public release macOS build and CTest (arm64)"',
+            '"integration_id": 15368',
+        ),
+        repo_root / "project" / "tools" / "ci" / "critical_path_review_gate.py": (
+            "pull_request_target",
+            "latest_decisive_reviews",
+            "login_key == author",
+            'review.get("commit_id")',
+            "validate_review_body",
+            "apply_enforcement_mode",
+            "publish_status",
+        ),
+        repo_root / "project" / "tools" / "ci" / "configure_critical_review_ruleset.py": (
+            "configured owner",
+            "SB_LINUX_CI_ENABLED",
+            "SB_WINDOWS_CI_ENABLED",
+            "SB_MACOS_CI_ENABLED",
+            'parser.add_argument("--apply"',
+        ),
+    }
+    for path, tokens in required_files.items():
+        if not path.is_file():
+            fail(f"critical_review_file_missing:{path.relative_to(repo_root)}")
+        source = path.read_text(encoding="utf-8")
+        for token in tokens:
+            require_token(source, token, str(path.relative_to(repo_root)))
+
+    codeowners_text = (github_root / "CODEOWNERS").read_text(encoding="utf-8")
+    if re.search(r"(?m)^[^#\n].*@(Herb0t|moloquin)\b", codeowners_text):
+        fail("pre_beta_future_reviewer_in_active_codeowners")
+
+
+def check_critical_review_workflow(text: str, rel: str) -> None:
+    """Prevent untrusted PR code from executing with status-write authority."""
+
+    if len(re.findall(r"uses:\s+actions/checkout@", text)) != 1:
+        fail(f"critical_review_checkout_count_invalid:{rel}")
+    for forbidden in (
+        "github.event.pull_request.head",
+        "github.head_ref",
+        "refs/pull/",
+    ):
+        if forbidden in text:
+            fail(f"critical_review_untrusted_ref_forbidden:{rel}:{forbidden}")
+    if re.search(r"(?m)^  pull_request:\s*$", text):
+        fail(f"critical_review_untrusted_event_forbidden:{rel}")
+    if re.search(r"(?m)^\s+run:.*\$\{\{\s*github[.]event[.]pull_request", text):
+        fail(f"critical_review_event_expression_in_run_forbidden:{rel}")
+
+
+def check_signal_job_topology(
+    text: str,
+    rel: str,
+    aggregate_job: str,
+    preset: str,
+) -> None:
+    """Require independent CI signals with a fail-closed aggregate."""
+
+    blocks = {
+        name: workflow_job_block(text, name, rel)
+        for name in (
+            "static-policy",
+            "build",
+            "unit-runtime-tests",
+            "process-integration-tests",
+            "packaging",
+            aggregate_job,
+        )
+    }
+    if re.search(r"(?m)^    needs:", blocks["static-policy"]):
+        fail(f"static_policy_not_independent:{rel}")
+    if re.search(r"(?m)^    needs:", blocks["build"]):
+        fail(f"build_not_independent:{rel}")
+    for token in (
+        "public_packaging_history_gate.py",
+        "github_actions_static_gate.py",
+        "public_private_reference_scan.py",
+        "python3 -m unittest discover -s project/tests/repository_policy",
+        "if: always()",
+        "actions/upload-artifact@v4",
+        "path: build/failure-proofs/",
+    ):
+        require_token(blocks["static-policy"], token, rel)
+    for forbidden in (
+        "public_packaging_history_gate.py",
+        "github_actions_static_gate.py",
+        "public_private_reference_scan.py",
+    ):
+        if forbidden in blocks["build"]:
+            fail(f"static_policy_leaked_into_build:{rel}:{forbidden}")
+    for token in (
+        "stage_ci_build_handoff.py",
+        '--include-label "$SB_CI_RELEASE_LABELS"',
+        "zstd -T0 -3 --long=27",
+        ".tar.zst",
+        "retention-days: 1",
+    ):
+        require_token(blocks["build"], token, rel)
+    if (
+        "cmake -E tar cfz" in blocks["build"]
+        and f"build/{preset}" in blocks["build"]
+    ):
+        fail(f"unbounded_configured_build_handoff:{rel}")
+
+    for name in ("unit-runtime-tests", "process-integration-tests", "packaging"):
+        require_token(blocks[name], "needs: build", rel)
+        require_token(blocks[name], "if: ${{ always()", rel)
+        require_token(blocks[name], "actions/download-artifact@v4", rel)
+        require_token(blocks[name], "actions/upload-artifact@v4", rel)
+        require_token(blocks[name], "path: build/failure-proofs/", rel)
+        require_token(blocks[name], "zstd -dc", rel)
+
+    unit_block = blocks["unit-runtime-tests"]
+    process_block = blocks["process-integration-tests"]
+    for block in (unit_block, process_block):
+        require_token(block, "run_ctest_chunks.py", rel)
+        require_token(block, f"--preset {preset}", rel)
+        require_token(block, '--include-label "$SB_CI_RELEASE_LABELS"', rel)
+    require_token(unit_block, '--exclude-label "$SB_CI_PROCESS_LABELS"', rel)
+    require_token(process_block, '--require-label "$SB_CI_PROCESS_LABELS"', rel)
+
+    aggregate = blocks[aggregate_job]
+    require_token(aggregate, "if: ${{ always()", rel)
+    for required in (
+        "static-policy",
+        "build",
+        "unit-runtime-tests",
+        "process-integration-tests",
+        "packaging",
+    ):
+        require_token(aggregate, f"- {required}", rel)
+        require_token(aggregate, f"${{{{ needs.{required}.result }}}}", rel)
+    require_token(aggregate, 'if [ "$result" != success ]', rel)
+
+
 def check_push_to_main_trigger(text: str, rel: str) -> None:
     trigger_match = re.search(
         r"(?ms)^on:\s*\n.*?(?=^permissions:\s*$)", text
@@ -356,7 +635,12 @@ def check_main_push_ci_policy(
         "if: ${{ github.event_name != 'pull_request' || "
         f"vars.{opt_in_variable} == 'true' }}"
     )
-    require_token(block, expected_condition, rel)
+    aggregate_condition = (
+        "if: ${{ always() && (github.event_name != 'pull_request' || "
+        f"vars.{opt_in_variable} == 'true') }}"
+    )
+    if expected_condition not in block and aggregate_condition not in block:
+        fail(f"main_push_ci_condition_missing:{rel}:{job_name}")
 
 
 def check_public_installer_materialization(
@@ -586,8 +870,24 @@ def check_macos_launchd_credential_probe(
         require_token(smoke_text, token, credential_smoke.name)
 
 
-def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> None:
+def check_macos_real128_build_dependency(
+    text: str,
+    rel: str,
+    job_name: str,
+    repo_root: Path | None = None,
+) -> None:
     block = workflow_job_block(text, job_name, rel)
+    source = block
+    if "install_macos_release_dependencies.sh" in block:
+        if repo_root is None:
+            fail(f"macos_dependency_script_root_missing:{rel}:{job_name}")
+        for name in (
+            "install_macos_release_dependencies.sh",
+            "export_macos_release_environment.sh",
+        ):
+            source += (repo_root / "project" / "tools" / "ci" / name).read_text(
+                encoding="utf-8"
+            )
     required_patterns = {
         "homebrew_boost": r"(?m)^\s+boost\s+\\?\s*$",
         "boost_root": r"BOOST_ROOT=\$\(brew --prefix boost\)",
@@ -599,7 +899,7 @@ def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> 
         "llvm_runtime_argument": r"-DSB_LLVM_RUNTIME_LIBRARY=\"\$SB_LLVM_RUNTIME_LIBRARY\"",
     }
     for label, pattern in required_patterns.items():
-        if re.search(pattern, block) is None:
+        if re.search(pattern, source) is None:
             fail(f"macos_real128_dependency_missing:{rel}:{job_name}:{label}")
 
 
@@ -649,6 +949,8 @@ def check_ctest_label_contract(
 
 def check_linux_release_dependencies(text: str, rel: str, job_name: str) -> None:
     block = workflow_job_block(text, job_name, rel)
+    if "install_linux_release_dependencies.sh" in block:
+        return
     for dependency in (
         "ninja-build",
         "clang-tidy-18",
@@ -657,7 +959,6 @@ def check_linux_release_dependencies(text: str, rel: str, job_name: str) -> None
     ):
         if dependency not in block:
             fail(f"linux_release_dependency_missing:{rel}:{job_name}:{dependency}")
-    check_ctest_label_contract(text, rel, job_name, "public-release-linux")
 
 
 def check_windows_llvm_release_dependency(text: str, rel: str, job_name: str) -> None:
@@ -691,7 +992,6 @@ def check_windows_llvm_release_dependency(text: str, rel: str, job_name: str) ->
             )
     if re.search(r"libLLVM[^\s'\"/\\]*[.]a\b", block):
         fail(f"windows_llvm_runtime_archive_forbidden:{rel}:{job_name}")
-    check_ctest_label_contract(text, rel, job_name, "public-release-windows")
 
 
 def check_windows_zip_only_release_path(text: str, rel: str, job_name: str) -> None:
@@ -1198,6 +1498,8 @@ def main() -> int:
         fail("workflow_root_missing")
     check_mkdtemp_header_contract(repo_root)
     check_native_installer_admission_contract(repo_root)
+    check_ci_support_scripts(repo_root)
+    check_critical_path_review_policy(repo_root)
     check_workflow_inventory(workflow_root)
     for name, tokens in REQUIRED_WORKFLOWS.items():
         path = workflow_root / name
@@ -1210,20 +1512,25 @@ def main() -> int:
         check_failure_uploads_are_textual(text, name)
         for token in tokens:
             require_token(text, token, name)
-        if name == "ci-macos.yml":
+        if name == "critical-path-review.yml":
+            check_critical_review_workflow(text, name)
+        elif name == "ci-macos.yml":
+            check_signal_job_topology(
+                text, name, "public-release-macos", "public-release-macos"
+            )
             check_main_push_ci_policy(
                 text, name, "public-release-macos", "SB_MACOS_CI_ENABLED"
             )
             check_macos_system_installer_failure_diagnostics(
-                text, name, "public-release-macos"
+                text, name, "packaging"
             )
             check_macos_system_payload_verifier_authority(
-                text, name, "public-release-macos"
+                text, name, "packaging"
             )
-            check_macos_real128_build_dependency(text, name, "public-release-macos")
-            check_macos_nonmember_probe(text, name, "public-release-macos")
+            check_macos_real128_build_dependency(text, name, "build", repo_root)
+            check_macos_nonmember_probe(text, name, "packaging")
             check_macos_launchd_credential_probe(
-                text, name, "public-release-macos", repo_root
+                text, name, "packaging", repo_root
             )
             check_macos_universal_smoke_llvm_runtime(
                 text, name, "macos-universal-artifact"
@@ -1231,7 +1538,7 @@ def main() -> int:
             check_native_release_stage(
                 text,
                 name,
-                "public-release-macos",
+                "packaging",
                 "macos",
                 True,
                 retain_native_proof_artifacts=True,
@@ -1239,7 +1546,7 @@ def main() -> int:
             check_public_installer_materialization(
                 text,
                 name,
-                "public-release-macos",
+                "packaging",
                 "macos",
                 "Upload macOS installers",
                 "build/public-installers/macos-${{ matrix.arch }}",
@@ -1251,22 +1558,28 @@ def main() -> int:
                 "build/public-installers/macos-universal",
             )
         elif name == "ci-linux.yml":
+            check_signal_job_topology(
+                text, name, "public-release-linux", "public-release-linux"
+            )
             check_main_push_ci_policy(
                 text, name, "public-release-linux", "SB_LINUX_CI_ENABLED"
             )
-            check_linux_release_dependencies(text, name, "public-release-linux")
+            check_linux_release_dependencies(text, name, "build")
             check_native_release_stage(
-                text, name, "public-release-linux", "linux", False
+                text, name, "packaging", "linux", False
             )
         elif name == "ci-windows.yml":
+            check_signal_job_topology(
+                text, name, "public-release-windows", "public-release-windows"
+            )
             check_main_push_ci_policy(
                 text, name, "public-release-windows", "SB_WINDOWS_CI_ENABLED"
             )
             check_windows_llvm_release_dependency(
-                text, name, "public-release-windows"
+                text, name, "build"
             )
             check_native_release_stage(
-                text, name, "public-release-windows", "windows", False
+                text, name, "packaging", "windows", False
             )
         elif name == "verify-installers.yml":
             check_installer_reusable_policy(text, name)

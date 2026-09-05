@@ -14,61 +14,79 @@ concurrency:
   group: windows-ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SB_CI_RELEASE_LABELS: "^(public_release_correctness|engine_listener_enterprise)$"
+  SB_CI_PROCESS_LABELS: "^(integration|e2e|live_server|process_kill|database_lifecycle_server_route)$"
+
 jobs:
-  public-release-windows:
-    name: Public release Windows build and CTest
+  static-policy:
+    name: Windows repository and static policy
     if: ${{ github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true' }}
-    runs-on: windows-2022
-    timeout-minutes: 240
-
-    defaults:
-      run:
-        shell: msys2 {0}
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Repository and static release gates
+        run: |
+          mkdir -p build/ci-logs/windows-static
+          set -o pipefail
+          {
+            status=0
+            python3 project/tools/release/public_packaging_history_gate.py || status=1
+            python3 project/tools/release/github_actions_static_gate.py || status=1
+            python3 project/tools/release/public_private_reference_scan.py || status=1
+            python3 -m unittest discover -s project/tests/repository_policy -p 'test_*.py' || status=1
+            exit "$status"
+          } 2>&1 | tee build/ci-logs/windows-static/static-policy.log
+      - name: Stage Windows static-policy proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/windows-static \
+            --output-root build/failure-proofs/windows-static
+      - name: Upload Windows static-policy proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-windows-static-policy-proof
+          path: build/failure-proofs/windows-static
+          if-no-files-found: error
+          retention-days: 14
 
+  build:
+    name: Windows configure and compile
+    if: ${{ github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Setup MSYS2 UCRT64
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
           install: >-
-            git
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-python
-            mingw-w64-ucrt-x86_64-llvm
-            mingw-w64-ucrt-x86_64-clang-tools-extra
-            mingw-w64-ucrt-x86_64-cppcheck
-            mingw-w64-ucrt-x86_64-openssl
-            mingw-w64-ucrt-x86_64-boost
-            mingw-w64-ucrt-x86_64-icu
-            mingw-w64-ucrt-x86_64-libxml2
-            mingw-w64-ucrt-x86_64-zlib
-            mingw-w64-ucrt-x86_64-lz4
-            mingw-w64-ucrt-x86_64-zstd
-            mingw-w64-ucrt-x86_64-geos
-            mingw-w64-ucrt-x86_64-proj
+            git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-cppcheck mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-boost mingw-w64-ucrt-x86_64-icu
+            mingw-w64-ucrt-x86_64-libxml2 mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4 mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-geos mingw-w64-ucrt-x86_64-proj
             mingw-w64-ucrt-x86_64-gtest
-
-      - name: Static release gates
-        shell: bash
-        run: |
-          python project/tools/release/public_packaging_history_gate.py
-          python project/tools/release/github_actions_static_gate.py
-          python project/tools/release/public_private_reference_scan.py
-
       - name: Configure
         working-directory: project
         run: |
+          mkdir -p ../build/ci-logs/windows-build
           set -euo pipefail
           LLVM_CONFIG="${MINGW_PREFIX:-/ucrt64}/bin/llvm-config"
-          if [ ! -x "$LLVM_CONFIG" ]; then
-            LLVM_CONFIG="$(command -v llvm-config)"
-          fi
+          if [ ! -x "$LLVM_CONFIG" ]; then LLVM_CONFIG="$(command -v llvm-config)"; fi
           LLVM_CMAKE_DIR="$("$LLVM_CONFIG" --cmakedir)"
           LLVM_LIB_DIR="$("$LLVM_CONFIG" --libdir)"
           LLVM_MAJOR="$("$LLVM_CONFIG" --version | sed -E 's/^([0-9]+).*/\1/')"
@@ -94,54 +112,265 @@ jobs:
             -DLLVM_DIR="$LLVM_CMAKE_DIR" \
             -DSB_LLVM_LIBRARY="$LLVM_LIBRARY" \
             -DSB_LLVM_RUNTIME_LIBRARY="$LLVM_RUNTIME_LIBRARY" \
-            -DSB_LLVM_MIN_MAJOR="$LLVM_REQUIRED_MAJOR"
-
+            -DSB_LLVM_MIN_MAJOR="$LLVM_REQUIRED_MAJOR" \
+            2>&1 | tee ../build/ci-logs/windows-build/configure.log
       - name: Build
         working-directory: project
-        run: cmake --build --preset public-release-windows
-
-      - name: CTest
-        working-directory: project
         run: |
-          status=0
-          ctest --preset public-release-windows -L public_release_correctness || status=1
-          ctest --preset public-release-windows -L engine_listener_enterprise || status=1
-          exit "$status"
-
-      - name: Verify staged public bundle
-        shell: bash
-        run: python project/tools/release/verify_public_release_bundle.py build/public-release-windows/output/windows
-
-      - name: Stage and verify native-only SB bundle
-        shell: bash
+          set -o pipefail
+          cmake --build --preset public-release-windows 2>&1 | tee ../build/ci-logs/windows-build/build.log
+      - name: Stage bounded configured Windows build handoff
         run: |
-          runtime_search_root="$(cygpath -w "${MINGW_PREFIX:-/ucrt64}/bin")"
-          test -d "$runtime_search_root"
-          python project/tools/release/stage_native_release_bundle.py \
-            --source-root build/public-release-windows/output/windows \
-            --output-root build/native-release-windows/output/windows \
+          python project/tools/ci/stage_ci_build_handoff.py \
+            --test-dir build/public-release-windows \
             --platform windows \
-            --runtime-search-root "$runtime_search_root"
-          python project/tools/release/verify_public_release_bundle.py build/native-release-windows/output/windows
-          python project/tools/release/verify_native_release_bundle.py \
-            build/native-release-windows/output/windows --platform windows
-          cmake -E remove_directory build/public-release-windows/output/windows
-
-      - name: Stage Windows textual build proof
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --output-root build/ci-handoff/windows
+      - name: Archive configured Windows build handoff
+        run: |
+          mkdir -p build/ci-artifacts
+          set -o pipefail
+          tar -cf - -C build/ci-handoff/windows . | \
+            zstd -T0 -3 --long=27 -o build/ci-artifacts/public-release-windows.tar.zst
+      - name: Upload configured Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratchbird-windows-configured-build
+          path: build/ci-artifacts/public-release-windows.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Stage Windows compile proof
         if: always()
-        shell: bash
         run: |
           python project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/windows-build \
             --source build/public-release-windows/Testing \
-            --output-root build/failure-proofs/windows
-
-      - name: Upload Windows build proof
+            --output-root build/failure-proofs/windows-build
+      - name: Upload Windows compile proof
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          # Failure diagnostics only; this root is generated from bounded
-          # text evidence and cannot contain a staged executable payload.
-          name: scratchbird-windows-build-proof
-          path: build/failure-proofs/windows
-          if-no-files-found: warn
+          name: scratchbird-windows-compile-proof
+          path: build/failure-proofs/windows-build
+          if-no-files-found: error
           retention-days: 14
+
+  unit-runtime-tests:
+    name: Windows unit and runtime tests
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true') }}
+    runs-on: windows-2022
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-cppcheck mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-boost mingw-w64-ucrt-x86_64-icu
+            mingw-w64-ucrt-x86_64-libxml2 mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4 mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-geos mingw-w64-ucrt-x86_64-proj
+            mingw-w64-ucrt-x86_64-gtest
+      - name: Download configured Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Windows build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-windows.tar.zst | tar -xf -
+      - name: Run Windows unit and runtime partition
+        working-directory: project
+        run: |
+          python tools/ci/run_ctest_chunks.py \
+            --preset public-release-windows --chunk-count 8 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --exclude-label "$SB_CI_PROCESS_LABELS" \
+            --output-root ../build/ctest-chunks/windows-unit-runtime
+      - name: Stage Windows unit-runtime proof
+        if: always()
+        run: |
+          python project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/windows-unit-runtime \
+            --source build/public-release-windows/Testing \
+            --output-root build/failure-proofs/windows-unit-runtime
+      - name: Upload Windows unit-runtime proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-windows-unit-runtime-proof
+          path: build/failure-proofs/windows-unit-runtime
+          if-no-files-found: error
+          retention-days: 14
+
+  process-integration-tests:
+    name: Windows process and integration tests
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true') }}
+    runs-on: windows-2022
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-clang-tools-extra
+            mingw-w64-ucrt-x86_64-cppcheck mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-boost mingw-w64-ucrt-x86_64-icu
+            mingw-w64-ucrt-x86_64-libxml2 mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4 mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-geos mingw-w64-ucrt-x86_64-proj
+            mingw-w64-ucrt-x86_64-gtest
+      - name: Download configured Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Windows build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-windows.tar.zst | tar -xf -
+      - name: Run Windows process and integration partition
+        working-directory: project
+        run: |
+          python tools/ci/run_ctest_chunks.py \
+            --preset public-release-windows --chunk-count 4 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --require-label "$SB_CI_PROCESS_LABELS" \
+            --output-root ../build/ctest-chunks/windows-process-integration
+      - name: Stage Windows process-integration proof
+        if: always()
+        run: |
+          python project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/windows-process-integration \
+            --source build/public-release-windows/Testing \
+            --output-root build/failure-proofs/windows-process-integration
+      - name: Upload Windows process-integration proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-windows-process-integration-proof
+          path: build/failure-proofs/windows-process-integration
+          if-no-files-found: error
+          retention-days: 14
+
+  packaging:
+    name: Windows package verification
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true') }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-llvm mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-boost mingw-w64-ucrt-x86_64-icu
+            mingw-w64-ucrt-x86_64-libxml2 mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4 mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-geos mingw-w64-ucrt-x86_64-proj
+      - name: Download configured Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Windows build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-windows.tar.zst | tar -xf -
+      - name: Verify staged public bundle
+        shell: bash
+        run: |
+          mkdir -p build/ci-logs/windows-package
+          set -o pipefail
+          python project/tools/release/verify_public_release_bundle.py \
+            build/public-release-windows/output/windows 2>&1 | tee build/ci-logs/windows-package/public-bundle.log
+      - name: Stage and verify native-only SB bundle
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            runtime_search_root="$(cygpath -w "${MINGW_PREFIX:-/ucrt64}/bin")"
+            test -d "$runtime_search_root"
+            python project/tools/release/stage_native_release_bundle.py \
+              --source-root build/public-release-windows/output/windows \
+              --output-root build/native-release-windows/output/windows \
+              --platform windows \
+              --runtime-search-root "$runtime_search_root"
+            python project/tools/release/verify_public_release_bundle.py build/native-release-windows/output/windows
+            python project/tools/release/verify_native_release_bundle.py build/native-release-windows/output/windows --platform windows
+            cmake -E remove_directory build/public-release-windows/output/windows
+          } 2>&1 | tee build/ci-logs/windows-package/native-bundle.log
+      - name: Stage Windows packaging proof
+        if: always()
+        run: |
+          python project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/windows-package \
+            --output-root build/failure-proofs/windows-packaging
+      - name: Upload Windows packaging proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-windows-packaging-proof
+          path: build/failure-proofs/windows-packaging
+          if-no-files-found: error
+          retention-days: 14
+
+  public-release-windows:
+    name: Public release Windows build and CTest
+    needs:
+      - static-policy
+      - build
+      - unit-runtime-tests
+      - process-integration-tests
+      - packaging
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail-closed Windows release decision
+        env:
+          STATIC_POLICY_RESULT: ${{ needs.static-policy.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          UNIT_RUNTIME_RESULT: ${{ needs.unit-runtime-tests.result }}
+          PROCESS_INTEGRATION_RESULT: ${{ needs.process-integration-tests.result }}
+          PACKAGING_RESULT: ${{ needs.packaging.result }}
+        run: |
+          status=0
+          for result in "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT"; do
+            if [ "$result" != success ]; then status=1; fi
+          done
+          printf 'static-policy=%s\nbuild=%s\nunit-runtime-tests=%s\nprocess-integration-tests=%s\npackaging=%s\n' \
+            "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT"
+          exit "$status"

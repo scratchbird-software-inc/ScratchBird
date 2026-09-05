@@ -14,58 +14,62 @@ concurrency:
   group: linux-ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SB_CI_RELEASE_LABELS: "^(public_release_correctness|engine_listener_enterprise)$"
+  SB_CI_PROCESS_LABELS: "^(integration|e2e|live_server|process_kill|database_lifecycle_server_route)$"
+
 jobs:
-  public-release-linux:
-    name: Public release Linux build and CTest
+  static-policy:
+    name: Linux repository and static policy
     if: ${{ github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
-
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Repository and static release gates
+        run: |
+          mkdir -p build/ci-logs/linux-static
+          set -o pipefail
+          {
+            status=0
+            python3 project/tools/release/public_packaging_history_gate.py || status=1
+            python3 project/tools/release/github_actions_static_gate.py || status=1
+            python3 project/tools/release/public_private_reference_scan.py || status=1
+            python3 -m unittest discover -s project/tests/repository_policy -p 'test_*.py' || status=1
+            exit "$status"
+          } 2>&1 | tee build/ci-logs/linux-static/static-policy.log
+      - name: Stage Linux static-policy proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/linux-static \
+            --output-root build/failure-proofs/linux-static
+      - name: Upload Linux static-policy proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-linux-static-policy-proof
+          path: build/failure-proofs/linux-static
+          if-no-files-found: error
+          retention-days: 14
 
+  build:
+    name: Linux configure and compile
+    if: ${{ github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            ninja-build \
-            python3 \
-            python3-pip \
-            clang-tidy-18 \
-            cppcheck \
-            g++-mingw-w64-x86-64 \
-            wget \
-            gnupg \
-            lsb-release \
-            libssl-dev \
-            libboost-dev \
-            libicu-dev \
-            libxml2-dev \
-            zlib1g-dev \
-            liblz4-dev \
-            libzstd-dev \
-            libgeos-dev \
-            libproj-dev \
-            libgtest-dev \
-            unixodbc-dev
-          wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 23
-          sudo apt-get install -y libllvm23 llvm-23-dev
-
-      - name: Static release gates
-        run: |
-          python3 project/tools/release/public_packaging_history_gate.py
-          python3 project/tools/release/github_actions_static_gate.py
-          python3 project/tools/release/public_private_reference_scan.py
-
+        run: bash project/tools/ci/install_linux_release_dependencies.sh
       - name: Configure
         working-directory: project
-        run: cmake --preset public-release-linux
-
+        run: |
+          mkdir -p ../build/ci-logs/linux-build
+          set -o pipefail
+          cmake --preset public-release-linux 2>&1 | tee ../build/ci-logs/linux-build/configure.log
       - name: Record LLVM version and configured runtime resolution
         working-directory: project
         run: |
@@ -76,7 +80,6 @@ jobs:
           test "$llvm_major" -ge 23
           llvm_cmake_dir="$("$llvm_config" --cmakedir)"
           test -d "$llvm_cmake_dir"
-
           cache="../build/public-release-linux/CMakeCache.txt"
           test -f "$cache"
           cache_value() {
@@ -100,7 +103,6 @@ jobs:
           test "$configured_delivery" = system-package
           [[ "$configured_runtime" =~ ^libLLVM(-[0-9]+)?[.]so([.][0-9]+)*$ ]]
           [[ "$configured_runtime" != */* ]]
-
           {
             echo "### Linux LLVM release configuration"
             echo
@@ -111,47 +113,213 @@ jobs:
             echo "- Installed runtime reference: \`$configured_runtime\`"
             echo "- Runtime delivery: \`$configured_delivery\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Build
         working-directory: project
-        run: cmake --build --preset public-release-linux
-
-      - name: CTest
-        working-directory: project
         run: |
-          status=0
-          ctest --preset public-release-linux -L public_release_correctness || status=1
-          ctest --preset public-release-linux -L engine_listener_enterprise || status=1
-          exit "$status"
-
-      - name: Verify staged public bundle
-        run: python3 project/tools/release/verify_public_release_bundle.py build/public-release-linux/output/linux
-
-      - name: Stage and verify native-only SB bundle
+          set -o pipefail
+          cmake --build --preset public-release-linux 2>&1 | tee ../build/ci-logs/linux-build/build.log
+      - name: Stage bounded configured Linux build handoff
         run: |
-          python3 project/tools/release/stage_native_release_bundle.py \
-            --source-root build/public-release-linux/output/linux \
-            --output-root build/native-release-linux/output/linux \
-            --platform linux
-          python3 project/tools/release/verify_public_release_bundle.py build/native-release-linux/output/linux
-          python3 project/tools/release/verify_native_release_bundle.py \
-            build/native-release-linux/output/linux --platform linux
-          cmake -E remove_directory build/public-release-linux/output/linux
-
-      - name: Stage Linux textual build proof
+          python3 project/tools/ci/stage_ci_build_handoff.py \
+            --test-dir build/public-release-linux \
+            --platform linux \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --output-root build/ci-handoff/linux
+      - name: Archive configured Linux build handoff
+        run: |
+          mkdir -p build/ci-artifacts
+          set -o pipefail
+          tar -cf - -C build/ci-handoff/linux . | \
+            zstd -T0 -3 --long=27 -o build/ci-artifacts/public-release-linux.tar.zst
+      - name: Upload configured Linux build
+        uses: actions/upload-artifact@v4
+        with:
+          name: scratchbird-linux-configured-build
+          path: build/ci-artifacts/public-release-linux.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Stage Linux compile proof
         if: always()
         run: |
           python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/linux-build \
             --source build/public-release-linux/Testing \
-            --output-root build/failure-proofs/linux
-
-      - name: Upload Linux build proof
+            --output-root build/failure-proofs/linux-build
+      - name: Upload Linux compile proof
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          # Failure diagnostics only; this root is generated from bounded
-          # text evidence and cannot contain a staged executable payload.
-          name: scratchbird-linux-build-proof
-          path: build/failure-proofs/linux
-          if-no-files-found: warn
+          name: scratchbird-linux-compile-proof
+          path: build/failure-proofs/linux-build
+          if-no-files-found: error
           retention-days: 14
+
+  unit-runtime-tests:
+    name: Linux unit and runtime tests
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: bash project/tools/ci/install_linux_release_dependencies.sh
+      - name: Download configured Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-linux-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Linux build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-linux.tar.zst | tar -xf -
+      - name: Run Linux unit and runtime partition
+        working-directory: project
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-linux --chunk-count 8 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --exclude-label "$SB_CI_PROCESS_LABELS" \
+            --output-root ../build/ctest-chunks/linux-unit-runtime
+      - name: Stage Linux unit-runtime proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/linux-unit-runtime \
+            --source build/public-release-linux/Testing \
+            --output-root build/failure-proofs/linux-unit-runtime
+      - name: Upload Linux unit-runtime proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-linux-unit-runtime-proof
+          path: build/failure-proofs/linux-unit-runtime
+          if-no-files-found: error
+          retention-days: 14
+
+  process-integration-tests:
+    name: Linux process and integration tests
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: bash project/tools/ci/install_linux_release_dependencies.sh
+      - name: Download configured Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-linux-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Linux build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-linux.tar.zst | tar -xf -
+      - name: Run Linux process and integration partition
+        working-directory: project
+        run: |
+          python3 tools/ci/run_ctest_chunks.py \
+            --preset public-release-linux --chunk-count 4 --timeout 900 \
+            --include-label "$SB_CI_RELEASE_LABELS" \
+            --require-label "$SB_CI_PROCESS_LABELS" \
+            --output-root ../build/ctest-chunks/linux-process-integration
+      - name: Stage Linux process-integration proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ctest-chunks/linux-process-integration \
+            --source build/public-release-linux/Testing \
+            --output-root build/failure-proofs/linux-process-integration
+      - name: Upload Linux process-integration proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-linux-process-integration-proof
+          path: build/failure-proofs/linux-process-integration
+          if-no-files-found: error
+          retention-days: 14
+
+  packaging:
+    name: Linux package verification
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install package verification dependencies
+        run: bash project/tools/ci/install_linux_release_dependencies.sh
+      - name: Download configured Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-linux-configured-build
+          path: build/ci-artifacts
+      - name: Restore configured Linux build
+        run: |
+          set -o pipefail
+          zstd -dc build/ci-artifacts/public-release-linux.tar.zst | tar -xf -
+      - name: Verify staged public bundle
+        run: |
+          mkdir -p build/ci-logs/linux-package
+          set -o pipefail
+          python3 project/tools/release/verify_public_release_bundle.py \
+            build/public-release-linux/output/linux 2>&1 | tee build/ci-logs/linux-package/public-bundle.log
+      - name: Stage and verify native-only SB bundle
+        run: |
+          set -o pipefail
+          {
+            python3 project/tools/release/stage_native_release_bundle.py \
+              --source-root build/public-release-linux/output/linux \
+              --output-root build/native-release-linux/output/linux \
+              --platform linux
+            python3 project/tools/release/verify_public_release_bundle.py build/native-release-linux/output/linux
+            python3 project/tools/release/verify_native_release_bundle.py build/native-release-linux/output/linux --platform linux
+            cmake -E remove_directory build/public-release-linux/output/linux
+          } 2>&1 | tee build/ci-logs/linux-package/native-bundle.log
+      - name: Stage Linux packaging proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/ci-logs/linux-package \
+            --output-root build/failure-proofs/linux-packaging
+      - name: Upload Linux packaging proof
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scratchbird-linux-packaging-proof
+          path: build/failure-proofs/linux-packaging
+          if-no-files-found: error
+          retention-days: 14
+
+  public-release-linux:
+    name: Public release Linux build and CTest
+    needs:
+      - static-policy
+      - build
+      - unit-runtime-tests
+      - process-integration-tests
+      - packaging
+    if: ${{ always() && (github.event_name != 'pull_request' || vars.SB_LINUX_CI_ENABLED == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail-closed Linux release decision
+        env:
+          STATIC_POLICY_RESULT: ${{ needs.static-policy.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          UNIT_RUNTIME_RESULT: ${{ needs.unit-runtime-tests.result }}
+          PROCESS_INTEGRATION_RESULT: ${{ needs.process-integration-tests.result }}
+          PACKAGING_RESULT: ${{ needs.packaging.result }}
+        run: |
+          status=0
+          for result in "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT"; do
+            if [ "$result" != success ]; then status=1; fi
+          done
+          printf 'static-policy=%s\nbuild=%s\nunit-runtime-tests=%s\nprocess-integration-tests=%s\npackaging=%s\n' \
+            "$STATIC_POLICY_RESULT" "$BUILD_RESULT" "$UNIT_RUNTIME_RESULT" "$PROCESS_INTEGRATION_RESULT" "$PACKAGING_RESULT"
+          exit "$status"

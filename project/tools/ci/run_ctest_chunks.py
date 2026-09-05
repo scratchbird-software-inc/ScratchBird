@@ -102,6 +102,7 @@ def matches(patterns: list[re.Pattern[str]], values: Iterable[str]) -> bool:
 def filter_tests(
     tests: list[TestCase],
     include_label: list[re.Pattern[str]],
+    require_label: list[re.Pattern[str]],
     exclude_label: list[re.Pattern[str]],
     include_name: list[re.Pattern[str]],
     exclude_name: list[re.Pattern[str]],
@@ -112,6 +113,9 @@ def filter_tests(
         reasons: list[str] = []
         if include_label and not matches(include_label, test.labels):
             reasons.append("include_label")
+        for required in require_label:
+            if not matches([required], test.labels):
+                reasons.append(f"require_label:{required.pattern}")
         if include_name and not matches(include_name, (test.name,)):
             reasons.append("include_name")
         if matches(exclude_label, test.labels):
@@ -263,6 +267,15 @@ def main() -> int:
         help="Exclude tests whose labels match this regex. May be repeated.",
     )
     parser.add_argument(
+        "--require-label",
+        action="append",
+        default=[],
+        help=(
+            "Require at least one label matching each regex. May be repeated; "
+            "unlike --include-label, repeated requirements are combined with AND."
+        ),
+    )
+    parser.add_argument(
         "--include-name",
         action="append",
         default=[],
@@ -285,12 +298,14 @@ def main() -> int:
     base_command = ctest_base_command(args.preset, args.test_dir)
     inventory = load_ctest_inventory(base_command, cwd)
     include_label = compile_regexes(args.include_label)
+    require_label = compile_regexes(args.require_label)
     exclude_label = compile_regexes(args.exclude_label)
     include_name = compile_regexes(args.include_name)
     exclude_name = compile_regexes(args.exclude_name)
     tests, excluded = filter_tests(
         inventory,
         include_label=include_label,
+        require_label=require_label,
         exclude_label=exclude_label,
         include_name=include_name,
         exclude_name=exclude_name,
@@ -298,6 +313,7 @@ def main() -> int:
     chunks = build_chunks(tests, args.chunk_count)
     filters = {
         "include_label": args.include_label,
+        "require_label": args.require_label,
         "exclude_label": args.exclude_label,
         "include_name": args.include_name,
         "exclude_name": args.exclude_name,
