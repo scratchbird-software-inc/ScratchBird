@@ -2544,7 +2544,7 @@ bool statement_management_source_free_parameterized_query_template(
     std::string_view name;
     SblrValueKind value_kind;
   };
-  static constexpr std::array<ExpectedOperand, 18> kExactOperands{{
+  static constexpr std::array<ExpectedOperand, 11> kExactPrefix{{
       {"uint16", "relational_wire_version", SblrValueKind::literal_typed},
       {"uuid", "relational_bound_sblr_tree_uuid",
        SblrValueKind::literal_typed},
@@ -2564,16 +2564,6 @@ bool statement_management_source_free_parameterized_query_template(
       {"uint64", "relational_snapshot_visible_through_local_transaction_id",
        SblrValueKind::literal_typed},
       {"uint32", "relational_root_node_id", SblrValueKind::literal_typed},
-      {"relational_descriptor_v1", "slot_1",
-       SblrValueKind::literal_typed},
-      {"relational_expression_v1", "1", SblrValueKind::parameter_node_ref},
-      {"relational_output_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_values_row_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_node_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_node_binding_v1", "slot_1",
-       SblrValueKind::literal_typed},
-      {"expression.parameter_node_table.v1", "parameter_nodes",
-       SblrValueKind::parameter_node_table},
   }};
   if (operation.operation_id != "query.execute" ||
       operation.opcode != "SBLR_QUERY_EXECUTE" ||
@@ -2582,60 +2572,139 @@ bool statement_management_source_free_parameterized_query_template(
       operation.operation_version_minor != 0 ||
       operation.result_shape != "query_execute_result" ||
       operation.contains_sql_text ||
-      operation.operands.size() != kExactOperands.size()) {
+      operation.operands.size() < 18) {
     return fail("stmt_prepare_bind.parameterized_template_profile_invalid");
   }
-  for (std::size_t index = 0; index < kExactOperands.size(); ++index) {
+  for (std::size_t index = 0; index < kExactPrefix.size(); ++index) {
     const auto& operand = operation.operands[index];
-    const auto& expected = kExactOperands[index];
+    const auto& expected = kExactPrefix[index];
     if (operand.ordinal != index + 1 || operand.type != expected.type ||
         operand.name != expected.name ||
         operand.value_kind != expected.value_kind || operand.value_flags != 0) {
       return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
     }
   }
+
+  const auto& table_operand = operation.operands.back();
+  if (table_operand.ordinal != operation.operands.size() ||
+      table_operand.type != "expression.parameter_node_table.v1" ||
+      table_operand.name != "parameter_nodes" ||
+      table_operand.value_kind != SblrValueKind::parameter_node_table ||
+      table_operand.value_flags != 0) {
+    return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
+  }
+  const auto table =
+      scratchbird::engine::sblr::DecodeSblrParameterNodeTableV1(
+          table_operand.value_body.data(), table_operand.value_body.size());
+  const std::size_t parameter_count = table.ok ? table.table.nodes.size() : 0;
+  if (parameter_count == 0 || parameter_count > 4096 ||
+      operation.operands.size() != 15 + parameter_count * 3) {
+    return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
+  }
+
+  const std::size_t descriptor_begin = kExactPrefix.size();
+  const std::size_t expression_begin = descriptor_begin + parameter_count;
+  const std::size_t output_begin = expression_begin + parameter_count;
+  const std::size_t tail_begin = output_begin + parameter_count;
+  std::vector<scratchbird::engine::sblr::SblrParameterNodeReferenceV1>
+      references;
+  references.reserve(parameter_count);
+  std::string canonical_handles;
+  for (std::size_t index = 0; index < parameter_count; ++index) {
+    const auto ordinal = index + 1;
+    const std::string slot_name = "slot_" + std::to_string(ordinal);
+    const std::string expression_name = std::to_string(ordinal);
+    if (index != 0) canonical_handles.push_back(',');
+    canonical_handles.append(expression_name);
+
+    const auto& descriptor = operation.operands[descriptor_begin + index];
+    const auto& expression = operation.operands[expression_begin + index];
+    const auto& output = operation.operands[output_begin + index];
+    if (descriptor.ordinal != descriptor_begin + index + 1 ||
+        descriptor.type != "relational_descriptor_v1" ||
+        descriptor.name != slot_name ||
+        descriptor.value_kind != SblrValueKind::literal_typed ||
+        descriptor.value_flags != 0 ||
+        expression.ordinal != expression_begin + index + 1 ||
+        expression.type != "relational_expression_v1" ||
+        expression.name != expression_name ||
+        expression.value_kind != SblrValueKind::parameter_node_ref ||
+        expression.value_flags != 0 ||
+        output.ordinal != output_begin + index + 1 ||
+        output.type != "relational_output_v1" || output.name != slot_name ||
+        output.value_kind != SblrValueKind::literal_typed ||
+        output.value_flags != 0) {
+      return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
+    }
+    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
+    if (!scratchbird::engine::sblr::DecodeSblrParameterNodeReferenceV1(
+            expression.value_body.data(), expression.value_body.size(),
+            &reference)) {
+      return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
+    }
+    references.push_back(reference);
+  }
+
+  const auto& values_row_operand = operation.operands[tail_begin];
+  const auto& node_operand = operation.operands[tail_begin + 1];
+  const auto& node_binding_operand = operation.operands[tail_begin + 2];
+  const auto exact_tail_operand = [](const auto& operand,
+                                     const std::size_t ordinal,
+                                     const std::string_view type) {
+    return operand.ordinal == ordinal && operand.type == type &&
+           operand.name == "slot_1" &&
+           operand.value_kind == SblrValueKind::literal_typed &&
+           operand.value_flags == 0;
+  };
+  if (!exact_tail_operand(values_row_operand, tail_begin + 1,
+                          "relational_values_row_v1") ||
+      !exact_tail_operand(node_operand, tail_begin + 2,
+                          "relational_node_v1") ||
+      !exact_tail_operand(node_binding_operand, tail_begin + 3,
+                          "relational_node_binding_v1")) {
+    return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
+  }
   std::string_view root;
   std::string_view values_row;
   std::string_view node;
   std::string_view node_binding;
+  const std::string expected_node =
+      "13|0|-|" + canonical_handles + "|1";
+  const std::string expected_node_binding =
+      "76616c7565732e6c69746572616c2d7461626c652e7631|" +
+      canonical_handles + "|-|-|-";
   if (!statement_management_typed_payload(operation.operands[10], &root) ||
-      !statement_management_typed_payload(operation.operands[14], &values_row) ||
-      !statement_management_typed_payload(operation.operands[15], &node) ||
-      !statement_management_typed_payload(operation.operands[16],
+      !statement_management_typed_payload(values_row_operand, &values_row) ||
+      !statement_management_typed_payload(node_operand, &node) ||
+      !statement_management_typed_payload(node_binding_operand,
                                           &node_binding) ||
-      root != "1" || values_row != "1" || node != "13|0|-|1|1" ||
-      node_binding !=
-          "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-") {
+      root != "1" || values_row != canonical_handles ||
+      node != expected_node || node_binding != expected_node_binding) {
     return fail("stmt_prepare_bind.parameterized_template_source_free_shape_invalid");
   }
-  const auto table =
-      scratchbird::engine::sblr::DecodeSblrParameterNodeTableV1(
-          operation.operands[17].value_body.data(),
-          operation.operands[17].value_body.size());
-  scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
   const auto nonzero = [](const auto& bytes) {
     return std::ranges::any_of(bytes,
                                [](std::uint8_t byte) { return byte != 0; });
   };
-  if (!table.ok || table.table.nodes.size() != 1 ||
-      !scratchbird::engine::sblr::DecodeSblrParameterNodeReferenceV1(
-          operation.operands[12].value_body.data(),
-          operation.operands[12].value_body.size(), &reference) ||
-      !scratchbird::engine::sblr::ValidateSblrParameterReferenceBijectionV1(
-          table, {reference})) {
+  if (!scratchbird::engine::sblr::ValidateSblrParameterReferenceBijectionV1(
+          table, references)) {
     return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
   }
-  const auto& parameter_node = table.table.nodes.front();
-  if (parameter_node.node_id != 1 ||
-      parameter_node.parent_operand_ordinal != 1 ||
-      parameter_node.slot_ordinal != 0 ||
-      !nonzero(parameter_node.parameter_set_descriptor_uuid) ||
-      parameter_node.parameter_set_generation == 0 ||
-      !nonzero(parameter_node.datatype_descriptor_uuid) ||
-      parameter_node.datatype_descriptor_generation == 0 ||
-      reference.occurrence_ordinal != 1 || reference.node_id != 1 ||
-      reference.slot_ordinal != 0) {
-    return fail("stmt_prepare_bind.parameterized_template_binding_invalid");
+  for (std::size_t index = 0; index < parameter_count; ++index) {
+    const auto& parameter_node = table.table.nodes[index];
+    const auto& parameter_reference = references[index];
+    if (parameter_node.node_id != index + 1 ||
+        parameter_node.parent_operand_ordinal != index + 1 ||
+        parameter_node.slot_ordinal != index ||
+        !nonzero(parameter_node.parameter_set_descriptor_uuid) ||
+        parameter_node.parameter_set_generation == 0 ||
+        !nonzero(parameter_node.datatype_descriptor_uuid) ||
+        parameter_node.datatype_descriptor_generation == 0 ||
+        parameter_reference.occurrence_ordinal != index + 1 ||
+        parameter_reference.node_id != index + 1 ||
+        parameter_reference.slot_ordinal != index) {
+      return fail("stmt_prepare_bind.parameterized_template_binding_invalid");
+    }
   }
   return true;
 }
@@ -2965,7 +3034,7 @@ statement_management_load_parameter_binding(
       admitted.catalog_generation != view.literal_catalog_generation ||
       admitted.security_epoch != view.security_epoch ||
       admitted.resource_epoch != view.resource_epoch ||
-      admitted.slots.size() != 1) {
+      admitted.slots.empty() || admitted.slots.size() > 4096) {
     return refuse("SBLR.PARAMETER.STALE",
                   "sblr.stmt_execute.parameter_set_stale",
                   "prepared statement and durable parameter set differ");
@@ -3057,6 +3126,14 @@ statement_management_load_parameter_binding(
   for (std::size_t index = 0; index < decoded.value.records.size(); ++index) {
     const auto& record = decoded.value.records[index];
     const auto& slot = current.slots[index];
+    const bool exact_value =
+        record.state ==
+            scratchbird::engine::sblr::SblrParameterValueStateV1::value &&
+        record.canonical_value_bytes.size() == 8;
+    const bool exact_null =
+        record.state ==
+            scratchbird::engine::sblr::SblrParameterValueStateV1::null_value &&
+        slot.nullable && record.canonical_value_bytes.empty();
     if (record.slot_ordinal != slot.slot_ordinal ||
         record.slot_uuid != TextToUuid(slot.slot_uuid) ||
         record.datatype_descriptor_uuid !=
@@ -3067,12 +3144,10 @@ statement_management_load_parameter_binding(
             static_cast<std::uint8_t>(slot.direction) ||
         record.direction !=
             scratchbird::engine::sblr::SblrParameterDirectionV1::in ||
-        record.state !=
-            scratchbird::engine::sblr::SblrParameterValueStateV1::value ||
         slot.datatype_descriptor_uuid !=
             "019d0000-0000-7000-8000-00000000d711" ||
         slot.datatype_descriptor_generation != 1 ||
-        record.canonical_value_bytes.size() != 8) {
+        (!exact_value && !exact_null)) {
       return refuse("SBLR.PARAMETER.STALE",
                     "sblr.stmt_execute.parameter_slot_stale",
                     "the bounded int64 parameter slot or value changed");

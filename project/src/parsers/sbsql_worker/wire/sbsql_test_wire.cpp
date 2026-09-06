@@ -9540,6 +9540,51 @@ EncodeParameterPrebindRequest(const NativeRelationalAstDocument& ast,
   std::ranges::sort(parameters, {}, [](const auto* expression) {
     return expression->structural_parameter_occurrence_id;
   });
+  const bool nullable_source_free_values = [&] {
+    if (ast.catalog_relation_sources.size() != 0 ||
+        ast.model_object_resolution_requests.size() != 0 ||
+        ast.relations.size() != 1 || ast.values_rows.size() != 1 ||
+        ast.expressions.size() != parameters.size() ||
+        ast.grouping_sets.size() != 0 || ast.window_definitions.size() != 0 ||
+        ast.window_invocations.size() != 0 || ast.row_patterns.size() != 0) {
+      return false;
+    }
+    const auto& relation = ast.relations.front();
+    const auto& row = ast.values_rows.front();
+    if (relation.relation_kind != NativeRelationAstKind::kValues ||
+        relation.relation_id == 0 || ast.root_relation_id != relation.relation_id ||
+        row.row_id == 0 ||
+        relation.values_row_ids != std::vector<std::uint32_t>{row.row_id} ||
+        relation.output_expression_ids != row.expression_ids ||
+        row.expression_ids.size() != parameters.size() ||
+        !relation.input_relation_ids.empty() ||
+        !relation.relation_source_ids.empty() ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.predicate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() ||
+        !relation.table_function_name.empty() ||
+        !relation.table_function_argument_expression_ids.empty() ||
+        !relation.window_invocation_ids.empty() ||
+        !relation.ordering_terms.empty()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+      const auto* parameter = parameters[index];
+      if (parameter->expression_id != row.expression_ids[index] ||
+          parameter->expression_kind != NativeExpressionAstKind::kParameter ||
+          parameter->literal_kind.has_value() ||
+          !parameter->child_expression_ids.empty() ||
+          !parameter->qualified_identifier.empty() ||
+          (!parameter->spelling.empty() && parameter->spelling != "?") ||
+          !parameter->operator_name.empty() ||
+          parameter->structural_literal_occurrence_id != 0 ||
+          parameter->structural_variable_occurrence_id != 0) {
+        return false;
+      }
+    }
+    return true;
+  }();
   const auto receipt = CanonicalUuidBytes(context.preliminary_receipt_uuid);
   const auto mga = CanonicalUuidBytes(context.preliminary_mga_snapshot_uuid);
   if (!receipt || !mga || context.preliminary_catalog_generation == 0 ||
@@ -9566,7 +9611,7 @@ EncodeParameterPrebindRequest(const NativeRelationalAstDocument& ast,
     demand.marker_ordinal = marker_ordinal++;
     demand.context_code = 1;       // scalar_predicate_bigint_v1
     demand.requested_direction = 1;  // IN
-    demand.nullable_demand = 0;
+    demand.nullable_demand = nullable_source_free_values ? 1 : 0;
     state.demand.demands.push_back(demand);
   }
   state.demand.demand_sha256 =

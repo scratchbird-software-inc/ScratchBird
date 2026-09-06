@@ -1158,6 +1158,19 @@ int main(int argc, char** argv) {
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtCancelForWire():begun; }()
                     : operation == "parameter-bind"
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunParameterBindForWire():begun; }()
+                    : operation == "parameter-bind-multi-nullable"
+        ? [&session] {
+            auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+            if (!begun.accepted || begun.messages.has_errors()) return begun;
+            auto prepared = session.RunPipeline(
+                "PREPARE prep_parameter_multi (BIGINT, BIGINT) AS VALUES (?, ?);",
+                true);
+            if (!prepared.accepted || prepared.messages.has_errors()) {
+              return prepared;
+            }
+            return session.RunPipeline(
+                "EXECUTE prep_parameter_multi (7, NULL);", true, true);
+          }()
                     : operation == "result-page"
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunResultPageForWire():begun; }()
                     : operation == "query-execute"
@@ -1599,6 +1612,75 @@ int main(int argc, char** argv) {
                  "public_name=prep_parameter declared_type=BIGINT "
                  "prepare_surface=SBSQL-5535E9A48BE4 "
                  "execute_surface=SBSQL-414E9A624B34\n";
+    return 0;
+  }
+  if (operation == "parameter-bind-multi-nullable") {
+    scratchbird::engine::sblr::SblrStmtExecuteResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_result =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.stmt_execute" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count == 1 &&
+        scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.status == 1 && decoded.publication_barrier == 1 &&
+        decoded.executor_availability_generation != 0 &&
+        nonzero(decoded.result_descriptor_uuid) &&
+        nonzero(decoded.result_handle_uuid) &&
+        nonzero(decoded.effect_evidence_sha256) &&
+        nonzero(decoded.operation_evidence_uuid);
+    if (!exact_result) {
+      std::cerr << "CSC-TEST-005775 PARAMETER_BIND_MULTI_NULLABLE "
+                   "consume_failed detail="
+                << detail
+                << " payload_bytes=" << result.server_result_payload.size()
+                << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+      return 4;
+    }
+    const auto fetched =
+        session.FetchCursorOnRoute(result.server_cursor_uuid, 1);
+    const bool exact_typed_result =
+        fetched.accepted && fetched.row_count == 1 && fetched.end_of_cursor &&
+        !fetched.row_packet.empty() &&
+        fetched.row_packet.find("operation_id=engine.op.stmt_execute") !=
+            std::string::npos &&
+        fetched.row_packet.find("result_kind=stmt_execute_result") !=
+            std::string::npos &&
+        fetched.row_packet.find("row[0]=key_a=7;amount=") !=
+            std::string::npos &&
+        fetched.row_packet.find(
+            "row_meta[0]=key_a:int64:not_null;amount:int64:null") !=
+            std::string::npos &&
+        fetched.row_packet.find("<NULL>") == std::string::npos;
+    if (!exact_typed_result) {
+      std::cerr << "CSC-TEST-005775 PARAMETER_BIND_MULTI_NULLABLE "
+                   "typed_result_failed accepted="
+                << fetched.accepted << " row_count=" << fetched.row_count
+                << " end_of_cursor=" << fetched.end_of_cursor
+                << " row_packet=" << fetched.row_packet << '\n';
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-005775 PARAMETER_BIND_MULTI_NULLABLE accepted "
+                 "canonical_sblr=true durable_bind_consumed=true "
+                 "slot_count=2 first_value=7 second_value=null "
+                 "publication_barrier=passed public_name=prep_parameter_multi "
+                 "declared_types=BIGINT,BIGINT\n";
     return 0;
   }
   if (operation == "result-page") {

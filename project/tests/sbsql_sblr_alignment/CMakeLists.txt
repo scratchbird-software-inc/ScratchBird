@@ -4742,6 +4742,14 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia14_parameter_bind_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia14_parameter_bind_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;SBLR_STMT_PREPARE;SBLR_STMT_EXECUTE;SBSQL-5535E9A48BE4;SBSQL-414E9A624B34;CSC-TEST-003593;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia14_parameter_bind_multi_nullable_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation parameter-bind-multi-nullable
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia14_parameter_bind_multi_nullable_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia14_parameter_bind_multi_nullable_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;IA-05;SBLR_PARAMETER_BIND;SBLR_STMT_PREPARE;SBLR_STMT_EXECUTE;SBSQL-5535E9A48BE4;SBSQL-414E9A624B34;CSC-TEST-005775;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia15_result_page_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>

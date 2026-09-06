@@ -270,7 +270,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "parameter-bind-multi-nullable", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-create"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-merge"))
@@ -675,6 +675,20 @@ def main() -> int:
                     "public statement name, declared type, exact surface "
                     "identities, and durable typed binding"
                 )
+        elif args.operation == "parameter-bind-multi-nullable":
+            expected_success = (
+                "CSC-TEST-005775 PARAMETER_BIND_MULTI_NULLABLE accepted "
+                "canonical_sblr=true durable_bind_consumed=true "
+                "slot_count=2 first_value=7 second_value=null "
+                "publication_barrier=passed public_name=prep_parameter_multi "
+                "declared_types=BIGINT,BIGINT\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "multi-slot nullable PREPARE and EXECUTE did not preserve "
+                    "the exact ordered slot vector, SQL NULL state, and "
+                    "durable typed binding"
+                )
         audit_paths = (server_trace, dispatch_trace,
                        work / "sc" / "sb_server.audit.jsonl")
         audit = "\n".join(p.read_text(encoding="utf-8", errors="replace")
@@ -1078,7 +1092,8 @@ def main() -> int:
                 "executor_availability_generation=",
                 "terminal_state=already_terminal",
             )
-        elif args.operation == "parameter-bind":
+        elif args.operation in ("parameter-bind",
+                                "parameter-bind-multi-nullable"):
             expected = (
                 "executor_id=engine.op.parameter_bind",
                 "opcode=SBLR_PARAMETER_BIND",
