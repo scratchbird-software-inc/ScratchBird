@@ -10,11 +10,14 @@
 
 #include "api_diagnostics.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+// SEARCH_KEY: SB_ENGINE_MGA_PHYSICAL_CLEANUP_COORDINATOR_AUTHORITY
 
 namespace idx = scratchbird::core::index;
 namespace mga = scratchbird::transaction::mga;
@@ -279,5 +282,117 @@ MgaIntegratedPhysicalCleanupResult ApplyMgaIntegratedPhysicalCleanup(
   AddEvidence(&result, "allocation_map_extent_mutation", "applied");
   return result;
 }
+
+MgaRelationPhysicalSweepResult ApplyMgaRelationPhysicalSweepToState(
+    const MgaRelationPhysicalSweepRequest& request) {
+  namespace mga = scratchbird::transaction::mga;
+  auto fail = [](std::string detail) {
+    MgaRelationPhysicalSweepResult result;
+    result.fail_closed = true;
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_physical_sweep", std::move(detail));
+    return result;
+  };
+
+  if (!request.engine_mga_authoritative) {
+    return fail("engine_mga_authority_required");
+  }
+  if (!request.cleanup_horizon_authoritative ||
+      request.authoritative_cleanup_horizon_local_transaction_id == 0) {
+    return fail("cleanup_horizon_authority_required");
+  }
+  if (request.max_row_versions_to_scan == 0 ||
+      request.state.row_versions.size() > request.max_row_versions_to_scan) {
+    return fail("bounded_row_version_scan_required");
+  }
+  if (request.max_index_entries_to_scan == 0 ||
+      request.state.index_entries.size() > request.max_index_entries_to_scan) {
+    return fail("bounded_index_entry_scan_required");
+  }
+  if (request.reclaim_evidence_records.empty()) {
+    return fail("reclaim_evidence_required");
+  }
+
+  auto evidence_matches_row =
+      [](const mga::LocalCleanupReclaimEvidenceRecord& evidence,
+         const CrudRowVersionRecord& row) {
+        const std::string row_uuid =
+            scratchbird::core::uuid::UuidToString(
+                evidence.row_version_identity.row.row_uuid.value);
+        return row.creator_tx ==
+                   evidence.row_version_identity.creator_transaction.local_id.value &&
+               row.sequence == evidence.row_version_identity.version_sequence &&
+               row.row_uuid == row_uuid;
+      };
+  auto evidence_for_row =
+      [&](const CrudRowVersionRecord& row)
+          -> const mga::LocalCleanupReclaimEvidenceRecord* {
+        for (const auto& evidence : request.reclaim_evidence_records) {
+          if (evidence_matches_row(evidence, row)) {
+            return &evidence;
+          }
+        }
+        return nullptr;
+      };
+
+  MgaRelationPhysicalSweepResult result;
+  result.state = request.state;
+  result.state.row_versions.clear();
+  result.state.index_entries.clear();
+  result.scanned_row_version_count =
+      static_cast<std::uint64_t>(request.state.row_versions.size());
+  result.scanned_index_entry_count =
+      static_cast<std::uint64_t>(request.state.index_entries.size());
+
+  std::vector<std::string> removed_version_uuids;
+  std::vector<std::string> matched_evidence_ids;
+  for (const auto& row : request.state.row_versions) {
+    const auto* evidence = evidence_for_row(row);
+    if (evidence == nullptr) {
+      result.state.row_versions.push_back(row);
+      ++result.retained_row_version_count;
+      continue;
+    }
+    removed_version_uuids.push_back(row.version_uuid);
+    matched_evidence_ids.push_back(evidence->stable_evidence_id);
+    ++result.removed_row_version_count;
+  }
+
+  for (const auto& evidence : request.reclaim_evidence_records) {
+    if (std::find(matched_evidence_ids.begin(),
+                  matched_evidence_ids.end(),
+                  evidence.stable_evidence_id) == matched_evidence_ids.end()) {
+      return fail("reclaim_evidence_not_in_relation_state:" +
+                  evidence.stable_evidence_id);
+    }
+  }
+
+  for (const auto& entry : request.state.index_entries) {
+    if (std::find(removed_version_uuids.begin(),
+                  removed_version_uuids.end(),
+                  entry.version_uuid) != removed_version_uuids.end()) {
+      ++result.removed_index_entry_count;
+      continue;
+    }
+    result.state.index_entries.push_back(entry);
+    ++result.retained_index_entry_count;
+  }
+
+  result.ok = true;
+  result.physical_state_mutated =
+      result.removed_row_version_count != 0 ||
+      result.removed_index_entry_count != 0;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  result.evidence.push_back({"mga_relation_physical_sweep",
+                             "durable_mga_cleanup_horizon:" +
+                                 std::to_string(
+                                     request
+                                         .authoritative_cleanup_horizon_local_transaction_id)});
+  result.evidence.push_back({"mga_relation_physical_sweep_authority",
+                             "durable_mga_transaction_inventory"});
+  return result;
+}
+
 
 }  // namespace scratchbird::engine::internal_api

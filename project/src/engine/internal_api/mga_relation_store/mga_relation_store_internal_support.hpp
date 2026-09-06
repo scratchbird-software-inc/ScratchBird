@@ -12,6 +12,7 @@
 
 #include <functional>
 #include <map>
+#include <span>
 
 namespace scratchbird::engine::internal_api {
 
@@ -53,5 +54,35 @@ bool TextMigrationLineageCreatorVisibleForStoreModule(
 bool UpdateScopedRelationSummariesForStoreModule(
     const EngineRequestContext& context,
     const std::map<std::string, ScopedRelationSummaryDelta>& deltas);
+
+// Read-path bridges keep statement snapshot construction and visibility
+// filtering inside the canonical relation authority while allowing physical
+// heap decoding and delivery to live in its own module.
+struct PreparedMgaHeapReadAuthorityResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  PreparedMgaHeapReadAuthority authority;
+};
+
+PreparedMgaHeapReadAuthorityCohortResult
+PrepareMgaHeapReadAuthoritiesForStoreModule(
+    const EngineRequestContext& context,
+    std::span<const std::string> relation_uuids,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor*
+        resolved_statement_snapshot = nullptr);
+PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthorityForStoreModule(
+    const EngineRequestContext& context,
+    const std::string& relation_uuid);
+EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
+    const EngineRequestContext& context,
+    const CrudTableRecord& table);
+void FilterMgaRelationMetadataForStoreModule(
+    const EngineRequestContext& context,
+    RelationReadSnapshot* metadata);
+void FilterVisibleRetiredTemporaryMetadataForStoreModule(
+    const EngineRequestContext& context,
+    RelationReadSnapshot* metadata);
+EngineApiDiagnostic ValidateMgaRowVersionRecordChainsForStoreModule(
+    const std::vector<CrudRowVersionRecord>& rows);
 
 }  // namespace scratchbird::engine::internal_api

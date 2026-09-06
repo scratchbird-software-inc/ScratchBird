@@ -307,8 +307,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetIndexes(
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTarget(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForRelationScans(
-          context_, std::vector<std::string>{table_uuid}),
+      LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
       TransactionalRelationStoreRoute::mutation_target, "mutation", table_uuid,
       "target_relation_scope");
 }
@@ -316,7 +315,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadMutationTarget(
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargets(
     const std::vector<std::string>& table_uuids) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForRelationScans(context_, table_uuids),
+      LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
       TransactionalRelationStoreRoute::mutation_targets, "mutation",
       JoinedRelationUuids(table_uuids), "target_relation_scopes");
 }
@@ -340,7 +339,8 @@ MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationScan(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
+      LoadMgaRelationStoreStateForRelationScans(
+          context_, std::vector<std::string>{table_uuid}),
       TransactionalRelationStoreRoute::relation_scan, "select", table_uuid,
       "transaction_visible_relation_scan");
 }
@@ -348,7 +348,7 @@ MgaRelationStoreResult TransactionalRelationStore::OpenRelationScan(
 MgaRelationStoreResult TransactionalRelationStore::OpenRelationScans(
     const std::vector<std::string>& table_uuids) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
+      LoadMgaRelationStoreStateForRelationScans(context_, table_uuids),
       TransactionalRelationStoreRoute::relation_scans, "select",
       JoinedRelationUuids(table_uuids), "transaction_visible_relation_scans");
 }

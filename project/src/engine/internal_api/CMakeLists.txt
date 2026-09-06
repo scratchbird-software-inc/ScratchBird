@@ -396,7 +396,10 @@ add_library(sb_engine_internal_api
   dml/constraint_enforcement.cpp
   dml/delete_api.cpp
   dml/delete_batch.cpp
+  dml/direct_bulk_append_cache.cpp
   dml/direct_bulk_generated_projection.cpp
+  dml/direct_bulk_ordered_ingest.cpp
+  dml/direct_bulk_typed_row_codec.cpp
   dml/direct_bulk_uuid_authority.cpp
   dml/dml_ingestion_pipeline.cpp
   dml/dml_index_write_path.cpp
@@ -447,11 +450,13 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_bulk_import_publication.cpp
   mga_relation_store/mga_contextual_text_descriptor.cpp
   mga_relation_store/mga_event_sequence_allocator.cpp
+  mga_relation_store/mga_index_append_facade.cpp
   mga_relation_store/mga_large_value_store.cpp
   mga_relation_store/mga_relation_descriptor.cpp
   mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
   mga_relation_store/mga_relation_metadata_store.cpp
+  mga_relation_store/mga_relation_metadata_writer.cpp
   mga_relation_store/mga_relation_statistics.cpp
   mga_relation_store/mga_row_codec.cpp
   mga_relation_store/mga_row_version_reader.cpp
@@ -459,6 +464,8 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_savepoint_store.cpp
   mga_relation_store/mga_secondary_index_coordination.cpp
   mga_relation_store/mga_update_durable_store.cpp
+  mga_relation_store/mga_temporary_relation_store.cpp
+  mga_relation_store/mga_visible_heap_reader.cpp
   mga_relation_store/mga_relation_store.cpp
   nosql/document_api.cpp
   nosql/document_path_physical_provider.cpp

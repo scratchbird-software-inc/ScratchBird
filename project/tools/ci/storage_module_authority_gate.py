@@ -13,8 +13,8 @@ CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
     "mga_relation_store/mga_relation_store.cpp": (
-        8_600,
-        375_000,
+        3_100,
+        130_000,
         "SB_ENGINE_MGA_RELATION_ROW_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_bulk_import_publication.cpp": (
@@ -32,6 +32,11 @@ MODULES = {
         17_000,
         "SB_ENGINE_MGA_EVENT_SEQUENCE_ALLOCATOR_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_index_append_facade.cpp": (
+        190,
+        8_000,
+        "SB_ENGINE_MGA_INDEX_APPEND_FACADE_IMPLEMENTATION_AUTHORITY",
+    ),
     "mga_relation_store/mga_large_value_store.cpp": (
         550,
         23_000,
@@ -41,6 +46,11 @@ MODULES = {
         2_050,
         96_000,
         "SB_ENGINE_MGA_RELATION_METADATA_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_relation_metadata_writer.cpp": (
+        1_850,
+        85_000,
+        "SB_ENGINE_MGA_RELATION_METADATA_WRITER_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_row_codec.cpp": (
         2_000,
@@ -72,6 +82,21 @@ MODULES = {
         200_000,
         "SB_ENGINE_MGA_UPDATE_DURABLE_STORE_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_temporary_relation_store.cpp": (
+        800,
+        32_000,
+        "SB_ENGINE_MGA_TEMPORARY_RELATION_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_visible_heap_reader.cpp": (
+        3_400,
+        150_000,
+        "SB_ENGINE_MGA_VISIBLE_HEAP_READER_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_physical_cleanup_coordinator.cpp": (
+        450,
+        20_000,
+        "SB_ENGINE_MGA_PHYSICAL_CLEANUP_COORDINATOR_AUTHORITY",
+    ),
     "mga_relation_store/mga_relation_statistics.cpp": (
         240,
         10_000,
@@ -88,14 +113,29 @@ MODULES = {
         "SB_ENGINE_INSERT_PHYSICAL_AUTHORITY_COORDINATOR",
     ),
     "dml/direct_physical_bulk_append.cpp": (
-        11_000,
-        460_000,
+        9_000,
+        390_000,
         "SB_ENGINE_DIRECT_PHYSICAL_BULK_APPEND_COORDINATOR",
+    ),
+    "dml/direct_bulk_append_cache.cpp": (
+        550,
+        24_000,
+        "SB_ENGINE_DIRECT_BULK_APPEND_CACHE_AUTHORITY",
     ),
     "dml/direct_bulk_generated_projection.cpp": (
         700,
         24_000,
         "SB_ENGINE_DIRECT_BULK_GENERATED_PROJECTION_IMPLEMENTATION_AUTHORITY",
+    ),
+    "dml/direct_bulk_ordered_ingest.cpp": (
+        360,
+        15_000,
+        "SB_ENGINE_DIRECT_BULK_ORDERED_INGEST_AUTHORITY",
+    ),
+    "dml/direct_bulk_typed_row_codec.cpp": (
+        1_350,
+        48_000,
+        "SB_ENGINE_DIRECT_BULK_TYPED_ROW_CODEC_AUTHORITY",
     ),
     "dml/direct_bulk_uuid_authority.cpp": (
         320,
@@ -105,6 +145,11 @@ MODULES = {
 }
 
 FORBIDDEN_BY_MODULE = {
+    "mga_relation_store/mga_index_append_facade.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+    ),
     "mga_relation_store/mga_bulk_import_publication.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
@@ -129,6 +174,12 @@ FORBIDDEN_BY_MODULE = {
         "AppendMgaRowVersion",
     ),
     "mga_relation_store/mga_relation_metadata_store.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_relation_metadata_writer.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
@@ -173,6 +224,23 @@ FORBIDDEN_BY_MODULE = {
         "FinalizePhysicalMgaCowTransaction",
         "AppendMgaRowVersion",
     ),
+    "mga_relation_store/mga_temporary_relation_store.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+    ),
+    "mga_relation_store/mga_visible_heap_reader.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_physical_cleanup_coordinator.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
     "mga_relation_store/mga_relation_statistics.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
@@ -193,8 +261,23 @@ FORBIDDEN_BY_MODULE = {
         "ExecuteInsertPhysicalIntegration",
         "PersistLocalTransactionInventory",
     ),
+    "dml/direct_bulk_append_cache.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+    ),
     "dml/direct_bulk_generated_projection.cpp": (
         "transaction_inventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+    ),
+    "dml/direct_bulk_ordered_ingest.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+    ),
+    "dml/direct_bulk_typed_row_codec.cpp": (
+        "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
     ),
