@@ -318,6 +318,18 @@ void RequireSelectAndIndexLookups(const Fixture& fixture,
 
   const auto stats = api::EstimateMgaRelationStatistics(context, fixture.table_uuid, true);
   Require(stats.ok, "IPAR-P7-10 relation statistics lookup failed");
+  Require(stats.statistics.relation_found,
+          "IPAR-P7-10 relation statistics did not find the target relation");
+  const auto catalog_stats = api::EstimateMgaCatalogStatistics(context, true);
+  Require(catalog_stats.ok, "IPAR-P7-10 catalog statistics lookup failed");
+  Require(catalog_stats.statistics.relation_found,
+          "IPAR-P7-10 catalog statistics did not produce an aggregate");
+  Require(catalog_stats.statistics.visible_row_estimate >=
+              stats.statistics.visible_row_estimate,
+          "IPAR-P7-10 catalog row estimate excluded the target relation");
+  Require(catalog_stats.statistics.table_size_bytes >=
+              stats.statistics.table_size_bytes,
+          "IPAR-P7-10 catalog size estimate excluded the target relation");
   Rollback(context);
 }
 

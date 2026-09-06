@@ -396,6 +396,8 @@ add_library(sb_engine_internal_api
   dml/constraint_enforcement.cpp
   dml/delete_api.cpp
   dml/delete_batch.cpp
+  dml/direct_bulk_generated_projection.cpp
+  dml/direct_bulk_uuid_authority.cpp
   dml/dml_ingestion_pipeline.cpp
   dml/dml_index_write_path.cpp
   dml/dml_operation_path_proof.cpp
@@ -405,6 +407,7 @@ add_library(sb_engine_internal_api
   dml/hot_cold_row_split_api.cpp
   dml/index_apply_locality_bridge.cpp
   dml/insert_batch.cpp
+  dml/direct_physical_bulk_append.cpp
   dml/insert_physical_integration.cpp
   dml/insert_api.cpp
   dml/import_api.cpp
@@ -441,8 +444,11 @@ add_library(sb_engine_internal_api
   management/memory_management_api.cpp
   management/migration_management_api.cpp
   management/support_bundle_api.cpp
+  mga_relation_store/mga_event_sequence_allocator.cpp
   mga_relation_store/mga_relation_descriptor.cpp
+  mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
+  mga_relation_store/mga_relation_statistics.cpp
   mga_relation_store/mga_relation_store.cpp
   nosql/document_api.cpp
   nosql/document_path_physical_provider.cpp

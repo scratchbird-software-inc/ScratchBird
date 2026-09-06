@@ -69,6 +69,18 @@ if(EXISTS "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}")
 endif()
 unset(SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT)
 
+set(SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/storage_module_authority_gate.py")
+add_test(
+  NAME storage_module_authority_source_contract_gate
+  COMMAND "${Python3_EXECUTABLE}"
+          "${SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT}"
+)
+set_tests_properties(storage_module_authority_source_contract_gate PROPERTIES
+  LABELS "source_contract;not_runtime_correctness;storage_authority"
+)
+unset(SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

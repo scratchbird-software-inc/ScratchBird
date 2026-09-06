@@ -351,12 +351,15 @@ api::MgaRelationReadView LoadMgaCrudState(const api::EngineRequestContext& conte
 
 std::size_t CountIndexEntries(const api::MgaRelationReadView& state,
                               std::string_view index_uuid,
-                              std::string_view key = {}) {
+                              std::string_view key = {},
+                              std::string_view entry_kind = {}) {
   return static_cast<std::size_t>(std::count_if(
       state.index_entries.begin(),
       state.index_entries.end(),
       [&](const api::CrudIndexEntryRecord& entry) {
-        return entry.index_uuid == index_uuid && (key.empty() || entry.key_value == key);
+        return entry.index_uuid == index_uuid &&
+               (key.empty() || entry.key_value == key) &&
+               (entry_kind.empty() || entry.entry_kind == entry_kind);
       }));
 }
 
@@ -770,8 +773,10 @@ void RequireRuntimeIndexEntriesAndScans(const api::EngineRequestContext& context
           "expression update maintenance did not persist lower-case expression key");
   Require(CountIndexEntries(state, PartialIndexUuid(), "2") == 1,
           "partial update maintenance did not add row after predicate became true");
-  Require(CountIndexEntries(state, PartialIndexUuid(), "1") == 1,
+  Require(CountIndexEntries(state, PartialIndexUuid(), "1", "exact") == 1,
           "partial create-index maintenance did not capture existing predicate-matching row");
+  Require(CountIndexEntries(state, PartialIndexUuid(), "1", "retire") == 1,
+          "partial delete maintenance did not preserve the MGA retire record");
 
   auto selected = SelectRows(context, Predicate("column_range", "id", {TypedValue("int64", "2"),
                                                                         TypedValue("int64", "3")}));
