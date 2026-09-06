@@ -3315,7 +3315,30 @@ if(TARGET sb_engine_sblr)
       COMMAND sbsql_sblr_source_roundtrip_closure_conformance
     )
     set_tests_properties(sbsql_sblr_source_roundtrip_closure_conformance PROPERTIES
-      LABELS "sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_carrier_boundary;sblr_to_sbsql_conversion;sbsql_parser_worker"
+      LABELS "sbsql_sblr_source_roundtrip_closure_conformance;sblr_source_artifact_carrier_boundary;sblr_source_artifact_reversal_integration;sbsql_sblr_alignment_integration;sblr_to_sbsql_conversion;CSC-TEST-005767;CSC-TEST-005768;sbsql_parser_worker"
+    )
+
+    add_executable(
+      sbsql_sblr_source_artifact_container_conformance
+      sbsql_sblr_source_artifact_container_conformance.cpp
+    )
+    target_compile_features(sbsql_sblr_source_artifact_container_conformance PRIVATE cxx_std_23)
+    target_include_directories(
+      sbsql_sblr_source_artifact_container_conformance
+      PRIVATE
+      ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+      sbsql_sblr_source_artifact_container_conformance
+      PRIVATE
+      sb_engine_sblr
+    )
+    add_test(
+      NAME sbsql_sblr_source_artifact_container_conformance
+      COMMAND sbsql_sblr_source_artifact_container_conformance
+    )
+    set_tests_properties(sbsql_sblr_source_artifact_container_conformance PROPERTIES
+      LABELS "sbsql_sblr_source_artifact_container_conformance;IA-01;SBLR_SOURCE_ARTIFACT_MAP;sbsql_sblr_alignment_contract;CSC-TEST-005761;CSC-TEST-005762;CSC-TEST-005763;CSC-TEST-005764;CSC-TEST-005765;CSC-TEST-005766;sbsql_parser_worker"
     )
   endif()
 

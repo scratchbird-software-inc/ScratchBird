@@ -8,6 +8,7 @@
 
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_source_artifact_runtime.hpp"
 #include "sblr_to_sbsql.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
@@ -313,7 +314,127 @@ std::vector<std::string> RenderedStatements(std::string_view rendered) {
   return statements;
 }
 
-std::string BinaryRoundTripCanonicalText(
+int HexNibble(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  return -1;
+}
+
+sblr::SblrSourceArtifactUuidV1 ParseUuid(std::string_view text) {
+  sblr::SblrSourceArtifactUuidV1 uuid{};
+  Require(text.size() == 36 && text[8] == '-' && text[13] == '-' &&
+              text[18] == '-' && text[23] == '-',
+          "source artifact fixture UUID shape is invalid");
+  std::size_t output = 0;
+  for (std::size_t index = 0; index < text.size();) {
+    if (text[index] == '-') {
+      ++index;
+      continue;
+    }
+    Require(index + 1 < text.size() && output < uuid.size(),
+            "source artifact fixture UUID extent is invalid");
+    const auto high = HexNibble(text[index]);
+    const auto low = HexNibble(text[index + 1]);
+    Require(high >= 0 && low >= 0,
+            "source artifact fixture UUID hex is invalid");
+    uuid[output++] = static_cast<std::uint8_t>((high << 4) | low);
+    index += 2;
+  }
+  Require(output == uuid.size(),
+          "source artifact fixture UUID byte count is invalid");
+  return uuid;
+}
+
+sblr::SblrSourceArtifactSymbolKindV1 SymbolKind(std::string_view name) {
+  if (name == "variable") return sblr::SblrSourceArtifactSymbolKindV1::variable;
+  if (name == "parameter") return sblr::SblrSourceArtifactSymbolKindV1::parameter;
+  if (name == "cursor") return sblr::SblrSourceArtifactSymbolKindV1::cursor;
+  if (name == "label") return sblr::SblrSourceArtifactSymbolKindV1::label;
+  if (name == "block_name") return sblr::SblrSourceArtifactSymbolKindV1::block_name;
+  if (name == "routine") return sblr::SblrSourceArtifactSymbolKindV1::routine;
+  if (name == "routine_argument") {
+    return sblr::SblrSourceArtifactSymbolKindV1::routine_argument;
+  }
+  if (name == "exception_handler") {
+    return sblr::SblrSourceArtifactSymbolKindV1::exception_handler;
+  }
+  if (name == "cte") return sblr::SblrSourceArtifactSymbolKindV1::cte;
+  if (name == "relation_alias") {
+    return sblr::SblrSourceArtifactSymbolKindV1::relation_alias;
+  }
+  if (name == "column_alias") {
+    return sblr::SblrSourceArtifactSymbolKindV1::column_alias;
+  }
+  if (name == "object_display_name") {
+    return sblr::SblrSourceArtifactSymbolKindV1::object_display_name;
+  }
+  if (name == "generated_temp") {
+    return sblr::SblrSourceArtifactSymbolKindV1::generated_temp;
+  }
+  Require(false, "source artifact fixture symbol kind is unknown");
+  return sblr::SblrSourceArtifactSymbolKindV1::variable;
+}
+
+sblr::SblrSourceArtifactMapV1 BuildTypedSourceArtifact(
+    const sblr::SblrOperationEnvelope& envelope,
+    const sblr::SblrSourceArtifactUuidV1& container_request_uuid,
+    const sblr::SblrSourceArtifactUuidV1& dialect_uuid,
+    const sblr::SblrSourceArtifactUuidV1& parser_uuid) {
+  sblr::SblrSourceArtifactMapV1 artifact;
+  artifact.artifact_uuid = ParseUuid(
+      "019f1000-0000-7000-8000-000000000601");
+  artifact.container_request_uuid = container_request_uuid;
+  artifact.dialect_family_uuid = dialect_uuid;
+  artifact.parser_package_uuid = parser_uuid;
+  artifact.language_tag = "en";
+  artifact.redaction_class =
+      sblr::SblrSourceArtifactRedactionClassV1::none;
+  artifact.decompile_policy =
+      sblr::SblrSourceArtifactDecompilePolicyV1::source_preserving;
+
+  for (std::size_t index = 0;
+       index < envelope.source_artifact_map.symbols.size(); ++index) {
+    const auto& source = envelope.source_artifact_map.symbols[index];
+    sblr::SblrSourceArtifactSymbolV1 symbol;
+    symbol.symbol_id = index + 1;
+    symbol.symbol_key = source.stable_key;
+    symbol.symbol_kind = SymbolKind(source.symbol_kind);
+    if (symbol.symbol_kind !=
+        sblr::SblrSourceArtifactSymbolKindV1::object_display_name) {
+      symbol.declaration_node_id = 1;
+      symbol.scope_node_id = 1;
+      symbol.use_node_ids = {1};
+    }
+    if (symbol.symbol_kind ==
+        sblr::SblrSourceArtifactSymbolKindV1::object_display_name) {
+      symbol.related_object_uuid = ParseUuid(source.resolved_uuid);
+    }
+    symbol.raw_name_utf8 = source.render_hint;
+    symbol.normalized_lookup_key = source.render_hint;
+    if (!symbol.normalized_lookup_key.empty() &&
+        symbol.normalized_lookup_key.front() == ':') {
+      symbol.normalized_lookup_key.erase(0, 1);
+    }
+    symbol.language_tag = "en";
+    symbol.ordinal = static_cast<std::uint32_t>(index + 1);
+    artifact.symbols.push_back(std::move(symbol));
+  }
+  for (std::size_t index = 0;
+       index < envelope.source_artifact_map.operation_render_hints.size();
+       ++index) {
+    const auto& source =
+        envelope.source_artifact_map.operation_render_hints[index];
+    sblr::SblrSourceArtifactRenderHintV1 hint;
+    hint.render_hint_id = index + 1;
+    hint.node_id = 1;
+    hint.dialect_family_uuid = dialect_uuid;
+    hint.format_group = source.value;
+    artifact.render_hints.push_back(std::move(hint));
+  }
+  return artifact;
+}
+
+std::vector<std::uint8_t> BinaryRoundTripCanonicalContainer(
     const sblr::SblrOperationEnvelope& envelope) {
   Require(sblr::EncodeSblrEnvelope(envelope).empty(),
           "source metadata was serialized inside SBOP");
@@ -337,7 +458,7 @@ std::string BinaryRoundTripCanonicalText(
   public_sblr::SblrCanonicalContainer container;
   const auto engine_uuid = uuid(0x21);
   const auto dialect_uuid = uuid(0x22);
-  const auto parser_uuid = uuid(0x31);
+  const auto parser_uuid = ParseUuid(envelope.parser_package_uuid);
   const auto bundle_uuid = uuid(0x24);
   const auto request_uuid = uuid(0x25);
   std::copy(engine_uuid.begin(), engine_uuid.end(),
@@ -357,14 +478,21 @@ std::string BinaryRoundTripCanonicalText(
   std::copy(request_uuid.begin(), request_uuid.end(),
             container.canonical_anchor.begin() + 116);
   container.operation_payload.assign(encoded_text.begin(), encoded_text.end());
+  auto artifact = BuildTypedSourceArtifact(envelope, request_uuid,
+                                           dialect_uuid, parser_uuid);
+  std::string artifact_detail;
+  container.source_map =
+      sblr::EncodeSblrSourceArtifactMapV1(artifact, &artifact_detail);
+  Require(!container.source_map.empty(),
+          "typed source artifact did not encode: " + artifact_detail);
   const auto binary = public_sblr::EncodeSblrContainer(container);
   Require(!binary.empty(), "canonical SBLR container did not encode");
   const auto decoded =
       public_sblr::DecodeSblrContainerBytes(binary.data(), binary.size());
   Require(decoded.status == public_sblr::SblrCodecStatus::ok,
           "binary SBLR envelope did not decode");
-  Require(decoded.container.source_map.empty(),
-          "operation-only container acquired an unvalidated source map");
+  Require(decoded.container.source_map == container.source_map,
+          "canonical container did not preserve its typed source artifact");
 
   const std::string canonical_text(
       reinterpret_cast<const char*>(decoded.container.operation_payload.data()),
@@ -375,19 +503,22 @@ std::string BinaryRoundTripCanonicalText(
   const auto reencoded = public_sblr::EncodeSblrContainer(decoded.container);
   Require(reencoded == binary,
           "binary SBLR encode/decode was not byte-identical");
-  return canonical_text;
+  const auto decoded_artifact = sblr::DecodeSblrSourceArtifactMapV1(
+      decoded.container.source_map.data(), decoded.container.source_map.size());
+  Require(decoded_artifact.status ==
+              sblr::SblrSourceArtifactDecodeStatusV1::ok,
+          "typed source artifact did not decode after container round-trip");
+  return binary;
 }
 
 void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
                                  std::string_view expected_fragment,
                                  std::string_view label) {
-  const auto canonical_text = BinaryRoundTripCanonicalText(envelope);
-  auto decoded_text = sblr::DecodeSblrEnvelope(canonical_text);
-  Require(decoded_text.ok, std::string(label) + " textual envelope did not decode");
-  decoded_text.envelope.source_artifact_map = envelope.source_artifact_map;
-
+  const auto canonical_container =
+      BinaryRoundTripCanonicalContainer(envelope);
   const sblr::SblrToSbsqlOptions options{.source_preserving = true};
-  const auto rendered = sblr::RenderSblrEnvelopeToSbsql(decoded_text.envelope, options);
+  const auto rendered = sblr::RenderSblrContainerToSbsql(
+      canonical_container.data(), canonical_container.size(), options);
   Require(rendered.ok, std::string(label) + " did not render SBsql");
   Require(Contains(rendered.sbsql_text, expected_fragment),
           std::string(label) + " did not preserve expected render text");
@@ -397,13 +528,26 @@ void CheckRenderReparseRoundTrip(const sblr::SblrOperationEnvelope& envelope,
               !Contains(rendered.sbsql_text, "operation_id="),
           std::string(label) + " leaked authority metadata as SBsql text");
 
-  const auto udr_result =
-      udr::sbu_sbsql_decompile_sblr(canonical_text, kSourcePreservingPolicy);
-  Require(!udr_result.ok &&
-              Contains(udr_result.message_vector_json,
-                       "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED"),
+  const std::string_view container_packet(
+      reinterpret_cast<const char*>(canonical_container.data()),
+      canonical_container.size());
+  const auto udr_result = udr::sbu_sbsql_decompile_sblr(
+      container_packet, kSourcePreservingPolicy);
+  Require(udr_result.ok && udr_result.payload == rendered.sbsql_text,
           std::string(label) +
-              " bare-SBOP UDR reversal did not fail closed");
+              " canonical-container UDR reversal did not preserve SBsql");
+
+  auto bare_operation = envelope;
+  bare_operation.source_artifact_map = {};
+  const auto bare_sbop = sblr::EncodeSblrEnvelope(bare_operation);
+  Require(!bare_sbop.empty(),
+          std::string(label) + " bare canonical SBOP did not encode");
+  const auto bare_udr =
+      udr::sbu_sbsql_decompile_sblr(bare_sbop, kSourcePreservingPolicy);
+  Require(!bare_udr.ok &&
+              Contains(bare_udr.message_vector_json,
+                       "SB_SBLR_TO_SBSQL_SOURCE_ARTIFACT_REQUIRED"),
+          std::string(label) + " bare-SBOP reversal did not fail closed");
 
   for (const auto& statement : RenderedStatements(rendered.sbsql_text)) {
     const auto syntax = udr::sbu_sbsql_validate_syntax(statement, "sbsql");

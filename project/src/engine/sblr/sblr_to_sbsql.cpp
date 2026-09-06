@@ -9,11 +9,14 @@
 #include "sblr_to_sbsql.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "sblr_source_artifact_runtime.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
 #include "sblr_transaction_rollback_runtime.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <sstream>
 #include <string_view>
@@ -113,6 +116,222 @@ bool IsIdentifier(std::string_view value) {
     if (!std::isalnum(c) && c != '_') return false;
   }
   return true;
+}
+
+int HexNibble(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  return -1;
+}
+
+bool ParseUuid(std::string_view text, SblrSourceArtifactUuidV1* uuid) {
+  if (uuid == nullptr || text.size() != 36 || text[8] != '-' ||
+      text[13] != '-' || text[18] != '-' || text[23] != '-') {
+    return false;
+  }
+  std::size_t output = 0;
+  bool nonzero = false;
+  for (std::size_t index = 0; index < text.size();) {
+    if (text[index] == '-') {
+      ++index;
+      continue;
+    }
+    if (index + 1 >= text.size() || output == uuid->size()) return false;
+    const auto high = HexNibble(text[index]);
+    const auto low = HexNibble(text[index + 1]);
+    if (high < 0 || low < 0) return false;
+    (*uuid)[output] = static_cast<std::uint8_t>((high << 4) | low);
+    nonzero = nonzero || (*uuid)[output] != 0;
+    ++output;
+    index += 2;
+  }
+  return output == uuid->size() && nonzero;
+}
+
+template <typename T>
+bool NonZero(const T& value) {
+  return std::any_of(value.begin(), value.end(), [](std::uint8_t byte) {
+    return byte != 0;
+  });
+}
+
+std::string FormatUuid(const SblrSourceArtifactUuidV1& uuid) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string text;
+  text.reserve(36);
+  for (std::size_t index = 0; index < uuid.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) {
+      text.push_back('-');
+    }
+    text.push_back(kHex[uuid[index] >> 4U]);
+    text.push_back(kHex[uuid[index] & 0x0fU]);
+  }
+  return text;
+}
+
+std::string FormatSha256(const SblrSourceArtifactSha256V1& sha256) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string text = "sha256:";
+  text.reserve(7 + sha256.size() * 2);
+  for (const auto byte : sha256) {
+    text.push_back(kHex[byte >> 4U]);
+    text.push_back(kHex[byte & 0x0fU]);
+  }
+  return text;
+}
+
+std::string_view SymbolKindName(SblrSourceArtifactSymbolKindV1 kind) {
+  switch (kind) {
+    case SblrSourceArtifactSymbolKindV1::variable:
+      return "variable";
+    case SblrSourceArtifactSymbolKindV1::parameter:
+      return "parameter";
+    case SblrSourceArtifactSymbolKindV1::cursor:
+      return "cursor";
+    case SblrSourceArtifactSymbolKindV1::label:
+      return "label";
+    case SblrSourceArtifactSymbolKindV1::block_name:
+      return "block_name";
+    case SblrSourceArtifactSymbolKindV1::routine:
+      return "routine";
+    case SblrSourceArtifactSymbolKindV1::routine_argument:
+      return "routine_argument";
+    case SblrSourceArtifactSymbolKindV1::exception_handler:
+      return "exception_handler";
+    case SblrSourceArtifactSymbolKindV1::cte:
+      return "cte";
+    case SblrSourceArtifactSymbolKindV1::relation_alias:
+      return "relation_alias";
+    case SblrSourceArtifactSymbolKindV1::column_alias:
+      return "column_alias";
+    case SblrSourceArtifactSymbolKindV1::object_display_name:
+      return "object_display_name";
+    case SblrSourceArtifactSymbolKindV1::generated_temp:
+      return "generated_temp";
+  }
+  return {};
+}
+
+bool IsObjectAuthorityOperand(std::string_view name) {
+  constexpr std::array<std::string_view, 17> kAuthorityOperands{
+      "object_uuid",           "target_object_uuid",
+      "relation_object_uuid",  "target_relation_uuid",
+      "relation_uuid",         "table_uuid",
+      "parent_table_uuid",     "child_table_uuid",
+      "index_object_uuid",     "index_uuid",
+      "column_object_uuid",    "column_uuid",
+      "target_column_uuid",    "parent_column_uuid",
+      "child_column_uuid",
+      "value_column_uuid",     "predicate_column_uuid"};
+  return std::find(kAuthorityOperands.begin(), kAuthorityOperands.end(),
+                   name) != kAuthorityOperands.end();
+}
+
+std::string ProjectSymbolAuthorityUuid(
+    const SblrOperationEnvelope& envelope,
+    const SblrSourceArtifactSymbolV1& symbol) {
+  if (NonZero(symbol.related_object_uuid)) {
+    return FormatUuid(symbol.related_object_uuid);
+  }
+
+  struct StableKeyAuthority {
+    std::string_view stable_key_operand;
+    std::string_view authority_operand;
+  };
+  constexpr std::array<StableKeyAuthority, 10> kStableKeyAuthorities{{
+      {"value_column_symbol_key", "value_column_uuid"},
+      {"value_parameter_symbol_key", "value_parameter_uuid"},
+      {"predicate_column_symbol_key", "predicate_column_uuid"},
+      {"predicate_parameter_symbol_key", "predicate_parameter_uuid"},
+      {"table_symbol_key", "target_object_uuid"},
+      {"table_symbol_key", "relation_object_uuid"},
+      {"column_symbol_key", "column_descriptor_uuid"},
+      {"index_symbol_key", "index_object_uuid"},
+      {"relation_symbol_key", "relation_object_uuid"},
+      {"savepoint_symbol_key", "savepoint_authority_uuid"},
+  }};
+  for (const auto& mapping : kStableKeyAuthorities) {
+    if (OperandValue(envelope, mapping.stable_key_operand) !=
+        symbol.symbol_key) {
+      continue;
+    }
+    SblrSourceArtifactUuidV1 authority_uuid{};
+    if (ParseUuid(OperandValue(envelope, mapping.authority_operand),
+                  &authority_uuid)) {
+      return FormatUuid(authority_uuid);
+    }
+    continue;
+  }
+
+  std::string_view direct_authority_operand;
+  switch (symbol.symbol_kind) {
+    case SblrSourceArtifactSymbolKindV1::parameter:
+      direct_authority_operand = "parameter_slot_uuid";
+      break;
+    case SblrSourceArtifactSymbolKindV1::column_alias:
+      direct_authority_operand = "projection_alias_uuid";
+      break;
+    case SblrSourceArtifactSymbolKindV1::object_display_name:
+      direct_authority_operand = "target_object_uuid";
+      break;
+    case SblrSourceArtifactSymbolKindV1::label:
+      direct_authority_operand = "savepoint_authority_uuid";
+      break;
+    default:
+      return {};
+  }
+  SblrSourceArtifactUuidV1 authority_uuid{};
+  if (!ParseUuid(OperandValue(envelope, direct_authority_operand),
+                 &authority_uuid)) {
+    return {};
+  }
+  return FormatUuid(authority_uuid);
+}
+
+SblrSourceArtifactMap ToLegacySourceArtifact(
+    const SblrOperationEnvelope& envelope,
+    const SblrSourceArtifactMapV1& artifact) {
+  SblrSourceArtifactMap legacy;
+  legacy.policy_status =
+      artifact.redaction_class == SblrSourceArtifactRedactionClassV1::none
+          ? "non_authoritative_render_metadata"
+          : "redacted_render_metadata";
+  legacy.source_identity = FormatUuid(artifact.artifact_uuid);
+  legacy.source_hash = FormatSha256(artifact.artifact_sha256);
+  legacy.artifact_format = "sblr.source_artifact_map.v1";
+  legacy.render_metadata_only = true;
+  legacy.contains_sql_text = false;
+  legacy.raw_sql_text_authoritative = false;
+  for (const auto& symbol : artifact.symbols) {
+    SblrSourceSymbolArtifact row;
+    row.symbol_kind = std::string(SymbolKindName(symbol.symbol_kind));
+    row.stable_key = symbol.symbol_key;
+    row.resolved_uuid = ProjectSymbolAuthorityUuid(envelope, symbol);
+    row.render_hint = symbol.raw_name_utf8;
+    if (symbol.scope_node_id != 0) {
+      row.scope = "node:" + std::to_string(symbol.scope_node_id);
+    }
+    row.source_hash = FormatSha256(symbol.record_sha256);
+    row.authoritative = false;
+    row.contains_sql_text = false;
+    legacy.symbols.push_back(std::move(row));
+  }
+  for (const auto& hint : artifact.render_hints) {
+    SblrOperationRenderHint row;
+    row.hint_kind = "source_artifact_v1";
+    if (hint.symbol_id != 0 && hint.symbol_id <= artifact.symbols.size()) {
+      row.stable_key = artifact.symbols[hint.symbol_id - 1].symbol_key;
+    } else {
+      row.stable_key = "node." + std::to_string(hint.node_id);
+    }
+    row.value = hint.format_group.empty()
+                    ? "structured_source_preserving_render"
+                    : hint.format_group;
+    row.authoritative = false;
+    row.contains_sql_text = false;
+    legacy.operation_render_hints.push_back(std::move(row));
+  }
+  return legacy;
 }
 
 std::string ParameterName(std::string_view render_hint) {
@@ -986,6 +1205,118 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
   }
 
   return RefuseKnownOperationWithoutRenderContract(envelope);
+}
+
+SblrToSbsqlResult RenderSblrContainerToSbsql(
+    const std::uint8_t* data,
+    std::size_t size,
+    const SblrToSbsqlOptions& options) {
+  if (!options.source_preserving) {
+    return Refuse("SB_SBLR_TO_SBSQL_POLICY_REFUSED",
+                  "SBLR-to-SBsql conversion requires source-preserving policy");
+  }
+  const auto decoded_container =
+      scratchbird::engine::DecodeSblrContainerBytes(data, size);
+  if (decoded_container.status != scratchbird::engine::SblrCodecStatus::ok) {
+    return Refuse(
+        decoded_container.diagnostic_code.empty()
+            ? "SBLR.ENVELOPE.INVALID"
+            : std::string(decoded_container.diagnostic_code),
+        decoded_container.message_key.empty()
+            ? "canonical SBLR container decoding failed"
+            : std::string(decoded_container.message_key));
+  }
+  const auto& container = decoded_container.container;
+  if (container.source_map.empty()) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.absent");
+  }
+  if (container.lowering_metadata.size() >= 4 &&
+      std::equal(container.lowering_metadata.begin(),
+                 container.lowering_metadata.begin() + 4, "SAM1")) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.channel_duplicate_or_misplaced");
+  }
+  if (scratchbird::engine::SblrReadU16(
+          container.canonical_anchor.data() + 100) != 2) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.operation_payload_kind_unsupported");
+  }
+
+  const std::string operation_bytes(
+      reinterpret_cast<const char*>(container.operation_payload.data()),
+      container.operation_payload.size());
+  auto decoded_operation = DecodeSblrEnvelope(operation_bytes);
+  if (!decoded_operation.ok) {
+    SblrToSbsqlResult result;
+    CopyValidationDiagnostics(
+        SblrEnvelopeValidationResult{
+            .ok = false,
+            .diagnostics = std::move(decoded_operation.diagnostics)},
+        &result);
+    return result;
+  }
+
+  const auto decoded_artifact = DecodeSblrSourceArtifactMapV1(
+      container.source_map.data(), container.source_map.size());
+  if (decoded_artifact.status != SblrSourceArtifactDecodeStatusV1::ok) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact." + decoded_artifact.detail);
+  }
+
+  SblrSourceArtifactValidationContextV1 validation_context;
+  validation_context.operation_validated_without_artifact = true;
+  validation_context.source_preserving_requested = true;
+  std::copy_n(container.canonical_anchor.data() + 116, 16,
+              validation_context.expected_container_request_uuid.begin());
+  std::copy_n(container.canonical_anchor.data() + 16, 16,
+              validation_context.expected_dialect_family_uuid.begin());
+  std::copy_n(container.canonical_anchor.data() + 32, 16,
+              validation_context.expected_parser_package_uuid.begin());
+  SblrSourceArtifactUuidV1 operation_parser_uuid{};
+  if (!ParseUuid(decoded_operation.envelope.parser_package_uuid,
+                 &operation_parser_uuid) ||
+      operation_parser_uuid !=
+          validation_context.expected_parser_package_uuid) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.binding");
+  }
+
+  validation_context.admitted_node_ids.push_back(1);
+  for (const auto& operand : decoded_operation.envelope.operands) {
+    validation_context.admitted_node_ids.push_back(
+        static_cast<std::uint64_t>(operand.ordinal) + 1U);
+    if (!IsObjectAuthorityOperand(operand.name)) {
+      continue;
+    }
+    SblrSourceArtifactUuidV1 object_uuid{};
+    if (ParseUuid(OperandValue(decoded_operation.envelope, operand.name),
+                  &object_uuid) &&
+        std::find(validation_context.admitted_object_uuids.begin(),
+                  validation_context.admitted_object_uuids.end(),
+                  object_uuid) ==
+            validation_context.admitted_object_uuids.end()) {
+      validation_context.admitted_object_uuids.push_back(object_uuid);
+    }
+  }
+  std::sort(validation_context.admitted_node_ids.begin(),
+            validation_context.admitted_node_ids.end());
+  validation_context.admitted_node_ids.erase(
+      std::unique(validation_context.admitted_node_ids.begin(),
+                  validation_context.admitted_node_ids.end()),
+      validation_context.admitted_node_ids.end());
+
+  std::string artifact_detail;
+  if (!ValidateSblrSourceArtifactMapV1(decoded_artifact.artifact,
+                                       validation_context,
+                                       &artifact_detail)) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact." + artifact_detail);
+  }
+  decoded_operation.envelope.source_artifact_map =
+      ToLegacySourceArtifact(decoded_operation.envelope,
+                             decoded_artifact.artifact);
+  return RenderSblrEnvelopeToSbsql(decoded_operation.envelope, options);
 }
 
 }  // namespace scratchbird::engine::sblr

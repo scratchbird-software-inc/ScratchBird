@@ -641,20 +641,27 @@ UdrResult sbu_sbsql_describe_statement(std::string_view sql_text, std::string_vi
 
 UdrResult sbu_sbsql_decompile_sblr(std::string_view sblr_packet, std::string_view render_policy) {
   if (AllowsSourcePreservingDecompile(render_policy)) {
-    const auto decoded = scratchbird::engine::sblr::DecodeSblrEnvelope(sblr_packet);
-    if (!decoded.ok) {
-      const auto code = decoded.diagnostics.empty()
-                            ? std::string("SB_SBLR_TO_SBSQL_DECODE_FAILED")
-                            : decoded.diagnostics.front().code;
-      const auto message = decoded.diagnostics.empty()
-                               ? std::string("SBLR envelope decode failed")
-                               : decoded.diagnostics.front().message;
-      return Refuse(code, message);
-    }
     scratchbird::engine::sblr::SblrToSbsqlOptions options;
     options.source_preserving = true;
-    const auto rendered =
-        scratchbird::engine::sblr::RenderSblrEnvelopeToSbsql(decoded.envelope, options);
+    scratchbird::engine::sblr::SblrToSbsqlResult rendered;
+    if (StartsWith(sblr_packet, "SBLR")) {
+      rendered = scratchbird::engine::sblr::RenderSblrContainerToSbsql(
+          sblr_packet, options);
+    } else {
+      const auto decoded =
+          scratchbird::engine::sblr::DecodeSblrEnvelope(sblr_packet);
+      if (!decoded.ok) {
+        const auto code = decoded.diagnostics.empty()
+                              ? std::string("SB_SBLR_TO_SBSQL_DECODE_FAILED")
+                              : decoded.diagnostics.front().code;
+        const auto message = decoded.diagnostics.empty()
+                                 ? std::string("SBLR envelope decode failed")
+                                 : decoded.diagnostics.front().message;
+        return Refuse(code, message);
+      }
+      rendered = scratchbird::engine::sblr::RenderSblrEnvelopeToSbsql(
+          decoded.envelope, options);
+    }
     if (!rendered.ok) {
       const auto code = rendered.diagnostics.empty()
                             ? std::string("SB_SBLR_TO_SBSQL_FAILED")

@@ -14,6 +14,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_parameter_runtime.cpp
   sblr_variable_runtime.cpp
   sblr_source_map_runtime.cpp
+  sblr_source_artifact_runtime.cpp
   sblr_error_vector_runtime.cpp
     sblr_transaction_begin_runtime.cpp
     sblr_transaction_commit_runtime.cpp
