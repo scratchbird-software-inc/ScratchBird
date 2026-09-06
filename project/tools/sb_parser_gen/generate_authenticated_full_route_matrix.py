@@ -134,7 +134,7 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-B1816929AD45",
     "SBSQL-5CC9FDFFE6F7",
 }
-CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
+CREATE_SCHEMA_E2E_SURFACE_IDS = {
     "SBSQL-DE4B8AAF6326",
     "SBSQL-7BA0B928798B",
 }
@@ -210,25 +210,25 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "notes": "CREATE TABLE constraint child surface: grammar and bound syntax are recognized, but the child never owns an executor. Until the authenticated engine binder freezes the complete table, column, and constraint vector into CTDX/CTDO, lowering returns SBSQL.IMPL.NOT_AVAILABLE with parent engine.op.ddl_create_table/SBLR_DDL_CREATE_TABLE and emits no executable SBLR. No listener, SBPS, server dispatch, EngineCreateConstraint SQL-route, catalog mutation, or MGA finality is claimed.",
         }
 
-    if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS:
+    if surface_id in CREATE_SCHEMA_E2E_SURFACE_IDS:
         return {
             "fixture_path": fixture_path,
-            "credential_profile_accepted": "not_applicable_exact_refusal_before_executable_sblr",
-            "credential_profile_refused": "authenticated_sbsql_session_create_schema_refusal_is_implementation_evidence_driven",
+            "credential_profile_accepted": "durable_authenticated_principal_with_CONNECT_and_CATALOG_MUTATE",
+            "credential_profile_refused": "durable_authenticated_principal_with_CONNECT_without_CATALOG_MUTATE",
             "auth_policy": AUTH_POLICY,
             "session_profile": SESSION_PROFILE,
-            "transaction_profile": "not_applicable_no_engine_transaction_or_catalog_mutation_reached",
-            "transport_route": "sbsql_input_to_parser_worker_refusal_before_sbps_submission",
+            "transaction_profile": TRANSACTION_PROFILE,
+            "transport_route": TRANSPORT_ROUTE,
             "tls_profile_ref": TLS_PROFILE_REF,
-            "listener_path": "not_reached_exact_pre_sblr_refusal",
-            "ipc_admission_path": "not_reached_no_executable_sblr_emitted",
-            "engine_admission_authority": "not_reached_engine_bound_create_schema_descriptor_unavailable",
-            "mga_execution_authority": "not_reached_no_catalog_mutation_no_wal_authority",
-            "expected_authorization_accepted_outcome": "not_applicable_until_authenticated_engine_binder_publishes_exact_CSDX_CSDO_carrier",
-            "expected_authorization_refused_outcome": "refused_with_SBSQL_IMPL_NOT_AVAILABLE_before_executable_sblr_or_server_dispatch",
-            "expected_diagnostic_codes": "SBSQL.IMPL.NOT_AVAILABLE",
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": IPC_ADMISSION_PATH,
+            "engine_admission_authority": "authenticated_statement_receipt;engine_bound_CSQX_CSDX_CSDO;canonical_sblr_admission;engine_internal_api_security_authority_api;catalog_authority_through_descriptor_and_uuid_only",
+            "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
+            "expected_authorization_accepted_outcome": "engine_op_ddl_create_schema_executes_through_EngineCreateSchema_then_explicit_MGA_commit_and_independent_authenticated_visibility",
+            "expected_authorization_refused_outcome": "missing_CATALOG_MUTATE_refuses_SECURITY_ACCESS_DENIED_before_catalog_mutation_and_duplicate_name_refuses_CATALOG_NAME_AMBIGUOUS",
+            "expected_diagnostic_codes": "SECURITY.ACCESS_DENIED;CATALOG.NAME.AMBIGUOUS;PROCESS.CANCELLED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
             "fixture_status": "pending_authoring",
-            "notes": "CREATE SCHEMA syntax is recognized, but the command refuses before executable SBLR until the authenticated engine binder publishes the exact CSDX/CSDO carrier. Lowering returns SBSQL.IMPL.NOT_AVAILABLE with parent engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA. No listener, SBPS, server dispatch, EngineCreateSchema SQL route, catalog mutation, or MGA finality is claimed.",
+            "notes": "CREATE SCHEMA is proven through the public SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned CSQX/CSDX/CSDO binding, and EngineCreateSchema under MGA. The accepted branch explicitly commits and is visible to an independent authenticated parser worker. The refused branch authenticates a durable CONNECT-only principal and proves SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and rollback-absence branches preserve transaction authority. No parser-owned catalog identity, generic SQL execution, cluster-positive route, or WAL authority is admitted.",
         }
 
     if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:

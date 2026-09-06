@@ -40,14 +40,7 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-B1816929AD45",
     "SBSQL-5CC9FDFFE6F7",
 }
-CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
-    "SBSQL-DE4B8AAF6326",
-    "SBSQL-7BA0B928798B",
-}
-PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
-    CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
-    | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
-)
+PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
 
 
 def fail(message: str) -> None:
@@ -175,17 +168,12 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
         )
 
     if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
-        expected_parent = (
-            "not_admitted_parent_engine.op.ddl_create_schema"
-            if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
-            else "not_admitted_parent_engine.op.ddl_create_table"
-        )
         return (
             auth.get("status") == "native_now"
             and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
             and manifest.get("final_state") == "exact_refusal_passed"
             and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
-            and operation_id == expected_parent
+            and operation_id == "not_admitted_parent_engine.op.ddl_create_table"
         )
 
     if is_plan_import_rows_surface(surface_id):
@@ -230,17 +218,12 @@ def refreshable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
     if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
-        expected_parent = (
-            "not_admitted_parent_engine.op.ddl_create_schema"
-            if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
-            else "not_admitted_parent_engine.op.ddl_create_table"
-        )
         return (
             auth.get("status") == "native_now"
             and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
             and manifest.get("final_state") == "exact_refusal_passed"
             and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
-            and operation_id == expected_parent
+            and operation_id == "not_admitted_parent_engine.op.ddl_create_table"
         )
     if is_plan_import_rows_surface(surface_id):
         common = (

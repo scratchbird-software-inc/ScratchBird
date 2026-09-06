@@ -264,6 +264,10 @@ CONSTRUCTOR_EXACT_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_c
 
 CREATE_SCHEMA_EXACT_ROUTE_CTEST = "sbsql_create_schema_exact_route_conformance"
 CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_create_schema_exact_route_conformance.cpp"
+CREATE_SCHEMA_FULL_ROUTE_CTEST = "sb_listener_sbp_sbsql_sbwp_tls_engine_auth_route_smoke"
+CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_sbwp_tls_engine_auth_route_smoke.py"
+CREATE_SCHEMA_DIRECT_PROCESS_CTEST = "sbsql_sblr_alignment_ia08_ddl_create_schema_process_e2e"
+CREATE_SCHEMA_DIRECT_PROCESS_TEST_SOURCE = "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
 
 CREATE_STATISTICS_EXACT_ROUTE_CTEST = "sbsql_create_statistics_exact_route_conformance"
 CREATE_STATISTICS_EXACT_ROUTE_TEST_SOURCE = (
@@ -21351,57 +21355,66 @@ def classify_row(
         if op_row["sblr_operation_family"] != expected_family:
             fail(f"{surface['surface_id']} operation matrix family drift for CREATE SCHEMA exact-route override")
 
-        operation_id = "engine.op.diagnostic_refusal"
-        sblr_operation = "SBLR_DIAGNOSTIC_REFUSAL"
-        parent_operation_id = "engine.op.ddl_create_schema"
-        parent_sblr_operation = "SBLR_DDL_CREATE_SCHEMA"
+        operation_id = "engine.op.ddl_create_schema"
+        sblr_operation = "SBLR_DDL_CREATE_SCHEMA"
         fixture = "CREATE SCHEMA qa_schema"
         return {
-            "current_state": "exact_refusal_passed",
+            "current_state": "e2e_passed",
             "parser_evidence": (
                 f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};sql={fixture};"
-                f"registry_surface_id={surface['surface_id']};row_label={surface['canonical_name']}"
+                f"registry_surface_id={surface['surface_id']};row_label={surface['canonical_name']};"
+                f"{CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE};public_sql=CREATE SCHEMA route_create_schema_e2e"
             ),
             "binder_evidence": (
-                f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};bound_statement=true;"
-                "authority.parser.syntax_evidence_only;authority.parser.no_executable_sblr;"
+                f"{CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE};"
+                "authenticated_statement_receipt=true;engine_bound_CSDX_896=true;"
+                "engine_issued_CSDO_488=true;CSDX_to_CSDO_magic_only_projection=true;"
+                "authority.parser.syntax_evidence_only;authority.parser.no_catalog_identity;"
                 "authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution"
             ),
             "lowering_evidence": (
                 f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};"
                 f"sblr_operation={sblr_operation};row_surface_id={surface['surface_id']};"
-                f"canonical_parent_operation_id={parent_operation_id};"
-                f"canonical_parent_sblr_opcode={parent_sblr_operation};"
-                "executable_sblr_emitted=false;parser_executes_sql=false;"
+                "operand=create_schema_descriptor;result=ddl_result;"
+                "executable_sblr_emitted=true;parser_executes_sql=false;"
                 "sql_text_included=false;name_text_included=false"
             ),
             "server_admission_evidence": (
-                f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
-                "pre_sblr_refusal=true;server_admission_not_reached=true;"
-                "requires_public_abi_dispatch=false"
+                f"ctest:{CREATE_SCHEMA_FULL_ROUTE_CTEST};"
+                "SBWP_1_1_over_TLS=true;sb_listener=true;pool_allocated_sbp_sbsql=true;"
+                "SBPS=true;canonical_sblr_admission=true;requires_public_abi_dispatch=true"
             ),
             "engine_runtime_evidence": (
-                f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
-                "engine_dispatch_not_reached=true;catalog_mutation=false;"
-                "EngineCreateSchema_component_excluded_from_SQL_route_evidence=true;"
-                "contains_sql_text=false;no_generic_sql_execution;no_wal_authority"
+                f"ctest:{CREATE_SCHEMA_FULL_ROUTE_CTEST};"
+                "EngineCreateSchema=true;mga_catalog_schema_create=true;explicit_commit=true;"
+                "independent_authenticated_duplicate_refusal=true;rollback_absence=true;"
+                "missing_CATALOG_MUTATE_SECURITY_ACCESS_DENIED=true;"
+                f"ctest:{CREATE_SCHEMA_DIRECT_PROCESS_CTEST};restart_committed_visibility=true;"
+                "restart_rollback_absence=true;contains_sql_text=false;"
+                "no_generic_sql_execution;no_wal_authority"
             ),
             "function_or_api_operation_id": (
                 f"{operation_id};opcode={sblr_operation};"
-                f"parent_operation_id={parent_operation_id};"
-                f"parent_opcode={parent_sblr_operation};not_admitted"
+                "operand=create_schema_descriptor;result=ddl_result;"
+                "api=EngineCreateSchema"
             ),
             "diagnostic_evidence": (
-                "SBSQL.IMPL.NOT_AVAILABLE;executable_sblr_emitted=false;"
-                "canonical_message_vector_set"
+                "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
+                "SECURITY.ACCESS_DENIED_for_missing_CATALOG_MUTATE;"
+                "CATALOG.NAME.AMBIGUOUS_for_duplicate;PROCESS.CANCELLED"
             ),
             "fixture_evidence": (
+                f"ctest:{CREATE_SCHEMA_FULL_ROUTE_CTEST};"
+                f"source={CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE};fixture={fixture};"
+                f"ctest:{CREATE_SCHEMA_DIRECT_PROCESS_CTEST};"
+                f"source={CREATE_SCHEMA_DIRECT_PROCESS_TEST_SOURCE};"
                 f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};"
-                f"source={CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};fixture={fixture};"
-                f"surface_id={surface['surface_id']};exact_refusal=true;no_catalog_mutation"
+                f"component_source={CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE};"
+                f"surface_id={surface['surface_id']};authenticated_full_route=true;"
+                "independent_post_state=true"
             ),
             "evidence_complete": "yes",
-            "notes": "Corrected CREATE SCHEMA evidence: SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name are exact_refusal_passed with SBSQL.IMPL.NOT_AVAILABLE before executable SBLR because the authenticated engine-bound CSDX/CSDO carrier is unavailable. The canonical parent remains engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA; no server admission, engine dispatch, or catalog mutation is claimed. The separate EngineCreateSchema call is internal-API component coverage only and is excluded from this SQL-route evidence.",
+            "notes": "Bounded CREATE SCHEMA public-route evidence for SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name. The authenticated SBWP/TLS listener route acquires one engine statement receipt, binds exact CSQX/CSDX/CSDO authority, admits engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA, dispatches EngineCreateSchema under MGA, commits, and proves visibility from an independent authenticated parser worker. It also proves duplicate and missing-CATALOG_MUTATE refusals preserve transaction state and publish no catalog mutation, rollback absence, and restart visibility/absence through the independent direct-SBPS process fixture. Parser-only binding remains fail-closed without an engine-issued CSDO. No cluster-positive behavior, parser-owned catalog identity, parser finality, generic SQL execution, WAL authority, or byte-identical terminal CSRS replay after receipt loss is claimed.",
         }
 
     create_table_evidence = CREATE_TABLE_EXACT_ROUTE_ROW_EVIDENCE.get(surface["surface_id"])

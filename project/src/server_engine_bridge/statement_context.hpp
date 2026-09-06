@@ -419,6 +419,65 @@ struct StatementNameResolveAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Syntax-only private bind for CREATE SCHEMA. The parser supplies only the
+// admitted command identity, occurrence pair, and one to three raw UTF-8 name
+// atoms with quote bits. Object, parent, catalog, security, resource, recovery,
+// and result authority remains receipt-private and engine-produced.
+struct StatementDdlCreateSchemaNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementDdlCreateSchemaBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t schema_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementDdlCreateSchemaNameAtomV1> name_atoms;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementDdlCreateSchemaAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t schema_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementDdlCreateSchemaNameAtomV1> name_atoms;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string canonical_path_utf8;
+  std::string leaf_name_utf8;
+  std::string schema_uuid;
+  std::uint64_t schema_generation = 0;
+  std::string parent_schema_uuid;
+  std::uint64_t parent_namespace_generation = 0;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string owner_principal_uuid;
+  std::string binding_uuid;
+  std::string recovery_uuid;
+  std::uint64_t binding_generation = 0;
+  std::uint64_t recovery_generation = 0;
+  std::array<std::uint8_t, 32> normalized_path_sha256{};
+  std::array<std::uint8_t, 32> authorization_evidence_sha256{};
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Receipt-private authority for one exact SHOW <singular> <object_ref>
 // inspection. The parser supplies only target-name atoms through the existing
 // name-bind request; identities, generations, rows, and carriers are produced
@@ -1330,6 +1389,20 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
 sb_engine_status_t CopyStatementNameResolveAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     StatementNameResolveAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves and freezes one CREATE SCHEMA syntax demand under the exact live
+// statement receipt. The request contains no parser-selected UUID, generation,
+// policy, authorization, recovery, or publication authority.
+sb_engine_status_t BindStatementDdlCreateSchemaAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementDdlCreateSchemaBindRequestV1* request,
+    StatementDdlCreateSchemaAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementDdlCreateSchemaAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t schema_occurrence,
+    StatementDdlCreateSchemaAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 // Resolves and freezes a SHOW-object detail descriptor from an already-bound

@@ -484,6 +484,17 @@ def main() -> int:
                     "external source-artifact reference did not complete the "
                     "exact retain, resolve, admission, and render/reparse proof"
                 )
+        elif args.operation == "ddl-create-schema":
+            expected_success = (
+                "CSC-TEST-005780 DDL_CREATE_SCHEMA accepted "
+                "canonical_sblr=true catalog_mutation=true "
+                "commit=true publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "CREATE SCHEMA did not complete the exact committed "
+                    "canonical mutation route"
+                )
         elif args.operation == "ddl-create-index":
             expected_refusal = (
                 "CSC-TEST-002601 DDL_CREATE_INDEX "
@@ -1289,11 +1300,111 @@ def main() -> int:
                 raise ProofError(f"source-map success evidence lacks {marker}")
         second = command.copy()
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
+        if args.operation == "ddl-create-schema":
+            second[5] = "ddl-create-schema-observe"
         verified = subprocess.run(second, capture_output=True, text=True, timeout=30)
-        if verified.returncode != 0 or (verified.stdout != first.stdout and args.operation != "ddl-drop-operator"):
+        if verified.returncode != 0:
             raise ProofError(
                 "independent authenticated process/receipt verification failed: "
                 f"returncode={verified.returncode} "
+                f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+            )
+        if args.operation == "ddl-create-schema":
+            expected_observer = (
+                "CSC-TEST-005780 DDL_CREATE_SCHEMA observer_visible=true "
+                "independent_session=true exact_schema_identity=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated CREATE SCHEMA observer did not "
+                    "resolve the committed exact schema identity"
+                )
+
+            def run_schema_auxiliary(
+                operation: str, session_suffix: str, expected_stdout: str
+            ) -> None:
+                auxiliary = command.copy()
+                auxiliary[5] = operation
+                auxiliary[-1] = (
+                    "sbsql-sblr-ddl-create-schema-e2e-" + session_suffix
+                )
+                completed = subprocess.run(
+                    auxiliary, capture_output=True, text=True, timeout=30
+                )
+                if (
+                    completed.returncode != 0
+                    or completed.stdout != expected_stdout
+                    or completed.stderr
+                ):
+                    raise ProofError(
+                        f"CREATE SCHEMA {operation} proof failed: "
+                        f"returncode={completed.returncode} "
+                        f"stdout={completed.stdout!r} "
+                        f"stderr={completed.stderr!r}"
+                    )
+
+            run_schema_auxiliary(
+                "ddl-create-schema-duplicate",
+                "duplicate",
+                "CSC-TEST-005781 DDL_CREATE_SCHEMA "
+                "duplicate_refusal=CATALOG.NAME.AMBIGUOUS "
+                "no_catalog_mutation=true\n",
+            )
+            run_schema_auxiliary(
+                "ddl-create-schema-rollback",
+                "rollback",
+                "CSC-TEST-005783 DDL_CREATE_SCHEMA rollback=true "
+                "no_visible_catalog_effect=true\n",
+            )
+            run_schema_auxiliary(
+                "ddl-create-schema-observe-absent",
+                "rollback-observer",
+                "CSC-TEST-005783 DDL_CREATE_SCHEMA observer_absent=true "
+                "independent_session=true\n",
+            )
+
+            # Restart the real server on a new endpoint and repeat both the
+            # committed and rolled-back observations.  A fresh process,
+            # control directory, runtime directory, socket, session, and
+            # statement receipt must reconstruct state solely from the same
+            # durable database.
+            stop(server)
+            server = None
+            restart_endpoint = work / "sc-restart" / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(work / "sc-restart"),
+                    "--runtime-dir",
+                    str(work / "sr-restart"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(work / "server-restart.out").open("wb"),
+                stderr=(work / "server-restart.err").open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            command[1] = f"unix:{restart_endpoint}"
+            run_schema_auxiliary(
+                "ddl-create-schema-observe",
+                "restart-observer",
+                expected_observer,
+            )
+            run_schema_auxiliary(
+                "ddl-create-schema-observe-absent",
+                "restart-rollback-observer",
+                "CSC-TEST-005783 DDL_CREATE_SCHEMA observer_absent=true "
+                "independent_session=true\n",
+            )
+        elif verified.stdout != first.stdout and args.operation != "ddl-drop-operator":
+            raise ProofError(
+                "independent authenticated process/receipt output differed: "
                 f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
             )
         if args.operation in PRE_CONTEXT_COMMAND_REFUSALS:

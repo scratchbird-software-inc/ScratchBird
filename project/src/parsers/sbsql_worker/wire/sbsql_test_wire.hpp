@@ -501,7 +501,9 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlDropMacroForWire();
   PipelineResult RunAdminRegisterExternalRelationResolverForWire();
   PipelineResult RunAdminUnregisterExternalRelationResolverForWire();
-  PipelineResult RunDdlCreateSchemaForWire();
+  PipelineResult RunDdlCreateSchemaForWire(
+      std::string_view sql = "CREATE SCHEMA qa_schema;",
+      bool autocommit_emulation = false);
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();
   PipelineResult RunDdlDropIndexForWire();

@@ -36,10 +36,6 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-B1816929AD45",
     "SBSQL-5CC9FDFFE6F7",
 }
-CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
-    "SBSQL-DE4B8AAF6326",
-    "SBSQL-7BA0B928798B",
-}
 REQUIRED_KEYS = [
     "fixture_kind",
     "fixture_status",
@@ -191,7 +187,6 @@ def main() -> int:
         authority = fields.get("execution_authority_model", "")
         if surface_id in (
             CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
-            | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
             | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
             | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
             | CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS
@@ -363,24 +358,6 @@ def main() -> int:
                 forbidden = (
                     "ddl.constraint.create",
                     "SBLR_DDL_CONSTRAINT_CREATE",
-                    "server_admission_not_reached=false",
-                    "engine_dispatch_not_reached=false",
-                    "catalog_mutation=true",
-                    "byte_identical_round_trip_required=yes",
-                )
-            elif surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS:
-                required = (
-                    "not_admitted_parent_engine.op.ddl_create_schema",
-                    "SBSQL.IMPL.NOT_AVAILABLE",
-                    "parent_operation_id=engine.op.ddl_create_schema",
-                    "parent_opcode=SBLR_DDL_CREATE_SCHEMA",
-                    "pre_sblr_refusal=true",
-                    "executable_sblr_emitted=false",
-                    "no_server_or_engine_dispatch",
-                    "catalog_mutation=false",
-                    "not_applicable_pre_sblr_exact_refusal",
-                )
-                forbidden = (
                     "server_admission_not_reached=false",
                     "engine_dispatch_not_reached=false",
                     "catalog_mutation=true",

@@ -112,6 +112,9 @@ class EmbeddedEngineClient {
   ipc::ServerVariableBindingResult CoordinateCatalogIntrospect(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDdlCreateSchema(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult BindParseText(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

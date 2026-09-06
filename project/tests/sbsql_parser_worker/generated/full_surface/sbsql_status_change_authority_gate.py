@@ -63,10 +63,8 @@ EXPRESSION_RUNTIME_KINDS = {"function", "operator", "variable"}
 CANONICAL_PRE_SBLR_REFUSAL_SURFACES = {
     "SBSQL-28F16A4C7DD0",  # table_constraint
     "SBSQL-5CC9FDFFE6F7",  # constraint_body
-    "SBSQL-7BA0B928798B",  # schema_name
     "SBSQL-A57CFDE0BBA9",  # column_constraint
     "SBSQL-B1816929AD45",  # constraint_name
-    "SBSQL-DE4B8AAF6326",  # create_schema_stmt
 }
 CANONICAL_PRE_SBLR_REFUSAL_PROOFS = {
     "SBSQL.IMPL.NOT_AVAILABLE",

@@ -58,13 +58,8 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-B1816929AD45",
     "SBSQL-5CC9FDFFE6F7",
 }
-CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS = {
-    "SBSQL-DE4B8AAF6326",
-    "SBSQL-7BA0B928798B",
-}
 PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
     CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
-    | CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
     | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
     | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
     | CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS
@@ -454,9 +449,7 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
                     in CORE_UNAVAILABLE_COMMAND_REFUSAL_SURFACE_IDS
                 )
                 else (
-                    "not_admitted_parent_engine.op.ddl_create_schema"
-                    if surface_id in CREATE_SCHEMA_EXACT_REFUSAL_SURFACE_IDS
-                    else "not_admitted_parent_engine.op.ddl_create_table"
+                    "not_admitted_parent_engine.op.ddl_create_table"
                 )
             )
             if (

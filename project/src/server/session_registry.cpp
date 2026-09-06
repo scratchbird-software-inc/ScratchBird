@@ -12088,7 +12088,112 @@ SessionOperationResult HandleCoordinateKvStructuredStreamAppend(ServerSessionReg
 SessionOperationResult HandleCoordinateKvStructuredTimeseries(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=173;result.response_schema_id=sbps::kSchemaCoordinateKvStructuredTimeseriesResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.kv_structured_timeseries_refused","KV structured scan coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrKvStructuredTimeseriesRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrKvStructuredTimeseriesRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","kv_structured_timeseries_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_kv_structured_timeseries_binder");auto q=engine_api::CompileSblrKvStructuredTimeseriesDescriptor(c,ru,v.occurrence,v.timeseries_occurrence,r->view.kv_structured_timeseries_executor_availability_generation ? r->view.kv_structured_timeseries_executor_availability_generation : (r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation));if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrKvStructuredTimeseriesDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("KV.SCAN_FAILED","KTDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSystemConfigSet(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=175;result.response_schema_id=sbps::kSchemaCoordinateSystemConfigSetResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.system_config_set_refused","KV structured scan coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSystemConfigSetRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSystemConfigSetRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","system_config_set_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_system_config_set_binder");auto q=engine_api::CompileSblrSystemConfigSetDescriptor(c,ru,v.occurrence,v.config_occurrence,r->view.system_config_set_executor_availability_generation ? r->view.system_config_set_executor_availability_generation : (r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation));if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSystemConfigSetDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("KV.SCAN_FAILED","SCDX_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDdlCreateDomain(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=177;result.response_schema_id=sbps::kSchemaCoordinateDdlCreateDomainResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_create_domain_refused","KV structured scan coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlCreateDomainRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlCreateDomainRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_create_domain_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_domain_binder");auto q=engine_api::CompileSblrDdlCreateDomainDescriptor(c,ru,v.occurrence,v.domain_occurrence,r->view.ddl_create_domain_executor_availability_generation ? r->view.ddl_create_domain_executor_availability_generation : (r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation));if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlCreateDomainDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("KV.SCAN_FAILED","CDDX_encode_failed");result.accepted=true;return result;}
-SessionOperationResult HandleCoordinateDdlCreateSchema(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=179;result.response_schema_id=sbps::kSchemaCoordinateDdlCreateSchemaResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_create_schema_refused","KV structured scan coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlCreateSchemaRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlCreateSchemaRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_create_schema_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_schema_binder");auto q=engine_api::CompileSblrDdlCreateSchemaDescriptor(c,ru,v.occurrence,v.schema_occurrence,r->view.ddl_create_schema_executor_availability_generation ? r->view.ddl_create_schema_executor_availability_generation : (r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation));if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlCreateSchemaDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("KV.SCAN_FAILED","CSDX_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateDdlCreateSchema(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = 179;
+  result.response_schema_id = sbps::kSchemaCoordinateDdlCreateSchemaResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.ddl_create_schema_refused",
+        "CREATE SCHEMA coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  scratchbird::engine::sblr::SblrDdlCreateSchemaRequestV1 decoded;
+  std::string detail;
+  if (registry == nullptr ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateSchemaRequestV1(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", detail);
+  }
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+
+  const auto receipt_uuid = UuidBytesToText(decoded.receipt);
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "ddl_create_schema_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "ddl_create_schema_receipt_ended");
+  }
+  if (receipt.view.ddl_create_schema_executor_availability_generation == 0) {
+    return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "ddl_create_schema_executor_unavailable");
+  }
+
+  engine_bridge::StatementDdlCreateSchemaBindRequestV1 bind;
+  bind.authenticated_receipt_uuid = receipt_uuid;
+  bind.occurrence = decoded.occurrence;
+  bind.schema_occurrence = decoded.schema_occurrence;
+  bind.command_identity = decoded.command_identity;
+  bind.request_evidence_sha256 = decoded.evidence;
+  bind.exact_bind_request_bytes = request.payload;
+  for (const auto& atom : decoded.name_atoms) {
+    bind.name_atoms.push_back({atom.raw_utf8, atom.quoted});
+  }
+
+  engine_bridge::StatementDdlCreateSchemaAuthorityV1 authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::BindStatementDdlCreateSchemaAuthorityV1(
+      receipt.handle, &bind, &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  ReadFirstEngineDiagnostic(engine_result, &engine_code, &engine_detail);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1 descriptor;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateSchemaDescriptorV1(
+          authority.canonical_descriptor_bytes.data(),
+          authority.canonical_descriptor_bytes.size(), &descriptor, &detail,
+          false) ||
+      descriptor.receipt != decoded.receipt ||
+      descriptor.occurrence != decoded.occurrence ||
+      descriptor.schema_occurrence != decoded.schema_occurrence ||
+      descriptor.schema_uuid != TextToUuid(authority.schema_uuid) ||
+      descriptor.owning_transaction_uuid !=
+          TextToUuid(receipt.view.owning_transaction_uuid) ||
+      descriptor.owning_local_transaction_id !=
+          receipt.view.owning_local_transaction_id ||
+      descriptor.catalog_generation != receipt.view.catalog_generation_id ||
+      descriptor.security_epoch != receipt.view.security_epoch ||
+      descriptor.resource_generation != receipt.view.resource_epoch ||
+      descriptor.availability !=
+          receipt.view.ddl_create_schema_executor_availability_generation ||
+      descriptor.syntax_demand_sha256 != decoded.evidence ||
+      descriptor.evidence != authority.descriptor_evidence_sha256 ||
+      scratchbird::engine::sblr::EncodeSblrDdlCreateSchemaDescriptorV1(
+          descriptor, false) != authority.canonical_descriptor_bytes) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_schema_descriptor_authority_mismatch"
+                      : std::move(detail));
+  }
+  result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateDdlCreateTable(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=181;result.response_schema_id=sbps::kSchemaCoordinateDdlCreateTableResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_create_table_refused","KV structured scan coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlCreateTableRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlCreateTableRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_create_table_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_table_binder");auto q=engine_api::CompileSblrDdlCreateTableDescriptor(c,ru,v.occurrence,v.table_occurrence,r->view.ddl_create_table_executor_availability_generation ? r->view.ddl_create_table_executor_availability_generation : (r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation));if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlCreateTableDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("KV.SCAN_FAILED","CTDX_encode_failed");result.accepted=true;return result;}
 
 SessionOperationResult HandleCoordinateDdlCreateIndex(

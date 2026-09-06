@@ -302,10 +302,15 @@ CONSTRUCTOR_EXACT_ROUTE_CTEST_LABEL = (
 
 CREATE_SCHEMA_EXACT_ROUTE_CTEST = "sbsql_create_schema_exact_route_conformance"
 CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_create_schema_exact_route_conformance.cpp"
+CREATE_SCHEMA_FULL_ROUTE_CTEST = "sb_listener_sbp_sbsql_sbwp_tls_engine_auth_route_smoke"
+CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_sbwp_tls_engine_auth_route_smoke.py"
+CREATE_SCHEMA_DIRECT_PROCESS_CTEST = "sbsql_sblr_alignment_ia08_ddl_create_schema_process_e2e"
+CREATE_SCHEMA_DIRECT_PROCESS_TEST_SOURCE = "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
 CREATE_SCHEMA_EXACT_ROUTE_CTEST_LABEL = (
-    "sbsql_create_schema_exact_route_conformance;"
-    "sbsql_create_schema_exact_refusal;"
-    "sbsql_catalog_schema_component;sbsql_parser_worker"
+    "sbsql_surface_to_sblr_full_implementation_closure;"
+    "sbsql_parser_worker;SBLR_DDL_CREATE_SCHEMA;"
+    "CSC-TEST-005780;CSC-TEST-005781;CSC-TEST-005783;"
+    "sbsql_e2e_passed;authenticated_full_route;independent_post_state"
 )
 
 CREATE_STATISTICS_EXACT_ROUTE_CTEST = "sbsql_create_statistics_exact_route_conformance"
@@ -25198,43 +25203,50 @@ def classify(
             fail(f"{surface_id} CREATE SCHEMA exact-route manifest override SBLR family drift")
         if ledger_row is None:
             fail(f"{surface_id} CREATE SCHEMA exact-route manifest override requires strict ledger row")
-        if ledger_row.get("current_state") != "exact_refusal_passed":
-            fail(f"{surface_id} CREATE SCHEMA exact-route manifest override requires exact_refusal_passed strict ledger state")
+        if ledger_row.get("current_state") != "e2e_passed":
+            fail(f"{surface_id} CREATE SCHEMA exact-route manifest override requires e2e_passed strict ledger state")
         ledger_operation_id = ledger_row.get("function_or_api_operation_id", "").split(";", 1)[0]
-        if ledger_operation_id != "engine.op.diagnostic_refusal":
+        if ledger_operation_id != "engine.op.ddl_create_schema":
             fail(f"{surface_id} CREATE SCHEMA exact-route manifest override operation id drift")
 
         return {
-            "final_state": "exact_refusal_passed",
+            "final_state": "e2e_passed",
             "ctest_label": CREATE_SCHEMA_EXACT_ROUTE_CTEST_LABEL,
-            "fixture_path": CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE,
+            "fixture_path": (
+                f"{CREATE_SCHEMA_FULL_ROUTE_TEST_SOURCE};"
+                f"{CREATE_SCHEMA_DIRECT_PROCESS_TEST_SOURCE};"
+                f"{CREATE_SCHEMA_EXACT_ROUTE_TEST_SOURCE}"
+            ),
             "implementation_refs": (
-                "operation_id=engine.op.diagnostic_refusal;opcode=SBLR_DIAGNOSTIC_REFUSAL;"
-                "parent_operation_id=engine.op.ddl_create_schema;"
-                "parent_opcode=SBLR_DDL_CREATE_SCHEMA;"
+                "operation_id=engine.op.ddl_create_schema;opcode=SBLR_DDL_CREATE_SCHEMA;"
+                "operand=create_schema_descriptor;result=ddl_result;api=EngineCreateSchema;"
                 f"registry_surface_id={surface_id};generated_registry_row_asserted;"
-                "pre_sblr_refusal=true;server_admission_not_reached=true;"
-                "engine_dispatch_not_reached=true;catalog_mutation=false;"
-                "no_source_sql_text;no_generic_sql_execution"
+                "authenticated_statement_receipt=true;engine_bound_CSDX_CSDO=true;"
+                "server_public_abi_dispatch=true;mga_catalog_schema_create=true;"
+                "SBWP_TLS_listener_route=true;independent_post_state=true;"
+                "no_source_sql_text;no_generic_sql_execution;no_wal_authority"
             ),
             "diagnostic_proof": (
-                "sql_fixture=CREATE SCHEMA qa_schema;SBSQL.IMPL.NOT_AVAILABLE;"
-                "canonical_parent_operation_id=engine.op.ddl_create_schema;"
-                "canonical_parent_sblr_opcode=SBLR_DDL_CREATE_SCHEMA;"
-                "executable_sblr_emitted=false;canonical_message_vector_set"
+                "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
+                "SECURITY.ACCESS_DENIED_for_missing_CATALOG_MUTATE;"
+                "CATALOG.NAME.AMBIGUOUS_for_duplicate;PROCESS.CANCELLED;"
+                "parser_without_engine_CSDO_refuses"
             ),
             "result_proof": (
-                f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};fixture=CREATE SCHEMA qa_schema;"
-                f"row_surface_id={surface_id};operation_id=engine.op.diagnostic_refusal;"
-                "opcode=SBLR_DIAGNOSTIC_REFUSAL;exact_refusal=true;"
-                "executable_sblr_emitted=false;server_admission_not_reached=true;"
-                "engine_dispatch_not_reached=true;catalog_mutation=false;"
+                f"ctest:{CREATE_SCHEMA_FULL_ROUTE_CTEST};fixture=CREATE SCHEMA qa_schema;"
+                f"row_surface_id={surface_id};operation_id=engine.op.ddl_create_schema;"
+                "opcode=SBLR_DDL_CREATE_SCHEMA;authenticated_full_route=true;"
+                "explicit_commit=true;independent_committed_visibility=true;"
+                "authenticated_missing_grant_refusal=true;duplicate_no_mutation=true;"
+                "rollback_absence=true;"
+                f"ctest:{CREATE_SCHEMA_DIRECT_PROCESS_CTEST};restart_post_state=true;"
+                f"ctest:{CREATE_SCHEMA_EXACT_ROUTE_CTEST};parser_authority_refusal=true;"
                 "contains_sql_text=false;no_wal_authority"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
-            "promoter_slice": "CREATE-SCHEMA-PRE-SBLR-EXACT-REFUSAL",
+            "promoter_slice": "CREATE-SCHEMA-AUTHENTICATED-FULL-ROUTE-E2E",
             "notes": (
-                "Corrected exact-refusal evidence for SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name. CREATE SCHEMA refuses with SBSQL.IMPL.NOT_AVAILABLE before executable SBLR because the authenticated engine-bound CSDX/CSDO carrier is unavailable. The canonical parent remains engine.op.ddl_create_schema/SBLR_DDL_CREATE_SCHEMA; no server admission, engine dispatch, or catalog mutation is claimed. The separate EngineCreateSchema call is internal-API component coverage only."
+                "Bounded CREATE SCHEMA public-route evidence for SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name. The authenticated SBWP/TLS listener route proves exact CSQX/CSDX/CSDO binding, canonical SBLR admission, EngineCreateSchema MGA mutation, explicit commit, independent visibility, duplicate and missing-CATALOG_MUTATE no-mutation refusals, and rollback absence. The direct authenticated SBPS process fixture adds server-restart committed visibility and rollback absence; the parser-only component remains fail-closed without engine authority. Durable byte-identical CSRS terminal replay after receipt loss remains a separate in-progress workplan item."
             ),
         }
 

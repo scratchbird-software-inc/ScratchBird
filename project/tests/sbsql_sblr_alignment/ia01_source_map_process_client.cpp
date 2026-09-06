@@ -17,6 +17,7 @@
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
@@ -641,6 +642,181 @@ int main(int argc, char** argv) {
                    "transaction_controls=begin,commit,rollback "
                    "savepoint_controls=create,rollback_to,release "
                    "savepoint_labels=unquoted,double_quoted\n";
+    }
+    return 0;
+  }
+  if (operation == "ddl-create-schema" ||
+      operation == "ddl-create-schema-observe" ||
+      operation == "ddl-create-schema-duplicate" ||
+      operation == "ddl-create-schema-rollback" ||
+      operation == "ddl-create-schema-observe-absent") {
+    namespace ddl = scratchbird::engine::sblr;
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& result) {
+      std::cerr << "CSC-TEST-005780 DDL_CREATE_SCHEMA " << phase
+                << " accepted=" << result.accepted
+                << " outcome_unknown=" << result.outcome_unknown
+                << " operation=" << result.server_operation_id << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+    const auto decode_name_result = [&](const auto& resolved_result,
+                                        ddl::SblrNameResolveResultV1* out) {
+      std::string detail;
+      return resolved_result.accepted && !resolved_result.outcome_unknown &&
+             !resolved_result.messages.has_errors() &&
+             resolved_result.server_operation_id == "engine.op.name_resolve" &&
+             !resolved_result.sblr_payload.empty() && out != nullptr &&
+             ddl::DecodeSblrNameResolveResultV1(
+                 reinterpret_cast<const std::uint8_t*>(
+                     resolved_result.server_result_payload.data()),
+                 resolved_result.server_result_payload.size(), out, &detail);
+    };
+    const auto exact_schema_terminal = [&](const auto& created,
+                                           ddl::SblrDdlCreateSchemaResultV1* out) {
+      std::string detail;
+      return created.accepted && !created.outcome_unknown &&
+             !created.messages.has_errors() &&
+             created.server_operation_id == "engine.op.ddl_create_schema" &&
+             !created.sblr_payload.empty() && out != nullptr &&
+             ddl::DecodeSblrDdlCreateSchemaResultV1(
+                 reinterpret_cast<const std::uint8_t*>(
+                     created.server_result_payload.data()),
+                 created.server_result_payload.size(), out, &detail) &&
+             nonzero(out->receipt) && nonzero(out->schema_uuid) &&
+             out->schema_generation != 0 &&
+             nonzero(out->catalog_row_uuid) && nonzero(out->mutation_uuid) &&
+             nonzero(out->evidence) && out->availability != 0 &&
+             nonzero(out->publication_barrier) &&
+             out->catalog_row_uuid != out->schema_uuid &&
+             out->mutation_uuid != out->schema_uuid &&
+             out->publication_barrier != out->schema_uuid;
+    };
+
+    if (operation == "ddl-create-schema" ||
+        operation == "ddl-create-schema-rollback") {
+      const bool rollback_case = operation == "ddl-create-schema-rollback";
+      auto created =
+          session.RunPipeline(rollback_case
+                                  ? "CREATE SCHEMA qa_rolled_back_schema;"
+                                  : "CREATE SCHEMA qa_schema;",
+                              true);
+      ddl::SblrDdlCreateSchemaResultV1 terminal;
+      if (!exact_schema_terminal(created, &terminal)) {
+        dump_failure("terminal_contract_failed", created);
+        return 4;
+      }
+      auto finalized = session.RunPipeline(
+          rollback_case ? "ROLLBACK TRANSACTION" : "COMMIT TRANSACTION",
+          true);
+      if (!finalized.accepted || finalized.messages.has_errors()) {
+        dump_failure(rollback_case ? "rollback_failed" : "commit_failed",
+                     finalized);
+        return 4;
+      }
+      if (rollback_case) {
+        std::cout << "CSC-TEST-005783 DDL_CREATE_SCHEMA "
+                     "rollback=true no_visible_catalog_effect=true\n";
+        return 0;
+      }
+      std::cout << "CSC-TEST-005780 DDL_CREATE_SCHEMA accepted "
+                   "canonical_sblr=true catalog_mutation=true "
+                   "commit=true publication_barrier=passed\n";
+      return 0;
+    }
+
+    if (operation == "ddl-create-schema-duplicate") {
+      auto before_result =
+          session.RunPipeline("RESOLVE NAME qa_schema AS SCHEMA;", true);
+      ddl::SblrNameResolveResultV1 before;
+      if (!decode_name_result(before_result, &before) || before.status != 1 ||
+          before.visibility != 1 || before.object_class != 3 ||
+          !nonzero(before.resolved_object_uuid)) {
+        dump_failure("duplicate_before_observer_failed", before_result);
+        return 4;
+      }
+      auto duplicate =
+          session.RunPipeline("CREATE SCHEMA qa_schema;", true);
+      const bool exact_refusal =
+          !duplicate.accepted && !duplicate.outcome_unknown &&
+          duplicate.server_result_payload.empty() &&
+          std::ranges::any_of(
+              duplicate.messages.diagnostics, [](const auto& diagnostic) {
+                return diagnostic.code == "CATALOG.NAME.AMBIGUOUS";
+              });
+      if (!exact_refusal) {
+        dump_failure("duplicate_refusal_failed", duplicate);
+        return 4;
+      }
+      auto after_result =
+          session.RunPipeline("RESOLVE NAME qa_schema AS SCHEMA;", true);
+      ddl::SblrNameResolveResultV1 after;
+      if (!decode_name_result(after_result, &after) || after.status != 1 ||
+          after.visibility != 1 ||
+          after.resolved_object_uuid != before.resolved_object_uuid ||
+          after.object_descriptor_generation !=
+              before.object_descriptor_generation) {
+        dump_failure("duplicate_after_observer_failed", after_result);
+        return 4;
+      }
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+        dump_failure("duplicate_rollback_failed", rolled_back);
+        return 4;
+      }
+      std::cout << "CSC-TEST-005781 DDL_CREATE_SCHEMA "
+                   "duplicate_refusal=CATALOG.NAME.AMBIGUOUS "
+                   "no_catalog_mutation=true\n";
+      return 0;
+    }
+
+    const bool absent_case =
+        operation == "ddl-create-schema-observe-absent";
+    auto observed = session.RunPipeline(
+        absent_case ? "RESOLVE NAME qa_rolled_back_schema AS SCHEMA;"
+                    : "RESOLVE NAME qa_schema AS SCHEMA;",
+        true);
+    ddl::SblrNameResolveResultV1 resolved;
+    const bool exact_observer = decode_name_result(observed, &resolved) &&
+        resolved.object_class == 3 &&
+        (absent_case
+             ? resolved.status == 2 && resolved.visibility == 2 &&
+                   !nonzero(resolved.resolved_object_uuid) &&
+                   !nonzero(resolved.resolved_namespace_uuid)
+             : resolved.status == 1 && resolved.visibility == 1 &&
+                   nonzero(resolved.resolved_object_uuid) &&
+                   nonzero(resolved.resolved_namespace_uuid) &&
+                   resolved.object_descriptor_generation != 0);
+    if (!exact_observer) {
+      dump_failure("observer_contract_failed", observed);
+      return 4;
+    }
+    auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+    if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+      dump_failure("observer_rollback_failed", rolled_back);
+      return 4;
+    }
+    if (absent_case) {
+      std::cout << "CSC-TEST-005783 DDL_CREATE_SCHEMA "
+                   "observer_absent=true independent_session=true\n";
+    } else {
+      std::cout << "CSC-TEST-005780 DDL_CREATE_SCHEMA observer_visible=true "
+                   "independent_session=true exact_schema_identity=true\n";
     }
     return 0;
   }

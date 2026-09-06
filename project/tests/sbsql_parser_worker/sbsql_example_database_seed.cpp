@@ -17,6 +17,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -46,6 +47,8 @@ using scratchbird::core::platform::UuidKind;
 #endif
 
 constexpr std::string_view kBenchmarkPassword = "ScratchBird-E2E-2026!";
+constexpr std::string_view kRestrictedSchemaPrincipal =
+    "schema_connect_only";
 constexpr std::string_view kBenchmarkCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
     "salt=0123456789abcdef0123456789abcdef:"
@@ -155,6 +158,7 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.trace_tags.push_back("security.fixture_trace_authority");
   context.trace_tags.push_back("group:SEC");
   context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
+  context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
   context.trace_tags.push_back("right:CATALOG_MUTATE");
   context.trace_tags.push_back("right:DML_MUTATE");
   return context;
@@ -527,6 +531,47 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
   const std::string copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
   CreateCurrentBenchmarkTables(context, public_schema_uuid);
   CommitSeedTransaction(transaction);
+
+  auto security_transaction =
+      BeginSeedTransaction(database_path, database_uuid);
+  api::EngineSecurityCreatePrincipalRequest restricted_principal;
+  restricted_principal.context = security_transaction.context;
+  restricted_principal.target_object.uuid.canonical =
+      NewUuid(UuidKind::principal);
+  restricted_principal.target_object.object_kind = "security_principal";
+  restricted_principal.principal_uuid =
+      restricted_principal.target_object.uuid.canonical;
+  restricted_principal.principal_name =
+      std::string(kRestrictedSchemaPrincipal);
+  restricted_principal.credential_fingerprint =
+      std::string(kBenchmarkCredentialFingerprint);
+  restricted_principal.option_envelopes.push_back(
+      "principal_authority:engine");
+  const auto created_restricted_principal =
+      api::EngineSecurityCreatePrincipal(restricted_principal);
+  if (!created_restricted_principal.ok ||
+      !created_restricted_principal.principal_created) {
+    for (const auto& diagnostic :
+         created_restricted_principal.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Fail("engine-owned restricted schema principal seed failed");
+  }
+  api::EngineSecurityGrantPrivilegeRequest connect_grant;
+  connect_grant.context = security_transaction.context;
+  connect_grant.grantee_uuid = restricted_principal.principal_uuid;
+  connect_grant.grantee_kind = "principal";
+  connect_grant.privilege = "CONNECT";
+  connect_grant.grant_effect = "allow";
+  const auto granted_connect =
+      api::EngineSecurityGrantPrivilege(connect_grant);
+  if (!granted_connect.ok || !granted_connect.privilege_granted) {
+    for (const auto& diagnostic : granted_connect.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Fail("engine-owned restricted principal CONNECT grant failed");
+  }
+  CommitSeedTransaction(security_transaction);
 
   auto seed_transaction = BeginSeedTransaction(database_path, database_uuid);
   SeedCopyStreamFixtureRow(seed_transaction.context, copy_stream_table_uuid);

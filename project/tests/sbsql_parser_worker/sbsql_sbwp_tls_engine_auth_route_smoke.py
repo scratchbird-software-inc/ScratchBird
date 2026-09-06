@@ -56,6 +56,7 @@ MSG_COPY_IN_RESPONSE = 0x51
 MSG_SERVER_INFO = 0x61
 
 BENCHMARK_PASSWORD = b"ScratchBird-E2E-2026!"
+RESTRICTED_SCHEMA_PRINCIPAL = "schema_connect_only"
 WRONG_PASSWORD = b"ScratchBird-E2E-incorrect"
 TLS_DENIAL_STRUCTURED_VERIFIER = (
     b"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -517,12 +518,18 @@ def local_password_evidence(user: str, verifier: bytes, *extra_fields: bytes) ->
     return evidence
 
 
-def authenticate(sock: ssl.SSLSocket, evidence: bytes, *, p1_features: int = 0) -> tuple[bytes, int, int]:
+def authenticate(
+    sock: ssl.SSLSocket,
+    evidence: bytes,
+    *,
+    p1_features: int = 0,
+    user: str = "benchmark_user",
+) -> tuple[bytes, int, int]:
     sequence = 0
     payload = (
-        p1_startup_payload("benchmark_user", "default", p1_features)
+        p1_startup_payload(user, "default", p1_features)
         if p1_features
-        else startup_payload("benchmark_user", "default")
+        else startup_payload(user, "default")
     )
     send_frame(sock, MSG_STARTUP, sequence, payload)
     sequence += 1
@@ -735,42 +742,179 @@ def run_binary_copy_descriptor_mismatch_route(port: int, copy_fixture_seeded: bo
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
 
-def run_nested_schema_parent_route(port: int) -> None:
+def begin_explicit_transaction(
+    sock: ssl.SSLSocket,
+    sequence: int,
+    attachment: bytes,
+) -> tuple[int, int]:
+    send_frame(sock, MSG_TXN_BEGIN, sequence, attachment=attachment)
+    sequence += 1
+    ready_payload, frame_txn = expect_ready_after_command(
+        sock, "TXN_BEGIN before CREATE SCHEMA"
+    )
+    status, txn_id = decode_ready(ready_payload)
+    if status == 0 or txn_id == 0 or frame_txn == 0:
+        raise RouteError("CREATE SCHEMA route did not obtain an active transaction")
+    return sequence, txn_id
+
+
+def finish_explicit_transaction(
+    sock: ssl.SSLSocket,
+    sequence: int,
+    attachment: bytes,
+    txn_id: int,
+    *,
+    commit: bool,
+) -> int:
+    message_type = MSG_TXN_COMMIT if commit else MSG_TXN_ROLLBACK
+    label = "TXN_COMMIT after CREATE SCHEMA" if commit else "TXN_ROLLBACK after CREATE SCHEMA"
+    send_frame(
+        sock,
+        message_type,
+        sequence,
+        b"\x00\x00\x00\x00" if commit else b"",
+        attachment=attachment,
+        txn_id=txn_id,
+    )
+    sequence += 1
+    ready_payload, frame_txn = expect_ready_after_command(sock, label)
+    status, replacement_txn = decode_ready(ready_payload)
+    if status == 0 or replacement_txn == 0 or frame_txn == 0:
+        raise RouteError(f"{label} did not publish an active replacement transaction")
+    if replacement_txn == txn_id:
+        raise RouteError(f"{label} did not advance transaction identity")
+    return sequence
+
+
+def run_create_schema_full_route(port: int) -> None:
+    committed_name = "route_create_schema_e2e"
+    rolled_back_name = "route_create_schema_rolled_back"
+    unauthorized_name = "route_create_schema_unauthorized"
+
+    # Authenticated authorization refusal: this durable principal has only
+    # the server-derived CONNECT right.  The exact CREATE SCHEMA route must
+    # refuse CATALOG_MUTATE without publishing a catalog object.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(
+            sock,
+            BENCHMARK_PASSWORD,
+            user=RESTRICTED_SCHEMA_PRINCIPAL,
+        )
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        send_frame(
+            sock,
+            MSG_QUERY,
+            sequence,
+            query_payload(f"CREATE SCHEMA {unauthorized_name};"),
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"SECURITY.ACCESS_DENIED"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn != txn_id or frame_txn == 0:
+            raise RouteError(
+                "CREATE SCHEMA authorization refusal did not preserve transaction authority"
+            )
+        sequence = finish_explicit_transaction(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            commit=False,
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Independent no-mutation proof for the authorization refusal.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock, sequence, attachment, txn_id, f"CREATE SCHEMA {unauthorized_name};"
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Writer: the public TLS/SBWP route must reach the exact CREATE SCHEMA
+    # carrier, engine catalog mutation, and an explicit MGA commit.
     with connect_tls(port) as sock:
         attachment, sequence, txn_id = authenticate(
             sock,
             BENCHMARK_PASSWORD,
         )
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
         sequence = execute_command(
+            sock, sequence, attachment, txn_id, f"CREATE SCHEMA {committed_name};"
+        )
+        sequence = finish_explicit_transaction(
             sock,
             sequence,
             attachment,
             txn_id,
-            "CREATE SCHEMA users.public.route_nested_regression",
+            commit=True,
         )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Independent observer: a second authenticated parser worker and server
+    # receipt must see the committed name and refuse a duplicate before any
+    # catalog mutation.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        send_frame(
+            sock,
+            MSG_QUERY,
+            sequence,
+            query_payload(f"CREATE SCHEMA {committed_name};"),
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"CATALOG.NAME.AMBIGUOUS"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn != txn_id or frame_txn == 0:
+            raise RouteError(
+                "independent CREATE SCHEMA duplicate refusal did not preserve transaction authority"
+            )
+        sequence = finish_explicit_transaction(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            commit=False,
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Rollback writer: a successful CREATE SCHEMA statement must remain
+    # transaction-local until commit.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
         sequence = execute_command(
-            sock,
-            sequence,
-            attachment,
-            txn_id,
-            "CREATE TABLE users.public.route_nested_regression.route_nested_table "
-            "(id bigint, payload text)",
+            sock, sequence, attachment, txn_id, f"CREATE SCHEMA {rolled_back_name};"
         )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Independent absence proof: the same name can be created by a fresh
+    # authenticated parser worker after rollback.  Roll it back as well so
+    # the proof leaves no visible catalog effect.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
         sequence = execute_command(
-            sock,
-            sequence,
-            attachment,
-            txn_id,
-            "INSERT INTO users.public.route_nested_regression.route_nested_table "
-            "(id, payload) VALUES (1, 'nested-route'), (2, 'schema-parent')",
+            sock, sequence, attachment, txn_id, f"CREATE SCHEMA {rolled_back_name};"
         )
-        sequence = execute_row_query(
-            sock,
-            sequence,
-            attachment,
-            txn_id,
-            "SELECT * FROM users.public.route_nested_regression.route_nested_table",
-            expected_rows=((b"1", b"nested-route"),),
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
         )
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
 
@@ -998,7 +1142,8 @@ def seed_example_database(seeder: str | None, database: Path) -> None:
             ]
         )
         return
-    write_local_password_auth_store(database)
+    else:
+        write_local_password_auth_store(database)
 
 
 def main() -> int:
@@ -1087,6 +1232,7 @@ def main() -> int:
           run_plaintext_required_refusal(port)
           run_unknown_required_feature_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
+          run_create_schema_full_route(port)
           run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, False)
           run_negative_auth_route(port)

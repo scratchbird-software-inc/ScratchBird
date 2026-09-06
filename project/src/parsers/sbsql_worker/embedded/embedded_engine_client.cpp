@@ -20,6 +20,7 @@
 #include "engine/sblr/sblr_query_explain_runtime.hpp"
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
@@ -2297,6 +2298,67 @@ EmbeddedEngineClient::CoordinateCatalogIntrospect(
     AddDiagnostic(
         &result.messages, "MGA.TRANSACTION.STALE",
         "embedded catalog-introspection descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDdlCreateSchema(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlCreateSchemaRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlCreateSchemaRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CREATE SCHEMA request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateDdlCreateSchemaRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateDdlCreateSchemaRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateDdlCreateSchema(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlCreateSchemaDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDdlCreateSchemaResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaCoordinateDdlCreateSchemaResultV1 ||
+      !ddl::DecodeSblrDdlCreateSchemaDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.schema_occurrence != request.schema_occurrence ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CREATE SCHEMA descriptor is not exactly correlated",
         detail);
     return result;
   }

@@ -14063,7 +14063,7 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
       : lowered.operation_id == "engine.op.ddl_create_domain" && admitted_system_config_set_operand != nullptr
             ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_domain","SBLR_DDL_CREATE_DOMAIN","ddl.create.domain.native");e.opcode_code=1542;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_domain_descriptor";o.name="domain";o.value_kind=c::SblrValueKind::create_domain_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_schema" && admitted_system_config_set_operand != nullptr
-            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_schema","SBLR_DDL_CREATE_SCHEMA","ddl.create.schema.native");e.opcode_code=1536;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_schema_descriptor";o.name="schema";o.value_kind=c::SblrValueKind::create_schema_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
+            ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_schema","SBLR_DDL_CREATE_SCHEMA","ddl.create.schema.native");e.opcode_code=1536;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="ddl_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_schema_descriptor";o.name="schema";o.value_kind=c::SblrValueKind::create_schema_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_table" && admitted_system_config_set_operand != nullptr
                         ? [&]() -> std::optional<CanonicalBytes>{namespace c=scratchbird::engine::sblr;auto e=c::MakeSblrEnvelope("engine.op.ddl_create_table","SBLR_DDL_CREATE_TABLE","ddl.create.table.native");e.opcode_code=1537;e.requires_transaction_context=true;e.requires_security_context=true;e.result_shape="management_result";e.diagnostic_shape="diagnostic_vector";e.parser_package_uuid=session.admitted_parser_package_uuid;e.parser_package_version_major=session.admitted_parser_package_version_major;e.parser_package_version_minor=session.admitted_parser_package_version_minor;e.parser_package_version_patch=session.admitted_parser_package_version_patch;e.registry_snapshot_uuid=statement_context.catalog_epoch_uuid;e.parser_resolved_names_to_uuids=true;c::SblrOperand o;o.ordinal=1;o.type="create_table_descriptor";o.name="table";o.value_kind=c::SblrValueKind::create_table_descriptor;o.value_body=*admitted_system_config_set_operand;e.operands.push_back(std::move(o));auto bytes=c::EncodeSblrEnvelope(e);if(bytes.empty())return std::nullopt;return CanonicalBytes(bytes.begin(),bytes.end());}()
       : lowered.operation_id == "engine.op.ddl_create_index" && admitted_system_config_set_operand != nullptr
@@ -17604,6 +17604,72 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst,
 
 bool IsIdentifierLikeForRouteExecution(const Token& token) {
   return token.kind == TokenKind::kIdentifier || token.kind == TokenKind::kKeyword;
+}
+
+struct DdlCreateSchemaWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::vector<scratchbird::engine::sblr::SblrDdlCreateSchemaNameAtomV1>
+      name_atoms;
+  std::string invalid_reason;
+};
+
+DdlCreateSchemaWireCommand ParseDdlCreateSchemaWireCommand(
+    const CstDocument& cst) {
+  DdlCreateSchemaWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "CREATE" ||
+      ToUpperAscii(tokens[1]->text) != "SCHEMA") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto terminator_count =
+      std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      });
+  if (terminator_count > 1 ||
+      (terminator_count == 1 &&
+       tokens.back()->kind != TokenKind::kStatementTerminator)) {
+    return invalid("ddl_create_schema_statement_terminator_invalid");
+  }
+  if (terminator_count == 1) {
+    tokens.pop_back();
+  }
+  std::size_t index = 2;
+  while (index < tokens.size()) {
+    if (!IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->text.empty() || tokens[index]->text.size() > 256 ||
+        tokens[index]->text.find('.') != std::string::npos ||
+        result.name_atoms.size() == 3) {
+      return invalid("ddl_create_schema_name_invalid");
+    }
+    result.name_atoms.push_back(
+        {tokens[index]->text, tokens[index]->quoted});
+    ++index;
+    if (index == tokens.size()) break;
+    if (tokens[index]->text != ".") {
+      return invalid("ddl_create_schema_options_not_admitted");
+    }
+    ++index;
+    if (index == tokens.size()) {
+      return invalid("ddl_create_schema_name_invalid");
+    }
+  }
+  if (result.name_atoms.empty()) {
+    return invalid("ddl_create_schema_name_missing");
+  }
+  result.valid = true;
+  return result;
 }
 
 enum class PreparedStatementWireCommandKind {
@@ -25666,6 +25732,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       return RunShowObjectDetailForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
+        starts_with_command("CREATE SCHEMA")) {
+      return RunDdlCreateSchemaForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
         starts_with_command("CATALOG EPOCH CHECK")) {
       return RunCatalogEpochCheckForWire(sql, autocommit_emulation);
     }
@@ -31044,28 +31114,269 @@ int SbsqlTestWireSession::ServeFd(std::intptr_t fd) {
   return rc;
 }
 
-PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire() {
+PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace ddl = scratchbird::engine::sblr;
   PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
-  namespace c = scratchbird::engine::sblr;
-  c::SblrDdlCreateSchemaRequestV1 q;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DDL create schema preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
-  q.receipt = *receipt; q.occurrence = 1; q.schema_occurrence = 1;
-  auto coordinated = server_client_->CoordinateDdlCreateSchema(session_, c::EncodeSblrDdlCreateSchemaRequestV1(q));
-  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
-  c::SblrDdlCreateSchemaDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrDdlCreateSchemaDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
-  auto operand = c::EncodeSblrDdlCreateSchemaDescriptorV1(d, true); if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_schema"; g_system_config_set_operand = &operand;
-  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-  g_system_config_set_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (result.accepted) { c::SblrDdlCreateSchemaResultV1 rr; if (!c::DecodeSblrDdlCreateSchemaResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical CREATE SCHEMA operation was refused.",
+        "sbp_sbsql.wire.ddl_create_schema",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_create_schema_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDdlCreateSchemaWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "ddl_create_schema_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION.INVALID",
+                    "ddl_create_schema_statement_context_unavailable");
+    }
+    return result;
+  }
+
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto database_uuid = CanonicalUuidBytes(session_.database_uuid);
+  const auto transaction_uuid =
+      CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  const auto catalog_epoch =
+      CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  if (!receipt || !database_uuid || !transaction_uuid ||
+      !statement_snapshot || !catalog_epoch || !security_context ||
+      acquired.context.transaction.local_transaction_id == 0 ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0 ||
+      acquired.context
+              .preliminary_ddl_create_schema_executor_availability_generation ==
+          0) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_create_schema_statement_receipt_incomplete");
+  }
+
+  ddl::SblrDdlCreateSchemaRequestV1 request;
+  request.receipt = *receipt;
+  request.occurrence = 1;
+  request.schema_occurrence = 1;
+  request.command_identity = 1;
+  request.name_atoms = command.name_atoms;
+  const auto request_bytes =
+      ddl::EncodeSblrDdlCreateSchemaRequestV1(request);
+  ddl::SblrDdlCreateSchemaRequestV1 canonical_request;
+  std::string detail;
+  if (request_bytes.empty() ||
+      !ddl::DecodeSblrDdlCreateSchemaRequestV1(
+          request_bytes.data(), request_bytes.size(), &canonical_request,
+          &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_schema_bind_request_invalid"
+                      : detail);
+  }
+
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateDdlCreateSchema(session_, request_bytes)
+          : server_client_->CoordinateDdlCreateSchema(session_, request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "ddl_create_schema_coordinate_outcome_unknown"
+                        : "ddl_create_schema_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  ddl::SblrDdlCreateSchemaDescriptorV1 descriptor;
+  if (!ddl::DecodeSblrDdlCreateSchemaDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false) ||
+      descriptor.receipt != canonical_request.receipt ||
+      descriptor.occurrence != canonical_request.occurrence ||
+      descriptor.schema_occurrence != canonical_request.schema_occurrence ||
+      descriptor.database_uuid != *database_uuid ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          acquired.context.transaction.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation !=
+          acquired.context.preliminary_statement_catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch !=
+          acquired.context.preliminary_security_epoch ||
+      descriptor.resource_generation !=
+          acquired.context.preliminary_resource_epoch ||
+      descriptor.syntax_demand_sha256 != canonical_request.evidence ||
+      descriptor.availability !=
+          acquired.context
+              .preliminary_ddl_create_schema_executor_availability_generation ||
+      !nonzero(descriptor.schema_uuid) || !nonzero(descriptor.binding_uuid) ||
+      !nonzero(descriptor.recovery_uuid) || !nonzero(descriptor.evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_schema_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != 488 ||
+      !std::equal(operand.begin(), operand.begin() + 4, "CSDX")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_create_schema_descriptor_transport_invalid");
+  }
+  std::copy_n("CSDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_schema_descriptor_projection_changed_authority");
+  }
+  ddl::SblrDdlCreateSchemaDescriptorV1 operand_descriptor;
+  if (!ddl::DecodeSblrDdlCreateSchemaDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      operand_descriptor.receipt != descriptor.receipt ||
+      operand_descriptor.schema_uuid != descriptor.schema_uuid ||
+      operand_descriptor.binding_uuid != descriptor.binding_uuid ||
+      operand_descriptor.recovery_uuid != descriptor.recovery_uuid ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_schema_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_create_schema";
+  g_system_config_set_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr);
+  g_system_config_set_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_schema_canonical_submission_invalid");
+  }
+
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, false);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+
+  ddl::SblrDdlCreateSchemaResultV1 terminal;
+  if (executed.operation_id != "engine.op.ddl_create_schema" ||
+      !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !ddl::DecodeSblrDdlCreateSchemaResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &terminal, &detail) ||
+      terminal.receipt != descriptor.receipt ||
+      terminal.schema_uuid != descriptor.schema_uuid ||
+      terminal.schema_generation != descriptor.schema_generation ||
+      terminal.parent_schema_uuid != descriptor.parent_schema_uuid ||
+      terminal.parent_namespace_generation !=
+          descriptor.parent_namespace_generation ||
+      terminal.database_uuid != descriptor.database_uuid ||
+      terminal.owning_transaction_uuid !=
+          descriptor.owning_transaction_uuid ||
+      terminal.owning_local_transaction_id !=
+          descriptor.owning_local_transaction_id ||
+      terminal.statement_snapshot_uuid != descriptor.statement_snapshot_uuid ||
+      terminal.catalog_generation != descriptor.catalog_generation ||
+      terminal.security_epoch != descriptor.security_epoch ||
+      terminal.resource_generation != descriptor.resource_generation ||
+      terminal.normalized_path_sha256 != descriptor.normalized_path_sha256 ||
+      terminal.descriptor_evidence_sha256 != descriptor.evidence ||
+      terminal.availability != descriptor.availability ||
+      !nonzero(terminal.catalog_row_uuid) || !nonzero(terminal.mutation_uuid) ||
+      !nonzero(terminal.evidence) ||
+      !nonzero(terminal.publication_barrier) ||
+      terminal.catalog_row_uuid == terminal.schema_uuid ||
+      terminal.mutation_uuid == terminal.schema_uuid ||
+      terminal.publication_barrier == terminal.schema_uuid) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_schema_result_authority_mismatch"
+                      : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_affected_rows = 0;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_request_payload_bytes = request_bytes.size();
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
   return result;
 }
 
