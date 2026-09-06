@@ -444,11 +444,14 @@ add_library(sb_engine_internal_api
   management/memory_management_api.cpp
   management/migration_management_api.cpp
   management/support_bundle_api.cpp
+  mga_relation_store/mga_bulk_import_publication.cpp
   mga_relation_store/mga_event_sequence_allocator.cpp
+  mga_relation_store/mga_large_value_store.cpp
   mga_relation_store/mga_relation_descriptor.cpp
   mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
   mga_relation_store/mga_relation_statistics.cpp
+  mga_relation_store/mga_secondary_index_coordination.cpp
   mga_relation_store/mga_relation_store.cpp
   nosql/document_api.cpp
   nosql/document_path_physical_provider.cpp

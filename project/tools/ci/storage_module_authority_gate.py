@@ -13,14 +13,29 @@ CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
     "mga_relation_store/mga_relation_store.cpp": (
-        23_650,
-        1_035_000,
+        20_600,
+        890_000,
         "SB_ENGINE_MGA_RELATION_ROW_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_bulk_import_publication.cpp": (
+        1_150,
+        50_000,
+        "SB_ENGINE_MGA_BULK_IMPORT_PUBLICATION_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_event_sequence_allocator.cpp": (
         430,
         17_000,
         "SB_ENGINE_MGA_EVENT_SEQUENCE_ALLOCATOR_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_large_value_store.cpp": (
+        550,
+        23_000,
+        "SB_ENGINE_MGA_LARGE_VALUE_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_secondary_index_coordination.cpp": (
+        2_100,
+        95_000,
+        "SB_ENGINE_MGA_SECONDARY_INDEX_COORDINATION_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_relation_statistics.cpp": (
         240,
@@ -55,10 +70,28 @@ MODULES = {
 }
 
 FORBIDDEN_BY_MODULE = {
+    "mga_relation_store/mga_bulk_import_publication.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
     "mga_relation_store/mga_event_sequence_allocator.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
+    ),
+    "mga_relation_store/mga_large_value_store.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_secondary_index_coordination.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
     ),
     "mga_relation_store/mga_relation_statistics.cpp": (
         "PersistLocalTransactionInventory",
