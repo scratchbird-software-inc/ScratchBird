@@ -463,6 +463,7 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_row_version_writer.cpp
   mga_relation_store/mga_savepoint_store.cpp
   mga_relation_store/mga_secondary_index_coordination.cpp
+  mga_relation_store/mga_update_durable_frame_store.cpp
   mga_relation_store/mga_update_durable_store.cpp
   mga_relation_store/mga_temporary_relation_store.cpp
   mga_relation_store/mga_visible_heap_reader.cpp

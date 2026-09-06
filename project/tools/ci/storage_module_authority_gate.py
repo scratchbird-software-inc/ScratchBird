@@ -77,9 +77,14 @@ MODULES = {
         95_000,
         "SB_ENGINE_MGA_SECONDARY_INDEX_COORDINATION_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_update_durable_frame_store.cpp": (
+        575,
+        24_000,
+        "SB_ENGINE_MGA_UPDATE_DURABLE_FRAME_STORE_AUTHORITY",
+    ),
     "mga_relation_store/mga_update_durable_store.cpp": (
-        4_600,
-        200_000,
+        4_050,
+        178_000,
         "SB_ENGINE_MGA_UPDATE_DURABLE_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_temporary_relation_store.cpp": (
@@ -213,6 +218,12 @@ FORBIDDEN_BY_MODULE = {
         "LoadLocalTransactionInventoryFromDatabase",
     ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_update_durable_frame_store.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
