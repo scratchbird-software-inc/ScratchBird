@@ -7,12 +7,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Exact public refusal evidence for specified-but-unavailable Core commands.
+"""Exact public refusal evidence for specified Core commands still in progress.
 
-These commands have allocated Core routes, but the current parser component
-still emits retired text carriers and no authenticated engine binder produces
-the exact descriptor.  Component coverage remains useful; the public SBsql
-route must stop before executable SBLR until that producer exists.
+These commands have allocated Core routes, but their remaining public variants
+do not yet have an authenticated engine-owned carrier. Component coverage
+remains useful; the public SBsql route must stop before executable SBLR until
+that planned producer is implemented. Implemented command variants must not be
+listed here.
 """
 
 from __future__ import annotations
@@ -22,14 +23,6 @@ from pathlib import Path
 
 
 CORE_UNAVAILABLE_COMMAND_REFUSALS = {
-    "SBSQL-5535E9A48BE4": {
-        "canonical_name": "prepare_stmt",
-        "sql": "PREPARE prep_one AS SELECT 7 AS value",
-    },
-    "SBSQL-414E9A624B34": {
-        "canonical_name": "execute_prepared_stmt",
-        "sql": "EXECUTE prep_one",
-    },
     "SBSQL-6677B188A72E": {
         "canonical_name": "execute_stmt",
         "sql": "EXECUTE IMMEDIATE 'SELECT 7'",
@@ -37,10 +30,6 @@ CORE_UNAVAILABLE_COMMAND_REFUSALS = {
     "SBSQL-3F4B1406188A": {
         "canonical_name": "execute_stmt_option",
         "sql": "EXECUTE prep_one WITH CURSOR",
-    },
-    "SBSQL-FB03794952FB": {
-        "canonical_name": "deallocate_stmt",
-        "sql": "DEALLOCATE PREPARE prep_one",
     },
 }
 

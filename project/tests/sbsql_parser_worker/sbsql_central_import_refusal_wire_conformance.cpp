@@ -113,7 +113,7 @@ struct RefusalCase {
   std::string_view canonical_name;
 };
 
-constexpr std::array<RefusalCase, 14> kRefusalCases{{
+constexpr std::array<RefusalCase, 13> kRefusalCases{{
     {"COPY customer TO STDOUT", "SBSQL-BDC2B64DA2A9", "copy_endpoint"},
     {"COPY customer FROM STDIN JSONL", "SBSQL-2DDA6BFD9B65", "copy_format"},
     {"COPY customer FROM STDIN WITH HEADER", "SBSQL-4369855D2FC4", "copy_options"},
@@ -123,7 +123,6 @@ constexpr std::array<RefusalCase, 14> kRefusalCases{{
     {"LOAD DATA INTO customer FROM source CSV", "SBSQL-DB993AE8EDBB", "load_data_clause"},
     {"UUID TO NAME target", "SBSQL-2B7126C58E41", "uuid_to_name"},
     {"USE qa_lifecycle", "SBSQL-5B1C5630A433", "use_database_alias"},
-    {"RESOLVE NAME PUBLIC target", "SBSQL-5E6DC360F377", "resolve_name_public"},
     {"DISCONNECT SESSION 1", "SBSQL-71D1C5165313", "disconnect_session"},
     {"CREATE OBJECT target", "SBSQL-A8E627E27375", "create_object"},
     {"CONNECT SESSION user", "SBSQL-DC0192B217F7", "connect_session"},
@@ -203,17 +202,11 @@ constexpr std::array<RefusalCase, 11> kProcedureIrRefusalCases{{
      "SBSQL-FEE85792235D", "psql_continue_stmt"},
 }};
 
-constexpr std::array<RefusalCase, 5> kPreparedRefusalCases{{
-    {"PREPARE prep_one AS SELECT 7 AS value",
-     "SBSQL-5535E9A48BE4", "prepare_stmt"},
-    {"EXECUTE prep_one",
-     "SBSQL-414E9A624B34", "execute_prepared_stmt"},
-    {"EXECUTE IMMEDIATE 'SELECT 7'",
+constexpr std::array<RefusalCase, 2> kPreparedRefusalCases{{
+    {"EXECUTE IMMEDIATE 'SELECT 7';",
      "SBSQL-6677B188A72E", "execute_stmt"},
-    {"EXECUTE prep_one WITH CURSOR",
+    {"EXECUTE prep_one WITH CURSOR;",
      "SBSQL-3F4B1406188A", "execute_stmt_option"},
-    {"DEALLOCATE PREPARE prep_one",
-     "SBSQL-FB03794952FB", "deallocate_stmt"},
 }};
 
 }  // namespace

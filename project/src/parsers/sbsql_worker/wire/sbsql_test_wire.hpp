@@ -622,6 +622,14 @@ class SbsqlTestWireSession {
       const SbsqlCanonicalCompileOutput* precompiled = nullptr,
       const std::vector<std::uint8_t>* declared_parameter_type_demands =
           nullptr);
+  ipc::ServerPreparedParameterFinalizeResult
+  PrepareParameterizedNamedForWire(
+      std::string_view original_sql,
+      std::string_view nested_sql,
+      std::string_view statement_name,
+      bool statement_name_quoted,
+      const std::vector<std::string>& declared_parameter_types,
+      PipelineResult* named_prepare_result);
   PipelineResult RunNamedStmtExecuteDirectForWire(
       std::string_view original_sql,
       std::string_view nested_sql,

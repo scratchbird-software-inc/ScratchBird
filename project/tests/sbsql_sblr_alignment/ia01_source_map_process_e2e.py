@@ -566,6 +566,70 @@ def main() -> int:
                     "DATABASE ATTACH REGISTERED did not return the exact "
                     "durable session-alias success proof"
                 )
+        elif args.operation == "stmt-prepare":
+            expected_success = (
+                "CSC-TEST-003573 STMT_PREPARE accepted "
+                "canonical_sblr=true publication_barrier=passed "
+                "surface_id=SBSQL-5535E9A48BE4 input=prepare_stmt\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "PREPARE did not complete the exact normalized SBsql "
+                    "surface through the canonical statement executor"
+                )
+        elif args.operation == "stmt-execute":
+            expected_success = (
+                "CSC-TEST-003577 STMT_EXECUTE accepted "
+                "canonical_sblr=true publication_barrier=passed "
+                "result_handle=validated nested_row=key_a:1 "
+                "surface_id=SBSQL-414E9A624B34 "
+                "input=execute_prepared_stmt\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "EXECUTE did not complete the exact normalized prepared "
+                    "statement surface and result-handle route"
+                )
+        elif args.operation == "stmt-free":
+            expected_success = (
+                "CSC-TEST-003585 STMT_FREE accepted "
+                "canonical_sblr=true publication_barrier=passed "
+                "surface_id=SBSQL-FB03794952FB input=deallocate_stmt\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "DEALLOCATE did not complete the exact normalized SBsql "
+                    "surface through the canonical statement executor"
+                )
+        elif args.operation == "name-resolve":
+            expected_success = (
+                "CSC-TEST-003613 NAME_RESOLVE accepted "
+                "canonical_sblr=true visible_table=true "
+                "publication_barrier=passed "
+                "surface_id=SBSQL-5E6DC360F377 "
+                "input=resolve_name_public\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "RESOLVE NAME did not complete the exact normalized "
+                    "public-name-resolution surface through the canonical "
+                    "catalog executor"
+                )
+        elif args.operation == "parameter-bind":
+            expected_success = (
+                "CSC-TEST-003593 PARAMETER_BIND accepted "
+                "canonical_sblr=true durable_bind_consumed=true "
+                "typed_value=7 publication_barrier=passed "
+                "public_name=prep_parameter declared_type=BIGINT "
+                "prepare_surface=SBSQL-5535E9A48BE4 "
+                "execute_surface=SBSQL-414E9A624B34\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "parameterized PREPARE and EXECUTE did not preserve the "
+                    "public statement name, declared type, exact surface "
+                    "identities, and durable typed binding"
+                )
         audit_paths = (server_trace, dispatch_trace,
                        work / "sc" / "sb_server.audit.jsonl")
         audit = "\n".join(p.read_text(encoding="utf-8", errors="replace")

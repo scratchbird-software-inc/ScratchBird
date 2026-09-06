@@ -519,6 +519,7 @@ struct EnginePreparedStatementRecordV1 {
   bool source_free_parameterless_query_template = false;
   bool source_free_parameterized_query_template = false;
   std::string parameter_set_uuid;
+  std::string parameter_prepared_statement_uuid;
   std::uint64_t parameter_set_generation = 0;
   std::string parameter_set_snapshot_uuid;
   std::uint64_t parameter_set_snapshot_generation = 0;
@@ -2913,6 +2914,8 @@ statement_management_load_parameter_binding(
   if (!prepared.source_free_parameterized_query_template ||
       prepared.source_free_parameterless_query_template ||
       !canonical_non_nil_uuid_text(prepared.parameter_set_uuid) ||
+      !canonical_non_nil_uuid_text(
+          prepared.parameter_prepared_statement_uuid) ||
       prepared.parameter_set_generation == 0 ||
       !canonical_non_nil_uuid_text(prepared.parameter_set_snapshot_uuid) ||
       prepared.parameter_set_snapshot_generation == 0 ||
@@ -2954,7 +2957,8 @@ statement_management_load_parameter_binding(
       admitted.snapshot_uuid != prepared.parameter_set_snapshot_uuid ||
       admitted.snapshot_generation !=
           prepared.parameter_set_snapshot_generation ||
-      admitted.prepared_statement_uuid != prepared.canonical_name ||
+      admitted.prepared_statement_uuid !=
+          prepared.parameter_prepared_statement_uuid ||
       admitted.prepared_generation != prepared.prepared_generation ||
       admitted.slots_sha256 != prepared.ordered_slot_table_sha256 ||
       admitted.catalog_generation != view.literal_catalog_generation ||
@@ -2970,7 +2974,8 @@ statement_management_load_parameter_binding(
   const auto revalidated =
       scratchbird::engine::internal_api::RevalidateSblrParameterSet(
           registry_context, admitted, admitted.statement_receipt_uuid,
-          admitted.execution_uuid, admitted.prepared_statement_uuid,
+          admitted.execution_uuid,
+          prepared.parameter_prepared_statement_uuid,
           admitted.prepared_generation, admitted.batch_uuid,
           admitted.batch_generation, admitted.dynamic_package_uuid,
           admitted.dynamic_generation, &current);
@@ -2998,7 +3003,8 @@ statement_management_load_parameter_binding(
   const auto& binding = published.snapshot;
   if (binding.database_uuid != context.database_uuid.canonical ||
       binding.session_uuid != context.session_uuid.canonical ||
-      binding.prepared_statement_uuid != prepared.canonical_name ||
+      binding.prepared_statement_uuid !=
+          prepared.parameter_prepared_statement_uuid ||
       binding.prepared_generation != prepared.prepared_generation ||
       binding.parameter_set_descriptor_uuid != prepared.parameter_set_uuid ||
       binding.parameter_set_generation != prepared.parameter_set_generation ||
@@ -8764,46 +8770,74 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
                     parameter_detail);
     }
     canonical_parameter_admission = parameter_admission;
-    if (scratchbird::engine::sblr::EncodeSblrParameterAdmissionV1(
-            &canonical_parameter_admission) !=
-            request->declared_parameter_type_demands ||
-        !parameter_binding_finalized || !parameter_admission_consumed ||
-        parameter_set.state != scratchbird::engine::internal_api::
-                                   SblrParameterSetState::active ||
-        parameter_set.database_uuid != context.database_uuid.canonical ||
-        parameter_set.session_uuid != context.session_uuid.canonical ||
-        parameter_set.statement_receipt_uuid != view.receipt_uuid ||
-        parameter_admission.parameter_set_descriptor_uuid !=
-            TextToUuid(parameter_set.parameter_set_descriptor_uuid) ||
-        parameter_admission.descriptor_generation !=
-            parameter_set.descriptor_generation ||
-        parameter_admission.execution_uuid !=
-            TextToUuid(parameter_set.execution_uuid) ||
-        parameter_admission.prepared_uuid !=
-            TextToUuid(parameter_set.prepared_statement_uuid) ||
-        parameter_admission.prepared_generation !=
-            parameter_set.prepared_generation ||
-        parameter_admission.batch_uuid != TextToUuid(parameter_set.batch_uuid) ||
-        parameter_admission.batch_generation !=
-            parameter_set.batch_generation ||
-        parameter_admission.dynamic_uuid !=
-            TextToUuid(parameter_set.dynamic_package_uuid) ||
-        parameter_admission.dynamic_generation !=
-            parameter_set.dynamic_generation ||
-        parameter_admission.final_receipt_uuid !=
-            TextToUuid(parameter_final_receipt_uuid) ||
-        parameter_admission.admission_token_uuid !=
-            TextToUuid(parameter_admission_token_uuid) ||
-        parameter_admission.binding_sha256 !=
-            parameter_admission_binding_sha256 ||
-        !request->quoted ||
-        request->statement_name !=
-            CanonicalUuidText(parameter_admission.prepared_uuid) ||
-        parameter_set.catalog_generation != view.literal_catalog_generation ||
-        parameter_set.security_epoch != view.security_epoch ||
-        parameter_set.resource_epoch != view.resource_epoch) {
+    const auto canonical_parameter_bytes =
+        scratchbird::engine::sblr::EncodeSblrParameterAdmissionV1(
+            &canonical_parameter_admission);
+    const char* parameter_authority_mismatch = nullptr;
+    if (canonical_parameter_bytes != request->declared_parameter_type_demands) {
+      parameter_authority_mismatch = "canonical_admission";
+    } else if (!parameter_binding_finalized) {
+      parameter_authority_mismatch = "binding_not_finalized";
+    } else if (!parameter_admission_consumed) {
+      parameter_authority_mismatch = "admission_not_consumed";
+    } else if (parameter_set.state != scratchbird::engine::internal_api::
+                                          SblrParameterSetState::active) {
+      parameter_authority_mismatch = "parameter_set_state";
+    } else if (parameter_set.database_uuid != context.database_uuid.canonical) {
+      parameter_authority_mismatch = "database_uuid";
+    } else if (parameter_set.session_uuid != context.session_uuid.canonical) {
+      parameter_authority_mismatch = "session_uuid";
+    } else if (parameter_set.statement_receipt_uuid != view.receipt_uuid) {
+      parameter_authority_mismatch = "statement_receipt_uuid";
+    } else if (parameter_admission.parameter_set_descriptor_uuid !=
+               TextToUuid(parameter_set.parameter_set_descriptor_uuid)) {
+      parameter_authority_mismatch = "parameter_set_descriptor_uuid";
+    } else if (parameter_admission.descriptor_generation !=
+               parameter_set.descriptor_generation) {
+      parameter_authority_mismatch = "descriptor_generation";
+    } else if (parameter_admission.execution_uuid !=
+               TextToUuid(parameter_set.execution_uuid)) {
+      parameter_authority_mismatch = "execution_uuid";
+    } else if (parameter_admission.prepared_uuid !=
+               TextToUuid(parameter_set.prepared_statement_uuid)) {
+      parameter_authority_mismatch = "prepared_uuid";
+    } else if (parameter_admission.prepared_generation !=
+               parameter_set.prepared_generation) {
+      parameter_authority_mismatch = "prepared_generation";
+    } else if (parameter_admission.batch_uuid !=
+               TextToUuid(parameter_set.batch_uuid)) {
+      parameter_authority_mismatch = "batch_uuid";
+    } else if (parameter_admission.batch_generation !=
+               parameter_set.batch_generation) {
+      parameter_authority_mismatch = "batch_generation";
+    } else if (parameter_admission.dynamic_uuid !=
+               TextToUuid(parameter_set.dynamic_package_uuid)) {
+      parameter_authority_mismatch = "dynamic_uuid";
+    } else if (parameter_admission.dynamic_generation !=
+               parameter_set.dynamic_generation) {
+      parameter_authority_mismatch = "dynamic_generation";
+    } else if (parameter_admission.final_receipt_uuid !=
+               TextToUuid(parameter_final_receipt_uuid)) {
+      parameter_authority_mismatch = "final_receipt_uuid";
+    } else if (parameter_admission.admission_token_uuid !=
+               TextToUuid(parameter_admission_token_uuid)) {
+      parameter_authority_mismatch = "admission_token_uuid";
+    } else if (parameter_admission.binding_sha256 !=
+               parameter_admission_binding_sha256) {
+      parameter_authority_mismatch = "binding_sha256";
+    } else if (parameter_set.catalog_generation !=
+               view.literal_catalog_generation) {
+      parameter_authority_mismatch = "catalog_generation";
+    } else if (parameter_set.security_epoch != view.security_epoch) {
+      parameter_authority_mismatch = "security_epoch";
+    } else if (parameter_set.resource_epoch != view.resource_epoch) {
+      parameter_authority_mismatch = "resource_epoch";
+    }
+    if (parameter_authority_mismatch != nullptr) {
       return refuse(SB_ENGINE_STATUS_CONFLICT, "SBLR.PARAMETER.STALE",
-                    "sblr.stmt_prepare.bind_parameter_authority_stale");
+                    "sblr.stmt_prepare.bind_parameter_authority_stale",
+                    std::string("mismatched_field=") +
+                        parameter_authority_mismatch);
     }
     auto parameter_registry_context = context;
     parameter_registry_context.catalog_generation_id =
@@ -8923,6 +8957,8 @@ sb_engine_status_t BindStatementPrepareAuthorityV1(
   if (parameterized_prepare) {
     authority.parameter_set_uuid =
         parameter_set.parameter_set_descriptor_uuid;
+    authority.parameter_prepared_statement_uuid =
+        parameter_set.prepared_statement_uuid;
     authority.parameter_set_generation = parameter_set.descriptor_generation;
     authority.parameter_prepared_generation =
         parameter_set.prepared_generation;
@@ -12808,13 +12844,14 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
                   "SBLR.OPERAND.INVALID",
                   "sblr.parameter_bind.bind_request_invalid", detail);
   }
-  if (!request->quoted ||
-      request->statement_name != request->prepared_statement_uuid ||
+  const auto canonical_name = statement_management_canonical_name(
+      request->statement_name, request->quoted);
+  if (canonical_name.empty() ||
       !canonical_non_nil_uuid_text(request->prepared_statement_uuid) ||
       !canonical_non_nil_uuid_text(request->parameter_set_uuid)) {
-    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
-                  "SECURITY.ACCESS_DENIED",
-                  "sblr.parameter_bind.prepared_identity_hidden");
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "SBLR.OPERAND.INVALID",
+                  "sblr.parameter_bind.prepared_name_invalid");
   }
 
   StatementContextReceiptView view;
@@ -12870,13 +12907,35 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
                   "sblr.parameter_bind.receipt_authority_stale");
   }
+  const auto slot_hash_text = std::string("sha256:") +
+      scratchbird::core::hash::HexLower(request->ordered_slot_table_sha256);
+  EnginePreparedStatementRecordV1 named_prepared;
+  {
+    std::lock_guard<std::mutex> session_guard(session->mutex);
+    const auto found = session->prepared_statements_by_name.find(canonical_name);
+    if (session->closed ||
+        found == session->prepared_statements_by_name.end() ||
+        found->second.freed ||
+        !found->second.source_free_parameterized_query_template ||
+        found->second.source_free_parameterless_query_template ||
+        found->second.parameter_prepared_statement_uuid !=
+            request->prepared_statement_uuid ||
+        found->second.prepared_generation != request->prepared_generation ||
+        found->second.parameter_set_uuid != request->parameter_set_uuid ||
+        found->second.parameter_set_generation !=
+            request->parameter_set_generation ||
+        found->second.ordered_slot_table_sha256 != slot_hash_text) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.parameter_bind.prepared_identity_hidden");
+    }
+    named_prepared = found->second;
+  }
   auto parameter_registry_context = context;
   parameter_registry_context.catalog_generation_id =
       view.literal_catalog_generation;
   const auto loaded = scratchbird::engine::internal_api::LoadSblrParameterSet(
       parameter_registry_context, request->parameter_set_uuid);
-  const auto slot_hash_text = std::string("sha256:") +
-      scratchbird::core::hash::HexLower(request->ordered_slot_table_sha256);
   if (!loaded.ok ||
       loaded.snapshot.state != scratchbird::engine::internal_api::
                                    SblrParameterSetState::active ||
@@ -13018,6 +13077,23 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
             view.parameter_bind_executor_availability_generation) {
       return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
                     "sblr.parameter_bind.receipt_generation_stale");
+    }
+    std::lock_guard<std::mutex> session_guard(session->mutex);
+    const auto named_current =
+        session->prepared_statements_by_name.find(canonical_name);
+    if (session->closed ||
+        named_current == session->prepared_statements_by_name.end() ||
+        named_current->second.freed ||
+        named_current->second.statement_uuid != named_prepared.statement_uuid ||
+        named_current->second.descriptor_sha256 !=
+            named_prepared.descriptor_sha256 ||
+        named_current->second.parameter_prepared_statement_uuid !=
+            request->prepared_statement_uuid ||
+        named_current->second.parameter_set_uuid != request->parameter_set_uuid ||
+        named_current->second.parameter_set_generation !=
+            request->parameter_set_generation) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "SBLR.PARAMETER.STALE",
+                    "sblr.parameter_bind.prepared_generation_stale");
     }
     const auto current =
         scratchbird::engine::internal_api::LoadSblrParameterSet(
@@ -19475,6 +19551,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
                 ->source_free_parameterized_query_template;
         published.parameter_set_uuid =
             stmt_prepare_authority->parameter_set_uuid;
+        published.parameter_prepared_statement_uuid =
+            stmt_prepare_authority->parameter_prepared_statement_uuid;
         published.parameter_set_generation =
             stmt_prepare_authority->parameter_set_generation;
         published.parameter_set_snapshot_uuid =

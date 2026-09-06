@@ -17402,8 +17402,22 @@ struct PreparedStatementWireCommand {
   std::uint8_t cancel_mode{1};
   std::uint64_t cancel_deadline_monotonic_ns{0};
   std::vector<PreparedParameterWireValue> parameter_values;
+  std::vector<std::string> declared_parameter_types;
   std::string invalid_reason;
 };
+
+std::optional<std::string> CanonicalPreparedStatementNameForWire(
+    std::string_view name, bool quoted) {
+  if (name.empty() || name.size() > 256) return std::nullopt;
+  std::string canonical(name);
+  if (!quoted) {
+    std::transform(canonical.begin(), canonical.end(), canonical.begin(),
+                   [](const unsigned char value) {
+                     return static_cast<char>(std::tolower(value));
+                   });
+  }
+  return canonical;
+}
 
 PreparedStatementWireCommand ParsePreparedStatementWireCommand(
     const CstDocument& cst) {
@@ -17503,26 +17517,78 @@ PreparedStatementWireCommand ParsePreparedStatementWireCommand(
       result.kind = PreparedStatementWireCommandKind::kExecuteDirect;
       return result;
     }
-    if (tokens.size() != 3 ||
-        ToUpperAscii(tokens[1]->text) != "STATEMENT" ||
-        !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+    if (tokens.size() >= 3 &&
+        ToUpperAscii(tokens[1]->text) == "IMMEDIATE") {
+      // EXECUTE IMMEDIATE is an admitted but still-planned execute_stmt
+      // expression profile. Leave it to the exact surface refusal route until
+      // its engine-bound expression carrier is implemented.
+      return result;
+    }
+    if (std::ranges::any_of(tokens, [](const Token* token) {
+          return ToUpperAscii(token->text) == "WITH";
+        })) {
+      // Cursor options are a separately gated child surface. Do not collapse
+      // them into a malformed named-execute diagnostic.
+      return result;
+    }
+    const bool statement_spelling =
+        tokens.size() >= 2 && ToUpperAscii(tokens[1]->text) == "STATEMENT";
+    const std::size_t name_index = statement_spelling ? 2 : 1;
+    if (tokens.size() < name_index + 1 ||
+        !IsIdentifierLikeForRouteExecution(*tokens[name_index])) {
       return invalid("execute_requires_statement_and_one_name");
     }
+    if (tokens.size() != name_index + 1) {
+      if (tokens[name_index + 1]->text != "(" ||
+          tokens.back()->text != ")" ||
+          tokens.size() < name_index + 4) {
+        return invalid("execute_parameter_list_invalid");
+      }
+      std::size_t index = name_index + 2;
+      while (index + 1 < tokens.size()) {
+        const auto* token = tokens[index];
+        PreparedParameterWireValue value;
+        if (token->kind == TokenKind::kNumericLiteral) {
+          value.encoding = PreparedParameterPayloadEncoding::utf8_text;
+          value.raw_bytes.assign(token->text.begin(), token->text.end());
+        } else if (token->kind == TokenKind::kNullLiteral) {
+          value.is_null = true;
+        } else {
+          return invalid("execute_parameter_value_profile_not_admitted");
+        }
+        result.parameter_values.push_back(std::move(value));
+        ++index;
+        if (index + 1 == tokens.size()) break;
+        if (tokens[index]->text != ",") {
+          return invalid("execute_parameter_value_separator_invalid");
+        }
+        ++index;
+        if (index + 1 >= tokens.size()) {
+          return invalid("execute_parameter_value_missing");
+        }
+      }
+      if (result.parameter_values.empty() || index + 1 != tokens.size()) {
+        return invalid("execute_parameter_value_list_invalid");
+      }
+    }
     result.kind = PreparedStatementWireCommandKind::kExecute;
-    result.statement_name = tokens[2]->text;
-    result.statement_name_quoted = tokens[2]->quoted;
+    result.statement_name = tokens[name_index]->text;
+    result.statement_name_quoted = tokens[name_index]->quoted;
     return result;
   }
   if (first == "DEALLOCATE") {
-    if (tokens.size() != 3 ||
-        (ToUpperAscii(tokens[1]->text) != "STATEMENT" &&
-         ToUpperAscii(tokens[1]->text) != "PREPARE") ||
-        !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+    const bool keyword_spelling =
+        tokens.size() >= 2 &&
+        (ToUpperAscii(tokens[1]->text) == "STATEMENT" ||
+         ToUpperAscii(tokens[1]->text) == "PREPARE");
+    const std::size_t name_index = keyword_spelling ? 2 : 1;
+    if (tokens.size() != name_index + 1 ||
+        !IsIdentifierLikeForRouteExecution(*tokens[name_index])) {
       return invalid("deallocate_requires_statement_or_prepare_and_one_name");
     }
     result.kind = PreparedStatementWireCommandKind::kFree;
-    result.statement_name = tokens[2]->text;
-    result.statement_name_quoted = tokens[2]->quoted;
+    result.statement_name = tokens[name_index]->text;
+    result.statement_name_quoted = tokens[name_index]->quoted;
     return result;
   }
   if (first == "CANCEL") {
@@ -17554,15 +17620,41 @@ PreparedStatementWireCommand ParsePreparedStatementWireCommand(
     return result;
   }
 
-  if (tokens.size() < 5 || ToUpperAscii(tokens[1]->text) != "STATEMENT" ||
-      !IsIdentifierLikeForRouteExecution(*tokens[2])) {
+  const bool statement_spelling =
+      tokens.size() >= 2 && ToUpperAscii(tokens[1]->text) == "STATEMENT";
+  const std::size_t name_index = statement_spelling ? 2 : 1;
+  if (tokens.size() < name_index + 3 ||
+      !IsIdentifierLikeForRouteExecution(*tokens[name_index])) {
     return invalid("prepare_requires_statement_name_and_body");
   }
-  std::size_t index = 3;
+  std::size_t index = name_index + 1;
   if (tokens[index]->text == "(") {
-    return invalid("prepare_declared_parameter_types_require_bound_descriptors");
+    ++index;
+    while (index < tokens.size()) {
+      if (!IsIdentifierLikeForRouteExecution(*tokens[index])) {
+        return invalid("prepare_declared_parameter_type_invalid");
+      }
+      result.declared_parameter_types.push_back(
+          ToUpperAscii(tokens[index]->text));
+      ++index;
+      if (index >= tokens.size()) {
+        return invalid("prepare_declared_parameter_list_unterminated");
+      }
+      if (tokens[index]->text == ")") {
+        ++index;
+        break;
+      }
+      if (tokens[index]->text != ",") {
+        return invalid("prepare_declared_parameter_separator_invalid");
+      }
+      ++index;
+    }
+    if (result.declared_parameter_types.empty()) {
+      return invalid("prepare_declared_parameter_list_empty");
+    }
   }
-  if (ToUpperAscii(tokens[index]->text) != "AS" ||
+  if (index >= tokens.size() ||
+      ToUpperAscii(tokens[index]->text) != "AS" ||
       index + 1 >= tokens.size()) {
     return invalid("prepare_requires_as_and_one_complete_body");
   }
@@ -17589,8 +17681,8 @@ PreparedStatementWireCommand ParsePreparedStatementWireCommand(
     return invalid("prepare_body_cannot_be_statement_management");
   }
   result.kind = PreparedStatementWireCommandKind::kPrepare;
-  result.statement_name = tokens[2]->text;
-  result.statement_name_quoted = tokens[2]->quoted;
+  result.statement_name = tokens[name_index]->text;
+  result.statement_name_quoted = tokens[name_index]->quoted;
   return result;
 }
 
@@ -25349,6 +25441,17 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           !prepared_ast.messages.has_errors() &&
           prepared_command.kind ==
               PreparedStatementWireCommandKind::kExecute) {
+        if (!prepared_command.parameter_values.empty()) {
+          auto bound = RunNamedParameterBindForWire(
+              sql, prepared_command.statement_name,
+              prepared_command.statement_name_quoted,
+              prepared_command.parameter_values);
+          if (!bound.accepted || bound.messages.has_errors()) {
+            mark_phase("parameterized_statement_bind");
+            WriteParserPipelinePhaseTrace(sql, bound, phase_micros);
+            return bound;
+          }
+        }
         auto result = RunNamedStmtExecuteForWire(
             sql, prepared_command.statement_name,
             prepared_command.statement_name_quoted, cursor_requested,
@@ -25361,6 +25464,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           !prepared_ast.messages.has_errors() &&
           prepared_command.kind ==
               PreparedStatementWireCommandKind::kPrepare) {
+        if (!prepared_command.declared_parameter_types.empty()) {
+          PipelineResult result;
+          auto sealed = PrepareParameterizedNamedForWire(
+              sql, prepared_command.nested_sql,
+              prepared_command.statement_name,
+              prepared_command.statement_name_quoted,
+              prepared_command.declared_parameter_types, &result);
+          if (!sealed.accepted && !result.messages.has_errors()) {
+            result.messages = std::move(sealed.messages);
+          }
+          mark_phase("parameterized_statement_prepare");
+          WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+          return result;
+        }
         auto result = RunNamedStmtPrepareForWire(
             sql, prepared_command.statement_name,
             prepared_command.statement_name_quoted,
@@ -28489,6 +28606,15 @@ PipelineResult SbsqlTestWireSession::RunRolledBackDescendantForWire() {
 
 ipc::ServerPreparedParameterFinalizeResult
 SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
+  return PrepareParameterizedNamedForWire(sql, sql, {}, false, {}, nullptr);
+}
+
+ipc::ServerPreparedParameterFinalizeResult
+SbsqlTestWireSession::PrepareParameterizedNamedForWire(
+    std::string_view original_sql, std::string_view nested_sql,
+    std::string_view statement_name, bool statement_name_quoted,
+    const std::vector<std::string>& declared_parameter_types,
+    PipelineResult* named_prepare_result) {
   ipc::ServerPreparedParameterFinalizeResult result;
   if (server_client_ == nullptr || !session_.authenticated) {
     result.messages.diagnostics.push_back(MakeDiagnostic(
@@ -28506,7 +28632,7 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
   }
   ipc::PreparedParameterReference prepared;
   SbsqlCanonicalCompileOutput compiled;
-  auto pipeline = RunPipeline(sql, true, false, 0, false, {},
+  auto pipeline = RunPipeline(nested_sql, true, false, 0, false, {},
                               &begun.coordination, true, &prepared, {}, 0,
                               nullptr, nullptr, nullptr, &compiled);
   if (!pipeline.accepted || pipeline.messages.has_errors() ||
@@ -28520,11 +28646,59 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
     }
     return result;
   }
+  if (!declared_parameter_types.empty()) {
+    if (declared_parameter_types.size() != prepared.slots.size()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.PARAMETER.UNBOUND", "ERROR",
+          "The PREPARE type-list cardinality differs from the authenticated "
+          "parameter slot table.",
+          "sbp_sbsql.wire.statement_prepare"));
+      return result;
+    }
+    for (std::size_t index = 0; index < declared_parameter_types.size();
+         ++index) {
+      const auto& declared = declared_parameter_types[index];
+      const auto& slot = prepared.slots[index];
+      if ((declared != "BIGINT" && declared != "INT64") ||
+          ParameterSlotUuidText(slot.datatype_descriptor_uuid) !=
+              "019d0000-0000-7000-8000-00000000d711" ||
+          ParameterSlotUuidText(slot.datatype_type_uuid) !=
+              "019d0000-0000-7000-8000-00000000d712" ||
+          slot.datatype_descriptor_generation != 1 || slot.direction != 1) {
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
+            "The declared PREPARE type is not the exact engine-issued "
+            "datatype for its parameter slot.",
+            "sbp_sbsql.wire.statement_prepare",
+            {{"slot", std::to_string(index + 1)},
+             {"declared_type", declared}}));
+        return result;
+      }
+    }
+  }
+  const bool use_public_name = !statement_name.empty();
+  const std::string published_name =
+      use_public_name ? std::string(statement_name)
+                      : prepared.prepared_statement_uuid;
+  const bool published_name_quoted =
+      use_public_name ? statement_name_quoted : true;
+  const auto canonical_name = CanonicalPreparedStatementNameForWire(
+      published_name, published_name_quoted);
+  if (!canonical_name) {
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND.INVALID", "ERROR",
+        "The PREPARE statement name is not canonical.",
+        "sbp_sbsql.wire.statement_prepare"));
+    return result;
+  }
   auto named_prepare = RunNamedStmtPrepareForWire(
-      sql, prepared.prepared_statement_uuid, true, {}, &compiled,
+      original_sql, published_name, published_name_quoted, {}, &compiled,
       &prepared.canonical_parameter_admission);
   if (!named_prepare.accepted || named_prepare.messages.has_errors()) {
-    result.messages = std::move(named_prepare.messages);
+    result.messages = named_prepare.messages;
+    if (named_prepare_result != nullptr) {
+      *named_prepare_result = std::move(named_prepare);
+    }
     if (!result.messages.has_errors()) {
       result.messages.diagnostics.push_back(MakeDiagnostic(
           "SBLR.PARAMETER.STALE", "ERROR",
@@ -28535,8 +28709,11 @@ SbsqlTestWireSession::PrepareParameterizedForWire(std::string_view sql) {
     return result;
   }
   result.accepted = true;
-  prepared_parameter_bindings_[prepared.prepared_statement_uuid] = prepared;
+  prepared_parameter_bindings_[*canonical_name] = prepared;
   result.prepared = std::move(prepared);
+  if (named_prepare_result != nullptr) {
+    *named_prepare_result = std::move(named_prepare);
+  }
   return result;
 }
 
@@ -33371,9 +33548,11 @@ PipelineResult SbsqlTestWireSession::RunNamedStmtExecuteForWire(
   stmt::SblrStmtExecuteDescriptorV1 descriptor;
   std::string detail;
   const ipc::PreparedParameterReference* retained_parameter_set = nullptr;
-  if (statement_name_quoted) {
-    const auto retained =
-        prepared_parameter_bindings_.find(std::string(statement_name));
+  const auto canonical_statement_name = CanonicalPreparedStatementNameForWire(
+      statement_name, statement_name_quoted);
+  if (canonical_statement_name) {
+    const auto retained = prepared_parameter_bindings_.find(
+        *canonical_statement_name);
     if (retained != prepared_parameter_bindings_.end() &&
         retained->second.present()) {
       retained_parameter_set = &retained->second;
@@ -33698,6 +33877,10 @@ PipelineResult SbsqlTestWireSession::RunNamedStmtFreeForWire(
   result.server_affected_rows_present = executed.affected_rows_present;
   result.server_result_payload = executed.row_packet;
   ApplyExecutedTransactionState(executed, &session_);
+  if (const auto canonical_name = CanonicalPreparedStatementNameForWire(
+          statement_name, statement_name_quoted)) {
+    prepared_parameter_bindings_.erase(*canonical_name);
+  }
   return result;
 }
 
@@ -33923,12 +34106,14 @@ PipelineResult SbsqlTestWireSession::RunNamedParameterBindForWire(
     return refuse("SECURITY.ACCESS_DENIED",
                   "authenticated_statement_management_route_required");
   }
-  if (!statement_name_quoted) {
-    return refuse("SECURITY.ACCESS_DENIED",
-                  "prepared_parameter_identity_requires_exact_quoted_name");
+  const auto canonical_statement_name = CanonicalPreparedStatementNameForWire(
+      statement_name, statement_name_quoted);
+  if (!canonical_statement_name) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "prepared_parameter_name_invalid");
   }
   const auto retained = prepared_parameter_bindings_.find(
-      std::string(statement_name));
+      *canonical_statement_name);
   if (retained == prepared_parameter_bindings_.end() ||
       !retained->second.present()) {
     return refuse("SECURITY.ACCESS_DENIED",
@@ -34025,7 +34210,7 @@ PipelineResult SbsqlTestWireSession::RunNamedParameterBindForWire(
   bind_request.authenticated_receipt_uuid = *receipt;
   bind_request.occurrence = 1;
   bind_request.statement_name = std::string(statement_name);
-  bind_request.quoted = true;
+  bind_request.quoted = statement_name_quoted;
   bind_request.prepared_statement_uuid = *prepared_uuid;
   bind_request.prepared_generation = prepared.prepared_generation;
   bind_request.parameter_set_uuid = prepared.parameter_set_uuid;
@@ -34209,7 +34394,7 @@ PipelineResult SbsqlTestWireSession::RunNamedParameterBindForWire(
 
 PipelineResult SbsqlTestWireSession::RunStmtPrepareForWire() {
   return RunPipeline(
-      "PREPARE STATEMENT prep_one AS SELECT 1;", true);
+      "PREPARE prep_one AS SELECT 1;", true);
 }
 
 PipelineResult SbsqlTestWireSession::RunStmtPrepareCanonicalForWire() {
@@ -34219,9 +34404,9 @@ PipelineResult SbsqlTestWireSession::RunStmtPrepareCanonicalForWire() {
 PipelineResult SbsqlTestWireSession::RunStmtExecuteForWire(
     bool cursor_requested) {
   auto prepared = RunPipeline(
-      "PREPARE STATEMENT prep_execute AS SELECT 1;", true);
+      "PREPARE prep_execute AS SELECT 1;", true);
   if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
-  return RunPipeline("EXECUTE STATEMENT prep_execute;", true,
+  return RunPipeline("EXECUTE prep_execute;", true,
                      cursor_requested);
 }
 
@@ -34232,9 +34417,9 @@ PipelineResult SbsqlTestWireSession::RunStmtExecuteDirectForWire(
 
 PipelineResult SbsqlTestWireSession::RunStmtFreeForWire() {
   auto prepared = RunPipeline(
-      "PREPARE STATEMENT prep_free AS SELECT 1;", true);
+      "PREPARE prep_free AS SELECT 1;", true);
   if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
-  return RunPipeline("DEALLOCATE STATEMENT prep_free;", true);
+  return RunPipeline("DEALLOCATE prep_free;", true);
 }
 
 PipelineResult SbsqlTestWireSession::RunStmtCancelForWire() {
@@ -34248,24 +34433,10 @@ PipelineResult SbsqlTestWireSession::RunStmtCancelForWire() {
 }
 
 PipelineResult SbsqlTestWireSession::RunParameterBindForWire() {
-  auto prepared = PrepareParameterizedForWire("SELECT ?");
-  if (!prepared.accepted || prepared.messages.has_errors() ||
-      !prepared.prepared.present()) {
-    PipelineResult result;
-    result.messages = std::move(prepared.messages);
-    return result;
-  }
-  auto bound = RunPipeline(
-      "BIND PARAMETERS \"" + prepared.prepared.prepared_statement_uuid +
-          "\" USING (7);",
-      true);
-  if (!bound.accepted || bound.messages.has_errors()) {
-    return bound;
-  }
-  return RunPipeline(
-      "EXECUTE STATEMENT \"" +
-          prepared.prepared.prepared_statement_uuid + "\";",
-      true, true);
+  auto prepared = RunPipeline(
+      "PREPARE prep_parameter (BIGINT) AS SELECT ?;", true);
+  if (!prepared.accepted || prepared.messages.has_errors()) return prepared;
+  return RunPipeline("EXECUTE prep_parameter (7);", true, true);
 }
 
 PipelineResult SbsqlTestWireSession::RunResultPageForWire() {

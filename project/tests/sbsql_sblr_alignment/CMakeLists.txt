@@ -1243,7 +1243,7 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   add_test(NAME sbsql_sblr_alignment_ia09_context_unset_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation context-unset --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_context_unset_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_context_get_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation context-get --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_context_get_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation stmt-prepare --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_stmt_prepare_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_PREPARE;CSC-TEST-003573;e2e" TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_PREPARE;SBSQL-5535E9A48BE4;CSC-TEST-003573;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia09_security_alter_role_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-alter-role --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_alter_role_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_drop_role_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-drop-role --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_drop_role_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia09_security_create_role_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-09;SBLR_SEC_CREATE_ROLE;CSC-TEST-002973;e2e" TIMEOUT 240)
@@ -4661,7 +4661,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation stmt-execute
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia10_stmt_execute_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia10_stmt_execute_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE;CSC-TEST-003577;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_EXECUTE;SBSQL-414E9A624B34;CSC-TEST-003577;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia11_stmt_execute_direct_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4677,7 +4677,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation stmt-free
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia12_stmt_free_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia12_stmt_free_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_FREE;CSC-TEST-003585;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_FREE;SBSQL-FB03794952FB;CSC-TEST-003585;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia05_stmt_cancel_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4693,7 +4693,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation parameter-bind
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia14_parameter_bind_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia14_parameter_bind_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;CSC-TEST-003593;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-05;SBLR_PARAMETER_BIND;SBLR_STMT_PREPARE;SBLR_STMT_EXECUTE;SBSQL-5535E9A48BE4;SBSQL-414E9A624B34;CSC-TEST-003593;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia15_result_page_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
@@ -4725,7 +4725,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --operation name-resolve
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia18_name_resolve_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia18_name_resolve_process_e2e PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;CSC-TEST-003613;e2e" TIMEOUT 240)
+    LABELS "sbsql_sblr_alignment;IA-03;SBLR_NAME_RESOLVE;SBSQL-5E6DC360F377;CSC-TEST-003613;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia18_optimizer_stats_read_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>

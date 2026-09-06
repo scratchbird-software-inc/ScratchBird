@@ -836,7 +836,7 @@ int main(int argc, char** argv) {
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunContextGetForWire():begun; }()
                     : operation == "stmt-prepare"
                           ? session.RunPipeline(
-                                "PREPARE STATEMENT prep_one AS SELECT 1;",
+                                "PREPARE prep_one AS SELECT 1;",
                                 true)
                     : operation == "stmt-execute"
         ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunStmtExecuteForWire(true):begun; }()
@@ -1022,7 +1022,8 @@ int main(int argc, char** argv) {
       return 4;
     }
     std::cout << "CSC-TEST-003573 STMT_PREPARE accepted "
-                 "canonical_sblr=true publication_barrier=passed\n";
+                 "canonical_sblr=true publication_barrier=passed "
+                 "surface_id=SBSQL-5535E9A48BE4 input=prepare_stmt\n";
     return 0;
   }
   if (operation == "stmt-execute") {
@@ -1089,7 +1090,9 @@ int main(int argc, char** argv) {
     }
     std::cout << "CSC-TEST-003577 STMT_EXECUTE accepted "
                  "canonical_sblr=true publication_barrier=passed "
-                 "result_handle=validated nested_row=key_a:1\n";
+                 "result_handle=validated nested_row=key_a:1 "
+                 "surface_id=SBSQL-414E9A624B34 "
+                 "input=execute_prepared_stmt\n";
     return 0;
   }
   if (operation == "stmt-execute-direct") {
@@ -1186,7 +1189,8 @@ int main(int argc, char** argv) {
       return 4;
     }
     std::cout << "CSC-TEST-003585 STMT_FREE accepted "
-                 "canonical_sblr=true publication_barrier=passed\n";
+                 "canonical_sblr=true publication_barrier=passed "
+                 "surface_id=SBSQL-FB03794952FB input=deallocate_stmt\n";
     return 0;
   }
   if (operation == "stmt-cancel") {
@@ -1281,8 +1285,10 @@ int main(int argc, char** argv) {
     }
     std::cout << "CSC-TEST-003593 PARAMETER_BIND accepted "
                  "canonical_sblr=true durable_bind_consumed=true "
-                 "typed_value=7 "
-                 "publication_barrier=passed\n";
+                 "typed_value=7 publication_barrier=passed "
+                 "public_name=prep_parameter declared_type=BIGINT "
+                 "prepare_surface=SBSQL-5535E9A48BE4 "
+                 "execute_surface=SBSQL-414E9A624B34\n";
     return 0;
   }
   if (operation == "result-page") {
@@ -1371,7 +1377,9 @@ int main(int argc, char** argv) {
     }
     std::cout << "CSC-TEST-003613 NAME_RESOLVE accepted "
                  "canonical_sblr=true visible_table=true "
-                 "publication_barrier=passed\n";
+                 "publication_barrier=passed "
+                 "surface_id=SBSQL-5E6DC360F377 "
+                 "input=resolve_name_public\n";
     return 0;
   }
   if (operation == "optimizer-stats-read") {

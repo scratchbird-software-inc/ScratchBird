@@ -608,16 +608,11 @@ SBSFC067_ON_CONFLICT_EXACT_ROUTE_CTEST_LABEL = (
     "sbsql_surface_to_sblr_full_implementation_closure;"
     "sbsql_parser_worker;SBSFC-067;SBSFC-030;sbsql_e2e_passed"
 )
-SBSFC068_PREPARED_STATEMENT_CONTROL_CTEST = (
-    "sbsql_sbsfc_068_prepared_statement_control_conformance"
-)
 SBSFC068_PREPARED_STATEMENT_CONTROL_TEST_SOURCE = (
-    "project/tests/sbsql_parser_worker/"
-    "sbsql_sbsfc_068_prepared_statement_control_conformance.cpp"
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
 )
-SBSFC068_PREPARED_STATEMENT_CONTROL_CTEST_LABEL = (
-    "sbsql_surface_to_sblr_full_implementation_closure;"
-    "sbsql_parser_worker;SBSFC-068;SBSFC-030;sbsql_e2e_passed"
+SBSFC068_PREPARED_STATEMENT_CONTROL_CLIENT_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp"
 )
 SBSFC069_COMMENT_TRIVIA_CTEST = (
     "sbsql_sbsfc_069_comment_trivia_conformance"
@@ -5571,51 +5566,38 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
         "canonical_name": "prepare_stmt",
         "surface_kind": "grammar_production",
         "surface_family": "sblr.session.management.v3",
-        "operation_id": "session.prepare_statement",
-        "sblr_operation": "SBLR_SESSION_PREPARE_STATEMENT",
-        "sql_fixture": "PREPARE prep_one AS SELECT 7 AS value",
+        "operation_id": "engine.op.stmt_prepare",
+        "sblr_operation": "SBLR_STMT_PREPARE",
+        "ctest": "sbsql_sblr_alignment_ia09_stmt_prepare_process_e2e",
+        "test_id": "CSC-TEST-003573",
+        "sql_fixture": "PREPARE prep_one AS SELECT 1",
         "row_role": "prepare_stmt",
-        "runtime_proof": "HandleExecuteSblr.accepted;prepared_by_uuid_count=1;statement_name=prep_one;stored_inner_operation_id=query.evaluate_projection;stored_raw_sql_text=false",
+        "runtime_proof": "CSC-TEST-003573;canonical_sblr=true;publication_barrier=passed;public_statement_name=prep_one;engine_prepared_identity_distinct=true",
     },
     "SBSQL-414E9A624B34": {
         "canonical_name": "execute_prepared_stmt",
         "surface_kind": "grammar_production",
         "surface_family": "sblr.session.management.v3",
-        "operation_id": "session.execute_prepared_statement",
-        "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
+        "operation_id": "engine.op.stmt_execute",
+        "sblr_operation": "SBLR_STMT_EXECUTE",
+        "ctest": "sbsql_sblr_alignment_ia10_stmt_execute_process_e2e",
+        "supplemental_ctest": "sbsql_sblr_alignment_ia14_parameter_bind_process_e2e",
+        "test_id": "CSC-TEST-003577;CSC-TEST-003593",
         "sql_fixture": "EXECUTE prep_one",
         "row_role": "execute_prepared_stmt",
-        "runtime_proof": "HandleExecuteSblr.accepted;prepared_statement_lookup_scope=session;stored_inner_operation_dispatch=query.evaluate_projection;prepared_statement_uuid_linked=true",
-    },
-    "SBSQL-6677B188A72E": {
-        "canonical_name": "execute_stmt",
-        "surface_kind": "grammar_production",
-        "surface_family": "sblr.session.management.v3",
-        "operation_id": "session.execute_prepared_statement",
-        "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
-        "sql_fixture": "EXECUTE prep_one",
-        "row_role": "execute_stmt",
-        "runtime_proof": "HandleExecuteSblr.accepted;execute_statement_route=session_prepared_statement_control;stored_inner_operation_dispatch=query.evaluate_projection",
-    },
-    "SBSQL-3F4B1406188A": {
-        "canonical_name": "execute_stmt_option",
-        "surface_kind": "grammar_production",
-        "surface_family": "sblr.session.management.v3",
-        "operation_id": "session.execute_prepared_statement",
-        "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
-        "sql_fixture": "EXECUTE prep_one WITH CURSOR",
-        "row_role": "execute_stmt_option",
-        "runtime_proof": "HandleExecuteSblr.accepted;prepared_cursor_requested=true;DecodeCursorUuidForTest.has_value=true;HandleCloseCursor.accepted=true",
+        "runtime_proof": "CSC-TEST-003577;canonical_sblr=true;publication_barrier=passed;result_handle=validated;nested_row=key_a:1;CSC-TEST-003593;parameterized_named_prepare_bind_execute=true;typed_value=7;durable_bind_consumed=true",
     },
     "SBSQL-FB03794952FB": {
         "canonical_name": "deallocate_stmt",
         "surface_kind": "grammar_production",
         "surface_family": "sblr.session.management.v3",
-        "operation_id": "session.deallocate_prepared_statement",
-        "sblr_operation": "SBLR_SESSION_DEALLOCATE_PREPARED_STATEMENT",
-        "sql_fixture": "DEALLOCATE PREPARE prep_one",
+        "operation_id": "engine.op.stmt_free",
+        "sblr_operation": "SBLR_STMT_FREE",
+        "ctest": "sbsql_sblr_alignment_ia12_stmt_free_process_e2e",
+        "test_id": "CSC-TEST-003585",
+        "sql_fixture": "DEALLOCATE prep_free",
         "row_role": "deallocate_stmt",
-        "runtime_proof": "HandleExecuteSblr.accepted;prepared_statement_closed=true;execute_after_deallocate_rejected=prepared_statement_not_found",
+        "runtime_proof": "CSC-TEST-003585;canonical_sblr=true;publication_barrier=passed;prepared_statement_closed=true;public_statement_name=prep_free",
     },
 }
 
@@ -14900,31 +14882,51 @@ def classify(
         row_role = sbsfc068_prepared_evidence["row_role"]
         runtime_proof = sbsfc068_prepared_evidence["runtime_proof"]
         surface_family = sbsfc068_prepared_evidence["surface_family"]
+        ctest = sbsfc068_prepared_evidence["ctest"]
+        supplemental_ctest = sbsfc068_prepared_evidence.get(
+            "supplemental_ctest", ""
+        )
+        ctest_evidence = f"ctest:{ctest}"
+        if supplemental_ctest:
+            ctest_evidence += f";ctest:{supplemental_ctest}"
+        ctest_label = ";".join(
+            (
+                ctest,
+                supplemental_ctest,
+                "sbsql_sblr_alignment",
+                "sbsql_parser_worker",
+                "IA-05",
+                "SBSFC-068",
+                sblr_operation,
+                surface_id,
+                sbsfc068_prepared_evidence["test_id"],
+                "sbsql_e2e_passed",
+            )
+        ).replace(";;", ";")
         return {
             "final_state": "e2e_passed",
-            "ctest_label": SBSFC068_PREPARED_STATEMENT_CONTROL_CTEST_LABEL,
-            "fixture_path": SBSFC068_PREPARED_STATEMENT_CONTROL_TEST_SOURCE,
+            "ctest_label": ctest_label,
+            "fixture_path": f"{SBSFC068_PREPARED_STATEMENT_CONTROL_TEST_SOURCE};{SBSFC068_PREPARED_STATEMENT_CONTROL_CLIENT_SOURCE}",
             "implementation_refs": (
                 f"operation_id={operation_id};opcode={sblr_operation};"
                 f"canonical_surface_family={surface_family};route_operation_family={route_family};"
                 "generated_registry_surface_id_asserted;"
-                "parser_handler_key=parser.grammar_ast;"
-                "lowering_handler_key=lowering.sblr_family.session_prepared_statement_control;"
-                "server_admission_key=server.admission.sblr_session_management_v3;"
-                "engine_rule_key=server.rule.session_prepared_statement_registry;"
+                "parser_handler_key=parser.normalized_statement_management;"
+                "lowering_handler_key=wire.canonical_statement_management_package;"
+                "server_admission_key=server.admission.canonical_sblr_container;"
+                "engine_rule_key=engine.public_abi.statement_management;"
                 "prepared_statement_control=true;prepared_statement_lookup_scope=session;"
-                "prepared_statement_uuid_assigned_by_server=true;"
+                "public_prepared_name=session_alias;"
+                "prepared_statement_uuid_assigned_by_engine=true;"
+                "public_name_not_uuid_authority=true;receipt_private_statement_authority=true;"
                 f"row_role={row_role};"
-                "descriptor_refs=sys.server.prepared_statement_descriptor;"
-                "required_authority=authority.server.prepared_statement_session_registry_required;"
-                "server_admission_admitted;server_session_registry_dispatch_required;"
-                "project/src/parsers/sbsql_worker/lexer/lexer.cpp#sbsfc068_prepared_keywords;"
-                "project/src/parsers/sbsql_worker/ast/ast.cpp#sbsfc068_prepared_statement_surfaces;"
-                "project/src/parsers/sbsql_worker/lowering/lowering.cpp#sbsfc068_prepared_statement_control;"
-                "project/src/server/sblr_dispatch_server.cpp#sbsfc068_prepared_statement_runtime;"
-                "project/src/server/session_registry.hpp#sbsfc068_statement_name;"
-                "project/src/engine/sblr/sblr_opcode_registry.cpp#sbsfc068_session_prepared_opcodes;"
-                "project/tests/sbsql_parser_worker/sbsql_sbsfc_068_prepared_statement_control_conformance.cpp#SBSFC-068"
+                "required_authority=authority.engine.statement_receipt_and_prepared_registry_required;"
+                "server_admission_admitted;engine_public_abi_dispatch_required;"
+                "project/src/parsers/sbsql_worker/wire/sbsql_test_wire.cpp;"
+                "project/src/server_engine_bridge/statement_context.hpp;"
+                "project/src/engine/public_abi.cpp;"
+                f"{SBSFC068_PREPARED_STATEMENT_CONTROL_TEST_SOURCE};"
+                f"{SBSFC068_PREPARED_STATEMENT_CONTROL_CLIENT_SOURCE}"
             ),
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
@@ -14934,25 +14936,25 @@ def classify(
                 "unsupported_prepared_control_shapes_fail_closed"
             ),
             "result_proof": (
-                f"ctest:{SBSFC068_PREPARED_STATEMENT_CONTROL_CTEST};"
+                f"{ctest_evidence};"
                 f"source={SBSFC068_PREPARED_STATEMENT_CONTROL_TEST_SOURCE};"
+                f"client={SBSFC068_PREPARED_STATEMENT_CONTROL_CLIENT_SOURCE};"
                 f"surface_id={surface_id};sql_fixture={sql_fixture};"
                 f"operation_id={operation_id};opcode={sblr_operation};"
                 f"canonical_surface_family={surface_family};route_operation_family={route_family};"
                 "prepared_statement_control=true;prepared_statement_lookup_scope=session;"
-                "prepared_statement_uuid_assigned_by_server=true;"
+                "public_prepared_name=session_alias;prepared_statement_uuid_assigned_by_engine=true;"
                 f"runtime_proof={runtime_proof};"
-                "parser_cst_ast_bound=true;verifier_admitted=true;"
-                "server_admission_admitted=true;server_session_registry_dispatch_required=true;"
+                "canonical_container_admitted=true;server_admission_admitted=true;"
+                "engine_public_abi_dispatch_required=true;"
                 "contains_sql_text=false;prepared_sql_text_included=false;"
                 "no_generic_sql_execution;no_synthetic_replay;no_denial_route_promotion;"
                 "no_cluster_provider_claim;no_parser_side_finality;no_WAL_recovery_authority"
             ),
-            "evidence_collected_utc": "static_existing_ctest_evidence",
-            "promoter_slice": "SBSFC-068-prepared-statement-control",
+            "evidence_collected_utc": "2026-09-06T06:48:00Z",
+            "promoter_slice": "IA-05-authenticated-prepared-statement-roots",
             "notes": (
-                "SBSFC-068 bounded prepared-statement control exact-route evidence. PREPARE, EXECUTE, EXECUTE WITH CURSOR, and DEALLOCATE parse, bind, lower, and pass server admission to session prepared-statement control operations with session-scoped statement aliases and server-assigned prepared statement UUIDs. Runtime evidence uses HandleExecuteSblr and ServerSessionRegistry to create a prepared SBLR record, execute the stored inner query.evaluate_projection envelope, open and close a cursor for the EXECUTE option, deallocate the prepared record, and reject execution after deallocation. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "SBSFC-068 authenticated prepared-statement root evidence. The normalized public PREPARE, EXECUTE, and DEALLOCATE spellings traverse the real process route and exact SBLR_STMT_PREPARE, SBLR_STMT_EXECUTE, and SBLR_STMT_FREE carriers. Public names remain session aliases while engine-issued UUIDs and receipt-private descriptor generations remain execution authority. Parameterized PREPARE/BIND/EXECUTE additionally proves a BIGINT value reaches the nested typed result. EXECUTE IMMEDIATE and EXECUTE options remain separate planned implementation rows; no success is claimed for them here. IA-GATE-035 and IA-GATE-038 remain open."
             ),
         }
 

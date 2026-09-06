@@ -3,12 +3,12 @@
   "blocked_rows": 0,
   "cluster_provider_route_rows": 56,
   "declared_rows": 2617,
-  "exact_refused_rows": 87,
+  "exact_refused_rows": 84,
   "expected_total_rows": 2617,
   "final_status_counts": {
     "cluster_provider_route_passed": 56,
-    "e2e_passed": 2474,
-    "exact_refusal_passed": 87
+    "e2e_passed": 2477,
+    "exact_refusal_passed": 84
   },
   "generated_from": [
     "artifacts/PER_ROW_EVIDENCE_MANIFEST.csv",
@@ -17,7 +17,7 @@
     "artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv"
   ],
-  "implemented_rows": 2474,
+  "implemented_rows": 2477,
   "notes": "Row-level SBsql implementation evidence is complete. Authenticated-route and SBLR binary round-trip fixture layers are promoted to e2e_passed evidence.",
   "private_gated_rows": 56,
   "release_claim": "release_ready",
