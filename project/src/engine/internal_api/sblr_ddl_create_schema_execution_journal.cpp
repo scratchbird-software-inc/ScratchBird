@@ -4,12 +4,21 @@
 #include "sblr_ddl_create_schema_execution_journal.hpp"
 
 #include "api_diagnostics.hpp"
+#include "catalog/name_registry.hpp"
+#include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
+#include "ddl/create_api.hpp"
 #include "hash_digest.hpp"
+#include "sblr_executor_availability_registry.hpp"
+#include "security/authorization_api.hpp"
+#include "storage/database/local_transaction_store.hpp"
+#include "transaction/mga/transaction_inventory.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -40,6 +49,8 @@ constexpr std::string_view kRecordDomain =
     "ScratchBird.SblrDdlCreateSchemaExecutionJournalRecord.V1";
 constexpr std::string_view kJournalTraceTag =
     "private_ddl_create_schema_execution_journal";
+constexpr std::string_view kRecoveryTraceTag =
+    "private_ddl_create_schema_authenticated_recovery";
 
 std::mutex g_journal_mutex;
 std::atomic<std::uint64_t> g_temp_ordinal{1};
@@ -210,6 +221,174 @@ bool HasAuthority(
              UuidText(descriptor.owner_principal_uuid) &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),
                    kJournalTraceTag) != context.trace_tags.end();
+}
+
+SblrExecutorAvailabilityRowIdentity CreateSchemaExecutorIdentity() {
+  return {kSblrDdlCreateSchemaExecutorId,
+          kSblrDdlCreateSchemaOpcodeCode,
+          kSblrDdlCreateSchemaOpcodeVersion,
+          kSblrDdlCreateSchemaOperandDescriptorId,
+          kSblrDdlCreateSchemaResultDescriptorId,
+          kSblrDdlCreateSchemaResultDescriptorVersion};
+}
+
+bool RecoverySessionAuthenticated(
+    const EngineRequestContext& context,
+    const scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1&
+        descriptor) {
+  return context.security_context_present &&
+         context.authorization_context.present &&
+         !context.database_path.empty() &&
+         context.database_uuid.canonical == UuidText(descriptor.database_uuid) &&
+         context.principal_uuid.canonical ==
+             UuidText(descriptor.owner_principal_uuid) &&
+         !context.cluster_authority_available &&
+         !context.cluster_transaction_active && !context.route_fence_present;
+}
+
+bool ResultMatches(
+    const scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1&
+        descriptor,
+    const SblrDdlCreateSchemaJournalSnapshotV1& snapshot,
+    scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1* decoded_result);
+
+bool NormalizeRecoveryPath(
+    const scratchbird::engine::sblr::SblrDdlCreateSchemaRequestV1& request,
+    std::string* canonical_path, std::string* leaf_name,
+    SblrDdlCreateSchemaJournalHashV1* path_sha256) {
+  if (canonical_path == nullptr || leaf_name == nullptr ||
+      path_sha256 == nullptr || request.name_atoms.empty() ||
+      request.name_atoms.size() > 3) {
+    return false;
+  }
+  canonical_path->clear();
+  leaf_name->clear();
+  for (const auto& atom : request.name_atoms) {
+    if (atom.raw_utf8.empty() || atom.raw_utf8.size() > 256 ||
+        atom.raw_utf8.find('\0') != std::string::npos ||
+        atom.raw_utf8.find('.') != std::string::npos) {
+      return false;
+    }
+    std::string normalized = atom.raw_utf8;
+    if (!atom.quoted) {
+      std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                     [](unsigned char value) {
+                       return value < 0x80
+                                  ? static_cast<char>(std::tolower(value))
+                                  : static_cast<char>(value);
+                     });
+    }
+    if (!canonical_path->empty()) canonical_path->push_back('.');
+    canonical_path->append(normalized);
+    *leaf_name = std::move(normalized);
+  }
+  constexpr std::string_view kDomain =
+      "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1";
+  std::vector<std::uint8_t> material(kDomain.begin(), kDomain.end());
+  material.insert(material.end(), canonical_path->begin(),
+                  canonical_path->end());
+  material.push_back(0);
+  *path_sha256 =
+      scratchbird::core::hash::ComputeSha256Digest(material).digest;
+  return NonZero(*path_sha256);
+}
+
+bool ExactRecoveryPostcondition(
+    const EngineRequestContext& context,
+    const scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1&
+        descriptor,
+    const SblrDdlCreateSchemaJournalSnapshotV1& snapshot,
+    const std::string& canonical_path, const std::string& leaf_name,
+    std::uint64_t observer_transaction_id, std::string* detail) {
+  const auto mismatch = [&](std::string value) {
+    if (detail != nullptr) *detail = std::move(value);
+    return false;
+  };
+  scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1 result;
+  if (!ResultMatches(descriptor, snapshot, &result)) {
+    return mismatch("journal_result_mismatch");
+  }
+  const auto schema_uuid = UuidText(descriptor.schema_uuid);
+  const auto parent_uuid = NonZero(descriptor.parent_schema_uuid)
+                               ? UuidText(descriptor.parent_schema_uuid)
+                               : std::string{};
+  const auto recovery_uuid = UuidText(descriptor.recovery_uuid);
+  const std::vector<EngineLocalizedName> names{
+      {"en", "primary", canonical_path, leaf_name, true}};
+  auto expected_payload = SchemaTreePayload(parent_uuid, names, {});
+  const std::array<std::string, 5> extensions{
+      "catalog_ddl_mutation_audit=" + recovery_uuid,
+      "catalog_ddl_recovery_operation=" + recovery_uuid,
+      "catalog_ddl_result_row_uuid=" + UuidText(result.catalog_row_uuid),
+      "catalog_ddl_mutation_uuid=" + UuidText(result.mutation_uuid),
+      "catalog_ddl_statement_publication_barrier=" +
+          UuidText(result.publication_barrier)};
+  for (const auto& extension : extensions) {
+    if (!expected_payload.empty()) expected_payload.push_back(';');
+    expected_payload.append(extension);
+  }
+
+  const auto schemas = VisibleSchemaTreeRecords(context,
+                                                 observer_transaction_id);
+  std::size_t exact_schema_count = 0;
+  for (const auto& schema : schemas) {
+    if (schema.schema_uuid != schema_uuid) continue;
+    if (schema.creator_tx != descriptor.owning_local_transaction_id ||
+        schema.parent_schema_uuid != parent_uuid ||
+        schema.default_name != leaf_name || schema.localized_names.size() != 1 ||
+        schema.localized_names.front().language_tag != "en" ||
+        schema.localized_names.front().name_class != "primary" ||
+        schema.localized_names.front().path != canonical_path ||
+        schema.localized_names.front().name != leaf_name ||
+        !schema.localized_names.front().default_name ||
+        !schema.localized_comments.empty() ||
+        schema.payload != expected_payload || schema.state != "active") {
+      return mismatch("schema_record_mismatch");
+    }
+    ++exact_schema_count;
+  }
+  if (exact_schema_count != 1) return mismatch("schema_record_count_mismatch");
+
+  const auto loaded_names =
+      LoadNameRegistryState(context, observer_transaction_id);
+  if (!loaded_names.ok) return mismatch("name_registry_load_failed");
+  const auto expected_path_lookup_key = NameRegistryLookupKey(
+      canonical_path, context.identifier_profile_uuid, false);
+  std::size_t exact_name_count = 0;
+  for (const auto& name : loaded_names.state.entries) {
+    if (name.object_uuid != schema_uuid || name.object_class != "schema" ||
+        name.deleted) {
+      continue;
+    }
+    if (name.creator_tx != descriptor.owning_local_transaction_id)
+      return mismatch("name_registry_creator_transaction_mismatch");
+    if (name.scope_uuid != parent_uuid)
+      return mismatch("name_registry_scope_mismatch");
+    if (name.parent_schema_uuid != parent_uuid)
+      return mismatch("name_registry_parent_mismatch");
+    if (name.language_tag != "en")
+      return mismatch("name_registry_language_mismatch");
+    if (name.name_class != "primary")
+      return mismatch("name_registry_class_mismatch");
+    if (name.raw_name_text != leaf_name)
+      return mismatch("name_registry_raw_name_mismatch");
+    if (name.display_name != leaf_name)
+      return mismatch("name_registry_display_name_mismatch");
+    if (name.full_path_lookup_key != expected_path_lookup_key)
+      return mismatch("name_registry_path_mismatch");
+    if (name.was_quoted)
+      return mismatch("name_registry_quote_flag_mismatch");
+    if (name.quote_style != "none")
+      return mismatch("name_registry_quote_style_mismatch");
+    if (name.requires_exact_match)
+      return mismatch("name_registry_exact_match_mismatch");
+    if (name.lifecycle_state != "active")
+      return mismatch("name_registry_lifecycle_mismatch");
+    ++exact_name_count;
+  }
+  return exact_name_count == 1
+             ? true
+             : mismatch("name_registry_record_count_mismatch");
 }
 
 bool ResultMatches(
@@ -858,6 +1037,291 @@ ExecuteSblrDdlCreateSchemaExecutionJournalV1(
 
   auto published = PublishLocked(context, key);
   published.mutation_invoked = true;
+  return published;
+}
+
+SblrDdlCreateSchemaJournalResultV1
+RecoverSblrDdlCreateSchemaExecutionJournalV1(
+    const EngineRequestContext& authenticated_context,
+    const scratchbird::engine::sblr::
+        SblrDdlCreateSchemaRecoveryRequestV1& request) {
+  const auto exact_request = scratchbird::engine::sblr::
+      EncodeSblrDdlCreateSchemaRecoveryRequestV1(request);
+  if (exact_request.empty()) {
+    return Refused("SBLR.OPERAND_INVALID",
+                   "sblr.ddl_create_schema.recovery_request_invalid",
+                   "exact canonical CSRQ is required");
+  }
+  const auto& descriptor = request.operand_descriptor;
+  if (!RecoverySessionAuthenticated(authenticated_context, descriptor)) {
+    return Refused("SECURITY.ACCESS_DENIED",
+                   "sblr.ddl_create_schema.recovery_hidden");
+  }
+
+  std::string canonical_path;
+  std::string leaf_name;
+  SblrDdlCreateSchemaJournalHashV1 normalized_path_sha256{};
+  if (!NormalizeRecoveryPath(request.bind_request, &canonical_path, &leaf_name,
+                             &normalized_path_sha256) ||
+      normalized_path_sha256 != descriptor.normalized_path_sha256) {
+    return Refused("MGA.AUTHORITY_MISMATCH",
+                   "sblr.ddl_create_schema.recovery_syntax_mismatch",
+                   "CSRQ syntax does not reproduce the bound schema path");
+  }
+
+  EngineAuthorizeRequest authorize;
+  authorize.context = authenticated_context;
+  authorize.target_object.uuid = authenticated_context.database_uuid;
+  authorize.target_object.object_kind = "database";
+  authorize.required_right = "CATALOG_MUTATE";
+  const auto authorized = EngineAuthorize(authorize);
+  if (!authorized.ok || !authorized.authorized) {
+    const auto detail = authorized.diagnostics.empty()
+                            ? std::string{}
+                            : authorized.diagnostics.front().detail;
+    return Refused("SECURITY.ACCESS_DENIED",
+                   "sblr.ddl_create_schema.recovery_authorization_denied",
+                   detail);
+  }
+  if (authenticated_context.query_cancellation_requested &&
+      authenticated_context.query_cancellation_requested()) {
+    return Refused("PROCESS.CANCELLED",
+                   "sblr.ddl_create_schema.recovery_cancelled_before_inventory");
+  }
+
+  const auto inventory =
+      scratchbird::storage::database::
+          AcquireStrongLocalTransactionInventorySnapshot(
+              authenticated_context.database_path);
+  if (!inventory.ok()) {
+    return Refused(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.ddl_create_schema.recovery_inventory_unavailable",
+        inventory.diagnostic.diagnostic_code.empty()
+            ? inventory.diagnostic.remediation_hint
+            : inventory.diagnostic.diagnostic_code);
+  }
+  const auto original_transaction =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          inventory.snapshot->inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              descriptor.owning_local_transaction_id));
+  if (!original_transaction.ok() ||
+      !original_transaction.entry.identity.transaction_uuid.valid() ||
+      original_transaction.entry.identity.transaction_uuid.value.bytes !=
+          descriptor.owning_transaction_uuid) {
+    return Refused("MGA.TRANSACTION_INVALID",
+                   "sblr.ddl_create_schema.recovery_transaction_invalid",
+                   "owning transaction identity is absent or changed");
+  }
+
+  using TransactionState =
+      scratchbird::transaction::mga::TransactionState;
+  const auto state = original_transaction.entry.state;
+  const bool active = state == TransactionState::active;
+  const bool committed = state == TransactionState::committed;
+  if (!active && !committed) {
+    const bool unresolved =
+        state == TransactionState::created ||
+        state == TransactionState::preparing ||
+        state == TransactionState::prepared ||
+        state == TransactionState::committing ||
+        state == TransactionState::limbo ||
+        state == TransactionState::recovering;
+    return Refused(
+        unresolved ? "MGA.AUTHORITY_MISMATCH" : "MGA.TRANSACTION_INVALID",
+        unresolved
+            ? "sblr.ddl_create_schema.recovery_transaction_unresolved"
+            : "sblr.ddl_create_schema.recovery_transaction_terminal",
+        scratchbird::transaction::mga::TransactionStateName(state));
+  }
+
+  SblrDdlCreateSchemaJournalKeyV1 key;
+  key.database_uuid = descriptor.database_uuid;
+  key.recovery_uuid = descriptor.recovery_uuid;
+  key.canonical_descriptor_bytes =
+      scratchbird::engine::sblr::EncodeSblrDdlCreateSchemaDescriptorV1(
+          descriptor, true);
+  if (key.canonical_descriptor_bytes.empty()) {
+    return Refused("SBLR.OPERAND_INVALID",
+                   "sblr.ddl_create_schema.recovery_descriptor_invalid");
+  }
+
+  EngineRequestContext operation_context = authenticated_context;
+  operation_context.statement_transaction_inventory_snapshot =
+      inventory.snapshot;
+  operation_context.statement_receipt_uuid.canonical =
+      UuidText(descriptor.receipt);
+  operation_context.transaction_uuid.canonical =
+      UuidText(descriptor.owning_transaction_uuid);
+  operation_context.local_transaction_id =
+      descriptor.owning_local_transaction_id;
+  operation_context.snapshot_visible_through_local_transaction_id =
+      original_transaction.entry.begin_visible_through_local_transaction_id;
+  operation_context.statement_snapshot_uuid.canonical =
+      UuidText(descriptor.statement_snapshot_uuid);
+  operation_context.statement_metadata_snapshot_uuid =
+      operation_context.statement_snapshot_uuid;
+  operation_context.statement_metadata_snapshot_engine_owned = true;
+  operation_context.catalog_epoch_uuid.canonical =
+      UuidText(descriptor.catalog_epoch_uuid);
+  operation_context.catalog_generation_id = descriptor.catalog_generation;
+  operation_context.security_epoch = descriptor.security_epoch;
+  operation_context.transaction_policy_snapshot_uuid.canonical =
+      UuidText(descriptor.policy_snapshot_uuid);
+  operation_context.transaction_policy_snapshot_generation =
+      descriptor.policy_generation;
+  operation_context.resource_admission_uuid.canonical =
+      UuidText(descriptor.resource_grant_uuid);
+  operation_context.resource_epoch = descriptor.resource_generation;
+  operation_context.trace_tags.push_back(std::string(kJournalTraceTag));
+  operation_context.trace_tags.push_back(std::string(kRecoveryTraceTag));
+
+  if (active) {
+    if (authenticated_context.catalog_generation_id !=
+            descriptor.catalog_generation ||
+        authenticated_context.security_epoch != descriptor.security_epoch ||
+        authenticated_context.resource_epoch != descriptor.resource_generation) {
+      return Refused("MGA.AUTHORITY_MISMATCH",
+                     "sblr.ddl_create_schema.recovery_epoch_changed",
+                     "catalog security or resource authority changed");
+    }
+    const auto availability = LoadCurrentSblrExecutorAvailabilitySnapshot(
+        authenticated_context, CreateSchemaExecutorIdentity());
+    if (!availability.ok || !availability.snapshot.installed ||
+        availability.snapshot.generation != descriptor.availability) {
+      return Refused(
+          "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+          "sblr.ddl_create_schema.recovery_executor_unavailable",
+          "current CREATE SCHEMA executor evidence changed");
+    }
+  }
+  if (authenticated_context.query_cancellation_requested &&
+      authenticated_context.query_cancellation_requested()) {
+    return Refused("PROCESS.CANCELLED",
+                   "sblr.ddl_create_schema.recovery_cancelled_before_lock");
+  }
+
+  std::lock_guard guard(g_journal_mutex);
+  ScopedFileLock file_lock;
+  SblrDdlCreateSchemaJournalResultV1 refusal;
+  if (!AcquireRecordLock(authenticated_context, key, &file_lock, &refusal)) {
+    return refusal;
+  }
+  auto journaled = LoadExact(authenticated_context, key);
+  if (!journaled.ok) return journaled;
+
+  const auto observer_transaction_id =
+      committed && authenticated_context.local_transaction_id != 0
+          ? authenticated_context.local_transaction_id
+          : descriptor.owning_local_transaction_id;
+  EngineRequestContext observer_context =
+      committed ? authenticated_context : operation_context;
+  observer_context.statement_transaction_inventory_snapshot = inventory.snapshot;
+
+  if (journaled.found &&
+      journaled.snapshot.state ==
+          SblrDdlCreateSchemaJournalStateV1::published) {
+    std::string postcondition_detail;
+    if (!ExactRecoveryPostcondition(observer_context, descriptor,
+                                    journaled.snapshot, canonical_path,
+                                    leaf_name, observer_transaction_id,
+                                    &postcondition_detail)) {
+      return Refused(
+          "MGA.AUTHORITY_MISMATCH",
+          "sblr.ddl_create_schema.recovery_postcondition_mismatch",
+          "published CSRS does not name the exact durable catalog state: " +
+              postcondition_detail);
+    }
+    journaled.authenticated_recovery = true;
+    journaled.postcondition_verified = true;
+    journaled.replayed_published_result = true;
+    return journaled;
+  }
+  if (committed) {
+    return Refused(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.ddl_create_schema.recovery_committed_result_missing",
+        "committed operation has no exact published recovery result");
+  }
+
+  if (!journaled.found) {
+    journaled = EnsureLocked(operation_context, key);
+    if (!journaled.ok) return journaled;
+  }
+  scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1 planned_result;
+  if (!ResultMatches(descriptor, journaled.snapshot, &planned_result)) {
+    return Refused(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.ddl_create_schema.recovery_planned_result_invalid");
+  }
+  if (authenticated_context.query_cancellation_requested &&
+      authenticated_context.query_cancellation_requested()) {
+    return Refused("PROCESS.CANCELLED",
+                   "sblr.ddl_create_schema.recovery_cancelled_before_mutation");
+  }
+
+  EngineCreateSchemaRequest create;
+  create.context = operation_context;
+  create.operation_id = "ddl.create_schema";
+  create.target_database.uuid = operation_context.database_uuid;
+  create.target_database.object_kind = "database";
+  create.target_schema.uuid.canonical =
+      NonZero(descriptor.parent_schema_uuid)
+          ? UuidText(descriptor.parent_schema_uuid)
+          : std::string{};
+  create.target_schema.object_kind = "schema";
+  create.target_object.uuid.canonical = UuidText(descriptor.schema_uuid);
+  create.target_object.object_kind = "schema";
+  create.localized_names.push_back(
+      {"en", "primary", canonical_path, leaf_name, true});
+  create.recovery_operation_uuid.canonical = UuidText(descriptor.recovery_uuid);
+  create.requested_catalog_row_uuid.canonical =
+      UuidText(planned_result.catalog_row_uuid);
+  create.mutation_uuid.canonical = UuidText(planned_result.mutation_uuid);
+  create.statement_publication_barrier_uuid.canonical =
+      UuidText(planned_result.publication_barrier);
+  create.option_envelopes.push_back(
+      "catalog_ddl_mutation_audit:" +
+      create.recovery_operation_uuid.canonical);
+  const auto created = EngineCreateSchema(create);
+  if (!created.ok || created.primary_object.object_kind != "schema" ||
+      created.primary_object.uuid.canonical !=
+          create.target_object.uuid.canonical ||
+      created.catalog_row_uuid.canonical !=
+          create.requested_catalog_row_uuid.canonical) {
+    auto result = Refused(
+        "DDL.CREATE_SCHEMA_FAILED",
+        "sblr.ddl_create_schema.recovery_catalog_mutation_failed",
+        created.diagnostics.empty() ? std::string{}
+                                    : created.diagnostics.front().detail);
+    result.found = true;
+    result.mutation_invoked = true;
+    result.authenticated_recovery = true;
+    result.snapshot = std::move(journaled.snapshot);
+    return result;
+  }
+  std::string postcondition_detail;
+  if (!ExactRecoveryPostcondition(operation_context, descriptor,
+                                  journaled.snapshot, canonical_path,
+                                  leaf_name,
+                                  descriptor.owning_local_transaction_id,
+                                  &postcondition_detail)) {
+    auto result = Refused(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.ddl_create_schema.recovery_postcondition_mismatch",
+        "catalog mutation did not publish the exact journal postcondition: " +
+            postcondition_detail);
+    result.found = true;
+    result.mutation_invoked = true;
+    result.authenticated_recovery = true;
+    result.snapshot = std::move(journaled.snapshot);
+    return result;
+  }
+  auto published = PublishLocked(operation_context, key);
+  published.mutation_invoked = true;
+  published.authenticated_recovery = published.ok;
+  published.postcondition_verified = published.ok;
   return published;
 }
 

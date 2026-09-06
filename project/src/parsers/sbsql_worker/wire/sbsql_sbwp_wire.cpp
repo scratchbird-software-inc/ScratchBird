@@ -5983,7 +5983,12 @@ bool ExecuteSql(SbsqlTestWireSession* session,
                                  1,
                                  0,
                                  result.server_operation_id);
-  return !send_ready || SendReady(io, state);
+  const bool completed = !send_ready || SendReady(io, state);
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.ddl_create_schema") {
+    session->AcknowledgeDdlCreateSchemaCompletionForWire();
+  }
+  return completed;
 }
 
 bool QueryPayloadRequestsScriptIngest(const QueryPayload& query) {

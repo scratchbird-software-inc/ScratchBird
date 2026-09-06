@@ -51,6 +51,8 @@ struct SblrDdlCreateSchemaJournalResultV1 {
   bool found = false;
   bool mutation_invoked = false;
   bool replayed_published_result = false;
+  bool authenticated_recovery = false;
+  bool postcondition_verified = false;
   EngineApiDiagnostic diagnostic;
   SblrDdlCreateSchemaJournalSnapshotV1 snapshot;
 };
@@ -82,5 +84,17 @@ ExecuteSblrDdlCreateSchemaExecutionJournalV1(
     const EngineRequestContext& context,
     const SblrDdlCreateSchemaJournalKeyV1& key,
     const SblrDdlCreateSchemaMutationV1& mutation);
+
+// Reauthenticates an exact CSRQ after the statement receipt may have been
+// released.  The current session contributes authentication only; the nested
+// CSQX+CSDO remains the sole operation/transaction/catalog authority.  Active
+// owning transactions may repair the exact journaled mutation.  A committed
+// owning transaction is read-only and may only replay an already-published
+// byte-exact CSRS after its catalog and name-registry postcondition is proven.
+SblrDdlCreateSchemaJournalResultV1
+RecoverSblrDdlCreateSchemaExecutionJournalV1(
+    const EngineRequestContext& authenticated_context,
+    const scratchbird::engine::sblr::
+        SblrDdlCreateSchemaRecoveryRequestV1& request);
 
 }  // namespace scratchbird::engine::internal_api

@@ -556,6 +556,10 @@ constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
 // engine-issued SARA. Refusals use the correlated diagnostic pair.
 constexpr std::uint32_t kSchemaSourceArtifactRetainRequestV1 = 7751;
 constexpr std::uint32_t kSchemaSourceArtifactRetainResultV1 = 7752;
+// Authenticated CREATE SCHEMA recovery. The request is one exact 1432-byte
+// CSRQ (canonical CSQX plus literal CSDO); success is one exact 320-byte CSRS.
+constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryRequestV1 = 7753;
+constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryResultV1 = 7754;
 // Private raw-carrier narrow-query binding coordination.  These schemas are
 // deliberately not TLV envelopes: 7707 is exactly one canonical SBQNDR01 and
 // 7708 is success-only exactly one engine-issued SBQNPB01.
@@ -1093,6 +1097,8 @@ enum class MessageType : std::uint16_t {
   kDatabaseAttachBindResult = 737,
   kSourceArtifactRetainRequest = 738,
   kSourceArtifactRetainResult = 739,
+  kDdlCreateSchemaRecoveryRequest = 740,
+  kDdlCreateSchemaRecoveryResult = 741,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

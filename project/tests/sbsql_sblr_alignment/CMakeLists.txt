@@ -1415,7 +1415,7 @@ add_executable(sbsql_sblr_alignment_ia08_ddl_create_dictionary_runtime "${CMAKE_
   set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_temporary_table_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_TEMPORARY_TABLE;CSC-TEST-002661;e2e" TIMEOUT 240)
   set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_domain_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_DOMAIN;CSC-TEST-002589" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-create-schema --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_create_schema_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005781;CSC-TEST-005783;e2e;authenticated_process_route;sbps_direct;independent_post_state;restart_post_state" TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;PS_DDL_CREATE_SCHEMA_RECOVERY_REQUEST;PS_DDL_CREATE_SCHEMA_RECOVERY_RESULT;CSC-TEST-005780;CSC-TEST-005781;CSC-TEST-005783;CSC-TEST-005785;e2e;authenticated_process_route;sbps_direct;authenticated_recovery;independent_post_state;restart_post_state" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_table_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-create-table --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_create_table_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_TABLE;CSC-TEST-002597" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_sequence_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-create-sequence --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_create_sequence_e2e")
@@ -2459,7 +2459,7 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_drop_materialized_view_cancel
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia08_ddl_create_schema_runtime PRIVATE sb_sblr_parameter_wire_codec)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_runtime COMMAND sbsql_sblr_alignment_ia08_ddl_create_schema_runtime)
-set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_runtime PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005781;malformed_operand")
+set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_runtime PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;SBLR_DDL_CREATE_SCHEMA_AUTHENTICATED_RECOVERY;CSC-TEST-005781;CSC-TEST-005784;malformed_operand;recovery_codec")
 add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_availability ia08_ddl_create_schema_availability_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_availability PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia08_ddl_create_schema_availability PRIVATE sb_engine_internal_api)
@@ -2474,7 +2474,7 @@ add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery ia08_ddl_cre
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PRIVATE sb_engine_internal_api)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_recovery COMMAND sbsql_sblr_alignment_ia08_ddl_create_schema_recovery)
-set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005783;durable_recovery;crash_replay;byte_exact_result_replay")
+set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;SBLR_DDL_CREATE_SCHEMA_AUTHENTICATED_RECOVERY;CSC-TEST-005780;CSC-TEST-005783;CSC-TEST-005785;durable_recovery;authenticated_recovery;crash_replay;byte_exact_result_replay")
 add_executable(sbsql_sblr_alignment_ia01_window_availability ia01_window_availability_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia01_window_availability PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia01_window_availability PRIVATE sb_engine_internal_api)
@@ -5881,7 +5881,7 @@ add_test(NAME sbsql_sblr_alignment_sbps_private_narrow_profile_activation
   COMMAND sbsql_sblr_alignment_sbps_private_narrow_profile_activation)
 set_tests_properties(
   sbsql_sblr_alignment_sbps_private_narrow_profile_activation PROPERTIES
-  LABELS "sbsql_sblr_alignment;IA-01;IA-03;IA-07;IA-08;SBLR_BULK_IMPORT_STREAM;SBLR_PARSE_TEXT;SBLR_CATALOG_EPOCH_CHECK;SBLR_DATABASE_ATTACH;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;PS_738_739;CSC-TEST-005726;SBPS;private_narrow_profile;activation;47_pairs;18_forbidden;schema_7745;schema_7746;schema_7747;schema_7748;schema_7749;schema_7750;schema_7751;schema_7752;zero_capability;evidence_gated;exact_dispatch"
+  LABELS "sbsql_sblr_alignment;IA-01;IA-03;IA-07;IA-08;SBLR_BULK_IMPORT_STREAM;SBLR_PARSE_TEXT;SBLR_CATALOG_EPOCH_CHECK;SBLR_DATABASE_ATTACH;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;SBLR_DDL_CREATE_SCHEMA_AUTHENTICATED_RECOVERY;PS_738_739;PS_740_741;CSC-TEST-005726;CSC-TEST-005784;SBPS;private_narrow_profile;activation;49_pairs;18_forbidden;schema_7745;schema_7746;schema_7747;schema_7748;schema_7749;schema_7750;schema_7751;schema_7752;schema_7753;schema_7754;zero_capability;evidence_gated;exact_dispatch"
   TIMEOUT 30)
 
 add_executable(sbsql_sblr_alignment_sbps_bulk_import_stream_codec

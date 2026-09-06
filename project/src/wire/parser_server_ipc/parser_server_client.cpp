@@ -22,6 +22,7 @@
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
@@ -1001,6 +1002,8 @@ constexpr std::uint32_t kSchemaDatabaseAttachBindRequestV1 = 7749;
 constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
 constexpr std::uint32_t kSchemaSourceArtifactRetainRequestV1 = 7751;
 constexpr std::uint32_t kSchemaSourceArtifactRetainResultV1 = 7752;
+constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryRequestV1 = 7753;
+constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryResultV1 = 7754;
 constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7721;
 constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7722;
 constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 = 7723;
@@ -1057,6 +1060,8 @@ constexpr std::uint16_t kMessageDatabaseAttachBindRequest = 736;
 constexpr std::uint16_t kMessageDatabaseAttachBindResult = 737;
 constexpr std::uint16_t kMessageSourceArtifactRetainRequest = 738;
 constexpr std::uint16_t kMessageSourceArtifactRetainResult = 739;
+constexpr std::uint16_t kMessageDdlCreateSchemaRecoveryRequest = 740;
+constexpr std::uint16_t kMessageDdlCreateSchemaRecoveryResult = 741;
 constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindRequest = 708;
 constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindResult = 709;
 constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindRequest = 710;
@@ -9884,6 +9889,75 @@ ServerVariableBindingResult SbpsClient::RetainSourceArtifact(
         &messages, "MGA.AUTHORITY_MISMATCH",
         detail.empty()
             ? "source-artifact retain acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::RecoverDdlCreateSchema(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  namespace ddl = scratchbird::engine::sblr;
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !ddl::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(
+        &messages, "SBLR.OPERAND_INVALID",
+        detail.empty() ? "CREATE SCHEMA recovery request is malformed"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageDdlCreateSchemaRecoveryRequest,
+                              kSchemaDdlCreateSchemaRecoveryRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  ddl::SblrDdlCreateSchemaResultV1 terminal;
+  if (response.header.message_type !=
+          kMessageDdlCreateSchemaRecoveryResult ||
+      response.header.schema_id != kSchemaDdlCreateSchemaRecoveryResultV1 ||
+      !ddl::DecodeSblrDdlCreateSchemaResultV1(
+          response.payload.data(), response.payload.size(), &terminal,
+          &detail) ||
+      terminal.receipt != request.operand_descriptor.receipt ||
+      terminal.schema_uuid != request.operand_descriptor.schema_uuid ||
+      terminal.database_uuid != request.operand_descriptor.database_uuid ||
+      terminal.owning_transaction_uuid !=
+          request.operand_descriptor.owning_transaction_uuid ||
+      terminal.owning_local_transaction_id !=
+          request.operand_descriptor.owning_local_transaction_id ||
+      terminal.descriptor_evidence_sha256 !=
+          request.operand_descriptor.evidence ||
+      terminal.availability != request.operand_descriptor.availability ||
+      ddl::EncodeSblrDdlCreateSchemaResultV1(terminal) != response.payload) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "CREATE SCHEMA recovery result is not exactly correlated"
             : detail);
     result.messages = std::move(messages);
     return result;

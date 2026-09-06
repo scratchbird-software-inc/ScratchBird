@@ -85,6 +85,15 @@ struct SblrDdlCreateSchemaResultV1 {
   DdlCreateSchemaUuid publication_barrier{};
 };
 
+// CSRQ is a post-receipt recovery capability. It contains only the exact
+// parser syntax demand that produced the descriptor and the literal CSDO
+// copied from the engine. It cannot introduce or replace any authority field.
+struct SblrDdlCreateSchemaRecoveryRequestV1 {
+  SblrDdlCreateSchemaRequestV1 bind_request;
+  SblrDdlCreateSchemaDescriptorV1 operand_descriptor;
+  DdlCreateSchemaSha evidence{};
+};
+
 std::vector<std::uint8_t> EncodeSblrDdlCreateSchemaRequestV1(
     const SblrDdlCreateSchemaRequestV1&);
 bool DecodeSblrDdlCreateSchemaRequestV1(
@@ -100,5 +109,10 @@ std::vector<std::uint8_t> EncodeSblrDdlCreateSchemaResultV1(
 bool DecodeSblrDdlCreateSchemaResultV1(
     const std::uint8_t*, std::size_t, SblrDdlCreateSchemaResultV1*,
     std::string*);
+std::vector<std::uint8_t> EncodeSblrDdlCreateSchemaRecoveryRequestV1(
+    const SblrDdlCreateSchemaRecoveryRequestV1&);
+bool DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+    const std::uint8_t*, std::size_t,
+    SblrDdlCreateSchemaRecoveryRequestV1*, std::string*);
 
 }  // namespace scratchbird::engine::sblr

@@ -72,9 +72,10 @@
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context, "ddl.create_schema", loaded_names.diagnostic);
     }
-    const auto exact_name = [](const NameRegistryEntry& left,
-                               const NameRegistryEntry& right) {
-      return left.creator_tx == right.creator_tx &&
+	    const auto exact_name = [](const NameRegistryEntry& left,
+	                               const NameRegistryEntry& right) {
+	      return !left.derived_from_legacy_name &&
+	             left.creator_tx == right.creator_tx &&
              left.object_uuid == right.object_uuid &&
              left.object_class == right.object_class &&
              left.scope_uuid == right.scope_uuid &&

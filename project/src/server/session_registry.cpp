@@ -246,6 +246,7 @@
 #include "sblr_ddl_alter_view_coordinator.hpp"
 #include "sblr_ddl_alter_domain_coordinator.hpp"
 #include "sblr_ddl_create_schema_runtime.hpp"
+#include "sblr_ddl_create_schema_execution_journal.hpp"
 #include "sblr_ddl_create_table_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_runtime.hpp"
 #include "sblr_ddl_create_table_as_query_coordinator.hpp"
@@ -12191,6 +12192,97 @@ SessionOperationResult HandleCoordinateDdlCreateSchema(
                       : std::move(detail));
   }
   result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleRecoverDdlCreateSchema(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  namespace ddl = scratchbird::engine::sblr;
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kDdlCreateSchemaRecoveryResult);
+  result.response_schema_id = sbps::kSchemaDdlCreateSchemaRecoveryResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string key,
+                          std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    const auto message_key =
+        key.empty() ? std::string("parser_server_ipc.ddl_create_schema_recovery_refused")
+                    : std::move(key);
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), message_key,
+        "CREATE SCHEMA authenticated recovery was refused.",
+        {{"detail", std::move(detail)}, {"message_key", message_key}}));
+    return result;
+  };
+  if (registry == nullptr ||
+      request.header.payload_schema_id !=
+          sbps::kSchemaDdlCreateSchemaRecoveryRequestV1) {
+    return refuse("SBLR.OPERAND_INVALID", {},
+                  "ddl_create_schema_recovery.schema_invalid");
+  }
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 decoded;
+  std::string detail;
+  if (!ddl::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+          request.payload.data(), request.payload.size(), &decoded,
+          &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", {}, std::move(detail));
+  }
+  const auto session = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session == registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
+  }
+
+  // Freeze the current authenticated principal/database/transaction projection
+  // while the engine classifies and repairs the original durable operation.
+  // The CSRQ remains the sole operation authority; the current session grants
+  // only authentication and a fresh authorization decision.
+  std::unique_lock<std::mutex> transaction_guard(
+      *session->second.transaction_mutex);
+  auto context = EngineContextForSession(session->second, engine_state, request);
+  context.trace_tags.push_back(
+      "private_ddl_create_schema_authenticated_recovery");
+  const auto recovered =
+      engine_api::RecoverSblrDdlCreateSchemaExecutionJournalV1(context,
+                                                               decoded);
+  if (!recovered.ok) {
+    return refuse(recovered.diagnostic.code.empty()
+                      ? "DDL.CREATE_SCHEMA_FAILED"
+                      : recovered.diagnostic.code,
+                  recovered.diagnostic.message_key,
+                  recovered.diagnostic.detail);
+  }
+
+  ddl::SblrDdlCreateSchemaResultV1 terminal;
+  if (!recovered.authenticated_recovery ||
+      !recovered.postcondition_verified ||
+      recovered.snapshot.canonical_result_bytes.empty() ||
+      !ddl::DecodeSblrDdlCreateSchemaResultV1(
+          recovered.snapshot.canonical_result_bytes.data(),
+          recovered.snapshot.canonical_result_bytes.size(), &terminal,
+          &detail) ||
+      terminal.receipt != decoded.operand_descriptor.receipt ||
+      terminal.schema_uuid != decoded.operand_descriptor.schema_uuid ||
+      terminal.database_uuid != decoded.operand_descriptor.database_uuid ||
+      terminal.owning_transaction_uuid !=
+          decoded.operand_descriptor.owning_transaction_uuid ||
+      terminal.owning_local_transaction_id !=
+          decoded.operand_descriptor.owning_local_transaction_id ||
+      terminal.descriptor_evidence_sha256 !=
+          decoded.operand_descriptor.evidence ||
+      terminal.availability != decoded.operand_descriptor.availability ||
+      ddl::EncodeSblrDdlCreateSchemaResultV1(terminal) !=
+          recovered.snapshot.canonical_result_bytes) {
+    return refuse("MGA.AUTHORITY_MISMATCH", {},
+                  detail.empty()
+                      ? "ddl_create_schema_recovery.result_correlation_invalid"
+                      : std::move(detail));
+  }
+  result.payload = recovered.snapshot.canonical_result_bytes;
   result.accepted = true;
   return result;
 }

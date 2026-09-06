@@ -24315,7 +24315,75 @@ struct SbsqlTestWireSession::HeldBulkImportStream {
   }
 };
 
+struct SbsqlTestWireSession::HeldDdlCreateSchema {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrDdlCreateSchemaRequestV1 bind_request;
+  scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1 descriptor;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::vector<std::uint8_t> canonical_recovery_request;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
 namespace {
+
+bool ExactDdlCreateSchemaTerminal(
+    const scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1* terminal,
+    std::string* detail) {
+  namespace ddl = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      !ddl::DecodeSblrDdlCreateSchemaResultV1(bytes, size, terminal, detail) ||
+      ddl::EncodeSblrDdlCreateSchemaResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  return terminal->receipt == descriptor.receipt &&
+         terminal->schema_uuid == descriptor.schema_uuid &&
+         terminal->schema_generation == descriptor.schema_generation &&
+         terminal->parent_schema_uuid == descriptor.parent_schema_uuid &&
+         terminal->parent_namespace_generation ==
+             descriptor.parent_namespace_generation &&
+         terminal->database_uuid == descriptor.database_uuid &&
+         terminal->owning_transaction_uuid ==
+             descriptor.owning_transaction_uuid &&
+         terminal->owning_local_transaction_id ==
+             descriptor.owning_local_transaction_id &&
+         terminal->statement_snapshot_uuid ==
+             descriptor.statement_snapshot_uuid &&
+         terminal->catalog_generation == descriptor.catalog_generation &&
+         terminal->security_epoch == descriptor.security_epoch &&
+         terminal->resource_generation == descriptor.resource_generation &&
+         terminal->normalized_path_sha256 ==
+             descriptor.normalized_path_sha256 &&
+         terminal->descriptor_evidence_sha256 == descriptor.evidence &&
+         terminal->availability == descriptor.availability &&
+         nonzero(terminal->catalog_row_uuid) &&
+         nonzero(terminal->mutation_uuid) && nonzero(terminal->evidence) &&
+         nonzero(terminal->publication_barrier) &&
+         terminal->catalog_row_uuid != terminal->schema_uuid &&
+         terminal->mutation_uuid != terminal->schema_uuid &&
+         terminal->publication_barrier != terminal->schema_uuid;
+}
 
 template <std::size_t N>
 std::uint64_t BulkImportReadU64(const std::array<std::uint8_t, N>& body,
@@ -24448,6 +24516,28 @@ SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* m
 }
 
 SbsqlTestWireSession::~SbsqlTestWireSession() = default;
+
+bool SbsqlTestWireSession::HasHeldDdlCreateSchemaForWire() const {
+  return held_ddl_create_schema_ != nullptr;
+}
+
+std::vector<std::uint8_t>
+SbsqlTestWireSession::DdlCreateSchemaRecoveryRequestForWire() const {
+  return held_ddl_create_schema_ == nullptr
+             ? std::vector<std::uint8_t>{}
+             : held_ddl_create_schema_->canonical_recovery_request;
+}
+
+void SbsqlTestWireSession::AcknowledgeDdlCreateSchemaCompletionForWire() {
+  if (held_ddl_create_schema_ == nullptr) {
+    return;
+  }
+  const auto& held = *held_ddl_create_schema_;
+  if (held.phase == HeldDdlCreateSchema::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_ddl_create_schema_.reset();
+  }
+}
 
 bool SbsqlTestWireSession::HasHeldBulkImportStreamForWire() const {
   return held_bulk_import_stream_ != nullptr;
@@ -25662,6 +25752,26 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
              {"executable_sblr_emitted", "false"}}));
         return result;
       };
+
+  if (held_ddl_create_schema_ != nullptr &&
+      held_ddl_create_schema_->phase !=
+          HeldDdlCreateSchema::Phase::result_recorded &&
+      held_ddl_create_schema_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "ddl_catalog";
+    result.operation_family = "sblr.catalog.mutation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "A CREATE SCHEMA operation with unknown finality must be recovered before another command.",
+        "sbp_sbsql.wire.ddl_create_schema_recovery",
+        {{"detail", "exact_held_create_schema_recovery_required"}}));
+    mark_phase("ddl_create_schema_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
 
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
@@ -30704,7 +30814,12 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
   }
   if (upper.starts_with("EXECUTE ")) {
     auto result = RunPipeline(trimmed.substr(8), true);
-    return {false, RenderPipelineResult(result)};
+    auto rendered = RenderPipelineResult(result);
+    if (result.accepted &&
+        result.server_operation_id == "engine.op.ddl_create_schema") {
+      AcknowledgeDdlCreateSchemaCompletionForWire();
+    }
+    return {false, std::move(rendered)};
   }
   if (upper.starts_with("STREAM ")) {
     std::string stream_body = AfterCommand(trimmed, "STREAM");
@@ -31157,6 +31272,53 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
     return result;
   }
 
+  if (held_ddl_create_schema_ != nullptr) {
+    auto& held = *held_ddl_create_schema_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held CREATE SCHEMA lifecycle may only resume its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) {
+          return replay;
+        }
+        held.autocommit_complete = true;
+      }
+      return replay;
+    }
+    if (held.phase != HeldDdlCreateSchema::Phase::execution_pending ||
+        !held.execution_attempted || held.canonical_recovery_request.empty() ||
+        !held.submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "the held CREATE SCHEMA lifecycle is not recoverable by a fresh descriptor");
+    }
+    auto replay =
+        RecoverDdlCreateSchemaForWire(held.canonical_recovery_request);
+    if (!replay.accepted || replay.messages.has_errors()) {
+      return replay;
+    }
+    replay.server_operation_id = "engine.op.ddl_create_schema";
+    replay.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    replay.server_request_payload_bytes = held.canonical_bind_request.size();
+    held.phase = HeldDdlCreateSchema::Phase::result_recorded;
+    held.terminal_result = replay;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&replay)) {
+        return replay;
+      }
+      held.autocommit_complete = true;
+    }
+    return replay;
+  }
+
   ParserTransactionSelector selector{session_.local_transaction_id,
                                      session_.transaction_uuid};
   auto acquired = embedded
@@ -31311,6 +31473,38 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
                   "ddl_create_schema_canonical_submission_invalid");
   }
 
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 recovery_request;
+  recovery_request.bind_request = canonical_request;
+  recovery_request.operand_descriptor = operand_descriptor;
+  const auto recovery_request_bytes =
+      ddl::EncodeSblrDdlCreateSchemaRecoveryRequestV1(recovery_request);
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 canonical_recovery_request;
+  if (recovery_request_bytes.empty() ||
+      !ddl::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+          recovery_request_bytes.data(), recovery_request_bytes.size(),
+          &canonical_recovery_request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_schema_recovery_request_invalid"
+                      : detail);
+  }
+
+  auto held = std::make_unique<HeldDdlCreateSchema>();
+  held->exact_sql = std::string(sql);
+  held->statement_context = acquired.context;
+  held->bind_request = canonical_request;
+  held->descriptor = descriptor;
+  held->canonical_bind_request = request_bytes;
+  held->canonical_descriptor = coordinated.canonical_payload;
+  held->canonical_operand = operand;
+  held->canonical_recovery_request = recovery_request_bytes;
+  held->submission = *submission;
+  held->phase = HeldDdlCreateSchema::Phase::execution_pending;
+  held->execution_attempted = true;
+  held->autocommit_emulation = autocommit_emulation;
+  held->autocommit_complete = !autocommit_emulation;
+  held_ddl_create_schema_ = std::move(held);
+
   auto executed =
       embedded
           ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
@@ -31321,6 +31515,9 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
   if (!executed.accepted || result.messages.has_errors()) {
     result.outcome_unknown =
         executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    if (!result.outcome_unknown) {
+      held_ddl_create_schema_.reset();
+    }
     return result;
   }
 
@@ -31328,33 +31525,10 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
   if (executed.operation_id != "engine.op.ddl_create_schema" ||
       !executed.cursor_uuid.empty() || executed.row_count != 0 ||
       (executed.affected_rows_present && executed.affected_rows != 0) ||
-      !ddl::DecodeSblrDdlCreateSchemaResultV1(
+      !ExactDdlCreateSchemaTerminal(
+          descriptor,
           reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
-          executed.row_packet.size(), &terminal, &detail) ||
-      terminal.receipt != descriptor.receipt ||
-      terminal.schema_uuid != descriptor.schema_uuid ||
-      terminal.schema_generation != descriptor.schema_generation ||
-      terminal.parent_schema_uuid != descriptor.parent_schema_uuid ||
-      terminal.parent_namespace_generation !=
-          descriptor.parent_namespace_generation ||
-      terminal.database_uuid != descriptor.database_uuid ||
-      terminal.owning_transaction_uuid !=
-          descriptor.owning_transaction_uuid ||
-      terminal.owning_local_transaction_id !=
-          descriptor.owning_local_transaction_id ||
-      terminal.statement_snapshot_uuid != descriptor.statement_snapshot_uuid ||
-      terminal.catalog_generation != descriptor.catalog_generation ||
-      terminal.security_epoch != descriptor.security_epoch ||
-      terminal.resource_generation != descriptor.resource_generation ||
-      terminal.normalized_path_sha256 != descriptor.normalized_path_sha256 ||
-      terminal.descriptor_evidence_sha256 != descriptor.evidence ||
-      terminal.availability != descriptor.availability ||
-      !nonzero(terminal.catalog_row_uuid) || !nonzero(terminal.mutation_uuid) ||
-      !nonzero(terminal.evidence) ||
-      !nonzero(terminal.publication_barrier) ||
-      terminal.catalog_row_uuid == terminal.schema_uuid ||
-      terminal.mutation_uuid == terminal.schema_uuid ||
-      terminal.publication_barrier == terminal.schema_uuid) {
+          executed.row_packet.size(), &terminal, &detail)) {
     result.outcome_unknown = true;
     return refuse("MGA.AUTHORITY_MISMATCH",
                   detail.empty()
@@ -31373,10 +31547,91 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
       reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
       submission->canonical_container_bytes.size());
   ApplyExecutedTransactionState(executed, &session_);
+  held_ddl_create_schema_->phase =
+      HeldDdlCreateSchema::Phase::result_recorded;
+  held_ddl_create_schema_->terminal_result = result;
   if (autocommit_emulation &&
       !FinalizeSuccessfulAutocommitForWire(&result)) {
     result.accepted = false;
+  } else if (autocommit_emulation) {
+    held_ddl_create_schema_->autocommit_complete = true;
   }
+  return result;
+}
+
+PipelineResult SbsqlTestWireSession::RecoverDdlCreateSchemaForWire(
+    const std::vector<std::uint8_t>& canonical_recovery_request) {
+  namespace ddl = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.parser_executes_sql = false;
+  result.server_operation_id = "engine.op.ddl_create_schema.recover";
+  result.server_request_payload_bytes = canonical_recovery_request.size();
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          std::move(code), "ERROR",
+          "The authenticated CREATE SCHEMA recovery request was refused.",
+          "sbp_sbsql.wire.ddl_create_schema_recovery",
+          {{"detail", std::move(detail)}}));
+    }
+    return result;
+  };
+  if (!session_.authenticated || !HasExecutionRoute()) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_create_schema_recovery_route_required");
+  }
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 request;
+  std::string detail;
+  if (canonical_recovery_request.empty() ||
+      !ddl::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+          canonical_recovery_request.data(),
+          canonical_recovery_request.size(), &request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_schema_recovery_request_invalid"
+                      : detail);
+  }
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  auto recovered =
+      embedded
+          ? embedded_client_->RecoverDdlCreateSchema(
+                session_, canonical_recovery_request)
+          : server_client_->RecoverDdlCreateSchema(
+                session_, canonical_recovery_request);
+  result.outcome_unknown = recovered.outcome_unknown;
+  result.messages = std::move(recovered.messages);
+  if (!recovered.accepted || result.messages.has_errors()) {
+    if (!result.messages.has_errors()) {
+      return refuse(recovered.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "DDL.CREATE_SCHEMA_FAILED",
+                    recovered.outcome_unknown
+                        ? "ddl_create_schema_recovery_outcome_unknown"
+                        : "ddl_create_schema_recovery_refused_without_diagnostic");
+    }
+    return result;
+  }
+  ddl::SblrDdlCreateSchemaResultV1 terminal;
+  if (!ExactDdlCreateSchemaTerminal(
+          request.operand_descriptor, recovered.canonical_payload.data(),
+          recovered.canonical_payload.size(), &terminal, &detail)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_schema_recovery_result_authority_mismatch"
+                      : detail);
+  }
+  result.accepted = true;
+  result.server_row_count = 0;
+  result.server_affected_rows = 0;
+  result.server_affected_rows_present = false;
+  result.server_result_payload.assign(
+      reinterpret_cast<const char*>(recovered.canonical_payload.data()),
+      recovered.canonical_payload.size());
   return result;
 }
 

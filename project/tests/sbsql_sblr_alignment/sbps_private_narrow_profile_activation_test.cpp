@@ -13,10 +13,10 @@ namespace {
 namespace profile = scratchbird::server::sbps::private_narrow;
 using scratchbird::core::platform::byte;
 
-static_assert(profile::kPairUniverseCountV1 == 65);
-static_assert(profile::kRequiredPairCountV1 == 47);
+static_assert(profile::kPairUniverseCountV1 == 67);
+static_assert(profile::kRequiredPairCountV1 == 49);
 static_assert(profile::kForbiddenPairCountV1 == 18);
-static_assert(profile::kSuccessOnlyPairCountV1 == 19);
+static_assert(profile::kSuccessOnlyPairCountV1 == 20);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
@@ -79,10 +79,10 @@ void CoreRecordAndPendingEvidenceStayInactive() {
   const auto core = profile::CorePrivateNarrowProfileRecordV1();
   Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
           "compiled Core private profile record failed validation");
-  Require(core.pair_universe.size() == 65 &&
-              core.required_pairs.size() == 47 &&
+  Require(core.pair_universe.size() == 67 &&
+              core.required_pairs.size() == 49 &&
               core.forbidden_pairs.size() == 18 &&
-              core.candidate_activation_records.size() == 47 &&
+              core.candidate_activation_records.size() == 49 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
   const auto contains = [](const auto& pairs, std::uint16_t message,
@@ -181,6 +181,18 @@ void CoreRecordAndPendingEvidenceStayInactive() {
           "the source-artifact retain request was marked success-only");
   Require(contains(core.success_only_pairs, 739, 7752),
           "the source-artifact retain result lacks success-only role");
+  for (const auto [message, schema] : {
+           profile::PairV1{740, 7753}, profile::PairV1{741, 7754}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact CREATE SCHEMA recovery pair is not in the compiled "
+            "SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 740, 7753),
+          "the CREATE SCHEMA recovery request was marked success-only");
+  Require(contains(core.success_only_pairs, 741, 7754),
+          "the CREATE SCHEMA recovery result lacks success-only role");
   for (const auto& record : core.candidate_activation_records) {
     Require(!record.exact_nul_serialization.empty() &&
                 record.exact_nul_serialization.back() == 0 &&
@@ -325,6 +337,18 @@ void SyntheticUsableFixtureProvesExactDispatchOnly() {
   Require(source_artifact_retain_result.admitted &&
               source_artifact_retain_result.success_only,
           "739/7752 source-artifact retain result dispatch failed");
+  const auto create_schema_recovery =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(740, 7753));
+  Require(create_schema_recovery.admitted &&
+              !create_schema_recovery.success_only,
+          "740/7753 CREATE SCHEMA recovery dispatch failed");
+  const auto create_schema_recovery_result =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(741, 7754));
+  Require(create_schema_recovery_result.admitted &&
+              create_schema_recovery_result.success_only,
+          "741/7754 CREATE SCHEMA recovery result dispatch failed");
 
   const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
       core, activation.state, key(42, 1043));

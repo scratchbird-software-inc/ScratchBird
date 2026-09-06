@@ -374,6 +374,9 @@ def main() -> int:
         env["SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE"] = str(server_trace)
         env["SCRATCHBIRD_ENGINE_ABI_PHASE_TRACE_FILE"] = str(dispatch_trace)
         env["SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"] = str(dispatch_trace)
+        env["SCRATCHBIRD_TEST_DDL_CREATE_SCHEMA_RECOVERY_ARTIFACT"] = str(
+            work / "ddl-create-schema-recovery"
+        )
         server = subprocess.Popen(
             [args.server, "--foreground", "--no-listeners", "--control-dir",
              str(work / "sc"), "--runtime-dir", str(work / "sr"),
@@ -452,7 +455,9 @@ def main() -> int:
             executor_availability_before = executor_availability_snapshot()
         command = [args.client, f"unix:{endpoint}", str(database), "alice",
                    evidence, args.operation, f"sbsql-sblr-{args.operation}-e2e-first"]
-        first = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        first = subprocess.run(
+            command, capture_output=True, text=True, timeout=30, env=env
+        )
         if first.returncode != 0:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
         if args.operation == "source-artifact-container":
@@ -488,7 +493,8 @@ def main() -> int:
             expected_success = (
                 "CSC-TEST-005780 DDL_CREATE_SCHEMA accepted "
                 "canonical_sblr=true catalog_mutation=true "
-                "commit=true publication_barrier=passed\n"
+                "commit=true publication_barrier=passed "
+                "authenticated_recovery=true exact_csrs_replay=true\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -1302,7 +1308,9 @@ def main() -> int:
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
         if args.operation == "ddl-create-schema":
             second[5] = "ddl-create-schema-observe"
-        verified = subprocess.run(second, capture_output=True, text=True, timeout=30)
+        verified = subprocess.run(
+            second, capture_output=True, text=True, timeout=30, env=env
+        )
         if verified.returncode != 0:
             raise ProofError(
                 "independent authenticated process/receipt verification failed: "
@@ -1329,7 +1337,11 @@ def main() -> int:
                     "sbsql-sblr-ddl-create-schema-e2e-" + session_suffix
                 )
                 completed = subprocess.run(
-                    auxiliary, capture_output=True, text=True, timeout=30
+                    auxiliary,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
                 )
                 if (
                     completed.returncode != 0
@@ -1391,6 +1403,34 @@ def main() -> int:
             )
             wait_unix(restart_endpoint)
             command[1] = f"unix:{restart_endpoint}"
+            durable_catalog_paths = (
+                catalog_event_path,
+                Path(f"{database}.sb.api_events"),
+            )
+            if not all(path.exists() for path in durable_catalog_paths):
+                raise ProofError(
+                    "CREATE SCHEMA recovery requires both durable catalog "
+                    "and name-registry journals"
+                )
+            durable_catalog_before_recovery = {
+                path: path.read_bytes() for path in durable_catalog_paths
+            }
+            run_schema_auxiliary(
+                "ddl-create-schema-recover",
+                "restart-recovery",
+                "CSC-TEST-005785 DDL_CREATE_SCHEMA_RECOVERY accepted "
+                "new_session=true restarted_server=true "
+                "byte_identical_csrs=true exact_schema_visible=true "
+                "no_rebind=true\n",
+            )
+            durable_catalog_after_recovery = {
+                path: path.read_bytes() for path in durable_catalog_paths
+            }
+            if durable_catalog_after_recovery != durable_catalog_before_recovery:
+                raise ProofError(
+                    "authenticated CREATE SCHEMA recovery changed the durable "
+                    "catalog or name-registry journals"
+                )
             run_schema_auxiliary(
                 "ddl-create-schema-observe",
                 "restart-observer",

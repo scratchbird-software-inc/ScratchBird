@@ -1159,6 +1159,8 @@ SessionOperationResult HandleCoordinateKvStructuredTimeseries(ServerSessionRegis
 SessionOperationResult HandleCoordinateSystemConfigSet(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateDomain(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateSchema(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleRecoverDdlCreateSchema(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateOrReplaceSrs(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlDropSrs(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateDdlCreateRewriteRule(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);

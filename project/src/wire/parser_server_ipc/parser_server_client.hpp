@@ -851,6 +851,9 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateDdlRenameObjectVector(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlRenameObject(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateSchema(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult RecoverDdlCreateSchema(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateOrReplaceSrs(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlDropSrs(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDdlCreateRewriteRule(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;

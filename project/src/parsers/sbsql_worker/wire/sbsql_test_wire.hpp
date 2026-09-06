@@ -504,6 +504,12 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlCreateSchemaForWire(
       std::string_view sql = "CREATE SCHEMA qa_schema;",
       bool autocommit_emulation = false);
+  PipelineResult RecoverDdlCreateSchemaForWire(
+      const std::vector<std::uint8_t>& canonical_recovery_request);
+  [[nodiscard]] std::vector<std::uint8_t>
+  DdlCreateSchemaRecoveryRequestForWire() const;
+  void AcknowledgeDdlCreateSchemaCompletionForWire();
+  [[nodiscard]] bool HasHeldDdlCreateSchemaForWire() const;
   PipelineResult RunDdlCreateTableForWire();
   PipelineResult RunDdlCreateIndexForWire();
   PipelineResult RunDdlDropIndexForWire();
@@ -557,6 +563,7 @@ class SbsqlTestWireSession {
 
  private:
   struct HeldBulkImportStream;
+  struct HeldDdlCreateSchema;
 
   ParserConfig config_;
   ParserMetrics* metrics_;
@@ -566,6 +573,7 @@ class SbsqlTestWireSession {
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
   std::unique_ptr<SbpsClient> server_client_;
   std::unique_ptr<HeldBulkImportStream> held_bulk_import_stream_;
+  std::unique_ptr<HeldDdlCreateSchema> held_ddl_create_schema_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;

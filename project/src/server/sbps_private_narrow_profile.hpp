@@ -33,15 +33,15 @@ inline constexpr char kProfileIdV1[] =
 inline constexpr char kImplementationEvidenceIdV1[] =
     "SBPS-V1-EVIDENCE-019d3b15-6e00-7000-8000-000000000003";
 inline constexpr char kRegistrySnapshotSha256V1[] =
-    "14991e0d99101c8e45f93bec4939520bcaeb3ae7ee19936b881edd5a2917cfe4";
+    "dac33ad513d7266ed6bda38d470d182b41fcfa3cb6f4c9039b72529684782849";
 inline constexpr std::uint16_t kProtocolMajorV1 = 1;
 inline constexpr std::uint16_t kProtocolMinorV1 = 0;
 inline constexpr std::uint32_t kParserApiMajorV1 = 1;
 inline constexpr std::uint32_t kParserApiMinorV1 = 0;
-inline constexpr std::size_t kPairUniverseCountV1 = 65;
-inline constexpr std::size_t kRequiredPairCountV1 = 47;
+inline constexpr std::size_t kPairUniverseCountV1 = 67;
+inline constexpr std::size_t kRequiredPairCountV1 = 49;
 inline constexpr std::size_t kForbiddenPairCountV1 = 18;
-inline constexpr std::size_t kSuccessOnlyPairCountV1 = 19;
+inline constexpr std::size_t kSuccessOnlyPairCountV1 = 20;
 
 struct PairV1 {
   std::uint16_t message_code = 0;

@@ -28,6 +28,8 @@
 #include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 int main(int argc, char** argv) {
@@ -646,6 +648,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (operation == "ddl-create-schema" ||
+      operation == "ddl-create-schema-recover" ||
       operation == "ddl-create-schema-observe" ||
       operation == "ddl-create-schema-duplicate" ||
       operation == "ddl-create-schema-rollback" ||
@@ -707,6 +710,38 @@ int main(int argc, char** argv) {
              out->mutation_uuid != out->schema_uuid &&
              out->publication_barrier != out->schema_uuid;
     };
+    const char* recovery_artifact_base =
+        std::getenv("SCRATCHBIRD_TEST_DDL_CREATE_SCHEMA_RECOVERY_ARTIFACT");
+    const auto write_recovery_artifact = [&](std::string_view suffix,
+                                             const std::uint8_t* bytes,
+                                             std::size_t size) {
+      if (recovery_artifact_base == nullptr || bytes == nullptr || size == 0) {
+        return false;
+      }
+      std::ofstream out(std::string(recovery_artifact_base) +
+                            std::string(suffix),
+                        std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(bytes),
+                static_cast<std::streamsize>(size));
+      return out.good();
+    };
+    const auto read_recovery_artifact = [&](std::string_view suffix) {
+      std::vector<std::uint8_t> bytes;
+      if (recovery_artifact_base == nullptr) return bytes;
+      std::ifstream in(std::string(recovery_artifact_base) +
+                           std::string(suffix),
+                       std::ios::binary);
+      if (!in) return bytes;
+      in.seekg(0, std::ios::end);
+      const auto extent = in.tellg();
+      if (extent <= 0) return bytes;
+      bytes.resize(static_cast<std::size_t>(extent));
+      in.seekg(0, std::ios::beg);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+      if (!in) bytes.clear();
+      return bytes;
+    };
 
     if (operation == "ddl-create-schema" ||
         operation == "ddl-create-schema-rollback") {
@@ -721,6 +756,28 @@ int main(int argc, char** argv) {
         dump_failure("terminal_contract_failed", created);
         return 4;
       }
+      if (!rollback_case) {
+        const auto recovery_request =
+            session.DdlCreateSchemaRecoveryRequestForWire();
+        auto recovered =
+            session.RecoverDdlCreateSchemaForWire(recovery_request);
+        if (recovery_request.empty() || !recovered.accepted ||
+            recovered.outcome_unknown || recovered.messages.has_errors() ||
+            recovered.server_operation_id !=
+                "engine.op.ddl_create_schema.recover" ||
+            recovered.server_result_payload != created.server_result_payload ||
+            !write_recovery_artifact(".csrq", recovery_request.data(),
+                                     recovery_request.size()) ||
+            !write_recovery_artifact(
+                ".csrs",
+                reinterpret_cast<const std::uint8_t*>(
+                    created.server_result_payload.data()),
+                created.server_result_payload.size())) {
+          dump_failure("authenticated_recovery_failed", recovered);
+          return 4;
+        }
+      }
+      session.AcknowledgeDdlCreateSchemaCompletionForWire();
       auto finalized = session.RunPipeline(
           rollback_case ? "ROLLBACK TRANSACTION" : "COMMIT TRANSACTION",
           true);
@@ -736,7 +793,50 @@ int main(int argc, char** argv) {
       }
       std::cout << "CSC-TEST-005780 DDL_CREATE_SCHEMA accepted "
                    "canonical_sblr=true catalog_mutation=true "
-                   "commit=true publication_barrier=passed\n";
+                   "commit=true publication_barrier=passed "
+                   "authenticated_recovery=true exact_csrs_replay=true\n";
+      return 0;
+    }
+
+    if (operation == "ddl-create-schema-recover") {
+      const auto recovery_request = read_recovery_artifact(".csrq");
+      const auto expected_result = read_recovery_artifact(".csrs");
+      auto recovered =
+          session.RecoverDdlCreateSchemaForWire(recovery_request);
+      ddl::SblrDdlCreateSchemaResultV1 terminal;
+      std::string detail;
+      const bool exact_recovery =
+          !recovery_request.empty() && !expected_result.empty() &&
+          recovered.accepted && !recovered.outcome_unknown &&
+          !recovered.messages.has_errors() &&
+          recovered.server_operation_id ==
+              "engine.op.ddl_create_schema.recover" &&
+          recovered.sblr_payload.empty() &&
+          recovered.server_result_payload == std::string(
+              reinterpret_cast<const char*>(expected_result.data()),
+              expected_result.size()) &&
+          ddl::DecodeSblrDdlCreateSchemaResultV1(
+              expected_result.data(), expected_result.size(), &terminal,
+              &detail);
+      auto observed = session.RunPipeline(
+          "RESOLVE NAME qa_schema AS SCHEMA;", true);
+      ddl::SblrNameResolveResultV1 resolved;
+      const bool exact_observer = decode_name_result(observed, &resolved) &&
+                                  resolved.status == 1 &&
+                                  resolved.visibility == 1 &&
+                                  resolved.object_class == 3 &&
+                                  resolved.resolved_object_uuid ==
+                                      terminal.schema_uuid;
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_recovery || !exact_observer || !rolled_back.accepted ||
+          rolled_back.messages.has_errors()) {
+        dump_failure("restarted_recovery_failed", recovered);
+        return 4;
+      }
+      std::cout << "CSC-TEST-005785 DDL_CREATE_SCHEMA_RECOVERY accepted "
+                   "new_session=true restarted_server=true "
+                   "byte_identical_csrs=true exact_schema_visible=true "
+                   "no_rebind=true\n";
       return 0;
     }
 

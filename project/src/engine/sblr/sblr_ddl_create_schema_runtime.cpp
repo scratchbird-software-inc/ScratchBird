@@ -12,6 +12,8 @@ namespace {
 constexpr std::size_t kRequestSize = 896;
 constexpr std::size_t kDescriptorSize = 488;
 constexpr std::size_t kResultSize = 320;
+constexpr std::size_t kRecoveryRequestSize =
+    16 + kRequestSize + kDescriptorSize + 32;
 
 void PutLe(std::vector<std::uint8_t>* out, std::uint64_t value,
            std::size_t bytes) {
@@ -435,6 +437,76 @@ bool DecodeSblrDdlCreateSchemaResultV1(
       EncodeSblrDdlCreateSchemaResultV1(value) !=
           std::vector<std::uint8_t>(bytes, bytes + size)) {
     if (detail != nullptr) *detail = "CSRS authority or evidence is invalid";
+    return false;
+  }
+  *out = std::move(value);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeSblrDdlCreateSchemaRecoveryRequestV1(
+    const SblrDdlCreateSchemaRecoveryRequestV1& value) {
+  const auto request = EncodeSblrDdlCreateSchemaRequestV1(value.bind_request);
+  const auto descriptor = EncodeSblrDdlCreateSchemaDescriptorV1(
+      value.operand_descriptor, true);
+  if (request.size() != kRequestSize || descriptor.size() != kDescriptorSize ||
+      value.operand_descriptor.receipt != value.bind_request.receipt ||
+      value.operand_descriptor.occurrence != value.bind_request.occurrence ||
+      value.operand_descriptor.schema_occurrence !=
+          value.bind_request.schema_occurrence ||
+      value.operand_descriptor.syntax_demand_sha256 !=
+          value.bind_request.evidence) {
+    return {};
+  }
+  auto out = Header("CSRQ", kRecoveryRequestSize);
+  out.insert(out.end(), request.begin(), request.end());
+  out.insert(out.end(), descriptor.begin(), descriptor.end());
+  const auto evidence = Evidence(
+      "ScratchBird.SblrDdlCreateSchemaRecoveryRequest.V1", out.data() + 16,
+      kRequestSize + kDescriptorSize);
+  if (NonZero(value.evidence) && value.evidence != evidence) return {};
+  PutSha(&out, evidence);
+  return out.size() == kRecoveryRequestSize
+             ? out
+             : std::vector<std::uint8_t>{};
+}
+
+bool DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlCreateSchemaRecoveryRequestV1* out, std::string* detail) {
+  if (out == nullptr ||
+      !ValidHeader(bytes, size, "CSRQ", kRecoveryRequestSize)) {
+    if (detail != nullptr) *detail = "CSRQ header or extent is invalid";
+    return false;
+  }
+  SblrDdlCreateSchemaRecoveryRequestV1 value;
+  std::string nested_detail;
+  if (!DecodeSblrDdlCreateSchemaRequestV1(
+          bytes + 16, kRequestSize, &value.bind_request, &nested_detail) ||
+      !DecodeSblrDdlCreateSchemaDescriptorV1(
+          bytes + 16 + kRequestSize, kDescriptorSize,
+          &value.operand_descriptor, &nested_detail, true)) {
+    if (detail != nullptr) {
+      *detail = nested_detail.empty() ? "CSRQ nested carrier is invalid"
+                                      : std::move(nested_detail);
+    }
+    return false;
+  }
+  GetSha(bytes + 16 + kRequestSize + kDescriptorSize, &value.evidence);
+  const auto expected = Evidence(
+      "ScratchBird.SblrDdlCreateSchemaRecoveryRequest.V1", bytes + 16,
+      kRequestSize + kDescriptorSize);
+  if (value.operand_descriptor.receipt != value.bind_request.receipt ||
+      value.operand_descriptor.occurrence != value.bind_request.occurrence ||
+      value.operand_descriptor.schema_occurrence !=
+          value.bind_request.schema_occurrence ||
+      value.operand_descriptor.syntax_demand_sha256 !=
+          value.bind_request.evidence ||
+      value.evidence != expected ||
+      EncodeSblrDdlCreateSchemaRecoveryRequestV1(value) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    if (detail != nullptr) {
+      *detail = "CSRQ syntax, descriptor, evidence, or canonical bytes disagree";
+    }
     return false;
   }
   *out = std::move(value);

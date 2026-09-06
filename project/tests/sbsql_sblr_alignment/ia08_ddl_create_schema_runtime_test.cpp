@@ -149,6 +149,44 @@ int main() {
     return 6;
   }
 
+  sblr::SblrDdlCreateSchemaRecoveryRequestV1 recovery_request;
+  recovery_request.bind_request = decoded_request;
+  recovery_request.operand_descriptor = decoded_operand;
+  const auto recovery_bytes =
+      sblr::EncodeSblrDdlCreateSchemaRecoveryRequestV1(recovery_request);
+  sblr::SblrDdlCreateSchemaRecoveryRequestV1 decoded_recovery;
+  if (!Require(recovery_bytes.size() == 1432,
+               "CSRQ exact extent mismatch") ||
+      !Require(sblr::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+                   recovery_bytes.data(), recovery_bytes.size(),
+                   &decoded_recovery, &detail),
+               "CSRQ strict decode failed") ||
+      !Require(decoded_recovery.bind_request.evidence ==
+                       decoded_request.evidence &&
+                   decoded_recovery.operand_descriptor.evidence ==
+                       decoded_operand.evidence &&
+                   sblr::EncodeSblrDdlCreateSchemaRecoveryRequestV1(
+                       decoded_recovery) == recovery_bytes,
+               "CSRQ canonical replay changed retained authority")) {
+    return 7;
+  }
+  auto malformed_recovery = recovery_bytes;
+  malformed_recovery[16 + 832] ^= 1;
+  if (!Require(!sblr::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+                   malformed_recovery.data(), malformed_recovery.size(),
+                   &decoded_recovery, &detail),
+               "CSRQ changed nested CSQX was accepted")) {
+    return 8;
+  }
+  malformed_recovery = recovery_bytes;
+  malformed_recovery.back() ^= 1;
+  if (!Require(!sblr::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+                   malformed_recovery.data(), malformed_recovery.size(),
+                   &decoded_recovery, &detail),
+               "CSRQ recovery evidence drift was accepted")) {
+    return 9;
+  }
+
   sblr::SblrDdlCreateSchemaResultV1 result;
   result.receipt = decoded_descriptor.receipt;
   result.schema_uuid = decoded_descriptor.schema_uuid;
@@ -185,7 +223,7 @@ int main() {
                    decoded_result.availability ==
                        decoded_descriptor.availability,
                "CSRS changed descriptor authority")) {
-    return 7;
+    return 10;
   }
   auto malformed_result = result_bytes;
   malformed_result[256] ^= 1;
@@ -193,7 +231,7 @@ int main() {
                    malformed_result.data(), malformed_result.size(),
                    &decoded_result, &detail),
                "CSRS result evidence drift was accepted")) {
-    return 8;
+    return 11;
   }
   malformed_result = result_bytes;
   malformed_result[312] = 1;
@@ -201,7 +239,7 @@ int main() {
                    malformed_result.data(), malformed_result.size(),
                    &decoded_result, &detail),
                "CSRS reserved-byte drift was accepted")) {
-    return 9;
+    return 12;
   }
   return 0;
 }

@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "engine/internal_api/sblr_ddl_create_schema_execution_journal.hpp"
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
+#include "core/hash/hash_digest.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -255,8 +257,11 @@ std::filesystem::path JournalPath(
 void RequireExactResult(
     const api::SblrDdlCreateSchemaJournalResultV1& result,
     const api::SblrDdlCreateSchemaJournalKeyV1& key) {
-  Require(result.ok && result.found,
-          "durable CREATE SCHEMA journal result was not available");
+  if (!result.ok || !result.found) {
+    Fail("durable CREATE SCHEMA journal result was not available: " +
+         result.diagnostic.code + "/" + result.diagnostic.message_key +
+         "/" + result.diagnostic.detail);
+  }
   Require(result.snapshot.key.canonical_descriptor_bytes ==
               key.canonical_descriptor_bytes,
           "durable CREATE SCHEMA journal changed the CSDO authority");
@@ -302,6 +307,27 @@ api::EngineRequestContext BeginTransaction(
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
   context.transaction_isolation_level = begun.isolation_level;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      NewUuid(UuidKind::object, salt + 40);
+  context.authorization_context.security_context_generation = 1;
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = 1;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "principal";
+  context.authorization_context.effective_subjects.push_back(subject);
+  api::EngineMaterializedAuthorizationGrant grant;
+  grant.grant_uuid.canonical = NewUuid(UuidKind::object, salt + 41);
+  grant.subject_uuid = context.principal_uuid;
+  grant.subject_kind = "principal";
+  grant.target_uuid = context.database_uuid;
+  grant.right = "CATALOG_MUTATE";
+  grant.security_epoch = context.security_epoch;
+  context.authorization_context.grants.push_back(grant);
   return context;
 }
 
@@ -345,7 +371,12 @@ sblr::SblrDdlCreateSchemaDescriptorV1 DescriptorForTransaction(
   context->authorization_context.present = true;
   context->authorization_context.authority_uuid.canonical =
       UuidText(descriptor.security_context_uuid);
+  context->authorization_context.security_context_generation = 1;
+  context->authorization_context.principal_uuid = context->principal_uuid;
   context->authorization_context.security_epoch = descriptor.security_epoch;
+  context->authorization_context.policy_epoch = 1;
+  context->authorization_context.catalog_generation_id =
+      descriptor.catalog_generation;
   context->transaction_policy_snapshot_uuid.canonical =
       UuidText(descriptor.policy_snapshot_uuid);
   context->transaction_policy_snapshot_generation =
@@ -355,6 +386,63 @@ sblr::SblrDdlCreateSchemaDescriptorV1 DescriptorForTransaction(
   context->trace_tags.push_back(
       "private_ddl_create_schema_execution_journal");
   return descriptor;
+}
+
+sblr::SblrDdlCreateSchemaRecoveryRequestV1 RecoveryRequest(
+    sblr::SblrDdlCreateSchemaDescriptorV1 descriptor,
+    std::string schema_name) {
+  sblr::SblrDdlCreateSchemaRequestV1 bind;
+  bind.receipt = descriptor.receipt;
+  bind.occurrence = descriptor.occurrence;
+  bind.schema_occurrence = descriptor.schema_occurrence;
+  bind.command_identity = 1;
+  bind.name_atoms.push_back({std::move(schema_name), false});
+  const auto encoded_bind = sblr::EncodeSblrDdlCreateSchemaRequestV1(bind);
+  std::string detail;
+  Require(encoded_bind.size() == 896 &&
+              sblr::DecodeSblrDdlCreateSchemaRequestV1(
+                  encoded_bind.data(), encoded_bind.size(), &bind, &detail),
+          "CREATE SCHEMA recovery CSQX construction failed");
+  descriptor.syntax_demand_sha256 = bind.evidence;
+
+  constexpr std::string_view domain =
+      "ScratchBird.SblrDdlCreateSchemaNormalizedPath.V1";
+  std::vector<std::uint8_t> path_material(domain.begin(), domain.end());
+  path_material.insert(path_material.end(), bind.name_atoms.front().raw_utf8.begin(),
+                       bind.name_atoms.front().raw_utf8.end());
+  path_material.push_back(0);
+  descriptor.normalized_path_sha256 =
+      scratchbird::core::hash::ComputeSha256Digest(path_material).digest;
+  descriptor.evidence = {};
+
+  sblr::SblrDdlCreateSchemaRecoveryRequestV1 recovery;
+  recovery.bind_request = std::move(bind);
+  recovery.operand_descriptor = std::move(descriptor);
+  const auto encoded =
+      sblr::EncodeSblrDdlCreateSchemaRecoveryRequestV1(recovery);
+  Require(encoded.size() == 1432 &&
+              sblr::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+                  encoded.data(), encoded.size(), &recovery, &detail),
+          "CREATE SCHEMA recovery CSRQ construction failed");
+  return recovery;
+}
+
+void InstallCreateSchemaAvailability(
+    api::EngineRequestContext* context,
+    sblr::SblrDdlCreateSchemaDescriptorV1* descriptor) {
+  api::SblrExecutorAvailabilityRowIdentity identity{
+      api::kSblrDdlCreateSchemaExecutorId,
+      api::kSblrDdlCreateSchemaOpcodeCode,
+      api::kSblrDdlCreateSchemaOpcodeVersion,
+      api::kSblrDdlCreateSchemaOperandDescriptorId,
+      api::kSblrDdlCreateSchemaResultDescriptorId,
+      api::kSblrDdlCreateSchemaResultDescriptorVersion};
+  const auto loaded =
+      api::LoadSblrExecutorAvailabilitySnapshot(*context, identity);
+  Require(loaded.ok && loaded.snapshot.installed &&
+              loaded.snapshot.generation != 0,
+          "CREATE SCHEMA executor availability was not installed");
+  descriptor->availability = loaded.snapshot.generation;
 }
 
 api::EngineApiDiagnostic CreateSchemaMutation(
@@ -585,8 +673,12 @@ int main() {
     auto catalog_context = BeginTransaction(
         catalog_database_path, catalog_database_uuid,
         catalog_principal_uuid, 204);
-    const auto catalog_descriptor = DescriptorForTransaction(
+    auto catalog_descriptor = DescriptorForTransaction(
         &catalog_context, catalog_schema_uuid, 210);
+    InstallCreateSchemaAvailability(&catalog_context, &catalog_descriptor);
+    auto catalog_recovery =
+        RecoveryRequest(catalog_descriptor, "recovered_schema");
+    catalog_descriptor = catalog_recovery.operand_descriptor;
     const auto catalog_key = Key(catalog_descriptor);
 
     const auto catalog_child = ::fork();
@@ -619,18 +711,13 @@ int main() {
                 api::SblrDdlCreateSchemaJournalStateV1::begun,
             "real catalog mutation published CSRS before the crash boundary");
 
-    std::uint32_t catalog_recovery_callbacks = 0;
     const auto catalog_repaired =
-        api::ExecuteSblrDdlCreateSchemaExecutionJournalV1(
-            catalog_context, catalog_key,
-            [&](const sblr::SblrDdlCreateSchemaResultV1& planned_result) {
-              ++catalog_recovery_callbacks;
-              return CreateSchemaMutation(catalog_context, catalog_descriptor,
-                                          planned_result);
-            });
+        api::RecoverSblrDdlCreateSchemaExecutionJournalV1(
+            catalog_context, catalog_recovery);
     RequireExactResult(catalog_repaired, catalog_key);
     Require(catalog_repaired.ok && catalog_repaired.mutation_invoked &&
-                catalog_recovery_callbacks == 1 &&
+                catalog_repaired.authenticated_recovery &&
+                catalog_repaired.postcondition_verified &&
                 catalog_repaired.snapshot.state ==
                     api::SblrDdlCreateSchemaJournalStateV1::published,
             "real CREATE SCHEMA catalog recovery did not publish CSRS");
@@ -679,7 +766,66 @@ int main() {
                              entry.object_class == "schema";
                     }) == 1,
             "independent transaction did not observe one recovered schema name");
+
+    const auto committed_replay =
+        api::RecoverSblrDdlCreateSchemaExecutionJournalV1(
+            observer, catalog_recovery);
+    RequireExactResult(committed_replay, catalog_key);
+    Require(committed_replay.authenticated_recovery &&
+                committed_replay.postcondition_verified &&
+                committed_replay.replayed_published_result &&
+                !committed_replay.mutation_invoked &&
+                committed_replay.snapshot.canonical_result_bytes ==
+                    catalog_repaired.snapshot.canonical_result_bytes,
+            "committed CREATE SCHEMA recovery did not replay exact CSRS");
+
+    auto foreign_recovery_context = observer;
+    foreign_recovery_context.principal_uuid.canonical =
+        NewUuid(UuidKind::object, 240);
+    const auto foreign_recovery =
+        api::RecoverSblrDdlCreateSchemaExecutionJournalV1(
+            foreign_recovery_context, catalog_recovery);
+    Require(!foreign_recovery.ok &&
+                foreign_recovery.diagnostic.code == "SECURITY.ACCESS_DENIED",
+            "foreign principal observed authenticated CREATE SCHEMA recovery");
     Commit(observer);
+
+    const auto rolled_back_schema_uuid = NewUuid(UuidKind::schema, 250);
+    auto rolled_back_context = BeginTransaction(
+        catalog_database_path, catalog_database_uuid,
+        catalog_principal_uuid, 251);
+    auto rolled_back_descriptor = DescriptorForTransaction(
+        &rolled_back_context, rolled_back_schema_uuid, 260);
+    InstallCreateSchemaAvailability(&rolled_back_context,
+                                    &rolled_back_descriptor);
+    auto rolled_back_recovery =
+        RecoveryRequest(rolled_back_descriptor, "rolled_back_schema");
+    rolled_back_descriptor = rolled_back_recovery.operand_descriptor;
+    const auto rolled_back_key = Key(rolled_back_descriptor);
+    const auto rolled_back_intent =
+        api::EnsureSblrDdlCreateSchemaExecutionJournalV1(
+            rolled_back_context, rolled_back_key);
+    RequireExactResult(rolled_back_intent, rolled_back_key);
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = rolled_back_context;
+    Require(api::EngineRollbackTransaction(rollback).ok,
+            "CREATE SCHEMA recovery rollback setup failed");
+    auto rollback_observer = BeginTransaction(
+        catalog_database_path, catalog_database_uuid,
+        catalog_principal_uuid, 280);
+    const auto rolled_back_refusal =
+        api::RecoverSblrDdlCreateSchemaExecutionJournalV1(
+            rollback_observer, rolled_back_recovery);
+    Require(!rolled_back_refusal.ok &&
+                rolled_back_refusal.diagnostic.code ==
+                    "MGA.TRANSACTION_INVALID",
+            "rolled-back CREATE SCHEMA operation was recoverable");
+    Require(!api::FindVisibleSchemaTreeRecord(
+                rollback_observer, rolled_back_schema_uuid,
+                rollback_observer.local_transaction_id)
+                 .has_value(),
+            "rolled-back CREATE SCHEMA recovery mutated catalog state");
+    Commit(rollback_observer);
 #endif
 
     const auto corrupt_descriptor = Descriptor(0xe0);

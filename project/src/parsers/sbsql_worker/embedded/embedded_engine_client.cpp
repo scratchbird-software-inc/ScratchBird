@@ -2373,6 +2373,74 @@ EmbeddedEngineClient::CoordinateDdlCreateSchema(
   return result;
 }
 
+ipc::ServerVariableBindingResult EmbeddedEngineClient::RecoverDdlCreateSchema(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlCreateSchemaRecoveryRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlCreateSchemaRecoveryRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CREATE SCHEMA recovery request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kDdlCreateSchemaRecoveryRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaDdlCreateSchemaRecoveryRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleRecoverDdlCreateSchema(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlCreateSchemaResultV1 terminal;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kDdlCreateSchemaRecoveryResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaDdlCreateSchemaRecoveryResultV1 ||
+      !ddl::DecodeSblrDdlCreateSchemaResultV1(
+          operation.payload.data(), operation.payload.size(), &terminal,
+          &detail) ||
+      terminal.receipt != request.operand_descriptor.receipt ||
+      terminal.schema_uuid != request.operand_descriptor.schema_uuid ||
+      terminal.database_uuid != request.operand_descriptor.database_uuid ||
+      terminal.owning_transaction_uuid !=
+          request.operand_descriptor.owning_transaction_uuid ||
+      terminal.owning_local_transaction_id !=
+          request.operand_descriptor.owning_local_transaction_id ||
+      terminal.descriptor_evidence_sha256 !=
+          request.operand_descriptor.evidence ||
+      terminal.availability != request.operand_descriptor.availability ||
+      ddl::EncodeSblrDdlCreateSchemaResultV1(terminal) != operation.payload) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CREATE SCHEMA recovery result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
 ipc::ServerVariableBindingResult EmbeddedEngineClient::BindParseText(
     const SessionContext& session,
     const std::vector<std::uint8_t>& canonical_request) {
