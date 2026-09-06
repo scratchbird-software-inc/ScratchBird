@@ -457,9 +457,10 @@ def main() -> int:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
         if args.operation == "source-artifact-container":
             expected_success = (
-                "CSC-TEST-005770 SOURCE_ARTIFACT_CONTAINER accepted "
+                "CSC-TEST-005770 CSC-TEST-005776 "
+                "SOURCE_ARTIFACT_CONTAINER accepted "
                 "server_admission=true source_preserving_render=true "
-                "reparse=true\n"
+                "reparse=true transaction_controls=begin,commit,rollback\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -468,9 +469,11 @@ def main() -> int:
                 )
         elif args.operation == "source-artifact-external":
             expected_success = (
-                "CSC-TEST-005774 SOURCE_ARTIFACT_EXTERNAL_REFERENCE accepted "
+                "CSC-TEST-005774 CSC-TEST-005777 "
+                "SOURCE_ARTIFACT_EXTERNAL_REFERENCE accepted "
                 "server_admission=true receipt_resolution=true "
-                "source_preserving_render=true reparse=true\n"
+                "source_preserving_render=true reparse=true "
+                "transaction_controls=begin,commit,rollback\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(

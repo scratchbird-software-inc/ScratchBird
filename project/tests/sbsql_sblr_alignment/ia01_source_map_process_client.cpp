@@ -365,158 +365,206 @@ int main(int argc, char** argv) {
     namespace container = scratchbird::engine;
     namespace sblr = scratchbird::engine::sblr;
     const bool external = operation == "source-artifact-external";
-    scratchbird::parser::sbsql::SbsqlCanonicalExecutionObservation
-        observation;
-    auto executed = external
-                        ? session.RunSourceArtifactExternalReferenceForWire(
-                              &observation)
-                        : session.RunSourceArtifactContainerForWire(
-                              &observation);
-    if (!executed.accepted || executed.messages.has_errors() ||
-        !observation.captured ||
-        observation.operation_id != "engine.op.txn_begin" ||
-        observation.canonical_container_bytes.empty() ||
-        observation.external_source_artifact != external ||
-        (external &&
-         (observation.canonical_execution_envelope_bytes.empty() ||
-          observation.external_source_artifact_bytes.empty()))) {
-      for (const auto& diagnostic : executed.messages.diagnostics) {
-        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    struct TransactionArtifactCase {
+      std::string_view sql;
+      std::string_view operation_id;
+      std::string_view opcode;
+      std::string_view rendered_sql;
+    };
+    const TransactionArtifactCase cases[] = {
+        {"BEGIN TRANSACTION", "engine.op.txn_begin", "SBLR_TXN_BEGIN",
+         "BEGIN TRANSACTION;"},
+        {"COMMIT TRANSACTION", "engine.op.txn_commit", "SBLR_TXN_COMMIT",
+         "COMMIT;"},
+        {"ROLLBACK TRANSACTION", "engine.op.txn_rollback",
+         "SBLR_TXN_ROLLBACK", "ROLLBACK;"},
+    };
+    for (const auto& artifact_case : cases) {
+      if (artifact_case.operation_id != "engine.op.txn_begin") {
+        const auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+        if (!begun.accepted || begun.messages.has_errors()) {
+          std::cerr << "source_artifact_setup_begin_failed:"
+                    << artifact_case.operation_id << '\n';
+          return 4;
+        }
       }
-      std::cerr << "source_artifact_execution_observation_failed\n";
-      return 4;
-    }
-    const auto decoded_container = container::DecodeSblrContainerBytes(
-        observation.canonical_container_bytes.data(),
-        observation.canonical_container_bytes.size());
-    if (decoded_container.status != container::SblrCodecStatus::ok ||
-        container::SblrReadU16(
-            decoded_container.container.canonical_anchor.data() + 100) != 1 ||
-        (external ? !decoded_container.container.source_map.empty()
-                  : decoded_container.container.source_map.empty())) {
-      std::cerr << "source_artifact_container_decode_failed\n";
-      return 4;
-    }
-    container::SblrExecutionEnvelopeSemanticView ingress_view;
-    container::SblrDecodedExecutionEnvelopeV1 decoded_ingress;
-    if (external) {
-      decoded_ingress = container::DecodeSblrExecutionEnvelopeV1Bytes(
-          observation.canonical_execution_envelope_bytes.data(),
-          observation.canonical_execution_envelope_bytes.size());
-      if (decoded_ingress.status != container::SblrCodecStatus::ok ||
-          !container::SblrValidateExecutionEnvelopeFields(
-              decoded_ingress.envelope, &ingress_view) ||
-          !ingress_view.source_artifact_present ||
-          ingress_view.source_artifact_ref_kind != 4 ||
-          ingress_view.source_artifact_declared_size !=
-              observation.external_source_artifact_bytes.size() ||
-          ingress_view.source_artifact_crc32c != container::SblrCrc32c(
-              observation.external_source_artifact_bytes.data(),
-              observation.external_source_artifact_bytes.size()) ||
-          ingress_view.source_artifact_checksum_kind != 2 ||
-          ingress_view.source_artifact_checksum_sha256 !=
-              sblr::HashSblrSourceArtifactBytesV1(
-                  observation.external_source_artifact_bytes.data(),
-                  observation.external_source_artifact_bytes.size())) {
-        std::cerr << "source_artifact_external_reference_failed\n";
+      scratchbird::parser::sbsql::SbsqlCanonicalExecutionObservation
+          observation;
+      auto executed = external
+                          ? session.RunSourceArtifactExternalReferenceForWire(
+                                &observation, artifact_case.sql)
+                          : session.RunSourceArtifactContainerForWire(
+                                &observation, artifact_case.sql);
+      if (!executed.accepted || executed.messages.has_errors() ||
+          !observation.captured ||
+          observation.operation_id != artifact_case.operation_id ||
+          observation.canonical_container_bytes.empty() ||
+          observation.external_source_artifact != external ||
+          (external &&
+           (observation.canonical_execution_envelope_bytes.empty() ||
+            observation.external_source_artifact_bytes.empty()))) {
+        for (const auto& diagnostic : executed.messages.diagnostics) {
+          std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        }
+        std::cerr << "source_artifact_execution_observation_failed:"
+                  << artifact_case.operation_id << '\n';
         return 4;
       }
-    }
-    const std::string_view opcode_bytes(
-        reinterpret_cast<const char*>(
-            decoded_container.container.operation_payload.data()),
-        decoded_container.container.operation_payload.size());
-    const auto decoded_stream = sblr::DecodeSblrOpcodeStream(opcode_bytes);
-    if (!decoded_stream.ok || decoded_stream.stream.operations.size() != 3 ||
-        decoded_stream.stream.operations[1].operation_id !=
-            "engine.op.txn_begin" ||
-        decoded_stream.stream.operations[1].opcode != "SBLR_TXN_BEGIN") {
-      std::cerr << "source_artifact_opcode_stream_profile_failed\n";
-      return 4;
-    }
-    const auto& artifact_bytes =
-        external ? observation.external_source_artifact_bytes
-                 : decoded_container.container.source_map;
-    const auto decoded_artifact = sblr::DecodeSblrSourceArtifactMapV1(
-        artifact_bytes.data(), artifact_bytes.size());
-    if (decoded_artifact.status !=
-            sblr::SblrSourceArtifactDecodeStatusV1::ok ||
-        !decoded_artifact.artifact.symbols.empty() ||
-        decoded_artifact.artifact.source_spans.size() != 1 ||
-        decoded_artifact.artifact.render_hints.size() != 1 ||
-        decoded_artifact.artifact.source_text_ref.present ||
-        (external
-             ? (!std::all_of(
-                    decoded_artifact.artifact.container_request_uuid.begin(),
-                    decoded_artifact.artifact.container_request_uuid.end(),
-                    [](std::uint8_t value) { return value == 0; }) ||
-                !std::equal(
-                    decoded_artifact.artifact.sblr_envelope_uuid.begin(),
-                    decoded_artifact.artifact.sblr_envelope_uuid.end(),
-                    decoded_ingress.envelope.fields[0].begin()) ||
-                decoded_artifact.artifact.artifact_uuid !=
-                    ingress_view.source_artifact_uuid)
-             : !std::equal(
-                   decoded_artifact.artifact.container_request_uuid.begin(),
-                   decoded_artifact.artifact.container_request_uuid.end(),
-                   decoded_container.container.canonical_anchor.begin() +
-                       116)) ||
-        !std::equal(decoded_artifact.artifact.dialect_family_uuid.begin(),
-                    decoded_artifact.artifact.dialect_family_uuid.end(),
-                    decoded_container.container.canonical_anchor.begin() +
-                        16) ||
-        !std::equal(decoded_artifact.artifact.parser_package_uuid.begin(),
-                    decoded_artifact.artifact.parser_package_uuid.end(),
-                    decoded_container.container.canonical_anchor.begin() +
-                        32)) {
-      std::cerr << "source_artifact_binding_profile_failed\n";
-      return 4;
-    }
-    const auto rendered = external
-        ? sblr::RenderSblrExternalSourceArtifactToSbsql(
-              observation.canonical_container_bytes.data(),
-              observation.canonical_container_bytes.size(),
-              observation.canonical_execution_envelope_bytes.data(),
-              observation.canonical_execution_envelope_bytes.size(),
-              observation.external_source_artifact_bytes.data(),
-              observation.external_source_artifact_bytes.size(),
-              sblr::SblrToSbsqlOptions{.source_preserving = true})
-        : sblr::RenderSblrContainerToSbsql(
-              observation.canonical_container_bytes.data(),
-              observation.canonical_container_bytes.size(),
-              sblr::SblrToSbsqlOptions{.source_preserving = true});
-    if (!rendered.ok || !rendered.diagnostics.empty() ||
-        rendered.sbsql_text != "BEGIN TRANSACTION;") {
-      std::cerr << "source_artifact_source_preserving_render_failed\n";
-      return 4;
-    }
-    const auto reparsed_cst =
-        scratchbird::parser::sbsql::BuildCst(rendered.sbsql_text);
-    const auto reparsed_ast =
-        scratchbird::parser::sbsql::BuildAst(reparsed_cst);
-    if (reparsed_cst.messages.has_errors() ||
-        reparsed_ast.messages.has_errors() ||
-        reparsed_ast.family !=
-            scratchbird::parser::sbsql::StatementFamily::kTransaction ||
-        (reparsed_ast.statement_surface_name != "begin_transaction" &&
-         reparsed_ast.statement_surface_name != "begin_stmt")) {
-      std::cerr << "source_artifact_reparse_failed\n";
-      return 4;
-    }
-    const auto rolled_back =
-        session.RunPipeline("ROLLBACK TRANSACTION", true);
-    if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
-      std::cerr << "source_artifact_cleanup_rollback_failed\n";
-      return 4;
+      const auto decoded_container = container::DecodeSblrContainerBytes(
+          observation.canonical_container_bytes.data(),
+          observation.canonical_container_bytes.size());
+      if (decoded_container.status != container::SblrCodecStatus::ok ||
+          container::SblrReadU16(
+              decoded_container.container.canonical_anchor.data() + 100) !=
+              1 ||
+          (external ? !decoded_container.container.source_map.empty()
+                    : decoded_container.container.source_map.empty())) {
+        std::cerr << "source_artifact_container_decode_failed:"
+                  << artifact_case.operation_id << '\n';
+        return 4;
+      }
+      container::SblrExecutionEnvelopeSemanticView ingress_view;
+      container::SblrDecodedExecutionEnvelopeV1 decoded_ingress;
+      if (external) {
+        decoded_ingress = container::DecodeSblrExecutionEnvelopeV1Bytes(
+            observation.canonical_execution_envelope_bytes.data(),
+            observation.canonical_execution_envelope_bytes.size());
+        if (decoded_ingress.status != container::SblrCodecStatus::ok ||
+            !container::SblrValidateExecutionEnvelopeFields(
+                decoded_ingress.envelope, &ingress_view) ||
+            !ingress_view.source_artifact_present ||
+            ingress_view.source_artifact_ref_kind != 4 ||
+            ingress_view.source_artifact_declared_size !=
+                observation.external_source_artifact_bytes.size() ||
+            ingress_view.source_artifact_crc32c != container::SblrCrc32c(
+                observation.external_source_artifact_bytes.data(),
+                observation.external_source_artifact_bytes.size()) ||
+            ingress_view.source_artifact_checksum_kind != 2 ||
+            ingress_view.source_artifact_checksum_sha256 !=
+                sblr::HashSblrSourceArtifactBytesV1(
+                    observation.external_source_artifact_bytes.data(),
+                    observation.external_source_artifact_bytes.size())) {
+          std::cerr << "source_artifact_external_reference_failed:"
+                    << artifact_case.operation_id << '\n';
+          return 4;
+        }
+      }
+      const std::string_view opcode_bytes(
+          reinterpret_cast<const char*>(
+              decoded_container.container.operation_payload.data()),
+          decoded_container.container.operation_payload.size());
+      const auto decoded_stream = sblr::DecodeSblrOpcodeStream(opcode_bytes);
+      if (!decoded_stream.ok ||
+          decoded_stream.stream.operations.size() != 3 ||
+          decoded_stream.stream.operations[1].operation_id !=
+              artifact_case.operation_id ||
+          decoded_stream.stream.operations[1].opcode != artifact_case.opcode) {
+        std::cerr << "source_artifact_opcode_stream_profile_failed:"
+                  << artifact_case.operation_id << '\n';
+        return 4;
+      }
+      const auto& artifact_bytes =
+          external ? observation.external_source_artifact_bytes
+                   : decoded_container.container.source_map;
+      const auto decoded_artifact = sblr::DecodeSblrSourceArtifactMapV1(
+          artifact_bytes.data(), artifact_bytes.size());
+      if (decoded_artifact.status !=
+              sblr::SblrSourceArtifactDecodeStatusV1::ok ||
+          !decoded_artifact.artifact.symbols.empty() ||
+          decoded_artifact.artifact.source_spans.size() != 1 ||
+          decoded_artifact.artifact.render_hints.size() != 1 ||
+          decoded_artifact.artifact.source_text_ref.present ||
+          (external
+               ? (!std::all_of(
+                      decoded_artifact.artifact.container_request_uuid.begin(),
+                      decoded_artifact.artifact.container_request_uuid.end(),
+                      [](std::uint8_t value) { return value == 0; }) ||
+                  !std::equal(
+                      decoded_artifact.artifact.sblr_envelope_uuid.begin(),
+                      decoded_artifact.artifact.sblr_envelope_uuid.end(),
+                      decoded_ingress.envelope.fields[0].begin()) ||
+                  decoded_artifact.artifact.artifact_uuid !=
+                      ingress_view.source_artifact_uuid)
+               : !std::equal(
+                     decoded_artifact.artifact.container_request_uuid.begin(),
+                     decoded_artifact.artifact.container_request_uuid.end(),
+                     decoded_container.container.canonical_anchor.begin() +
+                         116)) ||
+          !std::equal(decoded_artifact.artifact.dialect_family_uuid.begin(),
+                      decoded_artifact.artifact.dialect_family_uuid.end(),
+                      decoded_container.container.canonical_anchor.begin() +
+                          16) ||
+          !std::equal(decoded_artifact.artifact.parser_package_uuid.begin(),
+                      decoded_artifact.artifact.parser_package_uuid.end(),
+                      decoded_container.container.canonical_anchor.begin() +
+                          32)) {
+        std::cerr << "source_artifact_binding_profile_failed:"
+                  << artifact_case.operation_id << '\n';
+        return 4;
+      }
+      const auto rendered = external
+          ? sblr::RenderSblrExternalSourceArtifactToSbsql(
+                observation.canonical_container_bytes.data(),
+                observation.canonical_container_bytes.size(),
+                observation.canonical_execution_envelope_bytes.data(),
+                observation.canonical_execution_envelope_bytes.size(),
+                observation.external_source_artifact_bytes.data(),
+                observation.external_source_artifact_bytes.size(),
+                sblr::SblrToSbsqlOptions{.source_preserving = true})
+          : sblr::RenderSblrContainerToSbsql(
+                observation.canonical_container_bytes.data(),
+                observation.canonical_container_bytes.size(),
+                sblr::SblrToSbsqlOptions{.source_preserving = true});
+      if (!rendered.ok || !rendered.diagnostics.empty() ||
+          rendered.sbsql_text != artifact_case.rendered_sql) {
+        std::cerr << "source_artifact_source_preserving_render_failed:"
+                  << artifact_case.operation_id << '\n';
+        return 4;
+      }
+      const auto reparsed_cst =
+          scratchbird::parser::sbsql::BuildCst(rendered.sbsql_text);
+      const auto reparsed_ast =
+          scratchbird::parser::sbsql::BuildAst(reparsed_cst);
+      const bool exact_surface =
+          artifact_case.operation_id == "engine.op.txn_begin"
+              ? (reparsed_ast.statement_surface_name == "begin_transaction" ||
+                 reparsed_ast.statement_surface_name == "begin_stmt")
+          : artifact_case.operation_id == "engine.op.txn_commit"
+              ? (reparsed_ast.statement_surface_name == "commit" ||
+                 reparsed_ast.statement_surface_name == "commit_stmt" ||
+                 reparsed_ast.statement_surface_name == "commit_options")
+              : (reparsed_ast.statement_surface_name == "rollback" ||
+                 reparsed_ast.statement_surface_name == "rollback_stmt");
+      if (reparsed_cst.messages.has_errors() ||
+          reparsed_ast.messages.has_errors() ||
+          reparsed_ast.family !=
+              scratchbird::parser::sbsql::StatementFamily::kTransaction ||
+          !exact_surface) {
+        std::cerr << "source_artifact_reparse_failed:"
+                  << artifact_case.operation_id << '\n';
+        return 4;
+      }
+      if (artifact_case.operation_id == "engine.op.txn_begin") {
+        const auto rolled_back =
+            session.RunPipeline("ROLLBACK TRANSACTION", true);
+        if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+          std::cerr << "source_artifact_cleanup_rollback_failed\n";
+          return 4;
+        }
+      }
     }
     if (external) {
-      std::cout << "CSC-TEST-005774 SOURCE_ARTIFACT_EXTERNAL_REFERENCE "
+      std::cout << "CSC-TEST-005774 CSC-TEST-005777 "
+                   "SOURCE_ARTIFACT_EXTERNAL_REFERENCE "
                    "accepted server_admission=true receipt_resolution=true "
-                   "source_preserving_render=true reparse=true\n";
+                   "source_preserving_render=true reparse=true "
+                   "transaction_controls=begin,commit,rollback\n";
     } else {
-      std::cout << "CSC-TEST-005770 SOURCE_ARTIFACT_CONTAINER accepted "
+      std::cout << "CSC-TEST-005770 CSC-TEST-005776 "
+                   "SOURCE_ARTIFACT_CONTAINER accepted "
                    "server_admission=true source_preserving_render=true "
-                   "reparse=true\n";
+                   "reparse=true "
+                   "transaction_controls=begin,commit,rollback\n";
     }
     return 0;
   }

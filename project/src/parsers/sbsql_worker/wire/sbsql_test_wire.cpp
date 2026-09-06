@@ -14877,7 +14877,7 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
 }
 
 template <typename NativeRouteClient>
-bool AttachExactTransactionBeginSourceArtifact(
+bool AttachExactTransactionControlSourceArtifact(
     const CstDocument& cst,
     const AstDocument& ast,
     const SblrEnvelope& lowered,
@@ -14890,7 +14890,16 @@ bool AttachExactTransactionBeginSourceArtifact(
     std::string* detail) {
   namespace artifact = scratchbird::engine::sblr;
   if (detail != nullptr) detail->clear();
-  if (lowered.operation_id != "engine.op.txn_begin") return true;
+  std::string_view expected_opcode;
+  if (lowered.operation_id == "engine.op.txn_begin") {
+    expected_opcode = "SBLR_TXN_BEGIN";
+  } else if (lowered.operation_id == "engine.op.txn_commit") {
+    expected_opcode = "SBLR_TXN_COMMIT";
+  } else if (lowered.operation_id == "engine.op.txn_rollback") {
+    expected_opcode = "SBLR_TXN_ROLLBACK";
+  } else {
+    return true;
+  }
   if (submission == nullptr || submission->canonical_container_bytes.empty() ||
       ast.root_node_index >= ast.nodes.size()) {
     if (detail != nullptr) *detail = "producer_input";
@@ -14913,8 +14922,8 @@ bool AttachExactTransactionBeginSourceArtifact(
   const auto decoded_stream = artifact::DecodeSblrOpcodeStream(opcode_bytes);
   if (!decoded_stream.ok || decoded_stream.stream.operations.size() != 3 ||
       decoded_stream.stream.operations[1].operation_id !=
-          "engine.op.txn_begin" ||
-      decoded_stream.stream.operations[1].opcode != "SBLR_TXN_BEGIN") {
+          lowered.operation_id ||
+      decoded_stream.stream.operations[1].opcode != expected_opcode) {
     if (detail != nullptr) *detail = "single_member_package";
     return false;
   }
@@ -28133,12 +28142,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         native_submission.has_value()) {
       std::string source_artifact_detail;
       const bool source_artifact_attached = embedded_native_route
-          ? AttachExactTransactionBeginSourceArtifact(
+          ? AttachExactTransactionControlSourceArtifact(
                 cst, ast, lowered, *native_statement_context, session_,
                 external_source_artifact, embedded_client_.get(),
                 &*native_submission, &external_source_artifact_bytes,
                 &source_artifact_detail)
-          : AttachExactTransactionBeginSourceArtifact(
+          : AttachExactTransactionControlSourceArtifact(
                 cst, ast, lowered, *native_statement_context, session_,
                 external_source_artifact, server_client_.get(),
                 &*native_submission, &external_source_artifact_bytes,
@@ -28527,16 +28536,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
 }
 
 PipelineResult SbsqlTestWireSession::RunSourceArtifactContainerForWire(
-    SbsqlCanonicalExecutionObservation* observation) {
-  return RunPipeline("BEGIN TRANSACTION", true, false, 0, false, {}, nullptr,
+    SbsqlCanonicalExecutionObservation* observation,
+    std::string_view sql) {
+  return RunPipeline(sql, true, false, 0, false, {}, nullptr,
                      false, nullptr, {}, 0, nullptr, nullptr, nullptr,
                      nullptr, observation);
 }
 
 PipelineResult
 SbsqlTestWireSession::RunSourceArtifactExternalReferenceForWire(
-    SbsqlCanonicalExecutionObservation* observation) {
-  return RunPipeline("BEGIN TRANSACTION", true, false, 0, false, {}, nullptr,
+    SbsqlCanonicalExecutionObservation* observation,
+    std::string_view sql) {
+  return RunPipeline(sql, true, false, 0, false, {}, nullptr,
                      false, nullptr, {}, 0, nullptr, nullptr, nullptr,
                      nullptr, observation, true);
 }

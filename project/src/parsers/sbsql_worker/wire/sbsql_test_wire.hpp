@@ -173,9 +173,11 @@ class SbsqlTestWireSession {
                                  canonical_execution_observation = nullptr,
                              bool external_source_artifact = false);
   PipelineResult RunSourceArtifactContainerForWire(
-      SbsqlCanonicalExecutionObservation* observation);
+      SbsqlCanonicalExecutionObservation* observation,
+      std::string_view sql = "BEGIN TRANSACTION");
   PipelineResult RunSourceArtifactExternalReferenceForWire(
-      SbsqlCanonicalExecutionObservation* observation);
+      SbsqlCanonicalExecutionObservation* observation,
+      std::string_view sql = "BEGIN TRANSACTION");
   PipelineResult RunVariableForWire(std::string_view sql,
                                     bool cursor_requested = false);
   PipelineResult RunSourceMapForWire();
