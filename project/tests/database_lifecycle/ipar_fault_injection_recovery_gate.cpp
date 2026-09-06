@@ -242,14 +242,17 @@ api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
                            std::string index_uuid,
                            std::string column,
-                           bool unique) {
+                           bool unique,
+                           std::string family = api::kCrudIndexFamilyBtree) {
   api::CrudIndexRecord index;
   index.creator_tx = context.local_transaction_id;
   index.index_uuid = std::move(index_uuid);
   index.table_uuid = fixture.table_uuid;
   index.column_name = std::move(column);
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  index.family = std::move(family);
+  index.profile = index.family == api::kCrudIndexFamilyBtree
+                      ? api::kCrudIndexProfileRowStoreScalarBtreeV1
+                      : std::string{};
   index.default_name = unique ? "ipar_p706_id_uq" : "ipar_p706_name_idx";
   index.unique = unique;
   index.key_envelopes.push_back(index.column_name);
@@ -259,7 +262,10 @@ api::CrudIndexRecord Index(const Fixture& fixture,
   return index;
 }
 
-Fixture MakeFixture(std::string name, platform::u64 salt) {
+Fixture MakeFixture(
+    std::string name,
+    platform::u64 salt,
+    std::string non_unique_family = api::kCrudIndexFamilyBtree) {
   Fixture fixture;
   fixture.salt = salt;
   fixture.dir = std::filesystem::temp_directory_path() /
@@ -294,7 +300,12 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
   Require(!table.error, "IPAR-P7-06 table metadata append failed");
   const auto non_unique = api::AppendMgaIndexMetadata(
       context,
-      Index(fixture, context, fixture.non_unique_index_uuid, "name", false));
+      Index(fixture,
+            context,
+            fixture.non_unique_index_uuid,
+            "name",
+            false,
+            std::move(non_unique_family)));
   Require(!non_unique.error, "IPAR-P7-06 non-unique index metadata append failed");
   const auto unique = api::AppendMgaIndexMetadata(
       context,
@@ -490,7 +501,9 @@ platform::u64 MaxLedgerLocalTransactionId(
 }
 
 void TestSecondaryMergeFault() {
-  auto fixture = MakeFixture("secondary_merge", 6000);
+  auto fixture = MakeFixture("secondary_merge",
+                             6000,
+                             api::kCrudIndexFamilyHash);
   auto writer = Begin(fixture, "ipar-p706-secondary-merge-seed");
   auto options = DeferredOptions();
   RequireOk(api::EngineInsertRows(InsertRequest(

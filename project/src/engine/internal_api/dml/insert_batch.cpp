@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "metric_contracts.hpp"
 #include "metric_producer.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -83,13 +84,7 @@ bool IsUniqueIndex(const CrudIndexRecord& index) {
 }
 
 bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
-  if (IsUniqueIndex(index)) {
-    return false;
-  }
-  // Ordered B-tree is the first released transactional provider family.  It
-  // must always use that provider contract; the legacy deferred ledger cannot
-  // bypass versioned insert/retire preparation or the commit barrier.
-  return index.family == kCrudIndexFamilyHash;
+  return !IsUniqueIndex(index) && index.family == kCrudIndexFamilyHash;
 }
 
 InsertIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index,

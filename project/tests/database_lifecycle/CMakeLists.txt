@@ -2115,6 +2115,27 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "dpc_secondary_index_delta_write_path_gate;DPC-022;DPC_TEST_INDEX_DEFER_LEDGER;secondary_index_delta_ledger;dml_write_path;mga_transaction_regression;database_lifecycle"
   )
 
+  add_executable(transactional_index_lifecycle_matrix_gate
+    transactional_index_lifecycle_matrix_gate.cpp
+  )
+  target_compile_features(transactional_index_lifecycle_matrix_gate PRIVATE cxx_std_23)
+  target_link_libraries(transactional_index_lifecycle_matrix_gate
+    PRIVATE
+      sb_core_index
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+  )
+
+  add_test(
+    NAME transactional_index_lifecycle_matrix_gate
+    COMMAND transactional_index_lifecycle_matrix_gate
+  )
+  set_tests_properties(transactional_index_lifecycle_matrix_gate PROPERTIES
+    LABELS "transactional_index_lifecycle_matrix_gate;DML_INDEX_TRANSACTIONAL_MATRIX;index_runtime_correctness;dml_write_path;mga_transaction_regression;database_lifecycle"
+  )
+
   add_executable(dpc_secondary_index_delta_overlay_lookup_gate
     dpc_secondary_index_delta_overlay_lookup_gate.cpp
   )

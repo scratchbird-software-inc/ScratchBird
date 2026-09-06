@@ -476,8 +476,8 @@ void ValidateDeferredInsertAndCommitState() {
           "DPC-022 deferred insert did not preserve precommit MGA state before commit");
   Require(PayloadField(records.front(), "key") == "alpha",
           "DPC-022 deferred insert key payload mismatch");
-  Require(CountIndexEntries(fixture, context, fixture.non_unique_index_uuid) == 0,
-          "DPC-022 deferred insert still wrote synchronous non-unique index entry");
+  Require(CountIndexEntries(fixture, context, fixture.non_unique_index_uuid) == 1,
+          "DPC-022 deferred auxiliary path bypassed mandatory transactional index entry");
   Require(CountIndexEntries(fixture, context, fixture.unique_index_uuid) == 1,
           "DPC-022 deferred insert did not preserve synchronous unique index entry");
 

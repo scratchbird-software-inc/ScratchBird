@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
+#include "index_family_registry.hpp"
 
 #include <algorithm>
 #include <map>
@@ -21,6 +22,7 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 namespace core_hash = scratchbird::core::hash;
+namespace core_index = scratchbird::core::index;
 using scratchbird::core::platform::byte;
 
 EngineApiDiagnostic OkDiagnostic() {
@@ -113,7 +115,7 @@ void AddProviderEvidence(
     std::vector<EngineEvidenceReference>* evidence) {
   if (evidence == nullptr) return;
   evidence->push_back({"transactional_index_provider_contract",
-                       "mga_ordered_btree_v1"});
+                       "mga_native_index_family_v1"});
   evidence->push_back({"transactional_index_provider_operation",
                        std::string(operation)});
   evidence->push_back({"transactional_index_finality_authority",
@@ -161,6 +163,21 @@ bool IsReleasedOrderedBtreeTransactionalFamily(const CrudIndexRecord& index) {
          family == kCrudIndexFamilyCovering;
 }
 
+bool IsAdmittedMgaTransactionalIndexFamily(const CrudIndexRecord& index) {
+  std::string family = ResolvedFamily(index);
+  if (family == kCrudIndexFamilyGraphAdjacency) family = "graph";
+  const auto lookup = core_index::FindBuiltinIndexFamilyById(family);
+  if (!lookup.ok()) return false;
+  const auto* capability =
+      core_index::FindBuiltinIndexFamilyPhysicalCapabilityState(
+          lookup.descriptor->family);
+  return capability != nullptr && capability->runtime_available &&
+         lookup.descriptor->persistence !=
+             core_index::IndexPersistenceClass::reference_emulated &&
+         lookup.descriptor->persistence !=
+             core_index::IndexPersistenceClass::policy_blocked;
+}
+
 std::string DmlTransactionalIndexMutationIdentity(
     const EngineRequestContext& context,
     const DmlTransactionalIndexEntryRequest& request,
@@ -190,11 +207,11 @@ DmlTransactionalIndexProviderResult
 MgaOrderedBtreeTransactionalIndexProvider::PrepareEntry(
     const DmlTransactionalIndexEntryRequest& request,
     std::string entry_kind) {
-  if (!IsReleasedOrderedBtreeTransactionalFamily(request.index)) {
+  if (!IsAdmittedMgaTransactionalIndexFamily(request.index)) {
     return Failure(
         context_, &request.index, entry_kind,
-        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_RELEASED",
-               "index.transactional_provider.family_not_released",
+        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_ADMITTED",
+               "index.transactional_provider.family_not_admitted",
                "family=" + ResolvedFamily(request.index)));
   }
   if (append_context_ == nullptr || context_.local_transaction_id == 0 ||
@@ -345,11 +362,11 @@ MgaOrderedBtreeTransactionalIndexProvider::ResolveVisibleEntry(
     const CrudIndexRecord& index,
     const EnginePredicateEnvelope& predicate,
     std::uint64_t limit) const {
-  if (!IsReleasedOrderedBtreeTransactionalFamily(index)) {
+  if (!IsAdmittedMgaTransactionalIndexFamily(index)) {
     return Failure(
         context_, &index, "ResolveVisibleEntry",
-        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_RELEASED",
-               "index.transactional_provider.family_not_released",
+        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_ADMITTED",
+               "index.transactional_provider.family_not_admitted",
                "family=" + ResolvedFamily(index)));
   }
   RelationReadSnapshot selected = state;
@@ -404,13 +421,13 @@ DmlTransactionalIndexProviderResult
 MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
     const RelationReadSnapshot& state,
     const CrudIndexRecord& index) const {
-  if (!IsReleasedOrderedBtreeTransactionalFamily(index) ||
+  if (!IsAdmittedMgaTransactionalIndexFamily(index) ||
       index.event_sequence == 0) {
     return Failure(
         context_, &index, "ValidateAgainstRelation",
         Refuse("INDEX.TRANSACTIONAL_PROVIDER.STALE_OR_INCOMPLETE",
                "index.transactional_provider.stale_or_incomplete",
-               "released provider requires a durable index generation"));
+               "admitted provider requires a durable index generation"));
   }
 
   std::map<std::string, std::string> unique_rows_by_key;
@@ -477,11 +494,11 @@ MgaOrderedBtreeTransactionalIndexProvider::RebuildFromRelation(
                "index.transactional_provider.rebuild_horizon_required",
                "in-place current-generation rebuild is refused while an older snapshot may require the prior generation"));
   }
-  if (!IsReleasedOrderedBtreeTransactionalFamily(index)) {
+  if (!IsAdmittedMgaTransactionalIndexFamily(index)) {
     return Failure(
         context_, &index, "RebuildFromRelation",
-        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_RELEASED",
-               "index.transactional_provider.family_not_released",
+        Refuse("INDEX.TRANSACTIONAL_PROVIDER.FAMILY_NOT_ADMITTED",
+               "index.transactional_provider.family_not_admitted",
                "family=" + ResolvedFamily(index)));
   }
 
@@ -516,7 +533,7 @@ MgaOrderedBtreeTransactionalIndexProvider::RebuildFromRelation(
 }
 
 DmlTransactionalIndexProviderResult
-ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+ValidateTransactionalIndexMutationSetForCommit(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state) {
   MgaOrderedBtreeTransactionalIndexProvider provider(context, nullptr);
@@ -529,7 +546,7 @@ ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
 
   std::map<std::string, std::vector<CrudIndexRecord>> indexes_by_table;
   for (const auto& index : state.indexes) {
-    if (IsReleasedOrderedBtreeTransactionalFamily(index) &&
+    if (IsAdmittedMgaTransactionalIndexFamily(index) &&
         CrudCreatorVisible(state, index.creator_tx, index.event_sequence,
                            context.local_transaction_id)) {
       indexes_by_table[index.table_uuid].push_back(index);
@@ -611,6 +628,13 @@ ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
   result.evidence.push_back({"transactional_index_commit_retire_count",
                              std::to_string(result.prepared_retire_count)});
   return result;
+}
+
+DmlTransactionalIndexProviderResult
+ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+    const EngineRequestContext& context,
+    const RelationReadSnapshot& state) {
+  return ValidateTransactionalIndexMutationSetForCommit(context, state);
 }
 
 }  // namespace scratchbird::engine::internal_api

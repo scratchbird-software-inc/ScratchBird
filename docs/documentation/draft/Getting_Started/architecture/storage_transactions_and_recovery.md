@@ -117,10 +117,13 @@ and asserts lower actual rows, bytes, and allocation units for the scoped route.
 
 ### Transactional Index Maintenance
 
-The first released transactional provider contract covers the ordered B-tree
-family, including unique, expression, partial, and covering B-tree profiles.
-Ordinary INSERT, key-changing UPDATE, DELETE, and their MERGE equivalents use
-the same provider methods to prepare new membership and old-key retirement.
+The transactional provider contract covers every native family whose built-in
+capability record marks it runtime-available. This includes ordered B-tree,
+unique B-tree, expression, partial, covering, hash, bitmap, zone-summary,
+full-text/token, spatial, vector, document-path, graph, temporary-work, and
+in-memory profiles. Ordinary INSERT, key-changing UPDATE, DELETE, and their
+MERGE equivalents use the same provider methods to prepare new membership and
+old-key retirement.
 Every durable record retains the creating local transaction, stable row and row
 version identity, index UUID, key, mutation kind, and event sequence. The index
 generation and relation-scoped physical identity are reconstructible from the
@@ -143,9 +146,25 @@ outcome already established by durable MGA inventory; neither can decide it.
 Recovery classifies prepared index records through the same inventory.
 `RebuildFromRelation` deterministically regenerates candidate membership from
 authoritative row versions and is refused unless the cleanup horizon proves no
-older snapshot still requires the prior generation. Other physical provider
-families do not inherit this ordered-B-tree contract implicitly; they require a
-separately admitted transactional provider contract.
+older snapshot still requires the prior generation. Registry families that are
+not runtime-available, including reference-emulated and policy-blocked
+profiles, fail closed instead of inheriting native transactional behavior.
+
+The `transactional_index_lifecycle_matrix_gate` derives its cases directly from
+the built-in index-family registry. Every admitted family must pass insert,
+key-changing update, delete, commit publication, rollback invisibility, old and
+new snapshot validation, recovery classification, durable reopen, rebuild, and
+supported uniqueness checks. A newly registered family cannot be omitted
+silently: it must either pass the native lifecycle or prove the exact
+non-admission diagnostic. Deferred hash/bitmap ledgers remain auxiliary
+candidate and recovery evidence; the common provider entry and MGA publication
+barrier are still mandatory.
+
+| Matrix group | Registry profiles | Expected result |
+| --- | --- | --- |
+| B-tree profiles | `btree`, `unique_btree`, `expression`, `partial`, `covering` | All lifecycle stages pass; uniqueness is also exercised where declared. |
+| Non-B-tree profiles | `hash`, `bitmap`, `brin_zone`, `bloom`, `full_text`, `gin`, `inverted`, `ngram`, `sparse_wand`, `spatial`, `rtree`, `gist`, `spgist`, `vector_exact`, `vector_hnsw`, `vector_ivf`, `columnar_zone`, `document_path`, `graph`, `temporary_work`, `in_memory` | All lifecycle stages and family-appropriate visible-entry probes pass. |
+| Non-admitted profiles | `reference_emulated`, `advanced_vector_policy_blocked` | Provider preparation and ordinary DML both fail closed; rollback leaves no visible row. |
 
 ## Commit And Reopen
 

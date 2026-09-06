@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "metric_producer.hpp"
 
 #include <algorithm>
@@ -38,11 +39,9 @@ bool IsUniqueIndex(const CrudIndexRecord& index) {
 }
 
 bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
-  if (IsUniqueIndex(index)) {
-    return false;
-  }
-  return index.family == kCrudIndexFamilyHash ||
-         index.family == kCrudIndexFamilyBitmap;
+  return !IsUniqueIndex(index) &&
+         (index.family == kCrudIndexFamilyHash ||
+          index.family == kCrudIndexFamilyBitmap);
 }
 
 bool PredicateEnvelopeTouchesColumn(const EnginePredicateEnvelope& predicate, const std::string& column_name) {
@@ -93,17 +92,11 @@ std::vector<std::string> PredicateTouchedColumns(const EngineDeleteRowsRequest& 
 }
 
 DeleteIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index, const DeleteFeatureGates& feature_gates) {
-  const std::string family =
-      index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
-                           : index.family;
-  if (family == kCrudIndexFamilyBtree || family == "unique_btree" ||
-      family == kCrudIndexFamilyExpression ||
-      family == kCrudIndexFamilyPartial ||
-      family == kCrudIndexFamilyCovering) {
-    return DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite;
-  }
   if (IsDeltaEligibleFamily(index) && feature_gates.secondary_index_delta_ledger == DeleteFeatureState::enabled) {
     return DeleteIndexMaintenanceAction::tombstone_delta_ledger;
+  }
+  if (IsAdmittedMgaTransactionalIndexFamily(index)) {
+    return DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite;
   }
   if (index.family == kCrudIndexFamilyBtree || index.family == kCrudIndexFamilyHash || index.family == kCrudIndexFamilyBitmap ||
       index.family == kCrudIndexFamilyFullText || index.family == kCrudIndexFamilySpatial ||

@@ -17,6 +17,7 @@
 #include "dml/index_apply_locality_bridge.hpp"
 #include "dml/insert_batch.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "dml/write_result_policy.hpp"
 #include "bulk_placement_order.hpp"
@@ -2017,10 +2018,11 @@ std::vector<CrudIndexRecord> DirectSynchronousIndexes(
     const InsertBatchContext& batch_context) {
   std::vector<CrudIndexRecord> indexes;
   for (const auto& entry : batch_context.index_plan.entries) {
-    if (entry.action == InsertIndexMaintenanceAction::committed_delta_ledger) {
-      continue;
+    if (entry.action !=
+            InsertIndexMaintenanceAction::committed_delta_ledger ||
+        IsAdmittedMgaTransactionalIndexFamily(entry.index)) {
+      indexes.push_back(entry.index);
     }
-    indexes.push_back(entry.index);
   }
   return indexes;
 }
@@ -2087,6 +2089,7 @@ std::vector<MgaIndexEntryAppendBatch> DirectIndexAppendBatches(
     MgaIndexEntryAppendBatch batch;
     batch.index = index;
     batch.table_uuid = table_uuid;
+    batch.entry_kind = "insert";
     batch.rows = rows;
     batches.push_back(std::move(batch));
   }
@@ -3471,6 +3474,7 @@ std::vector<MgaExactIndexEntryAppendBatch> DirectExactIndexAppendBatches(
     MgaExactIndexEntryAppendBatch batch;
     batch.index = index;
     batch.table_uuid = table_uuid;
+    batch.entry_kind = "insert";
     batch.entries.reserve(found->second.size());
     for (const auto& entry : found->second) {
       batch.entries.push_back({entry.encoded_key,
@@ -3525,6 +3529,7 @@ std::vector<MgaExactIndexEntryAppendBatch> DirectMoveExactIndexAppendBatches(
     MgaExactIndexEntryAppendBatch batch;
     batch.index = index;
     batch.table_uuid = table_uuid;
+    batch.entry_kind = "insert";
     batch.entries.reserve(found->second.size());
     for (auto& entry : found->second) {
       batch.entries.push_back({std::move(entry.encoded_key),
@@ -4155,6 +4160,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     MgaExactIndexEntryAppendBatch batch;
     batch.index = index;
     batch.table_uuid = request.target_table.uuid.canonical;
+    batch.entry_kind = "insert";
     batch.entries.reserve(built.entries.size());
     for (const auto& entry : built.entries) {
       batch.entries.push_back({entry.encoded_key,
@@ -9344,6 +9350,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool generated_counter_direct_input =
       generated_counter_plan.ok && request.borrowed_input_rows.empty();
   const auto synchronous_indexes = DirectSynchronousIndexes(batch_context);
+  for (const auto& index : synchronous_indexes) {
+    if (!IsAdmittedMgaTransactionalIndexFamily(index)) {
+      return DirectBulkFailure(
+          request,
+          MakeInvalidRequestDiagnostic(
+              "dml.direct_physical_bulk_append.index_maintenance",
+              "synchronous_index_family_has_no_transactional_provider:" +
+                  (index.family.empty()
+                       ? CrudIndexFamilyForProfile(index.profile)
+                       : index.family)),
+          "transactional_index_family_not_admitted");
+    }
+  }
   const bool has_delta_ledger_indexes =
       DirectHasCommittedDeltaLedgerIndexes(batch_context);
   const bool direct_retail_exact_append_candidate =
@@ -11962,6 +11981,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     return DirectBulkFailure(request,
                              index_appended,
                              "mga_index_append_refused");
+  }
+  if (!synchronous_indexes.empty()) {
+    result.evidence.push_back({"transactional_index_provider_contract",
+                               "mga_native_index_family_v1"});
+    result.evidence.push_back({"transactional_index_provider_operation",
+                               "PrepareInsertEntry"});
+    result.evidence.push_back({"transactional_index_finality_authority",
+                               "durable_transaction_inventory"});
   }
   mark_phase("index_retail_append");
   const auto index_flushed = hot_append.FlushIndexEntries();

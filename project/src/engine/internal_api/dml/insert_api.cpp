@@ -1370,10 +1370,11 @@ std::vector<CrudIndexRecord> SynchronousInsertIndexes(
     const InsertBatchContext& batch_context) {
   std::vector<CrudIndexRecord> indexes;
   for (const auto& entry : batch_context.index_plan.entries) {
-    if (entry.action == InsertIndexMaintenanceAction::committed_delta_ledger) {
-      continue;
+    if (entry.action !=
+            InsertIndexMaintenanceAction::committed_delta_ledger ||
+        IsAdmittedMgaTransactionalIndexFamily(entry.index)) {
+      indexes.push_back(entry.index);
     }
-    indexes.push_back(entry.index);
   }
   return indexes;
 }
@@ -1384,7 +1385,7 @@ bool IndexKeysChanged(const CrudIndexRecord& index,
   return CrudIndexKeysForValues(index, before) != CrudIndexKeysForValues(index, after);
 }
 
-EngineApiDiagnostic PrepareOrderedBtreeIndexVersionMutation(
+EngineApiDiagnostic PrepareTransactionalIndexVersionMutation(
     const EngineRequestContext& context,
     const std::vector<CrudIndexRecord>& indexes,
     const std::string& table_uuid,
@@ -1393,11 +1394,11 @@ EngineApiDiagnostic PrepareOrderedBtreeIndexVersionMutation(
     const std::vector<std::pair<std::string, std::string>>& logical_new_values,
     MgaRelationHotAppendContext* append_context,
     std::vector<EngineEvidenceReference>* evidence) {
-  MgaOrderedBtreeTransactionalIndexProvider provider(context, append_context);
+  MgaTransactionalIndexProvider provider(context, append_context);
   std::vector<DmlTransactionalIndexEntryRequest> retires;
   std::vector<DmlTransactionalIndexEntryRequest> inserts;
   for (const auto& index : indexes) {
-    if (!IsReleasedOrderedBtreeTransactionalFamily(index)) {
+    if (!IsAdmittedMgaTransactionalIndexFamily(index)) {
       return MakeInvalidRequestDiagnostic(
           "dml.insert_rows.index_maintenance",
           "synchronous_index_family_has_no_transactional_provider:" +
@@ -4124,7 +4125,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           ++result.dml_summary.flushes;
         }
         auto index_append_context = relation_store.OpenHotAppendContext();
-        const auto index_appended = PrepareOrderedBtreeIndexVersionMutation(
+        const auto index_appended = PrepareTransactionalIndexVersionMutation(
             request.context,
             synchronous_indexes,
             request.target_table.uuid.canonical,
@@ -4628,7 +4629,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       }
       for (std::size_t index = window_begin; index < window_end; ++index) {
         const auto& row_record = row_records[index - window_begin];
-        const auto index_prepared = PrepareOrderedBtreeIndexVersionMutation(
+        const auto index_prepared = PrepareTransactionalIndexVersionMutation(
             request.context,
             synchronous_indexes,
             request.target_table.uuid.canonical,

@@ -20,10 +20,10 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_DML_TRANSACTIONAL_INDEX_PROVIDER_V1
 //
-// This is the common transaction-version contract for the first released
-// physical provider family: ordered B-tree and its unique/expression/partial/
-// covering profiles.  Index bytes are candidate-access state.  The durable MGA
-// transaction inventory remains the sole authority for finality and visibility.
+// This is the common transaction-version contract for every native index
+// family admitted by the built-in release capability registry. Index bytes are
+// candidate-access state. The durable MGA transaction inventory remains the
+// sole authority for finality and visibility.
 struct DmlTransactionalIndexEntryRequest {
   CrudIndexRecord index;
   std::string table_uuid;
@@ -47,6 +47,7 @@ struct DmlTransactionalIndexProviderResult {
 };
 
 bool IsReleasedOrderedBtreeTransactionalFamily(const CrudIndexRecord& index);
+bool IsAdmittedMgaTransactionalIndexFamily(const CrudIndexRecord& index);
 
 std::string DmlTransactionalIndexMutationIdentity(
     const EngineRequestContext& context,
@@ -127,10 +128,21 @@ class MgaOrderedBtreeTransactionalIndexProvider final
   MgaRelationHotAppendContext* append_context_ = nullptr;
 };
 
-// Commit-barrier proof for all ordered B-tree mutations owned by the active
-// transaction.  A missing insert or retire record blocks inventory finality.
+// The original class name is retained for source compatibility. Its contract
+// is registry-driven and applies to every admitted native MGA index family.
+using MgaTransactionalIndexProvider =
+    MgaOrderedBtreeTransactionalIndexProvider;
+
+// Commit-barrier proof for transaction-owned mutations in every admitted
+// native index family. A missing insert or retire record blocks inventory
+// finality. The ordered-B-tree name remains as a compatibility entry point.
 DmlTransactionalIndexProviderResult
 ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+    const EngineRequestContext& context,
+    const RelationReadSnapshot& state);
+
+DmlTransactionalIndexProviderResult
+ValidateTransactionalIndexMutationSetForCommit(
     const EngineRequestContext& context,
     const RelationReadSnapshot& state);
 

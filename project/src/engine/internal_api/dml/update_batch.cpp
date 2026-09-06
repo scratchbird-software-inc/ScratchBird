@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "metric_producer.hpp"
 
 #include <algorithm>
@@ -48,13 +49,7 @@ bool IsUniqueIndex(const CrudIndexRecord& index) {
 }
 
 bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
-  if (IsUniqueIndex(index)) {
-    return false;
-  }
-  // Ordered B-tree mutations are maintained only by the released
-  // transaction-version provider.  Deferring them here would create a second
-  // publication protocol and is therefore intentionally unavailable.
-  return index.family == kCrudIndexFamilyHash;
+  return !IsUniqueIndex(index) && index.family == kCrudIndexFamilyHash;
 }
 
 bool AssignmentTouchesColumn(const std::vector<std::string>& assigned_columns, const std::string& column) {
@@ -175,18 +170,7 @@ UpdateIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index,
   if (IsDeltaEligibleFamily(index) && delta_ledger_enabled) {
     return UpdateIndexMaintenanceAction::committed_delta_ledger;
   }
-  if (index.family == kCrudIndexFamilyBtree ||
-      index.family == kCrudIndexFamilyHash ||
-      index.family == kCrudIndexFamilyBitmap ||
-      index.family.empty()) {
-    return UpdateIndexMaintenanceAction::synchronous_exact_rewrite;
-  }
-  if (index.family == kCrudIndexFamilyVectorHnsw || index.family == kCrudIndexFamilyVectorIvf ||
-      index.family == kCrudIndexFamilyFullText || index.family == kCrudIndexFamilySpatial ||
-      index.family == kCrudIndexFamilyColumnarZone || index.family == kCrudIndexFamilyExpression ||
-      index.family == kCrudIndexFamilyGraphAdjacency || index.family == kCrudIndexFamilyPartial ||
-      index.family == kCrudIndexFamilyCovering || index.family == kCrudIndexFamilyInMemory ||
-      index.family == kCrudIndexFamilyReferenceEmulated || index.family == kCrudIndexFamilyPolicyBlocked) {
+  if (IsAdmittedMgaTransactionalIndexFamily(index)) {
     return UpdateIndexMaintenanceAction::synchronous_exact_rewrite;
   }
   return UpdateIndexMaintenanceAction::reject_batch_path;

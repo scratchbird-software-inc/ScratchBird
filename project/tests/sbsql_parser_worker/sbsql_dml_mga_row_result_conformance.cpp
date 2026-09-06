@@ -3098,7 +3098,7 @@ api::EngineApiResult UpdateIdByRowUuid(
           "indexed-key update did not return one row");
   Require(HasEvidence(updated.api_result,
                       "transactional_index_provider_contract",
-                      "mga_ordered_btree_v1"),
+                      "mga_native_index_family_v1"),
           "indexed-key update bypassed transactional index provider");
   Require(HasEvidence(updated.api_result,
                       "transactional_index_provider_operation",

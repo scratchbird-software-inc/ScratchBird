@@ -415,12 +415,12 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
     return result;
   }
 
-  // The released ordered B-tree provider must prove that every transaction-
+  // Every registry-admitted native provider must prove that each transaction-
   // owned row mutation has the matching insert/retire index-version bytes
   // before durable inventory finality can be published.  This is validation
   // of candidate-access state, never a second finality decision.
   const auto index_validation =
-      ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+      ValidateTransactionalIndexMutationSetForCommit(
           context, BuildMgaRelationReadView(state.state));
   if (!index_validation.ok) {
     result.diagnostic = Refuse(

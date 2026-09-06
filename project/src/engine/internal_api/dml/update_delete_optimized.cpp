@@ -2741,10 +2741,12 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
   }
   for (std::size_t entry_index = 0; entry_index < batch_context.index_plan.entries.size(); ++entry_index) {
     const auto& entry = batch_context.index_plan.entries[entry_index];
-    if (!IsSynchronousUpdateIndexAction(entry.action)) {
+    if (!IsSynchronousUpdateIndexAction(entry.action) &&
+        entry.action !=
+            UpdateIndexMaintenanceAction::committed_delta_ledger) {
       continue;
     }
-    if (!IsReleasedOrderedBtreeTransactionalFamily(entry.index)) {
+    if (!IsAdmittedMgaTransactionalIndexFamily(entry.index)) {
       return MakeInvalidRequestDiagnostic(
           "dml.update_rows.index_maintenance",
           "synchronous_index_family_has_no_transactional_provider:" +
@@ -2829,7 +2831,7 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
                                     : MgaRelationHotAppendContext(context);
     MgaRelationHotAppendContext* target_context =
         append_context == nullptr ? &local_append_context : append_context;
-    MgaOrderedBtreeTransactionalIndexProvider provider(context, target_context);
+    MgaTransactionalIndexProvider provider(context, target_context);
     const auto retired = provider.PrepareRetireEntries(retire_requests);
     if (!retired.ok) return retired.diagnostic;
     const auto inserted = provider.PrepareInsertEntries(insert_requests);
@@ -2921,10 +2923,12 @@ EngineApiDiagnostic PrepareSynchronousDeleteIndexRetires(
   std::vector<DmlTransactionalIndexEntryRequest> requests;
   for (const auto& plan_entry : batch_context.index_plan.entries) {
     if (plan_entry.action !=
-        DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite) {
+            DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite &&
+        plan_entry.action !=
+            DeleteIndexMaintenanceAction::tombstone_delta_ledger) {
       continue;
     }
-    if (!IsReleasedOrderedBtreeTransactionalFamily(plan_entry.index)) {
+    if (!IsAdmittedMgaTransactionalIndexFamily(plan_entry.index)) {
       return MakeInvalidRequestDiagnostic(
           "dml.delete_rows.index_maintenance",
           "synchronous_index_family_has_no_transactional_provider");
@@ -2947,7 +2951,7 @@ EngineApiDiagnostic PrepareSynchronousDeleteIndexRetires(
       }
     }
   }
-  MgaOrderedBtreeTransactionalIndexProvider provider(context, append_context);
+  MgaTransactionalIndexProvider provider(context, append_context);
   const auto prepared = provider.PrepareRetireEntries(requests);
   if (!prepared.ok) return prepared.diagnostic;
   if (evidence != nullptr) {
