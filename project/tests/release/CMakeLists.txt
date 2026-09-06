@@ -1988,6 +1988,17 @@ set_tests_properties(crud_compatibility_boundary_gate PROPERTIES
   LABELS "public_release_correctness;crud_compatibility_boundary_gate;dml;MGA;compatibility;source_policy"
 )
 
+# DML_FULL_STATE_LOAD_BOUNDARY_GATE
+add_test(
+  NAME dml_full_state_load_boundary_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/dml_full_state_load_boundary_gate.py
+          --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+set_tests_properties(dml_full_state_load_boundary_gate PROPERTIES
+  LABELS "public_release_correctness;dml_full_state_load_boundary_gate;dml;MGA;performance;source_policy"
+)
+
 # PUBLIC_CRYPTO_ENTROPY_GATE
 add_test(
   NAME public_crypto_entropy_policy_gate

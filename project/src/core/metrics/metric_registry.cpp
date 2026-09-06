@@ -388,6 +388,32 @@ void LoadUpdateDeleteOptimizationDescriptors(MetricRegistry* registry) {
                                                 "engine_merge"));
 }
 
+void LoadRelationStateMaterializationDescriptors(MetricRegistry* registry) {
+  if (registry == nullptr) { return; }
+  constexpr std::string_view kNamespace = "sys.metrics.mga.relation_load";
+  constexpr std::string_view kOwner = "mga_relation_store";
+  (void)registry->RegisterDescriptor(Descriptor(
+      "sb_mga_relation_state_load_total", MetricType::counter,
+      MetricUnit::count, std::string(kNamespace),
+      "MGA relation-state loads by scope, operation, target, and reason.",
+      std::string(kOwner)));
+  (void)registry->RegisterDescriptor(Descriptor(
+      "sb_mga_relation_state_rows_materialized_total", MetricType::counter,
+      MetricUnit::count, std::string(kNamespace),
+      "Row versions retained by MGA relation-state loads.",
+      std::string(kOwner)));
+  (void)registry->RegisterDescriptor(Descriptor(
+      "sb_mga_relation_state_bytes_materialized_total", MetricType::counter,
+      MetricUnit::bytes, std::string(kNamespace),
+      "Retained object and payload bytes materialized by MGA relation-state loads.",
+      std::string(kOwner)));
+  (void)registry->RegisterDescriptor(Descriptor(
+      "sb_mga_relation_state_allocation_units_materialized_total",
+      MetricType::counter, MetricUnit::count, std::string(kNamespace),
+      "Retained allocation-bearing objects materialized by MGA relation-state loads.",
+      std::string(kOwner)));
+}
+
 }  // namespace
 
 MetricValidationResult MetricOk() {
@@ -447,6 +473,7 @@ MetricRegistry::MetricRegistry() {
   LoadBuiltinDescriptors();
   LoadInsertOptimizationDescriptors(this);
   LoadUpdateDeleteOptimizationDescriptors(this);
+  LoadRelationStateMaterializationDescriptors(this);
 }
 
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {

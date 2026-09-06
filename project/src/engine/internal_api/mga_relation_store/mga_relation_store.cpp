@@ -8615,9 +8615,197 @@ bool RowsContainLargeValueLocators(const std::vector<CrudRowVersionRecord>& rows
   return false;
 }
 
+void RetainRelationMetadataScope(const std::set<std::string>& table_scope,
+                                 RelationReadSnapshot* metadata) {
+  if (metadata == nullptr) { return; }
+  metadata->tables.erase(
+      std::remove_if(metadata->tables.begin(), metadata->tables.end(),
+                     [&table_scope](const CrudTableRecord& table) {
+                       return table_scope.count(table.table_uuid) == 0;
+                     }),
+      metadata->tables.end());
+  metadata->indexes.erase(
+      std::remove_if(metadata->indexes.begin(), metadata->indexes.end(),
+                     [&table_scope](const CrudIndexRecord& index) {
+                       return table_scope.count(index.table_uuid) == 0;
+                     }),
+      metadata->indexes.end());
+  metadata->large_values.erase(
+      std::remove_if(metadata->large_values.begin(),
+                     metadata->large_values.end(),
+                     [&table_scope](const CrudLargeValueRecord& value) {
+                       return table_scope.count(value.table_uuid) == 0;
+                     }),
+      metadata->large_values.end());
+  metadata->sealed_relation_descriptor_snapshots.erase(
+      std::remove_if(
+          metadata->sealed_relation_descriptor_snapshots.begin(),
+          metadata->sealed_relation_descriptor_snapshots.end(),
+          [&table_scope](
+              const CrudSealedRelationDescriptorSnapshot& snapshot) {
+            return table_scope.count(snapshot.relation_uuid) == 0;
+          }),
+      metadata->sealed_relation_descriptor_snapshots.end());
+}
+
+void AddMaterializedString(const std::string& value,
+                           std::uint64_t* bytes,
+                           std::uint64_t* allocation_units) {
+  if (bytes == nullptr || allocation_units == nullptr) { return; }
+  *bytes += static_cast<std::uint64_t>(value.size());
+  if (!value.empty()) { ++(*allocation_units); }
+}
+
+void AddMaterializedPairs(
+    const std::vector<std::pair<std::string, std::string>>& values,
+    std::uint64_t* bytes,
+    std::uint64_t* allocation_units) {
+  if (values.empty()) { return; }
+  ++(*allocation_units);
+  *bytes += static_cast<std::uint64_t>(
+      values.size() * sizeof(std::pair<std::string, std::string>));
+  for (const auto& [key, value] : values) {
+    AddMaterializedString(key, bytes, allocation_units);
+    AddMaterializedString(value, bytes, allocation_units);
+  }
+}
+
+void CaptureRelationLoadMaterialization(MgaRelationStoreResult* result) {
+  if (result == nullptr) { return; }
+  const auto& state = result->state;
+  auto& bytes = result->bytes_materialized;
+  auto& allocations = result->allocation_units_materialized;
+  bytes = sizeof(MgaRelationStoreState);
+  allocations = 0;
+
+  result->metadata_records_materialized =
+      static_cast<std::uint64_t>(state.relation_metadata.tables.size() +
+                                 state.relation_metadata.indexes.size() +
+                                 state.relation_metadata.transactions.size() +
+                                 state.relation_metadata.large_values.size() +
+                                 state.relation_metadata
+                                     .sealed_relation_descriptor_snapshots
+                                     .size());
+  result->rows_materialized =
+      static_cast<std::uint64_t>(state.row_versions.size());
+
+  if (!state.relation_metadata.transactions.empty()) { ++allocations; }
+  for (const auto& [transaction_id, status] :
+       state.relation_metadata.transactions) {
+    (void)transaction_id;
+    bytes += sizeof(transaction_id) + sizeof(status);
+    ++allocations;
+    AddMaterializedString(status, &bytes, &allocations);
+  }
+  if (!state.relation_metadata.tables.empty()) { ++allocations; }
+  bytes += static_cast<std::uint64_t>(
+      state.relation_metadata.tables.size() * sizeof(CrudTableRecord));
+  for (const auto& table : state.relation_metadata.tables) {
+    AddMaterializedString(table.table_uuid, &bytes, &allocations);
+    AddMaterializedString(table.default_name, &bytes, &allocations);
+    AddMaterializedPairs(table.columns, &bytes, &allocations);
+    AddMaterializedString(table.temporary_scope, &bytes, &allocations);
+    AddMaterializedString(table.temporary_session_uuid, &bytes, &allocations);
+    AddMaterializedString(table.on_commit_action, &bytes, &allocations);
+  }
+  if (!state.row_versions.empty()) { ++allocations; }
+  bytes += static_cast<std::uint64_t>(
+      state.row_versions.size() * sizeof(CrudRowVersionRecord));
+  for (const auto& row : state.row_versions) {
+    AddMaterializedString(row.table_uuid, &bytes, &allocations);
+    AddMaterializedString(row.row_uuid, &bytes, &allocations);
+    AddMaterializedString(row.version_uuid, &bytes, &allocations);
+    AddMaterializedString(row.temporary_session_uuid, &bytes, &allocations);
+    AddMaterializedString(row.previous_version_uuid, &bytes, &allocations);
+    AddMaterializedPairs(row.values, &bytes, &allocations);
+  }
+  if (!state.relation_metadata.indexes.empty()) { ++allocations; }
+  bytes += static_cast<std::uint64_t>(
+      state.relation_metadata.indexes.size() * sizeof(CrudIndexRecord));
+  for (const auto& index : state.relation_metadata.indexes) {
+    AddMaterializedString(index.index_uuid, &bytes, &allocations);
+    AddMaterializedString(index.table_uuid, &bytes, &allocations);
+    AddMaterializedString(index.column_name, &bytes, &allocations);
+    AddMaterializedString(index.family, &bytes, &allocations);
+    AddMaterializedString(index.profile, &bytes, &allocations);
+    AddMaterializedString(index.default_name, &bytes, &allocations);
+    if (!index.key_envelopes.empty()) { ++allocations; }
+    for (const auto& key : index.key_envelopes) {
+      AddMaterializedString(key, &bytes, &allocations);
+    }
+    if (!index.include_columns.empty()) { ++allocations; }
+    for (const auto& column : index.include_columns) {
+      AddMaterializedString(column, &bytes, &allocations);
+    }
+    AddMaterializedString(index.predicate_kind, &bytes, &allocations);
+    AddMaterializedString(index.predicate_column, &bytes, &allocations);
+    AddMaterializedString(index.predicate_value, &bytes, &allocations);
+  }
+  if (!state.index_entries.empty()) { ++allocations; }
+  bytes += static_cast<std::uint64_t>(
+      state.index_entries.size() * sizeof(CrudIndexEntryRecord));
+  for (const auto& entry : state.index_entries) {
+    AddMaterializedString(entry.index_uuid, &bytes, &allocations);
+    AddMaterializedString(entry.table_uuid, &bytes, &allocations);
+    AddMaterializedString(entry.column_name, &bytes, &allocations);
+    AddMaterializedString(entry.family, &bytes, &allocations);
+    AddMaterializedString(entry.entry_kind, &bytes, &allocations);
+    AddMaterializedString(entry.key_value, &bytes, &allocations);
+    AddMaterializedString(entry.payload_value, &bytes, &allocations);
+    AddMaterializedString(entry.row_uuid, &bytes, &allocations);
+    AddMaterializedString(entry.version_uuid, &bytes, &allocations);
+  }
+  if (!state.relation_metadata.large_values.empty()) { ++allocations; }
+  bytes += static_cast<std::uint64_t>(
+      state.relation_metadata.large_values.size() *
+      sizeof(CrudLargeValueRecord));
+  for (const auto& value : state.relation_metadata.large_values) {
+    AddMaterializedString(value.overflow_uuid, &bytes, &allocations);
+    AddMaterializedString(value.table_uuid, &bytes, &allocations);
+    AddMaterializedString(value.row_uuid, &bytes, &allocations);
+    AddMaterializedString(value.version_uuid, &bytes, &allocations);
+    AddMaterializedString(value.field_name, &bytes, &allocations);
+    AddMaterializedString(value.content_hash, &bytes, &allocations);
+    AddMaterializedString(value.state, &bytes, &allocations);
+    if (!value.chunks.empty()) { ++allocations; }
+    bytes += static_cast<std::uint64_t>(
+        value.chunks.size() * sizeof(CrudLargeValueChunkRecord));
+    for (const auto& chunk : value.chunks) {
+      AddMaterializedString(chunk.overflow_uuid, &bytes, &allocations);
+      AddMaterializedString(chunk.payload_fragment, &bytes, &allocations);
+    }
+  }
+  if (!state.relation_metadata.sealed_relation_descriptor_snapshots.empty()) {
+    ++allocations;
+  }
+  bytes += static_cast<std::uint64_t>(
+      state.relation_metadata.sealed_relation_descriptor_snapshots.size() *
+      sizeof(CrudSealedRelationDescriptorSnapshot));
+  for (const auto& snapshot :
+       state.relation_metadata.sealed_relation_descriptor_snapshots) {
+    AddMaterializedString(snapshot.relation_uuid, &bytes, &allocations);
+    AddMaterializedString(snapshot.relation_descriptor_uuid, &bytes,
+                          &allocations);
+    AddMaterializedPairs(snapshot.descriptor_fields, &bytes, &allocations);
+  }
+  if (!state.relation_metadata.savepoints.empty()) { ++allocations; }
+  for (const auto& [transaction_id, transaction_savepoints] :
+       state.relation_metadata.savepoints) {
+    (void)transaction_id;
+    bytes += sizeof(transaction_id) + sizeof(transaction_savepoints);
+    ++allocations;
+    for (const auto& [name, sequence] : transaction_savepoints) {
+      bytes += sizeof(name) + sizeof(sequence);
+      ++allocations;
+      AddMaterializedString(name, &bytes, &allocations);
+    }
+  }
+}
+
 void AddRelationLoadEvidence(MgaRelationStoreResult* result,
                              const std::string& route) {
   if (result == nullptr) { return; }
+  CaptureRelationLoadMaterialization(result);
   result->evidence.push_back({"mga_relation_state_load_route", route});
   result->evidence.push_back({"mga_relation_state_full_load",
                               result->full_state_load ? "true" : "false"});
@@ -8631,6 +8819,15 @@ void AddRelationLoadEvidence(MgaRelationStoreResult* result,
                               std::to_string(result->index_entries_scanned)});
   result->evidence.push_back({"mga_relation_state_index_entries_retained",
                               std::to_string(result->index_entries_retained)});
+  result->evidence.push_back({"mga_relation_state_metadata_records_materialized",
+                              std::to_string(result->metadata_records_materialized)});
+  result->evidence.push_back({"mga_relation_state_rows_materialized",
+                              std::to_string(result->rows_materialized)});
+  result->evidence.push_back({"mga_relation_state_bytes_materialized",
+                              std::to_string(result->bytes_materialized)});
+  result->evidence.push_back({"mga_relation_state_allocation_units_materialized",
+                              std::to_string(
+                                  result->allocation_units_materialized)});
   result->evidence.push_back({"mga_relation_state_scoped_physical_segments",
                               result->scoped_physical_segments_used ? "true" : "false"});
   result->evidence.push_back({"mga_relation_state_scoped_physical_fallback",
@@ -8949,7 +9146,9 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     const std::vector<std::string>& table_uuids,
     const std::string& evidence_route,
     bool include_index_entries = true,
-    bool include_row_versions = true) {
+    bool include_row_versions = true,
+    bool expand_constraint_scope = true,
+    const std::string& row_uuid_filter = {}) {
   MgaRelationStoreResult result;
   result.scoped_state_load = true;
   if (context.database_path.empty()) {
@@ -8984,9 +9183,13 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
   FilterVisibleRetiredTemporaryMetadata(context, &result.state.relation_metadata);
   std::set<std::string> table_scope;
   for (const auto& table_uuid : table_uuids) {
-    const auto scoped =
-        InsertTargetRelationScope(context, result.state.relation_metadata, table_uuid);
-    table_scope.insert(scoped.begin(), scoped.end());
+    if (expand_constraint_scope) {
+      const auto scoped = InsertTargetRelationScope(
+          context, result.state.relation_metadata, table_uuid);
+      table_scope.insert(scoped.begin(), scoped.end());
+    } else {
+      table_scope.insert(table_uuid);
+    }
   }
   const auto savepoints = ParseSavepoints(context);
 
@@ -9030,6 +9233,9 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       for (auto& row : decoded_rows) {
         if (table_scope.count(row.table_uuid) == 0 ||
             retired_tables.count(row.table_uuid) != 0) {
+          continue;
+        }
+        if (!row_uuid_filter.empty() && row.row_uuid != row_uuid_filter) {
           continue;
         }
         if (RowEventRolledBackBySavepoint(savepoints,
@@ -9111,6 +9317,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       return result;
     }
   }
+  RetainRelationMetadataScope(table_scope, &result.state.relation_metadata);
   FilterMgaTemporaryObjectsForSession(context, &result.state.relation_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
@@ -9187,6 +9394,50 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
                                                 table_uuids,
                                                 "mutation_targets_rows_only_scoped",
                                                 false);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    const std::string& row_uuid) {
+  if (row_uuid.empty()) {
+    MgaRelationStoreResult result;
+    result.scoped_state_load = true;
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.row_store", "row_uuid_required");
+    return result;
+  }
+  return LoadMgaRelationStoreStateForTargetScope(
+      context,
+      std::vector<std::string>{table_uuid},
+      "relation_point_cursor_scoped",
+      false,
+      true,
+      false,
+      row_uuid);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreStateForRelationScans(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context, table_uuids, "relation_scan_scoped", true, true, false);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreIndexesForRelation(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context, std::vector<std::string>{table_uuid},
+      "relation_index_cursor_scoped", true, false, false);
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreMetadataForRelation(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  return LoadMgaRelationStoreStateForTargetScope(
+      context, std::vector<std::string>{table_uuid},
+      "relation_metadata_scoped", false, false, false);
 }
 
 std::uint64_t CurrentMgaRelationMetadataEventSequence(

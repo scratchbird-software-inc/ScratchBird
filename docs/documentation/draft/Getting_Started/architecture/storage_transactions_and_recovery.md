@@ -81,6 +81,40 @@ The `crud_compatibility_boundary_gate` test freezes every remaining projection
 consumer by path, count, and classification. It rejects any compatibility-state
 or CRUD-event dependency added under the canonical DML source tree.
 
+### Bounded Relation-State Access
+
+Ordinary SELECT and simple DML do not reconstruct the complete relation store.
+The canonical transactional relation-store boundary provides UUID-addressed
+descriptor lookup, transaction-visible relation scans, stable-row UUID point
+cursors, relation-scoped index cursors, constraint scopes, and trigger metadata
+scopes. Multi-relation work must name each relation in its scope.
+
+Every relation-state load publishes its operation family, target relation UUID,
+reason, full-or-scoped result, and the retained materialization footprint. The
+live counter families are:
+
+- `sb_mga_relation_state_load_total`;
+- `sb_mga_relation_state_rows_materialized_total`;
+- `sb_mga_relation_state_bytes_materialized_total`;
+- `sb_mga_relation_state_allocation_units_materialized_total`.
+
+The byte counter measures the retained object and payload footprint assembled
+by the loader. The allocation-unit counter measures retained allocation-bearing
+containers and values; it is deterministic engine evidence, not a platform
+allocator event count.
+
+Only two full-state methods remain at this boundary. Diagnostic inventory is
+explicitly limited to 1,000,000 rows, 1 GiB of retained material, and 10,000,000
+allocation units. Deferred-constraint validation during transaction
+finalization is limited to 250,000 rows, 512 MiB, and 5,000,000 allocation
+units. Both identify their non-hot-path purpose in runtime evidence and refuse
+results beyond the declared policy.
+
+The `dml_full_state_load_boundary_gate` keeps the raw full-loader call sites and
+their policies on an exact allowlist. The `ipar_relation_state_load_route_gate`
+uses a skewed data shape to compare scoped output with the full-state reference
+and asserts lower actual rows, bytes, and allocation units for the scoped route.
+
 ## Commit And Reopen
 
 Before a writable local transaction can be recorded as committed, SBcore runs

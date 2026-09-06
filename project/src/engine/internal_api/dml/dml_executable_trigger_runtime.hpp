@@ -11,6 +11,7 @@
 #include "dml/mga_relation_read_view.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "dml/insert_api.hpp"
+#include "dml/transactional_relation_store.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_sequence_runtime.hpp"
@@ -373,12 +374,16 @@ inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& cont
                                                 std::string_view audit_table_leaf) {
   const auto target_name =
       LowerAscii(PayloadFieldValue(trigger.payload, "trigger_target_table_name:"));
-  if (!target_name.empty() && target_name.find('.') != std::string::npos) {
-    const std::string sibling_name = SiblingPresentedName(target_name, audit_table_leaf);
-    const std::string resolved = ResolveVisibleTableByPresentedName(context, sibling_name);
-    if (!resolved.empty()) return resolved;
-    return {};
-  }
+  const std::string presented_name =
+      !target_name.empty() && target_name.find('.') != std::string::npos
+          ? SiblingPresentedName(target_name, audit_table_leaf)
+          : std::string(audit_table_leaf);
+  const std::string resolved =
+      ResolveVisibleTableByPresentedName(context, presented_name);
+  if (!resolved.empty()) return resolved;
+  // The scoped state is a compatibility fallback for provisional catalogs
+  // whose name-registry rows have not yet been installed. It is never widened
+  // to a complete relation-store reconstruction.
   return FindVisibleTableByName(state, context, audit_table_leaf);
 }
 
@@ -417,16 +422,21 @@ inline DmlExecutableTriggerRuntimeResult ResolveTriggerRelationReadView(
     std::string_view required_table_name,
     MgaRelationReadView* trigger_state) {
   DmlExecutableTriggerRuntimeResult result;
-  *trigger_state = scoped_state;
-
-  const auto loaded = LoadMgaRelationStoreState(context);
+  (void)scoped_state;
+  TransactionalRelationStore relation_store(context);
+  auto loaded = relation_store.LoadTriggerMetadataScope(target_table_uuid);
   if (!loaded.ok) {
     result.ok = false;
     result.diagnostic = loaded.diagnostic;
     return result;
   }
-  *trigger_state = BuildMgaRelationReadView(loaded.state);
-  result.evidence.push_back({"trigger_relation_state_scope", "full_reload_for_trigger_dispatch"});
+  *trigger_state = relation_store.BuildReadView(&loaded);
+  result.evidence.insert(result.evidence.end(), loaded.evidence.begin(),
+                         loaded.evidence.end());
+  result.evidence.push_back(
+      {"trigger_relation_state_scope", "target_metadata_only"});
+  result.evidence.push_back(
+      {"trigger_required_relation_name", std::string(required_table_name)});
   return result;
 }
 

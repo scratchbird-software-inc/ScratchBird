@@ -34,8 +34,6 @@ TransactionalRelationStoreAuthorityMap();
 
 enum class TransactionalRelationStoreRoute {
   diagnostic_full_state,
-  insert_dependency_full_state,
-  selectable_procedure_dependency_full_state,
   deferred_constraint_validation_full_state,
   insert_target,
   insert_target_metadata,
@@ -44,6 +42,13 @@ enum class TransactionalRelationStoreRoute {
   mutation_targets,
   mutation_target_rows,
   mutation_targets_rows,
+  relation_scan,
+  relation_scans,
+  relation_point_cursor,
+  relation_index_cursor,
+  constraint_scope,
+  constraint_scopes,
+  trigger_metadata_scope,
   direct_physical_bulk_append,
 };
 
@@ -59,8 +64,6 @@ class TransactionalRelationStore {
   explicit TransactionalRelationStore(const EngineRequestContext& context);
 
   MgaRelationStoreResult LoadDiagnosticFullState() const;
-  MgaRelationStoreResult LoadInsertDependencyFullState() const;
-  MgaRelationStoreResult LoadSelectableProcedureDependencyFullState() const;
   MgaRelationStoreResult LoadDeferredConstraintValidationFullState() const;
   MgaRelationStoreResult LoadInsertTarget(const std::string& table_uuid) const;
   MgaRelationStoreResult LoadInsertTargetMetadata(
@@ -75,6 +78,21 @@ class TransactionalRelationStore {
       const std::string& table_uuid) const;
   MgaRelationStoreResult LoadMutationTargetRows(
       const std::vector<std::string>& table_uuids) const;
+  MgaRelationStoreResult OpenRelationScan(
+      const std::string& table_uuid) const;
+  MgaRelationStoreResult OpenRelationScans(
+      const std::vector<std::string>& table_uuids) const;
+  MgaRelationStoreResult OpenRelationPointCursor(
+      const std::string& table_uuid,
+      const std::string& row_uuid) const;
+  MgaRelationStoreResult OpenRelationIndexCursor(
+      const std::string& table_uuid) const;
+  MgaRelationStoreResult LoadConstraintScope(
+      const std::string& table_uuid) const;
+  MgaRelationStoreResult LoadConstraintScopes(
+      const std::vector<std::string>& table_uuids) const;
+  MgaRelationStoreResult LoadTriggerMetadataScope(
+      const std::string& table_uuid) const;
   MgaRelationStorageDescriptorLoadResult LoadRelationDescriptor(
       const std::string& relation_uuid) const;
 

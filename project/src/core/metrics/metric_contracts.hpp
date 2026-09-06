@@ -113,6 +113,14 @@ MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
                                                      bool full_state_load,
                                                      bool scoped_state_load,
                                                      std::string reason);
+MetricValidationResult RecordMgaRelationStateLoad(
+    std::string object_uuid,
+    std::string operation_family,
+    std::string load_scope,
+    std::string reason,
+    double rows_materialized,
+    double bytes_materialized,
+    double allocation_units_materialized);
 MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
                                                       std::string insert_mode,
                                                       double requested_rows,

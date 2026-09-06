@@ -278,7 +278,7 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     return {};
   }
   TransactionalRelationStore relation_store(request.context);
-  auto loaded = relation_store.LoadSelectableProcedureDependencyFullState();
+  auto loaded = relation_store.OpenRelationScan(dependency_uuid);
   if (!loaded.ok) {
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
@@ -333,7 +333,7 @@ std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
     return {};
   }
   TransactionalRelationStore relation_store(request.context);
-  auto loaded = relation_store.LoadSelectableProcedureDependencyFullState();
+  auto loaded = relation_store.OpenRelationScan(dependency_uuid);
   if (!loaded.ok) {
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
@@ -970,9 +970,9 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
        requested_predicate.predicate_kind == "column_not_in_projection") &&
       !subquery_source_uuid.empty();
   auto loaded = needs_subquery_source_scope
-      ? relation_store.LoadMutationTargets(
+      ? relation_store.OpenRelationScans(
             std::vector<std::string>{table_uuid, subquery_source_uuid})
-      : relation_store.LoadMutationTarget(table_uuid);
+      : relation_store.OpenRelationScan(table_uuid);
   mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);

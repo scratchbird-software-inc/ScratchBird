@@ -1,0 +1,22 @@
+{
+  "schema_version": "scratchbird.dml_full_state_load_boundary.v1",
+  "raw_full_load_callers": {
+    "src/engine/internal_api/dml/transactional_relation_store.cpp": 2
+  },
+  "allowed_full_loads": [
+    {
+      "method": "LoadDiagnosticFullState",
+      "classification": "explicit_diagnostic_inventory",
+      "maximum_rows": 1000000,
+      "maximum_bytes": 1073741824,
+      "maximum_allocation_units": 10000000
+    },
+    {
+      "method": "LoadDeferredConstraintValidationFullState",
+      "classification": "transaction_finalization_deferred_constraint_validation",
+      "maximum_rows": 250000,
+      "maximum_bytes": 536870912,
+      "maximum_allocation_units": 5000000
+    }
+  ]
+}

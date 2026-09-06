@@ -1498,13 +1498,6 @@ bool InsertOpaqueColumnsAllowed(const EngineInsertRowsRequest& request) {
          structured == "on";
 }
 
-bool InsertRequiresFullRelationState(const EngineInsertRowsRequest& request,
-                                     std::string_view conflict_action) {
-  (void)request;
-  (void)conflict_action;
-  return false;
-}
-
 bool InsertOptionKeyPresent(const std::vector<std::string>& options,
                             std::string_view key) {
   const std::string equals_prefix = std::string(key) + "=";
@@ -3355,8 +3348,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       return std::move(direct_attempt.result);
     }
   }
-  const bool full_relation_state_required =
-      InsertRequiresFullRelationState(request, conflict_action);
   const auto generated_source_uuids = GeneratedInsertSelectSourceUuids(request);
   const auto generated_source_capacity =
       TryBuildInsertSelectSourceCapacitySnapshot(request,
@@ -3372,14 +3363,12 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                       generated_source_uuids.end());
   mark_insert_phase("plan_relation_state_scope");
   TransactionalRelationStore relation_store(request.context);
-  auto loaded = full_relation_state_required
-                    ? relation_store.LoadInsertDependencyFullState()
-                    : (!generated_source_uuids.empty() &&
-                               !generated_source_capacity.usable
-                           ? relation_store.LoadMutationTargets(
-                                 generated_insert_scope_uuids)
-                           : relation_store.LoadInsertTarget(
-                                 request.target_table.uuid.canonical));
+  auto loaded = !generated_source_uuids.empty() &&
+                        !generated_source_capacity.usable
+                    ? relation_store.LoadConstraintScopes(
+                          generated_insert_scope_uuids)
+                    : relation_store.LoadConstraintScope(
+                          request.target_table.uuid.canonical);
   mark_insert_phase("load_relation_state");
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
       request.target_table.uuid.canonical,
@@ -3388,17 +3377,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           : InsertBatchModeName(ResolveInsertBatchMode(request)),
       loaded.full_state_load,
       loaded.scoped_state_load,
-      full_relation_state_required
-          ? (conflict_action == "do_update"
-                 ? "on_conflict_do_update_requires_child_reference_state"
-                 : "request_required_full_state")
-          : (!generated_source_uuids.empty()
-                 ? (generated_source_capacity.usable
-                        ? "insert_select_target_scoped_source_summary"
-                        : "insert_select_target_source_scoped")
-                 : (conflict_action == "do_update"
-                        ? "insert_target_child_reference_scoped"
-                        : "insert_target_scoped")));
+      !generated_source_uuids.empty()
+          ? (generated_source_capacity.usable
+                 ? "insert_select_target_scoped_source_summary"
+                 : "insert_select_target_source_scoped")
+          : (conflict_action == "do_update"
+                 ? "insert_target_child_reference_scoped"
+                 : "insert_target_scoped"));
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
   const auto table = FindVisibleMgaTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
@@ -3674,19 +3659,12 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                              loaded.full_state_load ? "1" : "0"});
   result.evidence.push_back({"relation_state_scoped_loads",
                              loaded.scoped_state_load ? "1" : "0"});
-  if (full_relation_state_required) {
-    result.evidence.push_back({"relation_state_load_reason",
-                               conflict_action == "do_update"
-                                   ? "on_conflict_do_update_requires_child_reference_state"
-                                   : "request_required_full_state"});
-  } else {
-    result.evidence.push_back({"relation_state_load_reason",
-                               !generated_source_uuids.empty()
-                                   ? "insert_select_target_source_scope"
-                                   : (conflict_action == "do_update"
-                                          ? "target_table_insert_and_child_reference_scope"
-                                          : "target_table_insert_scope")});
-  }
+  result.evidence.push_back({"relation_state_load_reason",
+                             !generated_source_uuids.empty()
+                                 ? "insert_select_target_source_scope"
+                                 : (conflict_action == "do_update"
+                                        ? "target_table_insert_and_child_reference_scope"
+                                        : "target_table_insert_scope")});
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
   }
@@ -4810,15 +4788,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                             static_cast<double>(physical_probe_cache.scan_fallback_attempts),
                             "scan_fallback",
                             "unique_physical_probe_cache_miss");
-  }
-  if (full_relation_state_required) {
-    RecordInsertBatchMetric(batch_context,
-                            "sb_dml_insert_slow_path_total",
-                            1.0,
-                            "full_relation_state",
-                            conflict_action == "do_update"
-                                ? "on_conflict_do_update_requires_child_reference_state"
-                                : "request_required_full_state");
   }
   if (batch_context.adaptive_batch_plan.reduced) {
     RecordInsertBatchMetric(batch_context,

@@ -8,17 +8,21 @@
 
 #include "database_lifecycle.hpp"
 #include "dml/insert_api.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "metric_registry.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <unistd.h>
 #include <vector>
@@ -27,6 +31,7 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
+namespace metrics = scratchbird::core::metrics;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
@@ -109,6 +114,58 @@ std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evide
     }
   }
   return {};
+}
+
+bool HasMetric(const std::vector<metrics::MetricValue>& values,
+               std::string_view family,
+               std::string_view object_uuid,
+               std::string_view operation,
+               std::string_view result,
+               double minimum_value) {
+  for (const auto& value : values) {
+    if (value.family != family || value.value < minimum_value) { continue; }
+    bool object_matches = false;
+    bool operation_matches = false;
+    bool result_matches = false;
+    for (const auto& label : value.labels) {
+      object_matches = object_matches ||
+                       (label.key == "object_uuid" &&
+                        label.value == object_uuid);
+      operation_matches = operation_matches ||
+                          (label.key == "operation" &&
+                           label.value == operation);
+      result_matches = result_matches ||
+                       (label.key == "result" && label.value == result);
+    }
+    if (object_matches && operation_matches && result_matches) { return true; }
+  }
+  return false;
+}
+
+void RequireSameRows(std::vector<api::CrudRowVersionRecord> left,
+                     std::vector<api::CrudRowVersionRecord> right) {
+  const auto order = [](const api::CrudRowVersionRecord& lhs,
+                        const api::CrudRowVersionRecord& rhs) {
+    return std::tie(lhs.row_uuid, lhs.version_uuid, lhs.event_sequence) <
+           std::tie(rhs.row_uuid, rhs.version_uuid, rhs.event_sequence);
+  };
+  std::sort(left.begin(), left.end(), order);
+  std::sort(right.begin(), right.end(), order);
+  Require(left.size() == right.size(),
+          "IPAR scoped/full parity row count differs");
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    Require(left[i].creator_tx == right[i].creator_tx &&
+                left[i].event_sequence == right[i].event_sequence &&
+                left[i].sequence == right[i].sequence &&
+                left[i].table_uuid == right[i].table_uuid &&
+                left[i].row_uuid == right[i].row_uuid &&
+                left[i].version_uuid == right[i].version_uuid &&
+                left[i].previous_version_uuid == right[i].previous_version_uuid &&
+                left[i].previous_sequence == right[i].previous_sequence &&
+                left[i].deleted == right[i].deleted &&
+                left[i].values == right[i].values,
+            "IPAR scoped/full parity row image differs");
+  }
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view detail) {
@@ -499,10 +556,175 @@ void VerifyRelationStateLoadRoutes() {
   Commit(verify);
 }
 
+void VerifyScopedMaterializationAndCursorParity() {
+  auto fixture = MakeFixture();
+
+  auto seed = Begin(fixture, "ipar-relation-state-shape-seed");
+  RequireInsertOk(InsertInto(fixture, seed, fixture.target_table_uuid,
+                             "target-shape-1"),
+                  "IPAR relation-state shape target insert 1 failed");
+  RequireInsertOk(InsertInto(fixture, seed, fixture.target_table_uuid,
+                             "target-shape-2"),
+                  "IPAR relation-state shape target insert 2 failed");
+  constexpr std::size_t kUnrelatedRows = 48;
+  for (std::size_t i = 0; i < kUnrelatedRows; ++i) {
+    RequireInsertOk(
+        InsertInto(fixture, seed, fixture.unrelated_table_uuid,
+                   "unrelated-shape-" + std::to_string(i)),
+        "IPAR relation-state shape unrelated insert failed");
+  }
+  Commit(seed);
+
+  auto verify = Begin(fixture, "ipar-relation-state-shape-verify");
+  api::TransactionalRelationStore relation_store(verify);
+  const auto full = relation_store.LoadDiagnosticFullState();
+  const auto scoped = relation_store.OpenRelationScan(fixture.target_table_uuid);
+  Require(full.ok && scoped.ok,
+          "IPAR relation-state shape loaders failed");
+  Require(full.full_state_load && !full.scoped_state_load,
+          "IPAR reference loader did not report full-state materialization");
+  Require(!scoped.full_state_load && scoped.scoped_state_load,
+          "IPAR relation scan did not report scoped materialization");
+  Require(full.rows_materialized >= kUnrelatedRows + 2,
+          "IPAR full-state shape did not contain the unrelated corpus");
+  Require(scoped.rows_materialized == 2,
+          "IPAR relation scan materialized rows outside its UUID scope");
+  Require(scoped.rows_materialized < full.rows_materialized,
+          "IPAR relation scan row materialization was not bounded");
+  Require(scoped.metadata_records_materialized <
+              full.metadata_records_materialized,
+          "IPAR relation scan metadata materialization was not UUID scoped");
+  Require(scoped.bytes_materialized < full.bytes_materialized,
+          "IPAR relation scan byte materialization was not bounded");
+  Require(scoped.allocation_units_materialized <
+              full.allocation_units_materialized,
+          "IPAR relation scan allocation footprint was not bounded");
+  Require(EvidenceValue(scoped.evidence,
+                        "mga_relation_state_rows_materialized") == "2",
+          "IPAR relation scan actual-row evidence is missing");
+  Require(EvidenceValue(scoped.evidence,
+                        "mga_relation_state_bytes_materialized") ==
+              std::to_string(scoped.bytes_materialized),
+          "IPAR relation scan actual-byte evidence is missing");
+  Require(EvidenceValue(scoped.evidence,
+                        "mga_relation_state_allocation_units_materialized") ==
+              std::to_string(scoped.allocation_units_materialized),
+          "IPAR relation scan allocation evidence is missing");
+  Require(HasEvidence(scoped.evidence,
+                      "mga_relation_state_operation_family", "select") &&
+              HasEvidence(scoped.evidence,
+                          "mga_relation_state_target_relation_uuid",
+                          fixture.target_table_uuid) &&
+              HasEvidence(scoped.evidence,
+                          "mga_relation_state_load_reason",
+                          "transaction_visible_relation_scan"),
+          "IPAR relation scan identity/reason evidence is incomplete");
+  Require(HasEvidence(full.evidence,
+                      "mga_relation_state_full_load_policy_reason",
+                      "explicit_diagnostic_inventory") &&
+              !EvidenceValue(full.evidence,
+                             "mga_relation_state_full_load_maximum_rows")
+                   .empty() &&
+              !EvidenceValue(full.evidence,
+                             "mga_relation_state_full_load_maximum_bytes")
+                   .empty() &&
+              !EvidenceValue(
+                   full.evidence,
+                   "mga_relation_state_full_load_maximum_allocation_units")
+                   .empty(),
+          "IPAR diagnostic full load lacks its named bounded policy");
+
+  const auto full_view = api::BuildMgaRelationReadView(full.state);
+  const auto scoped_view = api::BuildMgaRelationReadView(scoped.state);
+  const auto full_rows = api::VisibleMgaRowsForContext(
+      full_view, fixture.target_table_uuid, verify);
+  const auto scoped_rows = api::VisibleMgaRowsForContext(
+      scoped_view, fixture.target_table_uuid, verify);
+  RequireSameRows(full_rows, scoped_rows);
+  Require(!scoped_rows.empty(),
+          "IPAR scoped/full parity corpus unexpectedly has no rows");
+
+  const auto point = relation_store.OpenRelationPointCursor(
+      fixture.target_table_uuid, scoped_rows.front().row_uuid);
+  Require(point.ok && point.scoped_state_load && !point.full_state_load,
+          "IPAR point cursor did not remain scoped");
+  Require(point.state.row_versions.size() == 1 &&
+              point.state.row_versions.front().row_uuid ==
+                  scoped_rows.front().row_uuid,
+          "IPAR point cursor retained rows outside the stable row UUID");
+  Require(point.row_versions_scanned == 2 &&
+              point.row_versions_retained == 1 &&
+              point.rows_materialized == 1,
+          "IPAR point cursor scan/retention accounting is not exact");
+  Require(HasEvidence(point.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.relation_point_cursor.v1"),
+          "IPAR point cursor route evidence is missing");
+
+  const auto index =
+      relation_store.OpenRelationIndexCursor(fixture.target_table_uuid);
+  Require(index.ok && index.scoped_state_load && !index.full_state_load,
+          "IPAR index cursor did not remain relation scoped");
+  Require(index.index_entries_retained == 2,
+          "IPAR index cursor did not retain the target relation entries");
+  Require(index.rows_materialized == 0 && index.state.row_versions.empty(),
+          "IPAR index cursor unnecessarily materialized relation rows");
+  Require(HasEvidence(index.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.relation_index_cursor.v1"),
+          "IPAR index cursor route evidence is missing");
+
+  const auto constraint =
+      relation_store.LoadConstraintScope(fixture.target_table_uuid);
+  Require(constraint.ok && constraint.scoped_state_load &&
+              !constraint.full_state_load,
+          "IPAR constraint lookup did not remain scoped");
+  Require(constraint.rows_materialized == 2 &&
+              constraint.metadata_records_materialized <
+                  full.metadata_records_materialized,
+          "IPAR constraint lookup retained unrelated relation state");
+  Require(HasEvidence(constraint.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.constraint_scope.v1"),
+          "IPAR constraint lookup route evidence is missing");
+
+  const auto trigger =
+      relation_store.LoadTriggerMetadataScope(fixture.target_table_uuid);
+  Require(trigger.ok && trigger.scoped_state_load &&
+              !trigger.full_state_load && trigger.rows_materialized == 0 &&
+              trigger.state.relation_metadata.tables.size() == 1,
+          "IPAR trigger metadata lookup retained non-target relation state");
+  Require(HasEvidence(trigger.evidence,
+                      "transactional_relation_store_route",
+                      "normal_dml.trigger_metadata_scope.v1"),
+          "IPAR trigger metadata lookup route evidence is missing");
+
+  const auto metric_values =
+      metrics::DefaultMetricRegistry().SnapshotCurrent(false);
+  Require(HasMetric(metric_values, "sb_mga_relation_state_load_total",
+                    fixture.target_table_uuid, "select", "scoped", 1.0),
+          "IPAR scoped relation-load counter was not published");
+  Require(HasMetric(metric_values,
+                    "sb_mga_relation_state_rows_materialized_total",
+                    fixture.target_table_uuid, "select", "scoped", 2.0),
+          "IPAR scoped rows-materialized counter was not published");
+  Require(HasMetric(metric_values,
+                    "sb_mga_relation_state_bytes_materialized_total",
+                    fixture.target_table_uuid, "select", "scoped", 1.0),
+          "IPAR scoped bytes-materialized counter was not published");
+  Require(HasMetric(
+              metric_values,
+              "sb_mga_relation_state_allocation_units_materialized_total",
+              fixture.target_table_uuid, "select", "scoped", 1.0),
+          "IPAR scoped allocation-materialized counter was not published");
+  Commit(verify);
+}
+
 }  // namespace
 
 int main() {
   VerifyCanonicalStoreAuthorityMap();
   VerifyRelationStateLoadRoutes();
+  VerifyScopedMaterializationAndCursorParity();
   return EXIT_SUCCESS;
 }

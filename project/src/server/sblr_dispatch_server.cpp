@@ -21,6 +21,7 @@
 #include "catalog/sys_information_projection.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "observability/show_api.hpp"
 #include "security/security_crypto_policy.hpp"
@@ -3516,11 +3517,13 @@ std::vector<std::string> VisibleInsertColumnNamesForTarget(
     const std::string& target_object_uuid) {
   if (target_object_uuid.empty()) return {};
   const auto context = PublicAbiDispatchEngineContext(session);
-  const auto loaded = engine_api::LoadMgaRelationStoreState(context);
+  const auto loaded =
+      engine_api::LoadMgaRelationStoreMetadataForRelation(
+          context, target_object_uuid);
   if (!loaded.ok) return {};
-  const engine_api::RelationReadSnapshot state =
-      engine_api::BuildCrudCompatibilityStateFromMga(loaded.state);
-  const auto table = engine_api::FindVisibleCrudTable(
+  const engine_api::MgaRelationReadView state =
+      engine_api::BuildMgaRelationReadView(loaded.state);
+  const auto table = engine_api::FindVisibleMgaTable(
       state,
       target_object_uuid,
       context.local_transaction_id);

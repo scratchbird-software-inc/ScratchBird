@@ -8,11 +8,27 @@
 
 #include "dml/transactional_relation_store.hpp"
 
+#include "metric_contracts.hpp"
+
 #include <array>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
 namespace {
+
+struct FullStateLoadPolicy {
+  std::uint64_t maximum_rows;
+  std::uint64_t maximum_bytes;
+  std::uint64_t maximum_allocation_units;
+  std::string_view reason;
+};
+
+constexpr FullStateLoadPolicy kDiagnosticFullStatePolicy{
+    1'000'000, 1'073'741'824, 10'000'000,
+    "explicit_diagnostic_inventory"};
+constexpr FullStateLoadPolicy kDeferredConstraintFullStatePolicy{
+    250'000, 536'870'912, 5'000'000,
+    "transaction_finalization_deferred_constraint_validation"};
 
 constexpr std::array<TransactionalRelationStoreAuthorityRecord, 8>
     kAuthorityMap{{
@@ -36,9 +52,63 @@ constexpr std::array<TransactionalRelationStoreAuthorityRecord, 8>
 
 MgaRelationStoreResult WithRouteEvidence(
     MgaRelationStoreResult result,
-    TransactionalRelationStoreRoute route) {
+    TransactionalRelationStoreRoute route,
+    std::string operation_family,
+    std::string target_relation_uuid,
+    std::string reason) {
   TransactionalRelationStore::AppendRouteEvidence(route, &result.evidence);
+  const std::string load_scope = result.full_state_load ? "full" : "scoped";
+  result.evidence.push_back(
+      {"mga_relation_state_operation_family", operation_family});
+  result.evidence.push_back(
+      {"mga_relation_state_target_relation_uuid",
+       target_relation_uuid.empty() ? "none" : target_relation_uuid});
+  result.evidence.push_back({"mga_relation_state_load_reason", reason});
+  (void)scratchbird::core::metrics::RecordMgaRelationStateLoad(
+      target_relation_uuid, operation_family, load_scope, reason,
+      static_cast<double>(result.rows_materialized),
+      static_cast<double>(result.bytes_materialized),
+      static_cast<double>(result.allocation_units_materialized));
   return result;
+}
+
+MgaRelationStoreResult ApplyFullStatePolicy(
+    MgaRelationStoreResult result,
+    const FullStateLoadPolicy& policy) {
+  result.evidence.push_back(
+      {"mga_relation_state_full_load_policy_reason", std::string(policy.reason)});
+  result.evidence.push_back(
+      {"mga_relation_state_full_load_maximum_rows",
+       std::to_string(policy.maximum_rows)});
+  result.evidence.push_back(
+      {"mga_relation_state_full_load_maximum_bytes",
+       std::to_string(policy.maximum_bytes)});
+  result.evidence.push_back(
+      {"mga_relation_state_full_load_maximum_allocation_units",
+       std::to_string(policy.maximum_allocation_units)});
+  if (!result.ok ||
+      (result.rows_materialized <= policy.maximum_rows &&
+       result.bytes_materialized <= policy.maximum_bytes &&
+       result.allocation_units_materialized <=
+           policy.maximum_allocation_units)) {
+    return result;
+  }
+  result.ok = false;
+  result.diagnostic = MakeInvalidRequestDiagnostic(
+      "mga.relation_state_load", "full_state_load_resource_bound_exceeded");
+  result.state = {};
+  result.evidence.push_back(
+      {"mga_relation_state_full_load_policy_result", "refused"});
+  return result;
+}
+
+std::string JoinedRelationUuids(const std::vector<std::string>& relation_uuids) {
+  std::string joined;
+  for (const auto& relation_uuid : relation_uuids) {
+    if (!joined.empty()) { joined.push_back(','); }
+    joined += relation_uuid;
+  }
+  return joined;
 }
 
 }  // namespace
@@ -149,11 +219,6 @@ std::string_view TransactionalRelationStoreRouteId(
   switch (route) {
     case TransactionalRelationStoreRoute::diagnostic_full_state:
       return "normal_dml.diagnostic_full_state.v1";
-    case TransactionalRelationStoreRoute::insert_dependency_full_state:
-      return "normal_dml.insert_dependency_full_state.v1";
-    case TransactionalRelationStoreRoute::
-        selectable_procedure_dependency_full_state:
-      return "normal_dml.selectable_procedure_dependency_full_state.v1";
     case TransactionalRelationStoreRoute::
         deferred_constraint_validation_full_state:
       return "normal_dml.deferred_constraint_validation_full_state.v1";
@@ -171,6 +236,20 @@ std::string_view TransactionalRelationStoreRouteId(
       return "normal_dml.mutation_target_rows.v1";
     case TransactionalRelationStoreRoute::mutation_targets_rows:
       return "normal_dml.mutation_targets_rows.v1";
+    case TransactionalRelationStoreRoute::relation_scan:
+      return "normal_dml.relation_scan.v1";
+    case TransactionalRelationStoreRoute::relation_scans:
+      return "normal_dml.relation_scans.v1";
+    case TransactionalRelationStoreRoute::relation_point_cursor:
+      return "normal_dml.relation_point_cursor.v1";
+    case TransactionalRelationStoreRoute::relation_index_cursor:
+      return "normal_dml.relation_index_cursor.v1";
+    case TransactionalRelationStoreRoute::constraint_scope:
+      return "normal_dml.constraint_scope.v1";
+    case TransactionalRelationStoreRoute::constraint_scopes:
+      return "normal_dml.constraint_scopes.v1";
+    case TransactionalRelationStoreRoute::trigger_metadata_scope:
+      return "normal_dml.trigger_metadata_scope.v1";
     case TransactionalRelationStoreRoute::direct_physical_bulk_append:
       return "normal_dml.direct_physical_bulk_append.v1";
   }
@@ -184,80 +263,137 @@ TransactionalRelationStore::TransactionalRelationStore(
 MgaRelationStoreResult TransactionalRelationStore::LoadDiagnosticFullState()
     const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreState(context_),
-      TransactionalRelationStoreRoute::diagnostic_full_state);
-}
-
-MgaRelationStoreResult
-TransactionalRelationStore::LoadInsertDependencyFullState() const {
-  return WithRouteEvidence(
-      LoadMgaRelationStoreState(context_),
-      TransactionalRelationStoreRoute::insert_dependency_full_state);
-}
-
-MgaRelationStoreResult
-TransactionalRelationStore::LoadSelectableProcedureDependencyFullState() const {
-  return WithRouteEvidence(
-      LoadMgaRelationStoreState(context_),
-      TransactionalRelationStoreRoute::
-          selectable_procedure_dependency_full_state);
+      ApplyFullStatePolicy(LoadMgaRelationStoreState(context_),
+                           kDiagnosticFullStatePolicy),
+      TransactionalRelationStoreRoute::diagnostic_full_state, "diagnostic", "",
+      std::string(kDiagnosticFullStatePolicy.reason));
 }
 
 MgaRelationStoreResult
 TransactionalRelationStore::LoadDeferredConstraintValidationFullState() const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreState(context_),
+      ApplyFullStatePolicy(LoadMgaRelationStoreState(context_),
+                           kDeferredConstraintFullStatePolicy),
       TransactionalRelationStoreRoute::
-          deferred_constraint_validation_full_state);
+          deferred_constraint_validation_full_state,
+      "transaction_finalization", "",
+      std::string(kDeferredConstraintFullStatePolicy.reason));
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTarget(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreStateForInsertTarget(context_, table_uuid),
-      TransactionalRelationStoreRoute::insert_target);
+      TransactionalRelationStoreRoute::insert_target, "insert", table_uuid,
+      "target_relation_and_constraint_scope");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetMetadata(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreMetadataOnlyForInsertTarget(context_, table_uuid),
-      TransactionalRelationStoreRoute::insert_target_metadata);
+      TransactionalRelationStoreRoute::insert_target_metadata, "insert",
+      table_uuid, "target_relation_metadata_only");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadInsertTargetIndexes(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreIndexesOnlyForInsertTarget(context_, table_uuid),
-      TransactionalRelationStoreRoute::insert_target_indexes);
+      TransactionalRelationStoreRoute::insert_target_indexes, "insert",
+      table_uuid, "target_relation_index_only");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTarget(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
-      TransactionalRelationStoreRoute::mutation_target);
+      LoadMgaRelationStoreStateForRelationScans(
+          context_, std::vector<std::string>{table_uuid}),
+      TransactionalRelationStoreRoute::mutation_target, "mutation", table_uuid,
+      "target_relation_scope");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargets(
     const std::vector<std::string>& table_uuids) const {
   return WithRouteEvidence(
-      LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
-      TransactionalRelationStoreRoute::mutation_targets);
+      LoadMgaRelationStoreStateForRelationScans(context_, table_uuids),
+      TransactionalRelationStoreRoute::mutation_targets, "mutation",
+      JoinedRelationUuids(table_uuids), "target_relation_scopes");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
     const std::string& table_uuid) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreRowsOnlyForMutationTarget(context_, table_uuid),
-      TransactionalRelationStoreRoute::mutation_target_rows);
+      TransactionalRelationStoreRoute::mutation_target_rows, "mutation",
+      table_uuid, "target_relation_rows_only");
 }
 
 MgaRelationStoreResult TransactionalRelationStore::LoadMutationTargetRows(
     const std::vector<std::string>& table_uuids) const {
   return WithRouteEvidence(
       LoadMgaRelationStoreRowsOnlyForMutationTargets(context_, table_uuids),
-      TransactionalRelationStoreRoute::mutation_targets_rows);
+      TransactionalRelationStoreRoute::mutation_targets_rows, "mutation",
+      JoinedRelationUuids(table_uuids), "target_relation_rows_only_scopes");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::OpenRelationScan(
+    const std::string& table_uuid) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
+      TransactionalRelationStoreRoute::relation_scan, "select", table_uuid,
+      "transaction_visible_relation_scan");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::OpenRelationScans(
+    const std::vector<std::string>& table_uuids) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
+      TransactionalRelationStoreRoute::relation_scans, "select",
+      JoinedRelationUuids(table_uuids), "transaction_visible_relation_scans");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::OpenRelationPointCursor(
+    const std::string& table_uuid,
+    const std::string& row_uuid) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreRowsForPointLookup(context_, table_uuid, row_uuid),
+      TransactionalRelationStoreRoute::relation_point_cursor, "point_lookup",
+      table_uuid,
+      row_uuid.empty() ? "row_uuid_required" : "transaction_visible_row_uuid");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::OpenRelationIndexCursor(
+    const std::string& table_uuid) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreIndexesForRelation(context_, table_uuid),
+      TransactionalRelationStoreRoute::relation_index_cursor, "index_lookup",
+      table_uuid, "transaction_visible_index_cursor");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::LoadConstraintScope(
+    const std::string& table_uuid) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreStateForMutationTarget(context_, table_uuid),
+      TransactionalRelationStoreRoute::constraint_scope, "constraint",
+      table_uuid, "target_parent_child_constraint_scope");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::LoadConstraintScopes(
+    const std::vector<std::string>& table_uuids) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreStateForMutationTargets(context_, table_uuids),
+      TransactionalRelationStoreRoute::constraint_scopes, "constraint",
+      JoinedRelationUuids(table_uuids),
+      "target_parent_child_constraint_scopes");
+}
+
+MgaRelationStoreResult TransactionalRelationStore::LoadTriggerMetadataScope(
+    const std::string& table_uuid) const {
+  return WithRouteEvidence(
+      LoadMgaRelationStoreMetadataForRelation(context_, table_uuid),
+      TransactionalRelationStoreRoute::trigger_metadata_scope, "trigger",
+      table_uuid, "trigger_descriptor_metadata_only");
 }
 
 MgaRelationStorageDescriptorLoadResult

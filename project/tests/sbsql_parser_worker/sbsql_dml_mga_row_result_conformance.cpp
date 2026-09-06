@@ -3009,7 +3009,7 @@ api::EngineApiResult SelectById(const std::filesystem::path& database_path,
   Require(selected.ok, "select failed");
   Require(HasEvidence(selected,
                       "transactional_relation_store_route",
-                      "normal_dml.mutation_target.v1"),
+                      "normal_dml.relation_scan.v1"),
           "select did not traverse the canonical transactional relation store");
   return selected;
 }
@@ -3098,7 +3098,7 @@ api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
           "merge surface evidence missing");
   Require(HasEvidence(merged.api_result,
                       "transactional_relation_store_route",
-                      "normal_dml.mutation_target.v1"),
+                      "normal_dml.constraint_scope.v1"),
           "merge did not traverse the canonical transactional relation store");
   return merged.api_result;
 }
@@ -3124,7 +3124,7 @@ api::EngineApiResult DeleteByRowUuid(const std::filesystem::path& database_path,
           "delete tombstone evidence missing");
   Require(HasEvidence(deleted.api_result,
                       "transactional_relation_store_route",
-                      "normal_dml.mutation_target.v1"),
+                      "normal_dml.constraint_scope.v1"),
           "delete did not traverse the canonical transactional relation store");
   return deleted.api_result;
 }

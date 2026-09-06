@@ -22,7 +22,6 @@
     "src/engine/internal_api/mga_relation_store/mga_relation_store.hpp": {"count": 2, "classification": "compatibility_adapter_implementation"},
     "src/engine/internal_api/observability/show_api.cpp": {"count": 1, "classification": "administrative_display"},
     "src/engine/internal_api/query/plan_api.cpp": {"count": 3, "classification": "legacy_view"},
-    "src/engine/sblr/sblr_dispatch.cpp": {"count": 1, "classification": "temporary_differential_oracle"},
-    "src/server/sblr_dispatch_server.cpp": {"count": 1, "classification": "temporary_differential_oracle"}
+    "src/engine/sblr/sblr_dispatch.cpp": {"count": 1, "classification": "temporary_differential_oracle"}
   }
 }

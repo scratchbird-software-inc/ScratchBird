@@ -181,6 +181,10 @@ struct MgaRelationStoreResult {
   std::uint64_t row_versions_retained = 0;
   std::uint64_t index_entries_scanned = 0;
   std::uint64_t index_entries_retained = 0;
+  std::uint64_t metadata_records_materialized = 0;
+  std::uint64_t rows_materialized = 0;
+  std::uint64_t bytes_materialized = 0;
+  std::uint64_t allocation_units_materialized = 0;
   bool scoped_physical_segments_used = false;
   bool scoped_physical_segments_fallback = false;
   std::vector<EngineEvidenceReference> evidence;
@@ -845,6 +849,19 @@ MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTarget(
 MgaRelationStoreResult LoadMgaRelationStoreRowsOnlyForMutationTargets(
     const EngineRequestContext& context,
     const std::vector<std::string>& table_uuids);
+MgaRelationStoreResult LoadMgaRelationStoreRowsForPointLookup(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    const std::string& row_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreStateForRelationScans(
+    const EngineRequestContext& context,
+    const std::vector<std::string>& table_uuids);
+MgaRelationStoreResult LoadMgaRelationStoreIndexesForRelation(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaRelationStoreResult LoadMgaRelationStoreMetadataForRelation(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
 std::uint64_t CurrentMgaRelationMetadataEventSequence(
     const EngineRequestContext& context);
 std::uint64_t CurrentMgaSavepointAuthorityGeneration(

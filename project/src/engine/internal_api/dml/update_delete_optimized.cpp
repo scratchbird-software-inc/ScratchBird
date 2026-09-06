@@ -7381,7 +7381,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   EngineDeleteRowsRequest effective_request = request;
   NormalizeDeletePredicateFromLoweredOptions(&effective_request);
   TransactionalRelationStore relation_store(effective_request.context);
-  auto loaded = relation_store.LoadMutationTarget(
+  auto loaded = relation_store.LoadConstraintScope(
       effective_request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);

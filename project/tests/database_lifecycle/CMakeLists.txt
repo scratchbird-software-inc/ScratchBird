@@ -4502,6 +4502,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
 		  target_link_libraries(ipar_relation_state_load_route_gate
 		    PRIVATE
 		      sb_core_platform
+		      sb_core_metrics
 		      sb_core_uuid
 		      sb_engine_internal_api
 		      sb_engine_sblr

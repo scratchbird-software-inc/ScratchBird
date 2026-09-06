@@ -481,6 +481,36 @@ MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
   return status;
 }
 
+MetricValidationResult RecordMgaRelationStateLoad(
+    std::string object_uuid,
+    std::string operation_family,
+    std::string load_scope,
+    std::string reason,
+    double rows_materialized,
+    double bytes_materialized,
+    double allocation_units_materialized) {
+  const auto labels = Labels(
+      {{"component", "engine.mga_relation_store"},
+       {"object_uuid", object_uuid.empty() ? "none" : object_uuid},
+       {"operation", operation_family.empty() ? "unspecified" : operation_family},
+       {"result", load_scope.empty() ? "unspecified" : load_scope},
+       {"reason", reason.empty() ? "unspecified" : reason}});
+  auto status = IncrementCounter("sb_mga_relation_state_load_total", labels,
+                                 1.0, "mga_relation_store");
+  if (!status.ok) { return status; }
+  status = IncrementCounter("sb_mga_relation_state_rows_materialized_total",
+                            labels, rows_materialized,
+                            "mga_relation_store");
+  if (!status.ok) { return status; }
+  status = IncrementCounter("sb_mga_relation_state_bytes_materialized_total",
+                            labels, bytes_materialized,
+                            "mga_relation_store");
+  if (!status.ok) { return status; }
+  return IncrementCounter(
+      "sb_mga_relation_state_allocation_units_materialized_total", labels,
+      allocation_units_materialized, "mga_relation_store");
+}
+
 MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
                                                       std::string insert_mode,
                                                       double requested_rows,

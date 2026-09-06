@@ -793,8 +793,8 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   }
   TransactionalRelationStore relation_store(request.context);
   auto loaded = relation_scope_targets.size() == 1
-                    ? relation_store.LoadMutationTarget(target.uuid.canonical)
-                    : relation_store.LoadMutationTargets(relation_scope_targets);
+                    ? relation_store.LoadConstraintScope(target.uuid.canonical)
+                    : relation_store.LoadConstraintScopes(relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
   if (source_rows.empty() && !source_table_uuid.empty()) {
