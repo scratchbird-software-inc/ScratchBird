@@ -13,14 +13,19 @@ CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
     "mga_relation_store/mga_relation_store.cpp": (
-        20_600,
-        890_000,
+        13_500,
+        590_000,
         "SB_ENGINE_MGA_RELATION_ROW_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_bulk_import_publication.cpp": (
         1_150,
         50_000,
         "SB_ENGINE_MGA_BULK_IMPORT_PUBLICATION_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_contextual_text_descriptor.cpp": (
+        1_100,
+        48_000,
+        "SB_ENGINE_MGA_CONTEXTUAL_TEXT_DESCRIPTOR_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_event_sequence_allocator.cpp": (
         430,
@@ -31,6 +36,26 @@ MODULES = {
         550,
         23_000,
         "SB_ENGINE_MGA_LARGE_VALUE_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_relation_metadata_store.cpp": (
+        2_050,
+        96_000,
+        "SB_ENGINE_MGA_RELATION_METADATA_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_row_codec.cpp": (
+        2_000,
+        76_000,
+        "SB_ENGINE_MGA_ROW_CODEC_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_row_version_reader.cpp": (
+        750,
+        30_000,
+        "SB_ENGINE_MGA_ROW_VERSION_READER_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_row_version_writer.cpp": (
+        2_150,
+        92_000,
+        "SB_ENGINE_MGA_ROW_VERSION_WRITER_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
         2_100,
@@ -76,6 +101,12 @@ FORBIDDEN_BY_MODULE = {
         "FinalizePhysicalMgaCowTransaction",
         "AppendMgaRowVersion",
     ),
+    "mga_relation_store/mga_contextual_text_descriptor.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
     "mga_relation_store/mga_event_sequence_allocator.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
@@ -86,6 +117,32 @@ FORBIDDEN_BY_MODULE = {
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",
         "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_relation_metadata_store.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_row_codec.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_row_version_reader.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "ReserveEventSequenceRange",
+    ),
+    "mga_relation_store/mga_row_version_writer.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "OverlayMgaTransactionAuthority",
+        "LoadLocalTransactionInventoryFromDatabase",
     ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
         "PersistLocalTransactionInventory",
