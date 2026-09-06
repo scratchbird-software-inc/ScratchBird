@@ -141,7 +141,7 @@ std::string TextMigrationDecisionHash(
     const CrudSealedRelationDescriptorSnapshot& relation_snapshot);
 std::string Sha256Tagged(std::string_view payload);
 bool ValidConstraintBatchUuid(
-    const std::string& value,
+    std::string_view value,
     scratchbird::core::platform::UuidKind kind);
 std::vector<std::string> ConstraintMutationBatchLineFields(
     const MgaConstraintMutationBatch& batch,

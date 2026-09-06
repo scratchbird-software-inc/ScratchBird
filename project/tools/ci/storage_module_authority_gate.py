@@ -13,8 +13,8 @@ CMAKE = INTERNAL_API / "CMakeLists.txt"
 
 MODULES = {
     "mga_relation_store/mga_relation_store.cpp": (
-        13_500,
-        590_000,
+        8_600,
+        375_000,
         "SB_ENGINE_MGA_RELATION_ROW_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_bulk_import_publication.cpp": (
@@ -57,10 +57,20 @@ MODULES = {
         92_000,
         "SB_ENGINE_MGA_ROW_VERSION_WRITER_IMPLEMENTATION_AUTHORITY",
     ),
+    "mga_relation_store/mga_savepoint_store.cpp": (
+        600,
+        25_000,
+        "SB_ENGINE_MGA_SAVEPOINT_STORE_IMPLEMENTATION_AUTHORITY",
+    ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
         2_100,
         95_000,
         "SB_ENGINE_MGA_SECONDARY_INDEX_COORDINATION_IMPLEMENTATION_AUTHORITY",
+    ),
+    "mga_relation_store/mga_update_durable_store.cpp": (
+        4_600,
+        200_000,
+        "SB_ENGINE_MGA_UPDATE_DURABLE_STORE_IMPLEMENTATION_AUTHORITY",
     ),
     "mga_relation_store/mga_relation_statistics.cpp": (
         240,
@@ -144,7 +154,20 @@ FORBIDDEN_BY_MODULE = {
         "OverlayMgaTransactionAuthority",
         "LoadLocalTransactionInventoryFromDatabase",
     ),
+    "mga_relation_store/mga_savepoint_store.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+        "LoadLocalTransactionInventoryFromDatabase",
+    ),
     "mga_relation_store/mga_secondary_index_coordination.cpp": (
+        "PersistLocalTransactionInventory",
+        "WritePhysicalMgaCowUnpublishedMutation",
+        "FinalizePhysicalMgaCowTransaction",
+        "AppendMgaRowVersion",
+    ),
+    "mga_relation_store/mga_update_durable_store.cpp": (
         "PersistLocalTransactionInventory",
         "WritePhysicalMgaCowUnpublishedMutation",
         "FinalizePhysicalMgaCowTransaction",

@@ -456,7 +456,9 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_row_codec.cpp
   mga_relation_store/mga_row_version_reader.cpp
   mga_relation_store/mga_row_version_writer.cpp
+  mga_relation_store/mga_savepoint_store.cpp
   mga_relation_store/mga_secondary_index_coordination.cpp
+  mga_relation_store/mga_update_durable_store.cpp
   mga_relation_store/mga_relation_store.cpp
   nosql/document_api.cpp
   nosql/document_path_physical_provider.cpp
