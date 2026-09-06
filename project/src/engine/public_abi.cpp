@@ -17420,6 +17420,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
           "snapshot_owning_transaction_mismatch";
       return false;
     }
+    if (!current_snapshot.snapshot_vector.owning_transaction_uuid.valid() ||
+        scratchbird::core::uuid::UuidToString(
+            current_snapshot.snapshot_vector.owning_transaction_uuid.value) !=
+            view.owning_transaction_uuid) {
+      statement_snapshot_mismatch_detail =
+          "snapshot_owning_transaction_uuid_mismatch";
+      return false;
+    }
     if (current_snapshot.snapshot_vector.visible_committed_high_watermark !=
         view.visible_committed_high_watermark) {
       statement_snapshot_mismatch_detail =
@@ -22350,10 +22358,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
             RevalidateLocalTransactionInventorySnapshot(
                 *receipt->engine_context
                      .statement_transaction_inventory_snapshot);
-        if (!inventory_fence.ok()) {
+        // The inventory publish journal is database-wide. A committed DDL in
+        // another statement may change its file identity without changing
+        // this receipt's transaction or immutable statement snapshot. Keep
+        // the cheap identity fence on the normal path, then use the exact
+        // statement-snapshot authority as the slow-path TOCTOU fence.
+        if (!inventory_fence.ok() && !statement_snapshot_matches()) {
           return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4102,
                              "CATALOG.SNAPSHOT_STALE",
-                             "sblr.name_resolve.inventory_snapshot_stale");
+                             "sblr.name_resolve.inventory_snapshot_stale",
+                             statement_snapshot_mismatch_detail);
         }
 
         const auto expected_class =
