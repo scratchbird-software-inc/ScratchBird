@@ -17,6 +17,7 @@
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
+#include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_to_sbsql.hpp"
 #include "ast/ast.hpp"
@@ -370,17 +371,45 @@ int main(int argc, char** argv) {
       std::string_view operation_id;
       std::string_view opcode;
       std::string_view rendered_sql;
+      bool setup_begin;
+      bool cleanup_rollback;
+      std::string_view source_label;
+      bool source_label_quoted;
     };
     const TransactionArtifactCase cases[] = {
         {"BEGIN TRANSACTION", "engine.op.txn_begin", "SBLR_TXN_BEGIN",
-         "BEGIN TRANSACTION;"},
+         "BEGIN TRANSACTION;", false, true, "", false},
         {"COMMIT TRANSACTION", "engine.op.txn_commit", "SBLR_TXN_COMMIT",
-         "COMMIT;"},
+         "COMMIT;", true, false, "", false},
         {"ROLLBACK TRANSACTION", "engine.op.txn_rollback",
-         "SBLR_TXN_ROLLBACK", "ROLLBACK;"},
+         "SBLR_TXN_ROLLBACK", "ROLLBACK;", true, false, "", false},
+        {"SAVEPOINT source_mark", "engine.op.txn_savepoint",
+         "SBLR_TXN_SAVEPOINT", "SAVEPOINT source_mark;", true, false,
+         "source_mark", false},
+        {"ROLLBACK TO SAVEPOINT source_mark",
+         "engine.op.txn_rollback_to_savepoint",
+         "SBLR_TXN_ROLLBACK_TO_SAVEPOINT",
+         "ROLLBACK TO SAVEPOINT source_mark;", false, false, "source_mark",
+         false},
+        {"RELEASE SAVEPOINT source_mark",
+         "engine.op.txn_release_savepoint",
+         "SBLR_TXN_RELEASE_SAVEPOINT", "RELEASE SAVEPOINT source_mark;",
+         false, true, "source_mark", false},
+        {"SAVEPOINT \"Case Mark\"", "engine.op.txn_savepoint",
+         "SBLR_TXN_SAVEPOINT", "SAVEPOINT \"Case Mark\";", true, false,
+         "Case Mark", true},
+        {"ROLLBACK TO SAVEPOINT \"Case Mark\"",
+         "engine.op.txn_rollback_to_savepoint",
+         "SBLR_TXN_ROLLBACK_TO_SAVEPOINT",
+         "ROLLBACK TO SAVEPOINT \"Case Mark\";", false, false, "Case Mark",
+         true},
+        {"RELEASE SAVEPOINT \"Case Mark\"",
+         "engine.op.txn_release_savepoint",
+         "SBLR_TXN_RELEASE_SAVEPOINT", "RELEASE SAVEPOINT \"Case Mark\";",
+         false, true, "Case Mark", true},
     };
     for (const auto& artifact_case : cases) {
-      if (artifact_case.operation_id != "engine.op.txn_begin") {
+      if (artifact_case.setup_begin) {
         const auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
         if (!begun.accepted || begun.messages.has_errors()) {
           std::cerr << "source_artifact_setup_begin_failed:"
@@ -468,11 +497,43 @@ int main(int argc, char** argv) {
                    : decoded_container.container.source_map;
       const auto decoded_artifact = sblr::DecodeSblrSourceArtifactMapV1(
           artifact_bytes.data(), artifact_bytes.size());
+      const bool has_source_label = !artifact_case.source_label.empty();
+      const bool exact_label_profile = !has_source_label
+          ? decoded_artifact.artifact.symbols.empty() &&
+                decoded_artifact.artifact.source_spans.size() == 1
+          : decoded_artifact.artifact.symbols.size() == 1 &&
+                decoded_artifact.artifact.source_spans.size() == 2 &&
+                decoded_artifact.artifact.symbols[0].symbol_id == 1 &&
+                decoded_artifact.artifact.symbols[0].symbol_key ==
+                    "savepoint.label.1" &&
+                decoded_artifact.artifact.symbols[0].symbol_kind ==
+                    sblr::SblrSourceArtifactSymbolKindV1::label &&
+                decoded_artifact.artifact.symbols[0].declaration_node_id == 2 &&
+                decoded_artifact.artifact.symbols[0].scope_node_id == 1 &&
+                decoded_artifact.artifact.symbols[0].raw_name_utf8 ==
+                    artifact_case.source_label &&
+                decoded_artifact.artifact.symbols[0].normalized_lookup_key ==
+                    artifact_case.source_label &&
+                decoded_artifact.artifact.symbols[0].was_quoted ==
+                    artifact_case.source_label_quoted &&
+                decoded_artifact.artifact.symbols[0].quote_style ==
+                    (artifact_case.source_label_quoted
+                         ? sblr::SblrSourceArtifactQuoteStyleV1::double_quote
+                         : sblr::SblrSourceArtifactQuoteStyleV1::none) &&
+                decoded_artifact.artifact.symbols[0].source_span_id == 2 &&
+                decoded_artifact.artifact.source_spans[1].node_id == 2 &&
+                decoded_artifact.artifact.source_spans[1].span_kind ==
+                    sblr::SblrSourceArtifactSpanKindV1::identifier;
       if (decoded_artifact.status !=
               sblr::SblrSourceArtifactDecodeStatusV1::ok ||
-          !decoded_artifact.artifact.symbols.empty() ||
-          decoded_artifact.artifact.source_spans.size() != 1 ||
+          !exact_label_profile ||
           decoded_artifact.artifact.render_hints.size() != 1 ||
+          decoded_artifact.artifact.render_hints[0].symbol_id !=
+              (has_source_label ? 1U : 0U) ||
+          decoded_artifact.artifact.render_hints[0].delimiter_hint !=
+              (artifact_case.source_label_quoted
+                   ? sblr::SblrSourceArtifactQuoteStyleV1::double_quote
+                   : sblr::SblrSourceArtifactQuoteStyleV1::none) ||
           decoded_artifact.artifact.source_text_ref.present ||
           (external
                ? (!std::all_of(
@@ -533,8 +594,18 @@ int main(int argc, char** argv) {
               ? (reparsed_ast.statement_surface_name == "commit" ||
                  reparsed_ast.statement_surface_name == "commit_stmt" ||
                  reparsed_ast.statement_surface_name == "commit_options")
-              : (reparsed_ast.statement_surface_name == "rollback" ||
-                 reparsed_ast.statement_surface_name == "rollback_stmt");
+          : artifact_case.operation_id == "engine.op.txn_rollback"
+              ? (reparsed_ast.statement_surface_name == "rollback" ||
+                 reparsed_ast.statement_surface_name == "rollback_stmt")
+          : artifact_case.operation_id == "engine.op.txn_savepoint"
+              ? (reparsed_ast.statement_surface_name == "savepoint" ||
+                 reparsed_ast.statement_surface_name == "savepoint_stmt")
+          : artifact_case.operation_id ==
+                    "engine.op.txn_rollback_to_savepoint"
+              ? reparsed_ast.statement_surface_name ==
+                    "rollback_to_savepoint_stmt"
+              : reparsed_ast.statement_surface_name ==
+                    "release_savepoint_stmt";
       if (reparsed_cst.messages.has_errors() ||
           reparsed_ast.messages.has_errors() ||
           reparsed_ast.family !=
@@ -544,7 +615,7 @@ int main(int argc, char** argv) {
                   << artifact_case.operation_id << '\n';
         return 4;
       }
-      if (artifact_case.operation_id == "engine.op.txn_begin") {
+      if (artifact_case.cleanup_rollback) {
         const auto rolled_back =
             session.RunPipeline("ROLLBACK TRANSACTION", true);
         if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
@@ -554,17 +625,21 @@ int main(int argc, char** argv) {
       }
     }
     if (external) {
-      std::cout << "CSC-TEST-005774 CSC-TEST-005777 "
+      std::cout << "CSC-TEST-005774 CSC-TEST-005777 CSC-TEST-005779 "
                    "SOURCE_ARTIFACT_EXTERNAL_REFERENCE "
                    "accepted server_admission=true receipt_resolution=true "
                    "source_preserving_render=true reparse=true "
-                   "transaction_controls=begin,commit,rollback\n";
+                   "transaction_controls=begin,commit,rollback "
+                   "savepoint_controls=create,rollback_to,release "
+                   "savepoint_labels=unquoted,double_quoted\n";
     } else {
-      std::cout << "CSC-TEST-005770 CSC-TEST-005776 "
+      std::cout << "CSC-TEST-005770 CSC-TEST-005776 CSC-TEST-005778 "
                    "SOURCE_ARTIFACT_CONTAINER accepted "
                    "server_admission=true source_preserving_render=true "
                    "reparse=true "
-                   "transaction_controls=begin,commit,rollback\n";
+                   "transaction_controls=begin,commit,rollback "
+                   "savepoint_controls=create,rollback_to,release "
+                   "savepoint_labels=unquoted,double_quoted\n";
     }
     return 0;
   }

@@ -734,7 +734,7 @@ function(sbsql_sblr_alignment_register_ia01_source_artifact_container_process_e2
               --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_source_artifact_container_e2e")
     set_tests_properties(
       sbsql_sblr_alignment_ia01_source_artifact_container_process_e2e PROPERTIES
-      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_MAP;SBLR_SOURCE_ARTIFACT_SINGLE_MEMBER_PACKAGE_V1;SBLR_SOURCE_ARTIFACT_TRANSACTION_CONTROL_V1;CSC-TEST-005770;CSC-TEST-005776;e2e"
+      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_MAP;SBLR_SOURCE_ARTIFACT_SINGLE_MEMBER_PACKAGE_V1;SBLR_SOURCE_ARTIFACT_TRANSACTION_CONTROL_V1;SBLR_SOURCE_ARTIFACT_SAVEPOINT_CONTROL_V1;CSC-TEST-005770;CSC-TEST-005776;CSC-TEST-005778;e2e"
       TIMEOUT 240)
   endif()
 endfunction()
@@ -754,7 +754,7 @@ function(sbsql_sblr_alignment_register_ia01_source_artifact_external_process_e2e
               --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_source_artifact_external_e2e")
     set_tests_properties(
       sbsql_sblr_alignment_ia01_source_artifact_external_process_e2e PROPERTIES
-      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;SBLR_SOURCE_ARTIFACT_TRANSACTION_CONTROL_V1;PS_738_739;SCHEMA_7751_7752;CSC-TEST-005774;CSC-TEST-005777;e2e"
+      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;SBLR_SOURCE_ARTIFACT_TRANSACTION_CONTROL_V1;SBLR_SOURCE_ARTIFACT_SAVEPOINT_CONTROL_V1;PS_738_739;SCHEMA_7751_7752;CSC-TEST-005774;CSC-TEST-005777;CSC-TEST-005779;e2e"
       TIMEOUT 240)
   endif()
 endfunction()

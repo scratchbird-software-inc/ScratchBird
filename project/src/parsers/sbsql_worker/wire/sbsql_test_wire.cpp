@@ -14891,12 +14891,24 @@ bool AttachExactTransactionControlSourceArtifact(
   namespace artifact = scratchbird::engine::sblr;
   if (detail != nullptr) detail->clear();
   std::string_view expected_opcode;
+  bool exact_savepoint_control = false;
   if (lowered.operation_id == "engine.op.txn_begin") {
     expected_opcode = "SBLR_TXN_BEGIN";
   } else if (lowered.operation_id == "engine.op.txn_commit") {
     expected_opcode = "SBLR_TXN_COMMIT";
   } else if (lowered.operation_id == "engine.op.txn_rollback") {
     expected_opcode = "SBLR_TXN_ROLLBACK";
+  } else if (lowered.operation_id == "engine.op.txn_savepoint") {
+    expected_opcode = "SBLR_TXN_SAVEPOINT";
+    exact_savepoint_control = true;
+  } else if (lowered.operation_id ==
+             "engine.op.txn_release_savepoint") {
+    expected_opcode = "SBLR_TXN_RELEASE_SAVEPOINT";
+    exact_savepoint_control = true;
+  } else if (lowered.operation_id ==
+             "engine.op.txn_rollback_to_savepoint") {
+    expected_opcode = "SBLR_TXN_ROLLBACK_TO_SAVEPOINT";
+    exact_savepoint_control = true;
   } else {
     return true;
   }
@@ -14926,6 +14938,103 @@ bool AttachExactTransactionControlSourceArtifact(
       decoded_stream.stream.operations[1].opcode != expected_opcode) {
     if (detail != nullptr) *detail = "single_member_package";
     return false;
+  }
+  const auto& executable = decoded_stream.stream.operations[1];
+
+  const Token* savepoint_label = nullptr;
+  if (exact_savepoint_control) {
+    bool saw_savepoint_keyword = false;
+    for (const auto& token : cst.tokens) {
+      if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+      if (!saw_savepoint_keyword) {
+        saw_savepoint_keyword = token.canonical_text == "SAVEPOINT" ||
+                                CanonicalUnquotedIdentifier(token.text) ==
+                                    "savepoint";
+        continue;
+      }
+      if (token.kind == TokenKind::kIdentifier) {
+        savepoint_label = &token;
+        break;
+      }
+    }
+    const auto safe_unquoted_identifier = [](std::string_view value) {
+      if (value.empty()) return false;
+      const auto first = static_cast<unsigned char>(value.front());
+      if ((!std::isalpha(first) && first != '_') || value.size() > 256) {
+        return false;
+      }
+      return std::all_of(value.begin() + 1, value.end(), [](char ch) {
+        const auto byte = static_cast<unsigned char>(ch);
+        return std::isalnum(byte) || byte == '_';
+      });
+    };
+    const auto supported_quote_style = [](const Token& token) {
+      if (!token.quoted) {
+        return artifact::SblrSourceArtifactQuoteStyleV1::none;
+      }
+      if (token.raw_text.empty()) {
+        return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
+      }
+      if (token.raw_text.front() == '"') {
+        return artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
+      }
+      if (token.raw_text.front() == '`') {
+        return artifact::SblrSourceArtifactQuoteStyleV1::backtick;
+      }
+      if (token.raw_text.front() == '[') {
+        return artifact::SblrSourceArtifactQuoteStyleV1::bracket;
+      }
+      return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
+    };
+    if (savepoint_label == nullptr || savepoint_label->text.empty() ||
+        (!savepoint_label->quoted &&
+         !safe_unquoted_identifier(savepoint_label->text)) ||
+        (savepoint_label->quoted &&
+         supported_quote_style(*savepoint_label) ==
+             artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql) ||
+        executable.operands.size() != 1 ||
+        executable.operands.front().ordinal != 1 ||
+        executable.operands.front().name != "savepoint") {
+      if (detail != nullptr) *detail = "savepoint_label_or_operand";
+      return false;
+    }
+
+    const auto& operand = executable.operands.front();
+    std::string carrier_detail;
+    bool carrier_valid = false;
+    if (lowered.operation_id == "engine.op.txn_savepoint" &&
+        operand.type == "savepoint.descriptor" &&
+        operand.value_kind == artifact::SblrValueKind::savepoint_descriptor) {
+      artifact::SblrSavepointDescriptorV1 descriptor;
+      carrier_valid = artifact::DecodeSblrSavepointDescriptorV1(
+          operand.value_body.data(), operand.value_body.size(), &descriptor,
+          &carrier_detail);
+    } else if (lowered.operation_id ==
+                   "engine.op.txn_release_savepoint" &&
+               operand.type == "savepoint.release_handle" &&
+               operand.value_kind ==
+                   artifact::SblrValueKind::savepoint_release_handle) {
+      artifact::SblrSavepointReleaseOperandV1 release;
+      carrier_valid = artifact::DecodeSblrSavepointReleaseOperandV1(
+          operand.value_body.data(), operand.value_body.size(), &release,
+          &carrier_detail);
+    } else if (lowered.operation_id ==
+                   "engine.op.txn_rollback_to_savepoint" &&
+               operand.type == "savepoint.rollback_handle" &&
+               operand.value_kind ==
+                   artifact::SblrValueKind::savepoint_rollback_handle) {
+      artifact::SblrSavepointRollbackOperandV1 rollback;
+      carrier_valid = artifact::DecodeSblrSavepointRollbackOperandV1(
+          operand.value_body.data(), operand.value_body.size(), &rollback,
+          &carrier_detail);
+    }
+    if (!carrier_valid) {
+      if (detail != nullptr) {
+        *detail = carrier_detail.empty() ? "savepoint_authority"
+                                         : carrier_detail;
+      }
+      return false;
+    }
   }
 
   const auto statement_uuid =
@@ -14972,14 +15081,75 @@ bool AttachExactTransactionControlSourceArtifact(
   span.span_kind = artifact::SblrSourceArtifactSpanKindV1::statement;
   source_artifact.source_spans.push_back(std::move(span));
 
+  if (savepoint_label != nullptr) {
+    artifact::SblrSourceArtifactSpanV1 label_span;
+    label_span.source_span_id = 2;
+    label_span.node_id = 2;
+    label_span.byte_start = savepoint_label->offset;
+    label_span.byte_length = savepoint_label->length;
+    label_span.line_start = static_cast<std::uint32_t>(savepoint_label->line);
+    label_span.column_start =
+        static_cast<std::uint32_t>(savepoint_label->column);
+    label_span.line_end =
+        static_cast<std::uint32_t>(savepoint_label->end_line);
+    label_span.column_end =
+        static_cast<std::uint32_t>(savepoint_label->end_column);
+    label_span.span_kind =
+        artifact::SblrSourceArtifactSpanKindV1::identifier;
+    source_artifact.source_spans.push_back(std::move(label_span));
+
+    artifact::SblrSourceArtifactSymbolV1 symbol;
+    symbol.symbol_id = 1;
+    symbol.symbol_key = "savepoint.label.1";
+    symbol.symbol_kind = artifact::SblrSourceArtifactSymbolKindV1::label;
+    symbol.declaration_node_id = 2;
+    symbol.scope_node_id = 1;
+    symbol.raw_name_utf8 = savepoint_label->text;
+    symbol.normalized_lookup_key = savepoint_label->quoted
+        ? savepoint_label->text
+        : CanonicalUnquotedIdentifier(savepoint_label->text);
+    symbol.was_quoted = savepoint_label->quoted;
+    if (savepoint_label->quoted) {
+      if (savepoint_label->raw_text.front() == '"') {
+        symbol.quote_style =
+            artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
+      } else if (savepoint_label->raw_text.front() == '`') {
+        symbol.quote_style =
+            artifact::SblrSourceArtifactQuoteStyleV1::backtick;
+      } else {
+        symbol.quote_style =
+            artifact::SblrSourceArtifactQuoteStyleV1::bracket;
+      }
+    }
+    symbol.language_tag = source_artifact.language_tag;
+    symbol.ordinal = 1;
+    symbol.source_span_id = 2;
+    symbol.redaction_state =
+        artifact::SblrSourceArtifactSymbolRedactionV1::visible;
+    source_artifact.symbols.push_back(std::move(symbol));
+  }
+
   artifact::SblrSourceArtifactRenderHintV1 hint;
   hint.render_hint_id = 1;
-  hint.node_id = 1;
+  hint.node_id = savepoint_label == nullptr ? 1 : 2;
+  hint.symbol_id = savepoint_label == nullptr ? 0 : 1;
   hint.dialect_family_uuid = *dialect_uuid;
   hint.keyword_case =
       artifact::SblrSourceArtifactKeywordCaseV1::preserve;
   hint.identifier_render_policy =
       artifact::SblrSourceArtifactIdentifierPolicyV1::preserve_source;
+  if (savepoint_label != nullptr && savepoint_label->quoted) {
+    if (savepoint_label->raw_text.front() == '"') {
+      hint.delimiter_hint =
+          artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
+    } else if (savepoint_label->raw_text.front() == '`') {
+      hint.delimiter_hint =
+          artifact::SblrSourceArtifactQuoteStyleV1::backtick;
+    } else {
+      hint.delimiter_hint =
+          artifact::SblrSourceArtifactQuoteStyleV1::bracket;
+    }
+  }
   hint.comment_policy =
       artifact::SblrSourceArtifactCommentPolicyV1::preserve;
   hint.format_group = "source_preserving_transaction_control_v1";

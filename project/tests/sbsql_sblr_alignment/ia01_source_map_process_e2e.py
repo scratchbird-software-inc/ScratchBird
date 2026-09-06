@@ -457,10 +457,12 @@ def main() -> int:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
         if args.operation == "source-artifact-container":
             expected_success = (
-                "CSC-TEST-005770 CSC-TEST-005776 "
+                "CSC-TEST-005770 CSC-TEST-005776 CSC-TEST-005778 "
                 "SOURCE_ARTIFACT_CONTAINER accepted "
                 "server_admission=true source_preserving_render=true "
-                "reparse=true transaction_controls=begin,commit,rollback\n"
+                "reparse=true transaction_controls=begin,commit,rollback "
+                "savepoint_controls=create,rollback_to,release "
+                "savepoint_labels=unquoted,double_quoted\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -469,11 +471,13 @@ def main() -> int:
                 )
         elif args.operation == "source-artifact-external":
             expected_success = (
-                "CSC-TEST-005774 CSC-TEST-005777 "
+                "CSC-TEST-005774 CSC-TEST-005777 CSC-TEST-005779 "
                 "SOURCE_ARTIFACT_EXTERNAL_REFERENCE accepted "
                 "server_admission=true receipt_resolution=true "
                 "source_preserving_render=true reparse=true "
-                "transaction_controls=begin,commit,rollback\n"
+                "transaction_controls=begin,commit,rollback "
+                "savepoint_controls=create,rollback_to,release "
+                "savepoint_labels=unquoted,double_quoted\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -714,6 +718,22 @@ def main() -> int:
                         "opcode_code=256", "operand_descriptor_id=transaction_begin_options",
                         "result_descriptor_id=transaction_handle",
                         "result_descriptor_version=1", "transaction_handle_sha256=",
+                        "executor_id=engine.op.txn_savepoint",
+                        "opcode=SBLR_TXN_SAVEPOINT", "opcode_code=259",
+                        "operand_descriptor_id=savepoint_descriptor",
+                        "result_descriptor_id=savepoint_handle",
+                        "savepoint_handle_sha256=",
+                        "executor_id=engine.op.txn_rollback_to_savepoint",
+                        "opcode=SBLR_TXN_ROLLBACK_TO_SAVEPOINT",
+                        "opcode_code=261",
+                        "operand_descriptor_id=savepoint_rollback_handle",
+                        "result_descriptor_id=savepoint_rollback_result",
+                        "rollback_to_savepoint_result_sha256=",
+                        "executor_id=engine.op.txn_release_savepoint",
+                        "opcode=SBLR_TXN_RELEASE_SAVEPOINT", "opcode_code=260",
+                        "operand_descriptor_id=savepoint_release_handle",
+                        "result_descriptor_id=savepoint_release_result",
+                        "release_result_sha256=",
                         "executor_availability_generation=")
         elif args.operation == "error-vector":
             expected = ("executor_id=engine.op.error_vector", "opcode=SBLR_ERROR_VECTOR",

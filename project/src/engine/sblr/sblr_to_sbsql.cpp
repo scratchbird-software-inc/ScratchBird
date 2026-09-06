@@ -11,6 +11,7 @@
 #include "sblr_opcode_registry.hpp"
 #include "sblr_opcode_stream.hpp"
 #include "sblr_source_artifact_runtime.hpp"
+#include "sblr_savepoint_runtime.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
 #include "sblr_transaction_rollback_runtime.hpp"
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -170,6 +172,70 @@ std::string FormatUuid(const SblrSourceArtifactUuidV1& uuid) {
   return text;
 }
 
+struct ExactSavepointRenderAuthority {
+  SblrSourceArtifactUuidV1 savepoint_uuid{};
+  SblrSourceArtifactUuidV1 transaction_uuid{};
+};
+
+std::optional<ExactSavepointRenderAuthority>
+DecodeExactSavepointRenderAuthority(const SblrOperationEnvelope& envelope) {
+  if (envelope.operands.size() != 1 ||
+      envelope.operands.front().ordinal != 1 ||
+      envelope.operands.front().name != "savepoint") {
+    return std::nullopt;
+  }
+  const auto& operand = envelope.operands.front();
+  ExactSavepointRenderAuthority authority;
+  std::string detail;
+  if (envelope.operation_id == "engine.op.txn_savepoint" &&
+      envelope.opcode == "SBLR_TXN_SAVEPOINT" &&
+      operand.type == "savepoint.descriptor" &&
+      operand.value_kind == SblrValueKind::savepoint_descriptor) {
+    SblrSavepointDescriptorV1 descriptor;
+    if (!DecodeSblrSavepointDescriptorV1(
+            operand.value_body.data(), operand.value_body.size(), &descriptor,
+            &detail)) {
+      return std::nullopt;
+    }
+    authority.savepoint_uuid = descriptor.savepoint_uuid;
+    authority.transaction_uuid = descriptor.transaction_uuid;
+  } else if (envelope.operation_id ==
+                 "engine.op.txn_release_savepoint" &&
+             envelope.opcode == "SBLR_TXN_RELEASE_SAVEPOINT" &&
+             operand.type == "savepoint.release_handle" &&
+             operand.value_kind == SblrValueKind::savepoint_release_handle) {
+    SblrSavepointReleaseOperandV1 release;
+    if (!DecodeSblrSavepointReleaseOperandV1(
+            operand.value_body.data(), operand.value_body.size(), &release,
+            &detail)) {
+      return std::nullopt;
+    }
+    authority.savepoint_uuid = release.savepoint_uuid;
+    authority.transaction_uuid = release.transaction_uuid;
+  } else if (envelope.operation_id ==
+                 "engine.op.txn_rollback_to_savepoint" &&
+             envelope.opcode == "SBLR_TXN_ROLLBACK_TO_SAVEPOINT" &&
+             operand.type == "savepoint.rollback_handle" &&
+             operand.value_kind ==
+                 SblrValueKind::savepoint_rollback_handle) {
+    SblrSavepointRollbackOperandV1 rollback;
+    if (!DecodeSblrSavepointRollbackOperandV1(
+            operand.value_body.data(), operand.value_body.size(), &rollback,
+            &detail)) {
+      return std::nullopt;
+    }
+    authority.savepoint_uuid = rollback.savepoint_uuid;
+    authority.transaction_uuid = rollback.transaction_uuid;
+  } else {
+    return std::nullopt;
+  }
+  if (!NonZero(authority.savepoint_uuid) ||
+      !NonZero(authority.transaction_uuid)) {
+    return std::nullopt;
+  }
+  return authority;
+}
+
 std::string FormatSha256(const SblrSourceArtifactSha256V1& sha256) {
   constexpr char kHex[] = "0123456789abcdef";
   std::string text = "sha256:";
@@ -213,6 +279,38 @@ std::string_view SymbolKindName(SblrSourceArtifactSymbolKindV1 kind) {
   return {};
 }
 
+std::string RenderSourceArtifactIdentifier(
+    const SblrSourceArtifactSymbolV1& symbol) {
+  if (!symbol.was_quoted) return symbol.raw_name_utf8;
+  char open = '"';
+  char close = '"';
+  switch (symbol.quote_style) {
+    case SblrSourceArtifactQuoteStyleV1::double_quote:
+      break;
+    case SblrSourceArtifactQuoteStyleV1::backtick:
+      open = '`';
+      close = '`';
+      break;
+    case SblrSourceArtifactQuoteStyleV1::bracket:
+      open = '[';
+      close = ']';
+      break;
+    case SblrSourceArtifactQuoteStyleV1::native_sbsql:
+      break;
+    case SblrSourceArtifactQuoteStyleV1::none:
+      return {};
+  }
+  std::string rendered;
+  rendered.reserve(symbol.raw_name_utf8.size() + 2);
+  rendered.push_back(open);
+  for (const char ch : symbol.raw_name_utf8) {
+    rendered.push_back(ch);
+    if (ch == close) rendered.push_back(ch);
+  }
+  rendered.push_back(close);
+  return rendered;
+}
+
 bool IsObjectAuthorityOperand(std::string_view name) {
   constexpr std::array<std::string_view, 17> kAuthorityOperands{
       "object_uuid",           "target_object_uuid",
@@ -233,6 +331,16 @@ std::string ProjectSymbolAuthorityUuid(
     const SblrSourceArtifactSymbolV1& symbol) {
   if (NonZero(symbol.related_object_uuid)) {
     return FormatUuid(symbol.related_object_uuid);
+  }
+  if (symbol.symbol_kind == SblrSourceArtifactSymbolKindV1::label) {
+    const auto authority = DecodeExactSavepointRenderAuthority(envelope);
+    if (authority.has_value() && envelope.operands.size() == 1 &&
+        symbol.declaration_node_id ==
+            static_cast<std::uint64_t>(envelope.operands.front().ordinal) +
+                1U &&
+        symbol.scope_node_id == 1) {
+      return FormatUuid(authority->savepoint_uuid);
+    }
   }
 
   struct StableKeyAuthority {
@@ -308,7 +416,10 @@ SblrSourceArtifactMap ToLegacySourceArtifact(
     row.symbol_kind = std::string(SymbolKindName(symbol.symbol_kind));
     row.stable_key = symbol.symbol_key;
     row.resolved_uuid = ProjectSymbolAuthorityUuid(envelope, symbol);
-    row.render_hint = symbol.raw_name_utf8;
+    row.render_hint =
+        symbol.symbol_kind == SblrSourceArtifactSymbolKindV1::label
+            ? RenderSourceArtifactIdentifier(symbol)
+            : symbol.raw_name_utf8;
     if (symbol.scope_node_id != 0) {
       row.scope = "node:" + std::to_string(symbol.scope_node_id);
     }
@@ -346,6 +457,39 @@ bool RequireIdentifier(std::string_view value,
                        std::string_view role,
                        SblrToSbsqlResult* result) {
   if (IsIdentifier(value)) return true;
+  result->ok = false;
+  result->diagnostics.push_back(Diagnostic(
+      "SB_SBLR_TO_SBSQL_SYMBOL_RENDER_HINT_INVALID",
+      "SBLR-to-SBsql render hint is not a safe SBsql identifier for " +
+          std::string(role)));
+  return false;
+}
+
+bool IsRenderedIdentifier(std::string_view value) {
+  if (IsIdentifier(value)) return true;
+  if (value.size() < 2) return false;
+  const char open = value.front();
+  const char close = open == '[' ? ']' : open;
+  if ((open != '"' && open != '`' && open != '[') ||
+      value.back() != close) {
+    return false;
+  }
+  for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+    const auto byte = static_cast<unsigned char>(value[index]);
+    if (byte == 0 || byte < 0x20U || byte == 0x7fU) return false;
+    if (value[index] != close) continue;
+    if (index + 2 >= value.size() || value[index + 1] != close) {
+      return false;
+    }
+    ++index;
+  }
+  return true;
+}
+
+bool RequireRenderedIdentifier(std::string_view value,
+                               std::string_view role,
+                               SblrToSbsqlResult* result) {
+  if (IsRenderedIdentifier(value)) return true;
   result->ok = false;
   result->diagnostics.push_back(Diagnostic(
       "SB_SBLR_TO_SBSQL_SYMBOL_RENDER_HINT_INVALID",
@@ -1065,36 +1209,64 @@ SblrToSbsqlResult RenderTransactionSimpleControl(const SblrOperationEnvelope& en
 
 SblrToSbsqlResult RenderTransactionSavepoint(const SblrOperationEnvelope& envelope) {
   SblrToSbsqlResult result;
-  if (!RequireRenderFamily(envelope, "source_preserving_transaction_control_v1",
-                           &result) ||
-      !RequireOperand(envelope, "transaction_context_uuid",
-                      "SBLR-to-SBsql transaction conversion requires transaction context authority",
-                      &result) ||
-      !RequireSymbolAuthorityMatch(envelope, "label",
-                                   "savepoint_authority_uuid",
-                                   "transaction savepoint",
-                                   &result)) {
+  const bool exact_create = IsOperation(
+      envelope, "engine.op.txn_savepoint", "SBLR_TXN_SAVEPOINT");
+  const bool exact_release = IsOperation(
+      envelope, "engine.op.txn_release_savepoint",
+      "SBLR_TXN_RELEASE_SAVEPOINT");
+  const bool exact_rollback_to = IsOperation(
+      envelope, "engine.op.txn_rollback_to_savepoint",
+      "SBLR_TXN_ROLLBACK_TO_SAVEPOINT");
+  const bool exact_savepoint =
+      exact_create || exact_release || exact_rollback_to;
+  if (!exact_savepoint &&
+      (!RequireRenderFamily(
+           envelope, "source_preserving_transaction_control_v1", &result) ||
+       !RequireOperand(
+           envelope, "transaction_context_uuid",
+           "SBLR-to-SBsql transaction conversion requires transaction context authority",
+           &result) ||
+       !RequireSymbolAuthorityMatch(envelope, "label",
+                                    "savepoint_authority_uuid",
+                                    "transaction savepoint", &result))) {
     return result;
   }
 
   const auto* savepoint = RequiredSymbol(envelope, "label", &result);
   if (!result.diagnostics.empty()) return result;
-  if (!RequireIdentifier(savepoint->render_hint, "savepoint", &result)) {
+  if (exact_savepoint) {
+    const auto authority = DecodeExactSavepointRenderAuthority(envelope);
+    if (!authority.has_value()) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
+          "SBLR-to-SBsql savepoint rendering requires the exact typed engine authority carrier");
+    }
+    if (savepoint->resolved_uuid != FormatUuid(authority->savepoint_uuid)) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
+          "transaction savepoint source artifact UUID does not match the typed savepoint authority");
+    }
+  }
+  if (!RequireRenderedIdentifier(savepoint->render_hint, "savepoint",
+                                 &result)) {
     return result;
   }
 
   std::string prefix;
-  if (IsAnyOperation(envelope, "transaction.create_savepoint",
+  if (exact_create ||
+      IsAnyOperation(envelope, "transaction.create_savepoint",
                      "SBLR_TRANSACTION_CREATE_SAVEPOINT",
                      "transaction.savepoint.create",
                      "SBLR_TXN_SAVEPOINT")) {
     prefix = "SAVEPOINT ";
-  } else if (IsAnyOperation(envelope, "transaction.release_savepoint",
+  } else if (exact_release ||
+             IsAnyOperation(envelope, "transaction.release_savepoint",
                             "SBLR_TRANSACTION_RELEASE_SAVEPOINT",
                             "transaction.savepoint.release",
                             "SBLR_TXN_RELEASE_SAVEPOINT")) {
     prefix = "RELEASE SAVEPOINT ";
-  } else if (IsAnyOperation(envelope, "transaction.rollback_to_savepoint",
+  } else if (exact_rollback_to ||
+             IsAnyOperation(envelope, "transaction.rollback_to_savepoint",
                             "SBLR_TRANSACTION_ROLLBACK_TO_SAVEPOINT",
                             "transaction.savepoint.rollback_to",
                             "SBLR_TXN_ROLLBACK_TO_SAVEPOINT")) {
@@ -1201,6 +1373,12 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
       IsOperation(envelope, "transaction.savepoint.release",
                   "SBLR_TXN_RELEASE_SAVEPOINT") ||
       IsOperation(envelope, "transaction.savepoint.rollback_to",
+                  "SBLR_TXN_ROLLBACK_TO_SAVEPOINT") ||
+      IsOperation(envelope, "engine.op.txn_savepoint",
+                  "SBLR_TXN_SAVEPOINT") ||
+      IsOperation(envelope, "engine.op.txn_release_savepoint",
+                  "SBLR_TXN_RELEASE_SAVEPOINT") ||
+      IsOperation(envelope, "engine.op.txn_rollback_to_savepoint",
                   "SBLR_TXN_ROLLBACK_TO_SAVEPOINT")) {
     return RenderTransactionSavepoint(envelope);
   }
