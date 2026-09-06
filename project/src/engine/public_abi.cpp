@@ -19853,6 +19853,31 @@ sb_engine_status_t DispatchStatementContextReceipt(
         }
         current_prepared = current->second;
       }
+      const auto durable_execution = scratchbird::engine::internal_api::
+          ResolveSblrPreparedStatementExecutionV1(
+              prepared_statement_registry_context(receipt->session, false),
+              stmt_execute_authority->canonical_statement_name,
+              stmt_execute_descriptor.statement_uuid,
+              stmt_execute_descriptor.prepared_generation,
+              stmt_execute_descriptor.prepared_descriptor_sha256,
+              stmt_execute_descriptor.execution_uuid,
+              stmt_execute_authority->canonical_descriptor_bytes);
+      if (!durable_execution.ok) {
+        return fail_result(
+            prepared_statement_registry_status(durable_execution.diagnostic),
+            out_result, 4088, durable_execution.diagnostic.code,
+            durable_execution.diagnostic.message_key,
+            durable_execution.diagnostic.detail);
+      }
+      if (durable_execution.execution_found) {
+        stmt_execute_authority->canonical_terminal_result_bytes =
+            durable_execution.execution.canonical_terminal_result_bytes;
+        stmt_execute_authority->terminal_api_result =
+            durable_execution.execution.terminal_api_result;
+        stmt_execute_authority->terminal_result_published = true;
+        current_prepared = from_prepared_statement_registry_record(
+            durable_execution.record);
+      }
       if (stmt_execute_authority->terminal_result_published) {
         if (stmt_execute_authority->canonical_terminal_result_bytes.empty()) {
           return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4088,
@@ -23598,9 +23623,6 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                            "SBLR.EXECUTION_FAILED",
                            "sblr.stmt_execute.result_encoding_failed");
       }
-      stmt_execute_authority->canonical_terminal_result_bytes =
-          stmt_execute_result_bytes;
-      stmt_execute_authority->terminal_result_published = true;
     } else if (!scratchbird::engine::sblr::DecodeSblrStmtExecuteResultV1(
                    stmt_execute_result_bytes.data(),
                    stmt_execute_result_bytes.size(), &execute_result,
@@ -23637,6 +23659,57 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                          "SECURITY.ACCESS_DENIED",
                          "sblr.stmt_execute.session_hidden");
     }
+    scratchbird::engine::internal_api::
+        SblrPreparedStatementExecutionRecordV1 durable_execution_input;
+    durable_execution_input.execution_uuid = execute_result.execution_uuid;
+    durable_execution_input.statement_receipt_uuid =
+        execute_result.statement_receipt_uuid;
+    durable_execution_input.owning_transaction_uuid =
+        view.owning_transaction_uuid.empty()
+            ? std::array<std::uint8_t, 16>{}
+            : TextToUuid(view.owning_transaction_uuid);
+    durable_execution_input.final = view.owning_transaction_uuid.empty();
+    durable_execution_input.canonical_execute_descriptor_bytes =
+        stmt_execute_authority->canonical_descriptor_bytes;
+    durable_execution_input.canonical_terminal_result_bytes =
+        stmt_execute_result_bytes;
+    durable_execution_input.terminal_api_result =
+        stmt_execute_authority->terminal_api_result;
+    const auto durable_execution_publication =
+        scratchbird::engine::internal_api::
+            PublishSblrPreparedStatementExecutionV1(
+                prepared_statement_registry_context(receipt->session, false),
+                stmt_execute_authority->canonical_statement_name,
+                stmt_execute_descriptor.statement_uuid,
+                stmt_execute_descriptor.prepared_generation,
+                stmt_execute_descriptor.prepared_descriptor_sha256,
+                durable_execution_input);
+    if (!durable_execution_publication.ok) {
+      return fail_result(
+          prepared_statement_registry_status(
+              durable_execution_publication.diagnostic),
+          out_result, 4088, durable_execution_publication.diagnostic.code,
+          durable_execution_publication.diagnostic.message_key,
+          durable_execution_publication.diagnostic.detail);
+    }
+    if (!durable_execution_publication.execution_found ||
+        durable_execution_publication.execution
+                .canonical_execute_descriptor_bytes !=
+            stmt_execute_authority->canonical_descriptor_bytes ||
+        durable_execution_publication.execution
+                .canonical_terminal_result_bytes != stmt_execute_result_bytes) {
+      return fail_result(
+          SB_ENGINE_STATUS_CONFLICT, out_result, 4088,
+          "MGA.TRANSACTION.STALE",
+          "sblr.stmt_execute.durable_result_publication_conflict");
+    }
+    stmt_execute_result_bytes = durable_execution_publication.execution
+                                    .canonical_terminal_result_bytes;
+    stmt_execute_authority->canonical_terminal_result_bytes =
+        stmt_execute_result_bytes;
+    stmt_execute_authority->terminal_api_result =
+        durable_execution_publication.execution.terminal_api_result;
+    stmt_execute_authority->terminal_result_published = true;
     {
       std::lock_guard<std::mutex> session_guard(receipt->session->mutex);
       const auto found = receipt->session->prepared_statements_by_name.find(
@@ -23651,17 +23724,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                            "MGA.TRANSACTION.STALE",
                            "sblr.stmt_execute.result_publication_stale");
       }
-      auto& prepared = found->second;
-      prepared.last_execution_uuid = execute_result.execution_uuid;
-      prepared.last_execution_receipt_uuid =
-          execute_result.statement_receipt_uuid;
-      prepared.last_execution_transaction_uuid =
-          view.owning_transaction_uuid.empty()
-              ? std::array<std::uint8_t, 16>{}
-              : TextToUuid(view.owning_transaction_uuid);
-      prepared.last_execution_generation = 1;
-      prepared.last_execution_terminal = true;
-      prepared.last_execution_final = view.owning_transaction_uuid.empty();
+      found->second = from_prepared_statement_registry_record(
+          durable_execution_publication.record);
     }
     const auto digest = scratchbird::core::hash::ComputeSha256Digest(
         stmt_execute_result_bytes);

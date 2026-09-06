@@ -22,6 +22,25 @@ enum class SblrPreparedStatementRegistryStateV1 : std::uint32_t {
   session_revoked = 3,
 };
 
+// One successfully published named-execution terminal.  The canonical
+// descriptor and SBER result are retained byte-for-byte; EngineApiResult is the
+// engine-owned row/result material needed to reconstruct the public result
+// handle without executing the prepared body again after process recovery.
+struct SblrPreparedStatementExecutionRecordV1 {
+  SblrPreparedStatementRegistryUuidV1 execution_uuid{};
+  SblrPreparedStatementRegistryUuidV1 statement_receipt_uuid{};
+  SblrPreparedStatementRegistryUuidV1 owning_transaction_uuid{};
+  std::uint64_t execution_generation = 0;
+  bool final = false;
+  SblrPreparedStatementRegistryHashV1 execute_descriptor_sha256{};
+  SblrPreparedStatementRegistryHashV1 terminal_result_sha256{};
+  SblrPreparedStatementRegistryHashV1 terminal_api_result_sha256{};
+  std::vector<std::uint8_t> canonical_execute_descriptor_bytes;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  EngineApiResult terminal_api_result;
+  SblrPreparedStatementRegistryHashV1 record_evidence_sha256{};
+};
+
 // Private engine-owned form of one prepared statement. Public statement names
 // remain session aliases; UUIDs, generations, descriptors, and byte-exact
 // results remain the authority used after process recovery.
@@ -58,6 +77,7 @@ struct SblrPreparedStatementRegistryRecordV1 {
   std::uint64_t last_execution_generation = 0;
   bool last_execution_terminal = false;
   bool last_execution_final = false;
+  std::vector<SblrPreparedStatementExecutionRecordV1> executions;
   std::uint64_t record_generation = 0;
   SblrPreparedStatementRegistryHashV1 record_evidence_sha256{};
 };
@@ -79,6 +99,8 @@ struct SblrPreparedStatementRegistryResultV1 {
   EngineApiDiagnostic diagnostic;
   SblrPreparedStatementRegistrySnapshotV1 snapshot;
   SblrPreparedStatementRegistryRecordV1 record;
+  bool execution_found = false;
+  SblrPreparedStatementExecutionRecordV1 execution;
 };
 
 // Loads and validates the exact session registry directly from durable state.
@@ -111,6 +133,32 @@ SblrPreparedStatementRegistryResultV1 FreeSblrPreparedStatementV1(
     const SblrPreparedStatementRegistryHashV1& prepared_descriptor_sha256,
     const SblrPreparedStatementRegistryHashV1& free_descriptor_sha256,
     const std::vector<std::uint8_t>& canonical_free_result_bytes);
+
+// Resolves a byte-exact durable terminal for the supplied named-execution
+// descriptor.  A missing execution is returned as a successful lookup with
+// execution_found=false; an execution UUID collision with changed descriptor
+// bytes is a stale-authority refusal.
+SblrPreparedStatementRegistryResultV1
+ResolveSblrPreparedStatementExecutionV1(
+    const EngineRequestContext& context,
+    const std::string& canonical_name,
+    const SblrPreparedStatementRegistryUuidV1& statement_uuid,
+    std::uint64_t prepared_generation,
+    const SblrPreparedStatementRegistryHashV1& prepared_descriptor_sha256,
+    const SblrPreparedStatementRegistryUuidV1& execution_uuid,
+    const std::vector<std::uint8_t>& canonical_execute_descriptor_bytes);
+
+// Publishes the successful nested result and exact SBER terminal in the same
+// durable prepared-session snapshot before either is returned to the caller.
+// Exact execution replay returns the original generation and bytes.
+SblrPreparedStatementRegistryResultV1
+PublishSblrPreparedStatementExecutionV1(
+    const EngineRequestContext& context,
+    const std::string& canonical_name,
+    const SblrPreparedStatementRegistryUuidV1& statement_uuid,
+    std::uint64_t prepared_generation,
+    const SblrPreparedStatementRegistryHashV1& prepared_descriptor_sha256,
+    const SblrPreparedStatementExecutionRecordV1& execution);
 
 // Explicit logical-session termination is a durable terminal barrier. It is
 // distinct from a process crash, which leaves the session snapshot recoverable.

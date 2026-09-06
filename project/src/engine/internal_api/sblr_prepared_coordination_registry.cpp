@@ -89,6 +89,15 @@ bool Reason(std::string_view value) {
         return std::isalnum(c) || c == '.' || c == '_' || c == ':' || c == '-';
       });
 }
+SblrPreparedCoordinationKind KindFromReason(std::string_view reason) {
+  if (reason == "prepared.begin") {
+    return SblrPreparedCoordinationKind::preparation;
+  }
+  if (reason == "prepared.execution.begin") {
+    return SblrPreparedCoordinationKind::execution;
+  }
+  return SblrPreparedCoordinationKind::unknown;
+}
 std::string Path(const EngineRequestContext& c) {
   return c.database_path + ".sb.sblr_prepared_coordination.v1";
 }
@@ -171,7 +180,9 @@ bool Decode(const std::string& line, std::string_view kind,
   s->coordination_uuid=f[2]; s->operation_uuid=f[3]; s->database_uuid=f[4];
   s->session_uuid=f[5]; s->provisional_prepared_uuid=f[6];
   s->state=static_cast<SblrPreparedCoordinationState>(state);
-  s->seal_evidence_sha256=f[11]; *reason=f[12]; s->decision_evidence_sha256=f[13];
+  s->seal_evidence_sha256=f[11]; *reason=f[12];
+  s->kind=KindFromReason(*reason);
+  s->decision_evidence_sha256=f[13];
   return ValidUuid(s->coordination_uuid,scratchbird::core::platform::UuidKind::object) &&
       ValidUuid(s->operation_uuid,scratchbird::core::platform::UuidKind::object) &&
       ValidUuid(s->database_uuid,scratchbird::core::platform::UuidKind::database) &&
@@ -194,14 +205,19 @@ bool Replay(const EngineRequestContext& c,
     if(!Decode(lines[i],"EVIDENCE",&e,&ep,&er)||!Decode(lines[i+1],"STATE",&s,&sp,&sr)||
        lines[i].substr(lines[i].find('\t',lines[i].find('\t')+1)) !=
        lines[i+1].substr(lines[i+1].find('\t',lines[i+1].find('\t')+1) ) ||
-       ep!=sp || er!=sr || s.database_uuid!=c.database_uuid.canonical ||
+       ep!=sp || er!=sr || e.kind!=s.kind ||
+       s.database_uuid!=c.database_uuid.canonical ||
        s.coordinator_generation<=*high) return false;
     const auto found=states->find(s.coordination_uuid);
-    if((found==states->end() && (ep!=0||s.state!=SblrPreparedCoordinationState::begun)) ||
+    if((found==states->end() &&
+        (ep!=0||s.state!=SblrPreparedCoordinationState::begun||
+         s.kind==SblrPreparedCoordinationKind::unknown)) ||
        (found!=states->end() && (ep!=found->second.coordinator_generation ||
+        s.kind!=SblrPreparedCoordinationKind::unknown ||
         found->second.provisional_prepared_uuid!=s.provisional_prepared_uuid ||
         found->second.provisional_prepared_generation!=s.provisional_prepared_generation ||
         found->second.operation_uuid!=s.operation_uuid || found->second.session_uuid!=s.session_uuid))) return false;
+    if(found!=states->end()) s.kind=found->second.kind;
     (*states)[s.coordination_uuid]=s; *high=s.coordinator_generation;
   }
   return true;
@@ -265,6 +281,7 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
   s.coordination_uuid=NewUuid(s.coordinator_generation*2); s.provisional_prepared_uuid=NewUuid(s.coordinator_generation*2+1);
   s.operation_uuid=operation; s.database_uuid=c.database_uuid.canonical; s.session_uuid=c.session_uuid.canonical;
   s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed); if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  s.kind=SblrPreparedCoordinationKind::preparation;
   s.state=SblrPreparedCoordinationState::begun; s.decision_evidence_sha256=Hash(Material(s,0,"prepared.begin"));
   if(s.coordinator_generation==0||s.coordination_uuid.empty()||s.provisional_prepared_uuid.empty()||!Publish(c,s,0,"prepared.begin")) {
     if(s.coordinator_generation) --g_high_water[c.database_uuid.canonical];
@@ -295,6 +312,7 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
   const SblrPreparedCoordinationSnapshot* sealed=nullptr;
   for(const auto& [id,state]:states) {
     if(state.provisional_prepared_uuid==prepared &&
+       state.kind==SblrPreparedCoordinationKind::preparation &&
        state.state==SblrPreparedCoordinationState::sealed &&
        state.database_uuid==c.database_uuid.canonical &&
        state.session_uuid==c.session_uuid.canonical) {
@@ -322,6 +340,7 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
   s.provisional_prepared_generation=sealed->provisional_prepared_generation;
   s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
   if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  s.kind=SblrPreparedCoordinationKind::execution;
   s.state=SblrPreparedCoordinationState::begun;
   s.seal_evidence_sha256=sealed->seal_evidence_sha256;
   s.decision_evidence_sha256=Hash(Material(s,0,"prepared.execution.begin"));

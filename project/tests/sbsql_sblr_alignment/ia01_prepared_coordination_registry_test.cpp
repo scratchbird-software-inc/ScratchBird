@@ -3,43 +3,141 @@
 #include "sblr_prepared_coordination_registry.hpp"
 #include "uuid.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <filesystem>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 
 using namespace scratchbird::engine::internal_api;
+
 namespace {
-std::string Id(scratchbird::core::platform::UuidKind kind, std::uint64_t n) {
-  static auto next=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::system_clock::now().time_since_epoch()).count());
-  (void)n;
-  const auto v=scratchbird::core::uuid::GenerateEngineIdentityV7(kind,++next);
-  assert(v.ok()); return scratchbird::core::uuid::UuidToString(v.value.value);
+
+void Require(bool condition, const char* message) {
+  if (!condition) throw std::runtime_error(message);
 }
-EngineRequestContext Context(const std::filesystem::path& path,bool recovery=false) {
-  EngineRequestContext c; c.database_path=path.string();
-  c.database_uuid.canonical=Id(scratchbird::core::platform::UuidKind::database,1);
-  c.session_uuid.canonical=Id(scratchbird::core::platform::UuidKind::object,2);
-  c.security_context_present=true;c.statement_metadata_snapshot_engine_owned=true;
-  c.trace_tags.push_back(recovery?"right:SBLR_PREPARED_COORDINATION_ADMIN":"private_prepared_coordination"); return c;
+
+std::string Id(scratchbird::core::platform::UuidKind kind) {
+  static auto next = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  scratchbird::core::platform::TypedUuid typed;
+  if (scratchbird::core::uuid::UuidKindAllowsDurableIdentity(kind)) {
+    const auto value =
+        scratchbird::core::uuid::GenerateEngineIdentityV7(kind, ++next);
+    Require(value.ok(), "durable coordination UUID generation failed");
+    typed = value.value;
+  } else {
+    const auto value =
+        scratchbird::core::uuid::GenerateCompatibilityUnixTimeV7(++next);
+    Require(value.ok(), "compatibility coordination UUID generation failed");
+    const auto classified =
+        scratchbird::core::uuid::MakeTypedUuid(kind, value.value);
+    Require(classified.ok(), "coordination UUID classification failed");
+    typed = classified.value;
+  }
+  return scratchbird::core::uuid::UuidToString(typed.value);
 }
+
+EngineRequestContext Context(const std::filesystem::path& path) {
+  EngineRequestContext context;
+  context.database_path = path.string();
+  context.database_uuid.canonical =
+      Id(scratchbird::core::platform::UuidKind::database);
+  context.session_uuid.canonical =
+      Id(scratchbird::core::platform::UuidKind::session);
+  context.security_context_present = true;
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.trace_tags.push_back("private_prepared_coordination");
+  return context;
 }
+
+}  // namespace
+
 int main() {
-  const auto base=std::filesystem::temp_directory_path()/"sb_prepared_coordination_registry_test";
-  std::error_code ec; std::filesystem::remove(base.string()+".sb.sblr_prepared_coordination.v1",ec);
-  auto c=Context(base); const auto operation=Id(scratchbird::core::platform::UuidKind::object,3);
-  const auto begin=BeginSblrPreparedCoordination(c,operation); assert(begin.ok);
-  assert(begin.snapshot.provisional_prepared_generation==begin.snapshot.coordinator_generation);
-  assert(begin.snapshot.private_handle!=0);
-  const auto acquire=AcquireSblrPreparedCoordination(c,begin.snapshot.coordination_uuid,operation,begin.snapshot.coordinator_generation); assert(acquire.ok);
-  assert(acquire.snapshot.coordinator_generation>begin.snapshot.coordinator_generation);
-  const auto stale=SealSblrPreparedCoordination(c,begin.snapshot.coordination_uuid,operation,begin.snapshot.coordinator_generation,begin.snapshot.provisional_prepared_uuid,begin.snapshot.provisional_prepared_generation,"sha256:"+std::string(64,'a')); assert(!stale.ok&&stale.diagnostic.code=="SBLR.PARAMETER.STALE");
-  const auto seal=SealSblrPreparedCoordination(c,begin.snapshot.coordination_uuid,operation,acquire.snapshot.coordinator_generation,begin.snapshot.provisional_prepared_uuid,begin.snapshot.provisional_prepared_generation,"sha256:"+std::string(64,'b')); assert(seal.ok);
-  const auto second=BeginSblrPreparedCoordination(c,Id(scratchbird::core::platform::UuidKind::object,4)); assert(second.ok&&second.snapshot.coordinator_generation>seal.snapshot.coordinator_generation);
-  auto admin=c; admin.trace_tags={"right:SBLR_PREPARED_COORDINATION_ADMIN"};
-  assert(RecoverSblrPreparedCoordinationRegistry(admin).code=="OK");
-  const auto hidden=AcquireSblrPreparedCoordination(c,second.snapshot.coordination_uuid,second.snapshot.operation_uuid,second.snapshot.coordinator_generation); assert(!hidden.ok&&hidden.diagnostic.code=="SECURITY.ACCESS_DENIED");
-  const auto third=BeginSblrPreparedCoordination(c,Id(scratchbird::core::platform::UuidKind::object,5)); assert(third.ok&&third.snapshot.coordinator_generation>second.snapshot.coordinator_generation);
-  std::filesystem::remove(base.string()+".sb.sblr_prepared_coordination.v1",ec);
+  try {
+    const auto ordinal = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto base = std::filesystem::temp_directory_path() /
+                      ("sb_prepared_coordination_registry_test_" +
+                       std::to_string(ordinal));
+    std::error_code error;
+    std::filesystem::remove(
+        base.string() + ".sb.sblr_prepared_coordination.v1", error);
+    auto context = Context(base);
+    const auto operation = Id(scratchbird::core::platform::UuidKind::object);
+    const auto begin = BeginSblrPreparedCoordination(context, operation);
+    Require(begin.ok &&
+                begin.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation,
+            "preparation coordination begin failed");
+    Require(begin.snapshot.provisional_prepared_generation ==
+                begin.snapshot.coordinator_generation,
+            "provisional generation did not match begin generation");
+    Require(begin.snapshot.private_handle != 0,
+            "preparation coordination handle was not issued");
+
+    const auto acquire = AcquireSblrPreparedCoordination(
+        context, begin.snapshot.coordination_uuid, operation,
+        begin.snapshot.coordinator_generation);
+    Require(acquire.ok &&
+                acquire.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation &&
+                acquire.snapshot.coordinator_generation >
+                    begin.snapshot.coordinator_generation,
+            "preparation coordination acquire failed");
+    const auto stale = SealSblrPreparedCoordination(
+        context, begin.snapshot.coordination_uuid, operation,
+        begin.snapshot.coordinator_generation,
+        begin.snapshot.provisional_prepared_uuid,
+        begin.snapshot.provisional_prepared_generation,
+        "sha256:" + std::string(64, 'a'));
+    Require(!stale.ok && stale.diagnostic.code == "SBLR.PARAMETER.STALE",
+            "stale preparation coordination generation was admitted");
+    const auto seal = SealSblrPreparedCoordination(
+        context, begin.snapshot.coordination_uuid, operation,
+        acquire.snapshot.coordinator_generation,
+        begin.snapshot.provisional_prepared_uuid,
+        begin.snapshot.provisional_prepared_generation,
+        "sha256:" + std::string(64, 'b'));
+    Require(seal.ok &&
+                seal.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation,
+            "preparation coordination seal failed");
+
+    const auto second = BeginSblrPreparedCoordination(
+        context, Id(scratchbird::core::platform::UuidKind::object));
+    Require(second.ok &&
+                second.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation &&
+                second.snapshot.coordinator_generation >
+                    seal.snapshot.coordinator_generation,
+            "second preparation coordination begin failed");
+    auto admin = context;
+    admin.trace_tags = {"right:SBLR_PREPARED_COORDINATION_ADMIN"};
+    Require(RecoverSblrPreparedCoordinationRegistry(admin).code == "OK",
+            "coordination registry recovery failed");
+    const auto hidden = AcquireSblrPreparedCoordination(
+        context, second.snapshot.coordination_uuid,
+        second.snapshot.operation_uuid,
+        second.snapshot.coordinator_generation);
+    Require(!hidden.ok && hidden.diagnostic.code == "SECURITY.ACCESS_DENIED",
+            "recovery did not revoke unfinished coordination");
+    const auto third = BeginSblrPreparedCoordination(
+        context, Id(scratchbird::core::platform::UuidKind::object));
+    Require(third.ok &&
+                third.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation &&
+                third.snapshot.coordinator_generation >
+                    second.snapshot.coordinator_generation,
+            "post-recovery coordination generation did not advance");
+
+    std::filesystem::remove(
+        base.string() + ".sb.sblr_prepared_coordination.v1", error);
+    return 0;
+  } catch (const std::exception& exception) {
+    std::cerr << exception.what() << '\n';
+    return 1;
+  }
 }

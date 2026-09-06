@@ -18,6 +18,12 @@ enum class SblrPreparedCoordinationState : std::uint8_t {
   revoked = 4,
 };
 
+enum class SblrPreparedCoordinationKind : std::uint8_t {
+  unknown = 0,
+  preparation = 1,
+  execution = 2,
+};
+
 struct SblrPreparedCoordinationSnapshot {
   std::string coordination_uuid;
   std::string operation_uuid;
@@ -27,6 +33,7 @@ struct SblrPreparedCoordinationSnapshot {
   std::uint64_t provisional_prepared_generation{0};
   std::uint64_t coordinator_generation{0};
   std::uint64_t private_handle{0};
+  SblrPreparedCoordinationKind kind{SblrPreparedCoordinationKind::unknown};
   SblrPreparedCoordinationState state{SblrPreparedCoordinationState::revoked};
   std::string seal_evidence_sha256;
   std::string decision_evidence_sha256;

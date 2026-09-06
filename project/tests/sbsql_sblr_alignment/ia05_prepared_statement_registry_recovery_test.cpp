@@ -4,6 +4,7 @@
 #include "sblr_prepared_statement_registry.hpp"
 #include "sblr_prepared_coordination_registry.hpp"
 #include "database_lifecycle.hpp"
+#include "engine/sblr/sblr_stmt_execute_runtime.hpp"
 #include "scratchbird/engine/engine.h"
 #include "uuid.hpp"
 
@@ -25,11 +26,17 @@ using scratchbird::engine::internal_api::
     BeginSblrPreparedExecutionCoordination;
 using scratchbird::engine::internal_api::FreeSblrPreparedStatementV1;
 using scratchbird::engine::internal_api::LoadSblrPreparedStatementRegistryV1;
+using scratchbird::engine::internal_api::PublishSblrPreparedStatementExecutionV1;
 using scratchbird::engine::internal_api::PublishSblrPreparedStatementV1;
 using scratchbird::engine::internal_api::RevokeSblrPreparedStatementSessionV1;
 using scratchbird::engine::internal_api::
     ResolveActiveSblrPreparedStatementCapabilityV1;
+using scratchbird::engine::internal_api::
+    ResolveSblrPreparedStatementExecutionV1;
 using scratchbird::engine::internal_api::SealSblrPreparedCoordination;
+using scratchbird::engine::internal_api::SblrPreparedCoordinationKind;
+using scratchbird::engine::internal_api::
+    SblrPreparedStatementExecutionRecordV1;
 using scratchbird::engine::internal_api::SblrPreparedStatementRegistryHashV1;
 using scratchbird::engine::internal_api::SblrPreparedStatementRegistryRecordV1;
 using scratchbird::engine::internal_api::SblrPreparedStatementRegistryStateV1;
@@ -148,6 +155,108 @@ SblrPreparedStatementRegistryRecordV1 ParameterizedRecord(
   record.parameter_set_snapshot_generation = 1;
   record.ordered_slot_table_sha256 = "sha256:" + std::string(64, 'a');
   return record;
+}
+
+SblrPreparedStatementExecutionRecordV1 Execution(
+    const SblrPreparedStatementRegistryRecordV1& prepared,
+    std::uint8_t value_seed) {
+  namespace sblr = scratchbird::engine::sblr;
+  SblrPreparedStatementExecutionRecordV1 execution;
+  sblr::SblrStmtExecuteDescriptorV1 descriptor;
+  descriptor.execution_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.statement_uuid = prepared.statement_uuid;
+  descriptor.statement_name_uuid = prepared.statement_name_uuid;
+  descriptor.statement_receipt_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.catalog_snapshot_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.catalog_generation = 17;
+  descriptor.security_epoch = 19;
+  descriptor.resource_epoch = 23;
+  descriptor.mga_snapshot_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.prepared_generation = prepared.prepared_generation;
+  descriptor.prepared_descriptor_sha256 = prepared.descriptor_sha256;
+  descriptor.result_descriptor_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.parser_package_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  descriptor.executor_availability_generation = 29;
+  execution.canonical_execute_descriptor_bytes =
+      sblr::EncodeSblrStmtExecuteDescriptorV1(descriptor);
+  Require(!execution.canonical_execute_descriptor_bytes.empty(),
+          "execution descriptor fixture encoding failed");
+
+  sblr::SblrStmtExecuteResultV1 result;
+  result.execution_uuid = descriptor.execution_uuid;
+  result.statement_receipt_uuid = descriptor.statement_receipt_uuid;
+  result.result_descriptor_uuid = descriptor.result_descriptor_uuid;
+  result.result_handle_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  result.mga_snapshot_uuid = descriptor.mga_snapshot_uuid;
+  result.catalog_generation = descriptor.catalog_generation;
+  result.security_epoch = descriptor.security_epoch;
+  result.resource_epoch = descriptor.resource_epoch;
+  result.executor_availability_generation =
+      descriptor.executor_availability_generation;
+  result.status = 1;
+  result.publication_barrier = 1;
+  result.operation_evidence_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::object);
+  execution.canonical_terminal_result_bytes =
+      sblr::EncodeSblrStmtExecuteResultV1(result);
+  Require(execution.canonical_terminal_result_bytes.size() == 192,
+          "execution result fixture encoding failed");
+
+  execution.execution_uuid = descriptor.execution_uuid;
+  execution.statement_receipt_uuid = descriptor.statement_receipt_uuid;
+  execution.owning_transaction_uuid =
+      NewUuid(scratchbird::core::platform::UuidKind::transaction);
+  execution.terminal_api_result.ok = true;
+  execution.terminal_api_result.operation_id = "query.evaluate_projection";
+  execution.terminal_api_result.result_shape.result_kind =
+      "query_projection_result";
+  scratchbird::engine::internal_api::EngineDescriptor column;
+  column.descriptor_uuid.canonical = UuidText(
+      NewUuid(scratchbird::core::platform::UuidKind::object));
+  column.descriptor_kind = "typed_scalar_descriptor";
+  column.canonical_type_name = "int64";
+  column.encoded_descriptor = "canonical_int64_v1";
+  execution.terminal_api_result.result_shape.columns.push_back(column);
+  scratchbird::engine::internal_api::EngineRowValue row;
+  row.requested_row_uuid.canonical = UuidText(
+      NewUuid(scratchbird::core::platform::UuidKind::object));
+  scratchbird::engine::internal_api::EngineTypedValue value;
+  value.descriptor = column;
+  value.encoded_value = std::to_string(value_seed);
+  value.binary_value.assign(8, 0);
+  value.binary_value.front() = value_seed;
+  row.fields.emplace_back("value", std::move(value));
+  execution.terminal_api_result.result_shape.rows.push_back(std::move(row));
+  scratchbird::engine::internal_api::EngineApiDiagnostic notice;
+  notice.code = "NOTICE.TEST";
+  notice.message_key = "stmt_execute_recovery.notice";
+  notice.detail = "durable nested result fixture";
+  notice.error = false;
+  notice.fields.push_back({"seed", std::to_string(value_seed)});
+  execution.terminal_api_result.diagnostics.push_back(std::move(notice));
+  execution.terminal_api_result.primary_object.uuid.canonical = UuidText(
+      NewUuid(scratchbird::core::platform::UuidKind::object));
+  execution.terminal_api_result.primary_object.object_kind = "result_object";
+  execution.terminal_api_result.catalog_row_uuid.canonical = UuidText(
+      NewUuid(scratchbird::core::platform::UuidKind::row));
+  execution.terminal_api_result.transaction_uuid.canonical =
+      UuidText(execution.owning_transaction_uuid);
+  execution.terminal_api_result.local_transaction_id = value_seed;
+  execution.terminal_api_result.dml_summary.rows_changed = value_seed;
+  execution.terminal_api_result.dml_summary.fallback_reasons.push_back(
+      "fixture_fallback_reason");
+  execution.terminal_api_result.dml_summary.benchmark_clean = false;
+  execution.terminal_api_result.embedded_trust_mode_observed = true;
+  execution.terminal_api_result.evidence.push_back(
+      {"accepted_executor_evidence", "stmt_execute_recovery_fixture"});
+  return execution;
 }
 
 std::string PathFor(const EngineRequestContext& context) {
@@ -299,6 +408,120 @@ int main() {
                 collision_result.diagnostic.code == "MGA.TRANSACTION.STALE",
             "changed PREPARE descriptor replaced durable identity");
 
+    const auto execution_one = Execution(prepared, 7);
+    const auto execution_published =
+        PublishSblrPreparedStatementExecutionV1(
+            context, prepared.canonical_name, prepared.statement_uuid,
+            prepared.prepared_generation, prepared.descriptor_sha256,
+            execution_one);
+    Require(execution_published.ok &&
+                execution_published.execution_found &&
+                !execution_published.exact_replay &&
+                execution_published.execution.execution_generation == 1 &&
+                execution_published.record.executions.size() == 1,
+            "first durable EXECUTE terminal publication failed");
+    const auto execution_reopened =
+        LoadSblrPreparedStatementRegistryV1(context);
+    Require(execution_reopened.ok && execution_reopened.found &&
+                execution_reopened.snapshot.records.front().executions.size() ==
+                    1 &&
+                execution_reopened.snapshot.records.front()
+                        .executions.front()
+                        .canonical_execute_descriptor_bytes ==
+                    execution_one.canonical_execute_descriptor_bytes &&
+                execution_reopened.snapshot.records.front()
+                        .executions.front()
+                        .canonical_terminal_result_bytes ==
+                    execution_one.canonical_terminal_result_bytes &&
+                execution_reopened.snapshot.records.front()
+                        .executions.front()
+                        .terminal_api_result.result_shape.rows.front()
+                        .fields.front()
+                        .second.encoded_value == "7" &&
+                execution_reopened.snapshot.records.front()
+                        .executions.front()
+                        .terminal_api_result.diagnostics.front()
+                        .fields.front()
+                        .value == "7" &&
+                execution_reopened.snapshot.records.front()
+                        .executions.front()
+                        .terminal_api_result.dml_summary.rows_changed == 7 &&
+                !execution_reopened.snapshot.records.front()
+                     .executions.front()
+                     .terminal_api_result.dml_summary.benchmark_clean &&
+                execution_reopened.snapshot.records.front()
+                    .executions.front()
+                    .terminal_api_result.embedded_trust_mode_observed,
+            "process-style reopen did not recover the exact EXECUTE result");
+    const auto execution_resolved = ResolveSblrPreparedStatementExecutionV1(
+        context, prepared.canonical_name, prepared.statement_uuid,
+        prepared.prepared_generation, prepared.descriptor_sha256,
+        execution_one.execution_uuid,
+        execution_one.canonical_execute_descriptor_bytes);
+    Require(execution_resolved.ok && execution_resolved.execution_found &&
+                execution_resolved.exact_replay &&
+                execution_resolved.execution.canonical_terminal_result_bytes ==
+                    execution_one.canonical_terminal_result_bytes,
+            "exact EXECUTE lookup did not recover byte-identical SBER");
+    const auto execution_replay = PublishSblrPreparedStatementExecutionV1(
+        context, prepared.canonical_name, prepared.statement_uuid,
+        prepared.prepared_generation, prepared.descriptor_sha256,
+        execution_one);
+    Require(execution_replay.ok && execution_replay.execution_found &&
+                execution_replay.exact_replay &&
+                execution_replay.execution.execution_generation == 1,
+            "exact EXECUTE publication replay minted a new generation");
+    auto changed_execution = execution_one;
+    scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 changed_descriptor;
+    std::string changed_detail;
+    Require(scratchbird::engine::sblr::DecodeSblrStmtExecuteDescriptorV1(
+                changed_execution.canonical_execute_descriptor_bytes.data(),
+                changed_execution.canonical_execute_descriptor_bytes.size(),
+                &changed_descriptor, &changed_detail),
+            "execution collision fixture descriptor decode failed");
+    changed_descriptor.parser_package_uuid =
+        NewUuid(scratchbird::core::platform::UuidKind::object);
+    changed_descriptor.descriptor_sha256 = {};
+    changed_execution.canonical_execute_descriptor_bytes =
+        scratchbird::engine::sblr::EncodeSblrStmtExecuteDescriptorV1(
+            changed_descriptor);
+    Require(!changed_execution.canonical_execute_descriptor_bytes.empty(),
+            "execution collision fixture descriptor re-encode failed");
+    const auto changed_execution_result =
+        PublishSblrPreparedStatementExecutionV1(
+            context, prepared.canonical_name, prepared.statement_uuid,
+            prepared.prepared_generation, prepared.descriptor_sha256,
+            changed_execution);
+    Require(!changed_execution_result.ok &&
+                changed_execution_result.diagnostic.code ==
+                    "MGA.TRANSACTION.STALE",
+            "changed EXECUTE descriptor replaced a durable terminal");
+    auto wrong_result_identity = Execution(prepared, 9);
+    wrong_result_identity.terminal_api_result.operation_id =
+        "query.wrong_operation";
+    const auto wrong_result_identity_publication =
+        PublishSblrPreparedStatementExecutionV1(
+            context, prepared.canonical_name, prepared.statement_uuid,
+            prepared.prepared_generation, prepared.descriptor_sha256,
+            wrong_result_identity);
+    Require(!wrong_result_identity_publication.ok &&
+                wrong_result_identity_publication.diagnostic.code ==
+                    "MGA.TRANSACTION.STALE",
+            "EXECUTE terminal with the wrong body identity was published");
+    const auto execution_two = Execution(prepared, 11);
+    const auto execution_two_published =
+        PublishSblrPreparedStatementExecutionV1(
+            context, prepared.canonical_name, prepared.statement_uuid,
+            prepared.prepared_generation, prepared.descriptor_sha256,
+            execution_two);
+    Require(execution_two_published.ok &&
+                execution_two_published.execution_found &&
+                execution_two_published.execution.execution_generation == 2 &&
+                execution_two_published.record.executions.size() == 2 &&
+                execution_two_published.record.last_execution_uuid ==
+                    execution_two.execution_uuid,
+            "second durable EXECUTE did not append monotonically");
+
     const auto other_session =
         NewUuid(scratchbird::core::platform::UuidKind::session);
     const auto foreign_context =
@@ -344,8 +567,19 @@ int main() {
     Require(freed.ok && !freed.exact_replay &&
                 freed.record.state ==
                     SblrPreparedStatementRegistryStateV1::freed &&
-                freed.record.canonical_free_result_bytes == free_result,
+                freed.record.canonical_free_result_bytes == free_result &&
+                freed.record.executions.size() == 2,
             "durable FREE publication failed");
+    const auto post_free_execution_lookup =
+        ResolveSblrPreparedStatementExecutionV1(
+            context, prepared.canonical_name, prepared.statement_uuid,
+            prepared.prepared_generation, prepared.descriptor_sha256,
+            execution_one.execution_uuid,
+            execution_one.canonical_execute_descriptor_bytes);
+    Require(!post_free_execution_lookup.ok &&
+                post_free_execution_lookup.diagnostic.code ==
+                    "SECURITY.ACCESS_DENIED",
+            "FREE left a durable execution capability active");
     const auto free_replay = FreeSblrPreparedStatementV1(
         context, prepared.canonical_name, prepared.statement_uuid,
         prepared.prepared_generation, prepared.descriptor_sha256, free_hash,
@@ -391,7 +625,9 @@ int main() {
         NewUuid(scratchbird::core::platform::UuidKind::object));
     const auto coordinated_begin =
         BeginSblrPreparedCoordination(coordination_context, prepare_operation);
-    Require(coordinated_begin.ok,
+    Require(coordinated_begin.ok &&
+                coordinated_begin.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation,
             "private preparation coordination begin failed");
     auto coordinated = ParameterizedRecord("prepared_three", 37);
     coordinated.parameter_prepared_statement_uuid =
@@ -404,7 +640,9 @@ int main() {
         coordination_context,
         coordinated_begin.snapshot.coordination_uuid, prepare_operation,
         coordinated_begin.snapshot.coordinator_generation);
-    Require(coordinated_acquire.ok,
+    Require(coordinated_acquire.ok &&
+                coordinated_acquire.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation,
             "private preparation coordination acquire failed");
     const auto coordinated_seal = SealSblrPreparedCoordination(
         coordination_context,
@@ -413,14 +651,51 @@ int main() {
         coordinated_begin.snapshot.provisional_prepared_uuid,
         coordinated_begin.snapshot.provisional_prepared_generation,
         "sha256:" + std::string(64, 'b'));
-    Require(coordinated_seal.ok,
+    Require(coordinated_seal.ok &&
+                coordinated_seal.snapshot.kind ==
+                    SblrPreparedCoordinationKind::preparation,
             "private preparation coordination seal failed");
-    const auto first_execution = BeginSblrPreparedExecutionCoordination(
+    const auto first_execution_coordination =
+        BeginSblrPreparedExecutionCoordination(
         coordination_context,
         UuidText(NewUuid(scratchbird::core::platform::UuidKind::object)),
         coordinated.parameter_prepared_statement_uuid);
-    Require(first_execution.ok,
+    Require(first_execution_coordination.ok &&
+                first_execution_coordination.snapshot.kind ==
+                    SblrPreparedCoordinationKind::execution,
             "active durable capability did not authorize execution");
+    const auto first_execution_acquire = AcquireSblrPreparedCoordination(
+        coordination_context,
+        first_execution_coordination.snapshot.coordination_uuid,
+        first_execution_coordination.snapshot.operation_uuid,
+        first_execution_coordination.snapshot.coordinator_generation);
+    Require(first_execution_acquire.ok &&
+                first_execution_acquire.snapshot.kind ==
+                    SblrPreparedCoordinationKind::execution,
+            "execution coordination acquire lost its operation kind");
+    const auto first_execution_seal = SealSblrPreparedCoordination(
+        coordination_context,
+        first_execution_coordination.snapshot.coordination_uuid,
+        first_execution_coordination.snapshot.operation_uuid,
+        first_execution_acquire.snapshot.coordinator_generation,
+        first_execution_coordination.snapshot.provisional_prepared_uuid,
+        first_execution_coordination.snapshot.provisional_prepared_generation,
+        "sha256:" + std::string(64, 'c'));
+    Require(first_execution_seal.ok &&
+                first_execution_seal.snapshot.kind ==
+                    SblrPreparedCoordinationKind::execution,
+            "execution coordination seal lost its operation kind");
+    const auto second_execution_coordination =
+        BeginSblrPreparedExecutionCoordination(
+            coordination_context,
+            UuidText(NewUuid(scratchbird::core::platform::UuidKind::object)),
+            coordinated.parameter_prepared_statement_uuid);
+    Require(second_execution_coordination.ok &&
+                second_execution_coordination.snapshot.kind ==
+                    SblrPreparedCoordinationKind::execution &&
+                second_execution_coordination.snapshot.coordination_uuid !=
+                    first_execution_coordination.snapshot.coordination_uuid,
+            "sealed execution coordination shadowed preparation authority");
 
     auto coordinated_free = std::vector<std::uint8_t>(128, 43);
     coordinated_free[0] = 'S';
