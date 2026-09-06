@@ -31,6 +31,7 @@
 #include "sblr_result_page_runtime.hpp"
 #include "sblr_query_explain_runtime.hpp"
 #include "sblr_parameter_set_registry.hpp"
+#include "sblr_prepared_statement_registry.hpp"
 #include "sblr_source_map_descriptor_registry.hpp"
 #include "sblr_source_map_runtime.hpp"
 #include "sblr_source_artifact_runtime.hpp"
@@ -3734,6 +3735,136 @@ bool same_uuid(const sb_engine_uuid_t& left, const sb_engine_uuid_t& right) {
   return std::memcmp(left.bytes, right.bytes, sizeof(left.bytes)) == 0;
 }
 
+scratchbird::engine::internal_api::EngineRequestContext
+prepared_statement_registry_context(sb_engine_session_t session,
+                                    bool recovery) {
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  if (session == nullptr || session->engine == nullptr) return context;
+  context.database_path = session->engine->database_path;
+  context.database_uuid.canonical = session->engine->database_uuid;
+  context.principal_uuid.canonical =
+      uuid_to_canonical(session->effective_user_uuid);
+  context.session_uuid.canonical =
+      uuid_to_canonical(session->public_session_uuid);
+  context.security_context_present = true;
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.trace_tags.push_back(
+      recovery ? "right:SBLR_PREPARED_STATEMENT_REGISTRY_RECOVERY"
+               : "private_prepared_statement_registry");
+  return context;
+}
+
+scratchbird::engine::internal_api::SblrPreparedStatementRegistryRecordV1
+to_prepared_statement_registry_record(
+    const EnginePreparedStatementRecordV1& source) {
+  using Record = scratchbird::engine::internal_api::
+      SblrPreparedStatementRegistryRecordV1;
+  using State = scratchbird::engine::internal_api::
+      SblrPreparedStatementRegistryStateV1;
+  Record record;
+  record.canonical_name = source.canonical_name;
+  record.quoted = source.quoted;
+  record.body_operation_id = source.body_operation_id;
+  record.body_operation_family = source.body_operation_family;
+  record.body_result_shape = source.body_result_shape;
+  record.source_free_parameterless_query_template =
+      source.source_free_parameterless_query_template;
+  record.source_free_parameterized_query_template =
+      source.source_free_parameterized_query_template;
+  record.parameter_set_uuid = source.parameter_set_uuid;
+  record.parameter_prepared_statement_uuid =
+      source.parameter_prepared_statement_uuid;
+  record.parameter_set_generation = source.parameter_set_generation;
+  record.parameter_set_snapshot_uuid = source.parameter_set_snapshot_uuid;
+  record.parameter_set_snapshot_generation =
+      source.parameter_set_snapshot_generation;
+  record.ordered_slot_table_sha256 = source.ordered_slot_table_sha256;
+  record.statement_uuid = source.statement_uuid;
+  record.statement_name_uuid = source.statement_name_uuid;
+  record.preparing_receipt_uuid = source.preparing_receipt_uuid;
+  record.prepared_generation = source.prepared_generation;
+  record.descriptor_sha256 = source.descriptor_sha256;
+  record.canonical_descriptor_bytes = source.canonical_descriptor_bytes;
+  record.canonical_container_bytes = source.canonical_container_bytes;
+  record.canonical_execution_envelope_bytes =
+      source.canonical_execution_envelope_bytes;
+  record.canonical_prepare_result_bytes =
+      source.canonical_prepare_result_bytes;
+  record.state = source.freed ? State::freed : State::active;
+  record.free_descriptor_sha256 = source.free_descriptor_sha256;
+  record.canonical_free_result_bytes = source.canonical_free_result_bytes;
+  record.last_execution_uuid = source.last_execution_uuid;
+  record.last_execution_receipt_uuid = source.last_execution_receipt_uuid;
+  record.last_execution_transaction_uuid =
+      source.last_execution_transaction_uuid;
+  record.last_execution_generation = source.last_execution_generation;
+  record.last_execution_terminal = source.last_execution_terminal;
+  record.last_execution_final = source.last_execution_final;
+  return record;
+}
+
+EnginePreparedStatementRecordV1 from_prepared_statement_registry_record(
+    const scratchbird::engine::internal_api::
+        SblrPreparedStatementRegistryRecordV1& source) {
+  using State = scratchbird::engine::internal_api::
+      SblrPreparedStatementRegistryStateV1;
+  EnginePreparedStatementRecordV1 record;
+  record.canonical_name = source.canonical_name;
+  record.quoted = source.quoted;
+  record.body_operation_id = source.body_operation_id;
+  record.body_operation_family = source.body_operation_family;
+  record.body_result_shape = source.body_result_shape;
+  record.source_free_parameterless_query_template =
+      source.source_free_parameterless_query_template;
+  record.source_free_parameterized_query_template =
+      source.source_free_parameterized_query_template;
+  record.parameter_set_uuid = source.parameter_set_uuid;
+  record.parameter_prepared_statement_uuid =
+      source.parameter_prepared_statement_uuid;
+  record.parameter_set_generation = source.parameter_set_generation;
+  record.parameter_set_snapshot_uuid = source.parameter_set_snapshot_uuid;
+  record.parameter_set_snapshot_generation =
+      source.parameter_set_snapshot_generation;
+  record.ordered_slot_table_sha256 = source.ordered_slot_table_sha256;
+  record.statement_uuid = source.statement_uuid;
+  record.statement_name_uuid = source.statement_name_uuid;
+  record.preparing_receipt_uuid = source.preparing_receipt_uuid;
+  record.prepared_generation = source.prepared_generation;
+  record.descriptor_sha256 = source.descriptor_sha256;
+  record.canonical_descriptor_bytes = source.canonical_descriptor_bytes;
+  record.canonical_container_bytes = source.canonical_container_bytes;
+  record.canonical_execution_envelope_bytes =
+      source.canonical_execution_envelope_bytes;
+  record.canonical_prepare_result_bytes =
+      source.canonical_prepare_result_bytes;
+  record.freed = source.state == State::freed;
+  record.free_descriptor_sha256 = source.free_descriptor_sha256;
+  record.canonical_free_result_bytes = source.canonical_free_result_bytes;
+  record.last_execution_uuid = source.last_execution_uuid;
+  record.last_execution_receipt_uuid = source.last_execution_receipt_uuid;
+  record.last_execution_transaction_uuid =
+      source.last_execution_transaction_uuid;
+  record.last_execution_generation = source.last_execution_generation;
+  record.last_execution_terminal = source.last_execution_terminal;
+  record.last_execution_final = source.last_execution_final;
+  return record;
+}
+
+sb_engine_status_t prepared_statement_registry_status(
+    const scratchbird::engine::internal_api::EngineApiDiagnostic& diagnostic) {
+  if (diagnostic.code == "SECURITY.ACCESS_DENIED") {
+    return SB_ENGINE_STATUS_SECURITY_DENIED;
+  }
+  if (diagnostic.code == "SBLR.OPERAND.INVALID") {
+    return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  }
+  if (diagnostic.code == "MGA.TRANSACTION.STALE" ||
+      diagnostic.code == "CATALOG.SNAPSHOT_STALE") {
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
+  return SB_ENGINE_STATUS_INTERNAL_ERROR;
+}
+
 bool active_metadata_snapshot_exclusion(
     scratchbird::transaction::mga::TransactionState state) {
   using scratchbird::transaction::mga::TransactionState;
@@ -5589,6 +5720,41 @@ sb_engine_status_t sb_engine_session_begin(sb_engine_handle_t engine,
   session->effective_user_uuid = params->effective_user_uuid;
   session->public_session_uuid = params->session_uuid;
   session->trust_mode = params->trust_mode;
+  if (!engine->database_path.empty() && !engine->database_uuid.empty()) {
+    const auto recovered = scratchbird::engine::internal_api::
+        LoadSblrPreparedStatementRegistryV1(
+            prepared_statement_registry_context(session, true));
+    if (!recovered.ok) {
+      const auto status = prepared_statement_registry_status(
+          recovered.diagnostic);
+      const auto code = recovered.diagnostic.code;
+      const auto key = recovered.diagnostic.message_key;
+      const auto detail = recovered.diagnostic.detail;
+      delete session;
+      return fail_result(status, out_result, 3003, code, key, detail);
+    }
+    if (recovered.found && recovered.snapshot.session_revoked) {
+      delete session;
+      return fail_result(
+          SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 3003,
+          "SECURITY.ACCESS_DENIED",
+          "sblr.prepared_statement_registry.session_uuid_revoked",
+          "an explicitly terminated logical session cannot be reopened");
+    }
+    for (const auto& durable : recovered.snapshot.records) {
+      const auto record = from_prepared_statement_registry_record(durable);
+      if (!session->prepared_statements_by_name
+               .emplace(record.canonical_name, record)
+               .second) {
+        delete session;
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 3003,
+            "CATALOG.SNAPSHOT_STALE",
+            "sblr.prepared_statement_registry.duplicate_recovery_name",
+            "durable prepared-statement names are not unique");
+      }
+    }
+  }
   *out_session = session;
   return SB_ENGINE_STATUS_OK;
 }
@@ -5616,6 +5782,17 @@ sb_engine_status_t sb_engine_session_end(sb_engine_session_t session,
     if (session->open_streams != 0 && (params == nullptr || params->cancel_open_results == 0)) {
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 3002, "ENGINE.RESULT.STREAM_ACTIVE",
                          "engine.result.stream_active");
+    }
+    if (!session->prepared_statements_by_name.empty()) {
+      const auto revoked = scratchbird::engine::internal_api::
+          RevokeSblrPreparedStatementSessionV1(
+              prepared_statement_registry_context(session, false));
+      if (!revoked.ok) {
+        return fail_result(
+            prepared_statement_registry_status(revoked.diagnostic),
+            out_result, 3003, revoked.diagnostic.code,
+            revoked.diagnostic.message_key, revoked.diagnostic.detail);
+      }
     }
     release_statement_context_receipts_for_session(session);
     release_prepared_metadata_bindings_for_session(session);
@@ -19576,6 +19753,27 @@ sb_engine_status_t DispatchStatementContextReceipt(
         published.canonical_execution_envelope_bytes =
             stmt_prepare_authority->canonical_execution_envelope_bytes;
         published.canonical_prepare_result_bytes = stmt_prepare_result_bytes;
+        const auto durable_publication =
+            scratchbird::engine::internal_api::PublishSblrPreparedStatementV1(
+                prepared_statement_registry_context(owning_session, false),
+                to_prepared_statement_registry_record(published));
+        if (!durable_publication.ok ||
+            durable_publication.record.canonical_prepare_result_bytes !=
+                stmt_prepare_result_bytes) {
+          const auto diagnostic = durable_publication.ok
+                                      ? scratchbird::engine::internal_api::
+                                            MakeEngineApiDiagnostic(
+                                                "MGA.TRANSACTION.STALE",
+                                                "sblr.stmt_prepare.durable_replay_conflict",
+                                                "durable prepare result differs from the exact replay")
+                                      : durable_publication.diagnostic;
+          return fail_result(
+              prepared_statement_registry_status(diagnostic), out_result,
+              4084, diagnostic.code, diagnostic.message_key,
+              diagnostic.detail);
+        }
+        published = from_prepared_statement_registry_record(
+            durable_publication.record);
         const auto inserted = owning_session->prepared_statements_by_name.emplace(
             name, std::move(published));
         if (!inserted.second) {
@@ -20022,10 +20220,30 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              "SBLR.EXECUTION_FAILED",
                              "sblr.stmt_free.result_encoding_failed");
         }
-        prepared.freed = true;
-        prepared.free_descriptor_sha256 =
-            stmt_free_descriptor.descriptor_sha256;
-        prepared.canonical_free_result_bytes = stmt_free_result_bytes;
+        const auto durable_free =
+            scratchbird::engine::internal_api::FreeSblrPreparedStatementV1(
+                prepared_statement_registry_context(owning_session, false),
+                name, prepared.statement_uuid, prepared.prepared_generation,
+                prepared.descriptor_sha256,
+                stmt_free_descriptor.descriptor_sha256,
+                stmt_free_result_bytes);
+        if (!durable_free.ok ||
+            durable_free.record.canonical_free_result_bytes !=
+                stmt_free_result_bytes) {
+          const auto diagnostic = durable_free.ok
+                                      ? scratchbird::engine::internal_api::
+                                            MakeEngineApiDiagnostic(
+                                                "MGA.TRANSACTION.STALE",
+                                                "sblr.stmt_free.durable_replay_conflict",
+                                                "durable free result differs from the exact replay")
+                                      : durable_free.diagnostic;
+          return fail_result(
+              prepared_statement_registry_status(diagnostic), out_result,
+              4087, diagnostic.code, diagnostic.message_key,
+              diagnostic.detail);
+        }
+        prepared = from_prepared_statement_registry_record(
+            durable_free.record);
       }
       dispatched.accepted = true;
       dispatched.envelope_validated = true;

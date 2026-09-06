@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr_prepared_coordination_registry.hpp"
 
+#include "sblr_prepared_statement_registry.hpp"
+
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
@@ -301,6 +303,16 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
     }
   }
   if(sealed==nullptr) return Denied();
+  auto capability_context = c;
+  capability_context.trace_tags.push_back(
+      "private_prepared_statement_capability_check");
+  const auto capability = ResolveActiveSblrPreparedStatementCapabilityV1(
+      capability_context, prepared,
+      sealed->provisional_prepared_generation);
+  if (!capability.ok) {
+    r.diagnostic = capability.diagnostic;
+    return r;
+  }
   SblrPreparedCoordinationSnapshot s;
   s.coordinator_generation=NextGeneration(c.database_uuid.canonical);
   s.coordination_uuid=NewUuid(s.coordinator_generation*2);

@@ -523,6 +523,7 @@ add_library(sb_engine_internal_api
   sblr_executor_availability_registry.cpp
   sblr_parameter_set_registry.cpp
   sblr_prepared_coordination_registry.cpp
+  sblr_prepared_statement_registry.cpp
   sblr_name_resolve_journal.cpp
   sblr_parse_text_journal.cpp
   sblr_catalog_epoch_check_journal.cpp

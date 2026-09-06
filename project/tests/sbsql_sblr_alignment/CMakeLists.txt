@@ -621,6 +621,30 @@ set_tests_properties(
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_recovery;IA-01;SBLR_PARAMETER;prepared_coordination"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery
+  ia05_prepared_statement_registry_recovery_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery PRIVATE
+  cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery PRIVATE
+  sb_engine
+  sb_engine_internal_api
+  sb_storage_database
+  sb_transaction_mga
+  sb_core_platform
+  sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery
+  COMMAND sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery)
+set_tests_properties(
+  sbsql_sblr_alignment_ia05_prepared_statement_registry_recovery PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_recovery;IA-05;SBLR_STMT_PREPARE;SBLR_STMT_FREE;CSC-TEST-003576;CSC-TEST-003588;recovery;durable_registry"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_ia01_package_missing_executor_integration
   ia01_package_missing_executor_integration_test.cpp)
 target_compile_features(sbsql_sblr_alignment_ia01_package_missing_executor_integration
