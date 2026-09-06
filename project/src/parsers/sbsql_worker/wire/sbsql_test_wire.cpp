@@ -34,6 +34,7 @@
 #include "engine/sblr/sblr_opcode_registry.hpp"
 #include "engine/sblr/sblr_variable_runtime.hpp"
 #include "engine/sblr/sblr_source_map_runtime.hpp"
+#include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_error_vector_runtime.hpp"
 #include "engine/sblr/sblr_transaction_begin_runtime.hpp"
 #include "engine/sblr/sblr_transaction_commit_runtime.hpp"
@@ -14830,6 +14831,149 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
   return submission;
 }
 
+bool AttachExactTransactionBeginSourceArtifact(
+    const CstDocument& cst,
+    const AstDocument& ast,
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session,
+    ParserCanonicalSblrSubmission* submission,
+    std::string* detail) {
+  namespace artifact = scratchbird::engine::sblr;
+  if (detail != nullptr) detail->clear();
+  if (lowered.operation_id != "engine.op.txn_begin") return true;
+  if (submission == nullptr || submission->canonical_container_bytes.empty() ||
+      ast.root_node_index >= ast.nodes.size()) {
+    if (detail != nullptr) *detail = "producer_input";
+    return false;
+  }
+
+  const auto decoded_container = scratchbird::engine::DecodeSblrContainerBytes(
+      submission->canonical_container_bytes.data(),
+      submission->canonical_container_bytes.size());
+  if (decoded_container.status != scratchbird::engine::SblrCodecStatus::ok ||
+      scratchbird::engine::SblrReadU16(
+          decoded_container.container.canonical_anchor.data() + 100) != 1) {
+    if (detail != nullptr) *detail = "operation_payload_kind";
+    return false;
+  }
+  const std::string_view opcode_bytes(
+      reinterpret_cast<const char*>(
+          decoded_container.container.operation_payload.data()),
+      decoded_container.container.operation_payload.size());
+  const auto decoded_stream = artifact::DecodeSblrOpcodeStream(opcode_bytes);
+  if (!decoded_stream.ok || decoded_stream.stream.operations.size() != 3 ||
+      decoded_stream.stream.operations[1].operation_id !=
+          "engine.op.txn_begin" ||
+      decoded_stream.stream.operations[1].opcode != "SBLR_TXN_BEGIN") {
+    if (detail != nullptr) *detail = "single_member_package";
+    return false;
+  }
+
+  const auto statement_uuid =
+      CanonicalUuidBytes(statement_context.statement_uuid);
+  const auto dialect_uuid =
+      CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
+  const auto parser_uuid =
+      CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto generated = uuid::GenerateEngineIdentityV7(
+      UuidKind::object, CurrentUnixMillis());
+  if (!statement_uuid || !dialect_uuid || !parser_uuid || !generated.ok()) {
+    if (detail != nullptr) *detail = "identity";
+    return false;
+  }
+
+  artifact::SblrSourceArtifactMapV1 source_artifact;
+  std::copy(generated.value.value.bytes.begin(),
+            generated.value.value.bytes.end(),
+            source_artifact.artifact_uuid.begin());
+  source_artifact.container_request_uuid = *statement_uuid;
+  source_artifact.dialect_family_uuid = *dialect_uuid;
+  source_artifact.parser_package_uuid = *parser_uuid;
+  source_artifact.language_tag =
+      cst.exact_language_tag.empty() ? "en" : cst.exact_language_tag;
+  source_artifact.redaction_class =
+      artifact::SblrSourceArtifactRedactionClassV1::none;
+  source_artifact.decompile_policy =
+      artifact::SblrSourceArtifactDecompilePolicyV1::source_preserving;
+
+  const auto& root = ast.nodes[ast.root_node_index];
+  if (root.range.length == 0) {
+    if (detail != nullptr) *detail = "source_span";
+    return false;
+  }
+  artifact::SblrSourceArtifactSpanV1 span;
+  span.source_span_id = 1;
+  span.node_id = 1;
+  span.byte_start = root.range.offset;
+  span.byte_length = root.range.length;
+  span.span_kind = artifact::SblrSourceArtifactSpanKindV1::statement;
+  source_artifact.source_spans.push_back(std::move(span));
+
+  artifact::SblrSourceArtifactRenderHintV1 hint;
+  hint.render_hint_id = 1;
+  hint.node_id = 1;
+  hint.dialect_family_uuid = *dialect_uuid;
+  hint.keyword_case =
+      artifact::SblrSourceArtifactKeywordCaseV1::preserve;
+  hint.identifier_render_policy =
+      artifact::SblrSourceArtifactIdentifierPolicyV1::preserve_source;
+  hint.comment_policy =
+      artifact::SblrSourceArtifactCommentPolicyV1::preserve;
+  hint.format_group = "source_preserving_transaction_control_v1";
+  source_artifact.render_hints.push_back(std::move(hint));
+
+  auto encoded = artifact::EncodeSblrSourceArtifactMapV1(source_artifact,
+                                                          detail);
+  if (encoded.empty()) return false;
+  const auto decoded_artifact = artifact::DecodeSblrSourceArtifactMapV1(
+      encoded.data(), encoded.size());
+  if (decoded_artifact.status !=
+      artifact::SblrSourceArtifactDecodeStatusV1::ok) {
+    if (detail != nullptr) *detail = decoded_artifact.detail;
+    return false;
+  }
+  artifact::SblrSourceArtifactValidationContextV1 context;
+  context.operation_validated_without_artifact = true;
+  context.source_preserving_requested = true;
+  context.expected_container_request_uuid = *statement_uuid;
+  context.expected_dialect_family_uuid = *dialect_uuid;
+  context.expected_parser_package_uuid = *parser_uuid;
+  context.admitted_node_ids.push_back(1);
+  for (const auto& operand : decoded_stream.stream.operations[1].operands) {
+    context.admitted_node_ids.push_back(
+        static_cast<std::uint64_t>(operand.ordinal) + 1U);
+  }
+  std::sort(context.admitted_node_ids.begin(),
+            context.admitted_node_ids.end());
+  context.admitted_node_ids.erase(
+      std::unique(context.admitted_node_ids.begin(),
+                  context.admitted_node_ids.end()),
+      context.admitted_node_ids.end());
+  if (!artifact::ValidateSblrSourceArtifactMapV1(
+          decoded_artifact.artifact, context, detail)) {
+    return false;
+  }
+
+  auto container = decoded_container.container;
+  container.source_map = std::move(encoded);
+  auto canonical = scratchbird::engine::EncodeSblrContainer(container);
+  if (canonical.empty()) {
+    if (detail != nullptr) *detail = "container_encode";
+    return false;
+  }
+  const auto verified = scratchbird::engine::DecodeSblrContainerBytes(
+      canonical.data(), canonical.size());
+  if (verified.status != scratchbird::engine::SblrCodecStatus::ok ||
+      verified.container.source_map != container.source_map ||
+      verified.container.operation_payload != container.operation_payload) {
+    if (detail != nullptr) *detail = "container_reencode";
+    return false;
+  }
+  submission->canonical_container_bytes = std::move(canonical);
+  return true;
+}
+
 std::optional<ParserCanonicalSblrSubmission>
 BuildCanonicalRegistryOperationSubmission(
     const scratchbird::engine::sblr::SblrOperationEnvelope& envelope,
@@ -24884,12 +25028,17 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  SbsqlPipelineConformanceSummary*
                                                      conformance_summary,
                                                  SbsqlCanonicalCompileOutput*
-                                                     canonical_compile_output) {
+                                                     canonical_compile_output,
+                                                 SbsqlCanonicalExecutionObservation*
+                                                     canonical_execution_observation) {
   if (conformance_summary != nullptr) {
     *conformance_summary = {};
   }
   if (canonical_compile_output != nullptr) {
     *canonical_compile_output = {};
+  }
+  if (canonical_execution_observation != nullptr) {
+    *canonical_execution_observation = {};
   }
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
@@ -27684,6 +27833,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             "sbp_sbsql.wire"));
       }
     }
+    if (result.accepted && native_statement_context.has_value() &&
+        native_submission.has_value()) {
+      std::string source_artifact_detail;
+      if (!AttachExactTransactionBeginSourceArtifact(
+              cst, ast, lowered, *native_statement_context, session_,
+              &*native_submission, &source_artifact_detail)) {
+        result.accepted = false;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.SOURCE_ARTIFACT.INVALID", "ERROR",
+            "The parser could not bind the canonical source artifact to the finalized operation package.",
+            "sbp_sbsql.wire.source_artifact",
+            {{"reason", source_artifact_detail}}));
+      }
+    }
     mark_phase("encode_native_canonical_submission");
   }
   if (canonical_compile_output != nullptr) {
@@ -28034,8 +28197,28 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     (void)FinalizeSuccessfulAutocommitForWire(&result);
     mark_phase("canonical_autocommit_finality");
   }
+  if (canonical_execution_observation != nullptr && result.accepted &&
+      submit && native_submission.has_value()) {
+    const auto decoded = scratchbird::engine::DecodeSblrContainerBytes(
+        native_submission->canonical_container_bytes.data(),
+        native_submission->canonical_container_bytes.size());
+    if (decoded.status == scratchbird::engine::SblrCodecStatus::ok &&
+        !decoded.container.source_map.empty()) {
+      canonical_execution_observation->captured = true;
+      canonical_execution_observation->operation_id = lowered.operation_id;
+      canonical_execution_observation->canonical_container_bytes =
+          native_submission->canonical_container_bytes;
+    }
+  }
   WriteParserPipelinePhaseTrace(sql, result, phase_micros);
   return result;
+}
+
+PipelineResult SbsqlTestWireSession::RunSourceArtifactContainerForWire(
+    SbsqlCanonicalExecutionObservation* observation) {
+  return RunPipeline("BEGIN TRANSACTION", true, false, 0, false, {}, nullptr,
+                     false, nullptr, {}, 0, nullptr, nullptr, nullptr,
+                     nullptr, observation);
 }
 
 PipelineResult SbsqlTestWireSession::RunRetiredTransactionCommitReplayForWire() {

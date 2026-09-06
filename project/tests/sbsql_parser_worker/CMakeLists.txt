@@ -3338,7 +3338,7 @@ if(TARGET sb_engine_sblr)
       COMMAND sbsql_sblr_source_artifact_container_conformance
     )
     set_tests_properties(sbsql_sblr_source_artifact_container_conformance PROPERTIES
-      LABELS "sbsql_sblr_source_artifact_container_conformance;IA-01;SBLR_SOURCE_ARTIFACT_MAP;sbsql_sblr_alignment_contract;CSC-TEST-005761;CSC-TEST-005762;CSC-TEST-005763;CSC-TEST-005764;CSC-TEST-005765;CSC-TEST-005766;sbsql_parser_worker"
+      LABELS "sbsql_sblr_source_artifact_container_conformance;IA-01;SBLR_SOURCE_ARTIFACT_MAP;sbsql_sblr_alignment_contract;CSC-TEST-005761;CSC-TEST-005762;CSC-TEST-005763;CSC-TEST-005764;CSC-TEST-005765;CSC-TEST-005766;CSC-TEST-005769;sbsql_parser_worker"
     )
   endif()
 

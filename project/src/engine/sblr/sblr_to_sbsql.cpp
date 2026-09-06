@@ -9,6 +9,7 @@
 #include "sblr_to_sbsql.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "sblr_opcode_stream.hpp"
 #include "sblr_source_artifact_runtime.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
@@ -1237,24 +1238,43 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
     return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
                   "source_artifact.channel_duplicate_or_misplaced");
   }
-  if (scratchbird::engine::SblrReadU16(
-          container.canonical_anchor.data() + 100) != 2) {
-    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
-                  "source_artifact.operation_payload_kind_unsupported");
-  }
-
+  const auto payload_kind = scratchbird::engine::SblrReadU16(
+      container.canonical_anchor.data() + 100);
   const std::string operation_bytes(
       reinterpret_cast<const char*>(container.operation_payload.data()),
       container.operation_payload.size());
-  auto decoded_operation = DecodeSblrEnvelope(operation_bytes);
-  if (!decoded_operation.ok) {
-    SblrToSbsqlResult result;
-    CopyValidationDiagnostics(
-        SblrEnvelopeValidationResult{
-            .ok = false,
-            .diagnostics = std::move(decoded_operation.diagnostics)},
-        &result);
-    return result;
+  SblrOperationEnvelope operation;
+  if (payload_kind == 2) {
+    auto decoded_operation = DecodeSblrEnvelope(operation_bytes);
+    if (!decoded_operation.ok) {
+      SblrToSbsqlResult result;
+      CopyValidationDiagnostics(
+          SblrEnvelopeValidationResult{
+              .ok = false,
+              .diagnostics = std::move(decoded_operation.diagnostics)},
+          &result);
+      return result;
+    }
+    operation = std::move(decoded_operation.envelope);
+  } else if (payload_kind == 1) {
+    auto decoded_stream = DecodeSblrOpcodeStream(operation_bytes);
+    if (!decoded_stream.ok) {
+      return Refuse(decoded_stream.diagnostic_id.empty()
+                        ? "SBLR.OPERAND_INVALID"
+                        : decoded_stream.diagnostic_id,
+                    decoded_stream.detail.empty()
+                        ? "canonical opcode stream decoding failed"
+                        : decoded_stream.detail);
+    }
+    if (decoded_stream.stream.operations.size() != 3) {
+      return Refuse(
+          "SBLR.SOURCE_ARTIFACT.INVALID",
+          "source_artifact.opcode_stream_node_profile_unsupported");
+    }
+    operation = std::move(decoded_stream.stream.operations[1]);
+  } else {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.operation_payload_kind_unsupported");
   }
 
   const auto decoded_artifact = DecodeSblrSourceArtifactMapV1(
@@ -1274,8 +1294,7 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
   std::copy_n(container.canonical_anchor.data() + 32, 16,
               validation_context.expected_parser_package_uuid.begin());
   SblrSourceArtifactUuidV1 operation_parser_uuid{};
-  if (!ParseUuid(decoded_operation.envelope.parser_package_uuid,
-                 &operation_parser_uuid) ||
+  if (!ParseUuid(operation.parser_package_uuid, &operation_parser_uuid) ||
       operation_parser_uuid !=
           validation_context.expected_parser_package_uuid) {
     return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
@@ -1283,14 +1302,14 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
   }
 
   validation_context.admitted_node_ids.push_back(1);
-  for (const auto& operand : decoded_operation.envelope.operands) {
+  for (const auto& operand : operation.operands) {
     validation_context.admitted_node_ids.push_back(
         static_cast<std::uint64_t>(operand.ordinal) + 1U);
     if (!IsObjectAuthorityOperand(operand.name)) {
       continue;
     }
     SblrSourceArtifactUuidV1 object_uuid{};
-    if (ParseUuid(OperandValue(decoded_operation.envelope, operand.name),
+    if (ParseUuid(OperandValue(operation, operand.name),
                   &object_uuid) &&
         std::find(validation_context.admitted_object_uuids.begin(),
                   validation_context.admitted_object_uuids.end(),
@@ -1313,10 +1332,9 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
     return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
                   "source_artifact." + artifact_detail);
   }
-  decoded_operation.envelope.source_artifact_map =
-      ToLegacySourceArtifact(decoded_operation.envelope,
-                             decoded_artifact.artifact);
-  return RenderSblrEnvelopeToSbsql(decoded_operation.envelope, options);
+  operation.source_artifact_map =
+      ToLegacySourceArtifact(operation, decoded_artifact.artifact);
+  return RenderSblrEnvelopeToSbsql(operation, options);
 }
 
 }  // namespace scratchbird::engine::sblr

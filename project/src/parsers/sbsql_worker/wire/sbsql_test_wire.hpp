@@ -128,6 +128,16 @@ struct SbsqlCanonicalCompileOutput {
   std::string result_shape_key;
 };
 
+// Caller-owned observation of a canonical container only after the server has
+// accepted and executed that exact submission.  This carries no private
+// statement receipt, binding context, descriptor authority, or result
+// authority and exists solely for public carrier/reversal conformance.
+struct SbsqlCanonicalExecutionObservation {
+  bool captured{false};
+  std::string operation_id;
+  std::vector<std::uint8_t> canonical_container_bytes;
+};
+
 class SbsqlTestWireSession {
  public:
   SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache);
@@ -155,7 +165,11 @@ class SbsqlTestWireSession {
                              SbsqlPipelineConformanceSummary*
                                  conformance_summary = nullptr,
                              SbsqlCanonicalCompileOutput*
-                                 canonical_compile_output = nullptr);
+                                 canonical_compile_output = nullptr,
+                             SbsqlCanonicalExecutionObservation*
+                                 canonical_execution_observation = nullptr);
+  PipelineResult RunSourceArtifactContainerForWire(
+      SbsqlCanonicalExecutionObservation* observation);
   PipelineResult RunVariableForWire(std::string_view sql,
                                     bool cursor_requested = false);
   PipelineResult RunSourceMapForWire();

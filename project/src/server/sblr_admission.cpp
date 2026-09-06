@@ -15,6 +15,7 @@
 #include "../engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
 #include "../engine/sblr/sblr_plan_import_rows_codec.hpp"
+#include "../engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "hash_digest.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 
@@ -2070,7 +2071,15 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
       }
     }
   }
-  if (!container.container.lowering_metadata.empty() &&
+  if (container.container.lowering_metadata.size() >= 4 &&
+      std::equal(container.container.lowering_metadata.begin(),
+                 container.container.lowering_metadata.begin() + 4,
+                 "SAM1")) {
+    return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "Source artifacts cannot be carried as lowering metadata.",
+                  "source_artifact.channel_duplicate_or_misplaced");
+  }
+  if (!container.container.source_map.empty() &&
       ingress_view.source_artifact_present) {
     return Reject("SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
                   "Source artifacts must use exactly one in-band or external channel.",
@@ -2080,6 +2089,58 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
                   "External source artifacts require an engine resolver before admission.",
                   "source_artifact_resolver_unavailable");
+  }
+  if (!container.container.source_map.empty()) {
+    namespace source_artifact = scratchbird::engine::sblr;
+    const source_artifact::SblrOperationEnvelope* artifact_operation =
+        &operation.envelope;
+    if (opcode_stream) {
+      if (decoded_stream.stream.operations.size() != 3) {
+        return Reject(
+            "SBLR.SOURCE_ARTIFACT.INVALID",
+            "The V1 opcode-stream source-map profile requires exactly one executable member.",
+            "source_artifact.opcode_stream_node_profile_unsupported");
+      }
+      artifact_operation = &decoded_stream.stream.operations[1];
+    }
+    const auto decoded_artifact =
+        source_artifact::DecodeSblrSourceArtifactMapV1(
+            container.container.source_map.data(),
+            container.container.source_map.size());
+    if (decoded_artifact.status !=
+        source_artifact::SblrSourceArtifactDecodeStatusV1::ok) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "The in-band source artifact is malformed or noncanonical.",
+                    "source_artifact." + decoded_artifact.detail);
+    }
+    source_artifact::SblrSourceArtifactValidationContextV1
+        artifact_context;
+    artifact_context.operation_validated_without_artifact = true;
+    std::copy_n(container.container.canonical_anchor.data() + 116, 16,
+                artifact_context.expected_container_request_uuid.begin());
+    std::copy_n(container.container.canonical_anchor.data() + 16, 16,
+                artifact_context.expected_dialect_family_uuid.begin());
+    std::copy_n(container.container.canonical_anchor.data() + 32, 16,
+                artifact_context.expected_parser_package_uuid.begin());
+    artifact_context.admitted_node_ids.push_back(1);
+    for (const auto& operand : artifact_operation->operands) {
+      artifact_context.admitted_node_ids.push_back(
+          static_cast<std::uint64_t>(operand.ordinal) + 1U);
+    }
+    std::sort(artifact_context.admitted_node_ids.begin(),
+              artifact_context.admitted_node_ids.end());
+    artifact_context.admitted_node_ids.erase(
+        std::unique(artifact_context.admitted_node_ids.begin(),
+                    artifact_context.admitted_node_ids.end()),
+        artifact_context.admitted_node_ids.end());
+    std::string artifact_detail;
+    if (!source_artifact::ValidateSblrSourceArtifactMapV1(
+            decoded_artifact.artifact, artifact_context,
+            &artifact_detail)) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "The in-band source artifact is not bound to the admitted operation.",
+                    "source_artifact." + artifact_detail);
+    }
   }
   const auto canonical_uuid_text = [](std::string_view value) {
     if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||

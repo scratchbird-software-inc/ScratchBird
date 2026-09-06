@@ -698,6 +698,26 @@ cmake_language(
   DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
   CALL sbsql_sblr_alignment_register_ia01_source_map_process_e2e)
 
+function(sbsql_sblr_alignment_register_ia01_source_artifact_container_process_e2e)
+  if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)
+    add_test(
+      NAME sbsql_sblr_alignment_ia01_source_artifact_container_process_e2e
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+              --server $<TARGET_FILE:sb_server>
+              --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+              --operation source-artifact-container
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_source_artifact_container_e2e")
+    set_tests_properties(
+      sbsql_sblr_alignment_ia01_source_artifact_container_process_e2e PROPERTIES
+      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_MAP;SBLR_SOURCE_ARTIFACT_SINGLE_MEMBER_PACKAGE_V1;CSC-TEST-005770;e2e"
+      TIMEOUT 240)
+  endif()
+endfunction()
+cmake_language(
+  DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+  CALL sbsql_sblr_alignment_register_ia01_source_artifact_container_process_e2e)
+
 function(sbsql_sblr_alignment_register_ia00_show_version_process_e2e)
   if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)
     add_test(NAME sbsql_sblr_alignment_ia00_show_version_process_e2e
@@ -1384,7 +1404,7 @@ add_executable(sbsql_sblr_alignment_ia01_source_map_process_client
 target_compile_features(sbsql_sblr_alignment_ia01_source_map_process_client
   PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_ia01_source_map_process_client
-  PRIVATE sbl_sbsql_parser_worker_core)
+  PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr)
 
 add_executable(sbsql_sblr_alignment_ia01_parameter_process_client
   ia01_parameter_process_client.cpp)
