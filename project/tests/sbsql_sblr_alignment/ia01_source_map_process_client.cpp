@@ -10,6 +10,7 @@
 #include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
 #include "engine/sblr/sblr_parameter_bind_runtime.hpp"
 #include "engine/sblr/sblr_result_page_runtime.hpp"
+#include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
@@ -1851,6 +1852,119 @@ int main(int argc, char** argv) {
     std::cout << "CSC-TEST-003597 RESULT_PAGE accepted "
                  "canonical_sblr=true returned_rows=1 terminal=true "
                  "publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "show-object-detail") {
+    scratchbird::engine::sblr::SblrCatalogIntrospectResultV1 decoded;
+    std::string detail;
+    const auto nonzero = [](const auto& value) {
+      return std::any_of(value.begin(), value.end(),
+                         [](std::uint8_t byte) { return byte != 0; });
+    };
+    const bool exact_terminal =
+        result.accepted && !result.messages.has_errors() &&
+        result.server_operation_id == "engine.op.catalog_introspect" &&
+        !result.server_cursor_uuid.empty() && result.server_row_count > 1 &&
+        result.server_result_payload.size() == 320 &&
+        scratchbird::engine::sblr::DecodeSblrCatalogIntrospectResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                result.server_result_payload.data()),
+            result.server_result_payload.size(), &decoded, &detail) &&
+        decoded.row_count == result.server_row_count &&
+        decoded.object_kind == scratchbird::engine::sblr::
+                                   kSblrCatalogIntrospectObjectKindTableV1 &&
+        decoded.profile == scratchbird::engine::sblr::
+                               kSblrCatalogIntrospectProfileShowObjectDetailV1 &&
+        decoded.flags == scratchbird::engine::sblr::
+                             kSblrCatalogIntrospectDetailFlagV1 &&
+        decoded.catalog_epoch != 0 && decoded.security_epoch != 0 &&
+        decoded.availability != 0 && nonzero(decoded.request_uuid) &&
+        nonzero(decoded.readable_projection_uuid) &&
+        nonzero(decoded.row_descriptor_uuid) &&
+        nonzero(decoded.result_set_uuid) && nonzero(decoded.object_uuid) &&
+        nonzero(decoded.statement_snapshot_uuid) &&
+        nonzero(decoded.row_material_sha256) &&
+        nonzero(decoded.descriptor_evidence_sha256) &&
+        nonzero(decoded.evidence) && nonzero(decoded.publication_barrier);
+    scratchbird::parser::ipc::ServerFetchResult fetched;
+    std::uint64_t fetched_rows = 0;
+    std::string fetched_packets;
+    bool fetched_to_end = false;
+    if (exact_terminal) {
+      while (fetched_rows < result.server_row_count && !fetched_to_end) {
+        auto page = session.FetchCursorOnRoute(
+            result.server_cursor_uuid,
+            result.server_row_count - fetched_rows, 0, 0);
+        if (!page.accepted || page.messages.has_errors() ||
+            page.cursor_uuid != result.server_cursor_uuid ||
+            page.row_count == 0) {
+          fetched = std::move(page);
+          break;
+        }
+        fetched_rows += page.row_count;
+        fetched_packets.append(page.row_packet);
+        fetched_to_end = page.end_of_cursor;
+        fetched = std::move(page);
+      }
+    }
+    const bool exact_rows =
+        fetched.accepted && !fetched.messages.has_errors() &&
+        fetched.cursor_uuid == result.server_cursor_uuid &&
+        fetched_rows == result.server_row_count && fetched_to_end &&
+        fetched_packets.find(
+            "operation_id=engine.op.catalog_introspect\n") !=
+            std::string::npos &&
+        fetched_packets.find(
+            "result_kind=rs.sbsql.show_object_detail.v1\n") !=
+            std::string::npos &&
+        fetched_packets.find(
+            "row[0]=section=identity;section_ordinal=1;"
+            "element_ordinal=1;element_kind=table;"
+            "element_name=APP.CUSTOMERS;") != std::string::npos &&
+        fetched_packets.find("section=columns;") != std::string::npos &&
+        fetched_packets.find("element_kind=column;") !=
+            std::string::npos &&
+        fetched_packets.find("related_object_path=APP.CUSTOMERS;") !=
+            std::string::npos &&
+        fetched_packets.find("section=properties;") !=
+            std::string::npos &&
+        fetched_packets.find("row_meta[0]=section:text:not_null;") !=
+            std::string::npos;
+    auto closed = exact_rows
+                      ? session.CloseCursorOnRoute(result.server_cursor_uuid)
+                      : scratchbird::parser::ipc::ServerCloseCursorResult{};
+    const bool exact_eos_cleanup =
+        exact_rows && !closed.accepted && !closed.outcome_unknown &&
+        !closed.caller_cleanup_required && !closed.route_fatal &&
+        closed.messages.has_errors();
+    auto rolled_back =
+        exact_eos_cleanup
+            ? session.RunPipeline("ROLLBACK TRANSACTION", true)
+            : scratchbird::parser::sbsql::PipelineResult{};
+    if (!exact_terminal || !exact_rows || !exact_eos_cleanup ||
+        !rolled_back.accepted ||
+        rolled_back.messages.has_errors()) {
+      std::cerr << "CSC-TEST-003609 CATALOG_INTROSPECT_SHOW_TABLE "
+                   "exact_public_route_failed detail="
+                << detail << " terminal=" << exact_terminal
+                << " rows=" << exact_rows
+                << " eos_cleanup=" << exact_eos_cleanup
+                << " rollback=" << rolled_back.accepted
+                << " fetched_rows=" << fetched_rows
+                << " row_packet=" << fetched_packets << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      for (const auto& diagnostic : fetched.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << "CSC-TEST-003609 CATALOG_INTROSPECT_SHOW_TABLE accepted "
+                 "canonical_sblr=true receipt_name_bound=true "
+                 "typed_cirs=true cursor_rows=true identity=true "
+                 "columns=true properties=true cursor_closed=true "
+                 "transaction_rolled_back=true publication_barrier=passed\n";
     return 0;
   }
   if (operation == "name-resolve") {

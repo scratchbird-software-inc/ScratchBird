@@ -419,6 +419,37 @@ struct StatementNameResolveAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Receipt-private authority for one exact SHOW <singular> <object_ref>
+// inspection. The parser supplies only target-name atoms through the existing
+// name-bind request; identities, generations, rows, and carriers are produced
+// and retained by the engine.
+struct StatementCatalogIntrospectAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t object_occurrence = 0;
+  std::uint16_t object_kind = 0;
+  std::uint16_t profile = 0;
+  std::uint16_t flags = 0;
+  std::string object_uuid;
+  std::uint64_t object_generation = 0;
+  std::string relation_descriptor_uuid;
+  std::uint64_t relation_descriptor_generation = 0;
+  std::string canonical_path_utf8;
+  std::string statement_snapshot_uuid;
+  std::uint64_t catalog_epoch = 0;
+  std::uint64_t security_epoch = 0;
+  std::uint64_t resource_epoch = 0;
+  std::string request_uuid;
+  std::string readable_projection_uuid;
+  std::string row_descriptor_uuid;
+  std::string result_set_uuid;
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::array<std::uint8_t, 32> row_material_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineResultShape result_shape;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Syntax-only private bind for PARSE TEXT. The raw UTF-8 input never enters
 // the executable descriptor: it is retained under the opaque receipt only so
 // exact replay/conflict checks can be performed against the authenticated
@@ -1113,11 +1144,22 @@ struct StatementQueryExecuteResultHandleView {
   std::string snapshot_uuid;
 };
 
+struct StatementCatalogIntrospectResultHandleView {
+  std::string request_uuid;
+  std::string result_set_uuid;
+  std::string row_descriptor_uuid;
+  std::string snapshot_uuid;
+};
+
 // Returns only registry-validated typed command-handle metadata retained by
 // the engine result. It never parses presentation rows or evidence text.
 sb_engine_status_t ReadStatementQueryExecuteResultHandle(
     sb_engine_result_t result,
     StatementQueryExecuteResultHandleView* out_handle);
+
+sb_engine_status_t ReadStatementCatalogIntrospectResultHandle(
+    sb_engine_result_t result,
+    StatementCatalogIntrospectResultHandleView* out_handle);
 
 // Copies the canonical, already-redacted row bytes produced by one exact
 // RESULT_PAGE dispatch. The bytes remain engine-owned state on the returned
@@ -1288,6 +1330,20 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
 sb_engine_status_t CopyStatementNameResolveAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     StatementNameResolveAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves and freezes a SHOW-object detail descriptor from an already-bound
+// name occurrence on the same live receipt. No parser-provided UUID,
+// generation, row, or visibility claim enters this boundary.
+sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t object_occurrence,
+    StatementCatalogIntrospectAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementCatalogIntrospectAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t object_occurrence,
+    StatementCatalogIntrospectAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 // Binds one PARSE TEXT input and its nested canonical parser carriers to the

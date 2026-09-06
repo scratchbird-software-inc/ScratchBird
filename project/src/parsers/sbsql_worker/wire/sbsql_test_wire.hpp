@@ -235,7 +235,9 @@ class SbsqlTestWireSession {
   PipelineResult RunQueryNumericForWire();
   PipelineResult RunQueryEvaluateAdvancedDatatypeFamilyForWire();
   PipelineResult RunProjectForWire();
-  PipelineResult RunShowObjectDetailForWire();
+  PipelineResult RunShowObjectDetailForWire(
+      std::string_view sql = "SHOW TABLE app.customers;",
+      bool autocommit_emulation = false);
   PipelineResult RunNameResolveForWire(
       std::string_view sql = "RESOLVE NAME app.customers AS table;",
       bool autocommit_emulation = false);

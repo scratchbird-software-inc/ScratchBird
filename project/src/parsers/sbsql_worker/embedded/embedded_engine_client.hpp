@@ -109,6 +109,9 @@ class EmbeddedEngineClient {
   ipc::ServerVariableBindingResult CoordinateNameResolve(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateCatalogIntrospect(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult BindParseText(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

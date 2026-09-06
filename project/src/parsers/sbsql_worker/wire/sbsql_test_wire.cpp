@@ -18342,6 +18342,69 @@ NameResolveWireCommand ParseNameResolveWireCommand(const CstDocument& cst) {
   return result;
 }
 
+struct ShowObjectDetailWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::vector<scratchbird::wire::sbps_statement_management::
+                  NameResolveNameAtomV1>
+      target_name_atoms;
+  std::string invalid_reason;
+};
+
+ShowObjectDetailWireCommand ParseShowObjectDetailWireCommand(
+    const CstDocument& cst) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  ShowObjectDetailWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 4 || ToUpperAscii(tokens[0]->text) != "SHOW" ||
+      ToUpperAscii(tokens[1]->text) != "TABLE") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.target_name_atoms.clear();
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  if (std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      }) != 1 ||
+      tokens.back()->kind != TokenKind::kStatementTerminator) {
+    return invalid("show_table_requires_one_terminal_semicolon");
+  }
+  tokens.pop_back();
+  std::size_t index = 2;
+  while (index < tokens.size()) {
+    if (!IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->text.empty() || result.target_name_atoms.size() == 3) {
+      return invalid("show_table_target_name_invalid");
+    }
+    result.target_name_atoms.push_back(
+        bind::NameResolveNameAtomV1{tokens[index]->text,
+                                    tokens[index]->quoted});
+    ++index;
+    if (index == tokens.size()) break;
+    if (tokens[index]->text != ".") {
+      return invalid("show_table_trailing_syntax_invalid");
+    }
+    ++index;
+    if (index == tokens.size()) {
+      return invalid("show_table_target_name_invalid");
+    }
+  }
+  if (result.target_name_atoms.empty()) {
+    return invalid("show_table_target_name_missing");
+  }
+  result.valid = true;
+  return result;
+}
+
 void SkipTriviaTokens(const CstDocument& cst, std::size_t* index) {
   if (index == nullptr) return;
   while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
@@ -25045,14 +25108,25 @@ ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view curs
   const std::uint64_t requested_bytes =
       std::min(max_bytes == 0 ? authority.max_chunk_bytes : max_bytes,
                authority.max_chunk_bytes);
+  ServerFetchResult result;
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    return embedded_client_->FetchCursor(session_, cursor_uuid, authority,
+    result = embedded_client_->FetchCursor(session_, cursor_uuid, authority,
+                                           requested_rows, requested_bytes,
+                                           fetch_flags);
+  } else {
+    result = server_client_->FetchCursor(session_, cursor_uuid, authority,
                                          requested_rows, requested_bytes,
                                          fetch_flags);
   }
-  return server_client_->FetchCursor(session_, cursor_uuid, authority,
-                                     requested_rows, requested_bytes,
-                                     fetch_flags);
+  if (result.accepted && result.end_of_cursor) {
+    // EOS is the cursor's terminal cleanup boundary. The server releases the
+    // engine result and statement receipt exactly once, so the parser must
+    // discard its matching stream capability instead of retaining a stale
+    // local authority that could issue a second CLOSE.
+    cursor_stream_descriptors_.erase(std::string(cursor_uuid));
+    cursor_statement_contexts_.erase(std::string(cursor_uuid));
+  }
+  return result;
 }
 
 ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_view cursor_uuid) {
@@ -25586,6 +25660,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (canonical_compile_output == nullptr &&
         starts_with_command("RESOLVE NAME")) {
       return RunNameResolveForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("SHOW TABLE")) {
+      return RunShowObjectDetailForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CATALOG EPOCH CHECK")) {
@@ -31197,7 +31275,280 @@ PipelineResult SbsqlTestWireSession::RunAdminRegisterExternalRelationResolverFor
 PipelineResult SbsqlTestWireSession::RunAdminUnregisterExternalRelationResolverForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrAdminUnregisterExternalRelationResolverRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.resolver_occurrence=1;auto coordinated=server_client_->CoordinateAdminUnregisterExternalRelationResolver(session_,c::EncodeSblrAdminUnregisterExternalRelationResolverRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrAdminUnregisterExternalRelationResolverDescriptorV1 d;std::string detail;if(!c::DecodeSblrAdminUnregisterExternalRelationResolverDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrAdminUnregisterExternalRelationResolverDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.admin_unregister_external_relation_resolver";g_admin_unregister_external_relation_resolver_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_admin_unregister_external_relation_resolver_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDdlCreateDictionaryForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlCreateDictionaryRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.dictionary_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateDictionary(session_,c::EncodeSblrDdlCreateDictionaryRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlCreateDictionaryDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateDictionaryDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlCreateDictionaryDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_dictionary";g_ddl_create_dictionary_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_dictionary_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDdlDropDictionaryForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlDropDictionaryRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.dictionary_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropDictionary(session_,c::EncodeSblrDdlDropDictionaryRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropDictionaryDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropDictionaryDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropDictionaryDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_dictionary";g_ddl_drop_dictionary_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_drop_dictionary_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
-PipelineResult SbsqlTestWireSession::RunShowObjectDetailForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrCatalogIntrospectRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=q.object_occurrence=1;auto coordinated=server_client_->CoordinateCatalogIntrospect(session_,c::EncodeSblrCatalogIntrospectRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrCatalogIntrospectDescriptorV1 d;std::string detail;if(!c::DecodeSblrCatalogIntrospectDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrCatalogIntrospectDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.catalog_introspect";g_catalog_introspect_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
+PipelineResult SbsqlTestWireSession::RunShowObjectDetailForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace bind = scratchbird::wire::sbps_statement_management;
+  namespace catalog = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "show";
+  result.operation_family = "sblr.catalog.introspect.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical SHOW TABLE detail operation was refused.",
+        "sbp_sbsql.wire.show_object_detail",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_show_table_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseShowObjectDetailWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid ||
+      ast.family != StatementFamily::kShow) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "show_table_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = embedded
+                      ? embedded_client_->AcquireNativeStatementContext(
+                            session_, selector)
+                      : server_client_->AcquireNativeStatementContext(
+                            session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse("MGA.TRANSACTION.STALE",
+                    "show_table_statement_context_unavailable");
+    }
+    return result;
+  }
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  if (!receipt.has_value() || !statement_snapshot.has_value() ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse("MGA.TRANSACTION.STALE",
+                  "show_table_statement_receipt_incomplete");
+  }
+
+  bind::NameResolveBindRequestV1 bind_request;
+  bind_request.authenticated_receipt_uuid = *receipt;
+  bind_request.occurrence = 1;
+  bind_request.resolution_mode = 2;
+  bind_request.object_class = 2;
+  bind_request.target_name_atoms = command.target_name_atoms;
+  std::vector<std::uint8_t> bind_request_bytes;
+  std::string detail;
+  if (!bind::EncodeNameResolveBindRequestV1(bind_request,
+                                            &bind_request_bytes, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "show_table_bind_request_invalid"
+                                 : detail);
+  }
+  bind::NameResolveBindRequestV1 canonical_bind_request;
+  if (!bind::DecodeNameResolveBindRequestV1(
+          bind_request_bytes.data(), bind_request_bytes.size(),
+          &canonical_bind_request, &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty() ? "show_table_bind_request_noncanonical"
+                                 : detail);
+  }
+  auto bound = embedded
+                   ? embedded_client_->BindNameResolve(session_,
+                                                       bind_request_bytes)
+                   : server_client_->BindNameResolve(session_,
+                                                     bind_request_bytes);
+  if (!bound.accepted) {
+    result.outcome_unknown = bound.outcome_unknown;
+    result.messages = std::move(bound.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(bound.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                          : "SBLR.OPERAND.INVALID",
+                    bound.outcome_unknown
+                        ? "show_table_bind_outcome_unknown"
+                        : "show_table_bind_refused_without_diagnostic");
+    }
+    return result;
+  }
+  bind::NameResolveBindAckV1 bind_ack;
+  if (!bind::DecodeNameResolveBindAckV1(
+          bound.canonical_payload.data(), bound.canonical_payload.size(),
+          &bind_ack, &detail) ||
+      bind_ack.authenticated_receipt_uuid != *receipt ||
+      bind_ack.occurrence != canonical_bind_request.occurrence ||
+      bind_ack.binding_generation == 0 ||
+      !nonzero(bind_ack.resolution_uuid) ||
+      !nonzero(bind_ack.descriptor_sha256) ||
+      bind_ack.request_evidence_sha256 !=
+          canonical_bind_request.request_evidence_sha256) {
+    result.outcome_unknown = true;
+    return refuse("MGA.TRANSACTION.STALE",
+                  detail.empty() ? "show_table_bind_ack_invalid" : detail);
+  }
+
+  catalog::SblrCatalogIntrospectRequestV1 coordinate_request;
+  coordinate_request.receipt = *receipt;
+  coordinate_request.occurrence = canonical_bind_request.occurrence;
+  coordinate_request.object_occurrence = 1;
+  const auto coordinate_request_bytes =
+      catalog::EncodeSblrCatalogIntrospectRequestV1(coordinate_request);
+  if (coordinate_request_bytes.empty()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "show_table_coordinate_request_invalid");
+  }
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateCatalogIntrospect(
+                session_, coordinate_request_bytes)
+          : server_client_->CoordinateCatalogIntrospect(
+                session_, coordinate_request_bytes);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown ? "MGA.TRANSACTION.STALE"
+                                                : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "show_table_coordinate_outcome_unknown"
+                        : "show_table_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  catalog::SblrCatalogIntrospectDescriptorV1 descriptor;
+  if (!catalog::DecodeSblrCatalogIntrospectDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false) ||
+      descriptor.object_kind !=
+          catalog::kSblrCatalogIntrospectObjectKindTableV1 ||
+      descriptor.profile !=
+          catalog::kSblrCatalogIntrospectProfileShowObjectDetailV1 ||
+      descriptor.flags != catalog::kSblrCatalogIntrospectDetailFlagV1 ||
+      descriptor.catalog_epoch !=
+          acquired.context.preliminary_statement_catalog_generation ||
+      descriptor.security_epoch != acquired.context.preliminary_security_epoch ||
+      descriptor.availability == 0 ||
+      descriptor.canonical_path_utf8.empty() ||
+      !nonzero(descriptor.object_uuid) || !nonzero(descriptor.evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "show_table_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != 488 ||
+      !std::equal(operand.begin(), operand.begin() + 4, "CIDD")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "show_table_descriptor_transport_invalid");
+  }
+  std::copy_n("CIDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "show_table_descriptor_projection_changed_authority");
+  }
+  catalog::SblrCatalogIntrospectDescriptorV1 operand_descriptor;
+  if (!catalog::DecodeSblrCatalogIntrospectDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      operand_descriptor.object_uuid != descriptor.object_uuid ||
+      operand_descriptor.catalog_epoch != descriptor.catalog_epoch ||
+      operand_descriptor.security_epoch != descriptor.security_epoch ||
+      operand_descriptor.canonical_path_utf8 !=
+          descriptor.canonical_path_utf8 ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "show_table_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.catalog_introspect";
+  g_catalog_introspect_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, acquired.context, session_, nullptr, nullptr);
+  g_catalog_introspect_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "show_table_canonical_submission_invalid");
+  }
+  auto executed =
+      embedded
+          ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, true)
+          : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, acquired.context, *submission, {}, true);
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    return result;
+  }
+  catalog::SblrCatalogIntrospectResultV1 terminal;
+  if (executed.operation_id != "engine.op.catalog_introspect" ||
+      executed.cursor_uuid.empty() ||
+      !executed.cursor_stream_descriptor.complete() ||
+      executed.row_count == 0 ||
+      !catalog::DecodeSblrCatalogIntrospectResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &terminal, &detail) ||
+      terminal.object_uuid != descriptor.object_uuid ||
+      terminal.statement_snapshot_uuid != *statement_snapshot ||
+      terminal.catalog_epoch != descriptor.catalog_epoch ||
+      terminal.security_epoch != descriptor.security_epoch ||
+      terminal.row_count != executed.row_count ||
+      terminal.object_kind != descriptor.object_kind ||
+      terminal.profile != descriptor.profile ||
+      terminal.flags != descriptor.flags ||
+      terminal.descriptor_evidence_sha256 != descriptor.evidence ||
+      terminal.availability != descriptor.availability ||
+      !nonzero(terminal.row_material_sha256) || !nonzero(terminal.evidence) ||
+      !nonzero(terminal.publication_barrier)) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "show_table_result_authority_mismatch"
+                                 : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_cursor_uuid = executed.cursor_uuid;
+  result.server_row_count = executed.row_count;
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  cursor_stream_descriptors_[executed.cursor_uuid] =
+      executed.cursor_stream_descriptor;
+  cursor_statement_contexts_[executed.cursor_uuid] = acquired.context;
+  ApplyExecutedTransactionState(executed, &session_);
+  // Like every canonical cursor-producing statement, autocommit finality is
+  // deferred until the cursor reaches EOS or is explicitly closed.
+  (void)autocommit_emulation;
+  return result;
+}
 
 PipelineResult SbsqlTestWireSession::RunNameResolveForWire(
     std::string_view sql, bool autocommit_emulation) {

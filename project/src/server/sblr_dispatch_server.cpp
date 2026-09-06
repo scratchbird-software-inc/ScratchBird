@@ -8567,16 +8567,19 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
       dispatch_result.affected_rows = completion.affected_rows;
     }
     // Cursor execution normally defers payload publication to FETCH.  EXECUTE
-    // DIRECT is the exception: its exact SBER is the terminal statement-
-    // management result and must accompany the cursor that addresses the
-    // nested rowset.  Retaining the engine result handle must not hide SBER.
+    // DIRECT and catalog introspection are exceptions: their exact terminal
+    // capability carriers must accompany the cursor that addresses the
+    // separately paged rowset. Retaining the engine result handle must not
+    // hide SBER or CIRS.
     const bool statement_execute_terminal_payload =
         admission_token->opcode_stream &&
         admission_token->stream.operations.size() == 3 &&
         (admission_token->stream.operations[1].operation_id ==
              "engine.op.stmt_execute" ||
          admission_token->stream.operations[1].operation_id ==
-             "engine.op.stmt_execute_direct");
+             "engine.op.stmt_execute_direct" ||
+         admission_token->stream.operations[1].operation_id ==
+             "engine.op.catalog_introspect");
     if (!dispatch_result.ok || !retain_result_handle ||
         statement_execute_terminal_payload) {
       sb_engine_string_view_t payload{};
@@ -8692,10 +8695,6 @@ bool ReadQueryExecuteHandleFromEngineResult(
     ServerCursorRecord* cursor) {
   if (result == nullptr || cursor == nullptr) return false;
   engine_bridge::StatementQueryExecuteResultHandleView handle;
-  if (engine_bridge::ReadStatementQueryExecuteResultHandle(result, &handle) !=
-      SB_ENGINE_STATUS_OK) {
-    return false;
-  }
   const auto read = [&](std::string_view text,
                         std::array<std::uint8_t, 16>* output) {
     const auto parsed = ParseUuidTextForDispatch(text);
@@ -8703,10 +8702,23 @@ bool ReadQueryExecuteHandleFromEngineResult(
     *output = *parsed;
     return true;
   };
-  return read(handle.execution_uuid, &cursor->execution_uuid) &&
-         read(handle.result_set_uuid, &cursor->result_set_uuid) &&
-         read(handle.row_descriptor_uuid, &cursor->row_descriptor_uuid) &&
-         read(handle.snapshot_uuid, &cursor->snapshot_uuid);
+  if (engine_bridge::ReadStatementQueryExecuteResultHandle(result, &handle) ==
+      SB_ENGINE_STATUS_OK) {
+    return read(handle.execution_uuid, &cursor->execution_uuid) &&
+           read(handle.result_set_uuid, &cursor->result_set_uuid) &&
+           read(handle.row_descriptor_uuid, &cursor->row_descriptor_uuid) &&
+           read(handle.snapshot_uuid, &cursor->snapshot_uuid);
+  }
+  engine_bridge::StatementCatalogIntrospectResultHandleView catalog_handle;
+  if (engine_bridge::ReadStatementCatalogIntrospectResultHandle(
+          result, &catalog_handle) != SB_ENGINE_STATUS_OK) {
+    return false;
+  }
+  return read(catalog_handle.request_uuid, &cursor->execution_uuid) &&
+         read(catalog_handle.result_set_uuid, &cursor->result_set_uuid) &&
+         read(catalog_handle.row_descriptor_uuid,
+              &cursor->row_descriptor_uuid) &&
+         read(catalog_handle.snapshot_uuid, &cursor->snapshot_uuid);
 }
 
 bool IssueCursorStreamDescriptor(
@@ -13004,7 +13016,8 @@ SessionOperationResult HandleExecuteSblrImpl(
   const bool publish_execute_result_payload =
       !cursor_requested ||
       admission.operation_id == "engine.op.stmt_execute" ||
-      admission.operation_id == "engine.op.stmt_execute_direct";
+      admission.operation_id == "engine.op.stmt_execute_direct" ||
+      admission.operation_id == "engine.op.catalog_introspect";
   WriteServerPhaseTrace(
       "SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE",
       "execute_result_publication", admission.operation_id,

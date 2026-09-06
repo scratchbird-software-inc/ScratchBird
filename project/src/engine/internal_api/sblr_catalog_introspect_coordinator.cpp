@@ -1,9 +1,40 @@
 #include "sblr_catalog_introspect_coordinator.hpp"
 #include "api_diagnostics.hpp"
-#include <algorithm>
-#include <map>
-#include <mutex>
-namespace scratchbird::engine::internal_api { namespace { std::mutex m; std::map<std::string,scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1> live,used; std::string key(const scratchbird::engine::sblr::CatalogSha&h){return{reinterpret_cast<const char*>(h.data()),h.size()};} bool tag(const EngineRequestContext&c,const char*s){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),s)!=c.trace_tags.end();} EngineApiDiagnostic d(std::string c,std::string x){return MakeEngineApiDiagnostic(std::move(c),std::move(x),{});} }
-SblrCatalogIntrospectCoordinationResult CompileSblrCatalogIntrospectDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t occurrence,std::uint32_t object_occurrence,std::uint64_t availability){std::lock_guard lock(m);SblrCatalogIntrospectCoordinationResult o;if(!tag(c,"private_catalog_introspect_binder")||!c.statement_metadata_snapshot_engine_owned||r!=c.statement_uuid.canonical||!occurrence||!object_occurrence||!availability){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.catalog_introspect.coordination_invalid");return o;}o.descriptor.body[0]=1;o.descriptor.body[1]=std::uint8_t(object_occurrence);o.descriptor.availability=availability;auto b=scratchbird::engine::sblr::EncodeSblrCatalogIntrospectDescriptorV1(o.descriptor,false);if(b.empty()||!scratchbird::engine::sblr::DecodeSblrCatalogIntrospectDescriptorV1(b.data(),b.size(),&o.descriptor,nullptr,false)){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.catalog_introspect.descriptor_invalid");return o;}live[key(o.descriptor.evidence)]=o.descriptor;o.ok=true;o.diagnostic=d("OK","ok");return o;}
-SblrCatalogIntrospectCoordinationResult ConsumeSblrCatalogIntrospectDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1&v){std::lock_guard lock(m);SblrCatalogIntrospectCoordinationResult o;auto k=key(v.evidence);if(!tag(c,"private_catalog_introspect")){o.diagnostic=d("SECURITY.ACCESS_DENIED","sblr.catalog_introspect.hidden");return o;}auto i=live.find(k);if(i==live.end()){o.diagnostic=d(used.count(k)?"MGA.TRANSACTION.STALE":"SECURITY.ACCESS_DENIED",used.count(k)?"sblr.catalog_introspect.stale":"sblr.catalog_introspect.hidden");return o;}if(c.query_cancellation_requested&&c.query_cancellation_requested()){o.diagnostic=d("PROCESS.CANCELLED","sblr.catalog_introspect.cancelled");return o;}used[k]=v;live.erase(i);o.ok=true;o.descriptor=v;o.diagnostic=d("OK","ok");return o;}
+
+namespace scratchbird::engine::internal_api {
+
+SblrCatalogIntrospectCoordinationResult
+BuildSblrCatalogIntrospectDescriptorV1(
+    const SblrCatalogIntrospectAuthorityInputV1& input) {
+  SblrCatalogIntrospectCoordinationResult result;
+  result.descriptor.object_kind = input.object_kind;
+  result.descriptor.profile = input.profile;
+  result.descriptor.flags = input.flags;
+  result.descriptor.object_uuid = input.object_uuid;
+  result.descriptor.catalog_epoch = input.catalog_epoch;
+  result.descriptor.security_epoch = input.security_epoch;
+  result.descriptor.canonical_path_utf8 = input.canonical_path_utf8;
+  result.descriptor.availability =
+      input.executor_availability_generation;
+  result.canonical_descriptor_bytes =
+      scratchbird::engine::sblr::EncodeSblrCatalogIntrospectDescriptorV1(
+          result.descriptor, false);
+  std::string detail;
+  scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1 decoded;
+  if (result.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogIntrospectDescriptorV1(
+          result.canonical_descriptor_bytes.data(),
+          result.canonical_descriptor_bytes.size(), &decoded, &detail,
+          false)) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        "SBLR.OPERAND.INVALID",
+        "sblr.catalog_introspect.descriptor_authority_invalid", detail);
+    return result;
+  }
+  result.descriptor = std::move(decoded);
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {});
+  return result;
 }
+
+}  // namespace scratchbird::engine::internal_api

@@ -487,6 +487,10 @@ struct sb_engine_result_s {
       query_execute_result_handle;
   bool query_execute_result_handle_validated = false;
   bool admitted_query_row_stream_renderer = false;
+  scratchbird::server_engine_bridge::StatementCatalogIntrospectResultHandleView
+      catalog_introspect_result_handle;
+  bool catalog_introspect_result_handle_validated = false;
+  bool admitted_catalog_row_stream_renderer = false;
   std::optional<TypedPublicAbiResultStorage> typed_result;
   std::vector<std::uint8_t> result_page_material;
   std::vector<std::uint8_t> query_explain_material;
@@ -642,6 +646,9 @@ struct StatementContextReceiptOpaque {
       statement_query_explain_authorities;
   std::map<std::uint64_t, StatementNameResolveAuthorityV1>
       statement_name_resolve_authorities;
+  std::map<std::pair<std::uint64_t, std::uint32_t>,
+           StatementCatalogIntrospectAuthorityV1>
+      statement_catalog_introspect_authorities;
   std::map<std::uint64_t, StatementParseTextAuthorityV1>
       statement_parse_text_authorities;
   std::map<std::uint64_t, StatementCatalogEpochCheckAuthorityV1>
@@ -1133,6 +1140,7 @@ using scratchbird::server_engine_bridge::StatementQueryExplainAuthorityV1;
 using scratchbird::server_engine_bridge::StatementNameResolveBindAckV1;
 using scratchbird::server_engine_bridge::StatementNameResolveBindRequestV1;
 using scratchbird::server_engine_bridge::StatementNameResolveAuthorityV1;
+using scratchbird::server_engine_bridge::StatementCatalogIntrospectAuthorityV1;
 using scratchbird::server_engine_bridge::StatementParseTextBindAckV1;
 using scratchbird::server_engine_bridge::StatementParseTextBindRequestV1;
 using scratchbird::server_engine_bridge::StatementParseTextAuthorityV1;
@@ -10297,6 +10305,476 @@ sb_engine_status_t CopyStatementNameResolveAuthorityV1(
   return SB_ENGINE_STATUS_OK;
 }
 
+sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
+    StatementContextReceiptHandle receipt_handle, std::uint64_t occurrence,
+    std::uint32_t object_occurrence,
+    StatementCatalogIntrospectAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    return fail_result(status, out_result, 4104, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || occurrence == 0 || object_occurrence == 0 ||
+      out_authority == nullptr) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "SBLR.OPERAND.INVALID",
+                  "sblr.catalog_introspect.bind_request_invalid");
+  }
+
+  StatementContextReceiptView view;
+  StatementNameResolveAuthorityV1 name_authority;
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  sb_engine_session_t session = nullptr;
+  const auto key = std::make_pair(occurrence, object_occurrence);
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.catalog_introspect.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    const auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session == nullptr || receipt.session->closed) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.catalog_introspect.bind_hidden");
+    }
+    const auto existing =
+        receipt.statement_catalog_introspect_authorities.find(key);
+    if (existing != receipt.statement_catalog_introspect_authorities.end()) {
+      *out_authority = existing->second;
+      return SB_ENGINE_STATUS_OK;
+    }
+    const auto bound_name =
+        receipt.statement_name_resolve_authorities.find(occurrence);
+    if (bound_name == receipt.statement_name_resolve_authorities.end() ||
+        bound_name->second.object_class != 2 ||
+        bound_name->second.resolution_mode != 2 ||
+        bound_name->second.target_name_atoms.empty() ||
+        bound_name->second.target_name_atoms.size() > 3) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.catalog_introspect.name_authority_hidden");
+    }
+    view = receipt.view;
+    name_authority = bound_name->second;
+    context = receipt.engine_context;
+    session = receipt.session;
+  }
+
+  if (!context.security_context_present ||
+      !context.authorization_context.present ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      context.local_transaction_id == 0 ||
+      view.catalog_generation_id == 0 || view.security_epoch == 0 ||
+      view.resource_epoch == 0 ||
+      view.catalog_introspect_executor_availability_generation == 0 ||
+      context.catalog_generation_id != view.catalog_generation_id ||
+      context.security_epoch != view.security_epoch ||
+      context.resource_epoch != view.resource_epoch ||
+      context.transaction_uuid.canonical != view.owning_transaction_uuid ||
+      context.local_transaction_id != view.owning_local_transaction_id ||
+      context.statement_snapshot_uuid.canonical !=
+          view.statement_snapshot_uuid ||
+      context.statement_metadata_snapshot_uuid.canonical !=
+          view.statement_metadata_snapshot_uuid ||
+      context.statement_transaction_inventory_snapshot == nullptr) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
+                  "sblr.catalog_introspect.bind_epoch_stale");
+  }
+  const auto exact_transaction =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          context.statement_transaction_inventory_snapshot->inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              context.local_transaction_id));
+  if (!exact_transaction.ok() ||
+      !statement_context_transaction_active(exact_transaction.entry.state) ||
+      !exact_transaction.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          exact_transaction.entry.identity.transaction_uuid.value) !=
+          context.transaction_uuid.canonical) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
+                  "sblr.catalog_introspect.bind_transaction_stale");
+  }
+  if (view.cluster_context_active || view.cluster_transaction_active ||
+      view.route_fence_present) {
+    return refuse(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+        "sblr.catalog_introspect.bind_cluster_fallthrough_forbidden");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.catalog_introspect.cancelled_before_descriptor_lookup");
+  }
+
+  scratchbird::engine::internal_api::EngineResolveNameRequest resolve_request;
+  resolve_request.context = context;
+  resolve_request.operation_id = "catalog.resolve_name";
+  resolve_request.sql_object_reference.expected_object_type = "table";
+  resolve_request.sql_object_reference.path_type =
+      name_authority.target_name_atoms.size() == 1 ? "unqualified"
+                                                   : "qualified";
+  resolve_request.sql_object_reference.no_search_path =
+      name_authority.target_name_atoms.size() != 1;
+  for (std::size_t index = 0;
+       index < name_authority.target_name_atoms.size(); ++index) {
+    const auto& source = name_authority.target_name_atoms[index];
+    scratchbird::engine::internal_api::EngineIdentifierAtom atom;
+    atom.raw_text = source.raw_text;
+    atom.was_quoted = source.quoted;
+    atom.quote_style = source.quoted ? "double_quote" : "none";
+    atom.identifier_profile_uuid = context.identifier_profile_uuid;
+    atom.requires_exact_match = source.quoted;
+    if (index + 1 == name_authority.target_name_atoms.size()) {
+      resolve_request.sql_object_reference.object_name = std::move(atom);
+    } else {
+      resolve_request.sql_object_reference.path_components.push_back(
+          std::move(atom));
+    }
+  }
+  const auto resolved =
+      scratchbird::engine::internal_api::EngineResolveName(resolve_request);
+  if (!resolved.ok || resolved.primary_object.object_kind != "table" ||
+      !canonical_non_nil_uuid_text(resolved.primary_object.uuid.canonical) ||
+      resolved.bound_object_identity.catalog_generation_id == 0 ||
+      resolved.bound_object_identity.catalog_generation_id >
+          view.catalog_generation_id ||
+      resolved.bound_object_identity.security_epoch != view.security_epoch ||
+      resolved.bound_object_identity.resource_epoch != view.resource_epoch) {
+    return refuse(SB_ENGINE_STATUS_NOT_FOUND,
+                  "SBSQL.SHOW.OBJECT_NOT_FOUND",
+                  "sblr.catalog_introspect.object_not_found");
+  }
+  const auto authorization =
+      scratchbird::engine::internal_api::EvaluateMaterializedAuthorization(
+          context, context.authorization_context, "SELECT",
+          resolved.primary_object.uuid.canonical);
+  if (!authorization.authorized || authorization.denied ||
+      authorization.policy_recheck_required) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.catalog_introspect.object_hidden");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.catalog_introspect.cancelled_before_catalog_read");
+  }
+  const auto loaded =
+      scratchbird::engine::internal_api::LoadMgaRelationStorageDescriptor(
+          context, resolved.primary_object.uuid.canonical);
+  if (!loaded.ok ||
+      loaded.descriptor.relation_uuid.canonical !=
+          resolved.primary_object.uuid.canonical ||
+      loaded.descriptor.relation_generation == 0 ||
+      !canonical_non_nil_uuid_text(
+          loaded.descriptor.descriptor_uuid.canonical) ||
+      loaded.descriptor.descriptor_generation == 0 ||
+      loaded.descriptor.columns.empty()) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE",
+                  "sblr.catalog_introspect.descriptor_incomplete");
+  }
+
+  scratchbird::engine::sblr::SblrNameResolveDescriptorV1 name_descriptor;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrNameResolveDescriptorV1(
+          name_authority.canonical_descriptor_bytes.data(),
+          name_authority.canonical_descriptor_bytes.size(),
+          &name_descriptor, &detail) ||
+      name_descriptor.canonical_name_utf8.empty()) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE",
+                  "sblr.catalog_introspect.bound_name_incomplete", detail);
+  }
+
+  StatementCatalogIntrospectAuthorityV1 authority;
+  authority.occurrence = occurrence;
+  authority.object_occurrence = object_occurrence;
+  authority.object_kind = scratchbird::engine::sblr::
+      kSblrCatalogIntrospectObjectKindTableV1;
+  authority.profile = scratchbird::engine::sblr::
+      kSblrCatalogIntrospectProfileShowObjectDetailV1;
+  authority.flags =
+      scratchbird::engine::sblr::kSblrCatalogIntrospectDetailFlagV1;
+  authority.object_uuid = resolved.primary_object.uuid.canonical;
+  authority.object_generation = loaded.descriptor.relation_generation;
+  authority.relation_descriptor_uuid =
+      loaded.descriptor.descriptor_uuid.canonical;
+  authority.relation_descriptor_generation =
+      loaded.descriptor.descriptor_generation;
+  authority.canonical_path_utf8 = name_descriptor.canonical_name_utf8;
+  authority.statement_snapshot_uuid = view.statement_snapshot_uuid;
+  authority.catalog_epoch = view.catalog_generation_id;
+  authority.security_epoch = view.security_epoch;
+  authority.resource_epoch = view.resource_epoch;
+
+  std::unordered_set<std::string> identities{
+      view.receipt_uuid, view.statement_uuid, view.statement_snapshot_uuid,
+      view.statement_metadata_snapshot_uuid, view.catalog_epoch_uuid,
+      view.security_context_uuid, view.resource_admission_uuid,
+      authority.object_uuid, authority.relation_descriptor_uuid};
+  if (!generate_distinct_statement_context_uuid(&identities,
+                                                 &authority.request_uuid) ||
+      !generate_distinct_statement_context_uuid(
+          &identities, &authority.readable_projection_uuid) ||
+      !generate_distinct_statement_context_uuid(
+          &identities, &authority.row_descriptor_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities,
+                                                 &authority.result_set_uuid)) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+                  "sblr.catalog_introspect.result_identity_unavailable");
+  }
+
+  const auto text_descriptor = [] {
+    scratchbird::engine::internal_api::EngineDescriptor descriptor;
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = "text";
+    descriptor.encoded_descriptor = "type=text";
+    return descriptor;
+  }();
+  const auto ordinal_descriptor = [] {
+    scratchbird::engine::internal_api::EngineDescriptor descriptor;
+    descriptor.descriptor_kind = "scalar";
+    descriptor.canonical_type_name = "uint64";
+    descriptor.encoded_descriptor = "type=uint64;nullable=false";
+    return descriptor;
+  }();
+  static constexpr std::array<std::string_view, 12> kColumns{
+      "section", "section_ordinal", "element_ordinal", "element_kind",
+      "element_name", "data_type", "domain_name", "nullability",
+      "parameter_direction", "related_object_path", "definition",
+      "comment_text"};
+  authority.result_shape.result_kind =
+      "rs.sbsql.show_object_detail.v1";
+  authority.result_shape.columns.assign(kColumns.size(), text_descriptor);
+  authority.result_shape.columns[1] = ordinal_descriptor;
+  authority.result_shape.columns[2] = ordinal_descriptor;
+  const auto add_row = [&](std::array<std::optional<std::string>, 12> values) {
+    scratchbird::engine::internal_api::EngineRowValue row;
+    row.fields.reserve(kColumns.size());
+    for (std::size_t index = 0; index < kColumns.size(); ++index) {
+      auto value = scratchbird::engine::internal_api::EngineTypedValue{};
+      value.descriptor = authority.result_shape.columns[index];
+      if (values[index].has_value()) {
+        value.encoded_value = std::move(*values[index]);
+        value.setState(
+            scratchbird::engine::internal_api::EngineValueState::value);
+      } else {
+        value.setState(
+            scratchbird::engine::internal_api::EngineValueState::sql_null);
+      }
+      row.fields.emplace_back(std::string(kColumns[index]), std::move(value));
+    }
+    authority.result_shape.rows.push_back(std::move(row));
+  };
+  add_row({"identity", "1", "1", "table",
+           authority.canonical_path_utf8, std::nullopt, std::nullopt,
+           std::nullopt, std::nullopt, std::nullopt,
+           loaded.descriptor.relation_kind, std::nullopt});
+  for (std::size_t index = 0; index < loaded.descriptor.columns.size();
+       ++index) {
+    const auto& column = loaded.descriptor.columns[index];
+    add_row({"columns", "2", std::to_string(index + 1), "column",
+             column.canonical_name_key,
+             column.value_descriptor.canonical_type_name.empty()
+                 ? column.value_descriptor.descriptor_kind
+                 : column.value_descriptor.canonical_type_name,
+             std::nullopt,
+             column.nullable ? "nullable" : "not_nullable",
+             std::nullopt, authority.canonical_path_utf8,
+             column.generated ? "generated"
+                              : (column.identity_column ? "identity"
+                                                        : "stored"),
+             std::nullopt});
+  }
+  for (std::size_t index = 0; index < loaded.descriptor.indexes.size();
+       ++index) {
+    const auto& catalog_index = loaded.descriptor.indexes[index];
+    add_row({"indexes", "6", std::to_string(index + 1), "index",
+             std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+             std::nullopt, authority.canonical_path_utf8,
+             catalog_index.family + ":" + catalog_index.profile,
+             std::nullopt});
+  }
+  const std::array<std::pair<std::string, std::string>, 4>
+      properties{{{"relation_kind", loaded.descriptor.relation_kind},
+                  {"storage_profile", loaded.descriptor.storage_profile},
+                  {"descriptor_status", loaded.descriptor.descriptor_status},
+                  {"row_identity_rule", loaded.descriptor.row_identity_rule}}};
+  for (std::size_t index = 0; index < properties.size(); ++index) {
+    add_row({"properties", "11", std::to_string(index + 1), "property",
+             std::string(properties[index].first), std::nullopt,
+             std::nullopt, std::nullopt, std::nullopt,
+             authority.canonical_path_utf8,
+             std::string(properties[index].second), std::nullopt});
+  }
+  if (authority.result_shape.rows.empty()) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE",
+                  "sblr.catalog_introspect.detail_rows_empty");
+  }
+
+  std::vector<std::uint8_t> row_material;
+  constexpr std::string_view kRowDomain =
+      "ScratchBird.CatalogIntrospectShowObjectDetailRows.V1";
+  row_material.insert(row_material.end(), kRowDomain.begin(),
+                      kRowDomain.end());
+  const auto append_u64 = [&](std::uint64_t value) {
+    for (std::size_t byte = 0; byte < 8; ++byte) {
+      row_material.push_back(
+          static_cast<std::uint8_t>(value >> (byte * 8)));
+    }
+  };
+  append_u64(authority.result_shape.rows.size());
+  for (const auto& row : authority.result_shape.rows) {
+    append_u64(row.fields.size());
+    for (const auto& field : row.fields) {
+      append_u64(field.first.size());
+      row_material.insert(row_material.end(), field.first.begin(),
+                          field.first.end());
+      row_material.push_back(static_cast<std::uint8_t>(field.second.state));
+      append_u64(field.second.encoded_value.size());
+      row_material.insert(row_material.end(),
+                          field.second.encoded_value.begin(),
+                          field.second.encoded_value.end());
+    }
+  }
+  const auto row_digest =
+      scratchbird::core::hash::ComputeSha256Digest(row_material);
+  if (!row_digest.ok()) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE",
+                  "sblr.catalog_introspect.row_material_hash_failed");
+  }
+  authority.row_material_sha256 = row_digest.digest;
+
+  scratchbird::engine::internal_api::SblrCatalogIntrospectAuthorityInputV1
+      descriptor_input;
+  descriptor_input.object_kind = authority.object_kind;
+  descriptor_input.profile = authority.profile;
+  descriptor_input.flags = authority.flags;
+  descriptor_input.object_uuid = TextToUuid(authority.object_uuid);
+  descriptor_input.catalog_epoch = authority.catalog_epoch;
+  descriptor_input.security_epoch = authority.security_epoch;
+  descriptor_input.canonical_path_utf8 = authority.canonical_path_utf8;
+  descriptor_input.executor_availability_generation =
+      view.catalog_introspect_executor_availability_generation;
+  const auto coordinated = scratchbird::engine::internal_api::
+      BuildSblrCatalogIntrospectDescriptorV1(descriptor_input);
+  if (!coordinated.ok || coordinated.canonical_descriptor_bytes.empty()) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  coordinated.diagnostic.code.empty()
+                      ? "SBSQL.SHOW.DESCRIPTOR_INCOMPLETE"
+                      : coordinated.diagnostic.code,
+                  coordinated.diagnostic.message_key.empty()
+                      ? "sblr.catalog_introspect.descriptor_encoding_failed"
+                      : coordinated.diagnostic.message_key,
+                  coordinated.diagnostic.detail);
+  }
+  authority.canonical_descriptor_bytes =
+      coordinated.canonical_descriptor_bytes;
+  authority.descriptor_evidence_sha256 = coordinated.descriptor.evidence;
+
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.catalog_introspect.cancelled_before_authority_publish");
+  }
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.catalog_introspect.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    auto& receipt = *live->second;
+    const auto bound_name =
+        receipt.statement_name_resolve_authorities.find(occurrence);
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session != session ||
+        receipt.view.receipt_uuid != view.receipt_uuid ||
+        bound_name == receipt.statement_name_resolve_authorities.end() ||
+        bound_name->second.exact_bind_request_bytes !=
+            name_authority.exact_bind_request_bytes) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.catalog_introspect.bind_hidden");
+    }
+    const auto existing =
+        receipt.statement_catalog_introspect_authorities.find(key);
+    if (existing != receipt.statement_catalog_introspect_authorities.end()) {
+      *out_authority = existing->second;
+      return SB_ENGINE_STATUS_OK;
+    }
+    const auto inserted =
+        receipt.statement_catalog_introspect_authorities.emplace(
+            key, std::move(authority));
+    if (!inserted.second) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
+                    "sblr.catalog_introspect.bind_publish_conflict");
+    }
+    *out_authority = inserted.first->second;
+  }
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t CopyStatementCatalogIntrospectAuthorityV1(
+    StatementContextReceiptHandle receipt_handle, std::uint64_t occurrence,
+    std::uint32_t object_occurrence,
+    StatementCatalogIntrospectAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  if (!receipt_handle || occurrence == 0 || object_occurrence == 0 ||
+      out_authority == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4105,
+                       "SBLR.OPERAND.INVALID",
+                       "sblr.catalog_introspect.authority_lookup_invalid");
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live =
+      g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4105,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.catalog_introspect.authority_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  if (live->second->released ||
+      live->second->magic != kStatementContextReceiptMagic) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4105,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.catalog_introspect.authority_hidden");
+  }
+  const auto found = live->second->statement_catalog_introspect_authorities.find(
+      std::make_pair(occurrence, object_occurrence));
+  if (found ==
+      live->second->statement_catalog_introspect_authorities.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4105,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.catalog_introspect.authority_hidden");
+  }
+  *out_authority = found->second;
+  return SB_ENGINE_STATUS_OK;
+}
+
 sb_engine_status_t BindStatementParseTextAuthorityV1(
     StatementContextReceiptHandle receipt_handle,
     const StatementParseTextBindRequestV1* request,
@@ -15187,6 +15665,27 @@ sb_engine_status_t ReadStatementQueryExecuteResultHandle(
   return SB_ENGINE_STATUS_OK;
 }
 
+sb_engine_status_t ReadStatementCatalogIntrospectResultHandle(
+    sb_engine_result_t result,
+    StatementCatalogIntrospectResultHandleView* out_handle) {
+  if (out_handle == nullptr) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  *out_handle = {};
+  if (!valid_result(result)) return SB_ENGINE_STATUS_INVALID_HANDLE;
+  std::lock_guard<std::mutex> guard(result->mutex);
+  if (!result->catalog_introspect_result_handle_validated ||
+      !result->admitted_catalog_row_stream_renderer) {
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
+  *out_handle = result->catalog_introspect_result_handle;
+  if (out_handle->request_uuid.empty() || out_handle->result_set_uuid.empty() ||
+      out_handle->row_descriptor_uuid.empty() ||
+      out_handle->snapshot_uuid.empty()) {
+    *out_handle = {};
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
+  return SB_ENGINE_STATUS_OK;
+}
+
 sb_engine_status_t ReadStatementResultPageMaterial(
     sb_engine_result_t result, std::vector<std::uint8_t>* out_material) {
   if (out_material == nullptr) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
@@ -17378,6 +17877,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
   StatementParameterBindAuthorityV1* parameter_bind_authority = nullptr;
   StatementQueryExplainAuthorityV1* query_explain_authority = nullptr;
   StatementNameResolveAuthorityV1* name_resolve_authority = nullptr;
+  StatementCatalogIntrospectAuthorityV1* catalog_introspect_authority =
+      nullptr;
   StatementParseTextAuthorityV1* parse_text_authority = nullptr;
   StatementCatalogEpochCheckAuthorityV1* catalog_epoch_check_authority =
       nullptr;
@@ -17397,6 +17898,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   std::vector<std::uint8_t> query_explain_result_bytes;
   std::vector<std::uint8_t> query_explain_material_bytes;
   std::vector<std::uint8_t> name_resolve_result_bytes;
+  std::vector<std::uint8_t> catalog_introspect_result_bytes;
   std::vector<std::uint8_t> parse_text_result_bytes;
   std::vector<std::uint8_t> catalog_epoch_check_result_bytes;
   std::vector<std::uint8_t> database_attach_result_bytes;
@@ -22876,6 +23378,46 @@ sb_engine_status_t DispatchStatementContextReceipt(
                            "SBLR.OPERAND.INVALID",
                            "sblr.catalog_introspect.operand_invalid", detail);
       }
+      const auto& descriptor_bytes = member.operands.front().value_body;
+      for (auto& [authority_key, authority] :
+           receipt->statement_catalog_introspect_authorities) {
+        (void)authority_key;
+        auto expected_operand = authority.canonical_descriptor_bytes;
+        if (expected_operand.size() >= 4) {
+          std::copy_n("CIDO", 4, expected_operand.begin());
+        }
+        if (expected_operand == descriptor_bytes) {
+          if (catalog_introspect_authority != nullptr) {
+            return fail_result(
+                SB_ENGINE_STATUS_CONFLICT, out_result, 4100,
+                "MGA.AUTHORITY_MISMATCH",
+                "sblr.catalog_introspect.descriptor_authority_ambiguous");
+          }
+          catalog_introspect_authority = &authority;
+        }
+      }
+      if (catalog_introspect_authority == nullptr ||
+          catalog_introspect_descriptor.object_uuid !=
+              TextToUuid(catalog_introspect_authority->object_uuid) ||
+          catalog_introspect_descriptor.object_kind !=
+              catalog_introspect_authority->object_kind ||
+          catalog_introspect_descriptor.profile !=
+              catalog_introspect_authority->profile ||
+          catalog_introspect_descriptor.flags !=
+              catalog_introspect_authority->flags ||
+          catalog_introspect_descriptor.catalog_epoch !=
+              catalog_introspect_authority->catalog_epoch ||
+          catalog_introspect_descriptor.security_epoch !=
+              catalog_introspect_authority->security_epoch ||
+          catalog_introspect_descriptor.canonical_path_utf8 !=
+              catalog_introspect_authority->canonical_path_utf8 ||
+          catalog_introspect_descriptor.evidence !=
+              catalog_introspect_authority->descriptor_evidence_sha256) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4100,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.catalog_introspect.descriptor_authority_stale");
+      }
       if (catalog_introspect_descriptor.availability !=
               view.catalog_introspect_executor_availability_generation ||
           view.catalog_introspect_executor_availability_generation == 0) {
@@ -22884,39 +23426,44 @@ sb_engine_status_t DispatchStatementContextReceipt(
             "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
             "sblr.catalog_introspect.executor_unavailable");
       }
-      scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity
-          identity{
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectExecutorId,
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectOpcodeCode,
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectOpcodeVersion,
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectOperandDescriptorId,
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectResultDescriptorId,
-              scratchbird::engine::internal_api::
-                  kSblrCatalogIntrospectResultDescriptorVersion};
-      const auto admitted = scratchbird::engine::internal_api::
-          LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,
-                                                identity);
-      scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot
-          current;
-      const auto revalidated = scratchbird::engine::internal_api::
-          RevalidateSblrExecutorAvailability(
-              receipt->engine_context, identity, admitted.snapshot, &current);
-      if (!admitted.ok || !admitted.snapshot.installed ||
-          admitted.snapshot.generation !=
-              catalog_introspect_descriptor.availability ||
-          revalidated.code != "OK" || !current.installed ||
-          current.generation != catalog_introspect_descriptor.availability) {
-        return fail_result(
-            SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4100,
-            "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
-            "sblr.catalog_introspect.executor_unavailable");
+      catalog_introspect_availability_generation =
+          catalog_introspect_descriptor.availability;
+      if (!catalog_introspect_authority->terminal_result_published) {
+        scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity
+            identity{
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectExecutorId,
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectOpcodeCode,
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectOpcodeVersion,
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectOperandDescriptorId,
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectResultDescriptorId,
+                scratchbird::engine::internal_api::
+                    kSblrCatalogIntrospectResultDescriptorVersion};
+        const auto admitted = scratchbird::engine::internal_api::
+            LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,
+                                                  identity);
+        scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot
+            current;
+        const auto revalidated = scratchbird::engine::internal_api::
+            RevalidateSblrExecutorAvailability(receipt->engine_context,
+                                                identity, admitted.snapshot,
+                                                &current);
+        if (!admitted.ok || !admitted.snapshot.installed ||
+            admitted.snapshot.generation !=
+                catalog_introspect_descriptor.availability ||
+            revalidated.code != "OK" || !current.installed ||
+            current.generation != catalog_introspect_descriptor.availability) {
+          return fail_result(
+              SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4100,
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "sblr.catalog_introspect.executor_unavailable");
+        }
+        catalog_introspect_availability_generation = current.generation;
       }
-      catalog_introspect_availability_generation = current.generation;
     }
     if(project_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="projection_descriptor"||member.operands.front().name!="projection"||!scratchbird::engine::sblr::DecodeSblrProjectDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&project_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4100,"SBLR.OPERAND_INVALID","sblr.project.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrProjectExecutorId,1280,"1.0",scratchbird::engine::internal_api::kSblrProjectOperandDescriptorId,scratchbird::engine::internal_api::kSblrProjectResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=project_descriptor.availability||a.snapshot.generation!=view.project_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4100,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.project.executor_unavailable");project_availability_generation=a.snapshot.generation;}
     if(limit_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="limit_descriptor"||member.operands.front().name!="limit"||!scratchbird::engine::sblr::DecodeSblrLimitDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&limit_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4109,"SBLR.OPERAND_INVALID","sblr.limit.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrLimitExecutorId,1284,"1.0",scratchbird::engine::internal_api::kSblrLimitOperandDescriptorId,scratchbird::engine::internal_api::kSblrLimitResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=limit_descriptor.availability||a.snapshot.generation!=view.limit_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4109,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.limit.executor_unavailable");limit_availability_generation=a.snapshot.generation;}
@@ -23322,11 +23869,170 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       dispatched.api_result.result_shape.result_kind = "ddl_result";
     }
     if (catalog_introspect_root && !dispatched.accepted) {
+      if (catalog_introspect_authority == nullptr ||
+          receipt->engine_context.statement_transaction_inventory_snapshot ==
+              nullptr) {
+        return fail_result(
+            SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4100,
+            "SECURITY.ACCESS_DENIED",
+            "sblr.catalog_introspect.result_authority_hidden");
+      }
+      if (catalog_introspect_authority->terminal_result_published) {
+        // Result publication is the terminal statement-snapshot barrier.  An
+        // exact retry observes the retained CIRS byte-for-byte; cancellation
+        // and mutable catalog state cannot retract or regenerate it.
+        catalog_introspect_result_bytes =
+            catalog_introspect_authority->canonical_terminal_result_bytes;
+      } else {
+        const auto inventory_fence = scratchbird::storage::database::
+            RevalidateLocalTransactionInventorySnapshot(
+                *receipt->engine_context
+                     .statement_transaction_inventory_snapshot);
+        if (!inventory_fence.ok()) {
+          return fail_result(
+              SB_ENGINE_STATUS_CONFLICT, out_result, 4100,
+              "MGA.AUTHORITY_MISMATCH",
+              "sblr.catalog_introspect.transaction_inventory_stale");
+        }
+        if (cancellation_observed()) {
+          return fail_result(
+              SB_ENGINE_STATUS_TIMEOUT, out_result, 4100,
+              "PROCESS.CANCELLED",
+              "sblr.catalog_introspect.cancelled_before_catalog_revalidation");
+        }
+        const auto current_descriptor = scratchbird::engine::internal_api::
+            LoadMgaRelationStorageDescriptor(
+                receipt->engine_context,
+                catalog_introspect_authority->object_uuid);
+        if (!current_descriptor.ok ||
+            current_descriptor.descriptor.relation_uuid.canonical !=
+                catalog_introspect_authority->object_uuid ||
+            current_descriptor.descriptor.relation_generation !=
+                catalog_introspect_authority->object_generation ||
+            current_descriptor.descriptor.descriptor_uuid.canonical !=
+                catalog_introspect_authority->relation_descriptor_uuid ||
+            current_descriptor.descriptor.descriptor_generation !=
+                catalog_introspect_authority
+                    ->relation_descriptor_generation) {
+          return fail_result(
+              SB_ENGINE_STATUS_CONFLICT, out_result, 4100,
+              "MGA.AUTHORITY_MISMATCH",
+              "sblr.catalog_introspect.relation_descriptor_stale");
+        }
+        const auto authorization = scratchbird::engine::internal_api::
+            EvaluateMaterializedAuthorization(
+                receipt->engine_context,
+                receipt->engine_context.authorization_context, "SELECT",
+                catalog_introspect_authority->object_uuid);
+        if (!authorization.authorized || authorization.denied ||
+            authorization.policy_recheck_required) {
+          return fail_result(
+              SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4100,
+              "SECURITY.ACCESS_DENIED",
+              "sblr.catalog_introspect.object_hidden");
+        }
+        if (cancellation_observed()) {
+          return fail_result(
+              SB_ENGINE_STATUS_TIMEOUT, out_result, 4100,
+              "PROCESS.CANCELLED",
+              "sblr.catalog_introspect.cancelled_before_result_publication");
+        }
+        std::unordered_set<std::string> issued{
+            view.receipt_uuid,
+            view.statement_uuid,
+            view.statement_snapshot_uuid,
+            catalog_introspect_authority->request_uuid,
+            catalog_introspect_authority->readable_projection_uuid,
+            catalog_introspect_authority->row_descriptor_uuid,
+            catalog_introspect_authority->result_set_uuid,
+            catalog_introspect_authority->object_uuid,
+            catalog_introspect_authority->relation_descriptor_uuid};
+        std::string publication_barrier_uuid;
+        if (!generate_distinct_statement_context_uuid(
+                &issued, &publication_barrier_uuid)) {
+          return fail_result(
+              SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4100,
+              "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+              "sblr.catalog_introspect.publication_identity_unavailable");
+        }
+        scratchbird::engine::sblr::SblrCatalogIntrospectResultV1 carrier;
+        carrier.request_uuid =
+            TextToUuid(catalog_introspect_authority->request_uuid);
+        carrier.readable_projection_uuid = TextToUuid(
+            catalog_introspect_authority->readable_projection_uuid);
+        carrier.row_descriptor_uuid =
+            TextToUuid(catalog_introspect_authority->row_descriptor_uuid);
+        carrier.result_set_uuid =
+            TextToUuid(catalog_introspect_authority->result_set_uuid);
+        carrier.object_uuid =
+            TextToUuid(catalog_introspect_authority->object_uuid);
+        carrier.statement_snapshot_uuid =
+            TextToUuid(catalog_introspect_authority->statement_snapshot_uuid);
+        carrier.catalog_epoch = catalog_introspect_authority->catalog_epoch;
+        carrier.security_epoch = catalog_introspect_authority->security_epoch;
+        carrier.row_count = static_cast<std::uint64_t>(
+            catalog_introspect_authority->result_shape.rows.size());
+        carrier.object_kind = catalog_introspect_authority->object_kind;
+        carrier.profile = catalog_introspect_authority->profile;
+        carrier.flags = catalog_introspect_authority->flags;
+        carrier.row_material_sha256 =
+            catalog_introspect_authority->row_material_sha256;
+        carrier.descriptor_evidence_sha256 =
+            catalog_introspect_authority->descriptor_evidence_sha256;
+        carrier.availability = catalog_introspect_availability_generation;
+        carrier.publication_barrier = TextToUuid(publication_barrier_uuid);
+        catalog_introspect_result_bytes = scratchbird::engine::sblr::
+            EncodeSblrCatalogIntrospectResultV1(carrier);
+        catalog_introspect_authority->canonical_terminal_result_bytes =
+            catalog_introspect_result_bytes;
+        catalog_introspect_authority->terminal_result_published =
+            !catalog_introspect_result_bytes.empty();
+      }
+      scratchbird::engine::sblr::SblrCatalogIntrospectResultV1
+          decoded_result;
+      std::string result_detail;
+      if (catalog_introspect_result_bytes.empty() ||
+          !scratchbird::engine::sblr::DecodeSblrCatalogIntrospectResultV1(
+              catalog_introspect_result_bytes.data(),
+              catalog_introspect_result_bytes.size(), &decoded_result,
+              &result_detail) ||
+          decoded_result.request_uuid !=
+              TextToUuid(catalog_introspect_authority->request_uuid) ||
+          decoded_result.result_set_uuid !=
+              TextToUuid(catalog_introspect_authority->result_set_uuid) ||
+          decoded_result.row_descriptor_uuid !=
+              TextToUuid(catalog_introspect_authority->row_descriptor_uuid) ||
+          decoded_result.statement_snapshot_uuid !=
+              TextToUuid(catalog_introspect_authority
+                             ->statement_snapshot_uuid) ||
+          decoded_result.object_uuid !=
+              catalog_introspect_descriptor.object_uuid ||
+          decoded_result.row_count !=
+              catalog_introspect_authority->result_shape.rows.size() ||
+          decoded_result.row_material_sha256 !=
+              catalog_introspect_authority->row_material_sha256 ||
+          decoded_result.descriptor_evidence_sha256 !=
+              catalog_introspect_descriptor.evidence ||
+          decoded_result.availability !=
+              catalog_introspect_availability_generation) {
+        catalog_introspect_result_bytes.clear();
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4100,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.catalog_introspect.result_authority_stale",
+            result_detail);
+      }
       dispatched.accepted = true;
+      dispatched.envelope_validated = true;
       dispatched.dispatched_to_api = true;
       dispatched.api_result.ok = true;
       dispatched.api_result.operation_id = "engine.op.catalog_introspect";
-      dispatched.api_result.result_shape.result_kind = "catalog_introspect_result";
+      dispatched.api_result.result_shape =
+          catalog_introspect_authority->result_shape;
+      dispatched.api_result.evidence.push_back(
+          {"catalog_introspect_result_sha256",
+           "sha256:" + scratchbird::core::hash::HexLower(
+                           decoded_result.evidence)});
     }
     if (public_update_rows_root && !dispatched.accepted) {
       using scratchbird::engine::internal_api::EngineApiResult;
@@ -24488,35 +25194,6 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   std::vector<std::uint8_t> sequence_setval_result_bytes;if(sequence_setval_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_sequence_setval");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSequenceSetvalDescriptor(c,sequence_setval_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4095,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSequenceSetvalResultV1 rr;rr.body[0]=1;rr.body[40]=1;rr.body[44]=8;rr.body[48]=1;rr.availability=sequence_setval_availability_generation;sequence_setval_result_bytes=scratchbird::engine::sblr::EncodeSblrSequenceSetvalResultV1(rr);if(sequence_setval_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4095,"SEQUENCE.ASSIGNMENT_FAILED","sblr.sequence_setval.result_encoding_failed");}
   std::vector<std::uint8_t> query_numeric_result_bytes;if(query_numeric_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_query_numeric");auto consumed=scratchbird::engine::internal_api::ConsumeSblrQueryNumericDescriptor(c,query_numeric_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4097,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrQueryNumericResultV1 rr;rr.body[0]=1;rr.body[40]=1;rr.body[44]=8;rr.body[48]=1;rr.availability=query_numeric_availability_generation;query_numeric_result_bytes=scratchbird::engine::sblr::EncodeSblrQueryNumericResultV1(rr);if(query_numeric_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4097,"NUMERIC.EVALUATION_FAILED","sblr.query_numeric.result_encoding_failed");}
   std::vector<std::uint8_t> advanced_datatype_family_result_bytes;if(advanced_datatype_family_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_advanced_datatype_family");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAdvancedDatatypeFamilyDescriptor(c,advanced_datatype_family_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4099,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAdvancedDatatypeFamilyResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.body[64]=1;rr.availability=advanced_datatype_family_availability_generation;rr.publication_barrier[0]=1;advanced_datatype_family_result_bytes=scratchbird::engine::sblr::EncodeSblrAdvancedDatatypeFamilyResultV1(rr);if(advanced_datatype_family_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4099,"DATATYPE.FAMILY_EVALUATION_FAILED","sblr.advanced_datatype_family.result_encoding_failed");}
-  std::vector<std::uint8_t> catalog_introspect_result_bytes;
-  if (catalog_introspect_root) {
-    auto coordinator_context = receipt->engine_context;
-    coordinator_context.trace_tags.push_back("private_catalog_introspect");
-    auto consumed =
-        scratchbird::engine::internal_api::ConsumeSblrCatalogIntrospectDescriptor(
-            coordinator_context, catalog_introspect_descriptor);
-    if (!consumed.ok) {
-      return fail_result(
-          consumed.diagnostic.code == "PROCESS.CANCELLED"
-              ? SB_ENGINE_STATUS_TIMEOUT
-              : SB_ENGINE_STATUS_CONFLICT,
-          out_result, 4099, consumed.diagnostic.code,
-          consumed.diagnostic.message_key, consumed.diagnostic.detail);
-    }
-    scratchbird::engine::sblr::SblrCatalogIntrospectResultV1 result_carrier;
-    result_carrier.body[0] = 1;
-    result_carrier.body[1] = 1;
-    result_carrier.availability = catalog_introspect_availability_generation;
-    result_carrier.publication_barrier[0] = 1;
-    catalog_introspect_result_bytes =
-        scratchbird::engine::sblr::EncodeSblrCatalogIntrospectResultV1(
-            result_carrier);
-    if (catalog_introspect_result_bytes.empty()) {
-      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4099,
-                         "CATALOG.INTROSPECT_FAILED",
-                         "sblr.catalog_introspect.result_encoding_failed");
-    }
-  }
   std::vector<std::uint8_t> project_result_bytes;if(project_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_project");auto consumed=scratchbird::engine::internal_api::ConsumeSblrProjectDescriptor(c,project_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4101,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrProjectResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.body[68]=1;rr.availability=project_availability_generation;rr.publication_barrier[0]=1;project_result_bytes=scratchbird::engine::sblr::EncodeSblrProjectResultV1(rr);if(project_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4101,"PROJECTION.EXECUTION_FAILED","sblr.project.result_encoding_failed");}
   std::vector<std::uint8_t> aggregate_result_bytes;if(aggregate_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_aggregate");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAggregateDescriptor(c,aggregate_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4103,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAggregateResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.body[68]=1;rr.availability=aggregate_availability_generation;rr.publication_barrier[0]=1;aggregate_result_bytes=scratchbird::engine::sblr::EncodeSblrAggregateResultV1(rr);if(aggregate_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4103,"AGGREGATE.EXECUTION_FAILED","sblr.aggregate.result_encoding_failed");}
   std::vector<std::uint8_t> group_result_bytes;if(group_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_group");auto consumed=scratchbird::engine::internal_api::ConsumeSblrGroupDescriptor(c,group_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4105,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrGroupResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.body[68]=1;rr.availability=group_availability_generation;rr.publication_barrier[0]=1;group_result_bytes=scratchbird::engine::sblr::EncodeSblrGroupResultV1(rr);if(group_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4105,"GROUP.EXECUTION_FAILED","sblr.group.result_encoding_failed");}
@@ -24657,10 +25334,22 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       !public_native_bulk_ingest_root &&
       !public_ddl_create_table_root && !ddl_drop_table_root && !source_map_root && !error_vector_root &&
       !ddl_create_publication_root && !ddl_alter_publication_root && !ddl_drop_publication_root && !ddl_create_subscription_root && !ddl_alter_subscription_root && !ddl_drop_subscription_root && !ddl_create_operator_root && !ddl_drop_operator_root && !ddl_drop_timeseries_value_cache_root &&
-      !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !transaction_characteristics_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !table_truncate_root && !table_analyze_root && !bulk_import_stream_root && !bulk_export_stream_root && !statement_batch_root && !atomic_cas_root && !atomic_rmw_root && !advisory_lock_root && !advisory_lock_release_root && !function_call_root && !operator_call_root && !cast_root && !compare_root && !domain_operation_root && !udr_invoke_root && !procedure_invoke_root && !function_invoke_root && !aggregate_invoke_root && !sequence_nextval_root && !sequence_currval_root && !query_numeric_root && !advanced_datatype_family_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !project_root && !aggregate_root && !group_root && !security_create_group_mapping_root && !security_drop_group_mapping_root && !sort_root && !limit_root && !kv_structured_read_root && !kv_structured_mutate_root && !kv_structured_scan_root && !kv_structured_stream_read_root && !kv_structured_stream_append_root && !kv_structured_timeseries_root && !system_config_set_root && !ddl_create_domain_root && !ddl_alter_domain_root && !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root && !ddl_create_trigger_root && !ddl_create_package_root && !ddl_create_or_replace_srs_root && !ddl_drop_srs_root && !ddl_create_schema_root && !ddl_alter_rewrite_rule_root && !ddl_drop_rewrite_rule_root && !ddl_validate_constraint_root) {
+      !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !transaction_characteristics_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !table_truncate_root && !table_analyze_root && !bulk_import_stream_root && !bulk_export_stream_root && !statement_batch_root && !atomic_cas_root && !atomic_rmw_root && !advisory_lock_root && !advisory_lock_release_root && !function_call_root && !operator_call_root && !cast_root && !compare_root && !domain_operation_root && !udr_invoke_root && !procedure_invoke_root && !function_invoke_root && !aggregate_invoke_root && !sequence_nextval_root && !sequence_currval_root && !query_numeric_root && !advanced_datatype_family_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !catalog_introspect_root && !project_root && !aggregate_root && !group_root && !security_create_group_mapping_root && !security_drop_group_mapping_root && !sort_root && !limit_root && !kv_structured_read_root && !kv_structured_mutate_root && !kv_structured_scan_root && !kv_structured_stream_read_root && !kv_structured_stream_append_root && !kv_structured_timeseries_root && !system_config_set_root && !ddl_create_domain_root && !ddl_alter_domain_root && !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root && !ddl_create_trigger_root && !ddl_create_package_root && !ddl_create_or_replace_srs_root && !ddl_drop_srs_root && !ddl_create_schema_root && !ddl_alter_rewrite_rule_root && !ddl_drop_rewrite_rule_root && !ddl_validate_constraint_root) {
     result->query_execute_result_handle = query_handle_validation.handle;
     result->query_execute_result_handle_validated = true;
     result->admitted_query_row_stream_renderer = true;
+  }
+  if (catalog_introspect_root && catalog_introspect_authority != nullptr) {
+    result->catalog_introspect_result_handle.request_uuid =
+        catalog_introspect_authority->request_uuid;
+    result->catalog_introspect_result_handle.result_set_uuid =
+        catalog_introspect_authority->result_set_uuid;
+    result->catalog_introspect_result_handle.row_descriptor_uuid =
+        catalog_introspect_authority->row_descriptor_uuid;
+    result->catalog_introspect_result_handle.snapshot_uuid =
+        catalog_introspect_authority->statement_snapshot_uuid;
+    result->catalog_introspect_result_handle_validated = true;
+    result->admitted_catalog_row_stream_renderer = true;
   }
   if (ddl_alter_dictionary_root) {
     auto c=receipt->engine_context;
@@ -24836,7 +25525,16 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
   if(query_numeric_root){result->result_kind="typed_value";result->payload.assign(reinterpret_cast<const char*>(query_numeric_result_bytes.data()),query_numeric_result_bytes.size());}
   if(advanced_datatype_family_root){result->result_kind="datatype_family_evaluation";result->payload.assign(reinterpret_cast<const char*>(advanced_datatype_family_result_bytes.data()),advanced_datatype_family_result_bytes.size());}
   if(project_root){result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(project_result_bytes.data()),project_result_bytes.size());}
-  if(catalog_introspect_root){result->result_kind="catalog_introspect_result";result->payload.assign(reinterpret_cast<const char*>(catalog_introspect_result_bytes.data()),catalog_introspect_result_bytes.size());}
+  if (catalog_introspect_root) {
+    // The opcode result descriptor remains catalog_introspect_result, while
+    // the engine-owned SHOW profile publishes its exact rowset kind.  Do not
+    // replace that profile authority with the generic descriptor identity;
+    // FETCH renders this value from the retained result handle.
+    result->result_kind = dispatched.api_result.result_shape.result_kind;
+    result->payload.assign(
+        reinterpret_cast<const char*>(catalog_introspect_result_bytes.data()),
+        catalog_introspect_result_bytes.size());
+  }
   if(ddl_alter_trigger_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_alter_trigger");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlAlterTriggerDescriptor(c,ddl_alter_trigger_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4125,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlAlterTriggerResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_alter_trigger_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlAlterTriggerResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4125,"SYSTEM.CONFIG_FAILED","sblr.ddl_alter_trigger.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_drop_trigger_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_drop_trigger");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropTriggerDescriptor(c,ddl_drop_trigger_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4126,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropTriggerResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=ddl_drop_trigger_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropTriggerResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4126,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_trigger.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_create_procedure_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_procedure");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateProcedureDescriptor(c,ddl_create_procedure_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4127,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateProcedureResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_procedure_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateProcedureResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4127,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_procedure.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
@@ -25956,6 +26654,16 @@ sb_engine_status_t sb_engine_result_next_batch(sb_engine_result_t result,
        result->admitted_query_row_stream_renderer) &&
       !(result->query_execute_result_handle_validated &&
         result->admitted_query_row_stream_renderer)) {
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
+  if ((result->catalog_introspect_result_handle_validated ||
+       result->admitted_catalog_row_stream_renderer) &&
+      !(result->catalog_introspect_result_handle_validated &&
+        result->admitted_catalog_row_stream_renderer)) {
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
+  if (result->admitted_query_row_stream_renderer &&
+      result->admitted_catalog_row_stream_renderer) {
     return SB_ENGINE_STATUS_CONFLICT;
   }
   const std::uint64_t total_rows = static_cast<std::uint64_t>(result->row_values.size());

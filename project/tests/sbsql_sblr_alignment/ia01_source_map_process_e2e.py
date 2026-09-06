@@ -653,6 +653,20 @@ def main() -> int:
                     "DEALLOCATE public malformed, budget, cross-session hidden, "
                     "no-effect, and terminal-revocation boundaries did not pass"
                 )
+        elif args.operation == "show-object-detail":
+            expected_success = (
+                "CSC-TEST-003609 CATALOG_INTROSPECT_SHOW_TABLE accepted "
+                "canonical_sblr=true receipt_name_bound=true "
+                "typed_cirs=true cursor_rows=true identity=true "
+                "columns=true properties=true cursor_closed=true "
+                "transaction_rolled_back=true publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "SHOW TABLE did not complete the exact receipt-bound "
+                    "catalog-introspection, paged-rowset, EOS-cleanup, and "
+                    "transaction-rollback route"
+                )
         elif args.operation == "name-resolve":
             expected_success = (
                 "CSC-TEST-003613 NAME_RESOLVE accepted "
@@ -707,7 +721,16 @@ def main() -> int:
         elif args.operation == "show-wait-events":
             expected = ()
         elif args.operation == "show-object-detail":
-            expected = ("operation_id=engine.op.catalog_introspect", "opcode=SBLR_CATALOG_INTROSPECT", "opcode_code=4864")
+            expected = (
+                "operation_id=engine.op.catalog_introspect",
+                "opcode=SBLR_CATALOG_INTROSPECT",
+                "opcode_code=4864",
+                "operand_descriptor_id=catalog_introspect_descriptor",
+                "result_descriptor_id=catalog_introspect_result",
+                "result_descriptor_version=1",
+                "executor_evidence_sha256=sha256:",
+                "parent_success_barrier=passed",
+            )
         elif args.operation == "source-map":
             expected = ("executor_id=engine.op.source_map", "opcode=SBLR_SOURCE_MAP",
                         "opcode_code=6")

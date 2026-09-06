@@ -11978,6 +11978,7 @@ SessionOperationResult HandleCoordinateProject(ServerSessionRegistry*registry,co
 SessionOperationResult HandleCoordinateCatalogIntrospect(
     ServerSessionRegistry* registry, const HostedEngineState& engine_state,
     const sbps::Frame& request) {
+  (void)engine_state;
   SessionOperationResult result;
   result.response_message_type = 269;
   result.response_schema_id = sbps::kSchemaCoordinateCatalogIntrospectResultV1;
@@ -11999,53 +12000,75 @@ SessionOperationResult HandleCoordinateCatalogIntrospect(
           request.payload.data(), request.payload.size(), &decoded, &detail)) {
     return refuse("SBLR.OPERAND.INVALID", detail);
   }
-  const auto session =
-      registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));
-  if (session == registry->sessions_by_uuid.end()) {
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
 
   const auto receipt_uuid = UuidBytesToText(decoded.receipt);
-  engine_bridge::StatementContextReceiptView receipt_view;
-  bool found_owned_receipt = false;
-  {
-    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
-    for (const auto& [statement_uuid, row] :
-         registry->statement_contexts_by_statement_uuid) {
-      (void)statement_uuid;
-      if (!row.released && row.view.receipt_uuid == receipt_uuid &&
-          row.session_uuid == request.header.session_uuid) {
-        receipt_view = row.view;
-        found_owned_receipt = true;
-        break;
-      }
-    }
-  }
-  if (!found_owned_receipt) {
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "catalog_receipt_hidden");
   }
-  if (receipt_view.catalog_introspect_executor_availability_generation == 0) {
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION.INVALID", "catalog_receipt_ended");
+  }
+  if (receipt.view.catalog_introspect_executor_availability_generation == 0) {
     return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
                   "catalog_introspect_executor_unavailable");
   }
 
-  auto context = EngineContextForSession(session->second, engine_state, request);
-  context.statement_uuid.canonical = receipt_uuid;
-  context.statement_metadata_snapshot_engine_owned = true;
-  context.trace_tags.push_back("private_catalog_introspect_binder");
-  auto coordinated = engine_api::CompileSblrCatalogIntrospectDescriptor(
-      context, receipt_uuid, decoded.occurrence, decoded.object_occurrence,
-      receipt_view.catalog_introspect_executor_availability_generation);
-  if (!coordinated.ok) {
-    return refuse(coordinated.diagnostic.code,
-                  coordinated.diagnostic.message_key);
+  engine_bridge::StatementCatalogIntrospectAuthorityV1 authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::BindStatementCatalogIntrospectAuthorityV1(
+      receipt.handle, decoded.occurrence, decoded.object_occurrence,
+      &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  if (engine_result != nullptr) {
+    sb_engine_diagnostic_set_view_t diagnostics{};
+    if (sb_engine_result_diagnostics(engine_result, &diagnostics) ==
+            SB_ENGINE_STATUS_OK &&
+        diagnostics.diagnostic_count != 0 &&
+        diagnostics.diagnostics != nullptr) {
+      const auto& diagnostic = diagnostics.diagnostics[0];
+      engine_code.assign(diagnostic.symbolic_code.data,
+                         diagnostic.symbolic_code.size_bytes);
+      engine_detail.assign(diagnostic.safe_detail.data,
+                           diagnostic.safe_detail.size_bytes);
+    }
+    (void)sb_engine_result_release(engine_result);
   }
-  result.payload =
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1 descriptor;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogIntrospectDescriptorV1(
+          authority.canonical_descriptor_bytes.data(),
+          authority.canonical_descriptor_bytes.size(), &descriptor, &detail,
+          false) ||
+      descriptor.object_uuid != TextToUuid(authority.object_uuid) ||
+      descriptor.catalog_epoch != receipt.view.catalog_generation_id ||
+      descriptor.security_epoch != receipt.view.security_epoch ||
+      descriptor.availability !=
+          receipt.view.catalog_introspect_executor_availability_generation ||
+      descriptor.evidence != authority.descriptor_evidence_sha256 ||
       scratchbird::engine::sblr::EncodeSblrCatalogIntrospectDescriptorV1(
-          coordinated.descriptor, false);
-  if (result.payload.empty()) {
-    return refuse("CATALOG.INTROSPECT_FAILED", "CIDD_encode_failed");
+          descriptor, false) != authority.canonical_descriptor_bytes) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty() ? "catalog_descriptor_authority_mismatch"
+                                 : std::move(detail));
   }
+  result.payload = authority.canonical_descriptor_bytes;
   result.accepted = true;
   return result;
 }

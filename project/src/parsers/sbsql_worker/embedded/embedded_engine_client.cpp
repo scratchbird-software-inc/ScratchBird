@@ -19,6 +19,7 @@
 #include "engine/sblr/sblr_result_page_runtime.hpp"
 #include "engine/sblr/sblr_query_explain_runtime.hpp"
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
+#include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
@@ -2234,6 +2235,69 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::CoordinateNameResolve(
     AddDiagnostic(&result.messages, "MGA.TRANSACTION.STALE",
                   "embedded name-resolution descriptor is not exactly correlated",
                   detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateCatalogIntrospect(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrCatalogIntrospectRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogIntrospectRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded catalog-introspection request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateCatalogIntrospectRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateCatalogIntrospectRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateCatalogIntrospect(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrCatalogIntrospectDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateCatalogIntrospectResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaCoordinateCatalogIntrospectResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrCatalogIntrospectDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.object_kind != scratchbird::engine::sblr::
+                                    kSblrCatalogIntrospectObjectKindTableV1 ||
+      descriptor.profile != scratchbird::engine::sblr::
+                                kSblrCatalogIntrospectProfileShowObjectDetailV1 ||
+      descriptor.flags != scratchbird::engine::sblr::
+                              kSblrCatalogIntrospectDetailFlagV1) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.TRANSACTION.STALE",
+        "embedded catalog-introspection descriptor is not exactly correlated",
+        detail);
     return result;
   }
   result.accepted = true;
