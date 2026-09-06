@@ -144,6 +144,7 @@
 #include "sblr_optimizer_stats_read_runtime.hpp"
 #include "sblr_optimizer_stats_drop_runtime.hpp"
 #include "sblr_name_resolve_journal.hpp"
+#include "sblr_ddl_create_schema_execution_journal.hpp"
 #include "sblr_parse_text_journal.hpp"
 #include "sblr_catalog_epoch_check_journal.hpp"
 #include "sblr_database_attach_journal.hpp"
@@ -26368,113 +26369,112 @@ if(ddl_drop_srs_root){auto c=receipt->engine_context;c.trace_tags.push_back("pri
                            consumed.diagnostic.detail);
       }
 
-      scratchbird::engine::internal_api::EngineCreateSchemaRequest create;
-      create.context = execution_context;
-      create.operation_id = "ddl.create_schema";
-      create.target_database.uuid = execution_context.database_uuid;
-      create.target_database.object_kind = "database";
-      create.target_schema.uuid.canonical =
-          ddl_create_schema_authority->parent_schema_uuid;
-      create.target_schema.object_kind = "schema";
-      create.target_object.uuid.canonical =
-          ddl_create_schema_authority->schema_uuid;
-      create.target_object.object_kind = "schema";
-      create.localized_names.push_back(
-          {"en", "primary",
-           ddl_create_schema_authority->canonical_path_utf8,
-           ddl_create_schema_authority->leaf_name_utf8, true});
-      create.option_envelopes.push_back(
-          "catalog_ddl_mutation_audit:" +
-          ddl_create_schema_authority->recovery_uuid);
-      const auto created =
-          scratchbird::engine::internal_api::EngineCreateSchema(create);
-      if (!created.ok) {
-        const auto diagnostic =
-            created.diagnostics.empty()
-                ? scratchbird::engine::internal_api::EngineApiDiagnostic{}
-                : created.diagnostics.front();
+      auto journal_context = execution_context;
+      journal_context.trace_tags.push_back(
+          "private_ddl_create_schema_execution_journal");
+      scratchbird::engine::internal_api::
+          SblrDdlCreateSchemaJournalKeyV1 journal_key;
+      journal_key.database_uuid = ddl_create_schema_descriptor.database_uuid;
+      journal_key.recovery_uuid = ddl_create_schema_descriptor.recovery_uuid;
+      journal_key.canonical_descriptor_bytes =
+          scratchbird::engine::sblr::
+              EncodeSblrDdlCreateSchemaDescriptorV1(
+                  ddl_create_schema_descriptor, true);
+      if (journal_key.canonical_descriptor_bytes.empty()) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4126,
+            "SBLR.OPERAND_INVALID",
+            "sblr.ddl_create_schema.execution_journal_descriptor_invalid");
+      }
+
+      const auto journaled = scratchbird::engine::internal_api::
+          ExecuteSblrDdlCreateSchemaExecutionJournalV1(
+              journal_context, journal_key,
+              [&](const scratchbird::engine::sblr::
+                      SblrDdlCreateSchemaResultV1& planned_result) {
+                if (cancellation_observed()) {
+                  return scratchbird::engine::internal_api::
+                      MakeEngineApiDiagnostic(
+                          "PROCESS.CANCELLED",
+                          "sblr.ddl_create_schema.cancelled_before_catalog_mutation",
+                          {});
+                }
+
+                scratchbird::engine::internal_api::EngineCreateSchemaRequest
+                    create;
+                create.context = execution_context;
+                create.operation_id = "ddl.create_schema";
+                create.target_database.uuid = execution_context.database_uuid;
+                create.target_database.object_kind = "database";
+                create.target_schema.uuid.canonical =
+                    ddl_create_schema_authority->parent_schema_uuid;
+                create.target_schema.object_kind = "schema";
+                create.target_object.uuid.canonical =
+                    ddl_create_schema_authority->schema_uuid;
+                create.target_object.object_kind = "schema";
+                create.localized_names.push_back(
+                    {"en", "primary",
+                     ddl_create_schema_authority->canonical_path_utf8,
+                     ddl_create_schema_authority->leaf_name_utf8, true});
+                create.recovery_operation_uuid.canonical =
+                    ddl_create_schema_authority->recovery_uuid;
+                create.requested_catalog_row_uuid.canonical =
+                    CanonicalUuidText(planned_result.catalog_row_uuid);
+                create.mutation_uuid.canonical =
+                    CanonicalUuidText(planned_result.mutation_uuid);
+                create.statement_publication_barrier_uuid.canonical =
+                    CanonicalUuidText(planned_result.publication_barrier);
+                create.option_envelopes.push_back(
+                    "catalog_ddl_mutation_audit:" +
+                    ddl_create_schema_authority->recovery_uuid);
+                const auto created = scratchbird::engine::internal_api::
+                    EngineCreateSchema(create);
+                if (!created.ok) {
+                  return created.diagnostics.empty()
+                             ? scratchbird::engine::internal_api::
+                                   MakeEngineApiDiagnostic(
+                                       "DDL.CREATE_SCHEMA_FAILED",
+                                       "sblr.ddl_create_schema.catalog_mutation_failed",
+                                       {})
+                             : created.diagnostics.front();
+                }
+                if (created.primary_object.object_kind != "schema" ||
+                    created.primary_object.uuid.canonical !=
+                        ddl_create_schema_authority->schema_uuid ||
+                    created.catalog_row_uuid.canonical !=
+                        CanonicalUuidText(planned_result.catalog_row_uuid)) {
+                  return scratchbird::engine::internal_api::
+                      MakeEngineApiDiagnostic(
+                          "MGA.AUTHORITY_MISMATCH",
+                          "sblr.ddl_create_schema.catalog_result_authority_mismatch",
+                          {});
+                }
+                return scratchbird::engine::internal_api::
+                    MakeEngineApiDiagnostic("OK", "ok", {}, false);
+              });
+      if (!journaled.ok ||
+          journaled.snapshot.state != scratchbird::engine::internal_api::
+                                            SblrDdlCreateSchemaJournalStateV1::
+                                                published) {
+        const auto& diagnostic = journaled.diagnostic;
         return fail_result(
             diagnostic.code.rfind("SECURITY.", 0) == 0
                 ? SB_ENGINE_STATUS_SECURITY_DENIED
                 : diagnostic.code == "PROCESS.CANCELLED"
                       ? SB_ENGINE_STATUS_TIMEOUT
-                      : SB_ENGINE_STATUS_CONFLICT,
+                      : diagnostic.code == "ENGINE.RESOURCE.EXHAUSTED"
+                            ? SB_ENGINE_STATUS_RESOURCE_EXHAUSTED
+                            : SB_ENGINE_STATUS_CONFLICT,
             out_result, 4126,
-            diagnostic.code.empty() ? "CATALOG.NAME_INVALID"
+            diagnostic.code.empty() ? "DDL.CREATE_SCHEMA_FAILED"
                                     : diagnostic.code,
-            "sblr.ddl_create_schema.catalog_mutation_failed",
+            diagnostic.message_key.empty()
+                ? "sblr.ddl_create_schema.execution_journal_failed"
+                : diagnostic.message_key,
             diagnostic.detail);
       }
-      if (created.primary_object.object_kind != "schema" ||
-          created.primary_object.uuid.canonical !=
-              ddl_create_schema_authority->schema_uuid ||
-          !canonical_non_nil_uuid_text(created.catalog_row_uuid.canonical)) {
-        return fail_result(
-            SB_ENGINE_STATUS_CONFLICT, out_result, 4126,
-            "MGA.AUTHORITY_MISMATCH",
-            "sblr.ddl_create_schema.catalog_result_authority_mismatch");
-      }
-
-      std::unordered_set<std::string> terminal_identities{
-          ddl_create_schema_authority->schema_uuid,
-          ddl_create_schema_authority->binding_uuid,
-          ddl_create_schema_authority->recovery_uuid,
-          created.catalog_row_uuid.canonical};
-      std::string mutation_uuid;
-      std::string publication_barrier_uuid;
-      if (!generate_distinct_statement_context_uuid(&terminal_identities,
-                                                     &mutation_uuid) ||
-          !generate_distinct_statement_context_uuid(
-              &terminal_identities, &publication_barrier_uuid)) {
-        return fail_result(
-            SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4126,
-            "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
-            "sblr.ddl_create_schema.result_identity_unavailable");
-      }
-
-      scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1 terminal;
-      terminal.receipt = ddl_create_schema_descriptor.receipt;
-      terminal.schema_uuid = ddl_create_schema_descriptor.schema_uuid;
-      terminal.schema_generation =
-          ddl_create_schema_descriptor.schema_generation;
-      terminal.parent_schema_uuid =
-          ddl_create_schema_descriptor.parent_schema_uuid;
-      terminal.parent_namespace_generation =
-          ddl_create_schema_descriptor.parent_namespace_generation;
-      terminal.database_uuid = ddl_create_schema_descriptor.database_uuid;
-      terminal.owning_transaction_uuid =
-          ddl_create_schema_descriptor.owning_transaction_uuid;
-      terminal.owning_local_transaction_id =
-          ddl_create_schema_descriptor.owning_local_transaction_id;
-      terminal.statement_snapshot_uuid =
-          ddl_create_schema_descriptor.statement_snapshot_uuid;
-      terminal.catalog_row_uuid = TextToUuid(created.catalog_row_uuid.canonical);
-      terminal.mutation_uuid = TextToUuid(mutation_uuid);
-      terminal.catalog_generation =
-          ddl_create_schema_descriptor.catalog_generation;
-      terminal.security_epoch = ddl_create_schema_descriptor.security_epoch;
-      terminal.resource_generation =
-          ddl_create_schema_descriptor.resource_generation;
-      terminal.normalized_path_sha256 =
-          ddl_create_schema_descriptor.normalized_path_sha256;
-      terminal.descriptor_evidence_sha256 =
-          ddl_create_schema_descriptor.evidence;
-      terminal.availability = ddl_create_schema_availability_generation;
-      terminal.publication_barrier = TextToUuid(publication_barrier_uuid);
       create_schema_result_bytes =
-          scratchbird::engine::sblr::EncodeSblrDdlCreateSchemaResultV1(
-              terminal);
-      std::string detail;
-      scratchbird::engine::sblr::SblrDdlCreateSchemaResultV1 decoded;
-      if (create_schema_result_bytes.empty() ||
-          !scratchbird::engine::sblr::DecodeSblrDdlCreateSchemaResultV1(
-              create_schema_result_bytes.data(),
-              create_schema_result_bytes.size(), &decoded, &detail)) {
-        return fail_result(
-            SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4126,
-            "MGA.AUTHORITY_MISMATCH",
-            "sblr.ddl_create_schema.result_encoding_failed", detail);
-      }
+          journaled.snapshot.canonical_result_bytes;
       ddl_create_schema_authority->canonical_terminal_result_bytes =
           create_schema_result_bytes;
       ddl_create_schema_authority->terminal_result_published = true;

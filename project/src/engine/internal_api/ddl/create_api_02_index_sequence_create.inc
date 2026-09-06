@@ -12,29 +12,134 @@
           UnsupportedCrudFeatureDiagnostic("ddl.create_schema", "unsupported_schema_option"));
     }
   }
+  if (exact_recovery_identity) {
+    if (mutation_audit_recovery_uuid !=
+        request.recovery_operation_uuid.canonical) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context,
+          "ddl.create_schema",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_schema",
+              "recovery_operation_does_not_match_mutation_audit"));
+    }
+    schema_extension_payload.push_back(
+        "catalog_ddl_recovery_operation=" +
+        request.recovery_operation_uuid.canonical);
+    schema_extension_payload.push_back(
+        "catalog_ddl_result_row_uuid=" +
+        request.requested_catalog_row_uuid.canonical);
+    schema_extension_payload.push_back(
+        "catalog_ddl_mutation_uuid=" + request.mutation_uuid.canonical);
+    schema_extension_payload.push_back(
+        "catalog_ddl_statement_publication_barrier=" +
+        request.statement_publication_barrier_uuid.canonical);
+  }
   record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names, record.localized_comments);
   for (const auto& extension : schema_extension_payload) {
     if (!record.payload.empty()) { record.payload.push_back(';'); }
     record.payload.append(extension);
   }
-  const auto appended = PersistSchemaTreeRecord(request.context, record, "ddl.create_schema");
-  if (appended.error) {
-    return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(request.context, "ddl.create_schema", appended);
+  const auto existing_schema = FindVisibleSchemaTreeRecord(
+      request.context, schema_uuid, request.context.local_transaction_id);
+  if (existing_schema.has_value()) {
+    const bool exact_replay =
+        exact_recovery_identity &&
+        existing_schema->schema_uuid == record.schema_uuid &&
+        existing_schema->parent_schema_uuid == record.parent_schema_uuid &&
+        existing_schema->default_name == record.default_name &&
+        existing_schema->payload == record.payload &&
+        existing_schema->state == record.state;
+    if (!exact_replay) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context,
+          "ddl.create_schema",
+          MakeInvalidRequestDiagnostic("ddl.create_schema",
+                                       "schema_uuid_already_exists"));
+    }
+  } else {
+    const auto appended =
+        PersistSchemaTreeRecord(request.context, record, "ddl.create_schema");
+    if (appended.error) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context, "ddl.create_schema", appended);
+    }
   }
-  const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
-                                                                "ddl.create_schema",
-                                                                record.schema_uuid,
-                                                                "schema",
-                                                                record.parent_schema_uuid,
-                                                                record.localized_names,
-                                                                record.default_name);
-  if (name_appended.error) {
-    return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(request.context, "ddl.create_schema", name_appended);
+
+  if (exact_recovery_identity) {
+    const auto loaded_names = LoadNameRegistryState(
+        request.context, request.context.local_transaction_id);
+    if (!loaded_names.ok) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context, "ddl.create_schema", loaded_names.diagnostic);
+    }
+    const auto exact_name = [](const NameRegistryEntry& left,
+                               const NameRegistryEntry& right) {
+      return left.creator_tx == right.creator_tx &&
+             left.object_uuid == right.object_uuid &&
+             left.object_class == right.object_class &&
+             left.scope_uuid == right.scope_uuid &&
+             left.parent_object_uuid == right.parent_object_uuid &&
+             left.parent_schema_uuid == right.parent_schema_uuid &&
+             left.language_tag == right.language_tag &&
+             left.name_class == right.name_class &&
+             left.reference_id == right.reference_id &&
+             left.dialect_profile_uuid == right.dialect_profile_uuid &&
+             left.identifier_profile_uuid == right.identifier_profile_uuid &&
+             left.case_fold_profile_uuid == right.case_fold_profile_uuid &&
+             left.quoted_identifier_profile_uuid ==
+                 right.quoted_identifier_profile_uuid &&
+             left.raw_name_text == right.raw_name_text &&
+             left.display_name == right.display_name &&
+             left.was_quoted == right.was_quoted &&
+             left.quote_style == right.quote_style &&
+             left.requires_exact_match == right.requires_exact_match &&
+             left.normalized_lookup_key == right.normalized_lookup_key &&
+             left.exact_lookup_key == right.exact_lookup_key &&
+             left.full_path_lookup_key == right.full_path_lookup_key &&
+             left.catalog_generation_id == right.catalog_generation_id &&
+             left.resource_epoch == right.resource_epoch &&
+             left.name_resolution_epoch == right.name_resolution_epoch &&
+             left.lifecycle_state == right.lifecycle_state &&
+             left.deleted == right.deleted;
+    };
+    for (const auto& name : record.localized_names) {
+      const auto wanted = MakeNameRegistryEntry(
+          request.context, record.schema_uuid, "schema",
+          record.parent_schema_uuid, name, record.default_name);
+      const bool already_present = std::any_of(
+          loaded_names.state.entries.begin(), loaded_names.state.entries.end(),
+          [&](const NameRegistryEntry& candidate) {
+            return exact_name(candidate, wanted);
+          });
+      if (already_present) continue;
+      const auto appended = AppendNameRegistryEntry(
+          request.context, wanted, "ddl.create_schema");
+      if (appended.error) {
+        return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+            request.context, "ddl.create_schema", appended);
+      }
+    }
+  } else {
+    const auto name_appended = PersistNameRegistryEntriesForObject(
+        request.context,
+        "ddl.create_schema",
+        record.schema_uuid,
+        "schema",
+        record.parent_schema_uuid,
+        record.localized_names,
+        record.default_name);
+    if (name_appended.error) {
+      return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+          request.context, "ddl.create_schema", name_appended);
+    }
   }
   auto result = MakeApiBehaviorSuccess<EngineCreateSchemaResult>(request.context, "ddl.create_schema");
   result.primary_object.uuid.canonical = record.schema_uuid;
   result.primary_object.object_kind = "schema";
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid.canonical =
+      exact_recovery_identity
+          ? request.requested_catalog_row_uuid.canonical
+          : GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.create_schema");
   AddApiBehaviorEvidence(&result, "schema", record.schema_uuid);
   for (const auto& extension : schema_extension_payload) {

@@ -549,6 +549,7 @@ add_library(sb_engine_internal_api
   sblr_prepared_coordination_registry.cpp
   sblr_prepared_statement_registry.cpp
   sblr_name_resolve_journal.cpp
+  sblr_ddl_create_schema_execution_journal.cpp
   sblr_parse_text_journal.cpp
   sblr_catalog_epoch_check_journal.cpp
   sblr_database_attach_journal.cpp

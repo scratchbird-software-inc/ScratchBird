@@ -223,11 +223,21 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(request.context, "ddl.create_schema", context_status);
   }
   const std::string schema_uuid = ApiBehaviorObjectUuid(request, "schema");
-  if (FindVisibleSchemaTreeRecord(request.context, schema_uuid, request.context.local_transaction_id)) {
+  const bool any_recovery_identity =
+      !request.recovery_operation_uuid.canonical.empty() ||
+      !request.requested_catalog_row_uuid.canonical.empty() ||
+      !request.mutation_uuid.canonical.empty() ||
+      !request.statement_publication_barrier_uuid.canonical.empty();
+  const bool exact_recovery_identity =
+      !request.recovery_operation_uuid.canonical.empty() &&
+      !request.requested_catalog_row_uuid.canonical.empty() &&
+      !request.mutation_uuid.canonical.empty() &&
+      !request.statement_publication_barrier_uuid.canonical.empty();
+  if (any_recovery_identity != exact_recovery_identity) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
         request.context,
         "ddl.create_schema",
-        MakeInvalidRequestDiagnostic("ddl.create_schema", "schema_uuid_already_exists"));
+        MakeInvalidRequestDiagnostic("ddl.create_schema", "recovery_identity_tuple_incomplete"));
   }
   const std::string parent_schema_uuid = request.target_schema.uuid.canonical;
   if (!parent_schema_uuid.empty() &&
@@ -259,6 +269,7 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   record.localized_names = names;
   record.default_name = SchemaTreeDefaultName(names, "unnamed_schema");
   std::vector<std::string> schema_extension_payload;
+  std::string mutation_audit_recovery_uuid;
   for (const auto& option : request.option_envelopes) {
     if (StartsWithLocal(option, "unresolved_schema_parent_path:")) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
@@ -293,7 +304,9 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
     } else if (StartsWithLocal(option, "filespace_diagnostic:")) {
       schema_extension_payload.push_back("filespace_diagnostic=" + option.substr(21));
     } else if (StartsWithLocal(option, "catalog_ddl_mutation_audit:")) {
-      schema_extension_payload.push_back("catalog_ddl_mutation_audit=" + option.substr(27));
+      mutation_audit_recovery_uuid = option.substr(27);
+      schema_extension_payload.push_back(
+          "catalog_ddl_mutation_audit=" + mutation_audit_recovery_uuid);
     } else {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context,

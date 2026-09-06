@@ -21,7 +21,15 @@ struct EngineCreateDatabaseRequest : EngineApiRequest {};
 struct EngineCreateDatabaseResult : EngineApiResult {};
 EngineCreateDatabaseResult EngineCreateDatabase(const EngineCreateDatabaseRequest& request);
 
-struct EngineCreateSchemaRequest : EngineApiRequest {};
+struct EngineCreateSchemaRequest : EngineApiRequest {
+  // Engine-only durable recovery identities.  They are allocated and
+  // journaled before mutation by the canonical SBLR executor; public/parser
+  // callers leave the complete tuple empty.  Partial tuples are invalid.
+  EngineUuid recovery_operation_uuid;
+  EngineUuid requested_catalog_row_uuid;
+  EngineUuid mutation_uuid;
+  EngineUuid statement_publication_barrier_uuid;
+};
 struct EngineCreateSchemaResult : EngineApiResult {};
 EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& request);
 
