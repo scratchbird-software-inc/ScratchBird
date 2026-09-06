@@ -24,6 +24,7 @@
 #include "local_transaction_store.hpp"
 #include "transaction_inventory_page.hpp"
 #include "transaction_recovery.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include <array>
 #include <algorithm>
@@ -7789,6 +7790,8 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
     if (!dirty_manifest_evidence.ok()) {
       return dirty_manifest_evidence;
     }
+    scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+        "recovery_cleanup");
     first_open_activation_was_required =
         startup_state.state.first_open_activation_local_transaction_id == 0;
     const auto activation = EnsureFirstOpenActivationTransaction(&device,

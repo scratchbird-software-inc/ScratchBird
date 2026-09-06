@@ -158,6 +158,7 @@ def start_route(
     tls_required: bool,
     cert: Path | None = None,
     key: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> StartedRoute:
     server_control = root / "sc"
     server_runtime = root / "sr"
@@ -183,6 +184,8 @@ def start_route(
             "SCRATCHBIRD_SBSQL_WORKER_PHASE_TRACE_FILE": str(traces["worker"]),
         }
     )
+    if extra_env:
+        route_env.update(extra_env)
     if not database.exists():
         if not args.example_db_seeder:
             raise CopyPersistenceError("missing database and no approved example database seeder")

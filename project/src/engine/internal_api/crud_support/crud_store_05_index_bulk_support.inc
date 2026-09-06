@@ -434,6 +434,26 @@ std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
   return CrudIndexEntryKeysForValues(index, values);
 }
 
+std::string CrudIndexEntryLogicalKey(const CrudIndexRecord& index,
+                                     const CrudIndexEntryRecord& entry) {
+  // The typed direct-ingest lane persists order-preserving key bytes as an
+  // SBKOHEX envelope.  For a simple scalar index its payload remains the
+  // canonical logical value used by row-version validation and predicates.
+  // Keep the physical key for ordering, but compare the logical payload at
+  // row/index consistency boundaries.
+  const auto columns = CrudIndexKeyColumns(index);
+  if (columns.size() == 1 && entry.key_value.rfind("SBKOHEX:", 0) == 0) {
+    return entry.payload_value;
+  }
+  return entry.key_value;
+}
+
+bool CrudIndexEntryMatchesLogicalKey(const CrudIndexRecord& index,
+                                     const CrudIndexEntryRecord& entry,
+                                     const std::string& logical_key) {
+  return CrudIndexEntryLogicalKey(index, entry) == logical_key;
+}
+
 std::vector<CrudRowVersionRecord> IndexedCrudRows(const RelationReadSnapshot& state,
                                                   const std::string& table_uuid,
                                                   const std::string& column_name,

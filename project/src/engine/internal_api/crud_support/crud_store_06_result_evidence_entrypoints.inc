@@ -236,7 +236,8 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& 
     for (const auto& key : keys) {
       for (const auto& entry : state.index_entries) {
         if (entry.index_uuid != index.index_uuid || entry.table_uuid != table_uuid || entry.row_uuid == row_uuid ||
-            entry.key_value != key || !TxVisible(state, entry.creator_tx, observer_tx)) {
+            !CrudIndexEntryMatchesLogicalKey(index, entry, key) ||
+            !TxVisible(state, entry.creator_tx, observer_tx)) {
           continue;
         }
         const auto visible_row =

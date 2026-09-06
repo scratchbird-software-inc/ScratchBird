@@ -14,6 +14,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -461,11 +462,21 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
     return result;
   }
   for (const auto& path : paths) {
+    LocalCommitPublicationArtifact artifact;
+    artifact.artifact_identity = ArtifactIdentity(context, path);
+    artifact.mutation_domain = DomainForArtifact(artifact.artifact_identity);
     const auto synced = SyncFilesystemPath(path.string(), true);
     if (!synced.ok()) {
       result.diagnostic = Refuse("artifact_sync_failed:" + path.string() + ":" +
                                  synced.diagnostic.diagnostic_code);
       return result;
+    }
+    if (artifact.mutation_domain == "row_version") {
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "page_sync");
+    } else if (artifact.mutation_domain == "index") {
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "index_sync");
     }
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
@@ -473,9 +484,6 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
       result.diagnostic = Refuse("artifact_size_unavailable:" + path.string());
       return result;
     }
-    LocalCommitPublicationArtifact artifact;
-    artifact.artifact_identity = ArtifactIdentity(context, path);
-    artifact.mutation_domain = DomainForArtifact(artifact.artifact_identity);
     artifact.durable_size_bytes = static_cast<std::uint64_t>(size);
     artifact.postcondition_sha256 = ArtifactPostcondition(
         path, static_cast<std::uint64_t>(size));
@@ -555,6 +563,8 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
     result.diagnostic = Refuse("manifest_parent_sync_failed");
     return result;
   }
+  scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+      "mutation_manifest_publication");
 
   result.ok = true;
   result.diagnostic = Ok();

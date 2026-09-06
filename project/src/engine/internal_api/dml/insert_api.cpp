@@ -27,6 +27,7 @@
 #include "physical_plan.hpp"
 #include "relational_planner.hpp"
 #include "security/deep_enforcement_api.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1360,7 +1361,16 @@ UniquePhysicalProbeCache BuildUniquePhysicalProbeCache(
                             context.local_transaction_id)) {
       continue;
     }
-    cache.key_rows_by_index_uuid[entry.index_uuid][entry.key_value].insert(entry.row_uuid);
+    const auto found_index = std::find_if(
+        indexes.begin(), indexes.end(), [&](const auto& index) {
+          return index.index_uuid == entry.index_uuid;
+        });
+    if (found_index == indexes.end()) {
+      continue;
+    }
+    cache.key_rows_by_index_uuid[entry.index_uuid]
+                                [CrudIndexEntryLogicalKey(*found_index, entry)]
+                                    .insert(entry.row_uuid);
     ++cache.indexed_entry_count;
   }
   return cache;
@@ -3163,7 +3173,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
     for (const auto& entry : state.index_entries) {
       if (entry.table_uuid != table_uuid ||
           entry.index_uuid != index.index_uuid ||
-          entry.key_value != key ||
+          !CrudIndexEntryMatchesLogicalKey(index, entry, key) ||
           entry.row_uuid == exclude_row_uuid ||
           !MgaCreatorVisible(state,
                               entry.creator_tx,
@@ -3404,6 +3414,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     return failure;
   }
   const auto direct_initial_input_rows = request.EffectiveInputRows();
+  for (const auto& row : direct_initial_input_rows) {
+    for (const auto& [column, value] : row.fields) {
+      (void)column;
+      scratchbird::core::platform::ArmWholeStoreRealDmlCrashForObservedValue(
+          request.context.local_transaction_id, value.encoded_value);
+    }
+  }
   const bool executable_trigger_descriptors_present =
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
@@ -3415,6 +3432,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                       direct_initial_input_rows);
     mark_insert_phase("direct_initial_attempt");
     if (direct_attempt.attempted) {
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "catalog_trigger_effect");
       mark_insert_phase("direct_initial_result_policy");
       write_insert_outer_trace(direct_initial_input_rows.size());
       return std::move(direct_attempt.result);
@@ -4572,6 +4591,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 
       std::vector<std::uint64_t> written_event_sequences;
       auto hot_append = relation_store.OpenHotAppendContext();
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "allocation");
       if (IparFaultPointRequested(request.option_envelopes, "row_append")) {
         std::vector<EngineEvidenceReference> evidence = result.evidence;
         AppendIparFaultEvidence(&evidence,
@@ -4587,6 +4608,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       if (appended.error) {
         return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", appended);
       }
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "partial_page_write");
       const auto rows_flushed = hot_append.FlushRowVersions();
       if (rows_flushed.error) {
         return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", rows_flushed);
@@ -4647,6 +4670,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       if (index_flushed.error) {
         return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", index_flushed);
       }
+      scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+          "index_write");
       if (index_allocation.active || prework_index_capacity_ready) {
         result.evidence.push_back({"mga_index_store", "row_insert"});
       }
@@ -4818,6 +4843,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         "dml.insert_rows",
         trigger_result.diagnostic);
   }
+  scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+      "catalog_trigger_effect");
   result.evidence.insert(result.evidence.end(),
                          trigger_result.evidence.begin(),
                          trigger_result.evidence.end());

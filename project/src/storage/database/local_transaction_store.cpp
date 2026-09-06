@@ -15,6 +15,7 @@
 #include "startup_state.hpp"
 #include "transaction_inventory_page.hpp"
 #include "uuid.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -561,9 +562,17 @@ LocalTransactionStoreResult PersistPublishJournal(FileDevice* device,
                           "transaction_inventory_publish_journal.rename_failed",
                           replace_error);
   }
+  if (phase == "committed") {
+    scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+        "transaction_inventory_publication", true);
+  }
 
   const auto parent_sync = scratchbird::storage::disk::SyncParentDirectoryPath(target_path.string());
   if (!parent_sync.ok()) { return StoreError(parent_sync.status, parent_sync.diagnostic); }
+  if (phase == "committed") {
+    scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+        "final_sync", true);
+  }
   return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
 }
 
@@ -1132,7 +1141,10 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   result.status = StoreOkStatus();
   result.inventory = std::move(inventory);
   result.horizons = horizons.horizons;
-  return result;
+  // A readable page chain can still be the pre-publication generation after a
+  // process crash.  The fsynced publish journal is the authority that decides
+  // whether recovery exposes the old or new whole-inventory snapshot.
+  return RecoverInventoryFromPublishJournal(device, result);
 }
 
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(

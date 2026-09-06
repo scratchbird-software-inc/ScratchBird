@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction/transaction_api.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -1936,6 +1937,10 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
         &result, &*committing_entry);
     return trace_and_return(std::move(result));
   }
+  const scratchbird::core::platform::WholeStoreRealDmlCommitCrashScope
+      whole_store_crash_scope(!read_only_commit &&
+                                  !publication_barrier.mutations.empty(),
+                              request.context.local_transaction_id);
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory);
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
@@ -2302,6 +2307,10 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                           "mga.transaction_lifecycle.begin_failed"));
   }
 
+  const scratchbird::core::platform::WholeStoreRealDmlCommitCrashScope
+      whole_store_crash_scope(request.statement_succeeded &&
+                                  !publication_barrier.mutations.empty(),
+                              request.context.local_transaction_id);
   const auto persisted =
       PersistLocalTransactionInventoryToDatabase(request.context.database_path,
                                                 begun.inventory);

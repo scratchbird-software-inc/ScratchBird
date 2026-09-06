@@ -289,7 +289,9 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
   if (predicate.predicate_kind.empty()) { return true; }
   const auto columns = CrudIndexKeyColumns(index);
   const std::string first_column = columns.empty() ? index.column_name : columns.front();
-  const std::string first_key = FirstCompositeComponent(entry.key_value);
+  const std::string logical_entry_key =
+      CrudIndexEntryLogicalKey(index, entry);
+  const std::string first_key = FirstCompositeComponent(logical_entry_key);
   if (predicate.predicate_kind == "column_equals") {
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
            first_key == predicate.bound_values.front().encoded_value;

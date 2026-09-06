@@ -27743,6 +27743,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       lowered.sblr_opcode == "SBLR_OBSERVABILITY_SHOW_DATABASE";
   const bool canonical_zero_operand_direct_route =
       canonical_show_database_direct_route ||
+      lowered.operation_id == "observability.show_transactions" ||
       lowered.operation_id == "observability.show_management" ||
       lowered.operation_id == "observability.show_agents_extended" ||
       (lowered.operation_id == "cluster.inspect_provider" &&

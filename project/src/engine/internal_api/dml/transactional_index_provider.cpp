@@ -76,7 +76,8 @@ bool EntryMatches(const CrudIndexEntryRecord& entry,
                   std::uint64_t creator_tx = 0) {
   return entry.index_uuid == index.index_uuid &&
          entry.table_uuid == index.table_uuid && entry.row_uuid == row_uuid &&
-         entry.version_uuid == version_uuid && entry.key_value == key &&
+         entry.version_uuid == version_uuid &&
+         CrudIndexEntryMatchesLogicalKey(index, entry, key) &&
          (kind.empty() ? EntryKindIsMembership(entry.entry_kind)
                        : entry.entry_kind == kind) &&
          (creator_tx == 0 || entry.creator_tx == creator_tx);
@@ -441,7 +442,8 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
       for (const auto& entry : state.index_entries) {
         if (entry.index_uuid != index.index_uuid ||
             entry.table_uuid != index.table_uuid ||
-            entry.row_uuid != row.row_uuid || entry.key_value != key ||
+            entry.row_uuid != row.row_uuid ||
+            !CrudIndexEntryMatchesLogicalKey(index, entry, key) ||
             !EntryKindIsMembership(entry.entry_kind) ||
             !TransactionEntryVisible(state, entry, context_)) {
           continue;

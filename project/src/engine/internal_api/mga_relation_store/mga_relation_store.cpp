@@ -26,6 +26,7 @@
 #include "typed_update_carrier_codec.hpp"
 #include "uuid.hpp"
 #include "hash_digest.hpp"
+#include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14920,6 +14921,8 @@ EngineApiDiagnostic MgaRelationHotAppendContext::FlushRowVersions() {
     return MakeInvalidRequestDiagnostic("mga.row_store",
                                         "scoped_relation_summary_update_failed");
   }
+  scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+      "directory_mutation");
   if (!impl_->scoped_row_binary_buffers.empty()) {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
     ScopedDecodedRowCache().clear();

@@ -28,6 +28,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "ordered_ingest.hpp"
 #include "observability/dml_summary_counters.hpp"
+#include "whole_store_crash_injection.hpp"
 #include "security/deep_enforcement_api.hpp"
 #include "index_bulk_publish_recovery.hpp"
 #include "index_key_encoding.hpp"
@@ -11376,6 +11377,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "dml_ingestion_preallocator"});
   }
   mark_phase("index_page_allocation");
+  scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+      "allocation");
 
 	  bool large_value_persistence_required = false;
 	  if (!native_bulk_typed_logical_batch_bypass) {
@@ -11606,6 +11609,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
              set_ingestion_write_failure_reason("mga_row_append_refused");
              return appended;
            }
+           scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+               "partial_page_write");
            const auto flush_start = DirectSteadyClock::now();
            const auto flushed = hot_append.FlushRowVersions();
            row_stream_flush_us =
@@ -12005,6 +12010,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              index_flushed,
                              "mga_index_flush_refused");
   }
+  scratchbird::core::platform::MaybeCrashAtWholeStoreRealDmlBoundary(
+      "index_write");
   mark_phase("index_stream_flush");
 
   if (index_entries_authoritative && !bypass_single_window_native_bulk_cache) {

@@ -314,6 +314,12 @@ option(SB_BUILD_SBLR_DATATYPE_DOMAIN_PROBE "Build the SBLR datatype/domain dispa
 option(SB_BUILD_SBLR_DATATYPE_FULL_SURFACE_PROBE "Build the full SBLR datatype/domain surface probe" OFF)
 option(SB_BUILD_AGENT_RUNTIME_PROBES "Build the operational agent runtime implementation probes" OFF)
 option(SB_BUILD_TESTS "Build ScratchBird private tests" OFF)
+option(SB_ENABLE_TEST_CRASH_INJECTION
+  "Diagnostic-only: compile explicitly armed process-crash boundaries used by recovery tests"
+  OFF)
+if(SB_ENABLE_TEST_CRASH_INJECTION)
+  add_compile_definitions(SCRATCHBIRD_ENABLE_TEST_CRASH_INJECTION=1)
+endif()
 option(SB_BUILD_QOW_CLOSURE_TESTS
        "Build the query-optimizer/window closure targets"
        OFF)
