@@ -718,6 +718,26 @@ cmake_language(
   DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
   CALL sbsql_sblr_alignment_register_ia01_source_artifact_container_process_e2e)
 
+function(sbsql_sblr_alignment_register_ia01_source_artifact_external_process_e2e)
+  if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)
+    add_test(
+      NAME sbsql_sblr_alignment_ia01_source_artifact_external_process_e2e
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+              --server $<TARGET_FILE:sb_server>
+              --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+              --operation source-artifact-external
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia01_source_artifact_external_e2e")
+    set_tests_properties(
+      sbsql_sblr_alignment_ia01_source_artifact_external_process_e2e PROPERTIES
+      LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-01;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;PS_738_739;SCHEMA_7751_7752;CSC-TEST-005774;e2e"
+      TIMEOUT 240)
+  endif()
+endfunction()
+cmake_language(
+  DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+  CALL sbsql_sblr_alignment_register_ia01_source_artifact_external_process_e2e)
+
 function(sbsql_sblr_alignment_register_ia00_show_version_process_e2e)
   if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)
     add_test(NAME sbsql_sblr_alignment_ia00_show_version_process_e2e
@@ -5800,7 +5820,7 @@ add_test(NAME sbsql_sblr_alignment_sbps_private_narrow_profile_activation
   COMMAND sbsql_sblr_alignment_sbps_private_narrow_profile_activation)
 set_tests_properties(
   sbsql_sblr_alignment_sbps_private_narrow_profile_activation PROPERTIES
-  LABELS "sbsql_sblr_alignment;IA-03;IA-07;IA-08;SBLR_BULK_IMPORT_STREAM;SBLR_PARSE_TEXT;SBLR_CATALOG_EPOCH_CHECK;SBLR_DATABASE_ATTACH;CSC-TEST-005726;SBPS;private_narrow_profile;activation;45_pairs;18_forbidden;schema_7745;schema_7746;schema_7747;schema_7748;schema_7749;schema_7750;zero_capability;evidence_gated;exact_dispatch"
+  LABELS "sbsql_sblr_alignment;IA-01;IA-03;IA-07;IA-08;SBLR_BULK_IMPORT_STREAM;SBLR_PARSE_TEXT;SBLR_CATALOG_EPOCH_CHECK;SBLR_DATABASE_ATTACH;SBLR_SOURCE_ARTIFACT_EXTERNAL_REFERENCE_V1;PS_738_739;CSC-TEST-005726;SBPS;private_narrow_profile;activation;47_pairs;18_forbidden;schema_7745;schema_7746;schema_7747;schema_7748;schema_7749;schema_7750;schema_7751;schema_7752;zero_capability;evidence_gated;exact_dispatch"
   TIMEOUT 30)
 
 add_executable(sbsql_sblr_alignment_sbps_bulk_import_stream_codec

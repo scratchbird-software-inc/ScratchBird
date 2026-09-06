@@ -13,10 +13,10 @@ namespace {
 namespace profile = scratchbird::server::sbps::private_narrow;
 using scratchbird::core::platform::byte;
 
-static_assert(profile::kPairUniverseCountV1 == 63);
-static_assert(profile::kRequiredPairCountV1 == 45);
+static_assert(profile::kPairUniverseCountV1 == 65);
+static_assert(profile::kRequiredPairCountV1 == 47);
 static_assert(profile::kForbiddenPairCountV1 == 18);
-static_assert(profile::kSuccessOnlyPairCountV1 == 18);
+static_assert(profile::kSuccessOnlyPairCountV1 == 19);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
@@ -79,10 +79,10 @@ void CoreRecordAndPendingEvidenceStayInactive() {
   const auto core = profile::CorePrivateNarrowProfileRecordV1();
   Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
           "compiled Core private profile record failed validation");
-  Require(core.pair_universe.size() == 63 &&
-              core.required_pairs.size() == 45 &&
+  Require(core.pair_universe.size() == 65 &&
+              core.required_pairs.size() == 47 &&
               core.forbidden_pairs.size() == 18 &&
-              core.candidate_activation_records.size() == 45 &&
+              core.candidate_activation_records.size() == 47 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
   const auto contains = [](const auto& pairs, std::uint16_t message,
@@ -169,6 +169,18 @@ void CoreRecordAndPendingEvidenceStayInactive() {
           "the DATABASE ATTACH bind request was marked success-only");
   Require(contains(core.success_only_pairs, 737, 7750),
           "the DATABASE ATTACH bind result lacks success-only role");
+  for (const auto [message, schema] : {
+           profile::PairV1{738, 7751}, profile::PairV1{739, 7752}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact source-artifact retain pair is not in the compiled "
+            "SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 738, 7751),
+          "the source-artifact retain request was marked success-only");
+  Require(contains(core.success_only_pairs, 739, 7752),
+          "the source-artifact retain result lacks success-only role");
   for (const auto& record : core.candidate_activation_records) {
     Require(!record.exact_nul_serialization.empty() &&
                 record.exact_nul_serialization.back() == 0 &&
@@ -200,7 +212,7 @@ void CoreAndEvidenceNegativeDrift() {
   auto complement = core;
   complement.forbidden_pairs.pop_back();
   Require(!profile::ValidateCorePrivateNarrowProfileRecordV1(complement).ok(),
-          "45/18 complement drift was admitted");
+          "47/18 complement drift was admitted");
 
   auto nul_drift = core;
   nul_drift.candidate_activation_records.front()
@@ -301,6 +313,18 @@ void SyntheticUsableFixtureProvesExactDispatchOnly() {
   Require(database_attach_bind_result.admitted &&
               database_attach_bind_result.success_only,
           "737/7750 database-attach bind result dispatch failed");
+  const auto source_artifact_retain =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(738, 7751));
+  Require(source_artifact_retain.admitted &&
+              !source_artifact_retain.success_only,
+          "738/7751 source-artifact retain dispatch failed");
+  const auto source_artifact_retain_result =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(739, 7752));
+  Require(source_artifact_retain_result.admitted &&
+              source_artifact_retain_result.success_only,
+          "739/7752 source-artifact retain result dispatch failed");
 
   const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
       core, activation.state, key(42, 1043));

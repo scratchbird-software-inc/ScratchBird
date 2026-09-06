@@ -33,6 +33,7 @@
 #include "sblr_parameter_set_registry.hpp"
 #include "sblr_source_map_descriptor_registry.hpp"
 #include "sblr_source_map_runtime.hpp"
+#include "sblr_source_artifact_runtime.hpp"
 #include "sblr_error_vector_runtime.hpp"
 #include "sblr_error_vector_descriptor_registry.hpp"
 #include "sblr_diagnostic_identity_registry.hpp"
@@ -645,6 +646,8 @@ struct StatementContextReceiptOpaque {
       statement_catalog_epoch_check_authorities;
   std::map<std::uint64_t, StatementDatabaseAttachAuthorityV1>
       statement_database_attach_authorities;
+  std::map<std::array<std::uint8_t, 16>, StatementSourceArtifactRetentionV1>
+      statement_source_artifact_retentions;
   std::map<std::uint64_t, StatementOptimizerStatsReadAuthorityV1>
       statement_optimizer_stats_read_authorities;
   std::map<std::uint64_t, StatementOptimizerStatsDropAuthorityV1>
@@ -11093,6 +11096,216 @@ sb_engine_status_t CopyStatementDatabaseAttachAuthorityV1(
                        "sblr.database_attach.authority_hidden");
   }
   *out_authority = found->second;
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t RetainStatementSourceArtifactV1(
+    StatementContextReceiptHandle receipt_handle,
+    const std::uint8_t* exact_request_bytes,
+    std::size_t exact_request_size,
+    StatementSourceArtifactRetentionV1* out_retention,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_retention != nullptr) *out_retention = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    if (out_retention != nullptr) {
+      out_retention->failure_code = code;
+      out_retention->failure_message_key = key;
+      out_retention->failure_detail = detail;
+    }
+    return fail_result(status, out_result, 4114, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || exact_request_bytes == nullptr ||
+      exact_request_size == 0 || out_retention == nullptr) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "SBLR.SOURCE_ARTIFACT.INVALID",
+                  "sblr.source_artifact.retain_request_invalid",
+                  "request_or_output_missing");
+  }
+  namespace artifact = scratchbird::engine::sblr;
+  artifact::SblrSourceArtifactRetainRequestV1 request;
+  std::string detail;
+  if (!artifact::DecodeSblrSourceArtifactRetainRequestV1(
+          exact_request_bytes, exact_request_size, &request, &detail)) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "SBLR.SOURCE_ARTIFACT.INVALID",
+                  "sblr.source_artifact.retain_request_invalid",
+                  std::move(detail));
+  }
+
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live =
+      g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.source_artifact.retain_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  auto& receipt = *live->second;
+  if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+      receipt.session == nullptr || receipt.session->closed ||
+      request.authenticated_receipt_uuid != TextToUuid(receipt.view.receipt_uuid)) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.source_artifact.retain_hidden");
+  }
+  if (request.sblr_envelope_uuid != TextToUuid(receipt.view.statement_uuid) ||
+      request.sblr_envelope_uuid !=
+          TextToUuid(receipt.engine_context.statement_uuid.canonical) ||
+      request.authenticated_receipt_uuid !=
+          TextToUuid(receipt.engine_context.statement_receipt_uuid.canonical)) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.retain_statement_mismatch");
+  }
+  const auto decoded_artifact = artifact::DecodeSblrSourceArtifactMapV1(
+      request.canonical_artifact_bytes.data(),
+      request.canonical_artifact_bytes.size());
+  if (decoded_artifact.status !=
+          artifact::SblrSourceArtifactDecodeStatusV1::ok ||
+      decoded_artifact.artifact.parser_package_uuid !=
+          TextToUuid(receipt.engine_context.current_package_uuid.canonical) ||
+      (!receipt.engine_context.language_context.language_tag.empty() &&
+       decoded_artifact.artifact.language_tag !=
+           receipt.engine_context.language_context.language_tag)) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.retain_binding_mismatch",
+                  decoded_artifact.detail);
+  }
+  const auto existing =
+      receipt.statement_source_artifact_retentions.find(request.artifact_uuid);
+  if (existing != receipt.statement_source_artifact_retentions.end()) {
+    if (existing->second.exact_retain_request_bytes.size() ==
+            exact_request_size &&
+        std::equal(existing->second.exact_retain_request_bytes.begin(),
+                   existing->second.exact_retain_request_bytes.end(),
+                   exact_request_bytes)) {
+      *out_retention = existing->second;
+      return SB_ENGINE_STATUS_OK;
+    }
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.retain_replay_conflict");
+  }
+
+  artifact::SblrSourceArtifactRetainAckV1 acknowledgement;
+  acknowledgement.authenticated_receipt_uuid =
+      request.authenticated_receipt_uuid;
+  acknowledgement.sblr_envelope_uuid = request.sblr_envelope_uuid;
+  acknowledgement.artifact_uuid = request.artifact_uuid;
+  acknowledgement.declared_size = request.declared_size;
+  acknowledgement.crc32c = request.crc32c;
+  acknowledgement.redaction_class = request.redaction_class;
+  acknowledgement.decompile_policy = request.decompile_policy;
+  acknowledgement.artifact_sha256 = request.artifact_sha256;
+  acknowledgement.retention_generation = 1;
+  auto exact_ack = artifact::EncodeSblrSourceArtifactRetainAckV1(
+      acknowledgement, &detail);
+  if (exact_ack.empty() ||
+      !artifact::DecodeSblrSourceArtifactRetainAckV1(
+          exact_ack.data(), exact_ack.size(), &acknowledgement, &detail)) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  "SBLR.SOURCE_ARTIFACT.INVALID",
+                  "sblr.source_artifact.retain_ack_invalid",
+                  std::move(detail));
+  }
+  StatementSourceArtifactRetentionV1 retention;
+  retention.reference.sblr_envelope_uuid = request.sblr_envelope_uuid;
+  retention.reference.artifact_uuid = request.artifact_uuid;
+  retention.reference.declared_size = request.declared_size;
+  retention.reference.crc32c = request.crc32c;
+  retention.reference.checksum_kind = 2;
+  retention.reference.checksum_sha256 = request.artifact_sha256;
+  retention.reference.redaction_class =
+      static_cast<std::uint16_t>(request.redaction_class);
+  retention.decompile_policy =
+      static_cast<std::uint8_t>(request.decompile_policy);
+  retention.retention_generation = acknowledgement.retention_generation;
+  retention.exact_retain_request_bytes.assign(
+      exact_request_bytes, exact_request_bytes + exact_request_size);
+  retention.exact_retain_ack_bytes = std::move(exact_ack);
+  retention.canonical_artifact_bytes = request.canonical_artifact_bytes;
+  const auto inserted = receipt.statement_source_artifact_retentions.emplace(
+      request.artifact_uuid, std::move(retention));
+  if (!inserted.second) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.retain_publish_conflict");
+  }
+  *out_retention = inserted.first->second;
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t ResolveStatementSourceArtifactV1(
+    StatementContextReceiptHandle receipt_handle,
+    const StatementSourceArtifactReferenceV1* reference,
+    StatementSourceArtifactRetentionV1* out_retention,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_retention != nullptr) *out_retention = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    if (out_retention != nullptr) {
+      out_retention->failure_code = code;
+      out_retention->failure_message_key = key;
+      out_retention->failure_detail = detail;
+    }
+    return fail_result(status, out_result, 4115, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || reference == nullptr || out_retention == nullptr ||
+      reference->declared_size == 0 || reference->crc32c == 0 ||
+      (reference->checksum_kind != 1 && reference->checksum_kind != 2)) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                  "SBLR.SOURCE_ARTIFACT.INVALID",
+                  "sblr.source_artifact.reference_invalid");
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live =
+      g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.source_artifact.reference_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  const auto& receipt = *live->second;
+  if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+      reference->sblr_envelope_uuid != TextToUuid(receipt.view.statement_uuid)) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.reference_statement_mismatch");
+  }
+  const auto found = receipt.statement_source_artifact_retentions.find(
+      reference->artifact_uuid);
+  if (found == receipt.statement_source_artifact_retentions.end()) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.source_artifact.reference_hidden");
+  }
+  const auto& retained = found->second;
+  const bool checksum_matches =
+      reference->checksum_kind == 1
+          ? reference->checksum_crc32c == retained.reference.crc32c
+          : reference->checksum_sha256 ==
+                retained.reference.checksum_sha256;
+  if (reference->sblr_envelope_uuid !=
+          retained.reference.sblr_envelope_uuid ||
+      reference->declared_size != retained.reference.declared_size ||
+      reference->crc32c != retained.reference.crc32c ||
+      reference->redaction_class != retained.reference.redaction_class ||
+      !checksum_matches) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  "MGA.AUTHORITY_MISMATCH",
+                  "sblr.source_artifact.reference_mismatch");
+  }
+  *out_retention = retained;
   return SB_ENGINE_STATUS_OK;
 }
 

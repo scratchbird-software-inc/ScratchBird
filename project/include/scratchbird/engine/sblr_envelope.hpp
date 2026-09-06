@@ -627,7 +627,10 @@ inline bool SblrConsumeCanonicalStruct(SblrFieldReader* reader,
 inline bool SblrConsumeReference(SblrFieldReader* reader,
                                  std::uint8_t* kind_out = nullptr,
                                  const std::uint8_t** inline_data = nullptr,
-                                 std::uint64_t* inline_size = nullptr) {
+                                 std::uint64_t* inline_size = nullptr,
+                                 std::array<std::uint8_t, 16>* external_uuid = nullptr,
+                                 std::uint64_t* external_declared_size = nullptr,
+                                 std::uint32_t* external_crc32c = nullptr) {
   std::uint8_t kind = 0;
   if (!reader->U8(&kind)) return false;
   if (kind_out != nullptr) *kind_out = kind;
@@ -642,18 +645,44 @@ inline bool SblrConsumeReference(SblrFieldReader* reader,
     if (inline_size != nullptr) *inline_size = size;
     return true;
   }
-  return (kind == 2 || kind == 3 || kind == 4) &&
-         SblrConsumeUuid(reader) && reader->U64() && reader->U32();
+  if (kind != 2 && kind != 3 && kind != 4) return false;
+  const std::uint8_t* uuid = nullptr;
+  std::uint64_t declared_size = 0;
+  std::uint32_t crc32c = 0;
+  if (!reader->Take(16, &uuid) || !SblrNonzeroUuid(uuid) ||
+      !reader->U64(&declared_size) || !reader->U32(&crc32c)) {
+    return false;
+  }
+  if (kind == 4 &&
+      (declared_size == 0 || declared_size > kSblrMaxPayloadBytes ||
+       crc32c == 0)) {
+    return false;
+  }
+  if (external_uuid != nullptr) {
+    std::copy_n(uuid, external_uuid->size(), external_uuid->begin());
+  }
+  if (external_declared_size != nullptr) {
+    *external_declared_size = declared_size;
+  }
+  if (external_crc32c != nullptr) *external_crc32c = crc32c;
+  return true;
 }
 inline bool SblrConsumeChecksum(SblrFieldReader* reader,
                                 std::uint8_t* kind_out = nullptr,
-                                std::uint32_t* crc_out = nullptr) {
+                                std::uint32_t* crc_out = nullptr,
+                                std::array<std::uint8_t, 32>* sha256_out = nullptr) {
   std::uint8_t kind = 0;
   if (!reader->U8(&kind)) return false;
   if (kind_out != nullptr) *kind_out = kind;
   if (kind == 0) return true;
   if (kind == 1) return reader->U32(crc_out);
-  return kind == 2 && reader->Take(32);
+  if (kind != 2) return false;
+  const std::uint8_t* sha256 = nullptr;
+  if (!reader->Take(32, &sha256)) return false;
+  if (sha256_out != nullptr) {
+    std::copy_n(sha256, sha256_out->size(), sha256_out->begin());
+  }
+  return true;
 }
 
 // SEARCH_KEY: SB_ENGINE_SBLR_EXECUTION_ENVELOPE_V1
@@ -686,6 +715,13 @@ struct SblrExecutionEnvelopeSemanticView {
   bool diagnostic_context_present = false;
   bool source_artifact_present = false;
   std::uint8_t source_artifact_ref_kind = 0;
+  std::array<std::uint8_t, 16> source_artifact_uuid{};
+  std::uint64_t source_artifact_declared_size = 0;
+  std::uint32_t source_artifact_crc32c = 0;
+  std::uint8_t source_artifact_checksum_kind = 0;
+  std::uint32_t source_artifact_checksum_crc32c = 0;
+  std::array<std::uint8_t, 32> source_artifact_checksum_sha256{};
+  std::uint16_t source_artifact_redaction_class = 0;
   bool cluster_context_present = false;
 };
 
@@ -798,7 +834,13 @@ inline bool SblrValidateExecutionEnvelopeFields(
         std::uint8_t present = 0;
         ok = reader.U8(&present) && present <= 1;
         std::uint8_t kind = 0;
-        if (ok && present == 1) ok = SblrConsumeReference(&reader, &kind);
+        if (ok && present == 1) {
+          ok = SblrConsumeReference(
+              &reader, &kind, nullptr, nullptr,
+              ordinal == 23 ? &view.source_artifact_uuid : nullptr,
+              ordinal == 23 ? &view.source_artifact_declared_size : nullptr,
+              ordinal == 23 ? &view.source_artifact_crc32c : nullptr);
+        }
         if (ordinal == 22) view.diagnostic_context_present = present == 1;
         else {
           view.source_artifact_present = present == 1;
@@ -807,11 +849,15 @@ inline bool SblrValidateExecutionEnvelopeFields(
         break;
       }
       case 25:
-        ok = SblrConsumeChecksum(&reader);
+        ok = SblrConsumeChecksum(
+            &reader, &view.source_artifact_checksum_kind,
+            &view.source_artifact_checksum_crc32c,
+            &view.source_artifact_checksum_sha256);
         break;
       case 26: {
         std::uint16_t value = 0;
         ok = reader.U16(&value) && value <= 4;
+        view.source_artifact_redaction_class = value;
         break;
       }
       case 27: {
@@ -834,7 +880,13 @@ inline bool SblrValidateExecutionEnvelopeFields(
       view.cluster_context_present != ((envelope.header_flags & (1u << 3)) != 0) ||
       ((envelope.header_flags & 1u) != 0 &&
        (!view.source_artifact_present || view.source_artifact_ref_kind != 4)) ||
-      ((envelope.header_flags & 1u) == 0 && view.source_artifact_ref_kind == 4)) {
+      ((envelope.header_flags & 1u) == 0 && view.source_artifact_ref_kind == 4) ||
+      (view.source_artifact_present &&
+       (view.source_artifact_checksum_kind == 0 ||
+        view.source_artifact_redaction_class > 3)) ||
+      (!view.source_artifact_present &&
+       (view.source_artifact_checksum_kind != 0 ||
+        view.source_artifact_redaction_class != 0))) {
     return false;
   }
   if (view.operation_ref_kind == 1) {

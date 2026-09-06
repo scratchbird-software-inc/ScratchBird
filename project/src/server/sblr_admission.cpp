@@ -2085,12 +2085,46 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "Source artifacts must use exactly one in-band or external channel.",
                   "duplicate_source_artifact_channel");
   }
-  if (ingress_view.source_artifact_present) {
-    return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
-                  "External source artifacts require an engine resolver before admission.",
-                  "source_artifact_resolver_unavailable");
+  const std::vector<std::uint8_t>* artifact_bytes = nullptr;
+  const bool external_source_artifact =
+      ingress_view.source_artifact_present;
+  if (external_source_artifact) {
+    if (!request.source_artifact_resolved_by_engine ||
+        request.resolved_source_artifact_bytes.empty()) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "External source artifacts require an exact engine receipt resolution before admission.",
+                    "source_artifact_resolver_unavailable");
+    }
+    const auto& resolved = request.resolved_source_artifact_bytes;
+    const auto resolved_crc = scratchbird::engine::SblrCrc32c(
+        resolved.data(), resolved.size());
+    if (ingress_view.source_artifact_ref_kind != 4 ||
+        ingress_view.source_artifact_declared_size != resolved.size() ||
+        ingress_view.source_artifact_crc32c != resolved_crc) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "The external source-artifact reference does not match the engine-resolved bytes.",
+                    "source_artifact.reference_mismatch");
+    }
+    bool checksum_matches = false;
+    if (ingress_view.source_artifact_checksum_kind == 1) {
+      checksum_matches =
+          ingress_view.source_artifact_checksum_crc32c == resolved_crc;
+    } else if (ingress_view.source_artifact_checksum_kind == 2) {
+      checksum_matches =
+          ingress_view.source_artifact_checksum_sha256 ==
+          scratchbird::engine::sblr::HashSblrSourceArtifactBytesV1(
+              resolved.data(), resolved.size());
+    }
+    if (!checksum_matches) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "The external source-artifact checksum does not match the engine-resolved bytes.",
+                    "source_artifact.checksum_mismatch");
+    }
+    artifact_bytes = &resolved;
+  } else if (!container.container.source_map.empty()) {
+    artifact_bytes = &container.container.source_map;
   }
-  if (!container.container.source_map.empty()) {
+  if (artifact_bytes != nullptr) {
     namespace source_artifact = scratchbird::engine::sblr;
     const source_artifact::SblrOperationEnvelope* artifact_operation =
         &operation.envelope;
@@ -2105,19 +2139,23 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     }
     const auto decoded_artifact =
         source_artifact::DecodeSblrSourceArtifactMapV1(
-            container.container.source_map.data(),
-            container.container.source_map.size());
+            artifact_bytes->data(), artifact_bytes->size());
     if (decoded_artifact.status !=
         source_artifact::SblrSourceArtifactDecodeStatusV1::ok) {
       return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
-                    "The in-band source artifact is malformed or noncanonical.",
+                    "The source artifact is malformed or noncanonical.",
                     "source_artifact." + decoded_artifact.detail);
     }
     source_artifact::SblrSourceArtifactValidationContextV1
         artifact_context;
     artifact_context.operation_validated_without_artifact = true;
-    std::copy_n(container.container.canonical_anchor.data() + 116, 16,
-                artifact_context.expected_container_request_uuid.begin());
+    if (external_source_artifact) {
+      std::copy_n(ingress.envelope.fields[0].data(), 16,
+                  artifact_context.expected_sblr_envelope_uuid.begin());
+    } else {
+      std::copy_n(container.container.canonical_anchor.data() + 116, 16,
+                  artifact_context.expected_container_request_uuid.begin());
+    }
     std::copy_n(container.container.canonical_anchor.data() + 16, 16,
                 artifact_context.expected_dialect_family_uuid.begin());
     std::copy_n(container.container.canonical_anchor.data() + 32, 16,
@@ -2140,6 +2178,15 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
       return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
                     "The in-band source artifact is not bound to the admitted operation.",
                     "source_artifact." + artifact_detail);
+    }
+    if (external_source_artifact &&
+        (static_cast<std::uint16_t>(decoded_artifact.artifact.redaction_class) !=
+             ingress_view.source_artifact_redaction_class ||
+         decoded_artifact.artifact.artifact_uuid !=
+             ingress_view.source_artifact_uuid)) {
+      return Reject("SBLR.SOURCE_ARTIFACT.INVALID",
+                    "The external source-artifact semantic identity differs from its SBEE reference.",
+                    "source_artifact.semantic_reference_mismatch");
     }
   }
   const auto canonical_uuid_text = [](std::string_view value) {

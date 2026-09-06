@@ -22,6 +22,7 @@
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
@@ -2530,6 +2531,70 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindDatabaseAttach(
     AddDiagnostic(
         &result.messages, "MGA.AUTHORITY_MISMATCH",
         "embedded DATABASE ATTACH bind result is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult EmbeddedEngineClient::RetainSourceArtifact(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  scratchbird::engine::sblr::SblrSourceArtifactRetainRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded source-artifact retain request is malformed",
+                  detail);
+    return result;
+  }
+  auto frame = BaseFrame(static_cast<std::uint16_t>(
+      scratchbird::server::sbps::MessageType::kSourceArtifactRetainRequest),
+                         session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaSourceArtifactRetainRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleRetainSourceArtifact(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrSourceArtifactRetainAckV1 ack;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kSourceArtifactRetainResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaSourceArtifactRetainResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainAckV1(
+          operation.payload.data(), operation.payload.size(), &ack,
+          &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.sblr_envelope_uuid != request.sblr_envelope_uuid ||
+      ack.artifact_uuid != request.artifact_uuid ||
+      ack.declared_size != request.declared_size ||
+      ack.crc32c != request.crc32c ||
+      ack.redaction_class != request.redaction_class ||
+      ack.decompile_policy != request.decompile_policy ||
+      ack.artifact_sha256 != request.artifact_sha256 ||
+      ack.retention_generation == 0) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded source-artifact retain result is not exactly correlated",
         detail);
     return result;
   }

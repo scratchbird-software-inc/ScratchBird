@@ -22,6 +22,9 @@ using SblrSourceArtifactSha256V1 = std::array<std::uint8_t, 32>;
 inline constexpr std::size_t kSblrSourceArtifactHeaderSizeV1 = 224;
 inline constexpr std::size_t kSblrSourceArtifactMaximumBytesV1 = 4'194'304;
 inline constexpr std::size_t kSblrSourceArtifactMaximumRecordsV1 = 4'096;
+inline constexpr std::size_t kSblrSourceArtifactRetainRequestHeaderSizeV1 =
+    144;
+inline constexpr std::size_t kSblrSourceArtifactRetainAckSizeV1 = 152;
 
 enum class SblrSourceArtifactRedactionClassV1 : std::uint8_t {
   none = 0,
@@ -208,6 +211,40 @@ struct SblrSourceArtifactValidationContextV1 {
   std::vector<SblrSourceArtifactUuidV1> admitted_object_uuids;
 };
 
+// Private, authenticated statement-scoped retention carrier.  The parser may
+// present canonical SAM1 bytes, but only the engine-owned receipt retains them.
+// The later SBEE carries the immutable reference fields below and never the
+// source artifact body itself.
+struct SblrSourceArtifactRetainRequestV1 {
+  SblrSourceArtifactUuidV1 authenticated_receipt_uuid{};
+  SblrSourceArtifactUuidV1 sblr_envelope_uuid{};
+  SblrSourceArtifactUuidV1 artifact_uuid{};
+  std::uint64_t declared_size = 0;
+  std::uint32_t crc32c = 0;
+  SblrSourceArtifactRedactionClassV1 redaction_class =
+      SblrSourceArtifactRedactionClassV1::none;
+  SblrSourceArtifactDecompilePolicyV1 decompile_policy =
+      SblrSourceArtifactDecompilePolicyV1::source_preserving;
+  SblrSourceArtifactSha256V1 artifact_sha256{};
+  SblrSourceArtifactSha256V1 request_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_artifact_bytes;
+};
+
+struct SblrSourceArtifactRetainAckV1 {
+  SblrSourceArtifactUuidV1 authenticated_receipt_uuid{};
+  SblrSourceArtifactUuidV1 sblr_envelope_uuid{};
+  SblrSourceArtifactUuidV1 artifact_uuid{};
+  std::uint64_t declared_size = 0;
+  std::uint32_t crc32c = 0;
+  SblrSourceArtifactRedactionClassV1 redaction_class =
+      SblrSourceArtifactRedactionClassV1::none;
+  SblrSourceArtifactDecompilePolicyV1 decompile_policy =
+      SblrSourceArtifactDecompilePolicyV1::source_preserving;
+  SblrSourceArtifactSha256V1 artifact_sha256{};
+  std::uint64_t retention_generation = 0;
+  SblrSourceArtifactSha256V1 acknowledgement_evidence_sha256{};
+};
+
 std::vector<std::uint8_t> EncodeSblrSourceArtifactMapV1(
     const SblrSourceArtifactMapV1& artifact,
     std::string* detail = nullptr);
@@ -220,5 +257,29 @@ bool ValidateSblrSourceArtifactMapV1(
     const SblrSourceArtifactMapV1& artifact,
     const SblrSourceArtifactValidationContextV1& context,
     std::string* detail);
+
+SblrSourceArtifactSha256V1 HashSblrSourceArtifactBytesV1(
+    const std::uint8_t* data,
+    std::size_t size);
+
+std::vector<std::uint8_t> EncodeSblrSourceArtifactRetainRequestV1(
+    const SblrSourceArtifactRetainRequestV1& request,
+    std::string* detail = nullptr);
+
+bool DecodeSblrSourceArtifactRetainRequestV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrSourceArtifactRetainRequestV1* request,
+    std::string* detail = nullptr);
+
+std::vector<std::uint8_t> EncodeSblrSourceArtifactRetainAckV1(
+    const SblrSourceArtifactRetainAckV1& acknowledgement,
+    std::string* detail = nullptr);
+
+bool DecodeSblrSourceArtifactRetainAckV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrSourceArtifactRetainAckV1* acknowledgement,
+    std::string* detail = nullptr);
 
 }  // namespace scratchbird::engine::sblr

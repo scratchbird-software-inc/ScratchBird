@@ -260,6 +260,9 @@ def main() -> int:
     parser.add_argument("--client", required=True)
     parser.add_argument("--operation", choices=("show-version", "show-wait-events", "show-object-detail", "source-map", "source-artifact-container", "error-vector", "txn-begin", "txn-commit", "txn-rollback", "txn-rollback-to-savepoint", "txn-savepoint", "txn-release-savepoint", "psql-autonomous-frame", "transaction-reservation-release", "temporary-instance-cleanup", "cursor-open", "cursor-fetch", "cursor-close", "read-by-key", "read-range", "read-stream", "result-set-pass", "access-cursor-open", "access-cursor-fetch", "access-cursor-close", "insert", "update", "delete", "merge", "table-truncate", "table-analyze", "bulk-import-stream", "bulk-export-stream", "statement-batch", "atomic-cas", "atomic-rmw", "advisory-lock", "advisory-lock-release", "function-call", "operator-call", "cast", "compare", "domain-operation", "udr-invoke", "procedure-invoke", "function-invoke", "aggregate-invoke", "sequence-nextval", "sequence-currval", "sequence-setval", "query-numeric", "advanced-datatype-family", "project", "aggregate", "group", "sort", "limit", "window", "return-result-set", "kv-structured-read", "kv-structured-mutate", "kv-structured-scan", "kv-structured-stream-read", "kv-structured-stream-append", "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain", "ddl-create-view", "ddl-alter-view", "ddl-drop-view", "ddl-create-trigger", "ddl-create-schema", "ddl-create-table", "ddl-create-index", "ddl-drop-index"),
                         default="source-map")
+    parser._actions[-1].choices = tuple(
+        (*parser._actions[-1].choices, "source-artifact-external")
+    )
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add", "dml-conditional-mutate", "ddl-alter-timeseries-value-cache", "ddl-drop-timeseries-value-cache"))
@@ -457,6 +460,17 @@ def main() -> int:
                     "source-artifact container did not complete the exact "
                     "server admission and render/reparse proof"
                 )
+        elif args.operation == "source-artifact-external":
+            expected_success = (
+                "CSC-TEST-005774 SOURCE_ARTIFACT_EXTERNAL_REFERENCE accepted "
+                "server_admission=true receipt_resolution=true "
+                "source_preserving_render=true reparse=true\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "external source-artifact reference did not complete the "
+                    "exact retain, resolve, admission, and render/reparse proof"
+                )
         elif args.operation == "ddl-create-index":
             expected_refusal = (
                 "CSC-TEST-002601 DDL_CREATE_INDEX "
@@ -567,7 +581,9 @@ def main() -> int:
         elif args.operation == "source-map":
             expected = ("executor_id=engine.op.source_map", "opcode=SBLR_SOURCE_MAP",
                         "opcode_code=6")
-        elif args.operation == "source-artifact-container":
+        elif args.operation in (
+            "source-artifact-container", "source-artifact-external"
+        ):
             expected = ("executor_id=engine.op.txn_begin", "opcode=SBLR_TXN_BEGIN",
                         "opcode_code=256", "operand_descriptor_id=transaction_begin_options",
                         "result_descriptor_id=transaction_handle",

@@ -9977,6 +9977,70 @@ SessionOperationResult HandleExecuteSblrImpl(
       canonical_request.reserved_payload_sha256 =
           reservation_view.payload_sha256;
     }
+    const auto source_ingress =
+        scratchbird::engine::DecodeSblrExecutionEnvelopeV1Bytes(
+            reinterpret_cast<const std::uint8_t*>(
+                decoded->encoded_execution_envelope.data()),
+            decoded->encoded_execution_envelope.size());
+    scratchbird::engine::SblrExecutionEnvelopeSemanticView
+        source_ingress_view;
+    if (source_ingress.status == scratchbird::engine::SblrCodecStatus::ok &&
+        scratchbird::engine::SblrValidateExecutionEnvelopeFields(
+            source_ingress.envelope, &source_ingress_view) &&
+        source_ingress_view.source_artifact_present) {
+      engine_bridge::StatementSourceArtifactReferenceV1 reference;
+      std::copy_n(source_ingress.envelope.fields[0].data(),
+                  reference.sblr_envelope_uuid.size(),
+                  reference.sblr_envelope_uuid.begin());
+      reference.artifact_uuid = source_ingress_view.source_artifact_uuid;
+      reference.declared_size =
+          source_ingress_view.source_artifact_declared_size;
+      reference.crc32c = source_ingress_view.source_artifact_crc32c;
+      reference.checksum_kind =
+          source_ingress_view.source_artifact_checksum_kind;
+      reference.checksum_crc32c =
+          source_ingress_view.source_artifact_checksum_crc32c;
+      reference.checksum_sha256 =
+          source_ingress_view.source_artifact_checksum_sha256;
+      reference.redaction_class =
+          source_ingress_view.source_artifact_redaction_class;
+      engine_bridge::StatementSourceArtifactRetentionV1 retention;
+      sb_engine_result_t source_result = nullptr;
+      const auto source_status =
+          engine_bridge::ResolveStatementSourceArtifactV1(
+              live_statement_context->receipt, &reference, &retention,
+              &source_result);
+      std::string source_code = retention.failure_code;
+      std::string source_detail = retention.failure_detail;
+      if (source_code.empty()) {
+        source_code = FirstEngineDiagnosticCode(source_result);
+      }
+      if (source_detail.empty()) {
+        source_detail = FirstEngineDiagnosticDetail(source_result);
+      }
+      if (source_result != nullptr) {
+        (void)sb_engine_result_release(source_result);
+      }
+      if (source_status != SB_ENGINE_STATUS_OK ||
+          retention.canonical_artifact_bytes.empty()) {
+        CompleteServerRequestLifecycle(
+            registry, request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed,
+            source_detail.empty() ? "source_artifact_resolution_refused"
+                                  : source_detail);
+        return Failure(
+            static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+            response_schema, decoded->session_uuid,
+            source_code.empty() ? "SBLR.SOURCE_ARTIFACT.INVALID"
+                                : source_code,
+            "The external source artifact could not be resolved through the exact live statement receipt.",
+            source_detail.empty() ? "source_artifact_resolution_refused"
+                                  : source_detail);
+      }
+      canonical_request.source_artifact_resolved_by_engine = true;
+      canonical_request.resolved_source_artifact_bytes =
+          std::move(retention.canonical_artifact_bytes);
+    }
     BindServerSblrGatewayReceiptObservation(live_statement_context->view,
                                             &canonical_request);
     admission = AdmitServerSblrEnvelope(canonical_request);

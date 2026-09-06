@@ -34,6 +34,18 @@ bool Fail(std::string* detail, std::string_view reason) {
   return false;
 }
 
+std::uint32_t SourceArtifactCrc32c(const std::uint8_t* data,
+                                   std::size_t size) noexcept {
+  std::uint32_t crc = 0xffffffffu;
+  for (std::size_t index = 0; index != size; ++index) {
+    crc ^= data[index];
+    for (unsigned bit = 0; bit != 8; ++bit) {
+      crc = (crc >> 1U) ^ (0x82f63b78u & (0U - (crc & 1U)));
+    }
+  }
+  return ~crc;
+}
+
 template <typename T>
 bool NonZero(const T& value) {
   return std::any_of(value.begin(), value.end(), [](std::uint8_t byte) {
@@ -120,6 +132,13 @@ SblrSourceArtifactSha256V1 HashParts(
     bytes.insert(bytes.end(), variable, variable + variable_size);
   }
   return scratchbird::core::hash::ComputeSha256Digest(bytes).digest;
+}
+
+bool SameBytes(const std::vector<std::uint8_t>& left,
+               const std::uint8_t* right,
+               std::size_t size) {
+  return left.size() == size &&
+         std::equal(left.begin(), left.end(), right);
 }
 
 bool ValidUtf8(std::string_view value,
@@ -984,6 +1003,215 @@ bool ValidateSblrSourceArtifactMapV1(
                           : "node_ref");
     }
   }
+  return true;
+}
+
+SblrSourceArtifactSha256V1 HashSblrSourceArtifactBytesV1(
+    const std::uint8_t* data,
+    std::size_t size) {
+  if (data == nullptr && size != 0) {
+    return {};
+  }
+  std::vector<std::uint8_t> bytes;
+  if (size != 0) {
+    bytes.assign(data, data + size);
+  }
+  return scratchbird::core::hash::ComputeSha256Digest(bytes).digest;
+}
+
+std::vector<std::uint8_t> EncodeSblrSourceArtifactRetainRequestV1(
+    const SblrSourceArtifactRetainRequestV1& request,
+    std::string* detail) {
+  if (detail != nullptr) detail->clear();
+  const auto fail = [&](std::string_view reason) {
+    Fail(detail, reason);
+    return std::vector<std::uint8_t>{};
+  };
+  if (!IsUuidV7(request.authenticated_receipt_uuid) ||
+      !IsUuidV7(request.sblr_envelope_uuid) ||
+      !IsUuidV7(request.artifact_uuid) ||
+      request.canonical_artifact_bytes.empty() ||
+      request.canonical_artifact_bytes.size() >
+          kSblrSourceArtifactMaximumBytesV1 ||
+      request.declared_size != request.canonical_artifact_bytes.size() ||
+      request.crc32c != SourceArtifactCrc32c(
+                             request.canonical_artifact_bytes.data(),
+                             request.canonical_artifact_bytes.size()) ||
+      request.artifact_sha256 != HashSblrSourceArtifactBytesV1(
+                                         request.canonical_artifact_bytes.data(),
+                                         request.canonical_artifact_bytes.size()) ||
+      static_cast<std::uint8_t>(request.redaction_class) > 3 ||
+      static_cast<std::uint8_t>(request.decompile_policy) < 1 ||
+      static_cast<std::uint8_t>(request.decompile_policy) > 4) {
+    return fail("retain_request_shape");
+  }
+  const auto decoded = DecodeSblrSourceArtifactMapV1(
+      request.canonical_artifact_bytes.data(),
+      request.canonical_artifact_bytes.size());
+  if (decoded.status != SblrSourceArtifactDecodeStatusV1::ok ||
+      decoded.artifact.artifact_uuid != request.artifact_uuid ||
+      decoded.artifact.sblr_envelope_uuid != request.sblr_envelope_uuid ||
+      NonZero(decoded.artifact.container_request_uuid) ||
+      decoded.artifact.redaction_class != request.redaction_class ||
+      decoded.artifact.decompile_policy != request.decompile_policy) {
+    return fail(decoded.detail.empty() ? "retain_request_binding"
+                                       : decoded.detail);
+  }
+  const std::uint64_t total_size =
+      kSblrSourceArtifactRetainRequestHeaderSizeV1 +
+      request.canonical_artifact_bytes.size();
+  if (total_size > std::numeric_limits<std::uint32_t>::max()) {
+    return fail("retain_request_extent");
+  }
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(total_size), 0);
+  std::copy_n("SARQ", 4, bytes.begin());
+  StoreU16(&bytes, 4, 1);
+  StoreU16(&bytes, 6, kSblrSourceArtifactRetainRequestHeaderSizeV1);
+  StoreU32(&bytes, 8, static_cast<std::uint32_t>(total_size));
+  CopyTo(&bytes, 16, request.authenticated_receipt_uuid);
+  CopyTo(&bytes, 32, request.sblr_envelope_uuid);
+  CopyTo(&bytes, 48, request.artifact_uuid);
+  StoreU64(&bytes, 64, request.declared_size);
+  StoreU32(&bytes, 72, request.crc32c);
+  bytes[76] = static_cast<std::uint8_t>(request.redaction_class);
+  bytes[77] = static_cast<std::uint8_t>(request.decompile_policy);
+  CopyTo(&bytes, 80, request.artifact_sha256);
+  std::copy(request.canonical_artifact_bytes.begin(),
+            request.canonical_artifact_bytes.end(),
+            bytes.begin() + kSblrSourceArtifactRetainRequestHeaderSizeV1);
+  const auto evidence = HashParts(
+      "ScratchBird.StatementSourceArtifactRetainRequest.V1",
+      bytes.data() + 16, 96,
+      bytes.data() + kSblrSourceArtifactRetainRequestHeaderSizeV1,
+      request.canonical_artifact_bytes.size());
+  if (NonZero(request.request_evidence_sha256) &&
+      request.request_evidence_sha256 != evidence) {
+    return fail("retain_request_evidence");
+  }
+  CopyTo(&bytes, 112, evidence);
+  return bytes;
+}
+
+bool DecodeSblrSourceArtifactRetainRequestV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrSourceArtifactRetainRequestV1* request,
+    std::string* detail) {
+  if (detail != nullptr) detail->clear();
+  if (request != nullptr) *request = {};
+  if (data == nullptr || request == nullptr ||
+      size <= kSblrSourceArtifactRetainRequestHeaderSizeV1 ||
+      size > kSblrSourceArtifactRetainRequestHeaderSizeV1 +
+                 kSblrSourceArtifactMaximumBytesV1 ||
+      !std::equal(data, data + 4, "SARQ") || ReadU16(data + 4) != 1 ||
+      ReadU16(data + 6) != kSblrSourceArtifactRetainRequestHeaderSizeV1 ||
+      ReadU32(data + 8) != size || ReadU32(data + 12) != 0 ||
+      ReadU16(data + 78) != 0) {
+    return Fail(detail, "retain_request_header");
+  }
+  SblrSourceArtifactRetainRequestV1 value;
+  CopyFrom(data + 16, &value.authenticated_receipt_uuid);
+  CopyFrom(data + 32, &value.sblr_envelope_uuid);
+  CopyFrom(data + 48, &value.artifact_uuid);
+  value.declared_size = ReadU64(data + 64);
+  value.crc32c = ReadU32(data + 72);
+  value.redaction_class =
+      static_cast<SblrSourceArtifactRedactionClassV1>(data[76]);
+  value.decompile_policy =
+      static_cast<SblrSourceArtifactDecompilePolicyV1>(data[77]);
+  CopyFrom(data + 80, &value.artifact_sha256);
+  CopyFrom(data + 112, &value.request_evidence_sha256);
+  value.canonical_artifact_bytes.assign(
+      data + kSblrSourceArtifactRetainRequestHeaderSizeV1, data + size);
+  const auto canonical = EncodeSblrSourceArtifactRetainRequestV1(value, detail);
+  if (!SameBytes(canonical, data, size)) {
+    if (detail != nullptr && detail->empty()) *detail = "retain_request_noncanonical";
+    return false;
+  }
+  *request = std::move(value);
+  return true;
+}
+
+std::vector<std::uint8_t> EncodeSblrSourceArtifactRetainAckV1(
+    const SblrSourceArtifactRetainAckV1& acknowledgement,
+    std::string* detail) {
+  if (detail != nullptr) detail->clear();
+  const auto fail = [&](std::string_view reason) {
+    Fail(detail, reason);
+    return std::vector<std::uint8_t>{};
+  };
+  if (!IsUuidV7(acknowledgement.authenticated_receipt_uuid) ||
+      !IsUuidV7(acknowledgement.sblr_envelope_uuid) ||
+      !IsUuidV7(acknowledgement.artifact_uuid) ||
+      acknowledgement.declared_size == 0 ||
+      acknowledgement.declared_size > kSblrSourceArtifactMaximumBytesV1 ||
+      acknowledgement.crc32c == 0 ||
+      !NonZero(acknowledgement.artifact_sha256) ||
+      acknowledgement.retention_generation == 0 ||
+      static_cast<std::uint8_t>(acknowledgement.redaction_class) > 3 ||
+      static_cast<std::uint8_t>(acknowledgement.decompile_policy) < 1 ||
+      static_cast<std::uint8_t>(acknowledgement.decompile_policy) > 4) {
+    return fail("retain_ack_shape");
+  }
+  std::vector<std::uint8_t> bytes(kSblrSourceArtifactRetainAckSizeV1, 0);
+  std::copy_n("SARA", 4, bytes.begin());
+  StoreU16(&bytes, 4, 1);
+  StoreU16(&bytes, 6, kSblrSourceArtifactRetainAckSizeV1);
+  StoreU32(&bytes, 8, kSblrSourceArtifactRetainAckSizeV1);
+  CopyTo(&bytes, 16, acknowledgement.authenticated_receipt_uuid);
+  CopyTo(&bytes, 32, acknowledgement.sblr_envelope_uuid);
+  CopyTo(&bytes, 48, acknowledgement.artifact_uuid);
+  StoreU64(&bytes, 64, acknowledgement.declared_size);
+  StoreU32(&bytes, 72, acknowledgement.crc32c);
+  bytes[76] = static_cast<std::uint8_t>(acknowledgement.redaction_class);
+  bytes[77] = static_cast<std::uint8_t>(acknowledgement.decompile_policy);
+  CopyTo(&bytes, 80, acknowledgement.artifact_sha256);
+  StoreU64(&bytes, 112, acknowledgement.retention_generation);
+  const auto evidence = HashParts(
+      "ScratchBird.StatementSourceArtifactRetainAck.V1", bytes.data() + 16,
+      104, nullptr, 0);
+  if (NonZero(acknowledgement.acknowledgement_evidence_sha256) &&
+      acknowledgement.acknowledgement_evidence_sha256 != evidence) {
+    return fail("retain_ack_evidence");
+  }
+  CopyTo(&bytes, 120, evidence);
+  return bytes;
+}
+
+bool DecodeSblrSourceArtifactRetainAckV1(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrSourceArtifactRetainAckV1* acknowledgement,
+    std::string* detail) {
+  if (detail != nullptr) detail->clear();
+  if (acknowledgement != nullptr) *acknowledgement = {};
+  if (data == nullptr || acknowledgement == nullptr ||
+      size != kSblrSourceArtifactRetainAckSizeV1 ||
+      !std::equal(data, data + 4, "SARA") || ReadU16(data + 4) != 1 ||
+      ReadU16(data + 6) != kSblrSourceArtifactRetainAckSizeV1 ||
+      ReadU32(data + 8) != size || ReadU32(data + 12) != 0 ||
+      ReadU16(data + 78) != 0) {
+    return Fail(detail, "retain_ack_header");
+  }
+  SblrSourceArtifactRetainAckV1 value;
+  CopyFrom(data + 16, &value.authenticated_receipt_uuid);
+  CopyFrom(data + 32, &value.sblr_envelope_uuid);
+  CopyFrom(data + 48, &value.artifact_uuid);
+  value.declared_size = ReadU64(data + 64);
+  value.crc32c = ReadU32(data + 72);
+  value.redaction_class =
+      static_cast<SblrSourceArtifactRedactionClassV1>(data[76]);
+  value.decompile_policy =
+      static_cast<SblrSourceArtifactDecompilePolicyV1>(data[77]);
+  CopyFrom(data + 80, &value.artifact_sha256);
+  value.retention_generation = ReadU64(data + 112);
+  CopyFrom(data + 120, &value.acknowledgement_evidence_sha256);
+  const auto canonical = EncodeSblrSourceArtifactRetainAckV1(value, detail);
+  if (!SameBytes(canonical, data, size)) {
+    if (detail != nullptr && detail->empty()) *detail = "retain_ack_noncanonical";
+    return false;
+  }
+  *acknowledgement = std::move(value);
   return true;
 }
 

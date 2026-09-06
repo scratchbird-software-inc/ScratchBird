@@ -337,6 +337,94 @@ void CheckCanonicalCodecAndContainer() {
           "canonical source-artifact container was not byte-identical");
 }
 
+void CheckExternalRetainCarrierCodec() {
+  auto artifact = MakeTransactionArtifact();
+  artifact.container_request_uuid = {};
+  artifact.sblr_envelope_uuid = Uuid(30);
+  std::string detail;
+  const auto artifact_bytes =
+      sblr::EncodeSblrSourceArtifactMapV1(artifact, &detail);
+  Require(!artifact_bytes.empty(),
+          "external source artifact did not encode");
+  sblr::SblrSourceArtifactValidationContextV1 context;
+  context.operation_validated_without_artifact = true;
+  context.source_preserving_requested = true;
+  context.expected_sblr_envelope_uuid = artifact.sblr_envelope_uuid;
+  context.expected_dialect_family_uuid = artifact.dialect_family_uuid;
+  context.expected_parser_package_uuid = artifact.parser_package_uuid;
+  context.admitted_node_ids = {1, 2};
+  Require(sblr::ValidateSblrSourceArtifactMapV1(artifact, context, &detail),
+          "external source artifact did not validate against SBEE identity");
+
+  sblr::SblrSourceArtifactRetainRequestV1 request;
+  request.authenticated_receipt_uuid = Uuid(31);
+  request.sblr_envelope_uuid = artifact.sblr_envelope_uuid;
+  request.artifact_uuid = artifact.artifact_uuid;
+  request.declared_size = artifact_bytes.size();
+  request.crc32c =
+      public_sblr::SblrCrc32c(artifact_bytes.data(), artifact_bytes.size());
+  request.redaction_class = artifact.redaction_class;
+  request.decompile_policy = artifact.decompile_policy;
+  request.artifact_sha256 = sblr::HashSblrSourceArtifactBytesV1(
+      artifact_bytes.data(), artifact_bytes.size());
+  request.canonical_artifact_bytes = artifact_bytes;
+  const auto request_bytes =
+      sblr::EncodeSblrSourceArtifactRetainRequestV1(request, &detail);
+  Require(!request_bytes.empty(), "SARQ retain request did not encode");
+  sblr::SblrSourceArtifactRetainRequestV1 decoded_request;
+  Require(sblr::DecodeSblrSourceArtifactRetainRequestV1(
+              request_bytes.data(), request_bytes.size(), &decoded_request,
+              &detail) &&
+              decoded_request.authenticated_receipt_uuid ==
+                  request.authenticated_receipt_uuid &&
+              decoded_request.sblr_envelope_uuid ==
+                  request.sblr_envelope_uuid &&
+              decoded_request.artifact_uuid == request.artifact_uuid &&
+              decoded_request.canonical_artifact_bytes == artifact_bytes,
+          "SARQ retain request did not round-trip exactly");
+  Require(sblr::EncodeSblrSourceArtifactRetainRequestV1(decoded_request,
+                                                         &detail) ==
+              request_bytes,
+          "SARQ retain request was not byte-identical after decode");
+
+  sblr::SblrSourceArtifactRetainAckV1 ack;
+  ack.authenticated_receipt_uuid = request.authenticated_receipt_uuid;
+  ack.sblr_envelope_uuid = request.sblr_envelope_uuid;
+  ack.artifact_uuid = request.artifact_uuid;
+  ack.declared_size = request.declared_size;
+  ack.crc32c = request.crc32c;
+  ack.redaction_class = request.redaction_class;
+  ack.decompile_policy = request.decompile_policy;
+  ack.artifact_sha256 = request.artifact_sha256;
+  ack.retention_generation = 1;
+  const auto ack_bytes =
+      sblr::EncodeSblrSourceArtifactRetainAckV1(ack, &detail);
+  Require(ack_bytes.size() == sblr::kSblrSourceArtifactRetainAckSizeV1,
+          "SARA retain acknowledgement did not encode at exact extent");
+  sblr::SblrSourceArtifactRetainAckV1 decoded_ack;
+  Require(sblr::DecodeSblrSourceArtifactRetainAckV1(
+              ack_bytes.data(), ack_bytes.size(), &decoded_ack, &detail) &&
+              decoded_ack.artifact_uuid == request.artifact_uuid &&
+              decoded_ack.retention_generation == 1 &&
+              decoded_ack.artifact_sha256 == request.artifact_sha256,
+          "SARA retain acknowledgement did not round-trip exactly");
+  Require(sblr::EncodeSblrSourceArtifactRetainAckV1(decoded_ack, &detail) ==
+              ack_bytes,
+          "SARA retain acknowledgement was not byte-identical after decode");
+
+  auto corrupt_request = request_bytes;
+  corrupt_request.back() ^= 0x01;
+  Require(!sblr::DecodeSblrSourceArtifactRetainRequestV1(
+              corrupt_request.data(), corrupt_request.size(),
+              &decoded_request, &detail),
+          "tampered SARQ artifact bytes were accepted");
+  auto corrupt_ack = ack_bytes;
+  corrupt_ack.back() ^= 0x01;
+  Require(!sblr::DecodeSblrSourceArtifactRetainAckV1(
+              corrupt_ack.data(), corrupt_ack.size(), &decoded_ack, &detail),
+          "tampered SARA acknowledgement evidence was accepted");
+}
+
 void CheckCodecRefusals() {
   auto artifact = MakeArtifact();
   std::string detail;
@@ -523,6 +611,7 @@ void CheckCarrierBoundaryRefusals() {
 
 int main() {
   CheckCanonicalCodecAndContainer();
+  CheckExternalRetainCarrierCodec();
   CheckCodecRefusals();
   CheckAssociationAndPolicyRefusals();
   CheckCarrierBoundaryRefusals();

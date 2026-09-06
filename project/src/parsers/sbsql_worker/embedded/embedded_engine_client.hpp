@@ -124,6 +124,9 @@ class EmbeddedEngineClient {
   ipc::ServerVariableBindingResult BindDatabaseAttach(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult RetainSourceArtifact(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult CoordinateDatabaseAttach(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

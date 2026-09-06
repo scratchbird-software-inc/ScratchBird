@@ -1208,36 +1208,16 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
   return RefuseKnownOperationWithoutRenderContract(envelope);
 }
 
-SblrToSbsqlResult RenderSblrContainerToSbsql(
-    const std::uint8_t* data,
-    std::size_t size,
+namespace {
+
+SblrToSbsqlResult RenderBoundSourceArtifact(
+    const scratchbird::engine::SblrCanonicalContainer& container,
+    const std::vector<std::uint8_t>& artifact_bytes,
+    bool external_reference,
+    const SblrSourceArtifactUuidV1& expected_sblr_envelope_uuid,
+    const SblrSourceArtifactUuidV1& expected_artifact_uuid,
+    std::uint16_t expected_redaction_class,
     const SblrToSbsqlOptions& options) {
-  if (!options.source_preserving) {
-    return Refuse("SB_SBLR_TO_SBSQL_POLICY_REFUSED",
-                  "SBLR-to-SBsql conversion requires source-preserving policy");
-  }
-  const auto decoded_container =
-      scratchbird::engine::DecodeSblrContainerBytes(data, size);
-  if (decoded_container.status != scratchbird::engine::SblrCodecStatus::ok) {
-    return Refuse(
-        decoded_container.diagnostic_code.empty()
-            ? "SBLR.ENVELOPE.INVALID"
-            : std::string(decoded_container.diagnostic_code),
-        decoded_container.message_key.empty()
-            ? "canonical SBLR container decoding failed"
-            : std::string(decoded_container.message_key));
-  }
-  const auto& container = decoded_container.container;
-  if (container.source_map.empty()) {
-    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
-                  "source_artifact.absent");
-  }
-  if (container.lowering_metadata.size() >= 4 &&
-      std::equal(container.lowering_metadata.begin(),
-                 container.lowering_metadata.begin() + 4, "SAM1")) {
-    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
-                  "source_artifact.channel_duplicate_or_misplaced");
-  }
   const auto payload_kind = scratchbird::engine::SblrReadU16(
       container.canonical_anchor.data() + 100);
   const std::string operation_bytes(
@@ -1278,17 +1258,29 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
   }
 
   const auto decoded_artifact = DecodeSblrSourceArtifactMapV1(
-      container.source_map.data(), container.source_map.size());
+      artifact_bytes.data(), artifact_bytes.size());
   if (decoded_artifact.status != SblrSourceArtifactDecodeStatusV1::ok) {
     return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
                   "source_artifact." + decoded_artifact.detail);
+  }
+  if (external_reference &&
+      (decoded_artifact.artifact.artifact_uuid != expected_artifact_uuid ||
+       static_cast<std::uint16_t>(decoded_artifact.artifact.redaction_class) !=
+           expected_redaction_class)) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.semantic_reference_mismatch");
   }
 
   SblrSourceArtifactValidationContextV1 validation_context;
   validation_context.operation_validated_without_artifact = true;
   validation_context.source_preserving_requested = true;
-  std::copy_n(container.canonical_anchor.data() + 116, 16,
-              validation_context.expected_container_request_uuid.begin());
+  if (external_reference) {
+    validation_context.expected_sblr_envelope_uuid =
+        expected_sblr_envelope_uuid;
+  } else {
+    std::copy_n(container.canonical_anchor.data() + 116, 16,
+                validation_context.expected_container_request_uuid.begin());
+  }
   std::copy_n(container.canonical_anchor.data() + 16, 16,
               validation_context.expected_dialect_family_uuid.begin());
   std::copy_n(container.canonical_anchor.data() + 32, 16,
@@ -1305,12 +1297,9 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
   for (const auto& operand : operation.operands) {
     validation_context.admitted_node_ids.push_back(
         static_cast<std::uint64_t>(operand.ordinal) + 1U);
-    if (!IsObjectAuthorityOperand(operand.name)) {
-      continue;
-    }
+    if (!IsObjectAuthorityOperand(operand.name)) continue;
     SblrSourceArtifactUuidV1 object_uuid{};
-    if (ParseUuid(OperandValue(operation, operand.name),
-                  &object_uuid) &&
+    if (ParseUuid(OperandValue(operation, operand.name), &object_uuid) &&
         std::find(validation_context.admitted_object_uuids.begin(),
                   validation_context.admitted_object_uuids.end(),
                   object_uuid) ==
@@ -1335,6 +1324,136 @@ SblrToSbsqlResult RenderSblrContainerToSbsql(
   operation.source_artifact_map =
       ToLegacySourceArtifact(operation, decoded_artifact.artifact);
   return RenderSblrEnvelopeToSbsql(operation, options);
+}
+
+}  // namespace
+
+SblrToSbsqlResult RenderSblrContainerToSbsql(
+    const std::uint8_t* data,
+    std::size_t size,
+    const SblrToSbsqlOptions& options) {
+  if (!options.source_preserving) {
+    return Refuse("SB_SBLR_TO_SBSQL_POLICY_REFUSED",
+                  "SBLR-to-SBsql conversion requires source-preserving policy");
+  }
+  const auto decoded_container =
+      scratchbird::engine::DecodeSblrContainerBytes(data, size);
+  if (decoded_container.status != scratchbird::engine::SblrCodecStatus::ok) {
+    return Refuse(
+        decoded_container.diagnostic_code.empty()
+            ? "SBLR.ENVELOPE.INVALID"
+            : std::string(decoded_container.diagnostic_code),
+        decoded_container.message_key.empty()
+            ? "canonical SBLR container decoding failed"
+            : std::string(decoded_container.message_key));
+  }
+  const auto& container = decoded_container.container;
+  if (container.source_map.empty()) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.absent");
+  }
+  if (container.lowering_metadata.size() >= 4 &&
+      std::equal(container.lowering_metadata.begin(),
+                 container.lowering_metadata.begin() + 4, "SAM1")) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.channel_duplicate_or_misplaced");
+  }
+  return RenderBoundSourceArtifact(container, container.source_map, false,
+                                   {}, {}, 0, options);
+}
+
+SblrToSbsqlResult RenderSblrExternalSourceArtifactToSbsql(
+    const std::uint8_t* container_data,
+    std::size_t container_size,
+    const std::uint8_t* execution_envelope_data,
+    std::size_t execution_envelope_size,
+    const std::uint8_t* artifact_data,
+    std::size_t artifact_size,
+    const SblrToSbsqlOptions& options) {
+  if (!options.source_preserving) {
+    return Refuse("SB_SBLR_TO_SBSQL_POLICY_REFUSED",
+                  "SBLR-to-SBsql conversion requires source-preserving policy");
+  }
+  if (artifact_data == nullptr || artifact_size == 0) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.absent");
+  }
+  const auto decoded_container = scratchbird::engine::DecodeSblrContainerBytes(
+      container_data, container_size);
+  if (decoded_container.status != scratchbird::engine::SblrCodecStatus::ok) {
+    return Refuse(
+        decoded_container.diagnostic_code.empty()
+            ? "SBLR.ENVELOPE.INVALID"
+            : std::string(decoded_container.diagnostic_code),
+        decoded_container.message_key.empty()
+            ? "canonical SBLR container decoding failed"
+            : std::string(decoded_container.message_key));
+  }
+  const auto& container = decoded_container.container;
+  if (!container.source_map.empty()) {
+    return Refuse("SBLR.OPERATION.DUPLICATE_INGRESS_AUTHORITY",
+                  "source_artifact.duplicate_channel");
+  }
+  if (container.lowering_metadata.size() >= 4 &&
+      std::equal(container.lowering_metadata.begin(),
+                 container.lowering_metadata.begin() + 4, "SAM1")) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.channel_duplicate_or_misplaced");
+  }
+  const auto decoded_ingress =
+      scratchbird::engine::DecodeSblrExecutionEnvelopeV1Bytes(
+          execution_envelope_data, execution_envelope_size);
+  scratchbird::engine::SblrExecutionEnvelopeSemanticView ingress;
+  if (decoded_ingress.status != scratchbird::engine::SblrCodecStatus::ok ||
+      !scratchbird::engine::SblrValidateExecutionEnvelopeFields(
+          decoded_ingress.envelope, &ingress) ||
+      !ingress.source_artifact_present ||
+      ingress.source_artifact_ref_kind != 4) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.external_reference_invalid");
+  }
+  const auto* operation_data =
+      ingress.payload_kind == scratchbird::engine::SblrPayloadKind::opcode_stream
+          ? ingress.opcode_inline_data
+          : ingress.operation_inline_data;
+  const auto operation_size =
+      ingress.payload_kind == scratchbird::engine::SblrPayloadKind::opcode_stream
+          ? ingress.opcode_inline_size
+          : ingress.operation_inline_size;
+  const auto anchor_kind = static_cast<scratchbird::engine::SblrPayloadKind>(
+      scratchbird::engine::SblrReadU16(container.canonical_anchor.data() + 100));
+  if (operation_data == nullptr || anchor_kind != ingress.payload_kind ||
+      operation_size != container.operation_payload.size() ||
+      !std::equal(container.operation_payload.begin(),
+                  container.operation_payload.end(), operation_data)) {
+    return Refuse("SBLR.ENVELOPE.CHECKSUM_MISMATCH",
+                  "source_artifact.operation_payload_binding_mismatch");
+  }
+  const auto artifact_crc =
+      scratchbird::engine::SblrCrc32c(artifact_data, artifact_size);
+  bool checksum_matches = false;
+  if (ingress.source_artifact_checksum_kind == 1) {
+    checksum_matches =
+        ingress.source_artifact_checksum_crc32c == artifact_crc;
+  } else if (ingress.source_artifact_checksum_kind == 2) {
+    checksum_matches =
+        ingress.source_artifact_checksum_sha256 ==
+        HashSblrSourceArtifactBytesV1(artifact_data, artifact_size);
+  }
+  if (ingress.source_artifact_declared_size != artifact_size ||
+      ingress.source_artifact_crc32c != artifact_crc || !checksum_matches) {
+    return Refuse("SBLR.SOURCE_ARTIFACT.INVALID",
+                  "source_artifact.reference_or_checksum_mismatch");
+  }
+  SblrSourceArtifactUuidV1 sblr_envelope_uuid{};
+  std::copy_n(decoded_ingress.envelope.fields[0].data(),
+              sblr_envelope_uuid.size(), sblr_envelope_uuid.begin());
+  std::vector<std::uint8_t> artifact_bytes(
+      artifact_data, artifact_data + artifact_size);
+  return RenderBoundSourceArtifact(
+      container, artifact_bytes, true, sblr_envelope_uuid,
+      ingress.source_artifact_uuid, ingress.source_artifact_redaction_class,
+      options);
 }
 
 }  // namespace scratchbird::engine::sblr

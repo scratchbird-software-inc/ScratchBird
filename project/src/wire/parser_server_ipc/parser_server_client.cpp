@@ -21,6 +21,7 @@
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
+#include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
@@ -998,6 +999,8 @@ constexpr std::uint32_t kSchemaDatabaseAttachRequestV1 = 7423;
 constexpr std::uint32_t kSchemaDatabaseAttachResultV1 = 7424;
 constexpr std::uint32_t kSchemaDatabaseAttachBindRequestV1 = 7749;
 constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
+constexpr std::uint32_t kSchemaSourceArtifactRetainRequestV1 = 7751;
+constexpr std::uint32_t kSchemaSourceArtifactRetainResultV1 = 7752;
 constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindRequestV1 = 7721;
 constexpr std::uint32_t kSchemaCoordinateDmlUpdateRowsBindResultV1 = 7722;
 constexpr std::uint32_t kSchemaCoordinateDmlPlanImportRowsBindRequestV1 = 7723;
@@ -1052,6 +1055,8 @@ constexpr std::uint16_t kMessageCatalogEpochCheckBindRequest = 734;
 constexpr std::uint16_t kMessageCatalogEpochCheckBindResult = 735;
 constexpr std::uint16_t kMessageDatabaseAttachBindRequest = 736;
 constexpr std::uint16_t kMessageDatabaseAttachBindResult = 737;
+constexpr std::uint16_t kMessageSourceArtifactRetainRequest = 738;
+constexpr std::uint16_t kMessageSourceArtifactRetainResult = 739;
 constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindRequest = 708;
 constexpr std::uint16_t kMessageCoordinateDmlUpdateRowsBindResult = 709;
 constexpr std::uint16_t kMessageCoordinateDmlPlanImportRowsBindRequest = 710;
@@ -9815,6 +9820,70 @@ ServerVariableBindingResult SbpsClient::BindDatabaseAttach(
         &messages, "MGA.AUTHORITY_MISMATCH",
         detail.empty()
             ? "DATABASE ATTACH bind acknowledgement is not exactly correlated"
+            : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  result.messages = std::move(messages);
+  return result;
+}
+
+ServerVariableBindingResult SbpsClient::RetainSourceArtifact(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  scratchbird::engine::sblr::SblrSourceArtifactRetainRequestV1 request;
+  std::string detail;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!session.authenticated || !UuidPresent(session_uuid) ||
+      !UuidPresent(connection_uuid) ||
+      !scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainRequestV1(
+          payload.data(), payload.size(), &request, &detail)) {
+    AddDiagnostic(
+        &messages, "SBLR.OPERAND_INVALID",
+        detail.empty() ? "source-artifact retain request is malformed"
+                       : detail);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!SendRequest(endpoint_,
+                   BaseHeader(kMessageSourceArtifactRetainRequest,
+                              kSchemaSourceArtifactRetainRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.outcome_unknown = true;
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrSourceArtifactRetainAckV1 ack;
+  if (response.header.message_type != kMessageSourceArtifactRetainResult ||
+      response.header.schema_id != kSchemaSourceArtifactRetainResultV1 ||
+      !scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainAckV1(
+          response.payload.data(), response.payload.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != request.authenticated_receipt_uuid ||
+      ack.sblr_envelope_uuid != request.sblr_envelope_uuid ||
+      ack.artifact_uuid != request.artifact_uuid ||
+      ack.declared_size != request.declared_size ||
+      ack.crc32c != request.crc32c ||
+      ack.redaction_class != request.redaction_class ||
+      ack.decompile_policy != request.decompile_policy ||
+      ack.artifact_sha256 != request.artifact_sha256 ||
+      ack.retention_generation == 0) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &messages, "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "source-artifact retain acknowledgement is not exactly correlated"
             : detail);
     result.messages = std::move(messages);
     return result;

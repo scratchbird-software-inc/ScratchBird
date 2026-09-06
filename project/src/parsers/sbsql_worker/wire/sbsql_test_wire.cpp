@@ -14831,13 +14831,17 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
   return submission;
 }
 
+template <typename NativeRouteClient>
 bool AttachExactTransactionBeginSourceArtifact(
     const CstDocument& cst,
     const AstDocument& ast,
     const SblrEnvelope& lowered,
     const ParserStatementContext& statement_context,
     const SessionContext& session,
+    bool external_reference,
+    NativeRouteClient* client,
     ParserCanonicalSblrSubmission* submission,
+    std::vector<std::uint8_t>* external_artifact_bytes,
     std::string* detail) {
   namespace artifact = scratchbird::engine::sblr;
   if (detail != nullptr) detail->clear();
@@ -14887,7 +14891,11 @@ bool AttachExactTransactionBeginSourceArtifact(
   std::copy(generated.value.value.bytes.begin(),
             generated.value.value.bytes.end(),
             source_artifact.artifact_uuid.begin());
-  source_artifact.container_request_uuid = *statement_uuid;
+  if (external_reference) {
+    source_artifact.sblr_envelope_uuid = *statement_uuid;
+  } else {
+    source_artifact.container_request_uuid = *statement_uuid;
+  }
   source_artifact.dialect_family_uuid = *dialect_uuid;
   source_artifact.parser_package_uuid = *parser_uuid;
   source_artifact.language_tag =
@@ -14936,7 +14944,11 @@ bool AttachExactTransactionBeginSourceArtifact(
   artifact::SblrSourceArtifactValidationContextV1 context;
   context.operation_validated_without_artifact = true;
   context.source_preserving_requested = true;
-  context.expected_container_request_uuid = *statement_uuid;
+  if (external_reference) {
+    context.expected_sblr_envelope_uuid = *statement_uuid;
+  } else {
+    context.expected_container_request_uuid = *statement_uuid;
+  }
   context.expected_dialect_family_uuid = *dialect_uuid;
   context.expected_parser_package_uuid = *parser_uuid;
   context.admitted_node_ids.push_back(1);
@@ -14953,6 +14965,125 @@ bool AttachExactTransactionBeginSourceArtifact(
   if (!artifact::ValidateSblrSourceArtifactMapV1(
           decoded_artifact.artifact, context, detail)) {
     return false;
+  }
+
+  if (external_reference) {
+    if (client == nullptr) {
+      if (detail != nullptr) *detail = "retain_client_missing";
+      return false;
+    }
+    const auto receipt_uuid =
+        CanonicalUuidBytes(statement_context.preliminary_receipt_uuid);
+    if (!receipt_uuid) {
+      if (detail != nullptr) *detail = "receipt_identity";
+      return false;
+    }
+    artifact::SblrSourceArtifactRetainRequestV1 retain_request;
+    retain_request.authenticated_receipt_uuid = *receipt_uuid;
+    retain_request.sblr_envelope_uuid = *statement_uuid;
+    retain_request.artifact_uuid = decoded_artifact.artifact.artifact_uuid;
+    retain_request.declared_size = encoded.size();
+    retain_request.crc32c = scratchbird::engine::SblrCrc32c(
+        encoded.data(), encoded.size());
+    retain_request.redaction_class =
+        decoded_artifact.artifact.redaction_class;
+    retain_request.decompile_policy =
+        decoded_artifact.artifact.decompile_policy;
+    retain_request.artifact_sha256 =
+        artifact::HashSblrSourceArtifactBytesV1(encoded.data(),
+                                                encoded.size());
+    retain_request.canonical_artifact_bytes = encoded;
+    const auto retain_bytes =
+        artifact::EncodeSblrSourceArtifactRetainRequestV1(retain_request,
+                                                           detail);
+    artifact::SblrSourceArtifactRetainRequestV1 verified_request;
+    if (retain_bytes.empty() ||
+        !artifact::DecodeSblrSourceArtifactRetainRequestV1(
+            retain_bytes.data(), retain_bytes.size(), &verified_request,
+            detail)) {
+      return false;
+    }
+    const auto retained = client->RetainSourceArtifact(session, retain_bytes);
+    if (!retained.accepted) {
+      if (detail != nullptr) {
+        *detail = retained.outcome_unknown
+                      ? "retain_outcome_unknown"
+                      : "retain_refused:" +
+                            ipc::MessageVectorToJson(retained.messages);
+      }
+      return false;
+    }
+    artifact::SblrSourceArtifactRetainAckV1 ack;
+    if (!artifact::DecodeSblrSourceArtifactRetainAckV1(
+            retained.canonical_payload.data(),
+            retained.canonical_payload.size(), &ack, detail) ||
+        ack.authenticated_receipt_uuid !=
+            verified_request.authenticated_receipt_uuid ||
+        ack.sblr_envelope_uuid != verified_request.sblr_envelope_uuid ||
+        ack.artifact_uuid != verified_request.artifact_uuid ||
+        ack.declared_size != verified_request.declared_size ||
+        ack.crc32c != verified_request.crc32c ||
+        ack.redaction_class != verified_request.redaction_class ||
+        ack.decompile_policy != verified_request.decompile_policy ||
+        ack.artifact_sha256 != verified_request.artifact_sha256 ||
+        ack.retention_generation == 0) {
+      if (detail != nullptr && detail->empty()) *detail = "retain_ack";
+      return false;
+    }
+    const auto decoded_ingress =
+        scratchbird::engine::DecodeSblrExecutionEnvelopeV1Bytes(
+            submission->canonical_execution_envelope_bytes.data(),
+            submission->canonical_execution_envelope_bytes.size());
+    scratchbird::engine::SblrExecutionEnvelopeSemanticView ingress_view;
+    if (decoded_ingress.status !=
+            scratchbird::engine::SblrCodecStatus::ok ||
+        !scratchbird::engine::SblrValidateExecutionEnvelopeFields(
+            decoded_ingress.envelope, &ingress_view) ||
+        ingress_view.source_artifact_present) {
+      if (detail != nullptr) *detail = "execution_envelope";
+      return false;
+    }
+    auto ingress = decoded_ingress.envelope;
+    ingress.header_flags |= 1U;
+    ingress.fields[23] = {1, 4};
+    ingress.fields[23].insert(ingress.fields[23].end(),
+                              ack.artifact_uuid.begin(),
+                              ack.artifact_uuid.end());
+    CanonicalAppendU64(&ingress.fields[23], ack.declared_size);
+    CanonicalAppendU32(&ingress.fields[23], ack.crc32c);
+    ingress.fields[24] = {2};
+    ingress.fields[24].insert(ingress.fields[24].end(),
+                              ack.artifact_sha256.begin(),
+                              ack.artifact_sha256.end());
+    ingress.fields[25] = CanonicalU16(
+        static_cast<std::uint16_t>(ack.redaction_class));
+    auto ingress_bytes =
+        scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
+    const auto verified_ingress =
+        scratchbird::engine::DecodeSblrExecutionEnvelopeV1Bytes(
+            ingress_bytes.data(), ingress_bytes.size());
+    if (ingress_bytes.empty() ||
+        verified_ingress.status !=
+            scratchbird::engine::SblrCodecStatus::ok ||
+        !scratchbird::engine::SblrValidateExecutionEnvelopeFields(
+            verified_ingress.envelope, &ingress_view) ||
+        !ingress_view.source_artifact_present ||
+        ingress_view.source_artifact_ref_kind != 4 ||
+        ingress_view.source_artifact_uuid != ack.artifact_uuid ||
+        ingress_view.source_artifact_declared_size != ack.declared_size ||
+        ingress_view.source_artifact_crc32c != ack.crc32c ||
+        ingress_view.source_artifact_checksum_kind != 2 ||
+        ingress_view.source_artifact_checksum_sha256 !=
+            ack.artifact_sha256) {
+      if (detail != nullptr) *detail = "execution_envelope_reencode";
+      return false;
+    }
+    submission->canonical_execution_envelope_bytes =
+        std::move(ingress_bytes);
+    if (external_artifact_bytes != nullptr) {
+      *external_artifact_bytes = std::move(encoded);
+    }
+    return true;
   }
 
   auto container = decoded_container.container;
@@ -25030,7 +25161,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  SbsqlCanonicalCompileOutput*
                                                      canonical_compile_output,
                                                  SbsqlCanonicalExecutionObservation*
-                                                     canonical_execution_observation) {
+                                                     canonical_execution_observation,
+                                                 bool external_source_artifact) {
   if (conformance_summary != nullptr) {
     *conformance_summary = {};
   }
@@ -25043,6 +25175,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   const bool phase_trace =
       std::getenv("SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE") != nullptr;
   std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
+  std::vector<std::uint8_t> external_source_artifact_bytes;
   auto phase_start = ParserPipelineClock::now();
   auto mark_phase = [&](std::string phase) {
     if (!phase_trace) return;
@@ -27836,9 +27969,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (result.accepted && native_statement_context.has_value() &&
         native_submission.has_value()) {
       std::string source_artifact_detail;
-      if (!AttachExactTransactionBeginSourceArtifact(
-              cst, ast, lowered, *native_statement_context, session_,
-              &*native_submission, &source_artifact_detail)) {
+      const bool source_artifact_attached = embedded_native_route
+          ? AttachExactTransactionBeginSourceArtifact(
+                cst, ast, lowered, *native_statement_context, session_,
+                external_source_artifact, embedded_client_.get(),
+                &*native_submission, &external_source_artifact_bytes,
+                &source_artifact_detail)
+          : AttachExactTransactionBeginSourceArtifact(
+                cst, ast, lowered, *native_statement_context, session_,
+                external_source_artifact, server_client_.get(),
+                &*native_submission, &external_source_artifact_bytes,
+                &source_artifact_detail);
+      if (!source_artifact_attached) {
         result.accepted = false;
         result.messages.diagnostics.push_back(MakeDiagnostic(
             "SBLR.SOURCE_ARTIFACT.INVALID", "ERROR",
@@ -28203,11 +28345,18 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         native_submission->canonical_container_bytes.data(),
         native_submission->canonical_container_bytes.size());
     if (decoded.status == scratchbird::engine::SblrCodecStatus::ok &&
-        !decoded.container.source_map.empty()) {
+        (!decoded.container.source_map.empty() ||
+         !external_source_artifact_bytes.empty())) {
       canonical_execution_observation->captured = true;
+      canonical_execution_observation->external_source_artifact =
+          !external_source_artifact_bytes.empty();
       canonical_execution_observation->operation_id = lowered.operation_id;
       canonical_execution_observation->canonical_container_bytes =
           native_submission->canonical_container_bytes;
+      canonical_execution_observation->canonical_execution_envelope_bytes =
+          native_submission->canonical_execution_envelope_bytes;
+      canonical_execution_observation->external_source_artifact_bytes =
+          external_source_artifact_bytes;
     }
   }
   WriteParserPipelinePhaseTrace(sql, result, phase_micros);
@@ -28219,6 +28368,14 @@ PipelineResult SbsqlTestWireSession::RunSourceArtifactContainerForWire(
   return RunPipeline("BEGIN TRANSACTION", true, false, 0, false, {}, nullptr,
                      false, nullptr, {}, 0, nullptr, nullptr, nullptr,
                      nullptr, observation);
+}
+
+PipelineResult
+SbsqlTestWireSession::RunSourceArtifactExternalReferenceForWire(
+    SbsqlCanonicalExecutionObservation* observation) {
+  return RunPipeline("BEGIN TRANSACTION", true, false, 0, false, {}, nullptr,
+                     false, nullptr, {}, 0, nullptr, nullptr, nullptr,
+                     nullptr, observation, true);
 }
 
 PipelineResult SbsqlTestWireSession::RunRetiredTransactionCommitReplayForWire() {

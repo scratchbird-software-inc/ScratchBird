@@ -716,6 +716,9 @@ class SbpsClient {
   ServerVariableBindingResult BindDatabaseAttach(
       const ParserSessionContext&,
       const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult RetainSourceArtifact(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDatabaseAttach(
       const ParserSessionContext&,
       const std::vector<std::uint8_t>&) const;

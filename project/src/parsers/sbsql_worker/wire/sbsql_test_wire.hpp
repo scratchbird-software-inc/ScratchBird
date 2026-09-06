@@ -134,8 +134,11 @@ struct SbsqlCanonicalCompileOutput {
 // authority and exists solely for public carrier/reversal conformance.
 struct SbsqlCanonicalExecutionObservation {
   bool captured{false};
+  bool external_source_artifact{false};
   std::string operation_id;
   std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+  std::vector<std::uint8_t> external_source_artifact_bytes;
 };
 
 class SbsqlTestWireSession {
@@ -167,8 +170,11 @@ class SbsqlTestWireSession {
                              SbsqlCanonicalCompileOutput*
                                  canonical_compile_output = nullptr,
                              SbsqlCanonicalExecutionObservation*
-                                 canonical_execution_observation = nullptr);
+                                 canonical_execution_observation = nullptr,
+                             bool external_source_artifact = false);
   PipelineResult RunSourceArtifactContainerForWire(
+      SbsqlCanonicalExecutionObservation* observation);
+  PipelineResult RunSourceArtifactExternalReferenceForWire(
       SbsqlCanonicalExecutionObservation* observation);
   PipelineResult RunVariableForWire(std::string_view sql,
                                     bool cursor_requested = false);

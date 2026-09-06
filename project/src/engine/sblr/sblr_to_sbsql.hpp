@@ -53,4 +53,32 @@ inline SblrToSbsqlResult RenderSblrContainerToSbsql(
       options);
 }
 
+// Renders one canonical container through an external SAM1 reference carried
+// by the exact SBEE. Callers must supply the artifact bytes already resolved
+// by engine authority; the function revalidates every reference, checksum,
+// binding, redaction, node, and object field before rendering.
+SblrToSbsqlResult RenderSblrExternalSourceArtifactToSbsql(
+    const std::uint8_t* container_data,
+    std::size_t container_size,
+    const std::uint8_t* execution_envelope_data,
+    std::size_t execution_envelope_size,
+    const std::uint8_t* artifact_data,
+    std::size_t artifact_size,
+    const SblrToSbsqlOptions& options);
+
+inline SblrToSbsqlResult RenderSblrExternalSourceArtifactToSbsql(
+    std::string_view container_bytes,
+    std::string_view execution_envelope_bytes,
+    std::string_view artifact_bytes,
+    const SblrToSbsqlOptions& options) {
+  return RenderSblrExternalSourceArtifactToSbsql(
+      reinterpret_cast<const std::uint8_t*>(container_bytes.data()),
+      container_bytes.size(),
+      reinterpret_cast<const std::uint8_t*>(
+          execution_envelope_bytes.data()),
+      execution_envelope_bytes.size(),
+      reinterpret_cast<const std::uint8_t*>(artifact_bytes.data()),
+      artifact_bytes.size(), options);
+}
+
 }  // namespace scratchbird::engine::sblr

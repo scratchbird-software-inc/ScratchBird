@@ -1109,6 +1109,8 @@ SessionOperationResult HandleCoordinateCatalogEpochCheck(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleBindDatabaseAttach(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
+SessionOperationResult HandleRetainSourceArtifact(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDatabaseAttach(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateOptimizerStatsRead(

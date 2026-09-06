@@ -50,21 +50,30 @@ int main(int argc, char** argv) {
     return 3;
   }
   const std::string operation = argv[5];
-  if (operation == "source-artifact-container") {
+  if (operation == "source-artifact-container" ||
+      operation == "source-artifact-external") {
     namespace container = scratchbird::engine;
     namespace sblr = scratchbird::engine::sblr;
+    const bool external = operation == "source-artifact-external";
     scratchbird::parser::sbsql::SbsqlCanonicalExecutionObservation
         observation;
-    auto executed =
-        session.RunSourceArtifactContainerForWire(&observation);
+    auto executed = external
+                        ? session.RunSourceArtifactExternalReferenceForWire(
+                              &observation)
+                        : session.RunSourceArtifactContainerForWire(
+                              &observation);
     if (!executed.accepted || executed.messages.has_errors() ||
         !observation.captured ||
         observation.operation_id != "engine.op.txn_begin" ||
-        observation.canonical_container_bytes.empty()) {
+        observation.canonical_container_bytes.empty() ||
+        observation.external_source_artifact != external ||
+        (external &&
+         (observation.canonical_execution_envelope_bytes.empty() ||
+          observation.external_source_artifact_bytes.empty()))) {
       for (const auto& diagnostic : executed.messages.diagnostics) {
         std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
-      std::cerr << "source_artifact_container_execution_observation_failed\n";
+      std::cerr << "source_artifact_execution_observation_failed\n";
       return 4;
     }
     const auto decoded_container = container::DecodeSblrContainerBytes(
@@ -73,9 +82,35 @@ int main(int argc, char** argv) {
     if (decoded_container.status != container::SblrCodecStatus::ok ||
         container::SblrReadU16(
             decoded_container.container.canonical_anchor.data() + 100) != 1 ||
-        decoded_container.container.source_map.empty()) {
+        (external ? !decoded_container.container.source_map.empty()
+                  : decoded_container.container.source_map.empty())) {
       std::cerr << "source_artifact_container_decode_failed\n";
       return 4;
+    }
+    container::SblrExecutionEnvelopeSemanticView ingress_view;
+    container::SblrDecodedExecutionEnvelopeV1 decoded_ingress;
+    if (external) {
+      decoded_ingress = container::DecodeSblrExecutionEnvelopeV1Bytes(
+          observation.canonical_execution_envelope_bytes.data(),
+          observation.canonical_execution_envelope_bytes.size());
+      if (decoded_ingress.status != container::SblrCodecStatus::ok ||
+          !container::SblrValidateExecutionEnvelopeFields(
+              decoded_ingress.envelope, &ingress_view) ||
+          !ingress_view.source_artifact_present ||
+          ingress_view.source_artifact_ref_kind != 4 ||
+          ingress_view.source_artifact_declared_size !=
+              observation.external_source_artifact_bytes.size() ||
+          ingress_view.source_artifact_crc32c != container::SblrCrc32c(
+              observation.external_source_artifact_bytes.data(),
+              observation.external_source_artifact_bytes.size()) ||
+          ingress_view.source_artifact_checksum_kind != 2 ||
+          ingress_view.source_artifact_checksum_sha256 !=
+              sblr::HashSblrSourceArtifactBytesV1(
+                  observation.external_source_artifact_bytes.data(),
+                  observation.external_source_artifact_bytes.size())) {
+        std::cerr << "source_artifact_external_reference_failed\n";
+        return 4;
+      }
     }
     const std::string_view opcode_bytes(
         reinterpret_cast<const char*>(
@@ -89,19 +124,33 @@ int main(int argc, char** argv) {
       std::cerr << "source_artifact_opcode_stream_profile_failed\n";
       return 4;
     }
+    const auto& artifact_bytes =
+        external ? observation.external_source_artifact_bytes
+                 : decoded_container.container.source_map;
     const auto decoded_artifact = sblr::DecodeSblrSourceArtifactMapV1(
-        decoded_container.container.source_map.data(),
-        decoded_container.container.source_map.size());
+        artifact_bytes.data(), artifact_bytes.size());
     if (decoded_artifact.status !=
             sblr::SblrSourceArtifactDecodeStatusV1::ok ||
         !decoded_artifact.artifact.symbols.empty() ||
         decoded_artifact.artifact.source_spans.size() != 1 ||
         decoded_artifact.artifact.render_hints.size() != 1 ||
         decoded_artifact.artifact.source_text_ref.present ||
-        !std::equal(decoded_artifact.artifact.container_request_uuid.begin(),
+        (external
+             ? (!std::all_of(
+                    decoded_artifact.artifact.container_request_uuid.begin(),
                     decoded_artifact.artifact.container_request_uuid.end(),
-                    decoded_container.container.canonical_anchor.begin() +
-                        116) ||
+                    [](std::uint8_t value) { return value == 0; }) ||
+                !std::equal(
+                    decoded_artifact.artifact.sblr_envelope_uuid.begin(),
+                    decoded_artifact.artifact.sblr_envelope_uuid.end(),
+                    decoded_ingress.envelope.fields[0].begin()) ||
+                decoded_artifact.artifact.artifact_uuid !=
+                    ingress_view.source_artifact_uuid)
+             : !std::equal(
+                   decoded_artifact.artifact.container_request_uuid.begin(),
+                   decoded_artifact.artifact.container_request_uuid.end(),
+                   decoded_container.container.canonical_anchor.begin() +
+                       116)) ||
         !std::equal(decoded_artifact.artifact.dialect_family_uuid.begin(),
                     decoded_artifact.artifact.dialect_family_uuid.end(),
                     decoded_container.container.canonical_anchor.begin() +
@@ -113,10 +162,19 @@ int main(int argc, char** argv) {
       std::cerr << "source_artifact_binding_profile_failed\n";
       return 4;
     }
-    const auto rendered = sblr::RenderSblrContainerToSbsql(
-        observation.canonical_container_bytes.data(),
-        observation.canonical_container_bytes.size(),
-        sblr::SblrToSbsqlOptions{.source_preserving = true});
+    const auto rendered = external
+        ? sblr::RenderSblrExternalSourceArtifactToSbsql(
+              observation.canonical_container_bytes.data(),
+              observation.canonical_container_bytes.size(),
+              observation.canonical_execution_envelope_bytes.data(),
+              observation.canonical_execution_envelope_bytes.size(),
+              observation.external_source_artifact_bytes.data(),
+              observation.external_source_artifact_bytes.size(),
+              sblr::SblrToSbsqlOptions{.source_preserving = true})
+        : sblr::RenderSblrContainerToSbsql(
+              observation.canonical_container_bytes.data(),
+              observation.canonical_container_bytes.size(),
+              sblr::SblrToSbsqlOptions{.source_preserving = true});
     if (!rendered.ok || !rendered.diagnostics.empty() ||
         rendered.sbsql_text != "BEGIN TRANSACTION;") {
       std::cerr << "source_artifact_source_preserving_render_failed\n";
@@ -141,9 +199,15 @@ int main(int argc, char** argv) {
       std::cerr << "source_artifact_cleanup_rollback_failed\n";
       return 4;
     }
-    std::cout << "CSC-TEST-005770 SOURCE_ARTIFACT_CONTAINER accepted "
-                 "server_admission=true source_preserving_render=true "
-                 "reparse=true\n";
+    if (external) {
+      std::cout << "CSC-TEST-005774 SOURCE_ARTIFACT_EXTERNAL_REFERENCE "
+                   "accepted server_admission=true receipt_resolution=true "
+                   "source_preserving_render=true reparse=true\n";
+    } else {
+      std::cout << "CSC-TEST-005770 SOURCE_ARTIFACT_CONTAINER accepted "
+                   "server_admission=true source_preserving_render=true "
+                   "reparse=true\n";
+    }
     return 0;
   }
   auto result = operation == "show-version"

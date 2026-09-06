@@ -571,6 +571,33 @@ struct StatementDatabaseAttachAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Receipt-private retention for one canonical external SAM1 artifact.  The
+// parser receives only the byte-identical acknowledgement and later copies the
+// immutable reference tuple into SBEE fields 24/25/26.  Raw artifact bytes are
+// never projected through StatementContextReceiptView.
+struct StatementSourceArtifactReferenceV1 {
+  std::array<std::uint8_t, 16> sblr_envelope_uuid{};
+  std::array<std::uint8_t, 16> artifact_uuid{};
+  std::uint64_t declared_size = 0;
+  std::uint32_t crc32c = 0;
+  std::uint8_t checksum_kind = 0;
+  std::uint32_t checksum_crc32c = 0;
+  std::array<std::uint8_t, 32> checksum_sha256{};
+  std::uint16_t redaction_class = 0;
+};
+
+struct StatementSourceArtifactRetentionV1 {
+  StatementSourceArtifactReferenceV1 reference;
+  std::uint8_t decompile_policy = 0;
+  std::uint64_t retention_generation = 0;
+  std::vector<std::uint8_t> exact_retain_request_bytes;
+  std::vector<std::uint8_t> exact_retain_ack_bytes;
+  std::vector<std::uint8_t> canonical_artifact_bytes;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
 // Receipt-private authority for the narrow catalog statistics reader.  The
 // public descriptor exposes only immutable statement/catalog/security/
 // resource identities and aggregate MGA counters; it is not an optimizer
@@ -1292,6 +1319,18 @@ sb_engine_status_t BindStatementDatabaseAttachAuthorityV1(
 sb_engine_status_t CopyStatementDatabaseAttachAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     StatementDatabaseAttachAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t RetainStatementSourceArtifactV1(
+    StatementContextReceiptHandle receipt,
+    const std::uint8_t* exact_request_bytes,
+    std::size_t exact_request_size,
+    StatementSourceArtifactRetentionV1* out_retention,
+    sb_engine_result_t* out_result);
+sb_engine_status_t ResolveStatementSourceArtifactV1(
+    StatementContextReceiptHandle receipt,
+    const StatementSourceArtifactReferenceV1* reference,
+    StatementSourceArtifactRetentionV1* out_retention,
     sb_engine_result_t* out_result);
 
 // Issues the fixed catalog-scope OPTIMIZER_STATS_READ descriptor from the

@@ -551,6 +551,11 @@ constexpr std::uint32_t kSchemaDatabaseAttachRequestV1 = 7423;
 constexpr std::uint32_t kSchemaDatabaseAttachResultV1 = 7424;
 constexpr std::uint32_t kSchemaDatabaseAttachBindRequestV1 = 7749;
 constexpr std::uint32_t kSchemaDatabaseAttachBindResultV1 = 7750;
+// Private statement-scoped source-artifact retention. The request carries one
+// exact SARQ plus its canonical SAM1 bytes; the success response is one exact
+// engine-issued SARA. Refusals use the correlated diagnostic pair.
+constexpr std::uint32_t kSchemaSourceArtifactRetainRequestV1 = 7751;
+constexpr std::uint32_t kSchemaSourceArtifactRetainResultV1 = 7752;
 // Private raw-carrier narrow-query binding coordination.  These schemas are
 // deliberately not TLV envelopes: 7707 is exactly one canonical SBQNDR01 and
 // 7708 is success-only exactly one engine-issued SBQNPB01.
@@ -1086,6 +1091,8 @@ enum class MessageType : std::uint16_t {
   kCatalogEpochCheckBindResult = 735,
   kDatabaseAttachBindRequest = 736,
   kDatabaseAttachBindResult = 737,
+  kSourceArtifactRetainRequest = 738,
+  kSourceArtifactRetainResult = 739,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,
   kCoordinateLimitRequest = 156,

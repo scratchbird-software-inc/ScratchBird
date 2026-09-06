@@ -3700,6 +3700,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCatalogEpochCheckBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCatalogEpochCheckRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDatabaseAttachBindRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kSourceArtifactRetainRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDatabaseAttachRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kOptimizerStatsReadRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kOptimizerStatsDropRequest) ||
@@ -4464,6 +4465,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCatalogEpochCheckBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaCatalogEpochCheckBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleBindCatalogEpochCheck(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCatalogEpochCheckRequest)&&frame.header.payload_schema_id==sbps::kSchemaCatalogEpochCheckRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateCatalogEpochCheck(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kDatabaseAttachBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaDatabaseAttachBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleBindDatabaseAttach(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kSourceArtifactRetainRequest)&&frame.header.payload_schema_id==sbps::kSchemaSourceArtifactRetainRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleRetainSourceArtifact(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kDatabaseAttachRequest)&&frame.header.payload_schema_id==sbps::kSchemaDatabaseAttachRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDatabaseAttach(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kOptimizerStatsReadRequest)&&frame.header.payload_schema_id==sbps::kSchemaOptimizerStatsReadRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateOptimizerStatsRead(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kOptimizerStatsDropRequest)&&frame.header.payload_schema_id==sbps::kSchemaOptimizerStatsDropRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateOptimizerStatsDrop(session_registry,engine_state,frame)));return true;}

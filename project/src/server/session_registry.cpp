@@ -19,6 +19,7 @@
 #include "sblr_query_explain_runtime.hpp"
 #include "sblr_error_vector_runtime.hpp"
 #include "sblr_source_map_runtime.hpp"
+#include "sblr_source_artifact_runtime.hpp"
 #include "sblr_variable_runtime.hpp"
 #include "sblr_savepoint_runtime.hpp"
 #include "sblr_autonomous_frame_runtime.hpp"
@@ -10561,6 +10562,127 @@ SessionOperationResult HandleBindDatabaseAttach(
             : std::move(detail));
   }
   result.payload = bridge_ack.exact_bind_ack_bytes;
+  result.accepted = true;
+  return result;
+}
+
+SessionOperationResult HandleRetainSourceArtifact(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kSourceArtifactRetainResult);
+  result.response_schema_id = sbps::kSchemaSourceArtifactRetainResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string key,
+                          std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    const std::string message_key =
+        key.empty() ? "parser_server_ipc.source_artifact_retain_refused"
+                    : key;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), message_key,
+        "Statement-scoped source-artifact retention was refused.",
+        {{"detail", std::move(detail)}, {"message_key", message_key}}));
+    return result;
+  };
+  if (registry == nullptr ||
+      request.header.payload_schema_id !=
+          sbps::kSchemaSourceArtifactRetainRequestV1) {
+    return refuse("SBLR.OPERAND_INVALID", {},
+                  "source_artifact_retain.schema_invalid");
+  }
+  scratchbird::engine::sblr::SblrSourceArtifactRetainRequestV1 decoded;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainRequestV1(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", {}, std::move(detail));
+  }
+  const auto session = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session == registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
+  }
+  std::unique_lock<std::mutex> transaction_guard(
+      *session->second.transaction_mutex);
+  StatementManagementReceipt receipt;
+  const auto receipt_uuid =
+      UuidBytesToText(decoded.authenticated_receipt_uuid);
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED", {},
+                  "source_artifact_retain_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID", {},
+                  "source_artifact_retain_receipt_ended");
+  }
+  const auto transaction = session->second.transactions_by_local_id.find(
+      receipt.view.owning_local_transaction_id);
+  if (transaction == session->second.transactions_by_local_id.end() ||
+      transaction->second.lifecycle_state !=
+          ServerTransactionLifecycleState::kActive ||
+      transaction->second.transaction_uuid !=
+          receipt.view.owning_transaction_uuid) {
+    return refuse("MGA.TRANSACTION_INVALID", {},
+                  "source_artifact_retain_transaction_invalid");
+  }
+  const auto artifact =
+      scratchbird::engine::sblr::DecodeSblrSourceArtifactMapV1(
+          decoded.canonical_artifact_bytes.data(),
+          decoded.canonical_artifact_bytes.size());
+  if (artifact.status != scratchbird::engine::sblr::
+                             SblrSourceArtifactDecodeStatusV1::ok ||
+      artifact.artifact.parser_package_uuid !=
+          session->second.admitted_parser_package_uuid ||
+      artifact.artifact.dialect_family_uuid !=
+          session->second.admitted_dialect_profile_uuid) {
+    return refuse("MGA.AUTHORITY_MISMATCH", {},
+                  artifact.detail.empty()
+                      ? "source_artifact_retain.negotiated_identity_mismatch"
+                      : artifact.detail);
+  }
+  engine_bridge::StatementSourceArtifactRetentionV1 retention;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::RetainStatementSourceArtifactV1(
+      receipt.handle, request.payload.data(), request.payload.size(),
+      &retention, &engine_result);
+  if (engine_result != nullptr) (void)sb_engine_result_release(engine_result);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(
+        retention.failure_code.empty()
+            ? StatementManagementStatusCode(status)
+            : retention.failure_code,
+        retention.failure_message_key,
+        retention.failure_detail.empty()
+            ? std::string("engine_status=") + sb_engine_status_name(status)
+            : retention.failure_detail);
+  }
+  scratchbird::engine::sblr::SblrSourceArtifactRetainAckV1 ack;
+  if (retention.exact_retain_ack_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrSourceArtifactRetainAckV1(
+          retention.exact_retain_ack_bytes.data(),
+          retention.exact_retain_ack_bytes.size(), &ack, &detail) ||
+      ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
+      ack.sblr_envelope_uuid != decoded.sblr_envelope_uuid ||
+      ack.artifact_uuid != decoded.artifact_uuid ||
+      ack.declared_size != decoded.declared_size ||
+      ack.crc32c != decoded.crc32c ||
+      ack.redaction_class != decoded.redaction_class ||
+      ack.decompile_policy != decoded.decompile_policy ||
+      ack.artifact_sha256 != decoded.artifact_sha256 ||
+      ack.retention_generation != retention.retention_generation ||
+      retention.reference.sblr_envelope_uuid != decoded.sblr_envelope_uuid ||
+      retention.reference.artifact_uuid != decoded.artifact_uuid) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH", {},
+        detail.empty()
+            ? "source_artifact_retain.engine_ack_correlation_invalid"
+            : std::move(detail));
+  }
+  result.payload = retention.exact_retain_ack_bytes;
   result.accepted = true;
   return result;
 }

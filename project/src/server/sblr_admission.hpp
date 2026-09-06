@@ -111,6 +111,11 @@ struct ServerSblrAdmissionRequest {
   std::uint32_t reserved_record_count = 0;
   std::uint64_t reserved_resource_policy_generation = 0;
   std::array<std::uint8_t, 32> reserved_payload_sha256{};
+  // The statement receipt remains the sole owner of external source-artifact
+  // bytes. The dispatch boundary supplies this ephemeral resolved copy only
+  // after exact receipt/reference validation; callers cannot self-authorize it.
+  bool source_artifact_resolved_by_engine = false;
+  std::vector<std::uint8_t> resolved_source_artifact_bytes;
   // Prepare metadata admission defers package reservation until execution
   // has a live statement receipt.
   bool package_reservation_deferred = false;
