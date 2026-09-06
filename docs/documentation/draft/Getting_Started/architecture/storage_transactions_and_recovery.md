@@ -115,6 +115,38 @@ their policies on an exact allowlist. The `ipar_relation_state_load_route_gate`
 uses a skewed data shape to compare scoped output with the full-state reference
 and asserts lower actual rows, bytes, and allocation units for the scoped route.
 
+### Transactional Index Maintenance
+
+The first released transactional provider contract covers the ordered B-tree
+family, including unique, expression, partial, and covering B-tree profiles.
+Ordinary INSERT, key-changing UPDATE, DELETE, and their MERGE equivalents use
+the same provider methods to prepare new membership and old-key retirement.
+Every durable record retains the creating local transaction, stable row and row
+version identity, index UUID, key, mutation kind, and event sequence. The index
+generation and relation-scoped physical identity are reconstructible from the
+matching durable index descriptor and scoped index segment.
+
+An index entry is only a candidate. `ResolveVisibleEntry` always follows it with
+MGA row-version and predicate validation. A key-changing update therefore keeps
+the old membership for an old snapshot, writes a retire marker for the old key,
+and writes membership for the new row version. A delete writes a retire marker
+instead of physically erasing history. Rolled-back records remain invisible
+because the transaction inventory classifies their creator as rolled back.
+
+Before commit finality, the publication barrier calls
+`ValidateAgainstRelation` and verifies the active transaction's complete
+insert/retire mutation set. Missing membership, a missing retire marker, an
+unknown generation, or a unique conflict fails closed while the transaction is
+still open. `PublishTransaction` and `AbortTransaction` can only reflect an
+outcome already established by durable MGA inventory; neither can decide it.
+
+Recovery classifies prepared index records through the same inventory.
+`RebuildFromRelation` deterministically regenerates candidate membership from
+authoritative row versions and is refused unless the cleanup horizon proves no
+older snapshot still requires the prior generation. Other physical provider
+families do not inherit this ordered-B-tree contract implicitly; they require a
+separately admitted transactional provider contract.
+
 ## Commit And Reopen
 
 Before a writable local transaction can be recorded as committed, SBcore runs

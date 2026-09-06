@@ -86,9 +86,10 @@ bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
   if (IsUniqueIndex(index)) {
     return false;
   }
-  return index.family == kCrudIndexFamilyBtree ||
-         index.family == kCrudIndexFamilyHash ||
-         index.family.empty();
+  // Ordered B-tree is the first released transactional provider family.  It
+  // must always use that provider contract; the legacy deferred ledger cannot
+  // bypass versioned insert/retire preparation or the commit barrier.
+  return index.family == kCrudIndexFamilyHash;
 }
 
 InsertIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index,

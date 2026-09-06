@@ -24,6 +24,7 @@
 #include "dml/update_policy_catalog_authority_provider.hpp"
 #include "dml/update_statement_mga_authority_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "dml/write_result_policy.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "domain_support/domain_store.hpp"
@@ -2733,7 +2734,8 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
   // DPC_HOT_UPDATE_SHAPE: synchronous index maintenance is now based on the
   // actual old/new key comparison for each row version, while preserving the
   // append-plus-visible-row-recheck model used for key-changing updates.
-  std::vector<MgaExactIndexEntryAppendBatch> append_batches;
+  std::vector<DmlTransactionalIndexEntryRequest> retire_requests;
+  std::vector<DmlTransactionalIndexEntryRequest> insert_requests;
   if (!UpdatePlanHasMaintainableIndexWork(batch_context)) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
@@ -2742,10 +2744,14 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
     if (!IsSynchronousUpdateIndexAction(entry.action)) {
       continue;
     }
-    MgaExactIndexEntryAppendBatch batch;
-    batch.index = entry.index;
-    batch.table_uuid = table_uuid;
-    batch.entries.reserve(staged_update_rows.size());
+    if (!IsReleasedOrderedBtreeTransactionalFamily(entry.index)) {
+      return MakeInvalidRequestDiagnostic(
+          "dml.update_rows.index_maintenance",
+          "synchronous_index_family_has_no_transactional_provider:" +
+              (entry.index.family.empty()
+                   ? CrudIndexFamilyForProfile(entry.index.profile)
+                   : entry.index.family));
+    }
     for (std::size_t index = 0; index < staged_update_rows.size(); ++index) {
       const auto& staged = staged_update_rows[index];
       const auto* key_state =
@@ -2772,58 +2778,77 @@ EngineApiDiagnostic AppendSynchronousUpdateIndexEntries(
           ++counters->disabled_baseline_churn_decisions;
         }
       }
-      std::vector<std::string> fallback_keys;
-      const std::vector<std::string>* keys =
+      std::vector<std::string> fallback_old_keys;
+      std::vector<std::string> fallback_new_keys;
+      const std::vector<std::string>* old_keys =
+          key_state == nullptr ? nullptr : &key_state->old_keys;
+      const std::vector<std::string>* new_keys =
           key_state == nullptr ? nullptr : &key_state->new_keys;
-      if (keys == nullptr) {
-        fallback_keys = CrudIndexKeysForValues(entry.index, staged.logical_values);
-        keys = &fallback_keys;
+      if (old_keys == nullptr) {
+        fallback_old_keys =
+            CrudIndexKeysForValues(entry.index, staged.original_row.values);
+        old_keys = &fallback_old_keys;
       }
-      const std::string payload = CrudFieldValue(staged.logical_values,
-                                                 entry.index.column_name);
-      for (const auto& key : *keys) {
-        if (key.empty()) {
-          continue;
+      if (new_keys == nullptr) {
+        fallback_new_keys =
+            CrudIndexKeysForValues(entry.index, staged.logical_values);
+        new_keys = &fallback_new_keys;
+      }
+      if (*old_keys != *new_keys) {
+        const std::string old_payload = CrudFieldValue(
+            staged.original_row.values, entry.index.column_name);
+        for (const auto& key : *old_keys) {
+          retire_requests.push_back(
+              {entry.index,
+               table_uuid,
+               row_records[index].row_uuid,
+               row_records[index].version_uuid,
+               staged.original_row.version_uuid,
+               key,
+               old_payload});
         }
-        batch.entries.push_back({key,
-                                 payload,
-                                 row_records[index].row_uuid,
-                                 row_records[index].version_uuid});
       }
-    }
-    if (!batch.entries.empty()) {
-      append_batches.push_back(std::move(batch));
+      const std::string new_payload = CrudFieldValue(
+          staged.logical_values, entry.index.column_name);
+      for (const auto& key : *new_keys) {
+        insert_requests.push_back(
+            {entry.index,
+             table_uuid,
+             row_records[index].row_uuid,
+             row_records[index].version_uuid,
+             staged.original_row.version_uuid,
+             key,
+             new_payload});
+      }
     }
   }
-  if (!append_batches.empty()) {
-    // These keys were computed from the complete, authority-validated row
-    // image above. Keep them exact through locality planning: reconstructing a
-    // row from only the payload column loses partial-index predicate columns
-    // (and can also reinterpret expression keys).
-    const auto locality_plan =
-        PlanLocalityAwareExactIndexApplyBatches(append_batches);
-    if (locality_plan.diagnostic.error) {
-      return locality_plan.diagnostic;
-    }
-    if (evidence != nullptr) {
-      std::uint64_t entry_count = 0;
-      for (const auto& batch : append_batches) {
-        entry_count += static_cast<std::uint64_t>(batch.entries.size());
-      }
-      AddLocalityAwareIndexApplyEvidence(locality_plan, evidence);
-      evidence->push_back({"update_index_apply", "exact_key_cache_reuse"});
-      evidence->push_back({"update_index_apply_exact_entry_count",
-                           std::to_string(entry_count)});
-    }
-    if (append_context != nullptr) {
-      return append_context->AppendExactIndexEntryBatches(locality_plan.batches);
-    }
+  if (!retire_requests.empty() || !insert_requests.empty()) {
     TransactionalRelationStore relation_store(context);
-    auto local_append_context = relation_store.OpenHotAppendContext();
-    const auto appended =
-        local_append_context.AppendExactIndexEntryBatches(locality_plan.batches);
-    if (appended.error) { return appended; }
-    return local_append_context.FlushIndexEntries();
+    auto local_append_context = append_context == nullptr
+                                    ? relation_store.OpenHotAppendContext()
+                                    : MgaRelationHotAppendContext(context);
+    MgaRelationHotAppendContext* target_context =
+        append_context == nullptr ? &local_append_context : append_context;
+    MgaOrderedBtreeTransactionalIndexProvider provider(context, target_context);
+    const auto retired = provider.PrepareRetireEntries(retire_requests);
+    if (!retired.ok) return retired.diagnostic;
+    const auto inserted = provider.PrepareInsertEntries(insert_requests);
+    if (!inserted.ok) return inserted.diagnostic;
+    if (evidence != nullptr) {
+      evidence->insert(evidence->end(), retired.evidence.begin(),
+                       retired.evidence.end());
+      evidence->insert(evidence->end(), inserted.evidence.begin(),
+                       inserted.evidence.end());
+      evidence->push_back({"update_index_apply",
+                           "transactional_provider_exact_key_cache_reuse"});
+      evidence->push_back({"update_index_apply_exact_entry_count",
+                           std::to_string(insert_requests.size())});
+      evidence->push_back({"update_index_apply_retire_entry_count",
+                           std::to_string(retire_requests.size())});
+    }
+    if (append_context == nullptr) {
+      return local_append_context.FlushIndexEntries();
+    }
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
@@ -2884,6 +2909,53 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DeleteDeltaEntries(
     entries.push_back(std::move(input));
   }
   return entries;
+}
+
+EngineApiDiagnostic PrepareSynchronousDeleteIndexRetires(
+    const EngineRequestContext& context,
+    const DeleteBatchContext& batch_context,
+    const std::vector<StagedDeleteRow>& staged_rows,
+    const std::vector<CrudRowVersionRecord>& tombstone_rows,
+    MgaRelationHotAppendContext* append_context,
+    std::vector<EngineEvidenceReference>* evidence) {
+  std::vector<DmlTransactionalIndexEntryRequest> requests;
+  for (const auto& plan_entry : batch_context.index_plan.entries) {
+    if (plan_entry.action !=
+        DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite) {
+      continue;
+    }
+    if (!IsReleasedOrderedBtreeTransactionalFamily(plan_entry.index)) {
+      return MakeInvalidRequestDiagnostic(
+          "dml.delete_rows.index_maintenance",
+          "synchronous_index_family_has_no_transactional_provider");
+    }
+    for (std::size_t row_index = 0; row_index < staged_rows.size();
+         ++row_index) {
+      const auto& old_row = staged_rows[row_index].original_row;
+      const auto& tombstone = tombstone_rows[row_index];
+      const std::string payload =
+          CrudFieldValue(old_row.values, plan_entry.index.column_name);
+      for (const auto& key :
+           CrudIndexKeysForValues(plan_entry.index, old_row.values)) {
+        requests.push_back({plan_entry.index,
+                            batch_context.target_object_uuid,
+                            tombstone.row_uuid,
+                            tombstone.version_uuid,
+                            old_row.version_uuid,
+                            key,
+                            payload});
+      }
+    }
+  }
+  MgaOrderedBtreeTransactionalIndexProvider provider(context, append_context);
+  const auto prepared = provider.PrepareRetireEntries(requests);
+  if (!prepared.ok) return prepared.diagnostic;
+  if (evidence != nullptr) {
+    evidence->insert(evidence->end(), prepared.evidence.begin(),
+                     prepared.evidence.end());
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {},
+                                 false);
 }
 
 enum class DmlUpdateDescriptorLifecycleV1 : std::uint8_t {
@@ -7622,14 +7694,6 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     if (rows_flushed.error) {
       return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", rows_flushed);
     }
-    const auto& append_counters = hot_append_context.counters();
-    result.dml_summary.append_calls += append_counters.row_range_reservations;
-    result.dml_summary.file_opens += append_counters.row_stream_opens +
-                                     append_counters.scoped_row_stream_opens +
-                                     append_counters.allocator_stream_opens;
-    result.dml_summary.flushes += append_counters.row_stream_flushes +
-                                  append_counters.scoped_row_stream_flushes +
-                                  append_counters.allocator_stream_flushes;
     std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
     for (std::size_t index = 0; index < staged_delete_rows.size(); ++index) {
       auto row_delta_entries = DeleteDeltaEntries(batch_context,
@@ -7649,6 +7713,35 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     if (!delta_entries.empty()) {
       ++result.dml_summary.append_calls;
     }
+    const auto index_retired = PrepareSynchronousDeleteIndexRetires(
+        effective_request.context,
+        batch_context,
+        staged_delete_rows,
+        row_records,
+        &hot_append_context,
+        &result.evidence);
+    if (index_retired.error) {
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+          effective_request.context, "dml.delete_rows", index_retired);
+    }
+    const auto indexes_flushed = hot_append_context.FlushIndexEntries();
+    if (indexes_flushed.error) {
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+          effective_request.context, "dml.delete_rows", indexes_flushed);
+    }
+    const auto& append_counters = hot_append_context.counters();
+    result.dml_summary.append_calls += append_counters.row_range_reservations +
+                                       append_counters.index_range_reservations;
+    result.dml_summary.file_opens += append_counters.row_stream_opens +
+                                     append_counters.index_stream_opens +
+                                     append_counters.scoped_row_stream_opens +
+                                     append_counters.scoped_index_stream_opens +
+                                     append_counters.allocator_stream_opens;
+    result.dml_summary.flushes += append_counters.row_stream_flushes +
+                                  append_counters.index_stream_flushes +
+                                  append_counters.scoped_row_stream_flushes +
+                                  append_counters.scoped_index_stream_flushes +
+                                  append_counters.allocator_stream_flushes;
     for (std::size_t index = 0; index < staged_delete_rows.size(); ++index) {
       const auto& row_record = row_records[index];
       if (!suppress_payload_rows) {

@@ -51,7 +51,10 @@ bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
   if (IsUniqueIndex(index)) {
     return false;
   }
-  return index.family == kCrudIndexFamilyBtree || index.family == kCrudIndexFamilyHash || index.family.empty();
+  // Ordered B-tree mutations are maintained only by the released
+  // transaction-version provider.  Deferring them here would create a second
+  // publication protocol and is therefore intentionally unavailable.
+  return index.family == kCrudIndexFamilyHash;
 }
 
 bool AssignmentTouchesColumn(const std::vector<std::string>& assigned_columns, const std::string& column) {

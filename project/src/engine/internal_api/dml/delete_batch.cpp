@@ -41,10 +41,8 @@ bool IsDeltaEligibleFamily(const CrudIndexRecord& index) {
   if (IsUniqueIndex(index)) {
     return false;
   }
-  return index.family == kCrudIndexFamilyBtree ||
-         index.family == kCrudIndexFamilyHash ||
-         index.family == kCrudIndexFamilyBitmap ||
-         index.family.empty();
+  return index.family == kCrudIndexFamilyHash ||
+         index.family == kCrudIndexFamilyBitmap;
 }
 
 bool PredicateEnvelopeTouchesColumn(const EnginePredicateEnvelope& predicate, const std::string& column_name) {
@@ -95,6 +93,15 @@ std::vector<std::string> PredicateTouchedColumns(const EngineDeleteRowsRequest& 
 }
 
 DeleteIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index, const DeleteFeatureGates& feature_gates) {
+  const std::string family =
+      index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
+                           : index.family;
+  if (family == kCrudIndexFamilyBtree || family == "unique_btree" ||
+      family == kCrudIndexFamilyExpression ||
+      family == kCrudIndexFamilyPartial ||
+      family == kCrudIndexFamilyCovering) {
+    return DeleteIndexMaintenanceAction::synchronous_tombstone_rewrite;
+  }
   if (IsDeltaEligibleFamily(index) && feature_gates.secondary_index_delta_ledger == DeleteFeatureState::enabled) {
     return DeleteIndexMaintenanceAction::tombstone_delta_ledger;
   }

@@ -418,6 +418,7 @@ add_library(sb_engine_internal_api
   dml/page_allocation_runtime_bridge.cpp
   dml/select_api.cpp
   dml/serializable_mutation_guard.cpp
+  dml/transactional_index_provider.cpp
   dml/temporal_bitemporal_api.cpp
   dml/transactional_relation_store.cpp
   dml/update_batch.cpp

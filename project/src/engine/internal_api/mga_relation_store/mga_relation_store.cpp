@@ -2297,7 +2297,8 @@ bool AppendScopedExactIndexBinaryBatch(
       !AppendBinaryString(out, batch.index.index_uuid) ||
       !AppendBinaryString(out, batch.index.column_name) ||
       !AppendBinaryString(out, batch.index.family) ||
-      !AppendBinaryString(out, "exact")) {
+      !AppendBinaryString(out, batch.entry_kind.empty() ? "exact"
+                                                        : batch.entry_kind)) {
     return false;
   }
   for (const auto& entry : batch.entries) {
@@ -2859,7 +2860,8 @@ void AddPreparedIndexAppendBatch(const MgaIndexEntryAppendBatch& batch,
                               batch.index.index_uuid,
                               batch.index.column_name,
                               batch.index.family,
-                              "exact",
+                              batch.entry_kind.empty() ? "exact"
+                                                       : batch.entry_kind,
                               key,
                               payload,
                               row.row_uuid,
@@ -2932,7 +2934,8 @@ void AddPreparedExactIndexAppendBatch(const MgaExactIndexEntryAppendBatch& batch
                             batch.index.index_uuid,
                             batch.index.column_name,
                             batch.index.family,
-                            "exact",
+                            batch.entry_kind.empty() ? "exact"
+                                                     : batch.entry_kind,
                             entry.encoded_key,
                             entry.payload_value,
                             entry.row_uuid,

@@ -194,14 +194,17 @@ api::CrudIndexRecord Index(const Fixture& fixture,
                            const api::EngineRequestContext& context,
                            std::string index_uuid,
                            std::string column,
-                           bool unique) {
+                           bool unique,
+                           std::string family = api::kCrudIndexFamilyBtree) {
   api::CrudIndexRecord index;
   index.creator_tx = context.local_transaction_id;
   index.index_uuid = std::move(index_uuid);
   index.table_uuid = fixture.table_uuid;
   index.column_name = std::move(column);
-  index.family = api::kCrudIndexFamilyBtree;
-  index.profile = api::kCrudIndexProfileRowStoreScalarBtreeV1;
+  index.family = std::move(family);
+  index.profile = index.family == api::kCrudIndexFamilyBtree
+                      ? api::kCrudIndexProfileRowStoreScalarBtreeV1
+                      : std::string{};
   index.unique = unique;
   index.key_envelopes.push_back(index.column_name);
   if (unique) {
@@ -210,7 +213,10 @@ api::CrudIndexRecord Index(const Fixture& fixture,
   return index;
 }
 
-Fixture MakeFixture(std::string name, platform::u64 salt) {
+Fixture MakeFixture(
+    std::string name,
+    platform::u64 salt,
+    std::string non_unique_family = api::kCrudIndexFamilyBtree) {
   Fixture fixture;
   fixture.salt = salt;
   fixture.dir = std::filesystem::temp_directory_path() /
@@ -243,7 +249,12 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
                       "DPC-022 table metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
-                          Index(fixture, context, fixture.non_unique_index_uuid, "name", false)),
+                          Index(fixture,
+                                context,
+                                fixture.non_unique_index_uuid,
+                                "name",
+                                false,
+                                std::move(non_unique_family))),
                       "DPC-022 non-unique index metadata append failed");
   RequireDiagnosticOk(api::AppendMgaIndexMetadata(
                           context,
@@ -389,9 +400,16 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
   return false;
 }
 
-std::string SeedCommittedRow(Fixture& fixture, std::string id, std::string name) {
+std::string SeedCommittedRow(Fixture& fixture,
+                             std::string id,
+                             std::string name,
+                             std::vector<std::string> options = {}) {
   auto context = Begin(fixture, "dpc022-seed");
-  const auto inserted = InsertRow(fixture, context, std::move(id), std::move(name));
+  const auto inserted = InsertRow(fixture,
+                                  context,
+                                  std::move(id),
+                                  std::move(name),
+                                  std::move(options));
   RequireOk(inserted, "DPC-022 seed insert failed");
   Require(inserted.inserted_count == 1 && inserted.row_uuids.size() == 1,
           "DPC-022 seed insert result shape changed");
@@ -435,7 +453,9 @@ void ValidateDefaultAndProofOnlyStaySynchronous() {
 }
 
 void ValidateDeferredInsertAndCommitState() {
-  auto fixture = MakeFixture("insert", 3000);
+  // B-tree is now always routed through its transactional provider.  Keep the
+  // legacy delta-ledger gate scoped to its still-eligible hash family.
+  auto fixture = MakeFixture("insert", 3000, api::kCrudIndexFamilyHash);
   auto context = Begin(fixture, "dpc022-deferred-insert");
   const auto inserted = InsertRow(fixture, context, "id-insert", "alpha", DeferredOptions());
   RequireOk(inserted, "DPC-022 deferred insert failed");
@@ -486,8 +506,11 @@ void ValidateDeferredInsertAndCommitState() {
 }
 
 void ValidateDeferredUpdateAndRollbackCleanup() {
-  auto fixture = MakeFixture("update", 4000);
-  (void)SeedCommittedRow(fixture, "id-update", "alpha");
+  auto fixture = MakeFixture("update", 4000, api::kCrudIndexFamilyHash);
+  (void)SeedCommittedRow(fixture,
+                         "id-update",
+                         "alpha",
+                         DeferredOptions());
 
   auto context = Begin(fixture, "dpc022-deferred-update");
   const auto updated = UpdateName(fixture, context, "id-update", "bravo", DeferredOptions());
@@ -511,8 +534,11 @@ void ValidateDeferredUpdateAndRollbackCleanup() {
 }
 
 void ValidateDeferredDeleteWritesTombstoneDelta() {
-  auto fixture = MakeFixture("delete", 5000);
-  const std::string row_uuid = SeedCommittedRow(fixture, "id-delete", "alpha");
+  auto fixture = MakeFixture("delete", 5000, api::kCrudIndexFamilyHash);
+  const std::string row_uuid = SeedCommittedRow(fixture,
+                                                "id-delete",
+                                                "alpha",
+                                                DeferredOptions());
 
   auto context = Begin(fixture, "dpc022-deferred-delete");
   const auto deleted = DeleteRow(fixture, context, row_uuid, DeferredOptions());
@@ -530,8 +556,11 @@ void ValidateDeferredDeleteWritesTombstoneDelta() {
 }
 
 void ValidateErrorPathLeavesNoDelta() {
-  auto fixture = MakeFixture("duplicate", 6000);
-  (void)SeedCommittedRow(fixture, "id-duplicate", "alpha");
+  auto fixture = MakeFixture("duplicate", 6000, api::kCrudIndexFamilyHash);
+  (void)SeedCommittedRow(fixture,
+                         "id-duplicate",
+                         "alpha",
+                         DeferredOptions());
 
   auto context = Begin(fixture, "dpc022-duplicate-insert");
   const auto duplicate = InsertRow(fixture,
@@ -540,7 +569,7 @@ void ValidateErrorPathLeavesNoDelta() {
                                   "bravo",
                                   DeferredOptions());
   Require(!duplicate.ok, "DPC-022 duplicate insert unexpectedly succeeded");
-  Require(LoadLedger(fixture).records.empty(),
+  Require(RecordsForTx(LoadLedger(fixture), context.local_transaction_id).empty(),
           "DPC-022 validation error left a deferred delta record");
   Rollback(context);
 }

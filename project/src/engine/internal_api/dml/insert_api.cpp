@@ -17,6 +17,7 @@
 #include "dml/page_allocation_runtime_bridge.hpp"
 #include "dml/serializable_mutation_guard.hpp"
 #include "dml/transactional_relation_store.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "dml/write_result_policy.hpp"
 #include "domain_support/domain_store.hpp"
 #include "ipar_fault_injection.hpp"
@@ -1381,6 +1382,76 @@ bool IndexKeysChanged(const CrudIndexRecord& index,
                       const std::vector<std::pair<std::string, std::string>>& before,
                       const std::vector<std::pair<std::string, std::string>>& after) {
   return CrudIndexKeysForValues(index, before) != CrudIndexKeysForValues(index, after);
+}
+
+EngineApiDiagnostic PrepareOrderedBtreeIndexVersionMutation(
+    const EngineRequestContext& context,
+    const std::vector<CrudIndexRecord>& indexes,
+    const std::string& table_uuid,
+    const CrudRowVersionRecord* old_row,
+    const CrudRowVersionRecord& new_row,
+    const std::vector<std::pair<std::string, std::string>>& logical_new_values,
+    MgaRelationHotAppendContext* append_context,
+    std::vector<EngineEvidenceReference>* evidence) {
+  MgaOrderedBtreeTransactionalIndexProvider provider(context, append_context);
+  std::vector<DmlTransactionalIndexEntryRequest> retires;
+  std::vector<DmlTransactionalIndexEntryRequest> inserts;
+  for (const auto& index : indexes) {
+    if (!IsReleasedOrderedBtreeTransactionalFamily(index)) {
+      return MakeInvalidRequestDiagnostic(
+          "dml.insert_rows.index_maintenance",
+          "synchronous_index_family_has_no_transactional_provider:" +
+              (index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
+                                    : index.family));
+    }
+    const auto old_keys = old_row == nullptr
+                              ? std::vector<std::string>{}
+                              : CrudIndexKeysForValues(index, old_row->values);
+    const auto new_keys = new_row.deleted
+                              ? std::vector<std::string>{}
+                              : CrudIndexKeysForValues(index,
+                                                       logical_new_values);
+    const bool keys_changed = old_row != nullptr && old_keys != new_keys;
+    if (old_row != nullptr && (new_row.deleted || keys_changed)) {
+      const std::string old_payload =
+          CrudFieldValue(old_row->values, index.column_name);
+      for (const auto& key : old_keys) {
+        retires.push_back({index,
+                           table_uuid,
+                           new_row.row_uuid,
+                           new_row.version_uuid,
+                           old_row->version_uuid,
+                           key,
+                           old_payload});
+      }
+    }
+    if (old_row == nullptr || keys_changed) {
+      const std::string new_payload =
+          CrudFieldValue(logical_new_values, index.column_name);
+      for (const auto& key : new_keys) {
+        inserts.push_back({index,
+                           table_uuid,
+                           new_row.row_uuid,
+                           new_row.version_uuid,
+                           old_row == nullptr ? std::string{}
+                                              : old_row->version_uuid,
+                           key,
+                           new_payload});
+      }
+    }
+  }
+  auto retired = provider.PrepareRetireEntries(retires);
+  if (!retired.ok) return retired.diagnostic;
+  auto inserted = provider.PrepareInsertEntries(inserts);
+  if (!inserted.ok) return inserted.diagnostic;
+  if (evidence != nullptr) {
+    evidence->insert(evidence->end(), retired.evidence.begin(),
+                     retired.evidence.end());
+    evidence->insert(evidence->end(), inserted.evidence.begin(),
+                     inserted.evidence.end());
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {},
+                                 false);
 }
 
 bool InsertOptionEnabled(const EngineInsertRowsRequest& request,
@@ -4052,15 +4123,25 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           ++result.dml_summary.file_opens;
           ++result.dml_summary.flushes;
         }
-        const auto index_appended =
-            relation_store.AppendIndexEntriesForRowsWithIndexes(
+        auto index_append_context = relation_store.OpenHotAppendContext();
+        const auto index_appended = PrepareOrderedBtreeIndexVersionMutation(
+            request.context,
             synchronous_indexes,
             request.target_table.uuid.canonical,
-            std::vector<MgaIndexEntryRowInput>{{conflict_row.row_uuid, version_uuid, update_values}});
+            &conflict_row,
+            row_record,
+            update_values,
+            &index_append_context,
+            &result.evidence);
         if (index_appended.error) {
           return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context,
                                                                   "dml.insert_rows",
                                                                   index_appended);
+        }
+        const auto indexes_flushed = index_append_context.FlushIndexEntries();
+        if (indexes_flushed.error) {
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+              request.context, "dml.insert_rows", indexes_flushed);
         }
         if (index_allocation.active) {
           result.evidence.push_back({"mga_index_store", "row_update"});
@@ -4522,16 +4603,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             evidence);
       }
 
-      std::vector<MgaIndexEntryRowInput> index_rows;
-      index_rows.reserve(window_size);
       std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> delta_entries;
       for (std::size_t index = window_begin; index < window_end; ++index) {
         const auto& row_record = row_records[index - window_begin];
         AddInsertTrace(&batch_context, "insert.row.write", "write", row_record.row_uuid);
         AddInsertTrace(&batch_context, "insert.index.maintain", "index", row_record.row_uuid);
-        index_rows.push_back({row_record.row_uuid,
-                              row_record.version_uuid,
-                              staged_insert_rows[index].logical_values});
         auto row_delta_entries = InsertDeltaEntries(batch_context,
                                                     row_record,
                                                     staged_insert_rows[index].logical_values);
@@ -4550,18 +4626,21 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       if (!delta_entries.empty()) {
         ++result.dml_summary.append_calls;
       }
-      std::vector<MgaIndexEntryAppendBatch> index_batches;
-      index_batches.reserve(synchronous_indexes.size());
-      for (const auto& index : synchronous_indexes) {
-        MgaIndexEntryAppendBatch batch;
-        batch.index = index;
-        batch.table_uuid = request.target_table.uuid.canonical;
-        batch.rows = index_rows;
-        index_batches.push_back(std::move(batch));
-      }
-      const auto index_appended = hot_append.AppendIndexEntryBatches(index_batches);
-      if (index_appended.error) {
-        return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", index_appended);
+      for (std::size_t index = window_begin; index < window_end; ++index) {
+        const auto& row_record = row_records[index - window_begin];
+        const auto index_prepared = PrepareOrderedBtreeIndexVersionMutation(
+            request.context,
+            synchronous_indexes,
+            request.target_table.uuid.canonical,
+            nullptr,
+            row_record,
+            staged_insert_rows[index].logical_values,
+            &hot_append,
+            index == window_begin ? &result.evidence : nullptr);
+        if (index_prepared.error) {
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+              request.context, "dml.insert_rows", index_prepared);
+        }
       }
       const auto index_flushed = hot_append.FlushIndexEntries();
       if (index_flushed.error) {

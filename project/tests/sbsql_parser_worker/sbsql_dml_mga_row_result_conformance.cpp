@@ -10,6 +10,8 @@
 #include "database_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "dml/select_api.hpp"
+#include "dml/mga_relation_read_view.hpp"
+#include "dml/transactional_index_provider.hpp"
 #include "dml/update_api.hpp"
 #include "hash_digest.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
@@ -20,6 +22,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "transaction/local_commit_publication.hpp"
 #include "typed_update_carrier_codec.hpp"
 
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -3072,6 +3075,225 @@ api::EngineApiResult UpdateByRowUuid(const std::filesystem::path& database_path,
   return updated.api_result;
 }
 
+api::EngineApiResult UpdateIdByRowUuid(
+    const std::filesystem::path& database_path,
+    const api::EngineRequestContext& context,
+    std::string row_uuid,
+    std::string id) {
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = kTableUuid;
+  request.target_object.object_kind = "table";
+  request.predicate.predicate_kind = "row_uuid_match";
+  request.predicate.canonical_predicate_envelope = std::move(row_uuid);
+  request.assignments.push_back({"id", TextValue(std::move(id))});
+  RequestFullPayload(&request);
+  auto updated = Dispatch(database_path,
+                          "dml.update_rows",
+                          "SBLR_DML_UPDATE_ROWS",
+                          context,
+                          request,
+                          true);
+  Require(updated.api_result.ok, "indexed-key update failed");
+  Require(updated.api_result.result_shape.rows.size() == 1,
+          "indexed-key update did not return one row");
+  Require(HasEvidence(updated.api_result,
+                      "transactional_index_provider_contract",
+                      "mga_ordered_btree_v1"),
+          "indexed-key update bypassed transactional index provider");
+  Require(HasEvidence(updated.api_result,
+                      "transactional_index_provider_operation",
+                      "PrepareRetireEntry"),
+          "indexed-key update did not prepare old-key retirement");
+  Require(HasEvidence(updated.api_result,
+                      "transactional_index_provider_operation",
+                      "PrepareInsertEntry"),
+          "indexed-key update did not prepare new-key membership");
+  return updated.api_result;
+}
+
+const api::CrudIndexRecord& RequireFixtureIndex(
+    const api::MgaRelationReadView& state) {
+  for (const auto& index : state.indexes) {
+    if (index.index_uuid == kIndexUuid) return index;
+  }
+  Require(false, "transactional index fixture metadata missing");
+  return state.indexes.front();
+}
+
+api::EnginePredicateEnvelope IdPredicate(std::string id) {
+  api::EnginePredicateEnvelope predicate;
+  predicate.predicate_kind = "column_equals";
+  predicate.canonical_predicate_envelope = "id";
+  predicate.bound_values.push_back(TextValue(std::move(id)));
+  return predicate;
+}
+
+void RequireTransactionalIndexLifecycle(
+    const std::filesystem::path& database_path) {
+  auto old_snapshot = BeginTransaction(database_path, "205", "snapshot");
+  auto updater = BeginTransaction(database_path, "206");
+  const auto updated = UpdateIdByRowUuid(database_path, updater, kRowA, "15");
+  Require(FieldValue(updated, "id") == "15",
+          "indexed-key update returned the wrong key");
+  const auto publication = api::RunLocalCommitPageBarrier(updater);
+  Require(publication.ok,
+          "transactional index mutation set was rejected before commit");
+  bool manifest_insert = false;
+  bool manifest_retire = false;
+  for (const auto& mutation : publication.mutations) {
+    if (mutation.mutation_domain != "index" ||
+        mutation.object_identity != kIndexUuid ||
+        mutation.physical_identity != "database_page_or_mga_index_segment") {
+      continue;
+    }
+    manifest_insert = manifest_insert || mutation.mutation_kind == "insert";
+    manifest_retire = manifest_retire || mutation.mutation_kind == "retire";
+  }
+  Require(manifest_insert && manifest_retire,
+          "publication manifest omitted the transactional index insert/retire pair");
+  Commit(database_path, updater);
+
+  auto current_reader = BeginTransaction(database_path, "207");
+  auto loaded = api::LoadMgaRelationStoreState(current_reader);
+  Require(loaded.ok, "transactional index state reload failed");
+  const auto state = api::BuildMgaRelationReadView(std::move(loaded.state));
+  const auto& index = RequireFixtureIndex(state);
+
+  api::MgaOrderedBtreeTransactionalIndexProvider old_provider(old_snapshot,
+                                                              nullptr);
+  const auto old_key = old_provider.ResolveVisibleEntry(
+      state, index, IdPredicate("1"));
+  Require(old_key.ok && old_key.rows.size() == 1,
+          "old snapshot lost the pre-update index key");
+  const auto old_new_key = old_provider.ResolveVisibleEntry(
+      state, index, IdPredicate("15"));
+  Require(old_new_key.ok && old_new_key.rows.empty(),
+          "old snapshot observed the post-update index key");
+
+  api::MgaOrderedBtreeTransactionalIndexProvider current_provider(
+      current_reader, nullptr);
+  const auto current_key = current_provider.ResolveVisibleEntry(
+      state, index, IdPredicate("15"));
+  Require(current_key.ok && current_key.rows.size() == 1,
+          "current snapshot lost the post-update index key");
+  const auto current_old_key = current_provider.ResolveVisibleEntry(
+      state, index, IdPredicate("1"));
+  Require(current_old_key.ok && current_old_key.rows.empty(),
+          "current snapshot retained the retired index key");
+  const auto validated = current_provider.ValidateAgainstRelation(state, index);
+  Require(validated.ok,
+          "transactional index did not validate against authoritative rows");
+
+  bool saw_key_change_retire = false;
+  bool saw_delete_retire = false;
+  for (const auto& entry : state.index_entries) {
+    if (entry.index_uuid != kIndexUuid || entry.entry_kind != "retire") {
+      continue;
+    }
+    if (entry.creator_tx == updater.local_transaction_id &&
+        entry.row_uuid == kRowA && entry.key_value == "1") {
+      saw_key_change_retire = true;
+    }
+    if (entry.row_uuid == kRowB && entry.key_value == "2") {
+      saw_delete_retire = true;
+    }
+  }
+  Require(saw_key_change_retire,
+          "key-changing update retire marker was not durable after reload");
+  Require(saw_delete_retire,
+          "delete retire marker was not durable after reload");
+
+  auto missing_retire_state = state;
+  missing_retire_state.index_entries.erase(
+      std::remove_if(
+          missing_retire_state.index_entries.begin(),
+          missing_retire_state.index_entries.end(),
+          [&](const auto& entry) {
+            return entry.index_uuid == kIndexUuid &&
+                   entry.creator_tx == updater.local_transaction_id &&
+                   entry.row_uuid == kRowA && entry.key_value == "1" &&
+                   entry.entry_kind == "retire";
+          }),
+      missing_retire_state.index_entries.end());
+  const auto missing_retire =
+      api::ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+          updater, missing_retire_state);
+  Require(!missing_retire.ok &&
+              missing_retire.diagnostic.code ==
+                  "INDEX.TRANSACTIONAL_PROVIDER.RETIRE_ENTRY_MISSING",
+          "commit validation did not fail closed for a missing old-key retire");
+
+  auto missing_insert_state = state;
+  missing_insert_state.index_entries.erase(
+      std::remove_if(
+          missing_insert_state.index_entries.begin(),
+          missing_insert_state.index_entries.end(),
+          [&](const auto& entry) {
+            return entry.index_uuid == kIndexUuid &&
+                   entry.creator_tx == updater.local_transaction_id &&
+                   entry.row_uuid == kRowA && entry.key_value == "15" &&
+                   entry.entry_kind == "insert";
+          }),
+      missing_insert_state.index_entries.end());
+  const auto missing_insert =
+      api::ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+          updater, missing_insert_state);
+  Require(!missing_insert.ok &&
+              missing_insert.diagnostic.code ==
+                  "INDEX.TRANSACTIONAL_PROVIDER.INSERT_ENTRY_MISSING",
+          "commit validation did not fail closed for a missing new-key membership");
+
+  const auto recovered =
+      api::MgaOrderedBtreeTransactionalIndexProvider(updater, nullptr)
+          .RecoverInterruptedMutation(state);
+  Require(recovered.ok && recovered.lifecycle_state == "committed_by_inventory",
+          "committed index mutation recovery classification was incorrect");
+  const auto published =
+      api::MgaOrderedBtreeTransactionalIndexProvider(updater, nullptr)
+          .PublishTransaction(state);
+  Require(published.ok && published.lifecycle_state == "published_by_inventory",
+          "index provider publication did not follow inventory finality");
+  Commit(database_path, old_snapshot);
+  Commit(database_path, current_reader);
+
+  auto rebuild_context = BeginTransaction(database_path, "208");
+  auto rebuild_loaded = api::LoadMgaRelationStoreState(rebuild_context);
+  Require(rebuild_loaded.ok, "transactional index rebuild state load failed");
+  const auto rebuild_state =
+      api::BuildMgaRelationReadView(std::move(rebuild_loaded.state));
+  const auto& rebuild_index = RequireFixtureIndex(rebuild_state);
+  auto append = api::MgaRelationHotAppendContext(rebuild_context);
+  api::MgaOrderedBtreeTransactionalIndexProvider rebuild_provider(
+      rebuild_context, &append);
+  const auto horizon_refused = rebuild_provider.RebuildFromRelation(
+      rebuild_state, rebuild_index, false);
+  Require(!horizon_refused.ok &&
+              horizon_refused.diagnostic.code ==
+                  "INDEX.TRANSACTIONAL_PROVIDER.REBUILD_HORIZON_REQUIRED",
+          "index rebuild ignored the old-snapshot cleanup horizon");
+  const auto rebuilt = rebuild_provider.RebuildFromRelation(
+      rebuild_state, rebuild_index, true);
+  Require(rebuilt.ok && rebuilt.rebuilt_entry_count != 0,
+          "deterministic index rebuild produced no membership");
+  const auto rebuild_flushed = append.FlushIndexEntries();
+  Require(!rebuild_flushed.error,
+          "deterministic index rebuild did not flush durable entries");
+  Commit(database_path, rebuild_context);
+
+  auto reopen_reader = BeginTransaction(database_path, "209");
+  auto reopened = api::LoadMgaRelationStoreState(reopen_reader);
+  Require(reopened.ok, "transactional index restart/reopen load failed");
+  const auto reopened_state =
+      api::BuildMgaRelationReadView(std::move(reopened.state));
+  const auto& reopened_index = RequireFixtureIndex(reopened_state);
+  const auto reopened_validation =
+      api::MgaOrderedBtreeTransactionalIndexProvider(reopen_reader, nullptr)
+          .ValidateAgainstRelation(reopened_state, reopened_index);
+  Require(reopened_validation.ok,
+          "rebuilt index failed relation validation after reopen");
+  Commit(database_path, reopen_reader);
+}
+
 api::EngineApiResult MergeRow(const std::filesystem::path& database_path,
                               const api::EngineRequestContext& context,
                               std::string row_uuid,
@@ -4224,7 +4446,33 @@ void VerifyDmlRowEffects(const std::filesystem::path& database_path) {
   auto rollback_reader = BeginTransaction(database_path, "204");
   const auto rolled_back = SelectById(database_path, rollback_reader, "3");
   Require(rolled_back.result_shape.rows.empty(), "rolled-back DML row became visible");
+  auto rollback_state_load = api::LoadMgaRelationStoreState(rollback_reader);
+  Require(rollback_state_load.ok,
+          "rolled-back transactional index state load failed");
+  const auto rollback_state =
+      api::BuildMgaRelationReadView(std::move(rollback_state_load.state));
+  const auto& rollback_index = RequireFixtureIndex(rollback_state);
+  const auto rolled_back_index_lookup =
+      api::MgaOrderedBtreeTransactionalIndexProvider(rollback_reader, nullptr)
+          .ResolveVisibleEntry(rollback_state,
+                               rollback_index,
+                               IdPredicate("3"));
+  Require(rolled_back_index_lookup.ok &&
+              rolled_back_index_lookup.rows.empty(),
+          "rolled-back index membership remained visible as a ghost entry");
+  api::MgaOrderedBtreeTransactionalIndexProvider rollback_provider(
+      rollback_writer, nullptr);
+  const auto recovered_rollback =
+      rollback_provider.RecoverInterruptedMutation(rollback_state);
+  Require(recovered_rollback.ok &&
+              recovered_rollback.lifecycle_state == "abandoned_by_inventory",
+          "rolled-back index mutation recovery classification was incorrect");
+  const auto aborted = rollback_provider.AbortTransaction(rollback_state);
+  Require(aborted.ok && aborted.lifecycle_state == "invisible_by_inventory",
+          "index provider abort did not follow inventory rollback");
   Commit(database_path, rollback_reader);
+
+  RequireTransactionalIndexLifecycle(database_path);
 }
 
 }  // namespace

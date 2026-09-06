@@ -557,6 +557,10 @@ struct MgaIndexEntryAppendBatch {
   CrudIndexRecord index;
   std::string table_uuid;
   std::vector<MgaIndexEntryRowInput> rows;
+  // Durable mutation classification for the common transactional index
+  // provider.  "exact" remains the compatibility default for bulk/rebuild
+  // callers that predate the provider contract.
+  std::string entry_kind = "exact";
 };
 
 struct MgaExactIndexEntryInput {
@@ -570,6 +574,7 @@ struct MgaExactIndexEntryAppendBatch {
   CrudIndexRecord index;
   std::string table_uuid;
   std::vector<MgaExactIndexEntryInput> entries;
+  std::string entry_kind = "exact";
 };
 
 struct MgaRelationHotAppendCounters {

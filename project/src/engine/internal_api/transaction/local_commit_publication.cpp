@@ -8,6 +8,8 @@
 
 #include "transaction/local_commit_publication.hpp"
 
+#include "dml/transactional_index_provider.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "disk_device.hpp"
@@ -410,6 +412,21 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
   if (!state.ok) {
     result.diagnostic = Refuse("transaction_write_set_unclassifiable:" +
                                state.diagnostic.code);
+    return result;
+  }
+
+  // The released ordered B-tree provider must prove that every transaction-
+  // owned row mutation has the matching insert/retire index-version bytes
+  // before durable inventory finality can be published.  This is validation
+  // of candidate-access state, never a second finality decision.
+  const auto index_validation =
+      ValidateOrderedBtreeTransactionalIndexMutationSetForCommit(
+          context, BuildMgaRelationReadView(state.state));
+  if (!index_validation.ok) {
+    result.diagnostic = Refuse(
+        "transactional_index_mutation_set_incomplete:" +
+        index_validation.diagnostic.code + ":" +
+        index_validation.diagnostic.detail);
     return result;
   }
 
