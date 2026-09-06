@@ -50,6 +50,316 @@ int main(int argc, char** argv) {
     return 3;
   }
   const std::string operation = argv[5];
+  if (operation == "stmt-prepare-boundaries" ||
+      operation == "stmt-execute-boundaries" ||
+      operation == "stmt-free-boundaries") {
+    namespace parser = scratchbird::parser::sbsql;
+    namespace ipc = scratchbird::parser::ipc;
+    namespace sblr = scratchbird::engine::sblr;
+
+    const auto dump_result = [](std::string_view label,
+                                const parser::PipelineResult& result) {
+      std::cerr << label << " accepted=" << result.accepted
+                << " outcome_unknown=" << result.outcome_unknown
+                << " operation=" << result.server_operation_id << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto no_canonical_result = [](const parser::PipelineResult& result) {
+      return result.sblr_payload.empty() && result.server_operation_id.empty() &&
+             result.server_cursor_uuid.empty() && result.server_row_count == 0 &&
+             result.server_affected_rows == 0 &&
+             !result.server_affected_rows_present &&
+             result.server_result_payload.empty();
+    };
+    const auto exact_refusal = [&](const parser::PipelineResult& result,
+                                   std::string_view code,
+                                   std::string_view detail) {
+      if (result.accepted || result.outcome_unknown ||
+          result.messages.diagnostics.size() != 1 ||
+          result.messages.diagnostics.front().code != code ||
+          !no_canonical_result(result)) {
+        return false;
+      }
+      const auto& fields = result.messages.diagnostics.front().fields;
+      return std::ranges::any_of(fields, [&](const auto& field) {
+        return field.name == "detail" && field.value == detail;
+      });
+    };
+    const auto exact_budget_refusal = [&](const parser::PipelineResult& result) {
+      return !result.accepted && !result.outcome_unknown &&
+             result.messages.diagnostics.size() == 1 &&
+             result.messages.diagnostics.front().code ==
+                 "SBSQL.RESOURCE.STATEMENT_TOO_LARGE" &&
+             no_canonical_result(result);
+    };
+    const auto exact_hidden_pair = [&](const parser::PipelineResult& hidden,
+                                       const parser::PipelineResult& absent,
+                                       std::string_view hidden_name,
+                                       std::string_view absent_name) {
+      if (hidden.accepted || absent.accepted || hidden.outcome_unknown ||
+          absent.outcome_unknown || !no_canonical_result(hidden) ||
+          !no_canonical_result(absent) ||
+          hidden.messages.diagnostics.size() != 1 ||
+          absent.messages.diagnostics.size() != 1 ||
+          hidden.messages.diagnostics.front().code != "SECURITY.ACCESS_DENIED" ||
+          absent.messages.diagnostics.front().code != "SECURITY.ACCESS_DENIED") {
+        return false;
+      }
+      const auto hidden_json = ipc::MessageVectorToJson(hidden.messages);
+      const auto absent_json = ipc::MessageVectorToJson(absent.messages);
+      return hidden_json == absent_json &&
+             hidden_json.find(hidden_name) == std::string::npos &&
+             hidden_json.find(absent_name) == std::string::npos;
+    };
+    const auto exact_prepare = [](const parser::PipelineResult& result) {
+      sblr::SblrStmtPrepareResultV1 decoded;
+      std::string detail;
+      return result.accepted && !result.messages.has_errors() &&
+             result.server_operation_id == "engine.op.stmt_prepare" &&
+             sblr::DecodeSblrStmtPrepareResultV1(
+                 reinterpret_cast<const std::uint8_t*>(
+                     result.server_result_payload.data()),
+                 result.server_result_payload.size(), &decoded, &detail) &&
+             decoded.status == 1 && decoded.publication_barrier == 1 &&
+             decoded.prepared_generation != 0 &&
+             decoded.executor_availability_generation != 0;
+    };
+    const auto exact_free = [](const parser::PipelineResult& result) {
+      sblr::SblrStmtFreeResultV1 decoded;
+      std::string detail;
+      return result.accepted && !result.messages.has_errors() &&
+             result.server_operation_id == "engine.op.stmt_free" &&
+             sblr::DecodeSblrStmtFreeResultV1(
+                 reinterpret_cast<const std::uint8_t*>(
+                     result.server_result_payload.data()),
+                 result.server_result_payload.size(), &decoded, &detail) &&
+             decoded.terminal_state == 1 && decoded.publication_barrier == 1 &&
+             decoded.terminal_prepared_generation != 0 &&
+             decoded.executor_availability_generation != 0;
+    };
+    const auto begin_transaction = [&](parser::SbsqlTestWireSession& target) {
+      const auto begun = target.RunPipeline("BEGIN TRANSACTION", true);
+      if (!begun.accepted || begun.messages.has_errors()) {
+        dump_result("statement_boundary_begin_failed", begun);
+        return false;
+      }
+      return true;
+    };
+    const auto rollback_transaction = [&](parser::SbsqlTestWireSession& target) {
+      const auto rolled_back = target.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+        dump_result("statement_boundary_rollback_failed", rolled_back);
+        return false;
+      }
+      return true;
+    };
+    const auto execute_scalar = [&](parser::SbsqlTestWireSession& target,
+                                    std::string_view statement_name,
+                                    std::uint64_t expected_value) {
+      const auto sql = "EXECUTE " + std::string(statement_name) + ";";
+      const auto executed = target.RunPipeline(sql, true, true);
+      sblr::SblrStmtExecuteResultV1 decoded;
+      std::string detail;
+      if (!executed.accepted || executed.messages.has_errors() ||
+          executed.server_operation_id != "engine.op.stmt_execute" ||
+          executed.server_cursor_uuid.empty() || executed.server_row_count != 1 ||
+          !sblr::DecodeSblrStmtExecuteResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  executed.server_result_payload.data()),
+              executed.server_result_payload.size(), &decoded, &detail) ||
+          decoded.status != 1 || decoded.publication_barrier != 1) {
+        dump_result("statement_boundary_execute_failed", executed);
+        return false;
+      }
+      const auto fetched =
+          target.FetchCursorOnRoute(executed.server_cursor_uuid, 1);
+      const auto expected_row =
+          "row[0]=key_a=" + std::to_string(expected_value);
+      if (!fetched.accepted || fetched.row_count != 1 ||
+          !fetched.end_of_cursor ||
+          fetched.row_packet.find(expected_row) == std::string::npos) {
+        std::cerr << "statement_boundary_fetch_failed row_packet="
+                  << fetched.row_packet << '\n';
+        return false;
+      }
+      return true;
+    };
+    const auto make_peer = [&](parser::ParserConfig peer_config,
+                               std::string_view application_suffix) {
+      auto peer = std::make_unique<parser::SbsqlTestWireSession>(
+          std::move(peer_config), nullptr, nullptr);
+      auto peer_credentials = credentials;
+      peer_credentials.application_name += application_suffix;
+      parser::MessageVectorSet peer_messages;
+      if (!peer->AuthenticateCredentials(peer_credentials, &peer_messages)) {
+        for (const auto& diagnostic : peer_messages.diagnostics) {
+          std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        }
+        return std::unique_ptr<parser::SbsqlTestWireSession>{};
+      }
+      return peer;
+    };
+
+    parser::ParserConfig budget_config = config;
+    budget_config.resource_budget.max_statement_bytes = 8;
+    auto budget_session = make_peer(std::move(budget_config), "-budget");
+    auto peer_session = make_peer(config, "-peer");
+    if (budget_session == nullptr || peer_session == nullptr) return 4;
+
+    if (operation == "stmt-prepare-boundaries") {
+      const auto malformed = session.RunPipeline("PREPARE broken;", true);
+      const auto budgeted = budget_session->RunPipeline(
+          "PREPARE STATEMENT isolated_prepare AS SELECT 1;", true);
+      if (!exact_refusal(malformed, "SBLR.OPERAND.INVALID",
+                         "prepare_requires_statement_name_and_body") ||
+          !exact_budget_refusal(budgeted)) {
+        dump_result("stmt_prepare_malformed", malformed);
+        dump_result("stmt_prepare_budget", budgeted);
+        return 4;
+      }
+      const auto owner_prepared = session.RunPipeline(
+          "PREPARE STATEMENT isolated_prepare AS SELECT 1;", true);
+      const auto peer_prepared = peer_session->RunPipeline(
+          "PREPARE STATEMENT isolated_prepare AS SELECT 2;", true);
+      if (!exact_prepare(owner_prepared) || !exact_prepare(peer_prepared)) {
+        dump_result("stmt_prepare_owner", owner_prepared);
+        dump_result("stmt_prepare_peer", peer_prepared);
+        return 4;
+      }
+      const auto collision = session.RunPipeline(
+          "PREPARE STATEMENT isolated_prepare AS SELECT 2;", true);
+      if (collision.accepted || collision.outcome_unknown ||
+          collision.messages.diagnostics.size() != 1 ||
+          collision.messages.diagnostics.front().code !=
+              "MGA.TRANSACTION.STALE" ||
+          !no_canonical_result(collision)) {
+        dump_result("stmt_prepare_collision", collision);
+        return 4;
+      }
+      if (!begin_transaction(session) ||
+          !execute_scalar(session, "isolated_prepare", 1) ||
+          !rollback_transaction(session) ||
+          !begin_transaction(*peer_session) ||
+          !execute_scalar(*peer_session, "isolated_prepare", 2) ||
+          !rollback_transaction(*peer_session)) {
+        return 4;
+      }
+      std::cout << "CSC-TEST-001470 CSC-TEST-001471 CSC-TEST-001472 "
+                   "STMT_PREPARE_BOUNDARIES accepted malformed=true "
+                   "budget=true session_isolation=true "
+                   "collision_preserved_original=true cancellation_fault="
+                   "CSC-TEST-003576\n";
+      return 0;
+    }
+
+    if (operation == "stmt-execute-boundaries") {
+      const auto malformed = session.RunPipeline("EXECUTE;", true);
+      const auto budgeted = budget_session->RunPipeline(
+          "EXECUTE isolated_execute;", true, true);
+      if (!exact_refusal(malformed, "SBLR.OPERAND.INVALID",
+                         "execute_requires_statement_and_one_name") ||
+          !exact_budget_refusal(budgeted)) {
+        dump_result("stmt_execute_malformed", malformed);
+        dump_result("stmt_execute_budget", budgeted);
+        return 4;
+      }
+      const auto owner_prepared = session.RunPipeline(
+          "PREPARE STATEMENT isolated_execute AS SELECT 1;", true);
+      if (!exact_prepare(owner_prepared)) {
+        dump_result("stmt_execute_owner_prepare", owner_prepared);
+        return 4;
+      }
+      const auto hidden = peer_session->RunPipeline(
+          "EXECUTE isolated_execute;", true, true);
+      const auto absent = peer_session->RunPipeline(
+          "EXECUTE definitely_absent_execute;", true, true);
+      if (!exact_hidden_pair(hidden, absent, "isolated_execute",
+                             "definitely_absent_execute")) {
+        dump_result("stmt_execute_hidden", hidden);
+        dump_result("stmt_execute_absent", absent);
+        return 4;
+      }
+      const auto peer_prepared = peer_session->RunPipeline(
+          "PREPARE STATEMENT isolated_execute AS SELECT 2;", true);
+      if (!exact_prepare(peer_prepared) || !begin_transaction(session) ||
+          !execute_scalar(session, "isolated_execute", 1) ||
+          !rollback_transaction(session) ||
+          !begin_transaction(*peer_session) ||
+          !execute_scalar(*peer_session, "isolated_execute", 2) ||
+          !rollback_transaction(*peer_session)) {
+        dump_result("stmt_execute_peer_prepare", peer_prepared);
+        return 4;
+      }
+      std::cout << "CSC-TEST-001178 CSC-TEST-001179 CSC-TEST-001180 "
+                   "STMT_EXECUTE_BOUNDARIES accepted malformed=true "
+                   "budget=true cross_session_hidden=true "
+                   "owner_execution_preserved=true cancellation_fault="
+                   "CSC-TEST-003580\n";
+      return 0;
+    }
+
+    const auto malformed =
+        session.RunPipeline("DEALLOCATE STATEMENT;", true);
+    const auto budgeted = budget_session->RunPipeline(
+        "DEALLOCATE STATEMENT isolated_free;", true);
+    if (!exact_refusal(
+            malformed, "SBLR.OPERAND.INVALID",
+            "deallocate_requires_statement_or_prepare_and_one_name") ||
+        !exact_budget_refusal(budgeted)) {
+      dump_result("stmt_free_malformed", malformed);
+      dump_result("stmt_free_budget", budgeted);
+      return 4;
+    }
+    const auto owner_prepared = session.RunPipeline(
+        "PREPARE STATEMENT isolated_free AS SELECT 1;", true);
+    if (!exact_prepare(owner_prepared)) {
+      dump_result("stmt_free_owner_prepare", owner_prepared);
+      return 4;
+    }
+    const auto hidden = peer_session->RunPipeline(
+        "DEALLOCATE STATEMENT isolated_free;", true);
+    const auto absent = peer_session->RunPipeline(
+        "DEALLOCATE STATEMENT definitely_absent_free;", true);
+    if (!exact_hidden_pair(hidden, absent, "isolated_free",
+                           "definitely_absent_free")) {
+      dump_result("stmt_free_hidden", hidden);
+      dump_result("stmt_free_absent", absent);
+      return 4;
+    }
+    if (!begin_transaction(session) ||
+        !execute_scalar(session, "isolated_free", 1) ||
+        !rollback_transaction(session)) {
+      return 4;
+    }
+    const auto freed = session.RunPipeline(
+        "DEALLOCATE STATEMENT isolated_free;", true);
+    if (!exact_free(freed)) {
+      dump_result("stmt_free_owner", freed);
+      return 4;
+    }
+    const auto revoked = session.RunPipeline("EXECUTE isolated_free;", true,
+                                             true);
+    const auto revoked_absent = session.RunPipeline(
+        "EXECUTE definitely_absent_free;", true, true);
+    if (!exact_hidden_pair(revoked, revoked_absent, "isolated_free",
+                           "definitely_absent_free")) {
+      dump_result("stmt_free_revoked", revoked);
+      dump_result("stmt_free_revoked_absent", revoked_absent);
+      return 4;
+    }
+    std::cout << "CSC-TEST-000854 CSC-TEST-000855 CSC-TEST-000856 "
+                 "STMT_FREE_BOUNDARIES accepted malformed=true budget=true "
+                 "cross_session_hidden=true failed_free_no_effect=true "
+                 "revocation_hidden=true cancellation_fault="
+                 "CSC-TEST-003588\n";
+    return 0;
+  }
   if (operation == "source-artifact-container" ||
       operation == "source-artifact-external") {
     namespace container = scratchbird::engine;

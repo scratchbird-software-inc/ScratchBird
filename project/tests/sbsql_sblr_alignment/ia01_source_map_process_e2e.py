@@ -308,6 +308,12 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-alter-dictionary", "ddl-create-continuous-view", "ddl-alter-continuous-view", "ddl-drop-continuous-view", "dml-async-insert-submit", "dml-async-insert-status", "dml-async-insert-cancel", "dml-counter-add", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "alter-gpu-profile-disable"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "filespace-create"))
+    parser._actions[-1].choices = tuple((
+        *parser._actions[-1].choices,
+        "stmt-prepare-boundaries",
+        "stmt-execute-boundaries",
+        "stmt-free-boundaries",
+    ))
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--cluster-provider-proof")
     parser.add_argument("--expected-cluster-provider-mode")
@@ -600,6 +606,45 @@ def main() -> int:
                 raise ProofError(
                     "DEALLOCATE did not complete the exact normalized SBsql "
                     "surface through the canonical statement executor"
+                )
+        elif args.operation == "stmt-prepare-boundaries":
+            expected_success = (
+                "CSC-TEST-001470 CSC-TEST-001471 CSC-TEST-001472 "
+                "STMT_PREPARE_BOUNDARIES accepted malformed=true "
+                "budget=true session_isolation=true "
+                "collision_preserved_original=true cancellation_fault="
+                "CSC-TEST-003576\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "PREPARE public malformed, budget, session-isolation, "
+                    "and collision-preservation boundaries did not pass"
+                )
+        elif args.operation == "stmt-execute-boundaries":
+            expected_success = (
+                "CSC-TEST-001178 CSC-TEST-001179 CSC-TEST-001180 "
+                "STMT_EXECUTE_BOUNDARIES accepted malformed=true "
+                "budget=true cross_session_hidden=true "
+                "owner_execution_preserved=true cancellation_fault="
+                "CSC-TEST-003580\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "EXECUTE public malformed, budget, cross-session hidden, "
+                    "and owner-execution boundaries did not pass"
+                )
+        elif args.operation == "stmt-free-boundaries":
+            expected_success = (
+                "CSC-TEST-000854 CSC-TEST-000855 CSC-TEST-000856 "
+                "STMT_FREE_BOUNDARIES accepted malformed=true budget=true "
+                "cross_session_hidden=true failed_free_no_effect=true "
+                "revocation_hidden=true cancellation_fault="
+                "CSC-TEST-003588\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "DEALLOCATE public malformed, budget, cross-session hidden, "
+                    "no-effect, and terminal-revocation boundaries did not pass"
                 )
         elif args.operation == "name-resolve":
             expected_success = (
@@ -993,6 +1038,33 @@ def main() -> int:
                 "result_descriptor_version=1",
                 "stmt_free_result_sha256=",
                 "executor_availability_generation=",
+            )
+        elif args.operation == "stmt-prepare-boundaries":
+            expected = (
+                "executor_id=engine.op.stmt_prepare",
+                "opcode=SBLR_STMT_PREPARE",
+                "operand_descriptor_id=stmt_prepare_descriptor",
+                "executor_id=engine.op.stmt_execute",
+                "opcode=SBLR_STMT_EXECUTE",
+                "result_descriptor_id=stmt_execute_result",
+            )
+        elif args.operation == "stmt-execute-boundaries":
+            expected = (
+                "executor_id=engine.op.stmt_prepare",
+                "opcode=SBLR_STMT_PREPARE",
+                "executor_id=engine.op.stmt_execute",
+                "opcode=SBLR_STMT_EXECUTE",
+                "result_descriptor_id=stmt_execute_result",
+            )
+        elif args.operation == "stmt-free-boundaries":
+            expected = (
+                "executor_id=engine.op.stmt_prepare",
+                "opcode=SBLR_STMT_PREPARE",
+                "executor_id=engine.op.stmt_execute",
+                "opcode=SBLR_STMT_EXECUTE",
+                "executor_id=engine.op.stmt_free",
+                "opcode=SBLR_STMT_FREE",
+                "result_descriptor_id=stmt_free_result",
             )
         elif args.operation == "stmt-cancel":
             expected = (

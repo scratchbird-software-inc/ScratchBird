@@ -4678,6 +4678,30 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
       --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia12_stmt_free_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia12_stmt_free_process_e2e PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-05;SBLR_STMT_FREE;SBSQL-FB03794952FB;CSC-TEST-003585;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia04_stmt_prepare_command_boundaries_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation stmt-prepare-boundaries
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia04_stmt_prepare_command_boundaries_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia04_stmt_prepare_command_boundaries_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_fault;IA-04;SBLR_STMT_PREPARE;SBSQL-5535E9A48BE4;CSC-TEST-001470;CSC-TEST-001471;CSC-TEST-001472;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia04_stmt_execute_command_boundaries_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation stmt-execute-boundaries
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia04_stmt_execute_command_boundaries_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia04_stmt_execute_command_boundaries_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_fault;IA-04;SBLR_STMT_EXECUTE;SBSQL-414E9A624B34;CSC-TEST-001178;CSC-TEST-001179;CSC-TEST-001180;e2e" TIMEOUT 240)
+  add_test(NAME sbsql_sblr_alignment_ia04_stmt_free_command_boundaries_process_e2e
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
+      --server $<TARGET_FILE:sb_server>
+      --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+      --operation stmt-free-boundaries
+      --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia04_stmt_free_command_boundaries_e2e")
+  set_tests_properties(sbsql_sblr_alignment_ia04_stmt_free_command_boundaries_process_e2e PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_fault;IA-04;SBLR_STMT_FREE;SBSQL-FB03794952FB;CSC-TEST-000854;CSC-TEST-000855;CSC-TEST-000856;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia05_stmt_cancel_process_e2e
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia01_source_map_process_e2e.py"
       --server $<TARGET_FILE:sb_server>
