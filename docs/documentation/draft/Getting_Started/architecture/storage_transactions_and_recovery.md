@@ -64,6 +64,23 @@ Visibility decides which committed or uncommitted versions a transaction can see
 
 Visibility rules affect newly inserted rows, updated rows, deleted rows, catalog objects created or dropped inside transactions, index contents, cleanup decisions, long-running readers, and recovery after reopen. Visibility is not decided by the parser. A parser can ask for work; SBcore determines the transactionally valid view.
 
+## Canonical DML And Compatibility Views
+
+Ordinary INSERT, SELECT, UPDATE, DELETE, MERGE, constraint checks, trigger
+dispatch, and index lookups consume a scoped MGA relation read view. That view
+is assembled from the canonical relation store for the active transaction and
+cannot be passed to the legacy compatibility mutation APIs.
+
+The historical CRUD event representation is retained only as a subordinate,
+read-only compatibility projection for specifically inventoried legacy views,
+administrative display, migration tooling, and temporary differential oracles.
+It is not row, catalog, index, visibility, transaction, or recovery authority.
+Normal DML does not read or write `.sb.crud_events`.
+
+The `crud_compatibility_boundary_gate` test freezes every remaining projection
+consumer by path, count, and classification. It rejects any compatibility-state
+or CRUD-event dependency added under the canonical DML source tree.
+
 ## Commit And Reopen
 
 Before a writable local transaction can be recorded as committed, SBcore runs

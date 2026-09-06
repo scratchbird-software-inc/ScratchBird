@@ -5333,7 +5333,7 @@ std::vector<std::string> LoadDescriptorColumnNamesForCompactInsert(
       request.context,
       request.target_object.uuid.canonical);
   if (!loaded.ok) return columns;
-  api::CrudState state = api::BuildCrudCompatibilityStateFromMga(
+  api::RelationReadSnapshot state = api::BuildCrudCompatibilityStateFromMga(
       std::move(loaded.state));
   const auto table = api::FindVisibleCrudTable(
       state,

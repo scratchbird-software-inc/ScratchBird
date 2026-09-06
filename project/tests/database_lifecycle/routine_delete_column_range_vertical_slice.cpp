@@ -13,6 +13,7 @@
 #include "dml/select_api.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "prepared_metadata_binding.hpp"
 #include "sblr_dispatch.hpp"
 #include "scratchbird/engine/engine.h"
@@ -246,8 +247,8 @@ void CreateTableAndRows(Fixture& fixture,
 
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "routine vertical-slice MGA relation load failed");
-  const api::CrudState state =
-      api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const api::MgaRelationReadView state =
+      api::BuildMgaRelationReadView(loaded.state);
   const auto visible = api::FindVisibleCrudTable(
       state, fixture.table_uuid, context.local_transaction_id);
   Require(visible.has_value(),

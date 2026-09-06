@@ -88,7 +88,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   if (!loaded_mga.ok) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(request.context, "ddl.create_index", loaded_mga.diagnostic);
   }
-  CrudState loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
+  RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   const auto target_table = FindVisibleCrudTable(loaded_state, request.target_object.uuid.canonical, request.context.local_transaction_id);
   if (!target_table) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
@@ -270,7 +270,7 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   if (!loaded_mga.ok) {
     return MakeApiBehaviorDiagnostic<EngineCreateStatisticsResult>(request.context, kOperation, loaded_mga.diagnostic);
   }
-  const CrudState loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
+  const RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   const auto visible_table =
       FindVisibleCrudTable(loaded_state, target_table.uuid.canonical, request.context.local_transaction_id);
   if (!visible_table) {

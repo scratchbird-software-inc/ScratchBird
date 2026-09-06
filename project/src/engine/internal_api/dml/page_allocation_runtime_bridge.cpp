@@ -1255,13 +1255,13 @@ DmlPageAllocationRuntimeResult ReserveRuntimeLocked(
   return result;
 }
 
-std::uint64_t IndexPagesForValues(const CrudState& state,
+std::uint64_t IndexPagesForValues(const MgaRelationReadView& state,
                                   const EngineRequestContext& context,
                                   const std::string& table_uuid,
                                   const std::vector<std::pair<std::string, std::string>>& values,
                                   std::string* first_index_uuid) {
   std::uint64_t pages = 0;
-  for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, context.local_transaction_id)) {
+  for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, context.local_transaction_id)) {
     if (CrudIndexKeysForValues(index, values).empty()) {
       continue;
     }
@@ -1274,7 +1274,7 @@ std::uint64_t IndexPagesForValues(const CrudState& state,
 }
 
 std::uint64_t IndexPagesForValueBatch(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const std::string& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
@@ -1287,7 +1287,7 @@ std::uint64_t IndexPagesForValueBatch(
 }
 
 std::uint64_t IndexPagesForValueRefs(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const std::string& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
@@ -1303,7 +1303,7 @@ std::uint64_t IndexPagesForValueRefs(
 }
 
 std::uint64_t IndexPagesForRowCount(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const std::string& table_uuid,
     std::uint64_t row_count,
@@ -1312,7 +1312,7 @@ std::uint64_t IndexPagesForRowCount(
     return 0;
   }
   const auto indexes =
-      VisibleCrudIndexesForTable(state, table_uuid, context.local_transaction_id);
+      VisibleMgaIndexesForTable(state, table_uuid, context.local_transaction_id);
   std::uint64_t index_count = 0;
   for (const auto& index : indexes) {
     if (index.index_uuid.empty()) {
@@ -1448,7 +1448,7 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::string mutation_phase) {
@@ -1468,7 +1468,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
     std::string mutation_phase) {
@@ -1488,7 +1488,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
     std::string mutation_phase) {
@@ -1508,7 +1508,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     std::uint64_t row_count,
     std::string mutation_phase) {

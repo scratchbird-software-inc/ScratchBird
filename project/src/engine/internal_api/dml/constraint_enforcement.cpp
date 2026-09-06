@@ -460,11 +460,11 @@ std::vector<std::string> RelationIndexKeyColumns(
   return columns;
 }
 
-std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const CrudState& state,
+std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const MgaRelationReadView& state,
                                                                const std::string& table_uuid,
                                                                const std::string& column_name,
                                                                std::uint64_t observer_tx) {
-  for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
+  for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, observer_tx)) {
     if (index.unique && IndexCoversColumn(index, column_name)) { return index; }
   }
   return std::nullopt;
@@ -628,32 +628,32 @@ bool HasIndexBackedUniquePreflightProof(
 
 const std::vector<CrudRowVersionRecord>& CachedVisibleRowsForTable(
     ConstraintDmlValidationCache* cache,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context) {
   if (cache == nullptr) {
     static thread_local std::vector<CrudRowVersionRecord> uncached_rows;
-    uncached_rows = VisibleCrudRowsForContext(state, table_uuid, context);
+    uncached_rows = VisibleMgaRowsForContext(state, table_uuid, context);
     return uncached_rows;
   }
   const std::string cache_key = ContextScopedCacheKey(context, table_uuid);
   if (cache->visible_rows_built_for_table_uuid.insert(cache_key).second) {
     cache->visible_rows_by_table_uuid[cache_key] =
-        VisibleCrudRowsForContext(state, table_uuid, context);
+        VisibleMgaRowsForContext(state, table_uuid, context);
   }
   return cache->visible_rows_by_table_uuid[cache_key];
 }
 
 const std::map<std::string, std::set<std::string>>& CachedUniqueKeyRowsForIndex(
     ConstraintDmlValidationCache* cache,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudIndexRecord& index,
     const EngineRequestContext& context) {
   if (cache == nullptr) {
     static thread_local std::map<std::string, std::set<std::string>> uncached_keys;
     uncached_keys.clear();
-    for (const auto& row : VisibleCrudRowsForContext(state, table.table_uuid, context)) {
+    for (const auto& row : VisibleMgaRowsForContext(state, table.table_uuid, context)) {
       for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
         uncached_keys[key].insert(row.row_uuid);
       }
@@ -674,7 +674,7 @@ const std::map<std::string, std::set<std::string>>& CachedUniqueKeyRowsForIndex(
 
 const std::set<std::string>& CachedColumnValues(
     ConstraintDmlValidationCache* cache,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::string& column_name,
     const EngineRequestContext& context) {
@@ -683,7 +683,7 @@ const std::set<std::string>& CachedColumnValues(
   if (cache == nullptr) {
     static thread_local std::set<std::string> uncached_values;
     uncached_values.clear();
-    for (const auto& row : VisibleCrudRowsForContext(state, table_uuid, context)) {
+    for (const auto& row : VisibleMgaRowsForContext(state, table_uuid, context)) {
       uncached_values.insert(FieldValue(row.values, column_name));
     }
     return uncached_values;
@@ -699,7 +699,7 @@ const std::set<std::string>& CachedColumnValues(
 
 std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudIndexRecord& index,
     const std::string& row_uuid,
@@ -810,15 +810,15 @@ bool DescriptorDeclaresForeignKey(const std::map<std::string, std::string>& fiel
               .empty();
 }
 
-std::optional<CrudTableRecord> VisibleTableByUuid(const CrudState& state,
+std::optional<CrudTableRecord> VisibleTableByUuid(const MgaRelationReadView& state,
                                                   const std::string& table_uuid,
                                                   std::uint64_t observer_tx) {
-  return FindVisibleCrudTable(state, table_uuid, observer_tx);
+  return FindVisibleMgaTable(state, table_uuid, observer_tx);
 }
 
 std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::map<std::string, std::string>& fields,
     const std::string& column_name,
@@ -959,7 +959,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                   column_name);
     }
     std::vector<CrudIndexRecord> matches;
-    for (const auto& index : VisibleCrudIndexesForTable(
+    for (const auto& index : VisibleMgaIndexesForTable(
              state, parent->table_uuid, context.local_transaction_id)) {
       if (index.index_uuid == reference->support_uuid && index.unique &&
           LowerAscii(index.family.empty()
@@ -1102,14 +1102,14 @@ bool IsKeyColumnReferencedByChildren(const std::map<std::string, std::string>& c
 
 std::optional<EngineApiDiagnostic> ValidateChildReferencesForParentValue(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& parent_table,
     const std::string& parent_column,
     const std::string& parent_value,
     const std::string& action_kind,
     ConstraintDmlValidationCache* cache = nullptr) {
   for (const auto& child_table : state.tables) {
-    if (!CrudCreatorVisible(state, child_table.creator_tx, child_table.event_sequence, context.local_transaction_id)) {
+    if (!MgaCreatorVisible(state, child_table.creator_tx, child_table.event_sequence, context.local_transaction_id)) {
       continue;
     }
     for (const auto& [child_column, child_fields] : ConstraintColumns(child_table)) {
@@ -1287,7 +1287,7 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::string& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
@@ -1306,7 +1306,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::string& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
@@ -1536,7 +1536,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
       if (deferred_timing) {
         record_deferred("exclusion_constraint");
       } else {
-        for (const auto& row : VisibleCrudRowsForContext(state, table.table_uuid, context)) {
+        for (const auto& row : VisibleMgaRowsForContext(state, table.table_uuid, context)) {
           if (row.row_uuid == row_uuid) { continue; }
           if (ExclusionValuesConflict(value, FieldValue(row.values, column_name))) {
             result.diagnostic = ConstraintDiagnostic("CLI.CONSTRAINT_EXCLUSION_VIOLATION",
@@ -1608,7 +1608,7 @@ bool UpdateTouchesParentKeyColumns(const CrudTableRecord& table,
 
 EngineApiDiagnostic ValidateImmediateDeleteConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& deleted_row) {
   for (const auto& [column_name, fields] : ConstraintColumns(table)) {
@@ -1631,7 +1631,7 @@ EngineApiDiagnostic ValidateImmediateDeleteConstraints(
 
 EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& old_row,
     const std::vector<std::pair<std::string, std::string>>& new_values) {
@@ -1662,9 +1662,9 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
   TransactionalRelationStore relation_store(context);
   auto loaded = relation_store.LoadDeferredConstraintValidationFullState();
   if (!loaded.ok) { return loaded.diagnostic; }
-  const CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
+  const MgaRelationReadView state = relation_store.BuildReadView(&loaded);
   for (const auto& source_table : state.tables) {
-    if (!CrudCreatorVisible(state,
+    if (!MgaCreatorVisible(state,
                             source_table.creator_tx,
                             source_table.event_sequence,
                             context.local_transaction_id)) {
@@ -1687,7 +1687,7 @@ EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestCo
       continue;
     }
     ConstraintDmlValidationCache commit_cache;
-    for (const auto& row : VisibleCrudRowsForContext(state, commit_table.table_uuid, context)) {
+    for (const auto& row : VisibleMgaRowsForContext(state, commit_table.table_uuid, context)) {
       if (row.creator_tx != context.local_transaction_id) { continue; }
       const auto validation = ValidateImmediateRowConstraints(context,
                                                               state,

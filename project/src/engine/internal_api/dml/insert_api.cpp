@@ -981,7 +981,7 @@ EngineTypedValue GeneratedInsertValue(std::string value,
 std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
     const EngineInsertRowsRequest& request,
     const CrudTableRecord& table,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::map<std::string, EngineApiU64>* source_visible_row_counts,
     EngineApiDiagnostic* diagnostic,
     std::vector<EngineEvidenceReference>* evidence) {
@@ -1025,7 +1025,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
   if (!source_uuids.empty()) {
     EngineApiU64 visible_capacity = 1;
     for (const auto& source_uuid : source_uuids) {
-      const auto source_table = FindVisibleCrudTable(state,
+      const auto source_table = FindVisibleMgaTable(state,
                                                      source_uuid,
                                                      request.context.local_transaction_id);
       if (!source_table) {
@@ -1049,7 +1049,7 @@ std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
         }
       } else {
         const auto source_rows =
-            VisibleCrudRowsForContext(state, source_uuid, request.context);
+            VisibleMgaRowsForContext(state, source_uuid, request.context);
         source_count = static_cast<EngineApiU64>(source_rows.size());
         if (evidence != nullptr) {
           evidence->push_back({"insert_select_source_capacity_route",
@@ -1333,7 +1333,7 @@ struct UniquePhysicalProbeCache {
 };
 
 UniquePhysicalProbeCache BuildUniquePhysicalProbeCache(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const std::vector<CrudIndexRecord>& indexes) {
@@ -1353,7 +1353,7 @@ UniquePhysicalProbeCache BuildUniquePhysicalProbeCache(
   for (const auto& entry : state.index_entries) {
     if (entry.table_uuid != table_uuid ||
         unique_index_uuids.count(entry.index_uuid) == 0 ||
-        !CrudCreatorVisible(state,
+        !MgaCreatorVisible(state,
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id)) {
@@ -2467,7 +2467,7 @@ class InsertPreworkQueue {
  public:
   InsertPreworkQueue(const EngineInsertRowsRequest& request,
                      const InsertBatchContext& batch_context,
-                     const CrudState& state,
+                     const MgaRelationReadView& state,
                      EngineApiU64 input_row_count,
                      bool ordinary_insert)
       : request_(request),
@@ -2700,7 +2700,7 @@ class InsertPreworkQueue {
   }
 
   const EngineInsertRowsRequest& request_;
-  const CrudState& state_;
+  const MgaRelationReadView& state_;
   const EngineApiU64 max_rows_ = 1;
   const EngineApiU64 max_bytes_ = 1;
   std::mutex mutex_;
@@ -2924,7 +2924,7 @@ bool RowHasUniqueIndexKey(const CrudIndexRecord& index,
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleCrudRowUuidCandidate(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::string& row_uuid,
     const EngineRequestContext& context) {
@@ -2938,7 +2938,7 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRowUuidCandidate(
     return left.sequence > right.sequence;
   });
   for (const auto& row : versions) {
-    if (!CrudRowVersionVisibleToContext(state, row, context)) {
+    if (!MgaRowVersionVisibleToContext(state, row, context)) {
       continue;
     }
     if (!row.deleted) {
@@ -3028,7 +3028,7 @@ std::optional<UniqueConflictProbeResult> FindUniqueStatementOverlayConflict(
 }
 
 std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const UniquePhysicalProbeCache& physical_probe_cache,
@@ -3100,7 +3100,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
           entry.index_uuid != index.index_uuid ||
           entry.key_value != key ||
           entry.row_uuid == exclude_row_uuid ||
-          !CrudCreatorVisible(state,
+          !MgaCreatorVisible(state,
                               entry.creator_tx,
                               entry.event_sequence,
                               context.local_transaction_id)) {
@@ -3124,7 +3124,7 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
 }
 
 std::optional<UniqueConflictProbeResult> FindUniqueConflictByIndex(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const UniqueStatementOverlay& overlay,
@@ -3150,7 +3150,7 @@ std::optional<UniqueConflictProbeResult> FindUniqueConflictByIndex(
 }
 
 EngineApiDiagnostic ValidateIndexBackedUniquePreflightForRow(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const EngineRequestContext& context,
     const UniqueStatementOverlay& overlay,
@@ -3400,8 +3400,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                         ? "insert_target_child_reference_scoped"
                         : "insert_target_scoped")));
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", loaded.diagnostic); }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
   mark_insert_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "target_table_not_visible"));
@@ -3573,7 +3573,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                             serializable_admission.evidence.end());
     return failure;
   }
-  const auto visible_indexes = VisibleCrudIndexesForTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  const auto visible_indexes = VisibleMgaIndexesForTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
   ConstraintDmlValidationCache constraint_cache;
   const bool unique_route_required =
       UniquePreflightRouteRequired(visible_indexes, conflict_action);

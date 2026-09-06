@@ -167,7 +167,7 @@ void StoreNameRegistryLoadCache(const std::string& cache_key,
   }
 }
 
-void MergeMgaRelationCatalogState(CrudState* base, const CrudState& mga_state) {
+void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : mga_state.transactions) {
     base->transactions[tx] = state;
@@ -317,7 +317,7 @@ bool ProfileFoldsMysqlInsensitive(const std::string& profile) {
          p.find("dolt_case_insensitive") != std::string::npos;
 }
 
-bool EntryVisible(const CrudState& crud_state, const NameRegistryEntry& entry, std::uint64_t observer_tx) {
+bool EntryVisible(const RelationReadSnapshot& crud_state, const NameRegistryEntry& entry, std::uint64_t observer_tx) {
   if (entry.deleted || entry.lifecycle_state == "dropped") { return false; }
   return CrudCreatorVisible(crud_state, entry.creator_tx, entry.event_sequence, observer_tx);
 }
@@ -341,7 +341,7 @@ bool MgaCreatorVisible(const scratchbird::transaction::mga::LocalTransactionInve
   return false;
 }
 
-bool CreatorVisible(const CrudState& crud_state,
+bool CreatorVisible(const RelationReadSnapshot& crud_state,
                     const scratchbird::storage::database::LocalTransactionStoreResult& transaction_inventory,
                     std::uint64_t creator_tx,
                     std::uint64_t event_sequence,
@@ -351,7 +351,7 @@ bool CreatorVisible(const CrudState& crud_state,
          MgaCreatorVisible(transaction_inventory.inventory, creator_tx, observer_tx);
 }
 
-bool EntryVisible(const CrudState& crud_state,
+bool EntryVisible(const RelationReadSnapshot& crud_state,
                   const scratchbird::storage::database::LocalTransactionStoreResult& transaction_inventory,
                   const NameRegistryEntry& entry,
                   std::uint64_t observer_tx) {

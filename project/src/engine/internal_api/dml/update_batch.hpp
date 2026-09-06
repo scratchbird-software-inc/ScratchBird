@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/update_api.hpp"
 
 #include <cstddef>
@@ -155,7 +155,7 @@ const char* UpdateFeatureStateName(UpdateFeatureState state);
 const char* UpdateIndexMaintenanceActionName(UpdateIndexMaintenanceAction action);
 
 UpdateBatchMode ResolveUpdateBatchMode(const EngineUpdateRowsRequest& request,
-                                       const CrudState& state,
+                                       const MgaRelationReadView& state,
                                        const CrudTableRecord& table,
                                        const std::vector<CrudIndexRecord>& indexes);
 UpdateFeatureGates ResolveUpdateFeatureGates(const EngineUpdateRowsRequest& request);
@@ -163,7 +163,7 @@ UpdateBatchMemoryPolicy ResolveUpdateMemoryPolicy(const EngineUpdateRowsRequest&
 BoundUpdateAssignmentTemplate BuildBoundUpdateAssignmentTemplate(const EngineUpdateRowsRequest& request,
                                                                 const CrudTableRecord& table);
 UpdateIndexMaintenancePlan BuildUpdateIndexMaintenancePlan(const EngineUpdateRowsRequest& request,
-                                                           const CrudState& state,
+                                                           const MgaRelationReadView& state,
                                                            const CrudTableRecord& table,
                                                            const std::vector<CrudIndexRecord>& indexes,
                                                            const UpdateFeatureGates& feature_gates,
@@ -174,7 +174,7 @@ UpdatePageReservationPlan ReserveUpdatePages(const EngineUpdateRowsRequest& requ
 UpdateSecondaryIndexDeltaLedgerPolicy ResolveUpdateSecondaryIndexDeltaLedgerPolicy(const EngineUpdateRowsRequest& request,
                                                                                   const UpdateFeatureGates& feature_gates);
 UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes);
 

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "dml/insert_physical_integration.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <span>
@@ -21,7 +22,7 @@ namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_CANONICAL_TRANSACTIONAL_RELATION_STORE_AUTHORITY_MAP
 // This map names each storage artifact's role. It is deliberately code-owned
 // so runtime routes and tests cannot accidentally promote a cache or the
-// temporary CrudState projection into an equal source of truth.
+// temporary compatibility projection into an equal source of truth.
 struct TransactionalRelationStoreAuthorityRecord {
   std::string_view artifact;
   std::string_view authority;
@@ -77,10 +78,7 @@ class TransactionalRelationStore {
   MgaRelationStorageDescriptorLoadResult LoadRelationDescriptor(
       const std::string& relation_uuid) const;
 
-  // CrudState remains a transitional compatibility working projection of the
-  // MGA state returned by this facade. Mutations must use the methods below
-  // and never persist the projection as a second authority.
-  CrudState BuildCompatibilityProjection(MgaRelationStoreResult* loaded) const;
+  MgaRelationReadView BuildReadView(MgaRelationStoreResult* loaded) const;
 
   MgaRelationHotAppendContext OpenHotAppendContext() const;
   EngineApiDiagnostic AppendRowVersion(

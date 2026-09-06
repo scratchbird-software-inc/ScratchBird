@@ -37,7 +37,7 @@ EngineApiDiagnostic ApplyCrudTemporaryOnCommitActions(const EngineRequestContext
   return MakeInvalidRequestDiagnostic("crud.temporary", "crud_temporary_on_commit_retired_use_mga_relation_store");
 }
 
-std::optional<CrudTableRecord> FindVisibleCrudTable(const CrudState& state,
+std::optional<CrudTableRecord> FindVisibleCrudTable(const RelationReadSnapshot& state,
                                                     const std::string& table_uuid,
                                                     std::uint64_t observer_tx) {
   std::optional<CrudTableRecord> visible;
@@ -52,7 +52,7 @@ std::optional<CrudTableRecord> FindVisibleCrudTable(const CrudState& state,
   return visible;
 }
 
-std::vector<CrudRowVersionRecord> VisibleCrudRows(const CrudState& state,
+std::vector<CrudRowVersionRecord> VisibleCrudRows(const RelationReadSnapshot& state,
                                                   const std::string& table_uuid,
                                                   std::uint64_t observer_tx) {
   EngineRequestContext context;
@@ -61,7 +61,7 @@ std::vector<CrudRowVersionRecord> VisibleCrudRows(const CrudState& state,
   return VisibleCrudRowsForContext(state, table_uuid, context);
 }
 
-std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const CrudState& state,
+std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const RelationReadSnapshot& state,
                                                             const std::string& table_uuid,
                                                             const EngineRequestContext& context) {
   std::map<std::string, CrudRowVersionRecord> newest_visible_by_row;
@@ -85,7 +85,7 @@ std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const CrudState& sta
   return visible;
 }
 
-std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const CrudState& state,
+std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const RelationReadSnapshot& state,
                                                        const std::string& table_uuid,
                                                        const std::string& row_uuid,
                                                        std::uint64_t observer_tx) {
@@ -95,7 +95,7 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const CrudState& state,
   return FindVisibleCrudRowForContext(state, table_uuid, row_uuid, context);
 }
 
-std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const CrudState& state,
+std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const RelationReadSnapshot& state,
                                                                  const std::string& table_uuid,
                                                                  const std::string& row_uuid,
                                                                  const EngineRequestContext& context) {
@@ -117,7 +117,7 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const CrudState
   return std::nullopt;
 }
 
-std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const CrudState& state,
+std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const RelationReadSnapshot& state,
                                                         const std::string& table_uuid,
                                                         std::uint64_t observer_tx) {
   std::vector<CrudIndexRecord> indexes;
@@ -127,7 +127,7 @@ std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const CrudState& state,
   return indexes;
 }
 
-std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const CrudState& state,
+std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationReadSnapshot& state,
                                                               const std::string& table_uuid,
                                                               const std::string& column_name,
                                                               std::uint64_t observer_tx) {
@@ -434,7 +434,7 @@ std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
   return CrudIndexEntryKeysForValues(index, values);
 }
 
-std::vector<CrudRowVersionRecord> IndexedCrudRows(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRows(const RelationReadSnapshot& state,
                                                   const std::string& table_uuid,
                                                   const std::string& column_name,
                                                   const std::string& key_value,

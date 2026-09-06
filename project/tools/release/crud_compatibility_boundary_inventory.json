@@ -1,0 +1,28 @@
+{
+  "schema_version": "scratchbird.crud_compatibility_boundary.v1",
+  "allowed_classifications": [
+    "legacy_view",
+    "administrative_display",
+    "migration_tool",
+    "temporary_differential_oracle",
+    "compatibility_adapter_implementation"
+  ],
+  "consumers": {
+    "src/engine/functions/families/data_scalar_functions_00_common_helpers.inc": {"count": 1, "classification": "legacy_view"},
+    "src/engine/internal_api/agents/agent_durable_catalog_store_api.cpp": {"count": 3, "classification": "administrative_display"},
+    "src/engine/internal_api/backup_archive/backup_archive_api.cpp": {"count": 3, "classification": "migration_tool"},
+    "src/engine/internal_api/catalog/catalog_lookup_api.cpp": {"count": 1, "classification": "legacy_view"},
+    "src/engine/internal_api/catalog/descriptor_api.cpp": {"count": 1, "classification": "legacy_view"},
+    "src/engine/internal_api/catalog/name_registry.cpp": {"count": 1, "classification": "legacy_view"},
+    "src/engine/internal_api/catalog/relation_projection_view.cpp": {"count": 1, "classification": "legacy_view"},
+    "src/engine/internal_api/ddl/alter_api.cpp": {"count": 3, "classification": "migration_tool"},
+    "src/engine/internal_api/ddl/create_api_03_type_domain_routine_create.inc": {"count": 2, "classification": "migration_tool"},
+    "src/engine/internal_api/extensibility/executable_object_lifecycle.cpp": {"count": 1, "classification": "migration_tool"},
+    "src/engine/internal_api/mga_relation_store/mga_relation_store.cpp": {"count": 10, "classification": "compatibility_adapter_implementation"},
+    "src/engine/internal_api/mga_relation_store/mga_relation_store.hpp": {"count": 2, "classification": "compatibility_adapter_implementation"},
+    "src/engine/internal_api/observability/show_api.cpp": {"count": 1, "classification": "administrative_display"},
+    "src/engine/internal_api/query/plan_api.cpp": {"count": 3, "classification": "legacy_view"},
+    "src/engine/sblr/sblr_dispatch.cpp": {"count": 1, "classification": "temporary_differential_oracle"},
+    "src/server/sblr_dispatch_server.cpp": {"count": 1, "classification": "temporary_differential_oracle"}
+  }
+}

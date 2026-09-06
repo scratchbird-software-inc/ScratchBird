@@ -13,6 +13,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "sblr_dispatch.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -321,7 +322,7 @@ api::EngineAlterConstraintResult AlterForeignKey(
       [&]() {
         const auto state = api::LoadMgaRelationStoreState(context);
         Require(state.ok, "state unavailable while resolving parent");
-        const auto crud = api::BuildCrudCompatibilityStateFromMga(state.state);
+        const auto crud = api::BuildMgaRelationReadView(state.state);
         for (const auto& table : crud.tables) {
           if (table.default_name == "MASTER_TABLE") return table.table_uuid;
         }
@@ -353,7 +354,7 @@ void AlterForeignKeyThroughSblr(
       [&]() {
         const auto state = api::LoadMgaRelationStoreState(context);
         Require(state.ok, "state unavailable while resolving SBLR parent");
-        const auto crud = api::BuildCrudCompatibilityStateFromMga(state.state);
+        const auto crud = api::BuildMgaRelationReadView(state.state);
         for (const auto& table : crud.tables) {
           if (table.default_name == "MASTER_TABLE") return table.table_uuid;
         }
@@ -431,7 +432,7 @@ std::optional<api::CrudTableRecord> VisibleTable(
     const std::string& table_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "MGA relation state load failed");
-  const auto state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto state = api::BuildMgaRelationReadView(loaded.state);
   return api::FindVisibleCrudTable(
       state, table_uuid, context.local_transaction_id);
 }
@@ -504,7 +505,7 @@ api::MgaConstraintMutationBatch InventedDirectBatch(
     const std::string& parent_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "direct batch state load failed");
-  const auto state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto state = api::BuildMgaRelationReadView(loaded.state);
   const auto child = api::FindVisibleCrudTable(
       state, child_uuid, context.local_transaction_id);
   const auto parent = api::FindVisibleCrudTable(
@@ -974,7 +975,7 @@ int main() {
   Require(verified_store.ok,
           "post-update MGA relation state load failed");
   const auto verified_state =
-      api::BuildCrudCompatibilityStateFromMga(verified_store.state);
+      api::BuildMgaRelationReadView(verified_store.state);
   const auto visible_children = api::VisibleCrudRowsForContext(
       verified_state, fixture.child_uuid, verifier);
   Require(visible_children.size() == 1,

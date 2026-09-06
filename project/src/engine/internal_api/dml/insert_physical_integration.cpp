@@ -912,13 +912,13 @@ bool DirectTableRequiresLiveRowVisibility(const CrudTableRecord& table) {
 }
 
 bool DirectStateHasVisibleInboundForeignKey(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     std::string_view target_table_uuid,
     std::uint64_t local_transaction_id) {
   for (const auto& candidate : state.tables) {
     if (candidate.table_uuid.empty() ||
         candidate.table_uuid == target_table_uuid ||
-        !CrudCreatorVisible(state,
+        !MgaCreatorVisible(state,
                             candidate.creator_tx,
                             candidate.event_sequence,
                             local_transaction_id)) {
@@ -997,11 +997,11 @@ bool DirectSimpleScalarIndexKeyColumn(const CrudIndexRecord& index,
 }
 
 std::optional<CrudIndexRecord> DirectVisibleUniqueIndexForColumn(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::string& column_name,
     std::uint64_t observer_tx) {
-  for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
+  for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, observer_tx)) {
     if (DirectIndexIsUnique(index) && DirectIndexCoversColumn(index, column_name)) {
       return index;
     }
@@ -1490,7 +1490,7 @@ scratchbird::core::bulk_load::BulkConstraintProofKeyRef DirectProofKey(
 }
 
 void AddVisibleRowKeysForProof(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
     std::vector<scratchbird::core::bulk_load::BulkConstraintProofKeyRef>* keys,
@@ -1503,7 +1503,7 @@ void AddVisibleRowKeysForProof(
     for (const auto& entry : state.index_entries) {
       if (entry.index_uuid != index.index_uuid ||
           entry.table_uuid != index.table_uuid ||
-          !CrudCreatorVisible(state,
+          !MgaCreatorVisible(state,
                               entry.creator_tx,
                               entry.event_sequence,
                               context.local_transaction_id)) {
@@ -1518,7 +1518,7 @@ void AddVisibleRowKeysForProof(
   }
   std::set<std::string> visible_row_keys;
   for (const auto& row :
-       VisibleCrudRowsForContext(state, index.table_uuid, context)) {
+       VisibleMgaRowsForContext(state, index.table_uuid, context)) {
     for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
       keys->push_back(DirectProofKey(key,
                                      row.row_uuid,
@@ -1530,7 +1530,7 @@ void AddVisibleRowKeysForProof(
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != index.index_uuid ||
         entry.table_uuid != index.table_uuid ||
-        !CrudCreatorVisible(state,
+        !MgaCreatorVisible(state,
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
@@ -1545,7 +1545,7 @@ void AddVisibleRowKeysForProof(
 }
 
 void AddVisibleRowKeysForSortedBuild(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const CrudIndexRecord& index,
     std::vector<scratchbird::core::index::SortedBulkIndexRowInput>* keys,
@@ -1558,7 +1558,7 @@ void AddVisibleRowKeysForSortedBuild(
     for (const auto& entry : state.index_entries) {
       if (entry.index_uuid != index.index_uuid ||
           entry.table_uuid != index.table_uuid ||
-          !CrudCreatorVisible(state,
+          !MgaCreatorVisible(state,
                               entry.creator_tx,
                               entry.event_sequence,
                               context.local_transaction_id)) {
@@ -1578,7 +1578,7 @@ void AddVisibleRowKeysForSortedBuild(
   }
   std::set<std::string> visible_row_keys;
   for (const auto& row :
-       VisibleCrudRowsForContext(state, index.table_uuid, context)) {
+       VisibleMgaRowsForContext(state, index.table_uuid, context)) {
     for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
       scratchbird::core::index::SortedBulkIndexRowInput input;
       input.encoded_key = key;
@@ -1596,7 +1596,7 @@ void AddVisibleRowKeysForSortedBuild(
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != index.index_uuid ||
         entry.table_uuid != index.table_uuid ||
-        !CrudCreatorVisible(state,
+        !MgaCreatorVisible(state,
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
@@ -1649,7 +1649,7 @@ void AddCachedConflictingVisibleKeysForSortedBuild(
 }
 
 void AddVisibleParentKeysForProof(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const std::string& parent_table_uuid,
     const std::string& parent_column,
@@ -1664,7 +1664,7 @@ void AddVisibleParentKeysForProof(
     for (const auto& entry : state.index_entries) {
       if (entry.index_uuid != parent_index.index_uuid ||
           entry.table_uuid != parent_table_uuid ||
-          !CrudCreatorVisible(state,
+          !MgaCreatorVisible(state,
                               entry.creator_tx,
                               entry.event_sequence,
                               context.local_transaction_id)) {
@@ -1679,7 +1679,7 @@ void AddVisibleParentKeysForProof(
   }
   std::set<std::string> visible_parent_keys;
   for (const auto& row :
-       VisibleCrudRowsForContext(state, parent_table_uuid, context)) {
+       VisibleMgaRowsForContext(state, parent_table_uuid, context)) {
     const std::string key = CrudFieldValue(row.values, parent_column);
     keys->push_back(DirectProofKey(key,
                                    row.row_uuid,
@@ -1690,7 +1690,7 @@ void AddVisibleParentKeysForProof(
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != parent_index.index_uuid ||
         entry.table_uuid != parent_table_uuid ||
-        !CrudCreatorVisible(state,
+        !MgaCreatorVisible(state,
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
@@ -1733,7 +1733,7 @@ void AddCachedConflictingVisibleKeysForProof(
 
 DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     const DirectPhysicalBulkAppendRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& visible_indexes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
@@ -1869,7 +1869,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     if (!reference) {
       return fail_before_proof("bulk_fk_proof_descriptor_invalid");
     }
-    const auto parent = FindVisibleCrudTable(state,
+    const auto parent = FindVisibleMgaTable(state,
                                              reference->parent_table_uuid,
                                              request.context.local_transaction_id);
     if (!parent) {
@@ -3954,7 +3954,7 @@ struct DirectSortedBulkIndexBuildSelection {
 
 DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     const DirectPhysicalBulkAppendRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::vector<CrudIndexRecord>& synchronous_indexes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
@@ -4838,7 +4838,7 @@ struct DirectAppendIndexEntryCacheRecord {
 struct DirectBulkAppendContextCacheRecord {
   std::uint64_t row_version_count = 0;
   std::uint64_t metadata_event_sequence = 0;
-  std::shared_ptr<const CrudState> state;
+  std::shared_ptr<const MgaRelationReadView> state;
   std::vector<CrudIndexRecord> visible_indexes;
   MgaRelationStorageDescriptor relation_descriptor;
   bool index_entries_authoritative = false;
@@ -5054,7 +5054,7 @@ void DirectStoreBulkAppendContextCache(
     const EngineRequestContext& context,
     const std::string& table_uuid,
     std::uint64_t row_version_count,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::vector<CrudIndexRecord>& visible_indexes,
     const MgaRelationStorageDescriptor& relation_descriptor,
     bool index_entries_authoritative,
@@ -5063,7 +5063,7 @@ void DirectStoreBulkAppendContextCache(
   record.row_version_count = row_version_count;
   record.metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
-  record.state = std::make_shared<CrudState>(state);
+  record.state = std::make_shared<MgaRelationReadView>(state);
   record.visible_indexes = visible_indexes;
   record.relation_descriptor = relation_descriptor;
   record.index_entries_authoritative = index_entries_authoritative;
@@ -5102,12 +5102,12 @@ void DirectStoreAppendIndexEntryCache(
     const EngineRequestContext& context,
     const std::string& table_uuid,
     std::uint64_t row_version_count,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::vector<CrudIndexEntryRecord>& entries) {
   std::vector<CrudIndexEntryRecord> visible_entries;
   visible_entries.reserve(entries.size());
   for (const auto& entry : entries) {
-    if (CrudCreatorVisible(state,
+    if (MgaCreatorVisible(state,
                            entry.creator_tx,
                            entry.event_sequence,
                            context.local_transaction_id)) {
@@ -8984,8 +8984,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              loaded.diagnostic,
                              "mga_relation_store_load_failed");
   }
-  CrudState state_storage;
-  const CrudState* state = nullptr;
+  MgaRelationReadView state_storage;
+  const MgaRelationReadView* state = nullptr;
   if (bulk_context_cache_hit) {
     const auto state_build_start = DirectSteadyClock::now();
     state = bulk_context_cache.state.get();
@@ -8994,7 +8994,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          DirectSteadyClock::now());
   } else {
     const auto state_build_start = DirectSteadyClock::now();
-    state_storage = relation_store.BuildCompatibilityProjection(&loaded);
+    state_storage = relation_store.BuildReadView(&loaded);
     state = &state_storage;
     mark_descriptor_step("state_build",
                          state_build_start,
@@ -9017,7 +9017,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     append_index_cache_hit = true;
   }
   const auto find_table_start = DirectSteadyClock::now();
-  auto table = FindVisibleCrudTable(*state,
+  auto table = FindVisibleMgaTable(*state,
                                     request.target_table.uuid.canonical,
                                     request.context.local_transaction_id);
   mark_descriptor_step("find_visible_table",
@@ -9046,9 +9046,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                "mga_relation_store_load_failed");
     }
     loaded = std::move(reloaded);
-    state_storage = relation_store.BuildCompatibilityProjection(&loaded);
+    state_storage = relation_store.BuildReadView(&loaded);
     state = &state_storage;
-    table = FindVisibleCrudTable(*state,
+    table = FindVisibleMgaTable(*state,
                                  request.target_table.uuid.canonical,
                                  request.context.local_transaction_id);
     if (!table) {
@@ -9109,7 +9109,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          DirectSteadyClock::now());
   } else {
     const auto descriptor_start = DirectSteadyClock::now();
-    visible_indexes = VisibleCrudIndexesForTable(
+    visible_indexes = VisibleMgaIndexesForTable(
         *state,
         request.target_table.uuid.canonical,
         request.context.local_transaction_id);

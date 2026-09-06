@@ -13,6 +13,7 @@
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
@@ -166,7 +167,7 @@ std::string FieldValue(const std::vector<std::pair<std::string, std::string>>& v
   return {};
 }
 
-api::CrudTableRecord FindCatalogTable(const api::CrudState& state) {
+api::CrudTableRecord FindCatalogTable(const api::MgaRelationReadView& state) {
   for (const auto& table : state.tables) {
     if (table.default_name == api::kAgentDurableCatalogStoreTableName) {
       return table;
@@ -175,7 +176,7 @@ api::CrudTableRecord FindCatalogTable(const api::CrudState& state) {
   Fail("agent durable catalog table not found");
 }
 
-api::CrudRowVersionRecord FindCatalogRootRow(const api::CrudState& state,
+api::CrudRowVersionRecord FindCatalogRootRow(const api::MgaRelationReadView& state,
                                              const std::string& table_uuid) {
   api::CrudRowVersionRecord latest;
   for (const auto& row : state.row_versions) {
@@ -275,7 +276,7 @@ void TestLoadMigratesAndPersistsOldSchemaImage() {
   auto loaded_state = api::LoadMgaRelationStoreState(context);
   Require(loaded_state.ok, "MGA relation store load failed before migration seed");
   const auto crud_state =
-      api::BuildCrudCompatibilityStateFromMga(loaded_state.state);
+      api::BuildMgaRelationReadView(loaded_state.state);
   const auto table = FindCatalogTable(crud_state);
   const auto current = FindCatalogRootRow(crud_state, table.table_uuid);
 

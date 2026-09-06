@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "dml/insert_api.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
@@ -168,11 +168,11 @@ inline std::uint64_t ParseAuditId(std::string_view value) {
   }
 }
 
-inline std::uint64_t NextAuditId(const CrudState& state,
+inline std::uint64_t NextAuditId(const MgaRelationReadView& state,
                                  const std::string& audit_table_uuid,
                                  const EngineRequestContext& context) {
   std::uint64_t max_audit_id = 0;
-  for (const auto& row : VisibleCrudRowsForContext(state, audit_table_uuid, context)) {
+  for (const auto& row : VisibleMgaRowsForContext(state, audit_table_uuid, context)) {
     max_audit_id =
         std::max(max_audit_id, ParseAuditId(CrudFieldValue(row.values, "audit_id")));
   }
@@ -277,12 +277,12 @@ inline EngineRowValue AuditRow(std::uint64_t audit_id,
   return row;
 }
 
-inline std::string FindVisibleTableByName(const CrudState& state,
+inline std::string FindVisibleTableByName(const MgaRelationReadView& state,
                                           const EngineRequestContext& context,
                                           std::string_view table_name) {
   const auto target = LowerAscii(std::string(table_name));
   for (const auto& table : state.tables) {
-    if (!CrudCreatorVisible(state,
+    if (!MgaCreatorVisible(state,
                             table.creator_tx,
                             table.event_sequence,
                             context.local_transaction_id)) {
@@ -368,7 +368,7 @@ inline std::string ResolveVisibleSequenceByPresentedName(const EngineRequestCont
 }
 
 inline std::string ResolveTriggerAuditTableUuid(const EngineRequestContext& context,
-                                                const CrudState& state,
+                                                const MgaRelationReadView& state,
                                                 const EngineExecutableObjectRecord& trigger,
                                                 std::string_view audit_table_leaf) {
   const auto target_name =
@@ -395,11 +395,11 @@ inline std::string ResolveTriggerAuditSequenceUuid(const EngineRequestContext& c
   return ResolveVisibleSequenceByPresentedName(context, std::string(audit_sequence_leaf));
 }
 
-inline std::string FindVisibleTableNameByUuid(const CrudState& state,
+inline std::string FindVisibleTableNameByUuid(const MgaRelationReadView& state,
                                               const EngineRequestContext& context,
                                               const std::string& table_uuid) {
   for (const auto& table : state.tables) {
-    if (!CrudCreatorVisible(state,
+    if (!MgaCreatorVisible(state,
                             table.creator_tx,
                             table.event_sequence,
                             context.local_transaction_id)) {
@@ -410,12 +410,12 @@ inline std::string FindVisibleTableNameByUuid(const CrudState& state,
   return {};
 }
 
-inline DmlExecutableTriggerRuntimeResult ResolveTriggerCrudState(
+inline DmlExecutableTriggerRuntimeResult ResolveTriggerRelationReadView(
     const EngineRequestContext& context,
-    const CrudState& scoped_state,
+    const MgaRelationReadView& scoped_state,
     const std::string& target_table_uuid,
     std::string_view required_table_name,
-    CrudState* trigger_state) {
+    MgaRelationReadView* trigger_state) {
   DmlExecutableTriggerRuntimeResult result;
   *trigger_state = scoped_state;
 
@@ -425,7 +425,7 @@ inline DmlExecutableTriggerRuntimeResult ResolveTriggerCrudState(
     result.diagnostic = loaded.diagnostic;
     return result;
   }
-  *trigger_state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  *trigger_state = BuildMgaRelationReadView(loaded.state);
   result.evidence.push_back({"trigger_relation_state_scope", "full_reload_for_trigger_dispatch"});
   return result;
 }
@@ -567,7 +567,7 @@ inline bool HasActiveTableTriggerDescriptors(const EngineRequestContext& context
 
 inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
     const EngineRequestContext& context,
-    const CrudState& crud_state,
+    const MgaRelationReadView& crud_state,
     const std::string& target_table_uuid,
     const std::vector<CrudRowVersionRecord>& inserted_rows,
     const std::vector<std::string>& caller_options) {
@@ -578,9 +578,10 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
   EngineExecutableObjectLifecycleState executable_state;
   result = LoadExecutableState(context, &executable_state);
   if (!result.ok) return result;
-  CrudState trigger_state;
+  MgaRelationReadView trigger_state;
   auto state_result =
-      ResolveTriggerCrudState(context, crud_state, target_table_uuid, "trig_audit", &trigger_state);
+      ResolveTriggerRelationReadView(context, crud_state, target_table_uuid,
+                                     "trig_audit", &trigger_state);
   if (!state_result.ok) return state_result;
   result.evidence.insert(result.evidence.end(),
                          state_result.evidence.begin(),
@@ -642,7 +643,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterInsertTableTriggers(
 
 inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
     const EngineRequestContext& context,
-    const CrudState& crud_state,
+    const MgaRelationReadView& crud_state,
     const std::string& target_table_uuid,
     const std::vector<DmlTriggerUpdateRowImage>& updated_rows,
     const std::vector<std::string>& caller_options) {
@@ -653,9 +654,10 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
   EngineExecutableObjectLifecycleState executable_state;
   result = LoadExecutableState(context, &executable_state);
   if (!result.ok) return result;
-  CrudState trigger_state;
+  MgaRelationReadView trigger_state;
   auto state_result =
-      ResolveTriggerCrudState(context, crud_state, target_table_uuid, "trig_audit", &trigger_state);
+      ResolveTriggerRelationReadView(context, crud_state, target_table_uuid,
+                                     "trig_audit", &trigger_state);
   if (!state_result.ok) return state_result;
   result.evidence.insert(result.evidence.end(),
                          state_result.evidence.begin(),
@@ -753,7 +755,7 @@ inline DmlExecutableTriggerRuntimeResult FireAfterUpdateTableTriggers(
 
 inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
     const EngineRequestContext& context,
-    const CrudState& crud_state,
+    const MgaRelationReadView& crud_state,
     const std::string& target_table_uuid,
     const std::vector<CrudRowVersionRecord>& deleted_rows,
     const std::vector<std::string>& caller_options) {
@@ -764,9 +766,10 @@ inline DmlExecutableTriggerRuntimeResult FireAfterDeleteTableTriggers(
   EngineExecutableObjectLifecycleState executable_state;
   result = LoadExecutableState(context, &executable_state);
   if (!result.ok) return result;
-  CrudState trigger_state;
+  MgaRelationReadView trigger_state;
   auto state_result =
-      ResolveTriggerCrudState(context, crud_state, target_table_uuid, "trig_audit", &trigger_state);
+      ResolveTriggerRelationReadView(context, crud_state, target_table_uuid,
+                                     "trig_audit", &trigger_state);
   if (!state_result.ok) return state_result;
   result.evidence.insert(result.evidence.end(),
                          state_result.evidence.begin(),

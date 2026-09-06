@@ -102,11 +102,11 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-bool TxVisible(const CrudState& state, std::uint64_t creator_tx, std::uint64_t observer_tx) {
+bool TxVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t observer_tx) {
   return CrudCreatorVisible(state, creator_tx, 0, observer_tx);
 }
 
-std::uint64_t MaxCommittedCrudTransactionId(const CrudState& state) {
+std::uint64_t MaxCommittedCrudTransactionId(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
     if (status == "committed" || status == "archived") { max_committed = std::max(max_committed, tx); }
@@ -114,7 +114,7 @@ std::uint64_t MaxCommittedCrudTransactionId(const CrudState& state) {
   return max_committed;
 }
 
-std::uint64_t VisibilityHighWaterForContext(const CrudState& state, const EngineRequestContext& context) {
+std::uint64_t VisibilityHighWaterForContext(const RelationReadSnapshot& state, const EngineRequestContext& context) {
   const std::string isolation = context.transaction_isolation_level.empty()
                                     ? std::string("read_committed")
                                     : LowerAscii(context.transaction_isolation_level);
@@ -125,7 +125,7 @@ std::uint64_t VisibilityHighWaterForContext(const CrudState& state, const Engine
   return MaxCommittedCrudTransactionId(state);
 }
 
-bool CrudRowVersionVisibleToContextInternal(const CrudState& state,
+bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
                                             const CrudRowVersionRecord& row,
                                             const EngineRequestContext& context) {
   if (!row.temporary_session_uuid.empty() &&

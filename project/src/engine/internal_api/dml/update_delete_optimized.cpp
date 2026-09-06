@@ -709,7 +709,7 @@ std::string LowerAsciiCopy(std::string value) {
   return value;
 }
 
-std::uint64_t UpdateMaxCommittedCrudTransactionId(const CrudState& state) {
+std::uint64_t UpdateMaxCommittedCrudTransactionId(const MgaRelationReadView& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
     if (status == "committed" || status == "archived") {
@@ -720,7 +720,7 @@ std::uint64_t UpdateMaxCommittedCrudTransactionId(const CrudState& state) {
 }
 
 std::uint64_t UpdateVisibilityHighWaterForContext(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context) {
   const std::string isolation = context.transaction_isolation_level.empty()
                                     ? std::string("read_committed")
@@ -734,7 +734,7 @@ std::uint64_t UpdateVisibilityHighWaterForContext(
 }
 
 bool UpdateRowVersionVisibleWithHighWater(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudRowVersionRecord& row,
     const EngineRequestContext& context,
     std::uint64_t visible_through) {
@@ -758,7 +758,7 @@ bool UpdateRowVersionVisibleWithHighWater(
 }
 
 bool AppendOnlyUpdateCandidateRefs(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     std::vector<const CrudRowVersionRecord*>* rows) {
@@ -994,7 +994,7 @@ bool CrudRowMatchesPreparedUpdatePredicate(
 }
 
 bool VisibleCrudRowRefsForContext(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     std::vector<const CrudRowVersionRecord*>* rows) {
@@ -1037,7 +1037,7 @@ struct DmlProjectionPredicateResolution {
 
 DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
     const EngineUpdateRowsRequest& request,
-    const CrudState& state) {
+    const MgaRelationReadView& state) {
   DmlProjectionPredicateResolution resolution;
   if (request.update_predicate.predicate_kind != "column_in_projection") {
     return resolution;
@@ -1061,7 +1061,7 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
                                      "subquery_predicate_descriptor_incomplete");
     return resolution;
   }
-  const auto source_table = FindVisibleCrudTable(state,
+  const auto source_table = FindVisibleMgaTable(state,
                                                  source_uuid,
                                                  request.context.local_transaction_id);
   if (!source_table) {
@@ -1111,7 +1111,7 @@ DmlProjectionPredicateResolution ResolveColumnInProjectionPredicate(
     resolution.evidence.push_back({"dml_subquery_source_rows",
                                    "append_only_ref_fast_path"});
   } else {
-    const auto source_rows = VisibleCrudRowsForContext(state,
+    const auto source_rows = VisibleMgaRowsForContext(state,
                                                        source_uuid,
                                                        request.context);
     for (const auto& row : source_rows) {
@@ -1197,7 +1197,7 @@ bool UpdateCandidateStreamNeedsIndexEntries(
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::string& row_uuid,
     const EngineRequestContext& context) {
@@ -1211,7 +1211,7 @@ std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
     return left.sequence > right.sequence;
   });
   for (const auto& row : versions) {
-    if (!CrudRowVersionVisibleToContext(state, row, context)) {
+    if (!MgaRowVersionVisibleToContext(state, row, context)) {
       continue;
     }
     if (!row.deleted) {
@@ -1223,7 +1223,7 @@ std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
 }
 
 std::vector<CrudRowVersionRecord> FindVisibleRowUuidCandidates(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<std::string>& row_uuids,
     const EngineRequestContext& context) {
@@ -1248,7 +1248,7 @@ std::vector<CrudRowVersionRecord> FindVisibleRowUuidCandidates(
   for (const auto& row : state.row_versions) {
     if (row.table_uuid != table_uuid ||
         requested.find(row.row_uuid) == requested.end() ||
-        !CrudRowVersionVisibleToContext(state, row, context)) {
+        !MgaRowVersionVisibleToContext(state, row, context)) {
       continue;
     }
     const auto found = newest_visible_by_uuid.find(row.row_uuid);
@@ -1547,13 +1547,13 @@ bool IsIndexTargetAccess(DmlTargetAccessKind access_kind) {
 }
 
 std::vector<CrudRowVersionRecord> ScanVisibleRowsMatchingPredicate(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const EnginePredicateEnvelope& predicate,
     std::uint64_t limit) {
   std::vector<CrudRowVersionRecord> rows;
-  for (const auto& row : VisibleCrudRowsForContext(state, table_uuid, context)) {
+  for (const auto& row : VisibleMgaRowsForContext(state, table_uuid, context)) {
     if (!CrudRowMatchesPredicate(row, predicate)) {
       continue;
     }
@@ -1587,7 +1587,7 @@ EngineApiDiagnostic UpdateTargetAccessRefusalDiagnostic(
 
 UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
     const EngineUpdateRowsRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& visible_indexes) {
   UpdateTargetCandidateStream stream;
@@ -1936,7 +1936,7 @@ EngineApiDiagnostic DeleteTargetAccessRefusalDiagnostic(
 
 DeleteTargetCandidateStream BuildDeleteTargetCandidateStream(
     const EngineDeleteRowsRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& visible_indexes) {
   DeleteTargetCandidateStream stream;
@@ -6507,8 +6507,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     return cancellation_failure(
         "sblr.dml_update_rows.cancelled_after_target_enumeration");
   }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   mark_update_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -6570,7 +6570,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   mark_update_phase("serializable_admission");
 
-  auto visible_indexes = VisibleCrudIndexesForTable(
+  auto visible_indexes = VisibleMgaIndexesForTable(
       state,
       effective_request.target_table.uuid.canonical,
       effective_request.context.local_transaction_id);
@@ -6611,8 +6611,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     loaded.evidence.insert(loaded.evidence.end(),
                            reloaded.evidence.begin(),
                            reloaded.evidence.end());
-    state = relation_store.BuildCompatibilityProjection(&reloaded);
-    table = FindVisibleCrudTable(state,
+    state = relation_store.BuildReadView(&reloaded);
+    table = FindVisibleMgaTable(state,
                                  request.target_table.uuid.canonical,
                                  request.context.local_transaction_id);
     if (!table) {
@@ -6621,7 +6621,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
           "dml.update_rows",
           MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_not_visible"));
     }
-    visible_indexes = VisibleCrudIndexesForTable(
+    visible_indexes = VisibleMgaIndexesForTable(
         state,
         effective_request.target_table.uuid.canonical,
         effective_request.context.local_transaction_id);
@@ -6708,7 +6708,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   std::vector<CrudRowVersionRecord> materialized_rows;
   std::vector<const CrudRowVersionRecord*> row_refs;
   if (UpdateMutationWindowActive(effective_request)) {
-    materialized_rows = VisibleCrudRowsForContext(
+    materialized_rows = VisibleMgaRowsForContext(
         state,
         effective_request.target_table.uuid.canonical,
         effective_request.context);
@@ -6750,7 +6750,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     result.evidence.push_back({"update_visible_row_stream",
                                "mga_latest_ref_fast_path"});
   } else {
-    materialized_rows = VisibleCrudRowsForContext(
+    materialized_rows = VisibleMgaRowsForContext(
         state,
         effective_request.target_table.uuid.canonical,
         effective_request.context);
@@ -6897,7 +6897,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     }
     if (batch_context.index_plan.has_affected_unique_exact) {
       const auto unique_check =
-          ValidateCrudUniqueIndexesForRow(state,
+          ValidateMgaUniqueIndexesForRow(state,
                                           request.target_table.uuid.canonical,
                                           row.row_uuid,
                                           values,
@@ -7384,8 +7384,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   auto loaded = relation_store.LoadMutationTarget(
       effective_request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  const auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
@@ -7423,7 +7423,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     return failure;
   }
 
-  const auto visible_indexes = VisibleCrudIndexesForTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  const auto visible_indexes = VisibleMgaIndexesForTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(request.context, *table, visible_indexes, &relation_descriptor);
   if (descriptor_ready.error) {
@@ -7516,7 +7516,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   const auto rows = candidate_stream.rows_ready
                         ? candidate_stream.rows
-                        : VisibleCrudRowsForContext(state,
+                        : VisibleMgaRowsForContext(state,
                                                     effective_request.target_table.uuid.canonical,
                                                     effective_request.context);
   result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
@@ -7529,7 +7529,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   EngineApiU64 mutation_window_qualified_rows_seen = 0;
   EngineApiU64 mutation_window_skipped_rows = 0;
   for (const auto& row : rows) {
-    if (!CrudRowVersionVisibleToContext(state, row, effective_request.context)) { continue; }
+    if (!MgaRowVersionVisibleToContext(state, row, effective_request.context)) { continue; }
     if (!CrudRowMatchesPredicate(row, effective_request.delete_predicate)) { continue; }
     if (DeleteMutationWindowActive(effective_request)) {
       if (mutation_window_qualified_rows_seen < effective_request.offset) {

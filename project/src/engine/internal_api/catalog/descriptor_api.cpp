@@ -256,7 +256,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
   }
   const auto mga_relations = LoadMgaRelationStoreState(request.context);
   if (mga_relations.ok) {
-    const CrudState mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
+    const RelationReadSnapshot mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
     if (const auto table = FindVisibleCrudTable(mga_crud, descriptor_uuid, observer_tx)) {
       auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
       result.primary_object.uuid.canonical = table->table_uuid;

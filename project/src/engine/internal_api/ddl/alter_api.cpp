@@ -322,7 +322,7 @@ bool RenameColumnValue(std::vector<std::pair<std::string, std::string>>* values,
 }
 
 std::vector<CrudRowVersionRecord> BuildAlteredColumnRowVersions(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const EngineRequestContext& context,
     const CrudTableRecord& table,
     const std::string& action,
@@ -911,7 +911,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
             "ddl.alter_object",
             loaded.diagnostic);
       }
-      const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+      const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
       auto visible = FindVisibleCrudTable(state,
                                           request.target_object.uuid.canonical,
                                           request.context.local_transaction_id);
@@ -1077,7 +1077,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
             "ddl.alter_object",
             loaded.diagnostic);
       }
-      const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+      const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
       auto visible = FindVisibleCrudTable(state,
                                           request.target_object.uuid.canonical,
                                           request.context.local_transaction_id);
@@ -1285,7 +1285,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
     return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
         request.context, kOperation, loaded.diagnostic);
   }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto child = FindVisibleCrudTable(
       state, child_table_uuid, request.context.local_transaction_id);
   const auto parent = FindVisibleCrudTable(

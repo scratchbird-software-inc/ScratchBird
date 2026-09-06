@@ -9,7 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 
 #include <cstdint>
 #include <string>
@@ -49,7 +49,7 @@ DmlPageAllocationRuntimeResult ReserveDmlPageAllocationRuntime(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::string mutation_phase);
@@ -57,7 +57,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntime(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& row_values,
     std::string mutation_phase);
@@ -65,7 +65,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRows(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const std::vector<const std::vector<std::pair<std::string, std::string>>*>& row_values,
     std::string mutation_phase);
@@ -73,7 +73,7 @@ DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowRefs(
 DmlPageAllocationRuntimeResult ReserveDmlIndexPageAllocationRuntimeForRowCount(
     const EngineRequestContext& context,
     const std::vector<std::string>& option_envelopes,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     std::uint64_t row_count,
     std::string mutation_phase);

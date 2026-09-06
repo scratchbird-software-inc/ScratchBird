@@ -8106,8 +8106,15 @@ void AttachLivePlanCacheEvidence(EnginePlanOperationResult* result,
   AddApiBehaviorEvidence(result, "parser_claims_transaction_finality", "false");
 }
 
-CrudStoreResult LoadQueryCrudCompatibilityState(const EngineRequestContext& context) {
-  CrudStoreResult result;
+struct QueryCompatibilityReadResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  RelationReadSnapshot state;
+};
+
+QueryCompatibilityReadResult LoadQueryCrudCompatibilityState(
+    const EngineRequestContext& context) {
+  QueryCompatibilityReadResult result;
   const auto loaded = LoadMgaRelationStoreState(context);
   if (!loaded.ok) {
     result.ok = false;
@@ -10050,7 +10057,7 @@ EnginePlanOperationResult ExecuteFastCrudCount(
         loaded.diagnostic.detail.empty() ? loaded.diagnostic.code
                                          : loaded.diagnostic.detail);
   }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindVisibleCrudTable(state,
                                           request.target_object.uuid.canonical,
                                           request.context.local_transaction_id);
@@ -11533,7 +11540,7 @@ EngineResultShape UnpivotResultShape(const EnginePlanOperationRequest& request,
   return shape;
 }
 
-EngineQueryRelation CrudRelation(const CrudState& state,
+EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
                                  const std::string& table_uuid,
                                  const EngineRequestContext& context,
                                  const EnginePredicateEnvelope& predicate) {
@@ -12046,7 +12053,7 @@ std::string QueryProjectionTableTypeForCrud(const CrudTableRecord& table) {
   return "LOCAL TEMPORARY";
 }
 
-void QueryProjectionMergeCrudState(CrudState* base, const CrudState& source) {
+void QueryProjectionMergeCrudState(CrudState* base, const RelationReadSnapshot& source) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : source.transactions) {
     base->transactions[tx] = state;

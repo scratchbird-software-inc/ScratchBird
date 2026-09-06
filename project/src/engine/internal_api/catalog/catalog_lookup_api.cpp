@@ -92,7 +92,7 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
   }
   const auto mga_relations = LoadMgaRelationStoreState(request.context);
   if (mga_relations.ok) {
-    const CrudState mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
+    const RelationReadSnapshot mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
     if (const auto table = FindVisibleCrudTable(mga_crud, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
       const std::string display_name = PublicDisplayNameForObject(request, table->table_uuid, "table");
       result.primary_object.uuid.canonical = table->table_uuid;

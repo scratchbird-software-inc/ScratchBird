@@ -9,7 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
 
 #include <chrono>
@@ -28,7 +28,7 @@ namespace scratchbird::engine::internal_api {
 struct DmlIngestionPipelineConfig {
   EngineRequestContext context;
   std::vector<std::string> option_envelopes;
-  const CrudState* state = nullptr;
+  const MgaRelationReadView* state = nullptr;
   std::string operation_id = "dml.ingestion";
   std::string lane_operation = "insert_rows";
   std::string target_table_uuid;

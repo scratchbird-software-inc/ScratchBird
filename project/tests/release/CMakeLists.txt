@@ -1977,6 +1977,17 @@ set_tests_properties(public_diagnostic_stability_gate PROPERTIES
   LABELS "public_release_correctness;public_diagnostic_stability_gate;PCR-GATE-121;PCR-121;diagnostics;stability_matrix;redaction;compatibility;unsupported_features"
 )
 
+# CRUD_COMPATIBILITY_BOUNDARY_GATE
+add_test(
+  NAME crud_compatibility_boundary_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/crud_compatibility_boundary_gate.py
+          --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+set_tests_properties(crud_compatibility_boundary_gate PROPERTIES
+  LABELS "public_release_correctness;crud_compatibility_boundary_gate;dml;MGA;compatibility;source_policy"
+)
+
 # PUBLIC_CRYPTO_ENTROPY_GATE
 add_test(
   NAME public_crypto_entropy_policy_gate

@@ -9,7 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 
 #include <cstdint>
 #include <map>
@@ -99,7 +99,7 @@ ConstraintDmlValidationResult ApplyConstraintDefaultsForInsert(
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::string& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
@@ -108,7 +108,7 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraints(
 
 ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::string& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
@@ -118,13 +118,13 @@ ConstraintDmlValidationResult ValidateImmediateRowConstraintsWithOptions(
 
 EngineApiDiagnostic ValidateImmediateDeleteConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& deleted_row);
 
 EngineApiDiagnostic ValidateImmediateParentKeyUpdateConstraints(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const CrudRowVersionRecord& old_row,
     const std::vector<std::pair<std::string, std::string>>& new_values);

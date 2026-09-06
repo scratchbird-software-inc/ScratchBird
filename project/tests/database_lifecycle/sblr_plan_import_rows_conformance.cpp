@@ -556,8 +556,8 @@ void RequireInventoryEqual(
 
 void RequireRelationStateEqual(const api::MgaRelationStoreState& before,
                                const api::MgaRelationStoreState& after) {
-  const auto& left = before.crud_metadata;
-  const auto& right = after.crud_metadata;
+  const auto& left = before.relation_metadata;
+  const auto& right = after.relation_metadata;
   Require(before.row_versions.size() == after.row_versions.size() &&
               before.index_entries.size() == after.index_entries.size() &&
               before.max_row_event_sequence == after.max_row_event_sequence &&

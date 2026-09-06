@@ -14,6 +14,7 @@
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -576,7 +577,7 @@ std::size_t CountVisibleIndexEntries(const Fixture& fixture,
                                      const api::EngineRequestContext& context,
                                      const std::string& index_uuid) {
   const auto loaded = LoadState(fixture, context);
-  const auto state = api::BuildCrudCompatibilityStateFromMga(loaded);
+  const auto state = api::BuildMgaRelationReadView(loaded);
   std::size_t count = 0;
   for (const auto& entry : loaded.index_entries) {
     if (entry.table_uuid == fixture.table_uuid &&

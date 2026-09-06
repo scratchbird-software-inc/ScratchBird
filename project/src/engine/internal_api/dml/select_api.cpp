@@ -283,8 +283,8 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
   }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  const auto table = FindVisibleCrudTable(state,
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state,
                                           dependency_uuid,
                                           request.context.local_transaction_id);
   if (!table) {
@@ -292,7 +292,7 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
     return {};
   }
   std::vector<CrudRowVersionRecord> source_rows =
-      VisibleCrudRowsForContext(state, dependency_uuid, request.context);
+      VisibleMgaRowsForContext(state, dependency_uuid, request.context);
   std::stable_sort(source_rows.begin(),
                    source_rows.end(),
                    [](const CrudRowVersionRecord& lhs, const CrudRowVersionRecord& rhs) {
@@ -338,8 +338,8 @@ std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
     if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
     return {};
   }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  const auto table = FindVisibleCrudTable(state,
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state,
                                           dependency_uuid,
                                           request.context.local_transaction_id);
   if (!table) {
@@ -347,7 +347,7 @@ std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
     return {};
   }
   const std::vector<CrudRowVersionRecord> source_rows =
-      VisibleCrudRowsForContext(state, dependency_uuid, request.context);
+      VisibleMgaRowsForContext(state, dependency_uuid, request.context);
   if (source_rows.empty()) { return {}; }
   long double campo1 = 0;
   long double campo2 = 0;
@@ -539,7 +539,7 @@ struct SelectProjectionPredicateResolution {
 
 SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
     const EngineSelectRowsRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EnginePredicateEnvelope& requested_predicate) {
   SelectProjectionPredicateResolution resolution;
   if (requested_predicate.predicate_kind != "column_in_projection" &&
@@ -566,7 +566,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
                                      "subquery_predicate_descriptor_incomplete");
     return resolution;
   }
-  const auto source_table = FindVisibleCrudTable(state,
+  const auto source_table = FindVisibleMgaTable(state,
                                                  source_uuid,
                                                  request.context.local_transaction_id);
   if (!source_table) {
@@ -608,7 +608,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
   resolved.canonical_predicate_envelope =
       requested_predicate.canonical_predicate_envelope;
 
-  const auto source_rows = VisibleCrudRowsForContext(state,
+  const auto source_rows = VisibleMgaRowsForContext(state,
                                                      source_uuid,
                                                      request.context);
   for (const auto& row : source_rows) {
@@ -635,7 +635,7 @@ SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
 }
 
 std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
@@ -651,7 +651,7 @@ std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
     const auto& row = *it;
     if (row.table_uuid != table_uuid ||
         resolved_row_uuids.count(row.row_uuid) != 0 ||
-        !CrudRowVersionVisibleToContext(state, row, context)) {
+        !MgaRowVersionVisibleToContext(state, row, context)) {
       continue;
     }
     resolved_row_uuids.insert(row.row_uuid);
@@ -975,8 +975,8 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       : relation_store.LoadMutationTarget(table_uuid);
   mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
-  const auto table = FindVisibleCrudTable(state, table_uuid, request.context.local_transaction_id);
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state, table_uuid, request.context.local_transaction_id);
   mark_select_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_not_visible"));
@@ -1013,14 +1013,14 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   bool rows_ready = false;
 	  const auto load_rows = [&]() -> std::vector<CrudRowVersionRecord>& {
 	    if (!rows_ready) {
-	      rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
+	      rows = VisibleMgaRowsForContext(state, table_uuid, request.context);
 	      rows_ready = true;
 	    }
 	    return rows;
 	  };
 	  const auto scan_rows_for_predicate = [&]() {
 	    std::vector<CrudRowVersionRecord> filtered;
-	    const auto visible = VisibleCrudRowsForContext(state, table_uuid, request.context);
+	    const auto visible = VisibleMgaRowsForContext(state, table_uuid, request.context);
 	    for (const auto& row : visible) {
 	      if (CrudRowMatchesPredicate(row, predicate)) { filtered.push_back(row); }
 	    }
@@ -1156,7 +1156,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
 	  }
   mark_select_phase("resolve_visible_rows");
   if (!rows_ready) {
-    rows = VisibleCrudRowsForContext(state, table_uuid, request.context);
+    rows = VisibleMgaRowsForContext(state, table_uuid, request.context);
     rows_ready = true;
   }
   mark_select_phase("ensure_visible_rows");

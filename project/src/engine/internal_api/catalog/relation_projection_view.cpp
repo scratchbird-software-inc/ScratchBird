@@ -678,8 +678,7 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
     inventory.diagnostic = relations.diagnostic;
     return inventory;
   }
-  const CrudState visible_crud =
-      BuildCrudCompatibilityStateFromMga(relations.state);
+  const RelationReadSnapshot visible_crud = BuildCrudCompatibilityStateFromMga(relations.state);
   std::set<std::string> visited_relations;
   for (const auto& table_record : visible_crud.tables) {
     const auto visible = FindVisibleCrudTable(

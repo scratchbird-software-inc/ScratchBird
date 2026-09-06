@@ -156,7 +156,10 @@ struct CrudSealedRelationDescriptorSnapshot {
   std::vector<std::pair<std::string, std::string>> descriptor_fields;
 };
 
-struct CrudState {
+// Read-only consumers share this neutral snapshot shape. CrudState is the
+// legacy event-store materialization below; canonical MGA code uses its own
+// derived view and cannot be passed to mutation APIs that require CrudState.
+struct RelationReadSnapshot {
   std::map<std::uint64_t, std::string> transactions;
   std::vector<CrudTableRecord> tables;
   std::vector<CrudRowVersionRecord> row_versions;
@@ -172,6 +175,16 @@ struct CrudState {
   std::map<std::uint64_t, std::map<std::string, std::uint64_t>> savepoints;
 };
 
+struct CrudState : RelationReadSnapshot {
+  CrudState() = default;
+  CrudState(const CrudState&) = default;
+  CrudState(CrudState&&) noexcept = default;
+  CrudState& operator=(const CrudState&) = default;
+  CrudState& operator=(CrudState&&) noexcept = default;
+  CrudState(const RelationReadSnapshot&) = delete;
+  CrudState(RelationReadSnapshot&&) = delete;
+};
+
 struct CrudStoreResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
@@ -180,7 +193,7 @@ struct CrudStoreResult {
 
 std::string GenerateCrudEngineUuid(std::string kind, std::uint64_t unix_epoch_millis = 0);
 bool IsEmptyUuid(const EngineUuid& uuid);
-bool CrudCreatorVisible(const CrudState& state, std::uint64_t creator_tx, std::uint64_t event_sequence, std::uint64_t observer_tx);
+bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t event_sequence, std::uint64_t observer_tx);
 std::string UuidStringOrGenerated(const EngineUuid& uuid, std::string kind);
 CrudStoreResult LoadCrudState(const EngineRequestContext& context);
 EngineApiDiagnostic AppendCrudEvent(const EngineRequestContext& context, const std::string& event);
@@ -211,30 +224,30 @@ bool CrudPredicateTouchesOpaqueColumn(const CrudTableRecord& table, const Engine
 bool CrudRowsTouchOpaqueColumn(const CrudTableRecord& table, std::span<const EngineRowValue> rows);
 bool CrudAssignmentsTouchOpaqueColumn(const CrudTableRecord& table,
                                       const std::vector<std::pair<std::string, EngineTypedValue>>& assignments);
-std::optional<CrudTableRecord> FindVisibleCrudTable(const CrudState& state,
+std::optional<CrudTableRecord> FindVisibleCrudTable(const RelationReadSnapshot& state,
                                                     const std::string& table_uuid,
                                                     std::uint64_t observer_tx);
-std::vector<CrudRowVersionRecord> VisibleCrudRows(const CrudState& state,
+std::vector<CrudRowVersionRecord> VisibleCrudRows(const RelationReadSnapshot& state,
                                                   const std::string& table_uuid,
                                                   std::uint64_t observer_tx);
-std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const CrudState& state,
+std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const RelationReadSnapshot& state,
                                                             const std::string& table_uuid,
                                                             const EngineRequestContext& context);
-bool CrudRowVersionVisibleToContext(const CrudState& state,
+bool CrudRowVersionVisibleToContext(const RelationReadSnapshot& state,
                                     const CrudRowVersionRecord& row,
                                     const EngineRequestContext& context);
-std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const CrudState& state,
+std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const RelationReadSnapshot& state,
                                                        const std::string& table_uuid,
                                                        const std::string& row_uuid,
                                                        std::uint64_t observer_tx);
-std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const CrudState& state,
+std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const RelationReadSnapshot& state,
                                                                  const std::string& table_uuid,
                                                                  const std::string& row_uuid,
                                                                  const EngineRequestContext& context);
-std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const CrudState& state,
+std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const RelationReadSnapshot& state,
                                                         const std::string& table_uuid,
                                                         std::uint64_t observer_tx);
-std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const CrudState& state,
+std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationReadSnapshot& state,
                                                               const std::string& table_uuid,
                                                               const std::string& column_name,
                                                               std::uint64_t observer_tx);
@@ -242,19 +255,19 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate);
 std::vector<std::string> CrudIndexKeysForValues(const CrudIndexRecord& index,
                                                 const std::vector<std::pair<std::string, std::string>>& values);
-std::vector<CrudRowVersionRecord> IndexedCrudRows(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRows(const RelationReadSnapshot& state,
                                                   const std::string& table_uuid,
                                                   const std::string& column_name,
                                                   const std::string& key_value,
                                                   std::uint64_t observer_tx,
                                                   std::string* index_uuid_used);
-std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const RelationReadSnapshot& state,
                                                               const std::string& table_uuid,
                                                               const EnginePredicateEnvelope& predicate,
                                                               std::uint64_t observer_tx,
                                                               std::uint64_t limit,
                                                               std::string* index_evidence_id);
-std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const RelationReadSnapshot& state,
                                                                         const std::string& table_uuid,
                                                                         const EnginePredicateEnvelope& predicate,
                                                                         const EngineRequestContext& context,
@@ -292,7 +305,7 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
                                       const std::string& payload_value,
                                       const std::string& row_uuid,
                                       const std::string& version_uuid);
-EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const CrudState& state,
+EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
                                                     const std::string& table_uuid,
                                                     const std::string& row_uuid,
                                                     const std::vector<std::pair<std::string, std::string>>& values,
@@ -303,7 +316,7 @@ EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& c
                                                    const std::string& version_uuid,
                                                    const std::vector<std::pair<std::string, std::string>>& values);
 EngineApiDiagnostic AppendCrudIndexEntriesForRow(const EngineRequestContext& context,
-                                                 const CrudState& state,
+                                                 const RelationReadSnapshot& state,
                                                  const std::string& table_uuid,
                                                  const std::string& row_uuid,
                                                  const std::string& version_uuid,

@@ -1141,7 +1141,7 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
   std::unordered_set<std::string> visible_predecessor_uuids;
   for (const auto& row : scoped_rows.state.row_versions) {
     if (row.table_uuid == request.collection_uuid &&
-        CrudRowVersionVisibleToContext(scoped_rows.state.crud_metadata, row,
+        CrudRowVersionVisibleToContext(scoped_rows.state.relation_metadata, row,
                                        request.context)) {
       visible_version_uuids.insert(row.version_uuid);
     }

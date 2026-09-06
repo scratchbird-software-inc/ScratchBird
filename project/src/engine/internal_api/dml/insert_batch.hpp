@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/insert_api.hpp"
 
 #include <cstddef>
@@ -291,7 +291,7 @@ StrictBulkLoadPolicy ResolveStrictBulkLoadPolicy(const EngineInsertRowsRequest& 
 BoundInsertRowTemplate BuildBoundInsertRowTemplate(const EngineInsertRowsRequest& request,
                                                    const CrudTableRecord& table);
 IndexMaintenancePlan BuildIndexMaintenancePlan(const EngineInsertRowsRequest& request,
-                                               const CrudState& state,
+                                               const MgaRelationReadView& state,
                                                const CrudTableRecord& table,
                                                const std::vector<CrudIndexRecord>& indexes,
                                                const InsertFeatureGates& feature_gates,
@@ -305,7 +305,7 @@ SecondaryIndexDeltaLedgerPolicy ResolveSecondaryIndexDeltaLedgerPolicy(const Eng
                                                                        const InsertFeatureGates& feature_gates);
 
 InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes);
 
@@ -314,7 +314,7 @@ EngineApiDiagnostic ValidateStrictBulkLoadEligibility(const InsertBatchContext& 
 EngineApiDiagnostic ValidateInsertBatchMemoryBudget(const InsertBatchContext& context,
                                                     std::uint64_t projected_bytes);
 EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext& context,
-                                                   const CrudState& state,
+                                                   const MgaRelationReadView& state,
                                                    const PreparedInsertRow& row);
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,
                                                        const std::vector<std::pair<std::string, std::string>>& values);

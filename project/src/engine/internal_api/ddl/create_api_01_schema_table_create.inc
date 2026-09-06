@@ -113,7 +113,7 @@ CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
 }
 
 std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const CrudTableRecord& table,
     const EngineRequestContext& context) {
   if (!table.temporary || table.temporary_scope != "global") {
@@ -142,7 +142,7 @@ std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
   return rows;
 }
 
-bool ExistingRowsHaveDuplicateKeys(const CrudState& state,
+bool ExistingRowsHaveDuplicateKeys(const RelationReadSnapshot& state,
                                    const CrudTableRecord& table,
                                    const CrudIndexRecord& index,
                                    const EngineRequestContext& context) {

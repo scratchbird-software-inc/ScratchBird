@@ -10,6 +10,7 @@
 #include "dml/insert_api.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "database_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -332,13 +333,13 @@ void SeedParent(Fixture& fixture) {
   Commit(context);
 }
 
-api::CrudState LoadFixtureCrudState(const api::EngineRequestContext& context) {
+api::MgaRelationReadView LoadFixtureCrudState(const api::EngineRequestContext& context) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "ODF-039 relation store load failed");
-  return api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  return api::BuildMgaRelationReadView(loaded.state);
 }
 
-api::CrudTableRecord VisibleChildTable(const api::CrudState& state,
+api::CrudTableRecord VisibleChildTable(const api::MgaRelationReadView& state,
                                        const Fixture& fixture,
                                        const api::EngineRequestContext& context) {
   const auto table = api::FindVisibleCrudTable(state,

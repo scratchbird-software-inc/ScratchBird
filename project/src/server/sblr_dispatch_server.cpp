@@ -3518,7 +3518,7 @@ std::vector<std::string> VisibleInsertColumnNamesForTarget(
   const auto context = PublicAbiDispatchEngineContext(session);
   const auto loaded = engine_api::LoadMgaRelationStoreState(context);
   if (!loaded.ok) return {};
-  const engine_api::CrudState state =
+  const engine_api::RelationReadSnapshot state =
       engine_api::BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = engine_api::FindVisibleCrudTable(
       state,

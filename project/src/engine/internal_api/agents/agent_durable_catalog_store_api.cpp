@@ -73,7 +73,7 @@ std::vector<std::pair<std::string, std::string>> CatalogColumns() {
           {"storage_linkage_digest", "text:not_null"}};
 }
 
-std::optional<CrudTableRecord> FindCatalogTable(const CrudState& state,
+std::optional<CrudTableRecord> FindCatalogTable(const RelationReadSnapshot& state,
                                                 const EngineRequestContext& context) {
   for (const auto& table : state.tables) {
     if (table.default_name != kAgentDurableCatalogStoreTableName) { continue; }
@@ -94,7 +94,7 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
   }
   auto loaded = LoadMgaRelationStoreState(context);
   if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto existing = FindCatalogTable(state, context);
   CrudTableRecord table;
   if (existing) {
@@ -127,7 +127,7 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
   return result;
 }
 
-std::optional<CrudRowVersionRecord> LatestCatalogRow(const CrudState& state,
+std::optional<CrudRowVersionRecord> LatestCatalogRow(const RelationReadSnapshot& state,
                                                      const EngineRequestContext& context,
                                                      const std::string& table_uuid) {
   std::optional<CrudRowVersionRecord> latest;
@@ -143,7 +143,7 @@ std::optional<CrudRowVersionRecord> LatestCatalogRow(const CrudState& state,
   return latest;
 }
 
-std::string MissingCatalogRowDetail(const CrudState& state,
+std::string MissingCatalogRowDetail(const RelationReadSnapshot& state,
                                     const EngineRequestContext& context,
                                     const std::string& table_uuid) {
   std::size_t table_row_versions = 0;
@@ -196,7 +196,7 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
 
   auto loaded = LoadMgaRelationStoreState(request.context);
   if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto previous = LatestCatalogRow(state, request.context, table.table_uuid);
   if (previous) {
     const std::string previous_root =
@@ -293,7 +293,7 @@ AgentDurableCatalogStoreResult LoadAgentDurableCatalogImage(
   }
   auto loaded = LoadMgaRelationStoreState(context);
   if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindCatalogTable(state, context);
   if (!table) { return ErrorResult("catalog_table_not_found"); }
   const auto latest = LatestCatalogRow(state, context, table->table_uuid);

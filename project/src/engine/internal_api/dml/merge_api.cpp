@@ -111,12 +111,12 @@ EngineRowValue MergeRowFromCrudRow(const CrudRowVersionRecord& source_row) {
 }
 
 std::vector<EngineRowValue> MergeRowsFromSourceTable(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const EngineRequestContext& context,
     const std::string& source_table_uuid) {
   std::vector<EngineRowValue> rows;
   for (const auto& source_row :
-       VisibleCrudRowsForContext(state, source_table_uuid, context)) {
+       VisibleMgaRowsForContext(state, source_table_uuid, context)) {
     rows.push_back(MergeRowFromCrudRow(source_row));
   }
   return rows;
@@ -413,7 +413,7 @@ bool MergePredicateEligibleForTargetKeyLookup(
 }
 
 MergeTargetKeyLookup BuildMergeTargetKeyLookup(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const EnginePredicateEnvelope& predicate,
@@ -424,7 +424,7 @@ MergeTargetKeyLookup BuildMergeTargetKeyLookup(
   }
   lookup.enabled = true;
   lookup.column = predicate.canonical_predicate_envelope;
-  lookup.visible_rows = VisibleCrudRowsForContext(state, table_uuid, context);
+  lookup.visible_rows = VisibleMgaRowsForContext(state, table_uuid, context);
   lookup.first_row_index_by_key.reserve(lookup.visible_rows.size());
   for (std::size_t index = 0; index < lookup.visible_rows.size(); ++index) {
     const std::string key = CrudFieldValue(lookup.visible_rows[index].values,
@@ -487,7 +487,7 @@ MergeMatchLookupResult FindMergeMatchWithTargetKeyLookup(
 }
 
 MergeMatchLookupResult FindMergeMatchWithPlan(
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
@@ -508,7 +508,7 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
           return result;
         }
       }
-      result.row = FindVisibleCrudRowForContext(state, table_uuid, plan.row_uuid, context);
+      result.row = FindVisibleMgaRowForContext(state, table_uuid, plan.row_uuid, context);
       if (result.row) {
         AddMergeHotPointAdmissionEvidence(plan_request, result.row->row_uuid, evidence);
       }
@@ -581,7 +581,7 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
     }
     case DmlTargetAccessKind::table_scan: {
       evidence->push_back({"merge_row_candidate_stream", "table_scan"});
-      const auto rows = VisibleCrudRowsForContext(state, table_uuid, context);
+      const auto rows = VisibleMgaRowsForContext(state, table_uuid, context);
       for (const auto& row : rows) {
         if (CrudRowMatchesPredicate(row, predicate)) {
           result.row = row;
@@ -796,10 +796,10 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                     ? relation_store.LoadMutationTarget(target.uuid.canonical)
                     : relation_store.LoadMutationTargets(relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
-  CrudState state = relation_store.BuildCompatibilityProjection(&loaded);
+  MgaRelationReadView state = relation_store.BuildReadView(&loaded);
   if (source_rows.empty() && !source_table_uuid.empty()) {
     const auto source_table =
-        FindVisibleCrudTable(state,
+        FindVisibleMgaTable(state,
                              source_table_uuid,
                              request.context.local_transaction_id);
     if (!source_table) {
@@ -822,7 +822,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
   }
   const std::string table_uuid = target.uuid.canonical;
-  const auto table = FindVisibleCrudTable(state, table_uuid, request.context.local_transaction_id);
+  const auto table = FindVisibleMgaTable(state, table_uuid, request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_not_visible"));
   }
@@ -874,7 +874,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   }
   AddMutationOptimizerEvidence("merge", request.context.local_transaction_id != 0, true, &result.evidence);
   const auto visible_indexes =
-      VisibleCrudIndexesForTable(state, table_uuid, request.context.local_transaction_id);
+      VisibleMgaIndexesForTable(state, table_uuid, request.context.local_transaction_id);
   const EnginePredicateEnvelope base_merge_predicate =
       !request.match_predicate.predicate_kind.empty() ? request.match_predicate
                                                       : request.predicate;

@@ -23,7 +23,7 @@
 
 }  // namespace
 
-bool CrudRowVersionVisibleToContext(const CrudState& state,
+bool CrudRowVersionVisibleToContext(const RelationReadSnapshot& state,
                                     const CrudRowVersionRecord& row,
                                     const EngineRequestContext& context) {
   return CrudRowVersionVisibleToContextInternal(state, row, context);
@@ -46,7 +46,7 @@ std::string GenerateCrudEngineUuid(std::string kind, std::uint64_t unix_epoch_mi
 
 bool IsEmptyUuid(const EngineUuid& uuid) { return uuid.canonical.empty(); }
 
-bool CrudCreatorVisible(const CrudState& state, std::uint64_t creator_tx, std::uint64_t, std::uint64_t observer_tx) {
+bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t, std::uint64_t observer_tx) {
   if (creator_tx == 0) { return true; }
   const auto it = state.transactions.find(creator_tx);
   if (it == state.transactions.end()) { return false; }

@@ -9,6 +9,7 @@
 #include "database_lifecycle.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -338,7 +339,7 @@ std::vector<std::string> VisibleBaseIndexKeys(
     const api::MgaRelationStoreState& state,
     const Fixture& fixture,
     const api::EngineRequestContext& context) {
-  const auto crud = api::BuildCrudCompatibilityStateFromMga(state);
+  const auto crud = api::BuildMgaRelationReadView(state);
   std::vector<std::string> keys;
   for (const auto& row :
        api::VisibleCrudRowsForContext(crud, fixture.table_uuid, context)) {
@@ -368,7 +369,7 @@ void RequireIndexLookup(const api::MgaRelationStoreState& state,
                         std::string key,
                         std::size_t expected_count,
                         std::string_view message) {
-  const auto crud = api::BuildCrudCompatibilityStateFromMga(state);
+  const auto crud = api::BuildMgaRelationReadView(state);
   const auto lookup = api::IndexedMgaRowsForPredicateForContext(
       crud,
       fixture.table_uuid,
@@ -638,7 +639,7 @@ void TestDeferredIndexBulkPublishRollbackVisibility() {
 
   auto observer = Begin(fixture, "orh-211-rollback-observer");
   const auto state = LoadedState(observer);
-  const auto crud = api::BuildCrudCompatibilityStateFromMga(state);
+  const auto crud = api::BuildMgaRelationReadView(state);
   Require(api::VisibleCrudRowsForContext(crud, fixture.table_uuid, observer)
               .empty(),
           "ORH-211 rolled-back base rows became visible");

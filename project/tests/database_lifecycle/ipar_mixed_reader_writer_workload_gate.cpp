@@ -307,7 +307,7 @@ void RequireSelectAndIndexLookups(const Fixture& fixture,
   }
   Require(state.ok, "IPAR-P7-10 scoped state load failed");
   const auto indexed = api::IndexedMgaRowsForPredicateForContext(
-      state.state.crud_metadata,
+      state.state.relation_metadata,
       fixture.table_uuid,
       TagPredicate("hot-tag-1"),
       context,

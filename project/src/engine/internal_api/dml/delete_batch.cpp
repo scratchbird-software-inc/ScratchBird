@@ -124,13 +124,13 @@ std::string ActionReason(DeleteIndexMaintenanceAction action) {
 }
 
 std::uint64_t EstimateMatches(const EngineDeleteRowsRequest& request,
-                              const CrudState& state,
+                              const MgaRelationReadView& state,
                               const CrudTableRecord& table,
                               const std::vector<CrudIndexRecord>&) {
   if (request.delete_predicate.predicate_kind == "row_uuid_match") {
     return 1;
   }
-  return static_cast<std::uint64_t>(VisibleCrudRows(state, table.table_uuid, request.context.local_transaction_id).size());
+  return static_cast<std::uint64_t>(VisibleMgaRows(state, table.table_uuid, request.context.local_transaction_id).size());
 }
 
 std::uint64_t PredicateBytes(const EngineDeleteRowsRequest& request) {
@@ -178,7 +178,7 @@ const char* DeleteIndexMaintenanceActionName(DeleteIndexMaintenanceAction action
 }
 
 DeleteBatchMode ResolveDeleteBatchMode(const EngineDeleteRowsRequest& request,
-                                       const CrudState&,
+                                       const MgaRelationReadView&,
                                        const CrudTableRecord&,
                                        const std::vector<CrudIndexRecord>& indexes) {
   if (request.delete_predicate.predicate_kind == "row_uuid_match") {
@@ -249,7 +249,7 @@ BoundDeletePredicateTemplate BuildBoundDeletePredicateTemplate(const EngineDelet
 }
 
 DeleteIndexMaintenancePlan BuildDeleteIndexMaintenancePlan(const EngineDeleteRowsRequest&,
-                                                           const CrudState&,
+                                                           const MgaRelationReadView&,
                                                            const CrudTableRecord& table,
                                                            const std::vector<CrudIndexRecord>& indexes,
                                                            const DeleteFeatureGates& feature_gates) {
@@ -306,7 +306,7 @@ DeleteSecondaryIndexDeltaLedgerPolicy ResolveDeleteSecondaryIndexDeltaLedgerPoli
 }
 
 DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   DeleteBatchContext context;

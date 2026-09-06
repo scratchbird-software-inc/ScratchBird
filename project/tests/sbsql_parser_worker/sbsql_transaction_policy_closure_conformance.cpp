@@ -292,8 +292,8 @@ void RequireReadOnlyMGAHelpers(const api::EngineRequestContext& context,
 
   const auto mga_state = api::LoadMgaRelationStoreState(read_only_context);
   Require(!mga_state.ok, "read-only MGA overlay unexpectedly admitted mutation authority");
-  const auto mga_tx = mga_state.state.crud_metadata.transactions.find(read_only.local_transaction_id);
-  Require(mga_tx != mga_state.state.crud_metadata.transactions.end(),
+  const auto mga_tx = mga_state.state.relation_metadata.transactions.find(read_only.local_transaction_id);
+  Require(mga_tx != mga_state.state.relation_metadata.transactions.end(),
           "MGA overlay did not expose read-only transaction");
   Require(mga_tx->second == "read_only_active",
           "MGA overlay did not render read_only_active");

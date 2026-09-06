@@ -154,7 +154,7 @@ void RecordArchiveRestoreRefusalMetric(const std::string& archive_class, const E
   }
 }
 
-std::uint64_t MaxCommittedTransaction(const CrudState& state) {
+std::uint64_t MaxCommittedTransaction(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, tx_state] : state.transactions) {
     if (tx_state == "committed" || tx_state == "archived") {
@@ -713,7 +713,7 @@ struct TemporaryBackupExclusionStats {
 };
 
 std::vector<std::string> TemporaryTableUuidsVisibleThrough(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     std::uint64_t visible_through_tx) {
   std::vector<std::string> table_uuids;
   for (const auto& table : state.tables) {
@@ -734,7 +734,7 @@ bool ContainsUuid(const std::vector<std::string>& uuids,
 }
 
 TemporaryBackupExclusionStats CountTemporarySnapshotExclusions(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     std::uint64_t snapshot_tx) {
   TemporaryBackupExclusionStats stats;
   const auto temporary_table_uuids =
@@ -766,7 +766,7 @@ TemporaryBackupExclusionStats CountTemporarySnapshotExclusions(
 }
 
 TemporaryBackupExclusionStats CountTemporaryDeltaExclusions(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     std::uint64_t start_tx,
     std::uint64_t end_tx) {
   TemporaryBackupExclusionStats stats;
@@ -820,7 +820,7 @@ void AddTemporaryBackupExclusionEvidence(
                          std::to_string(stats.index_count));
 }
 
-std::string UnsafeFinalityGap(const CrudState& state, std::uint64_t snapshot_tx) {
+std::string UnsafeFinalityGap(const RelationReadSnapshot& state, std::uint64_t snapshot_tx) {
   for (const auto& [transaction_id, transaction_state] : state.transactions) {
     if (transaction_id <= snapshot_tx && IsUnsafeFinalityState(transaction_state)) {
       return std::to_string(transaction_id) + ":" + transaction_state;
@@ -2515,7 +2515,7 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
   if (!loaded_mga.ok) {
     return MakeApiBehaviorDiagnostic<EngineStartLogicalBackupResult>(request.context, kOperation, loaded_mga.diagnostic);
   }
-  const CrudState loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
+  const RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   LogicalBackupRecordSet records;
   records.backup_uuid.canonical = GenerateCrudEngineUuid("backup");
   records.snapshot_uuid.canonical = GenerateCrudEngineUuid("snapshot");
@@ -2757,7 +2757,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                    const std::vector<CrudTableRecord>& tables,
                                    const std::vector<CrudIndexRecord>& indexes,
                                    const std::vector<CrudRowVersionRecord>& rows,
-                                   const CrudState& state) {
+                                   const RelationReadSnapshot& state) {
   std::ostringstream body;
   body << kDeltaPackageMagic << "\n";
   const auto filespace_uuid = RequiredManifestOption(request, "filespace_uuid:");
@@ -3164,7 +3164,7 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   }
   const auto loaded_mga = LoadMgaRelationStoreState(request.context);
   if (!loaded_mga.ok) { return MakeApiBehaviorDiagnostic<EnginePackageDeltaStreamResult>(request.context, kOperation, loaded_mga.diagnostic); }
-  const CrudState loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
+  const RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   const auto start_tx = ParseU64(OptionValue(request, "start_transaction_id:"));
   const auto requested_end = ParseU64(OptionValue(request, "end_transaction_id:"));
   const auto end_tx = requested_end == 0 ? MaxCommittedTransaction(loaded_state) : requested_end;
@@ -3416,7 +3416,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   if (!loaded_target_mga.ok) {
     return MakeApiBehaviorDiagnostic<EngineApplyDeltaStreamResult>(request.context, kOperation, loaded_target_mga.diagnostic);
   }
-  const CrudState target_state = BuildCrudCompatibilityStateFromMga(loaded_target_mga.state);
+  const RelationReadSnapshot target_state = BuildCrudCompatibilityStateFromMga(loaded_target_mga.state);
   auto table_exists = [&](const std::string& table_uuid) {
     return std::any_of(target_state.tables.begin(), target_state.tables.end(), [&](const auto& existing) {
       return existing.table_uuid == table_uuid;

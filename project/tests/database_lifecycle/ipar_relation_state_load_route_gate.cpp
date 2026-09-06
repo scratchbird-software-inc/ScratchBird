@@ -19,6 +19,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 
@@ -28,6 +29,10 @@ namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
+
+static_assert(!std::is_constructible_v<api::CrudState,
+                                       api::RelationReadSnapshot>,
+              "compatibility read snapshots must not feed mutable CRUD state");
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -92,8 +97,8 @@ void VerifyCanonicalStoreAuthorityMap() {
   const auto* compatibility = FindAuthority("crud_compatibility_state");
   Require(compatibility != nullptr &&
               compatibility->classification ==
-                  "transitional_non_authoritative_projection",
-          "CrudState compatibility projection was not classified as transitional");
+                  "read_only_subordinate_projection",
+          "compatibility projection was not classified as read-only/subordinate");
 }
 
 std::string EvidenceValue(const std::vector<api::EngineEvidenceReference>& evidence,
@@ -413,9 +418,9 @@ void VerifyRelationStateLoadRoutes() {
                       "durable_transaction_inventory"),
           "IPAR relation-state insert did not identify MGA finality authority");
   Require(HasEvidence(normal.evidence,
-                      "transactional_relation_store_compatibility_projection",
-                      "transitional_non_authoritative_projection"),
-          "IPAR relation-state insert promoted the compatibility projection");
+                      "transactional_relation_store_read_model",
+                      "mga_scoped_read_view_v1"),
+          "IPAR relation-state insert did not use the MGA read model");
   Require(EvidenceValue(normal.evidence,
                         "mga_relation_state_row_versions_retained") == "2",
           "IPAR relation-state scoped loader did not retain only target and child row state");

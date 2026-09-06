@@ -31,7 +31,7 @@ constexpr std::array<TransactionalRelationStoreAuthorityRecord, 8>
         {"relation_caches", "canonical_store_derived_cache",
          "derived_non_authoritative"},
         {"crud_compatibility_state", "mga_state_projection",
-         "transitional_non_authoritative_projection"},
+         "read_only_subordinate_projection"},
     }};
 
 MgaRelationStoreResult WithRouteEvidence(
@@ -46,6 +46,102 @@ MgaRelationStoreResult WithRouteEvidence(
 std::span<const TransactionalRelationStoreAuthorityRecord>
 TransactionalRelationStoreAuthorityMap() {
   return kAuthorityMap;
+}
+
+MgaRelationReadView BuildMgaRelationReadView(
+    const MgaRelationStoreState& state) {
+  MgaRelationReadView view;
+  view.transactions = state.relation_metadata.transactions;
+  view.tables = state.relation_metadata.tables;
+  view.row_versions = state.row_versions;
+  view.indexes = state.relation_metadata.indexes;
+  view.index_entries = state.index_entries;
+  view.large_values = state.relation_metadata.large_values;
+  view.sealed_relation_descriptor_snapshots =
+      state.relation_metadata.sealed_relation_descriptor_snapshots;
+  view.max_transaction_id = state.relation_metadata.max_transaction_id;
+  view.max_sequence = state.max_row_event_sequence;
+  view.max_index_sequence = state.max_index_event_sequence;
+  view.max_event_sequence = state.relation_metadata.max_event_sequence;
+  view.savepoints = state.relation_metadata.savepoints;
+  return view;
+}
+
+MgaRelationReadView BuildMgaRelationReadView(MgaRelationStoreState&& state) {
+  MgaRelationReadView view;
+  view.transactions = std::move(state.relation_metadata.transactions);
+  view.tables = std::move(state.relation_metadata.tables);
+  view.row_versions = std::move(state.row_versions);
+  view.indexes = std::move(state.relation_metadata.indexes);
+  view.index_entries = std::move(state.index_entries);
+  view.large_values = std::move(state.relation_metadata.large_values);
+  view.sealed_relation_descriptor_snapshots =
+      std::move(state.relation_metadata.sealed_relation_descriptor_snapshots);
+  view.max_transaction_id = state.relation_metadata.max_transaction_id;
+  view.max_sequence = state.max_row_event_sequence;
+  view.max_index_sequence = state.max_index_event_sequence;
+  view.max_event_sequence = state.relation_metadata.max_event_sequence;
+  view.savepoints = std::move(state.relation_metadata.savepoints);
+  return view;
+}
+
+bool MgaCreatorVisible(const MgaRelationReadView& view,
+                       std::uint64_t creator_tx,
+                       std::uint64_t event_sequence,
+                       std::uint64_t observer_tx) {
+  return CrudCreatorVisible(view, creator_tx, event_sequence, observer_tx);
+}
+
+bool MgaRowVersionVisibleToContext(const MgaRelationReadView& view,
+                                   const CrudRowVersionRecord& row,
+                                   const EngineRequestContext& context) {
+  return CrudRowVersionVisibleToContext(view, row, context);
+}
+
+std::optional<CrudTableRecord> FindVisibleMgaTable(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    std::uint64_t observer_tx) {
+  return FindVisibleCrudTable(view, table_uuid, observer_tx);
+}
+
+std::optional<CrudRowVersionRecord> FindVisibleMgaRowForContext(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    const std::string& row_uuid,
+    const EngineRequestContext& context) {
+  return FindVisibleCrudRowForContext(view, table_uuid, row_uuid, context);
+}
+
+std::vector<CrudRowVersionRecord> VisibleMgaRowsForContext(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    const EngineRequestContext& context) {
+  return VisibleCrudRowsForContext(view, table_uuid, context);
+}
+
+std::vector<CrudRowVersionRecord> VisibleMgaRows(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    std::uint64_t observer_tx) {
+  return VisibleCrudRows(view, table_uuid, observer_tx);
+}
+
+std::vector<CrudIndexRecord> VisibleMgaIndexesForTable(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    std::uint64_t observer_tx) {
+  return VisibleCrudIndexesForTable(view, table_uuid, observer_tx);
+}
+
+EngineApiDiagnostic ValidateMgaUniqueIndexesForRow(
+    const MgaRelationReadView& view,
+    const std::string& table_uuid,
+    const std::string& row_uuid,
+    const std::vector<std::pair<std::string, std::string>>& values,
+    const EngineRequestContext& context) {
+  return ValidateCrudUniqueIndexesForRow(view, table_uuid, row_uuid, values,
+                                         context);
 }
 
 std::string_view TransactionalRelationStoreRouteId(
@@ -170,15 +266,14 @@ TransactionalRelationStore::LoadRelationDescriptor(
   return LoadMgaRelationStorageDescriptor(context_, relation_uuid);
 }
 
-CrudState TransactionalRelationStore::BuildCompatibilityProjection(
+MgaRelationReadView TransactionalRelationStore::BuildReadView(
     MgaRelationStoreResult* loaded) const {
   if (loaded == nullptr) {
     return {};
   }
   loaded->evidence.push_back(
-      {"transactional_relation_store_compatibility_projection",
-       "transitional_non_authoritative_projection"});
-  return BuildCrudCompatibilityStateFromMga(std::move(loaded->state));
+      {"transactional_relation_store_read_model", "mga_scoped_read_view_v1"});
+  return BuildMgaRelationReadView(std::move(loaded->state));
 }
 
 MgaRelationHotAppendContext

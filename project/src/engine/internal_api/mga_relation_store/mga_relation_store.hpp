@@ -35,7 +35,7 @@ struct EngineContextualTextPolicyRowSetV2;
 // reference/parser API and does not accept SQL names.
 
 struct MgaRelationStoreState {
-  CrudState crud_metadata;
+  RelationReadSnapshot relation_metadata;
   std::vector<CrudRowVersionRecord> row_versions;
   std::vector<CrudIndexEntryRecord> index_entries;
   std::uint64_t max_row_event_sequence = 0;
@@ -860,8 +860,10 @@ MgaMetadataWorkPresenceResult HasMgaTemporaryCleanupMetadataWork(
     bool include_delete_rows,
     bool include_preserve_rows,
     bool retire_private_metadata);
-CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state);
-CrudState BuildCrudCompatibilityStateFromMga(MgaRelationStoreState&& state);
+RelationReadSnapshot BuildCrudCompatibilityStateFromMga(
+    const MgaRelationStoreState& state);
+RelationReadSnapshot BuildCrudCompatibilityStateFromMga(
+    MgaRelationStoreState&& state);
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,
     const std::string& table_uuid);
@@ -951,13 +953,13 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index);
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& context,
-                                                const CrudState& state,
+                                                const RelationReadSnapshot& state,
                                                 const std::string& table_uuid,
                                                 const std::string& row_uuid,
                                                 const std::string& version_uuid,
                                                 const std::vector<std::pair<std::string, std::string>>& values);
 EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& context,
-                                                 const CrudState& state,
+                                                 const RelationReadSnapshot& state,
                                                  const std::string& table_uuid,
                                                  const std::vector<MgaIndexEntryRowInput>& rows);
 EngineApiDiagnostic AppendMgaIndexEntriesForRowsWithIndexes(const EngineRequestContext& context,
@@ -997,7 +999,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
 MgaRelationPhysicalSweepResult ApplyMgaRelationPhysicalSweepToState(
     const MgaRelationPhysicalSweepRequest& request);
 MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const std::string& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,

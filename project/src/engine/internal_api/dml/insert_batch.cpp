@@ -818,7 +818,7 @@ PreparedInsertDescriptorValidation ValidatePreparedInsertDescriptorAuthority(
 
 PreparedInsertDescriptorResolution ResolvePreparedInsertDescriptor(
     const EngineInsertRowsRequest& request,
-    const CrudState& state,
+    const MgaRelationReadView& state,
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& indexes,
     const InsertFeatureGates& feature_gates,
@@ -1118,7 +1118,7 @@ BoundInsertRowTemplate BuildBoundInsertRowTemplate(const EngineInsertRowsRequest
 }
 
 IndexMaintenancePlan BuildIndexMaintenancePlan(const EngineInsertRowsRequest& request,
-                                               const CrudState&,
+                                               const MgaRelationReadView&,
                                                const CrudTableRecord& table,
                                                const std::vector<CrudIndexRecord>& indexes,
                                                const InsertFeatureGates& feature_gates,
@@ -1332,7 +1332,7 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
 }
 
 InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   InsertBatchContext context;
@@ -1624,7 +1624,7 @@ EngineApiDiagnostic ValidateInsertBatchMemoryBudget(const InsertBatchContext& co
 }
 
 EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext&,
-                                                   const CrudState&,
+                                                   const MgaRelationReadView&,
                                                    const PreparedInsertRow&) {
   return OkDiagnostic();
 }

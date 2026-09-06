@@ -19,6 +19,7 @@
 #include "index_statistics_lifecycle.hpp"
 #include "index_verification.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "sblr_dispatch.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -339,16 +340,16 @@ api::EnginePredicateEnvelope Predicate(std::string kind,
   return predicate;
 }
 
-api::CrudState LoadMgaCrudState(const api::EngineRequestContext& context) {
+api::MgaRelationReadView LoadMgaCrudState(const api::EngineRequestContext& context) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   if (!loaded.ok) {
     std::cerr << loaded.diagnostic.detail << '\n';
   }
   Require(loaded.ok, "MGA relation store load failed");
-  return api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  return api::BuildMgaRelationReadView(loaded.state);
 }
 
-std::size_t CountIndexEntries(const api::CrudState& state,
+std::size_t CountIndexEntries(const api::MgaRelationReadView& state,
                               std::string_view index_uuid,
                               std::string_view key = {}) {
   return static_cast<std::size_t>(std::count_if(
@@ -359,7 +360,7 @@ std::size_t CountIndexEntries(const api::CrudState& state,
       }));
 }
 
-const api::CrudIndexRecord& RequireIndexRecord(const api::CrudState& state,
+const api::CrudIndexRecord& RequireIndexRecord(const api::MgaRelationReadView& state,
                                                std::string_view index_uuid,
                                                std::string_view family) {
   for (const auto& index : state.indexes) {

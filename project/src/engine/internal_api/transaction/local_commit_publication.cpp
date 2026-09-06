@@ -287,7 +287,7 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
     const scratchbird::core::index::PersistentSecondaryIndexDeltaLedger& ledger) {
   std::vector<LocalCommitPublicationMutation> mutations;
   const auto transaction_id = context.local_transaction_id;
-  for (const auto& table : state.crud_metadata.tables) {
+  for (const auto& table : state.relation_metadata.tables) {
     if (table.creator_tx != transaction_id) continue;
     const std::string postcondition = table.table_uuid + "\t" +
                                       std::to_string(table.event_sequence) + "\t" +
@@ -297,7 +297,7 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
         table.table_uuid, "mga_relation_metadata", 0, table.event_sequence,
         "absent", postcondition, context));
   }
-  for (const auto& index : state.crud_metadata.indexes) {
+  for (const auto& index : state.relation_metadata.indexes) {
     if (index.creator_tx != transaction_id) continue;
     const std::string postcondition = index.index_uuid + "\t" + index.table_uuid +
                                       "\t" + std::to_string(index.event_sequence);
@@ -307,7 +307,7 @@ std::vector<LocalCommitPublicationMutation> TransactionMutations(
         "absent", postcondition, context));
   }
   for (const auto& descriptor :
-       state.crud_metadata.sealed_relation_descriptor_snapshots) {
+       state.relation_metadata.sealed_relation_descriptor_snapshots) {
     if (descriptor.creator_tx != transaction_id) continue;
     const std::string postcondition = descriptor.relation_uuid + "\t" +
         descriptor.relation_descriptor_uuid + "\t" +

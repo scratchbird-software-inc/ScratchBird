@@ -15,6 +15,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "transaction/transaction_api.hpp"
@@ -446,7 +447,7 @@ Delete03VisibleRows ReadDelete03VisibleRows(
     const std::string& table_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "updatable relation projection MGA state load failed");
-  const auto state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto state = api::BuildMgaRelationReadView(loaded.state);
   const auto rows =
       api::VisibleCrudRowsForContext(state, table_uuid, context);
   Delete03VisibleRows counts;
@@ -487,7 +488,7 @@ std::size_t VisibleRowCount(const api::EngineRequestContext& context,
                             const std::string& table_uuid) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "relation projection MGA row-count load failed");
-  const auto state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto state = api::BuildMgaRelationReadView(loaded.state);
   return api::VisibleCrudRowsForContext(state, table_uuid, context).size();
 }
 

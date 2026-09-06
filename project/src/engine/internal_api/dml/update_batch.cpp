@@ -202,7 +202,7 @@ std::string ActionReason(UpdateIndexMaintenanceAction action) {
 }
 
 std::uint64_t EstimateMatches(const EngineUpdateRowsRequest& request,
-                              const CrudState& state,
+                              const MgaRelationReadView& state,
                               const CrudTableRecord& table,
                               const std::vector<CrudIndexRecord>&) {
   if (request.update_predicate.predicate_kind == "row_uuid_match") {
@@ -264,7 +264,7 @@ const char* UpdateIndexMaintenanceActionName(UpdateIndexMaintenanceAction action
 }
 
 UpdateBatchMode ResolveUpdateBatchMode(const EngineUpdateRowsRequest& request,
-                                       const CrudState&,
+                                       const MgaRelationReadView&,
                                        const CrudTableRecord&,
                                        const std::vector<CrudIndexRecord>& indexes) {
   if (request.update_predicate.predicate_kind == "row_uuid_match") {
@@ -336,7 +336,7 @@ BoundUpdateAssignmentTemplate BuildBoundUpdateAssignmentTemplate(const EngineUpd
 }
 
 UpdateIndexMaintenancePlan BuildUpdateIndexMaintenancePlan(const EngineUpdateRowsRequest& request,
-                                                           const CrudState&,
+                                                           const MgaRelationReadView&,
                                                            const CrudTableRecord& table,
                                                            const std::vector<CrudIndexRecord>& indexes,
                                                            const UpdateFeatureGates&,
@@ -401,7 +401,7 @@ UpdateSecondaryIndexDeltaLedgerPolicy ResolveUpdateSecondaryIndexDeltaLedgerPoli
 }
 
 UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   UpdateBatchContext context;

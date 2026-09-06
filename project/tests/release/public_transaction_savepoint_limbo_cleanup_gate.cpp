@@ -224,7 +224,7 @@ api::CrudRowVersionRecord Row(const Fixture& fixture,
 
 bool HasTable(const api::MgaRelationStoreState& state,
               const std::string& table_uuid) {
-  for (const auto& table : state.crud_metadata.tables) {
+  for (const auto& table : state.relation_metadata.tables) {
     if (table.table_uuid == table_uuid) {
       return true;
     }
@@ -234,7 +234,7 @@ bool HasTable(const api::MgaRelationStoreState& state,
 
 bool HasIndex(const api::MgaRelationStoreState& state,
               const std::string& index_uuid) {
-  for (const auto& index : state.crud_metadata.indexes) {
+  for (const auto& index : state.relation_metadata.indexes) {
     if (index.index_uuid == index_uuid) {
       return true;
     }

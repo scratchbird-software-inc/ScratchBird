@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "crud_support/crud_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "dml/delete_api.hpp"
 
 #include <cstdint>
@@ -144,7 +144,7 @@ const char* DeleteFeatureStateName(DeleteFeatureState state);
 const char* DeleteIndexMaintenanceActionName(DeleteIndexMaintenanceAction action);
 
 DeleteBatchMode ResolveDeleteBatchMode(const EngineDeleteRowsRequest& request,
-                                       const CrudState& state,
+                                       const MgaRelationReadView& state,
                                        const CrudTableRecord& table,
                                        const std::vector<CrudIndexRecord>& indexes);
 DeleteFeatureGates ResolveDeleteFeatureGates(const EngineDeleteRowsRequest& request);
@@ -152,7 +152,7 @@ DeleteBatchMemoryPolicy ResolveDeleteMemoryPolicy(const EngineDeleteRowsRequest&
 BoundDeletePredicateTemplate BuildBoundDeletePredicateTemplate(const EngineDeleteRowsRequest& request,
                                                               const CrudTableRecord& table);
 DeleteIndexMaintenancePlan BuildDeleteIndexMaintenancePlan(const EngineDeleteRowsRequest& request,
-                                                           const CrudState& state,
+                                                           const MgaRelationReadView& state,
                                                            const CrudTableRecord& table,
                                                            const std::vector<CrudIndexRecord>& indexes,
                                                            const DeleteFeatureGates& feature_gates);
@@ -162,7 +162,7 @@ DeletePageReclamationPlan BuildDeletePageReclamationPlan(const EngineDeleteRowsR
 DeleteSecondaryIndexDeltaLedgerPolicy ResolveDeleteSecondaryIndexDeltaLedgerPolicy(const EngineDeleteRowsRequest& request,
                                                                                   const DeleteFeatureGates& feature_gates);
 DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& request,
-                                           const CrudState& state,
+                                           const MgaRelationReadView& state,
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes);
 

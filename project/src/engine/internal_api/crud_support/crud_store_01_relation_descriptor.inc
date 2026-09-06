@@ -18,7 +18,7 @@
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-EngineApiDiagnostic ValidateCrudRowVersionChains(const CrudState& state) {
+EngineApiDiagnostic ValidateCrudRowVersionChains(const RelationReadSnapshot& state) {
   std::map<std::string, CrudRowVersionRecord> by_version_uuid;
   for (const auto& row : state.row_versions) {
     if (row.version_uuid.empty()) {
@@ -107,7 +107,7 @@ CrudLargeValueRecord* FindMutableCrudLargeValue(CrudState* state, const std::str
   return found == state->large_values.end() ? nullptr : &(*found);
 }
 
-const CrudLargeValueRecord* FindCrudLargeValue(const CrudState& state, const std::string& overflow_uuid) {
+const CrudLargeValueRecord* FindCrudLargeValue(const RelationReadSnapshot& state, const std::string& overflow_uuid) {
   auto found = std::find_if(state.large_values.begin(),
                             state.large_values.end(),
                             [&](const CrudLargeValueRecord& record) {

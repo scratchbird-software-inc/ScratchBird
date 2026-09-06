@@ -1040,7 +1040,7 @@ std::string VisibleDescriptor(const api::EngineRequestContext& context,
   }
   Require(loaded.ok, "relation metadata recovery load failed");
   const auto newest = api::FindVisibleCrudTable(
-      loaded.state.crud_metadata,
+      loaded.state.relation_metadata,
       table_uuid.empty() ? fixture.table_uuid : table_uuid,
       context.local_transaction_id);
   Require(newest.has_value() && !newest->columns.empty(),
@@ -1054,7 +1054,7 @@ std::uint64_t VisibleTableGeneration(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "visible table generation load failed");
   const auto table = api::FindVisibleCrudTable(
-      loaded.state.crud_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
   Require(table.has_value(), "visible table generation missing");
   return table->event_sequence;
 }
@@ -1065,7 +1065,7 @@ std::vector<std::string> VisibleDescriptors(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "relation metadata recovery load failed");
   const auto newest = api::FindVisibleCrudTable(
-      loaded.state.crud_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
   Require(newest.has_value(), "visible table projection missing");
   std::vector<std::string> descriptors;
   for (const auto& [name, descriptor] : newest->columns) {
@@ -1089,7 +1089,7 @@ RefusalArtifactSnapshot CaptureRefusalArtifacts(
   return {
       ReadFileBytes(fixture.path.string() + ".sb.mga_relation_metadata"),
       ReadFileBytes(fixture.path.string() + ".sb.mga_event_sequences"),
-      loaded.state.crud_metadata.max_event_sequence};
+      loaded.state.relation_metadata.max_event_sequence};
 }
 
 void RequireRefusalArtifactsUnchanged(
@@ -1129,7 +1129,7 @@ std::string EnsureLegacyTextRelationDescriptor(
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "legacy text metadata load failed");
   const auto table = api::FindVisibleCrudTable(
-      loaded.state.crud_metadata, table_uuid, context.local_transaction_id);
+      loaded.state.relation_metadata, table_uuid, context.local_transaction_id);
   Require(table.has_value(), "legacy text table is not visible");
   api::MgaRelationStorageDescriptor descriptor;
   const auto ensured = api::EnsureMgaRelationStorageDescriptor(
@@ -1861,7 +1861,7 @@ int main(const int argc, char* argv[]) {
   const auto fresh_state = api::LoadMgaRelationStoreState(fresh);
   Require(fresh_state.ok &&
               !api::FindVisibleCrudTable(
-                   fresh_state.state.crud_metadata,
+                   fresh_state.state.relation_metadata,
                    fixture.rejected_text_table_uuid,
                    fresh.local_transaction_id).has_value(),
           "refused fresh text DDL published a table row");
@@ -2201,7 +2201,7 @@ int main(const int argc, char* argv[]) {
   const auto later_state = api::LoadMgaRelationStoreState(later_metadata);
   Require(later_state.ok, "later metadata setup load failed");
   const auto current_text_table = api::FindVisibleCrudTable(
-      later_state.state.crud_metadata, fixture.text_table_uuid,
+      later_state.state.relation_metadata, fixture.text_table_uuid,
       later_metadata.local_transaction_id);
   Require(current_text_table.has_value(),
           "canonical TEXT table missing before later metadata test");

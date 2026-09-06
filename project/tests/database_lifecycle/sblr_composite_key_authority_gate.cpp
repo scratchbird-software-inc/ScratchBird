@@ -13,6 +13,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -565,7 +566,7 @@ int main() {
   auto metadata_reader = Begin(fixture, schema_uuid, 2);
   const auto loaded_mga = api::LoadMgaRelationStoreState(metadata_reader);
   Require(loaded_mga.ok, "composite-key MGA metadata load failed");
-  const auto loaded = api::BuildCrudCompatibilityStateFromMga(loaded_mga.state);
+  const auto loaded = api::BuildMgaRelationReadView(loaded_mga.state);
   const auto indexes = api::VisibleCrudIndexesForTable(
       loaded, table_uuid, metadata_reader.local_transaction_id);
   Require(indexes.size() == 2,

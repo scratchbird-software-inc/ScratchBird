@@ -12,6 +12,7 @@
 #include "ddl/create_api.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "query/expression_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -568,7 +569,7 @@ void RequireIndexFamilyPersisted(const api::EngineRequestContext& context,
                                  std::string_view family) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "MGA relation metadata load failed");
-  const api::CrudState state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const api::MgaRelationReadView state = api::BuildMgaRelationReadView(loaded.state);
   for (const auto& index : state.indexes) {
     if (index.index_uuid == index_uuid) {
       Require(index.family == family, "persisted index family drifted");

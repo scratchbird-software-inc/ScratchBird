@@ -13,7 +13,7 @@
   return IndexedCrudRowsForPredicate(state, table_uuid, predicate, observer_tx, 0, index_uuid_used);
 }
 
-std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const RelationReadSnapshot& state,
                                                               const std::string& table_uuid,
                                                               const EnginePredicateEnvelope& predicate,
                                                               std::uint64_t observer_tx,
@@ -25,7 +25,7 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const CrudState& s
   return IndexedCrudRowsForPredicateForContext(state, table_uuid, predicate, context, limit, index_evidence_id);
 }
 
-std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const CrudState& state,
+std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const RelationReadSnapshot& state,
                                                                         const std::string& table_uuid,
                                                                         const EnginePredicateEnvelope& predicate,
                                                                         const EngineRequestContext& context,
@@ -224,7 +224,7 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
   return "SBCRUD_RETIRED_INDEX_ENTRY_V2_USE_SBMGA1";
 }
 
-EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const CrudState& state,
+EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
                                                     const std::string& table_uuid,
                                                     const std::string& row_uuid,
                                                     const std::vector<std::pair<std::string, std::string>>& values,
@@ -262,7 +262,7 @@ EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& c
 }
 
 EngineApiDiagnostic AppendCrudIndexEntriesForRow(const EngineRequestContext& context,
-                                                 const CrudState& state,
+                                                 const RelationReadSnapshot& state,
                                                  const std::string& table_uuid,
                                                  const std::string& row_uuid,
                                                  const std::string& version_uuid,

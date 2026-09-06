@@ -10,6 +10,7 @@
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "database_lifecycle.hpp"
 #include "row_version.hpp"
 #include "transaction/transaction_api.hpp"
@@ -314,15 +315,15 @@ std::string FieldValue(const api::EngineSelectRowsResult& result,
   return {};
 }
 
-api::CrudState LoadState(const Fixture& fixture,
+api::MgaRelationReadView LoadState(const Fixture& fixture,
                          const api::EngineRequestContext& context) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "ODF-050 load MGA relation store failed");
-  return api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  return api::BuildMgaRelationReadView(loaded.state);
 }
 
 std::vector<api::CrudRowVersionRecord> VersionsForRow(
-    const api::CrudState& state,
+    const api::MgaRelationReadView& state,
     const std::string& row_uuid) {
   std::vector<api::CrudRowVersionRecord> versions;
   for (const auto& row : state.row_versions) {
@@ -331,7 +332,7 @@ std::vector<api::CrudRowVersionRecord> VersionsForRow(
   return versions;
 }
 
-std::size_t IndexEntryCount(const api::CrudState& state,
+std::size_t IndexEntryCount(const api::MgaRelationReadView& state,
                             const std::string& table_uuid) {
   std::size_t count = 0;
   for (const auto& entry : state.index_entries) {

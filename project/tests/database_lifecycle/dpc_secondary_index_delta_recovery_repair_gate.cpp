@@ -10,6 +10,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/mga_relation_read_view.hpp"
 #include "secondary_index_delta_ledger.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -374,7 +375,7 @@ api::MgaIndexedRowsLookupResult DirectIndexedLookup(
     std::string value) {
   const auto loaded = api::LoadMgaRelationStoreState(context);
   Require(loaded.ok, "DPC-025 direct lookup state load failed");
-  api::CrudState state = api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  api::MgaRelationReadView state = api::BuildMgaRelationReadView(loaded.state);
   return api::IndexedMgaRowsForPredicateForContext(
       state,
       fixture.table_uuid,

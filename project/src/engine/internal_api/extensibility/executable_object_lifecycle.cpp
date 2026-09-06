@@ -1322,7 +1322,7 @@ EngineTypedValue ScalarValue(std::string type_name, std::string value) {
   return EngineTypedValue(std::move(descriptor), std::move(value));
 }
 
-std::string FindVisibleTableUuidByName(const CrudState& state,
+std::string FindVisibleTableUuidByName(const RelationReadSnapshot& state,
                                        const EngineRequestContext& context,
                                        const std::string& table_name) {
   const auto target = LowerAscii(table_name);
@@ -1356,7 +1356,7 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
                                                  EngineApiResult* evidence_result) {
   const auto loaded = LoadMgaRelationStoreState(request.context);
   if (!loaded.ok) { return loaded.diagnostic; }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const std::string task_table_uuid =
       FindVisibleTableUuidByName(state, request.context, "proc_tasks");
   const std::string result_table_uuid =

@@ -599,7 +599,7 @@ EngineRequestContext CatalogReadContext(EngineRequestContext context) {
   return context;
 }
 
-void MergeCrudCatalogState(CrudState* base, const CrudState& source) {
+void MergeCrudCatalogState(CrudState* base, const RelationReadSnapshot& source) {
   if (base == nullptr) { return; }
   for (const auto& [tx, state] : source.transactions) {
     base->transactions[tx] = state;

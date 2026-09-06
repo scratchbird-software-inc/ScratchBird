@@ -4052,7 +4052,7 @@ std::string MakeSecondaryIndexDeltaEvidenceReference(
          ":key_hash=" + std::to_string(ChecksumText(key));
 }
 
-std::uint64_t MaxCommittedLocalTransactionId(const CrudState& state) {
+std::uint64_t MaxCommittedLocalTransactionId(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
     if (status == "committed" || status == "archived") {
@@ -4062,7 +4062,7 @@ std::uint64_t MaxCommittedLocalTransactionId(const CrudState& state) {
   return max_committed;
 }
 
-std::uint64_t SnapshotVisibleThroughForOverlay(const CrudState& state,
+std::uint64_t SnapshotVisibleThroughForOverlay(const RelationReadSnapshot& state,
                                                const EngineRequestContext& context) {
   const std::string isolation = context.transaction_isolation_level.empty()
                                     ? std::string("read_committed")
@@ -4157,7 +4157,7 @@ EngineApiDiagnostic OverlayLookupDiagnostic(
                                  true);
 }
 
-std::optional<CrudIndexRecord> SelectCrudIndexForPredicate(const CrudState& state,
+std::optional<CrudIndexRecord> SelectCrudIndexForPredicate(const RelationReadSnapshot& state,
                                                            const std::string& table_uuid,
                                                            const EnginePredicateEnvelope& predicate,
                                                            std::uint64_t observer_tx) {
@@ -4309,7 +4309,7 @@ bool Dpc025DeltaRequiresPublishedBase(idx::SecondaryIndexDeltaKind kind) {
          kind == idx::SecondaryIndexDeltaKind::update_after;
 }
 
-bool Dpc025PublishedBaseContainsRecord(const CrudState& state,
+bool Dpc025PublishedBaseContainsRecord(const RelationReadSnapshot& state,
                                        const CrudIndexRecord& index,
                                        const std::string& table_uuid,
                                        const idx::SecondaryIndexDeltaLedgerRecord& record,
@@ -4378,7 +4378,7 @@ EngineApiDiagnostic Dpc033TableSnapshotEntryForCleanup(
   return OkDiagnostic();
 }
 
-std::optional<CrudIndexRecord> FindVisibleCrudIndexByUuid(const CrudState& state,
+std::optional<CrudIndexRecord> FindVisibleCrudIndexByUuid(const RelationReadSnapshot& state,
                                                           const std::string& table_uuid,
                                                           const std::string& index_uuid,
                                                           std::uint64_t observer_tx) {
@@ -4389,7 +4389,7 @@ std::optional<CrudIndexRecord> FindVisibleCrudIndexByUuid(const CrudState& state
 }
 
 bool LedgerRecordBelongsToUniqueIndex(const idx::SecondaryIndexDeltaLedgerRecord& record,
-                                      const CrudState& state) {
+                                      const RelationReadSnapshot& state) {
   const std::string index_uuid =
       scratchbird::core::uuid::UuidToString(record.delta.index_uuid.value);
   for (const auto& index : state.indexes) {
@@ -4434,7 +4434,7 @@ EngineApiDiagnostic CrudIndexEntryForMergedBase(const CrudIndexRecord& index,
 
 EngineApiDiagnostic RewriteMgaIndexEntriesForMergedIndex(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const CrudIndexRecord& index,
     const std::string& table_uuid,
     const std::vector<idx::SecondaryIndexBaseEntry>& base_entries) {
@@ -5314,7 +5314,7 @@ bool IsMgaLargeValueLocator(const std::string& value) {
 }
 
 EngineApiDiagnostic OverlayMgaTransactionAuthority(const EngineRequestContext& context,
-                                                   CrudState* state,
+                                                   RelationReadSnapshot* state,
                                                    bool allow_read_only_active);
 
 struct LargeValueRecord {
@@ -6005,7 +6005,7 @@ StatementTransactionInventoryAuthority ResolveStatementTransactionInventory(
 
 EngineApiDiagnostic OverlayMgaTransactionAuthority(
     const EngineRequestContext& context,
-    CrudState* state,
+    RelationReadSnapshot* state,
     bool allow_read_only_active) {
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.transaction_authority", "state_required");
@@ -6078,7 +6078,7 @@ bool TextMigrationLineageCreatorVisible(
 
 std::set<std::string> VisibleRetiredTemporaryTableMetadata(
     const EngineRequestContext& context,
-    const CrudState& state) {
+    const RelationReadSnapshot& state) {
   std::set<std::string> retired_tables;
   for (const auto& line : ReadLines(MetadataStorePath(context))) {
     const auto fields = SplitTabs(line);
@@ -6105,7 +6105,7 @@ std::set<std::string> VisibleRetiredTemporaryTableMetadata(
 }
 
 void FilterVisibleRetiredTemporaryMetadata(const EngineRequestContext& context,
-                                           CrudState* state) {
+                                           RelationReadSnapshot* state) {
   if (state == nullptr) { return; }
   const auto retired_tables =
       VisibleRetiredTemporaryTableMetadata(context, *state);
@@ -6183,11 +6183,13 @@ EngineApiDiagnostic ValidateMgaRowVersionRecordChains(
   return OkDiagnostic();
 }
 
-EngineApiDiagnostic ValidateMgaRowVersionChains(const CrudState& state) {
+EngineApiDiagnostic ValidateMgaRowVersionChains(const RelationReadSnapshot& state) {
   return ValidateMgaRowVersionRecordChains(state.row_versions);
 }
 
-void FilterMgaTemporaryObjectsForSession(const EngineRequestContext& context, CrudState* state) {
+void FilterMgaTemporaryObjectsForSession(
+    const EngineRequestContext& context,
+    RelationReadSnapshot* state) {
   if (state == nullptr) { return; }
   std::map<std::string, bool> purged_tables;
   std::vector<CrudTableRecord> retained_tables;
@@ -6223,7 +6225,8 @@ void FilterMgaTemporaryObjectsForSession(const EngineRequestContext& context, Cr
                              state->index_entries.end());
 }
 
-EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext& context) {
+EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
+                                    const EngineRequestContext& context) {
   if (state == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "state_required");
   }
@@ -8559,7 +8562,7 @@ std::optional<std::string> ParentTableUuidFromRelationDescriptor(
 }
 
 std::set<std::string> InsertTargetRelationScope(const EngineRequestContext& context,
-                                                const CrudState& metadata,
+                                                const RelationReadSnapshot& metadata,
                                                 const std::string& table_uuid) {
   std::set<std::string> table_scope;
   if (table_uuid.empty()) { return table_scope; }
@@ -8754,13 +8757,13 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
     return result;
   }
-  const auto metadata = LoadMgaMetadata(&result.state.crud_metadata, context);
+  const auto metadata = LoadMgaMetadata(&result.state.relation_metadata, context);
   if (metadata.error) {
     result.diagnostic = metadata;
     return result;
   }
   const auto authority = OverlayMgaTransactionAuthority(
-      context, &result.state.crud_metadata, false);
+      context, &result.state.relation_metadata, false);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
@@ -8768,7 +8771,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
   const auto savepoints = ParseSavepoints(context);
   std::unordered_map<std::string, std::string> row_value_key_cache;
   std::set<std::string> all_table_uuids;
-  for (const auto& table : result.state.crud_metadata.tables) {
+  for (const auto& table : result.state.relation_metadata.tables) {
     if (!table.table_uuid.empty()) {
       all_table_uuids.insert(table.table_uuid);
     }
@@ -8905,8 +8908,8 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     ++result.index_entries_retained;
   }
   const auto retired_tables =
-      VisibleRetiredTemporaryTableMetadata(context, result.state.crud_metadata);
-  FilterVisibleRetiredTemporaryMetadata(context, &result.state.crud_metadata);
+      VisibleRetiredTemporaryTableMetadata(context, result.state.relation_metadata);
+  FilterVisibleRetiredTemporaryMetadata(context, &result.state.relation_metadata);
   result.state.row_versions.erase(
       std::remove_if(result.state.row_versions.begin(),
                      result.state.row_versions.end(),
@@ -8934,7 +8937,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     result.diagnostic = chain_status;
     return result;
   }
-  FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
+  FilterMgaTemporaryObjectsForSession(context, &result.state.relation_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   AddRelationLoadEvidence(&result, "full");
@@ -8965,24 +8968,24 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       return result;
     }
   }
-  const auto metadata = LoadMgaMetadata(&result.state.crud_metadata, context);
+  const auto metadata = LoadMgaMetadata(&result.state.relation_metadata, context);
   if (metadata.error) {
     result.diagnostic = metadata;
     return result;
   }
   const auto authority = OverlayMgaTransactionAuthority(
-      context, &result.state.crud_metadata, true);
+      context, &result.state.relation_metadata, true);
   if (authority.error) {
     result.diagnostic = authority;
     return result;
   }
   const auto retired_tables =
-      VisibleRetiredTemporaryTableMetadata(context, result.state.crud_metadata);
-  FilterVisibleRetiredTemporaryMetadata(context, &result.state.crud_metadata);
+      VisibleRetiredTemporaryTableMetadata(context, result.state.relation_metadata);
+  FilterVisibleRetiredTemporaryMetadata(context, &result.state.relation_metadata);
   std::set<std::string> table_scope;
   for (const auto& table_uuid : table_uuids) {
     const auto scoped =
-        InsertTargetRelationScope(context, result.state.crud_metadata, table_uuid);
+        InsertTargetRelationScope(context, result.state.relation_metadata, table_uuid);
     table_scope.insert(scoped.begin(), scoped.end());
   }
   const auto savepoints = ParseSavepoints(context);
@@ -9108,7 +9111,7 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
       return result;
     }
   }
-  FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
+  FilterMgaTemporaryObjectsForSession(context, &result.state.relation_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   AddRelationLoadEvidence(&result, evidence_route);
@@ -9268,8 +9271,9 @@ CanUseMgaRelationIndexOnlyProofForInsertTarget(
   return result;
 }
 
-CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state) {
-  CrudState merged = state.crud_metadata;
+RelationReadSnapshot BuildCrudCompatibilityStateFromMga(
+    const MgaRelationStoreState& state) {
+  RelationReadSnapshot merged = state.relation_metadata;
   merged.row_versions = state.row_versions;
   merged.index_entries = state.index_entries;
   merged.max_sequence = state.max_row_event_sequence;
@@ -9277,8 +9281,9 @@ CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state)
   return merged;
 }
 
-CrudState BuildCrudCompatibilityStateFromMga(MgaRelationStoreState&& state) {
-  CrudState merged = std::move(state.crud_metadata);
+RelationReadSnapshot BuildCrudCompatibilityStateFromMga(
+    MgaRelationStoreState&& state) {
+  RelationReadSnapshot merged = std::move(state.relation_metadata);
   merged.row_versions = std::move(state.row_versions);
   merged.index_entries = std::move(state.index_entries);
   merged.max_sequence = state.max_row_event_sequence;
@@ -9756,7 +9761,7 @@ bool TableUuidSeen(const std::vector<std::string>& seen, const std::string& tabl
 }
 
 MgaRelationStatistics EstimateRelationStatisticsFromState(const EngineRequestContext& context,
-                                                          const CrudState& state,
+                                                          const RelationReadSnapshot& state,
                                                           const std::string& table_uuid,
                                                           bool include_indexes) {
   MgaRelationStatistics statistics;
@@ -9802,7 +9807,7 @@ MgaRelationStatisticsResult EstimateMgaRelationStatistics(const EngineRequestCon
     result.diagnostic = loaded.diagnostic;
     return result;
   }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   result.statistics = EstimateRelationStatisticsFromState(context, state, table_uuid, include_indexes);
   result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -9817,7 +9822,7 @@ MgaRelationStatisticsResult EstimateMgaCatalogStatistics(const EngineRequestCont
     result.diagnostic = loaded.diagnostic;
     return result;
   }
-  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   std::vector<std::string> table_uuids;
   for (const auto& table : state.tables) {
     if (table.table_uuid.empty() || TableUuidSeen(table_uuids, table.table_uuid)) { continue; }
@@ -9848,7 +9853,7 @@ struct VisibleSealedRelationDescriptorSelection {
 VisibleSealedRelationDescriptorSelection
 SelectVisibleSealedRelationDescriptorSnapshot(
     const EngineRequestContext& context,
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const CrudTableRecord& table) {
   VisibleSealedRelationDescriptorSelection result;
   const CrudSealedRelationDescriptorSnapshot* newest = nullptr;
@@ -9900,7 +9905,7 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
   const auto state = LoadMgaRelationStoreState(context);
   if (!state.ok) return state.diagnostic;
   const auto sealed = SelectVisibleSealedRelationDescriptorSnapshot(
-      context, state.state.crud_metadata, table);
+      context, state.state.relation_metadata, table);
   if (sealed.conflict) {
     return MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor",
@@ -15284,7 +15289,7 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   }
   const auto current = LoadMgaRelationStoreState(context);
   if (!current.ok) return current.diagnostic;
-  const CrudState current_state = BuildCrudCompatibilityStateFromMga(
+  const RelationReadSnapshot current_state = BuildCrudCompatibilityStateFromMga(
       current.state);
   const auto current_owner = FindVisibleCrudTable(
       current_state, batch.owner_table_uuid, context.local_transaction_id);
@@ -15766,9 +15771,9 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     }
     const CrudTableRecord* exact = nullptr;
     std::uint64_t newest_visible_generation = 0;
-    for (const auto& table : current.state.crud_metadata.tables) {
+    for (const auto& table : current.state.relation_metadata.tables) {
       if (table.table_uuid != requested.object_uuid ||
-          !CrudCreatorVisible(current.state.crud_metadata,
+          !CrudCreatorVisible(current.state.relation_metadata,
                               table.creator_tx,
                               table.event_sequence,
                               context.local_transaction_id)) {
@@ -16000,9 +16005,9 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
     if (updated == updated_by_object.end()) {
       const CrudTableRecord* exact = nullptr;
       std::uint64_t newest_visible_generation = 0;
-      for (const auto& table : current.state.crud_metadata.tables) {
+      for (const auto& table : current.state.relation_metadata.tables) {
         if (table.table_uuid != requested.object_uuid ||
-            !CrudCreatorVisible(current.state.crud_metadata,
+            !CrudCreatorVisible(current.state.relation_metadata,
                                 table.creator_tx,
                                 table.event_sequence,
                                 context.local_transaction_id)) {
@@ -16269,9 +16274,9 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     if (updated == updated_by_object.end()) {
       const CrudTableRecord* exact = nullptr;
       std::uint64_t newest_visible_generation = 0;
-      for (const auto& table : current.state.crud_metadata.tables) {
+      for (const auto& table : current.state.relation_metadata.tables) {
         if (table.table_uuid != requested.object_uuid ||
-            !CrudCreatorVisible(current.state.crud_metadata,
+            !CrudCreatorVisible(current.state.relation_metadata,
                                 table.creator_tx,
                                 table.event_sequence,
                                 context.local_transaction_id)) {
@@ -16652,7 +16657,7 @@ EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
 }
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& context,
-                                                const CrudState& state,
+                                                const RelationReadSnapshot& state,
                                                 const std::string& table_uuid,
                                                 const std::string& row_uuid,
                                                 const std::string& version_uuid,
@@ -16664,7 +16669,7 @@ EngineApiDiagnostic AppendMgaIndexEntriesForRow(const EngineRequestContext& cont
 }
 
 EngineApiDiagnostic AppendMgaIndexEntriesForRows(const EngineRequestContext& context,
-                                                 const CrudState& state,
+                                                 const RelationReadSnapshot& state,
                                                  const std::string& table_uuid,
                                                  const std::vector<MgaIndexEntryRowInput>& rows) {
   if (rows.empty()) {
@@ -16916,7 +16921,7 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
                      result.throttle_or_refusal_reason);
     return result;
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
   const auto selected = FindVisibleCrudIndexByUuid(
       state,
       request.table_uuid,
@@ -17234,7 +17239,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
                   "mga.secondary_index_delta_recovery.state_load_refused",
                   loaded_state.diagnostic.detail);
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
   const auto selected = FindVisibleCrudIndexByUuid(
       state,
       request.table_uuid,
@@ -17502,7 +17507,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
                   "mga.secondary_index_garbage_cleanup.state_load_refused",
                   loaded_state.diagnostic.detail);
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded_state.state);
   const auto selected = FindVisibleCrudIndexByUuid(
       state,
       request.table_uuid,
@@ -17677,7 +17682,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
 }
 
 MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
-    const CrudState& state,
+    const RelationReadSnapshot& state,
     const std::string& table_uuid,
     const EnginePredicateEnvelope& predicate,
     const EngineRequestContext& context,
@@ -18171,7 +18176,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
   load_context.local_transaction_id = local_transaction_id;
   auto loaded = LoadMgaRelationStoreState(load_context);
   if (!loaded.ok) { return loaded.diagnostic; }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto visible_reclaims = LoadVisibleMgaLargeValueReclaims(context);
   if (visible_reclaims.diagnostic.error) { return visible_reclaims.diagnostic; }
   std::set<std::string> already_reclaimed_overflow_uuids =
@@ -23698,7 +23703,7 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
     result.diagnostic = loaded.diagnostic;
     return result;
   }
-  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindVisibleCrudTable(
       state,
       table_uuid,
