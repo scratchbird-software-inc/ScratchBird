@@ -21,6 +21,8 @@
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
+#include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
@@ -2362,6 +2364,125 @@ EmbeddedEngineClient::CoordinateDdlCreateSchema(
     AddDiagnostic(
         &result.messages, "MGA.AUTHORITY_MISMATCH",
         "embedded CREATE SCHEMA descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDdlCreateProcedure(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlCreateProcedureBindRequestV2 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CREATE PROCEDURE request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateDdlCreateProcedureRequest),
+      session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCoordinateDdlCreateProcedureRequestV1;
+  frame.payload = canonical_request;
+  const auto operation =
+      scratchbird::server::HandleCoordinateDdlCreateProcedure(
+          &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlCreateProcedureDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDdlCreateProcedureResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDdlCreateProcedureResultV1 ||
+      !ddl::DecodeSblrDdlCreateProcedureDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      !std::equal(request.receipt.begin(), request.receipt.end(),
+                  descriptor.body.begin()) ||
+      descriptor.availability == 0) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CREATE PROCEDURE descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateProcedureInvoke(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace procedure = scratchbird::engine::sblr;
+  procedure::SblrProcedureInvokeBindRequestV2 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !procedure::DecodeSblrProcedureInvokeBindRequestV2(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded PROCEDURE INVOKE request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateProcedureInvokeRequest),
+      session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCoordinateProcedureInvokeRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateProcedureInvoke(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  procedure::SblrProcedureInvokeDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateProcedureInvokeResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateProcedureInvokeResultV1 ||
+      !procedure::DecodeSblrProcedureInvokeDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.availability == 0) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded PROCEDURE INVOKE descriptor is not exactly correlated",
         detail);
     return result;
   }

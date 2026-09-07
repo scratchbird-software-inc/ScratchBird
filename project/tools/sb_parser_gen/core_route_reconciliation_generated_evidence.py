@@ -27,7 +27,7 @@ import re
 _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-01F52A6E564D": "project/tests/sbsql_parser_worker/sbsql_sbsfc_073_archive_replication_conformance.cpp",
     "SBSQL-02482A768886": "project/tests/sbsql_parser_worker/sbsql_sbsfc_075_catalog_descriptor_mutation_conformance.cpp",
-    "SBSQL-13F5A8364A50": "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp",
+    "SBSQL-13F5A8364A50": "project/tests/sbsql_parser_worker/sbsql_procedure_lifecycle_full_route_gate.py",
     "SBSQL-1A0000000001": "project/tests/sbsql_parser_worker/sbsql_missing_functionality_migration_management_conformance.cpp",
     "SBSQL-1A0000000002": "project/tests/sbsql_parser_worker/sbsql_missing_functionality_migration_management_conformance.cpp",
     "SBSQL-1A0000000003": "project/tests/sbsql_parser_worker/sbsql_missing_functionality_migration_management_conformance.cpp",
@@ -40,6 +40,7 @@ _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-4A5F97F6CC4E": "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp",
     "SBSQL-4FAA221A7195": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
     "SBSQL-5127560F8031": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
+    "SBSQL-5AFD1BFCCEC8": "project/tests/sbsql_parser_worker/sbsql_procedure_lifecycle_full_route_gate.py",
     "SBSQL-AA3896D3895F": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
     "SBSQL-57D59EB5A619": "project/tests/sbsql_parser_worker/sbsql_sbsfc_073_archive_replication_conformance.cpp",
     "SBSQL-58224DEE5BCA": "project/tests/sbsql_parser_worker/sbsql_alter_rename_exact_route_conformance.cpp",
@@ -56,6 +57,8 @@ _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-D13498FA0EF4": "project/tests/sbsql_parser_worker/sbsql_sbsfc_075_catalog_descriptor_mutation_conformance.cpp",
     "SBSQL-E64AF6FD5CD3": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
     "SBSQL-F15CCA3D7F79": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
+    "SBSQL-F3006C91D952": "project/tests/sbsql_parser_worker/sbsql_procedure_lifecycle_full_route_gate.py",
+    "SBSQL-FAC34DDEAC9D": "project/tests/sbsql_parser_worker/sbsql_procedure_lifecycle_full_route_gate.py",
     "SBSQL-F86AC3DCC60A": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
 }
 
@@ -200,7 +203,11 @@ def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
         row = command_rows.get(surface_id)
         if row is None:
             raise ValueError(f"reviewed Core command row missing: {surface_id}")
-        if row.get("root_route_kind") not in {"sblr_opcode", "procedural_ir_node"}:
+        if row.get("root_route_kind") not in {
+            "sblr_opcode",
+            "procedural_ir_node",
+            "sblr_procedural_node",
+        }:
             raise ValueError(f"reviewed Core command route kind drift: {surface_id}")
         _validate_source(
             repo_root,

@@ -27,9 +27,9 @@ Generated public per-element contract snapshot.
 
 | Field | Value |
 | --- | --- |
-| Backlog closure status | exact_refusal_passed |
-| Release final status | exact_refusal_passed |
-| Release claim | public_exact_refusal_implemented |
+| Backlog closure status | e2e_passed |
+| Release final status | e2e_passed |
+| Release claim | public_sbsql_e2e_implemented |
 | Release status | row_evidence_complete |
 | Remaining risk | none |
 

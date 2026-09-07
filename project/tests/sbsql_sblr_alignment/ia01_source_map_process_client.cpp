@@ -21,6 +21,8 @@
 #include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
+#include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
@@ -28,6 +30,8 @@
 #include "ast/ast.hpp"
 #include "cst/cst.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
+#include "engine/internal_api/sblr_ddl_create_procedure_coordinator.hpp"
+#include "engine/internal_api/sblr_procedure_invoke_coordinator.hpp"
 #include "wire/sbsql_test_wire.hpp"
 
 #include <algorithm>
@@ -1399,6 +1403,424 @@ END;)SBSQL";
     }
     return 0;
   }
+  if (operation == "ddl-create-procedure" ||
+      operation == "ddl-create-procedure-observe" ||
+      operation == "ddl-create-procedure-observe-absent" ||
+      operation == "ddl-create-procedure-rollback" ||
+      operation == "ddl-create-procedure-invalid" ||
+      operation == "procedure-invoke" ||
+      operation == "procedure-invoke-invalid") {
+    namespace sblr = scratchbird::engine::sblr;
+    namespace engine_api = scratchbird::engine::internal_api;
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+    const auto read_u32 = [](const std::uint8_t* bytes) {
+      std::uint32_t value = 0;
+      for (std::size_t index = 0; index < 4; ++index) {
+        value |= static_cast<std::uint32_t>(bytes[index]) << (8U * index);
+      }
+      return value;
+    };
+    const auto read_u64 = [](const std::uint8_t* bytes) {
+      std::uint64_t value = 0;
+      for (std::size_t index = 0; index < 8; ++index) {
+        value |= static_cast<std::uint64_t>(bytes[index]) << (8U * index);
+      }
+      return value;
+    };
+    const auto dump_failure = [&](std::string_view phase,
+                                  const auto& failed) {
+      std::cerr << (operation == "procedure-invoke" ||
+                            operation == "procedure-invoke-invalid"
+                        ? "CSC-TEST-002501 PROCEDURE_INVOKE "
+                        : "CSC-TEST-002633 DDL_CREATE_PROCEDURE ")
+                << phase << " accepted=" << failed.accepted
+                << " outcome_unknown=" << failed.outcome_unknown
+                << " operation=" << failed.server_operation_id << '\n';
+      for (const auto& diagnostic : failed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const char* create_artifact_path = std::getenv(
+        "SCRATCHBIRD_TEST_DDL_CREATE_PROCEDURE_RESULT_ARTIFACT");
+    const auto write_create_artifact = [&](const std::string& bytes) {
+      if (create_artifact_path == nullptr || *create_artifact_path == '\0' ||
+          bytes.empty()) {
+        return false;
+      }
+      std::ofstream out(create_artifact_path,
+                        std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      return out.good();
+    };
+    const auto read_create_artifact = [&]() {
+      std::vector<std::uint8_t> bytes;
+      if (create_artifact_path == nullptr || *create_artifact_path == '\0') {
+        return bytes;
+      }
+      std::ifstream in(create_artifact_path, std::ios::binary);
+      if (!in) return bytes;
+      in.seekg(0, std::ios::end);
+      const auto extent = in.tellg();
+      if (extent <= 0) return bytes;
+      bytes.resize(static_cast<std::size_t>(extent));
+      in.seekg(0, std::ios::beg);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+      if (!in) bytes.clear();
+      return bytes;
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+
+    const auto exact_pre_sblr_refusal = [&](const auto& refused,
+                                             std::string_view code,
+                                             std::string_view detail) {
+      if (refused.accepted || refused.outcome_unknown ||
+          !refused.sblr_payload.empty() ||
+          !refused.server_operation_id.empty() ||
+          !refused.server_result_payload.empty() ||
+          !refused.server_cursor_uuid.empty() || refused.server_row_count != 0 ||
+          refused.server_affected_rows != 0 ||
+          refused.server_affected_rows_present ||
+          refused.messages.diagnostics.size() != 1 ||
+          refused.messages.diagnostics.front().code != code) {
+        return false;
+      }
+      return std::ranges::any_of(
+          refused.messages.diagnostics.front().fields,
+          [&](const auto& field) {
+            return field.name == "detail" && field.value == detail;
+          });
+    };
+
+    if (operation == "ddl-create-procedure-invalid" ||
+        operation == "procedure-invoke-invalid") {
+      const bool invoke_invalid = operation == "procedure-invoke-invalid";
+      auto refused = session.RunPipeline(
+          invoke_invalid
+              ? "EXECUTE PROCEDURE app.alignment_null_procedure(1);"
+              : "CREATE PROCEDURE app.invalid_with_parameter(value BIGINT) "
+                "AS BEGIN NULL; END;",
+          true);
+      const bool exact_refusal = exact_pre_sblr_refusal(
+          refused, "SBLR.OPERAND.INVALID",
+          invoke_invalid ? "procedure_invoke_arguments_not_admitted"
+                         : "ddl_create_procedure_parameters_not_admitted");
+      const bool no_held_authority =
+          invoke_invalid ? !session.HasHeldProcedureInvokeForWire()
+                         : !session.HasHeldDdlCreateProcedureForWire();
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_refusal || !no_held_authority || !rolled_back.accepted ||
+          rolled_back.messages.has_errors()) {
+        dump_failure("pre_sblr_refusal_contract_failed", refused);
+        return 4;
+      }
+      if (invoke_invalid) {
+        std::cout << "CSC-TEST-005805 PROCEDURE_INVOKE "
+                     "malformed_refusal=SBLR.OPERAND.INVALID "
+                     "no_canonical_execution=true no_state_mutation=true\n";
+      } else {
+        std::cout << "CSC-TEST-005804 DDL_CREATE_PROCEDURE "
+                     "malformed_refusal=SBLR.OPERAND.INVALID "
+                     "no_canonical_execution=true no_catalog_mutation=true\n";
+      }
+      return 0;
+    }
+
+    if (operation == "ddl-create-procedure-observe" ||
+        operation == "ddl-create-procedure-observe-absent") {
+      const bool absent_case =
+          operation == "ddl-create-procedure-observe-absent";
+      const auto expected_bytes = absent_case
+                                      ? std::vector<std::uint8_t>{}
+                                      : read_create_artifact();
+      sblr::SblrDdlCreateProcedureResultV1 expected;
+      std::string detail;
+      auto observed = session.RunPipeline(
+          absent_case
+              ? "RESOLVE NAME app.alignment_rolled_back_procedure AS PROCEDURE;"
+              : "RESOLVE NAME app.alignment_null_procedure AS PROCEDURE;",
+          true);
+      sblr::SblrNameResolveResultV1 resolved;
+      const bool decoded_observer =
+          observed.accepted && !observed.outcome_unknown &&
+          !observed.messages.has_errors() &&
+          observed.server_operation_id == "engine.op.name_resolve" &&
+          sblr::DecodeSblrNameResolveResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  observed.server_result_payload.data()),
+              observed.server_result_payload.size(), &resolved, &detail) &&
+          resolved.object_class == 7 &&
+          nonzero(resolved.publication_evidence_uuid) &&
+          nonzero(resolved.resolution_material_sha256) &&
+          nonzero(resolved.executor_evidence_sha256);
+      const bool exact_observer =
+          decoded_observer &&
+          (absent_case
+               ? resolved.status == 2 && resolved.visibility == 2 &&
+                     !nonzero(resolved.resolved_object_uuid) &&
+                     !nonzero(resolved.resolved_namespace_uuid)
+               : !expected_bytes.empty() &&
+                     sblr::DecodeSblrDdlCreateProcedureResultV1(
+                         expected_bytes.data(), expected_bytes.size(),
+                         &expected, &detail) &&
+                     resolved.status == 1 && resolved.visibility == 1 &&
+                     std::equal(resolved.resolved_object_uuid.begin(),
+                                resolved.resolved_object_uuid.end(),
+                                expected.body.begin()) &&
+                     // Procedures created through the executable/name
+                     // lifecycle are resolved from the durable name registry.
+                     // Its descriptor fence is the exact catalog generation
+                     // published in PCRS; body offset 16 instead identifies the
+                     // executable-body generation revalidated by PIDO.
+                     resolved.object_descriptor_generation ==
+                         read_u64(expected.body.data() + 48) &&
+                     resolved.catalog_generation ==
+                         read_u64(expected.body.data() + 48) &&
+                     nonzero(resolved.resolved_namespace_uuid));
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_observer || !rolled_back.accepted ||
+          rolled_back.messages.has_errors()) {
+        dump_failure(detail.empty() ? "observer_contract_failed" : detail,
+                     observed);
+        return 4;
+      }
+      if (absent_case) {
+        std::cout << "CSC-TEST-005803 DDL_CREATE_PROCEDURE "
+                     "observer_absent=true independent_session=true\n";
+      } else {
+        std::cout << "CSC-TEST-005801 DDL_CREATE_PROCEDURE "
+                     "observer_visible=true independent_session=true "
+                     "exact_procedure_identity=true\n";
+      }
+      return 0;
+    }
+
+    if (operation == "ddl-create-procedure" ||
+        operation == "ddl-create-procedure-rollback") {
+      const bool rollback_case =
+          operation == "ddl-create-procedure-rollback";
+      const std::string_view kCreateProcedureSql =
+          rollback_case
+              ? "CREATE PROCEDURE app.alignment_rolled_back_procedure AS "
+                "BEGIN NULL; END;"
+              : "CREATE PROCEDURE app.alignment_null_procedure AS BEGIN "
+                "NULL; END;";
+      auto created = session.RunPipeline(kCreateProcedureSql, true);
+      const auto container = scratchbird::engine::DecodeSblrContainerBytes(
+          reinterpret_cast<const std::uint8_t*>(created.sblr_payload.data()),
+          created.sblr_payload.size());
+      const auto stream =
+          container.status == scratchbird::engine::SblrCodecStatus::ok
+              ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                    reinterpret_cast<const char*>(
+                        container.container.operation_payload.data()),
+                    container.container.operation_payload.size()))
+              : sblr::SblrOpcodeStreamResult{};
+      sblr::SblrDdlCreateProcedureDescriptorV1 descriptor;
+      engine_api::SblrDdlCreateProcedureAuthorityInputV1 authority;
+      sblr::SblrDdlCreateProcedureResultV1 terminal;
+      std::string detail;
+      const bool exact_stream =
+          stream.ok && stream.stream.operations.size() == 3 &&
+          stream.stream.operations[1].operation_id ==
+              "engine.op.ddl_create_procedure" &&
+          stream.stream.operations[1].opcode ==
+              "SBLR_DDL_CREATE_PROCEDURE" &&
+          stream.stream.operations[1].opcode_code == 1554 &&
+          stream.stream.operations[1].operands.size() == 1 &&
+          stream.stream.operations[1].operands[0].type ==
+              "create_procedure_descriptor" &&
+          stream.stream.operations[1].operands[0].name == "procedure" &&
+          stream.stream.operations[1].operands[0].value_kind ==
+              sblr::SblrValueKind::create_procedure_descriptor &&
+          sblr::DecodeSblrDdlCreateProcedureDescriptorV1(
+              stream.stream.operations[1].operands[0].value_body.data(),
+              stream.stream.operations[1].operands[0].value_body.size(),
+              &descriptor, &detail, true) &&
+          engine_api::DecodeSblrDdlCreateProcedureAuthorityInputV1(
+              descriptor, &authority, &detail) &&
+          scratchbird::engine::EncodeSblrContainer(container.container) ==
+              std::vector<std::uint8_t>(created.sblr_payload.begin(),
+                                        created.sblr_payload.end());
+      const auto exact_at = [&](std::size_t offset, const auto& expected) {
+        return offset <= terminal.body.size() &&
+               terminal.body.size() - offset >= expected.size() &&
+               std::equal(expected.begin(), expected.end(),
+                          terminal.body.begin() +
+                              static_cast<std::ptrdiff_t>(offset));
+      };
+      const bool exact_terminal =
+          exact_stream && created.accepted && !created.outcome_unknown &&
+          !created.messages.has_errors() &&
+          created.server_operation_id ==
+              "engine.op.ddl_create_procedure" &&
+          created.server_row_count == 0 &&
+          sblr::DecodeSblrDdlCreateProcedureResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  created.server_result_payload.data()),
+              created.server_result_payload.size(), &terminal, &detail) &&
+          sblr::EncodeSblrDdlCreateProcedureResultV1(terminal) ==
+              std::vector<std::uint8_t>(
+                  created.server_result_payload.begin(),
+                  created.server_result_payload.end()) &&
+          exact_at(0, authority.procedure_uuid) &&
+          read_u64(terminal.body.data() + 16) ==
+              authority.procedure_generation &&
+          terminal.body[24] == 1 && exact_at(32, authority.receipt) &&
+          read_u64(terminal.body.data() + 48) ==
+              authority.catalog_generation &&
+          read_u64(terminal.body.data() + 56) ==
+              authority.schema_generation &&
+          exact_at(64, authority.schema_uuid) &&
+          exact_at(80, authority.owning_transaction_uuid) &&
+          read_u64(terminal.body.data() + 96) ==
+              authority.owning_local_transaction_id &&
+          exact_at(104, authority.statement_snapshot_uuid) &&
+          exact_at(152, authority.body_sblr_uuid) &&
+          read_u64(terminal.body.data() + 168) ==
+              authority.body_sblr_generation &&
+          exact_at(176, authority.body_sblr_sha256) &&
+          exact_at(208, descriptor.evidence) &&
+          terminal.availability ==
+              authority.executor_availability_generation &&
+          nonzero(terminal.evidence) &&
+          nonzero(terminal.publication_barrier) &&
+          (rollback_case ||
+           write_create_artifact(created.server_result_payload));
+      if (!exact_terminal) {
+        dump_failure(detail.empty() ? "terminal_contract_failed" : detail,
+                     created);
+        return 4;
+      }
+      auto finalized = session.RunPipeline(
+          rollback_case ? "ROLLBACK TRANSACTION" : "COMMIT TRANSACTION",
+          true);
+      if (!finalized.accepted || finalized.messages.has_errors()) {
+        dump_failure(rollback_case ? "rollback_failed" : "commit_failed",
+                     finalized);
+        return 4;
+      }
+      session.AcknowledgeDdlCreateProcedureCompletionForWire();
+      if (session.HasHeldDdlCreateProcedureForWire()) {
+        std::cerr << "ddl_create_procedure_terminal_holder_not_released\n";
+        return 4;
+      }
+      if (rollback_case) {
+        std::cout << "CSC-TEST-005803 DDL_CREATE_PROCEDURE "
+                     "rollback=true no_visible_catalog_effect=true\n";
+      } else {
+        std::cout << "CSC-TEST-002633 CSC-TEST-005800 "
+                     "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
+                     "typed_null_body=true catalog_mutation=true commit=true "
+                     "publication_barrier=passed\n";
+      }
+      return 0;
+    }
+
+    constexpr std::string_view kInvokeProcedureSql =
+        "EXECUTE PROCEDURE app.alignment_null_procedure;";
+    auto invoked = session.RunPipeline(kInvokeProcedureSql, true);
+    const auto container = scratchbird::engine::DecodeSblrContainerBytes(
+        reinterpret_cast<const std::uint8_t*>(invoked.sblr_payload.data()),
+        invoked.sblr_payload.size());
+    const auto stream =
+        container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(
+                      container.container.operation_payload.data()),
+                  container.container.operation_payload.size()))
+            : sblr::SblrOpcodeStreamResult{};
+    sblr::SblrProcedureInvokeDescriptorV1 descriptor;
+    engine_api::SblrProcedureInvokeAuthorityInputV1 authority;
+    sblr::SblrProcedureInvokeResultV1 terminal;
+    std::string detail;
+    const bool exact_stream =
+        stream.ok && stream.stream.operations.size() == 3 &&
+        stream.stream.operations[1].operation_id ==
+            "engine.op.procedure_invoke" &&
+        stream.stream.operations[1].opcode == "SBLR_PROCEDURE_INVOKE" &&
+        stream.stream.operations[1].opcode_code == 1030 &&
+        stream.stream.operations[1].operands.size() == 1 &&
+        stream.stream.operations[1].operands[0].type ==
+            "procedure_invoke_descriptor" &&
+        stream.stream.operations[1].operands[0].name == "procedure" &&
+        stream.stream.operations[1].operands[0].value_kind ==
+            sblr::SblrValueKind::procedure_invoke_descriptor &&
+        sblr::DecodeSblrProcedureInvokeDescriptorV1(
+            stream.stream.operations[1].operands[0].value_body.data(),
+            stream.stream.operations[1].operands[0].value_body.size(),
+            &descriptor, &detail, true) &&
+        engine_api::DecodeSblrProcedureInvokeAuthorityInputV1(
+            descriptor, &authority, &detail) &&
+        scratchbird::engine::EncodeSblrContainer(container.container) ==
+            std::vector<std::uint8_t>(invoked.sblr_payload.begin(),
+                                      invoked.sblr_payload.end());
+    const auto exact_at = [&](std::size_t offset, const auto& expected) {
+      return offset <= terminal.body.size() &&
+             terminal.body.size() - offset >= expected.size() &&
+             std::equal(expected.begin(), expected.end(),
+                        terminal.body.begin() +
+                            static_cast<std::ptrdiff_t>(offset));
+    };
+    const bool exact_terminal =
+        exact_stream && invoked.accepted && !invoked.outcome_unknown &&
+        !invoked.messages.has_errors() &&
+        invoked.server_operation_id == "engine.op.procedure_invoke" &&
+        invoked.server_row_count == 0 &&
+        sblr::DecodeSblrProcedureInvokeResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                invoked.server_result_payload.data()),
+            invoked.server_result_payload.size(), &terminal, &detail) &&
+        sblr::EncodeSblrProcedureInvokeResultV1(terminal) ==
+            std::vector<std::uint8_t>(invoked.server_result_payload.begin(),
+                                      invoked.server_result_payload.end()) &&
+        exact_at(0, authority.invocation_uuid) &&
+        read_u64(terminal.body.data() + 16) ==
+            authority.invocation_generation &&
+        terminal.body[24] == 1 && terminal.body[25] == 0 &&
+        exact_at(32, authority.output_descriptor_vector_uuid) &&
+        read_u64(terminal.body.data() + 48) ==
+            authority.output_descriptor_vector_generation &&
+        read_u32(terminal.body.data() + 56) == 0 &&
+        read_u32(terminal.body.data() + 60) == 0 &&
+        exact_at(208, authority.effect_set_sha256) &&
+        terminal.availability ==
+            authority.executor_availability_generation &&
+        nonzero(terminal.evidence) && nonzero(terminal.barrier) &&
+        terminal.barrier != authority.invocation_uuid &&
+        terminal.barrier != authority.recovery_uuid;
+    if (!exact_terminal) {
+      dump_failure(detail.empty() ? "terminal_contract_failed" : detail,
+                   invoked);
+      return 4;
+    }
+    auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
+    if (!committed.accepted || committed.messages.has_errors()) {
+      dump_failure("commit_failed", committed);
+      return 4;
+    }
+    session.AcknowledgeProcedureInvokeCompletionForWire();
+    if (session.HasHeldProcedureInvokeForWire()) {
+      std::cerr << "procedure_invoke_terminal_holder_not_released\n";
+      return 4;
+    }
+    std::cout << "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
+                 "accepted canonical_sblr=true typed_null_body=true "
+                 "output_count=0 commit=true publication_barrier=passed\n";
+    return 0;
+  }
   if (operation == "ddl-create-schema" ||
       operation == "ddl-create-schema-recover" ||
       operation == "ddl-create-schema-observe" ||
@@ -1856,7 +2278,7 @@ END;)SBSQL";
                     : operation == "udr-invoke"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunUdrInvokeForWire():begun; }()
                     : operation == "procedure-invoke"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunProcedureInvokeForWire():begun; }()
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunProcedureInvokeForWire("EXECUTE PROCEDURE app.alignment_null_procedure;", false):begun; }()
                     : operation == "function-invoke"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunFunctionInvokeForWire():begun; }()
                     : operation == "aggregate-invoke"
@@ -2223,7 +2645,7 @@ END;)SBSQL";
                                 "DROP TRIGGER app.trig_items_ai RESTRICT;",
                                 true)
                     : operation == "ddl-create-procedure"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateProcedureForWire():begun; }()
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateProcedureForWire("CREATE PROCEDURE app.alignment_null_procedure AS BEGIN NULL; END;", false):begun; }()
                     : operation == "ddl-alter-procedure"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterProcedureForWire():begun; }()
                     : operation == "ddl-drop-procedure"

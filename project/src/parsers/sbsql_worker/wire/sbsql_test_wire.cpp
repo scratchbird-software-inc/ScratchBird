@@ -186,6 +186,7 @@
 #include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
+#include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_procedure_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_procedure_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_function_runtime.hpp"
@@ -13363,6 +13364,7 @@ thread_local const std::vector<std::uint8_t>* g_ddl_create_trigger_operand = nul
 thread_local const std::vector<std::uint8_t>* g_ddl_alter_trigger_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_trigger_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_create_procedure_operand = nullptr;
+thread_local const std::vector<std::uint8_t>* g_procedure_invoke_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_alter_procedure_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_drop_procedure_operand = nullptr;
 thread_local const std::vector<std::uint8_t>* g_ddl_create_function_operand = nullptr;
@@ -13661,6 +13663,10 @@ std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
   if (lowered.operation_id == "engine.op.ddl_alter_trigger" && g_ddl_alter_trigger_operand != nullptr) admitted_ddl_alter_trigger_operand = g_ddl_alter_trigger_operand;
   if (lowered.operation_id == "engine.op.ddl_drop_trigger" && g_ddl_drop_trigger_operand != nullptr) admitted_ddl_drop_trigger_operand = g_ddl_drop_trigger_operand;
   if (lowered.operation_id == "engine.op.ddl_create_procedure" && g_ddl_create_procedure_operand != nullptr) admitted_ddl_create_procedure_operand = g_ddl_create_procedure_operand;
+  if (lowered.operation_id == "engine.op.procedure_invoke" &&
+      g_procedure_invoke_operand != nullptr) {
+    admitted_procedure_operand = g_procedure_invoke_operand;
+  }
   if (lowered.operation_id == "engine.op.ddl_alter_procedure" && g_ddl_alter_procedure_operand != nullptr) admitted_ddl_alter_procedure_operand = g_ddl_alter_procedure_operand;
   if (lowered.operation_id == "engine.op.ddl_drop_procedure" && g_ddl_drop_procedure_operand != nullptr) admitted_ddl_drop_procedure_operand = g_ddl_drop_procedure_operand;
   if (lowered.operation_id == "engine.op.ddl_create_function" && g_ddl_create_function_operand != nullptr) admitted_ddl_create_function_operand = g_ddl_create_function_operand;
@@ -17813,6 +17819,154 @@ DdlCreateSchemaWireCommand ParseDdlCreateSchemaWireCommand(
   }
   if (result.name_atoms.empty()) {
     return invalid("ddl_create_schema_name_missing");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct DdlCreateProcedureWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::vector<
+      scratchbird::engine::sblr::SblrDdlCreateProcedureNameAtomV2>
+      name_atoms;
+  std::string invalid_reason;
+};
+
+DdlCreateProcedureWireCommand ParseDdlCreateProcedureWireCommand(
+    const CstDocument& cst) {
+  DdlCreateProcedureWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 7 || ToUpperAscii(tokens[0]->text) != "CREATE" ||
+      ToUpperAscii(tokens[1]->text) != "PROCEDURE") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto is_word = [&](std::size_t index, std::string_view word) {
+    return index < tokens.size() && !tokens[index]->quoted &&
+           ToUpperAscii(tokens[index]->text) == word;
+  };
+  const auto is_terminator = [&](std::size_t index) {
+    return index < tokens.size() &&
+           tokens[index]->kind == TokenKind::kStatementTerminator;
+  };
+  std::size_t index = 2;
+  while (index < tokens.size()) {
+    const auto* atom = tokens[index];
+    if (!IsIdentifierLikeForRouteExecution(*atom) || atom->text.empty() ||
+        atom->text.size() > 256 || atom->text.find('.') != std::string::npos ||
+        result.name_atoms.size() == 3) {
+      return invalid("ddl_create_procedure_name_invalid");
+    }
+    result.name_atoms.push_back({atom->text, atom->quoted});
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text != ".") break;
+    ++index;
+    if (index >= tokens.size()) {
+      return invalid("ddl_create_procedure_name_invalid");
+    }
+  }
+  if (result.name_atoms.empty()) {
+    return invalid("ddl_create_procedure_name_missing");
+  }
+  if (index < tokens.size() && tokens[index]->text == "(") {
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text != ")") {
+      return invalid("ddl_create_procedure_parameters_not_admitted");
+    }
+    ++index;
+  }
+  if (!is_word(index, "AS") || !is_word(index + 1, "BEGIN") ||
+      !is_word(index + 2, "NULL")) {
+    return invalid("ddl_create_procedure_null_body_required");
+  }
+  index += 3;
+  if (is_terminator(index)) ++index;
+  if (!is_word(index, "END")) {
+    return invalid("ddl_create_procedure_null_body_required");
+  }
+  ++index;
+  if (is_terminator(index)) ++index;
+  if (index != tokens.size()) {
+    return invalid("ddl_create_procedure_options_not_admitted");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct ProcedureInvokeWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::vector<scratchbird::engine::sblr::SblrProcedureInvokeNameAtomV2>
+      name_atoms;
+  std::string invalid_reason;
+};
+
+ProcedureInvokeWireCommand ParseProcedureInvokeWireCommand(
+    const CstDocument& cst) {
+  ProcedureInvokeWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  const bool execute_procedure =
+      tokens.size() >= 3 && ToUpperAscii(tokens[0]->text) == "EXECUTE" &&
+      ToUpperAscii(tokens[1]->text) == "PROCEDURE";
+  const bool call = tokens.size() >= 2 &&
+                    ToUpperAscii(tokens[0]->text) == "CALL";
+  if (!execute_procedure && !call) {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  std::size_t index = execute_procedure ? 2 : 1;
+  while (index < tokens.size()) {
+    const auto* atom = tokens[index];
+    if (!IsIdentifierLikeForRouteExecution(*atom) || atom->text.empty() ||
+        atom->text.size() > 256 || atom->text.find('.') != std::string::npos ||
+        result.name_atoms.size() == 3) {
+      return invalid("procedure_invoke_name_invalid");
+    }
+    result.name_atoms.push_back({atom->text, atom->quoted});
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text != ".") break;
+    ++index;
+    if (index >= tokens.size()) {
+      return invalid("procedure_invoke_name_invalid");
+    }
+  }
+  if (result.name_atoms.empty()) {
+    return invalid("procedure_invoke_name_missing");
+  }
+  if (index < tokens.size() && tokens[index]->text == "(") {
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text != ")") {
+      return invalid("procedure_invoke_arguments_not_admitted");
+    }
+    ++index;
+  }
+  if (index < tokens.size() &&
+      tokens[index]->kind == TokenKind::kStatementTerminator) {
+    ++index;
+  }
+  if (index != tokens.size()) {
+    return invalid("procedure_invoke_arguments_not_admitted");
   }
   result.valid = true;
   return result;
@@ -25127,6 +25281,55 @@ struct SbsqlTestWireSession::HeldDdlDropTrigger {
   bool autocommit_complete{false};
 };
 
+struct SbsqlTestWireSession::HeldDdlCreateProcedure {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2
+      bind_request;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 descriptor;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureAuthorityV1
+      descriptor_authority;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
+struct SbsqlTestWireSession::HeldProcedureInvoke {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 bind_request;
+  scratchbird::engine::sblr::SblrProcedureInvokeDescriptorV1 descriptor;
+  scratchbird::engine::sblr::SblrProcedureInvokeAuthorityV1
+      descriptor_authority;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
 namespace {
 
 bool ExactDdlCreateSchemaTerminal(
@@ -25325,6 +25528,130 @@ bool ExactDdlDropTriggerTerminal(
          terminal->mutation_uuid != terminal->publication_barrier;
 }
 
+bool ExactDdlCreateProcedureTerminal(
+    const scratchbird::engine::sblr::SblrDdlCreateProcedureAuthorityV1&
+        descriptor,
+    const scratchbird::engine::sblr::DdlCreateProcedureSha&
+        descriptor_evidence,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrDdlCreateProcedureResultV1* terminal,
+    std::string* detail) {
+  namespace ddl = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      !ddl::DecodeSblrDdlCreateProcedureResultV1(bytes, size, terminal,
+                                                 detail) ||
+      ddl::EncodeSblrDdlCreateProcedureResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const auto exact_at = [&](std::size_t offset, const auto& expected) {
+    return offset <= terminal->body.size() &&
+           terminal->body.size() - offset >= expected.size() &&
+           std::equal(expected.begin(), expected.end(),
+                      terminal->body.begin() +
+                          static_cast<std::ptrdiff_t>(offset));
+  };
+  std::array<std::uint8_t, 16> catalog_row{};
+  std::array<std::uint8_t, 16> mutation{};
+  std::copy_n(terminal->body.begin() + 120, catalog_row.size(),
+              catalog_row.begin());
+  std::copy_n(terminal->body.begin() + 136, mutation.size(),
+              mutation.begin());
+  return exact_at(0, descriptor.procedure_uuid) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 16) ==
+             descriptor.procedure_generation &&
+         terminal->body[24] == 1 &&
+         std::all_of(terminal->body.begin() + 25,
+                     terminal->body.begin() + 32,
+                     [](auto byte) { return byte == 0; }) &&
+         exact_at(32, descriptor.receipt) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 48) ==
+             descriptor.catalog_generation &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 56) ==
+             descriptor.schema_generation &&
+         exact_at(64, descriptor.schema_uuid) &&
+         exact_at(80, descriptor.owning_transaction_uuid) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 96) ==
+             descriptor.owning_local_transaction_id &&
+         exact_at(104, descriptor.statement_snapshot_uuid) &&
+         exact_at(152, descriptor.body_sblr_uuid) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 168) ==
+             descriptor.body_sblr_generation &&
+         exact_at(176, descriptor.body_sblr_sha256) &&
+         exact_at(208, descriptor_evidence) &&
+         terminal->availability ==
+             descriptor.executor_availability_generation &&
+         nonzero(catalog_row) && nonzero(mutation) &&
+         nonzero(terminal->evidence) &&
+         nonzero(terminal->publication_barrier) &&
+         catalog_row != descriptor.procedure_uuid &&
+         mutation != descriptor.procedure_uuid &&
+         terminal->publication_barrier != descriptor.procedure_uuid &&
+         catalog_row != mutation &&
+         catalog_row != terminal->publication_barrier &&
+         mutation != terminal->publication_barrier;
+}
+
+bool ExactProcedureInvokeTerminal(
+    const scratchbird::engine::sblr::SblrProcedureInvokeAuthorityV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrProcedureInvokeResultV1* terminal,
+    std::string* detail) {
+  namespace invoke = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      !invoke::DecodeSblrProcedureInvokeResultV1(bytes, size, terminal,
+                                                detail) ||
+      invoke::EncodeSblrProcedureInvokeResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const auto exact_at = [&](std::size_t offset, const auto& expected) {
+    return offset <= terminal->body.size() &&
+           terminal->body.size() - offset >= expected.size() &&
+           std::equal(expected.begin(), expected.end(),
+                      terminal->body.begin() +
+                          static_cast<std::ptrdiff_t>(offset));
+  };
+  static constexpr char kEmptyOutputDomain[] =
+      "ScratchBird.ProcedureInvokeOutput.Empty.V1";
+  const std::vector<std::uint8_t> empty_output_material(
+      kEmptyOutputDomain, kEmptyOutputDomain + sizeof(kEmptyOutputDomain) - 1);
+  const auto empty_output =
+      scratchbird::core::hash::ComputeSha256Digest(empty_output_material);
+  return empty_output.ok() && exact_at(0, descriptor.invocation_uuid) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 16) ==
+             descriptor.invocation_generation &&
+         terminal->body[24] == 1 && terminal->body[25] == 0 &&
+         std::all_of(terminal->body.begin() + 26,
+                     terminal->body.begin() + 32,
+                     [](auto byte) { return byte == 0; }) &&
+         exact_at(32, descriptor.output_descriptor_vector_uuid) &&
+         scratchbird::engine::SblrReadU64(terminal->body.data() + 48) ==
+             descriptor.output_descriptor_vector_generation &&
+         scratchbird::engine::SblrReadU32(terminal->body.data() + 56) == 0 &&
+         scratchbird::engine::SblrReadU32(terminal->body.data() + 60) == 0 &&
+         std::all_of(terminal->body.begin() + 64,
+                     terminal->body.begin() + 176,
+                     [](auto byte) { return byte == 0; }) &&
+         exact_at(176, empty_output.digest) &&
+         exact_at(208, descriptor.effect_set_sha256) &&
+         terminal->availability ==
+             descriptor.executor_availability_generation &&
+         nonzero(terminal->evidence) && nonzero(terminal->barrier) &&
+         terminal->barrier != descriptor.invocation_uuid &&
+         terminal->barrier != descriptor.output_descriptor_vector_uuid &&
+         terminal->barrier != descriptor.recovery_uuid;
+}
+
 template <std::size_t N>
 std::uint64_t BulkImportReadU64(const std::array<std::uint8_t, N>& body,
                                 std::size_t offset) {
@@ -25515,6 +25842,32 @@ void SbsqlTestWireSession::AcknowledgeDdlDropTriggerCompletionForWire() {
   if (held.phase == HeldDdlDropTrigger::Phase::result_recorded &&
       held.terminal_result.has_value() && held.autocommit_complete) {
     held_ddl_drop_trigger_.reset();
+  }
+}
+
+bool SbsqlTestWireSession::HasHeldDdlCreateProcedureForWire() const {
+  return held_ddl_create_procedure_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeDdlCreateProcedureCompletionForWire() {
+  if (held_ddl_create_procedure_ == nullptr) return;
+  const auto& held = *held_ddl_create_procedure_;
+  if (held.phase == HeldDdlCreateProcedure::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_ddl_create_procedure_.reset();
+  }
+}
+
+bool SbsqlTestWireSession::HasHeldProcedureInvokeForWire() const {
+  return held_procedure_invoke_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeProcedureInvokeCompletionForWire() {
+  if (held_procedure_invoke_ == nullptr) return;
+  const auto& held = *held_procedure_invoke_;
+  if (held.phase == HeldProcedureInvoke::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_procedure_invoke_.reset();
   }
 }
 
@@ -26808,6 +27161,44 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
+  if (held_ddl_create_procedure_ != nullptr &&
+      held_ddl_create_procedure_->phase !=
+          HeldDdlCreateProcedure::Phase::result_recorded &&
+      held_ddl_create_procedure_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "ddl_catalog";
+    result.operation_family = "sblr.catalog.mutation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "A CREATE PROCEDURE operation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.ddl_create_procedure_recovery",
+        {{"detail", "exact_held_create_procedure_replay_required"}}));
+    mark_phase("ddl_create_procedure_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+  if (held_procedure_invoke_ != nullptr &&
+      held_procedure_invoke_->phase !=
+          HeldProcedureInvoke::Phase::result_recorded &&
+      held_procedure_invoke_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "general";
+    result.operation_family = "sblr.procedural.invocation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "A PROCEDURE invocation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.procedure_invoke_recovery",
+        {{"detail", "exact_held_procedure_invoke_replay_required"}}));
+    mark_phase("procedure_invoke_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
 
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
@@ -26882,6 +27273,15 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       return RunDdlCreateSchemaForWire(
           sql, autocommit_emulation, canonical_execution_observation,
           external_source_artifact);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("CREATE PROCEDURE")) {
+      return RunDdlCreateProcedureForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        (starts_with_command("CALL") ||
+         starts_with_command("EXECUTE PROCEDURE"))) {
+      return RunProcedureInvokeForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CREATE TRIGGER")) {
@@ -30857,7 +31257,344 @@ PipelineResult SbsqlTestWireSession::RunUdrInvokeForWire() {
   return result;
 }
 
-PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace p=scratchbird::engine::sblr;p::SblrProcedureInvokeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_procedure_invoke_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.invocation_occurrence=1;auto coordinated=server_client_->CoordinateProcedureInvoke(session_,p::EncodeSblrProcedureInvokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;p::SblrProcedureInvokeDescriptorV1 d;std::string detail;if(!p::DecodeSblrProcedureInvokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=p::EncodeSblrProcedureInvokeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.procedure_invoke";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){p::SblrProcedureInvokeResultV1 rr;if(!p::DecodeSblrProcedureInvokeResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace invoke = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "general";
+  result.operation_family = "sblr.procedural.invocation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          std::move(code), "ERROR",
+          "The canonical PROCEDURE invocation was refused.",
+          "sbp_sbsql.wire.procedure_invoke",
+          {{"detail", std::move(detail)}}));
+    }
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_procedure_invoke_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseProcedureInvokeWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "procedure_invoke_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_procedure_invoke_ == nullptr ||
+        held_procedure_invoke_->phase !=
+            HeldProcedureInvoke::Phase::execution_pending ||
+        !held_procedure_invoke_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "procedure_invoke_held_execution_invalid");
+    }
+    auto& held = *held_procedure_invoke_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_procedure_invoke_.reset();
+      return result;
+    }
+    invoke::SblrProcedureInvokeResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.procedure_invoke" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactProcedureInvokeTerminal(
+            held.descriptor_authority,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "procedure_invoke_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes = held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldProcedureInvoke::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_procedure_invoke_ != nullptr) {
+    auto& held = *held_procedure_invoke_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held PROCEDURE invocation may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldProcedureInvoke::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldProcedureInvoke::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "procedure_invoke_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "procedure_invoke_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    if (!receipt ||
+        acquired.context
+                .preliminary_procedure_invoke_executor_availability_generation ==
+            0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "procedure_invoke_statement_receipt_incomplete");
+    }
+    invoke::SblrProcedureInvokeBindRequestV2 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.invocation_occurrence = 1;
+    request.command_identity = 1;
+    request.name_atoms = command.name_atoms;
+    const auto request_bytes =
+        invoke::EncodeSblrProcedureInvokeBindRequestV2(request);
+    invoke::SblrProcedureInvokeBindRequestV2 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !invoke::DecodeSblrProcedureInvokeBindRequestV2(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty() ? "procedure_invoke_bind_request_invalid"
+                                   : detail);
+    }
+    auto held = std::make_unique<HeldProcedureInvoke>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldProcedureInvoke::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_procedure_invoke_ = std::move(held);
+  }
+
+  auto& held = *held_procedure_invoke_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateProcedureInvoke(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateProcedureInvoke(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_procedure_invoke_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "procedure_invoke_coordinate_outcome_unknown"
+                        : "procedure_invoke_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  invoke::SblrProcedureInvokeDescriptorV1 descriptor;
+  invoke::SblrProcedureInvokeAuthorityV1 descriptor_authority;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto metadata_snapshot =
+      CanonicalUuidBytes(context.statement_metadata_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  const auto policy_snapshot = CanonicalUuidBytes(
+      context.preliminary_transaction_policy_snapshot_uuid);
+  if (!transaction_uuid || !statement_snapshot || !metadata_snapshot ||
+      !catalog_epoch || !security_context || !policy_snapshot ||
+      !invoke::DecodeSblrProcedureInvokeDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false) ||
+      !invoke::DecodeSblrProcedureInvokeAuthorityV1(
+          descriptor, &descriptor_authority, &detail) ||
+      descriptor_authority.owning_transaction_uuid != *transaction_uuid ||
+      descriptor_authority.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor_authority.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor_authority.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor_authority.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor_authority.security_context_uuid != *security_context ||
+      descriptor_authority.policy_snapshot_uuid != *policy_snapshot ||
+      descriptor_authority.policy_generation !=
+          context.preliminary_transaction_policy_generation ||
+      descriptor_authority.engine_snapshot_uuid != *metadata_snapshot ||
+      descriptor_authority.executor_availability_generation !=
+          context
+              .preliminary_procedure_invoke_executor_availability_generation ||
+      descriptor_authority.procedure_generation == 0 ||
+      descriptor_authority.procedure_body_generation == 0 ||
+      descriptor_authority.procedure_abi_generation == 0 ||
+      descriptor_authority.invocation_generation == 0 ||
+      descriptor_authority.recovery_generation == 0 ||
+      descriptor_authority.argument_count != 0 ||
+      descriptor_authority.output_parameter_count != 0 ||
+      descriptor_authority.invocation_flags != 0 ||
+      !nonzero(descriptor_authority.invocation_uuid) ||
+      !nonzero(descriptor_authority.procedure_uuid) ||
+      !nonzero(descriptor_authority.procedure_body_uuid) ||
+      !nonzero(descriptor_authority.procedure_body_sha256) ||
+      !nonzero(descriptor_authority.procedure_abi_uuid) ||
+      !nonzero(descriptor_authority.argument_vector_uuid) ||
+      !nonzero(descriptor_authority.argument_vector_sha256) ||
+      !nonzero(descriptor_authority.output_descriptor_vector_uuid) ||
+      !nonzero(descriptor_authority.result_set_shape_uuid) ||
+      !nonzero(descriptor_authority.effect_set_sha256) ||
+      !nonzero(descriptor_authority.recovery_uuid) ||
+      !nonzero(descriptor.evidence) ||
+      invoke::EncodeSblrProcedureInvokeDescriptorV1(descriptor, false) !=
+          coordinated.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "procedure_invoke_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != 488 ||
+      !std::equal(operand.begin(), operand.begin() + 4, "PIDD")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "procedure_invoke_descriptor_transport_invalid");
+  }
+  std::copy_n("PIDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "procedure_invoke_descriptor_projection_changed_authority");
+  }
+  invoke::SblrProcedureInvokeDescriptorV1 operand_descriptor;
+  invoke::SblrProcedureInvokeAuthorityV1 operand_authority;
+  if (!invoke::DecodeSblrProcedureInvokeDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      !invoke::DecodeSblrProcedureInvokeAuthorityV1(
+          operand_descriptor, &operand_authority, &detail) ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability ||
+      operand_authority.invocation_uuid !=
+          descriptor_authority.invocation_uuid ||
+      operand_authority.procedure_uuid != descriptor_authority.procedure_uuid ||
+      operand_authority.procedure_body_uuid !=
+          descriptor_authority.procedure_body_uuid ||
+      operand_authority.recovery_uuid != descriptor_authority.recovery_uuid ||
+      operand_authority.effect_set_sha256 !=
+          descriptor_authority.effect_set_sha256) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "procedure_invoke_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.procedure_invoke";
+  g_procedure_invoke_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr);
+  g_procedure_invoke_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "procedure_invoke_canonical_submission_invalid");
+  }
+
+  held.descriptor = descriptor;
+  held.descriptor_authority = descriptor_authority;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldProcedureInvoke::Phase::execution_pending;
+  return execute_held();
+}
 
 PipelineResult SbsqlTestWireSession::RunFunctionInvokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace f=scratchbird::engine::sblr;f::SblrFunctionInvokeRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_function_invoke_executor_availability_generation)return result;q.receipt=*receipt;q.occurrence=q.invocation_occurrence=1;auto coordinated=server_client_->CoordinateFunctionInvoke(session_,f::EncodeSblrFunctionInvokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;f::SblrFunctionInvokeDescriptorV1 d;std::string detail;if(!f::DecodeSblrFunctionInvokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=f::EncodeSblrFunctionInvokeDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.function_invoke";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){f::SblrFunctionInvokeResultV1 rr;if(!f::DecodeSblrFunctionInvokeResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;}
 
@@ -32452,10 +33189,344 @@ PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire(
   return execute_held();
 }
 
-PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire() {
-  PipelineResult result; if (!server_client_ || !session_.authenticated) { result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.NO_SESSION","ERROR","missing authenticated route","sbsql_sblr_alignment")); return result; }
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid}; auto acquired=server_client_->AcquireNativeStatementContext(session_,selector); if(!acquired.accepted){result.messages=std::move(acquired.messages);if(result.messages.diagnostics.empty())result.messages.diagnostics.push_back(MakeDiagnostic("SCU_TRACE.ACQUIRE","ERROR","statement context acquisition failed","sbsql_sblr_alignment"));return result;}
-  namespace c=scratchbird::engine::sblr; c::SblrDdlCreateProcedureRequestV1 q; auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid); if(!receipt||!acquired.context.preliminary_ddl_create_domain_executor_availability_generation){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR","CREATE PROCEDURE preliminary authority was missing.","sbp_sbsql.wire"));return result;} q.receipt=*receipt;q.occurrence=1;q.procedure_occurrence=1; auto coordinated=server_client_->CoordinateDdlCreateProcedure(session_,c::EncodeSblrDdlCreateProcedureRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result; c::SblrDdlCreateProcedureDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateProcedureDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID","ERROR",detail,"sbp_sbsql.wire"));return result;}auto operand=c::EncodeSblrDdlCreateProcedureDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_procedure";g_ddl_create_procedure_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_procedure_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlCreateProcedureResultV1 rr;if(!c::DecodeSblrDdlCreateProcedureResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result;
+PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace ddl = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          std::move(code), "ERROR",
+          "The canonical CREATE PROCEDURE operation was refused.",
+          "sbp_sbsql.wire.ddl_create_procedure",
+          {{"detail", std::move(detail)}}));
+    }
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_create_procedure_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDdlCreateProcedureWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "ddl_create_procedure_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_ddl_create_procedure_ == nullptr ||
+        held_ddl_create_procedure_->phase !=
+            HeldDdlCreateProcedure::Phase::execution_pending ||
+        !held_ddl_create_procedure_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_procedure_held_execution_invalid");
+    }
+    auto& held = *held_ddl_create_procedure_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_ddl_create_procedure_.reset();
+      return result;
+    }
+    ddl::SblrDdlCreateProcedureResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.ddl_create_procedure" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactDdlCreateProcedureTerminal(
+            held.descriptor_authority, held.descriptor.evidence,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "ddl_create_procedure_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes = held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldDdlCreateProcedure::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_ddl_create_procedure_ != nullptr) {
+    auto& held = *held_ddl_create_procedure_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held CREATE PROCEDURE lifecycle may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldDdlCreateProcedure::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldDdlCreateProcedure::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_procedure_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "ddl_create_procedure_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    if (!receipt ||
+        acquired.context.preliminary_statement_catalog_generation == 0 ||
+        acquired.context.preliminary_security_epoch == 0 ||
+        acquired.context.preliminary_resource_epoch == 0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_procedure_statement_receipt_incomplete");
+    }
+    ddl::SblrDdlCreateProcedureBindRequestV2 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.procedure_occurrence = 1;
+    request.command_identity = 1;
+    request.body_profile = 1;
+    request.name_atoms = command.name_atoms;
+    const auto request_bytes =
+        ddl::EncodeSblrDdlCreateProcedureBindRequestV2(request);
+    ddl::SblrDdlCreateProcedureBindRequestV2 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty()
+                        ? "ddl_create_procedure_bind_request_invalid"
+                        : detail);
+    }
+    auto held = std::make_unique<HeldDdlCreateProcedure>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldDdlCreateProcedure::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_ddl_create_procedure_ = std::move(held);
+  }
+
+  auto& held = *held_ddl_create_procedure_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateDdlCreateProcedure(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateDdlCreateProcedure(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_ddl_create_procedure_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "ddl_create_procedure_coordinate_outcome_unknown"
+                        : "ddl_create_procedure_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  ddl::SblrDdlCreateProcedureDescriptorV1 descriptor;
+  ddl::SblrDdlCreateProcedureAuthorityV1 descriptor_authority;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  const auto policy_snapshot = CanonicalUuidBytes(
+      context.preliminary_transaction_policy_snapshot_uuid);
+  if (!transaction_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context || !policy_snapshot ||
+      !ddl::DecodeSblrDdlCreateProcedureDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false) ||
+      !ddl::DecodeSblrDdlCreateProcedureAuthorityV1(
+          descriptor, &descriptor_authority, &detail) ||
+      descriptor_authority.receipt != held.bind_request.receipt ||
+      descriptor_authority.occurrence != held.bind_request.occurrence ||
+      descriptor_authority.procedure_occurrence !=
+          held.bind_request.procedure_occurrence ||
+      descriptor_authority.command_identity !=
+          held.bind_request.command_identity ||
+      descriptor_authority.body_profile != held.bind_request.body_profile ||
+      descriptor_authority.owning_transaction_uuid != *transaction_uuid ||
+      descriptor_authority.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor_authority.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor_authority.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor_authority.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor_authority.security_context_uuid != *security_context ||
+      descriptor_authority.security_epoch != context.preliminary_security_epoch ||
+      descriptor_authority.policy_snapshot_uuid != *policy_snapshot ||
+      descriptor_authority.policy_generation !=
+          context.preliminary_transaction_policy_generation ||
+      descriptor_authority.resource_generation !=
+          context.preliminary_resource_epoch ||
+      descriptor_authority.request_evidence_sha256 !=
+          held.bind_request.evidence ||
+      descriptor_authority.executor_availability_generation == 0 ||
+      descriptor_authority.procedure_generation == 0 ||
+      descriptor_authority.schema_generation == 0 ||
+      descriptor_authority.body_sblr_generation == 0 ||
+      descriptor_authority.procedure_abi_generation == 0 ||
+      descriptor_authority.recovery_generation == 0 ||
+      !nonzero(descriptor_authority.procedure_uuid) ||
+      !nonzero(descriptor_authority.schema_uuid) ||
+      !nonzero(descriptor_authority.resource_grant_uuid) ||
+      !nonzero(descriptor_authority.owner_principal_uuid) ||
+      !nonzero(descriptor_authority.body_sblr_uuid) ||
+      !nonzero(descriptor_authority.body_sblr_sha256) ||
+      !nonzero(descriptor_authority.procedure_abi_uuid) ||
+      !nonzero(descriptor_authority.effect_set_sha256) ||
+      !nonzero(descriptor_authority.recovery_uuid) ||
+      !nonzero(descriptor.evidence) ||
+      ddl::EncodeSblrDdlCreateProcedureDescriptorV1(descriptor, false) !=
+          coordinated.canonical_payload) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_procedure_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != 488 ||
+      !std::equal(operand.begin(), operand.begin() + 4, "PCDX")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_create_procedure_descriptor_transport_invalid");
+  }
+  std::copy_n("PCDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_procedure_descriptor_projection_changed_authority");
+  }
+  ddl::SblrDdlCreateProcedureDescriptorV1 operand_descriptor;
+  ddl::SblrDdlCreateProcedureAuthorityV1 operand_authority;
+  if (!ddl::DecodeSblrDdlCreateProcedureDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      !ddl::DecodeSblrDdlCreateProcedureAuthorityV1(
+          operand_descriptor, &operand_authority, &detail) ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability ||
+      operand_authority.receipt != descriptor_authority.receipt ||
+      operand_authority.procedure_uuid != descriptor_authority.procedure_uuid ||
+      operand_authority.schema_uuid != descriptor_authority.schema_uuid ||
+      operand_authority.body_sblr_uuid != descriptor_authority.body_sblr_uuid ||
+      operand_authority.recovery_uuid != descriptor_authority.recovery_uuid) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_procedure_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_create_procedure";
+  g_ddl_create_procedure_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr);
+  g_ddl_create_procedure_operand = nullptr;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_procedure_canonical_submission_invalid");
+  }
+
+  held.descriptor = descriptor;
+  held.descriptor_authority = descriptor_authority;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldDdlCreateProcedure::Phase::execution_pending;
+  return execute_held();
 }
 
 PipelineResult SbsqlTestWireSession::RunDdlAlterProcedureForWire() {

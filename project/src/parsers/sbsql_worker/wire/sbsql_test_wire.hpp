@@ -226,7 +226,11 @@ class SbsqlTestWireSession {
   PipelineResult RunCompareForWire();
   PipelineResult RunDomainOperationForWire();
   PipelineResult RunUdrInvokeForWire();
-  PipelineResult RunProcedureInvokeForWire();
+  PipelineResult RunProcedureInvokeForWire(
+      std::string_view sql,
+      bool autocommit_emulation = false);
+  void AcknowledgeProcedureInvokeCompletionForWire();
+  [[nodiscard]] bool HasHeldProcedureInvokeForWire() const;
   PipelineResult RunFunctionInvokeForWire();
   PipelineResult RunAggregateInvokeForWire();
   PipelineResult RunSequenceNextvalForWire();
@@ -422,7 +426,11 @@ class SbsqlTestWireSession {
       bool autocommit_emulation = false);
   void AcknowledgeDdlDropTriggerCompletionForWire();
   [[nodiscard]] bool HasHeldDdlDropTriggerForWire() const;
-  PipelineResult RunDdlCreateProcedureForWire();
+  PipelineResult RunDdlCreateProcedureForWire(
+      std::string_view sql,
+      bool autocommit_emulation = false);
+  void AcknowledgeDdlCreateProcedureCompletionForWire();
+  [[nodiscard]] bool HasHeldDdlCreateProcedureForWire() const;
   PipelineResult RunDdlAlterProcedureForWire();
   PipelineResult RunDdlDropProcedureForWire();
   PipelineResult RunDdlCreateFunctionForWire();
@@ -581,6 +589,8 @@ class SbsqlTestWireSession {
   struct HeldDdlCreateTrigger;
   struct HeldDdlAlterTrigger;
   struct HeldDdlDropTrigger;
+  struct HeldDdlCreateProcedure;
+  struct HeldProcedureInvoke;
 
   ParserConfig config_;
   ParserMetrics* metrics_;
@@ -594,6 +604,8 @@ class SbsqlTestWireSession {
   std::unique_ptr<HeldDdlCreateTrigger> held_ddl_create_trigger_;
   std::unique_ptr<HeldDdlAlterTrigger> held_ddl_alter_trigger_;
   std::unique_ptr<HeldDdlDropTrigger> held_ddl_drop_trigger_;
+  std::unique_ptr<HeldDdlCreateProcedure> held_ddl_create_procedure_;
+  std::unique_ptr<HeldProcedureInvoke> held_procedure_invoke_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;

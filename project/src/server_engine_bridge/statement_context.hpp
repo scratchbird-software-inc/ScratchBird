@@ -569,6 +569,135 @@ struct StatementDdlCreateTriggerAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Syntax-only CREATE PROCEDURE and PROCEDURE INVOKE demands.  The parser may
+// identify the presented name and the closed NULL-body profile only.  Object,
+// body, ABI, recovery, catalog, MGA, security, and result identities are
+// generated or resolved under the immutable statement receipt and never
+// copied from parser-owned state.
+struct StatementProcedureNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementDdlCreateProcedureBindRequestV2 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t procedure_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint16_t body_profile = 1;
+  std::vector<StatementProcedureNameAtomV1> name_atoms;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementDdlCreateProcedureAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t procedure_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint16_t body_profile = 1;
+  std::vector<StatementProcedureNameAtomV1> name_atoms;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string canonical_procedure_path_utf8;
+  std::string procedure_leaf_name_utf8;
+  std::string procedure_uuid;
+  std::uint64_t procedure_generation = 0;
+  std::string schema_uuid;
+  std::uint64_t schema_generation = 0;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string owner_principal_uuid;
+  std::string body_sblr_uuid;
+  std::uint64_t body_sblr_generation = 0;
+  std::array<std::uint8_t, 32> body_sblr_sha256{};
+  std::array<std::uint8_t, 32> effect_set_sha256{};
+  std::vector<std::uint8_t> canonical_body_sblr_bytes;
+  std::string procedure_abi_uuid;
+  std::uint64_t procedure_abi_generation = 0;
+  std::array<std::uint8_t, 32> procedure_signature_sha256{};
+  std::string recovery_uuid;
+  std::uint64_t recovery_generation = 0;
+  std::string mutation_uuid;
+  std::string publication_barrier_uuid;
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
+struct StatementProcedureInvokeBindRequestV2 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t invocation_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementProcedureNameAtomV1> name_atoms;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementProcedureInvokeAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t invocation_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementProcedureNameAtomV1> name_atoms;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string canonical_procedure_path_utf8;
+  std::string procedure_uuid;
+  std::uint64_t procedure_generation = 0;
+  std::uint64_t procedure_metadata_epoch = 0;
+  std::string schema_uuid;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string body_sblr_uuid;
+  std::uint64_t body_sblr_generation = 0;
+  std::array<std::uint8_t, 32> body_sblr_sha256{};
+  std::vector<std::uint8_t> canonical_body_sblr_bytes;
+  std::string procedure_abi_uuid;
+  std::uint64_t procedure_abi_generation = 0;
+  std::string argument_vector_uuid;
+  std::uint64_t argument_vector_generation = 0;
+  std::array<std::uint8_t, 32> argument_vector_sha256{};
+  std::string output_descriptor_vector_uuid;
+  std::uint64_t output_descriptor_vector_generation = 0;
+  std::string result_set_shape_uuid;
+  std::uint64_t result_set_shape_generation = 0;
+  std::array<std::uint8_t, 32> effect_set_sha256{};
+  std::string invocation_uuid;
+  std::uint64_t invocation_generation = 0;
+  std::string recovery_uuid;
+  std::uint64_t recovery_generation = 0;
+  std::string publication_barrier_uuid;
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // ALTER/DROP TRIGGER accept syntax demand only. The engine resolves the
 // presented trigger name and freezes the exact visible trigger generation,
 // target relation, executable body, catalog/security/resource cohort, and
@@ -1265,6 +1394,7 @@ struct StatementContextReceiptView {
   std::uint64_t ddl_create_trigger_executor_availability_generation = 0;
   std::uint64_t ddl_alter_trigger_executor_availability_generation = 0;
   std::uint64_t ddl_drop_trigger_executor_availability_generation = 0;
+  std::uint64_t ddl_create_procedure_executor_availability_generation = 0;
   // Exact engine-issued TXBH for the selected active transaction.  This is a
   // copy-only public projection; the corresponding private handle remains
   // owned by `session` and is the authority used by commit/rollback.
@@ -1644,6 +1774,27 @@ sb_engine_status_t CopyStatementDdlCreateTriggerAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     std::uint32_t trigger_occurrence,
     StatementDdlCreateTriggerAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementDdlCreateProcedureBindRequestV2* request,
+    StatementDdlCreateProcedureAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementDdlCreateProcedureAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t procedure_occurrence,
+    StatementDdlCreateProcedureAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementProcedureInvokeBindRequestV2* request,
+    StatementProcedureInvokeAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementProcedureInvokeAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t invocation_occurrence,
+    StatementProcedureInvokeAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(

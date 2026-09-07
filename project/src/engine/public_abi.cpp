@@ -177,6 +177,7 @@
 #include "sblr_ddl_alter_trigger_runtime.hpp"
 #include "sblr_ddl_drop_trigger_runtime.hpp"
 #include "sblr_ddl_create_procedure_runtime.hpp"
+#include "sblr_procedural_body_runtime.hpp"
 #include "sblr_ddl_alter_view_runtime.hpp"
 #include "sblr_ddl_create_schema_runtime.hpp"
 #include "sblr_ddl_create_table_runtime.hpp"
@@ -659,6 +660,12 @@ struct StatementContextReceiptOpaque {
            StatementDdlCreateTriggerAuthorityV1>
       statement_ddl_create_trigger_authorities;
   std::map<std::pair<std::uint64_t, std::uint32_t>,
+           StatementDdlCreateProcedureAuthorityV1>
+      statement_ddl_create_procedure_authorities;
+  std::map<std::pair<std::uint64_t, std::uint32_t>,
+           StatementProcedureInvokeAuthorityV1>
+      statement_procedure_invoke_authorities;
+  std::map<std::pair<std::uint64_t, std::uint32_t>,
            StatementDdlAlterTriggerAuthorityV1>
       statement_ddl_alter_trigger_authorities;
   std::map<std::pair<std::uint64_t, std::uint32_t>,
@@ -836,6 +843,28 @@ std::string HexBytes(const std::vector<std::uint8_t>& bytes) {
     text[i * 2 + 1] = kHex[bytes[i] & 0x0FU];
   }
   return text;
+}
+
+bool ParseCanonicalHexBytes(std::string_view text,
+                            std::vector<std::uint8_t>* bytes) {
+  if (bytes == nullptr || text.empty() || (text.size() % 2) != 0) {
+    return false;
+  }
+  const auto nibble = [](char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return 10 + value - 'a';
+    return -1;
+  };
+  std::vector<std::uint8_t> decoded;
+  decoded.reserve(text.size() / 2);
+  for (std::size_t offset = 0; offset < text.size(); offset += 2) {
+    const int high = nibble(text[offset]);
+    const int low = nibble(text[offset + 1]);
+    if (high < 0 || low < 0) return false;
+    decoded.push_back(static_cast<std::uint8_t>((high << 4) | low));
+  }
+  *bytes = std::move(decoded);
+  return true;
 }
 
 using scratchbird::server_engine_bridge::PreparedMetadataBindingHandle;
@@ -1163,6 +1192,11 @@ using scratchbird::server_engine_bridge::StatementDdlCreateSchemaAuthorityV1;
 using scratchbird::server_engine_bridge::StatementDdlCreateSchemaBindRequestV1;
 using scratchbird::server_engine_bridge::StatementDdlCreateTriggerAuthorityV1;
 using scratchbird::server_engine_bridge::StatementDdlCreateTriggerBindRequestV1;
+using scratchbird::server_engine_bridge::StatementDdlCreateProcedureAuthorityV1;
+using scratchbird::server_engine_bridge::StatementDdlCreateProcedureBindRequestV2;
+using scratchbird::server_engine_bridge::StatementProcedureInvokeAuthorityV1;
+using scratchbird::server_engine_bridge::StatementProcedureInvokeBindRequestV2;
+using scratchbird::server_engine_bridge::StatementProcedureNameAtomV1;
 using scratchbird::server_engine_bridge::StatementDdlAlterTriggerAuthorityV1;
 using scratchbird::server_engine_bridge::StatementDdlAlterTriggerBindRequestV1;
 using scratchbird::server_engine_bridge::StatementDdlDropTriggerAuthorityV1;
@@ -6150,6 +6184,122 @@ ResolveStatementDdlCreateTriggerName(
   return scratchbird::engine::internal_api::EngineResolveName(request);
 }
 
+scratchbird::engine::internal_api::EngineResolveNameResult
+ResolveStatementProcedureName(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const std::vector<StatementProcedureNameAtomV1>& atoms) {
+  scratchbird::engine::internal_api::EngineResolveNameRequest request;
+  request.context = context;
+  request.operation_id = "catalog.resolve_name";
+  request.sql_object_reference.expected_object_type = "procedure";
+  request.sql_object_reference.path_type =
+      atoms.size() == 1 ? "unqualified" : "qualified";
+  request.sql_object_reference.no_search_path = atoms.size() != 1;
+  for (std::size_t index = 0; index < atoms.size(); ++index) {
+    const auto& source = atoms[index];
+    scratchbird::engine::internal_api::EngineIdentifierAtom atom;
+    atom.raw_text = source.raw_text;
+    atom.was_quoted = source.quoted;
+    atom.quote_style = source.quoted ? "double_quote" : "none";
+    atom.identifier_profile_uuid = context.identifier_profile_uuid;
+    atom.requires_exact_match = source.quoted;
+    if (index + 1 == atoms.size()) {
+      request.sql_object_reference.object_name = std::move(atom);
+    } else {
+      request.sql_object_reference.path_components.push_back(std::move(atom));
+    }
+  }
+  return scratchbird::engine::internal_api::EngineResolveName(request);
+}
+
+bool NormalizeStatementProcedureNameAtoms(
+    const std::vector<StatementProcedureNameAtomV1>& atoms,
+    std::vector<std::string>* normalized,
+    std::string* canonical_path) {
+  if (normalized == nullptr || canonical_path == nullptr || atoms.empty() ||
+      atoms.size() > 3) {
+    return false;
+  }
+  normalized->clear();
+  canonical_path->clear();
+  normalized->reserve(atoms.size());
+  for (const auto& atom : atoms) {
+    if (!canonical_utf8_extent(atom.raw_text, false, 256) ||
+        atom.raw_text.find('.') != std::string::npos) {
+      normalized->clear();
+      canonical_path->clear();
+      return false;
+    }
+    std::string component = atom.raw_text;
+    if (!atom.quoted) {
+      std::transform(component.begin(), component.end(), component.begin(),
+                     [](unsigned char value) {
+                       return value < 0x80
+                                  ? static_cast<char>(std::tolower(value))
+                                  : static_cast<char>(value);
+                     });
+    }
+    if (!canonical_path->empty()) canonical_path->push_back('.');
+    canonical_path->append(component);
+    normalized->push_back(std::move(component));
+  }
+  return true;
+}
+
+scratchbird::engine::internal_api::EngineApiDiagnostic
+ResolveStatementProcedureSchema(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const std::vector<StatementProcedureNameAtomV1>& atoms,
+    std::string* schema_uuid) {
+  if (schema_uuid == nullptr || atoms.empty()) {
+    return scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+        "SBLR.OPERAND_INVALID", "sblr.procedure.schema_request_invalid", {});
+  }
+  if (atoms.size() == 1) {
+    if (!canonical_non_nil_uuid_text(context.current_schema_uuid.canonical)) {
+      return scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+          "MGA.AUTHORITY_MISMATCH",
+          "sblr.procedure.current_schema_authority_missing", {});
+    }
+    *schema_uuid = context.current_schema_uuid.canonical;
+    return scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+        "OK", "ok", {}, false);
+  }
+  scratchbird::engine::internal_api::EngineResolveNameRequest request;
+  request.context = context;
+  request.operation_id = "catalog.resolve_name";
+  request.sql_object_reference.expected_object_type = "schema";
+  request.sql_object_reference.path_type = "qualified";
+  request.sql_object_reference.no_search_path = true;
+  for (std::size_t index = 0; index + 1 < atoms.size(); ++index) {
+    const auto& source = atoms[index];
+    scratchbird::engine::internal_api::EngineIdentifierAtom atom;
+    atom.raw_text = source.raw_text;
+    atom.was_quoted = source.quoted;
+    atom.quote_style = source.quoted ? "double_quote" : "none";
+    atom.identifier_profile_uuid = context.identifier_profile_uuid;
+    atom.requires_exact_match = source.quoted;
+    if (index + 2 == atoms.size()) {
+      request.sql_object_reference.object_name = std::move(atom);
+    } else {
+      request.sql_object_reference.path_components.push_back(std::move(atom));
+    }
+  }
+  const auto resolved =
+      scratchbird::engine::internal_api::EngineResolveName(request);
+  if (!resolved.ok || resolved.primary_object.object_kind != "schema" ||
+      !canonical_non_nil_uuid_text(resolved.primary_object.uuid.canonical)) {
+    return resolved.diagnostics.empty()
+               ? scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+                     "CATALOG.NAME.NOT_FOUND",
+                     "sblr.procedure.schema_not_found", {})
+               : resolved.diagnostics.front();
+  }
+  *schema_uuid = resolved.primary_object.uuid.canonical;
+  return scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+      "OK", "ok", {}, false);
+}
+
 std::string TriggerLifecyclePayloadValue(const std::string& payload,
                                          std::string_view prefix) {
   std::size_t offset = 0;
@@ -7720,6 +7870,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
       SB_STATEMENT_EXECUTOR_ROW(DdlCreateTrigger),
       SB_STATEMENT_EXECUTOR_ROW(DdlAlterTrigger),
       SB_STATEMENT_EXECUTOR_ROW(DdlDropTrigger),
+      SB_STATEMENT_EXECUTOR_ROW(DdlCreateProcedure),
       SB_STATEMENT_EXECUTOR_ROW(OptimizerStatsRead),
       SB_STATEMENT_EXECUTOR_ROW(OptimizerStatsDrop),
       SB_STATEMENT_EXECUTOR_ROW(Parameter),
@@ -7801,6 +7952,12 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.ddl_drop_trigger_executor_availability_generation =
       statement_executor_generation(
           SB_STATEMENT_EXECUTOR_ROW(DdlDropTrigger));
+  view.ddl_create_procedure_executor_availability_generation =
+      statement_executor_generation(
+          SB_STATEMENT_EXECUTOR_ROW(DdlCreateProcedure));
+  view.procedure_invoke_executor_availability_generation =
+      statement_executor_generation(
+          SB_STATEMENT_EXECUTOR_ROW(ProcedureInvoke));
   if (view.stmt_prepare_executor_availability_generation == 0 ||
       view.stmt_execute_executor_availability_generation == 0 ||
       view.stmt_execute_direct_executor_availability_generation == 0 ||
@@ -7818,7 +7975,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
       view.optimizer_stats_drop_executor_availability_generation == 0 ||
       view.ddl_create_trigger_executor_availability_generation == 0 ||
       view.ddl_alter_trigger_executor_availability_generation == 0 ||
-      view.ddl_drop_trigger_executor_availability_generation == 0) {
+      view.ddl_drop_trigger_executor_availability_generation == 0 ||
+      view.ddl_create_procedure_executor_availability_generation == 0 ||
+      view.procedure_invoke_executor_availability_generation == 0) {
     return fail_result(
         SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4046,
         "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
@@ -8014,7 +8173,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity compare_id{scratchbird::engine::internal_api::kSblrCompareExecutorId,1027,"1.0",scratchbird::engine::internal_api::kSblrCompareOperandDescriptorId,scratchbird::engine::internal_api::kSblrCompareResultDescriptorId,1};const auto compare_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,compare_id);if(!compare_executor.ok||!compare_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4053,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.compare_preliminary.executor_evidence_missing");view.compare_executor_availability_generation=compare_executor.snapshot.generation;
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity domain_operation_id{scratchbird::engine::internal_api::kSblrDomainOperationExecutorId,1028,"1.0",scratchbird::engine::internal_api::kSblrDomainOperationOperandDescriptorId,scratchbird::engine::internal_api::kSblrDomainOperationResultDescriptorId,1};const auto domain_operation_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,domain_operation_id);if(!domain_operation_executor.ok||!domain_operation_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4054,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.domain_operation_preliminary.executor_evidence_missing");view.domain_operation_executor_availability_generation=domain_operation_executor.snapshot.generation;
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity udr_invoke_id{scratchbird::engine::internal_api::kSblrUdrInvokeExecutorId,1029,"1.0",scratchbird::engine::internal_api::kSblrUdrInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrUdrInvokeResultDescriptorId,1};const auto udr_invoke_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,udr_invoke_id);if(!udr_invoke_executor.ok||!udr_invoke_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4055,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.udr_invoke_preliminary.executor_evidence_missing");view.udr_invoke_executor_availability_generation=udr_invoke_executor.snapshot.generation;
-  scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity procedure_invoke_id{scratchbird::engine::internal_api::kSblrProcedureInvokeExecutorId,1030,"1.0",scratchbird::engine::internal_api::kSblrProcedureInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrProcedureInvokeResultDescriptorId,1};const auto procedure_invoke_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,procedure_invoke_id);if(!procedure_invoke_executor.ok||!procedure_invoke_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4056,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.procedure_invoke_preliminary.executor_evidence_missing");view.procedure_invoke_executor_availability_generation=procedure_invoke_executor.snapshot.generation;
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity function_invoke_id{scratchbird::engine::internal_api::kSblrFunctionInvokeExecutorId,1031,"1.0",scratchbird::engine::internal_api::kSblrFunctionInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrFunctionInvokeResultDescriptorId,1};const auto function_invoke_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,function_invoke_id);if(!function_invoke_executor.ok||!function_invoke_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4057,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.function_invoke_preliminary.executor_evidence_missing");view.function_invoke_executor_availability_generation=function_invoke_executor.snapshot.generation;
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity aggregate_invoke_id{scratchbird::engine::internal_api::kSblrAggregateInvokeExecutorId,1032,"1.0",scratchbird::engine::internal_api::kSblrAggregateInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrAggregateInvokeResultDescriptorId,1};const auto aggregate_invoke_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,aggregate_invoke_id);if(!aggregate_invoke_executor.ok||!aggregate_invoke_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4058,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.aggregate_invoke_preliminary.executor_evidence_missing");view.aggregate_invoke_executor_availability_generation=aggregate_invoke_executor.snapshot.generation;
   scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity sequence_nextval_id{scratchbird::engine::internal_api::kSblrSequenceNextvalExecutorId,1033,"1.0",scratchbird::engine::internal_api::kSblrSequenceNextvalOperandDescriptorId,scratchbird::engine::internal_api::kSblrSequenceNextvalResultDescriptorId,1};const auto sequence_nextval_executor=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(engine_context,sequence_nextval_id);if(!sequence_nextval_executor.ok||!sequence_nextval_executor.snapshot.installed)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4059,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.sequence_nextval_preliminary.executor_evidence_missing");view.sequence_nextval_executor_availability_generation=sequence_nextval_executor.snapshot.generation;
@@ -11728,6 +11886,958 @@ sb_engine_status_t CopyStatementDdlCreateTriggerAuthorityV1(
     return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4125,
                        "SECURITY.ACCESS_DENIED",
                        "sblr.ddl_create_trigger.authority_hidden");
+  }
+  *out_authority = found->second;
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
+    StatementContextReceiptHandle receipt_handle,
+    const StatementDdlCreateProcedureBindRequestV2* request,
+    StatementDdlCreateProcedureAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    return fail_result(status, out_result, 4130, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || request == nullptr || out_authority == nullptr ||
+      request->occurrence == 0 || request->procedure_occurrence == 0 ||
+      request->command_identity != 1 || request->body_profile != 1 ||
+      request->name_atoms.empty() || request->name_atoms.size() > 3 ||
+      request->exact_bind_request_bytes.empty()) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.ddl_create_procedure.bind_request_invalid");
+  }
+
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2 wire_request;
+  wire_request.receipt = TextToUuid(request->authenticated_receipt_uuid);
+  wire_request.occurrence = request->occurrence;
+  wire_request.procedure_occurrence = request->procedure_occurrence;
+  wire_request.command_identity = request->command_identity;
+  wire_request.body_profile = request->body_profile;
+  wire_request.evidence = request->request_evidence_sha256;
+  for (const auto& atom : request->name_atoms) {
+    wire_request.name_atoms.push_back({atom.raw_text, atom.quoted});
+  }
+  if (scratchbird::engine::sblr::EncodeSblrDdlCreateProcedureBindRequestV2(
+          wire_request) != request->exact_bind_request_bytes) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.ddl_create_procedure.bind_request_noncanonical");
+  }
+
+  StatementContextReceiptView view;
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  sb_engine_session_t session = nullptr;
+  const auto key =
+      std::make_pair(request->occurrence, request->procedure_occurrence);
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.ddl_create_procedure.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    const auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session == nullptr || receipt.session->closed ||
+        receipt.view.receipt_uuid != request->authenticated_receipt_uuid) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.ddl_create_procedure.bind_hidden");
+    }
+    const auto existing =
+        receipt.statement_ddl_create_procedure_authorities.find(key);
+    if (existing !=
+        receipt.statement_ddl_create_procedure_authorities.end()) {
+      if (existing->second.exact_bind_request_bytes ==
+          request->exact_bind_request_bytes) {
+        *out_authority = existing->second;
+        return SB_ENGINE_STATUS_OK;
+      }
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.ddl_create_procedure.bind_replay_conflict");
+    }
+    view = receipt.view;
+    context = receipt.engine_context;
+    session = receipt.session;
+  }
+
+  if (!context.security_context_present ||
+      !context.authorization_context.present || !view.inventory_authoritative ||
+      !view.snapshot_complete ||
+      !canonical_non_nil_uuid_text(view.receipt_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_snapshot_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_metadata_snapshot_uuid) ||
+      !canonical_non_nil_uuid_text(view.catalog_epoch_uuid) ||
+      !canonical_non_nil_uuid_text(view.security_context_uuid) ||
+      !canonical_non_nil_uuid_text(view.resource_admission_uuid) ||
+      !canonical_non_nil_uuid_text(view.owning_transaction_uuid) ||
+      !canonical_non_nil_uuid_text(context.database_uuid.canonical) ||
+      !canonical_non_nil_uuid_text(context.principal_uuid.canonical) ||
+      !canonical_non_nil_uuid_text(
+          context.transaction_policy_snapshot_uuid.canonical) ||
+      context.transaction_policy_snapshot_generation == 0 ||
+      view.catalog_generation_id == 0 || view.security_epoch == 0 ||
+      view.resource_epoch == 0 ||
+      view.ddl_create_procedure_executor_availability_generation == 0 ||
+      context.catalog_epoch_uuid.canonical != view.catalog_epoch_uuid ||
+      context.catalog_generation_id != view.catalog_generation_id ||
+      context.security_epoch != view.security_epoch ||
+      context.resource_epoch != view.resource_epoch ||
+      context.resource_admission_uuid.canonical !=
+          view.resource_admission_uuid ||
+      context.statement_uuid.canonical != view.statement_uuid ||
+      context.statement_snapshot_uuid.canonical !=
+          view.statement_snapshot_uuid ||
+      context.statement_metadata_snapshot_uuid.canonical !=
+          view.statement_metadata_snapshot_uuid ||
+      context.transaction_uuid.canonical != view.owning_transaction_uuid ||
+      context.local_transaction_id != view.owning_local_transaction_id ||
+      context.statement_transaction_inventory_snapshot == nullptr) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.ddl_create_procedure.bind_authority_stale");
+  }
+  const auto exact_transaction =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          context.statement_transaction_inventory_snapshot->inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              context.local_transaction_id));
+  if (!exact_transaction.ok() ||
+      !statement_context_transaction_active(exact_transaction.entry.state) ||
+      !exact_transaction.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          exact_transaction.entry.identity.transaction_uuid.value) !=
+          context.transaction_uuid.canonical) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
+                  "sblr.ddl_create_procedure.bind_transaction_invalid");
+  }
+  if (view.cluster_context_active || view.cluster_transaction_active ||
+      view.route_fence_present) {
+    return refuse(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+        "sblr.ddl_create_procedure.bind_cluster_fallthrough_forbidden");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.ddl_create_procedure.cancelled_before_resolution");
+  }
+
+  std::vector<std::string> normalized_atoms;
+  std::string canonical_path;
+  if (!NormalizeStatementProcedureNameAtoms(request->name_atoms,
+                                             &normalized_atoms,
+                                             &canonical_path)) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "CATALOG.NAME_INVALID",
+                  "sblr.ddl_create_procedure.name_atom_invalid");
+  }
+  std::string schema_uuid;
+  const auto schema = ResolveStatementProcedureSchema(
+      context, request->name_atoms, &schema_uuid);
+  if (schema.error) {
+    return refuse(schema.code.rfind("SECURITY.", 0) == 0
+                      ? SB_ENGINE_STATUS_SECURITY_DENIED
+                      : SB_ENGINE_STATUS_CONFLICT,
+                  schema.code, schema.message_key, schema.detail);
+  }
+
+  scratchbird::engine::internal_api::EngineAuthorizeRequest authorize;
+  authorize.context = context;
+  authorize.target_object.uuid = context.database_uuid;
+  authorize.target_object.object_kind = "database";
+  authorize.required_right = "CATALOG_MUTATE";
+  const auto authorized =
+      scratchbird::engine::internal_api::EngineAuthorize(authorize);
+  if (!authorized.ok || !authorized.authorized) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.ddl_create_procedure.bind_authorization_denied",
+                  authorized.diagnostics.empty()
+                      ? std::string{}
+                      : authorized.diagnostics.front().detail);
+  }
+  const auto existing =
+      ResolveStatementProcedureName(context, request->name_atoms);
+  if (existing.ok) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "CATALOG.NAME.AMBIGUOUS",
+                  "sblr.ddl_create_procedure.name_already_exists",
+                  canonical_path);
+  }
+  if (!existing.diagnostics.empty() &&
+      existing.diagnostics.front().code != "CATALOG.NAME.NOT_FOUND") {
+    const auto& diagnostic = existing.diagnostics.front();
+    return refuse(diagnostic.code.rfind("SECURITY.", 0) == 0
+                      ? SB_ENGINE_STATUS_SECURITY_DENIED
+                      : SB_ENGINE_STATUS_CONFLICT,
+                  diagnostic.code,
+                  diagnostic.message_key.empty()
+                      ? "sblr.ddl_create_procedure.name_preflight_failed"
+                      : diagnostic.message_key,
+                  diagnostic.detail);
+  }
+
+  std::unordered_set<std::string> identities{
+      view.receipt_uuid,
+      view.statement_uuid,
+      view.statement_snapshot_uuid,
+      view.statement_metadata_snapshot_uuid,
+      view.catalog_epoch_uuid,
+      view.security_context_uuid,
+      view.resource_admission_uuid,
+      view.owning_transaction_uuid,
+      context.database_uuid.canonical,
+      context.principal_uuid.canonical,
+      context.transaction_policy_snapshot_uuid.canonical,
+      schema_uuid,
+  };
+  std::string procedure_uuid;
+  std::string body_uuid;
+  std::string abi_uuid;
+  std::string recovery_uuid;
+  std::string mutation_uuid;
+  std::string publication_barrier_uuid;
+  if (!generate_distinct_statement_context_uuid(&identities, &procedure_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities, &body_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities, &abi_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities, &recovery_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities, &mutation_uuid) ||
+      !generate_distinct_statement_context_uuid(
+          &identities, &publication_barrier_uuid)) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+                  "sblr.ddl_create_procedure.bind_identity_unavailable");
+  }
+
+  const auto body = scratchbird::engine::sblr::
+      MakeSblrPsqlNullProceduralBodyV1(TextToUuid(body_uuid), 1,
+                                      TextToUuid(procedure_uuid), 1, 1);
+  const auto body_bytes =
+      scratchbird::engine::sblr::EncodeSblrProceduralBodyV1(body);
+  if (body_bytes.size() !=
+      scratchbird::engine::sblr::kSblrProceduralBodyV1Bytes) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "SBLR.OPERAND_INVALID",
+                  "sblr.ddl_create_procedure.body_compile_failed");
+  }
+  const auto body_sha =
+      scratchbird::core::hash::ComputeSha256Digest(body_bytes).digest;
+  std::vector<std::uint8_t> signature_material{
+      'S','c','r','a','t','c','h','B','i','r','d','.',
+      'P','r','o','c','e','d','u','r','e','S','i','g','n','a','t','u','r','e',
+      '.','V','1'};
+  signature_material.insert(signature_material.end(),
+                            procedure_uuid.begin(), procedure_uuid.end());
+  signature_material.push_back(0);
+  signature_material.insert(signature_material.end(), canonical_path.begin(),
+                            canonical_path.end());
+  signature_material.push_back(0);
+  signature_material.insert(signature_material.end(), abi_uuid.begin(),
+                            abi_uuid.end());
+  signature_material.insert(signature_material.end(), body_sha.begin(),
+                            body_sha.end());
+  const auto signature_sha = scratchbird::core::hash::
+      ComputeSha256Digest(signature_material).digest;
+
+  scratchbird::engine::internal_api::
+      SblrDdlCreateProcedureAuthorityInputV1 coordinator_input;
+  coordinator_input.receipt = TextToUuid(view.receipt_uuid);
+  coordinator_input.occurrence = request->occurrence;
+  coordinator_input.procedure_occurrence = request->procedure_occurrence;
+  coordinator_input.command_identity = request->command_identity;
+  coordinator_input.body_profile = request->body_profile;
+  coordinator_input.procedure_uuid = TextToUuid(procedure_uuid);
+  coordinator_input.procedure_generation = 1;
+  coordinator_input.schema_uuid = TextToUuid(schema_uuid);
+  coordinator_input.schema_generation = view.catalog_generation_id;
+  coordinator_input.owning_transaction_uuid =
+      TextToUuid(view.owning_transaction_uuid);
+  coordinator_input.owning_local_transaction_id =
+      view.owning_local_transaction_id;
+  coordinator_input.statement_snapshot_uuid =
+      TextToUuid(view.statement_snapshot_uuid);
+  coordinator_input.catalog_epoch_uuid = TextToUuid(view.catalog_epoch_uuid);
+  coordinator_input.catalog_generation = view.catalog_generation_id;
+  coordinator_input.security_context_uuid =
+      TextToUuid(view.security_context_uuid);
+  coordinator_input.security_epoch = view.security_epoch;
+  coordinator_input.policy_snapshot_uuid = TextToUuid(
+      context.transaction_policy_snapshot_uuid.canonical);
+  coordinator_input.policy_generation =
+      context.transaction_policy_snapshot_generation;
+  coordinator_input.resource_grant_uuid =
+      TextToUuid(view.resource_admission_uuid);
+  coordinator_input.resource_generation = view.resource_epoch;
+  coordinator_input.owner_principal_uuid =
+      TextToUuid(context.principal_uuid.canonical);
+  coordinator_input.body_sblr_uuid = TextToUuid(body_uuid);
+  coordinator_input.body_sblr_generation = 1;
+  coordinator_input.body_sblr_sha256 = body_sha;
+  coordinator_input.procedure_abi_uuid = TextToUuid(abi_uuid);
+  coordinator_input.procedure_abi_generation = 1;
+  coordinator_input.effect_set_sha256 = body.effect_set_sha256;
+  coordinator_input.recovery_uuid = TextToUuid(recovery_uuid);
+  coordinator_input.recovery_generation = 1;
+  coordinator_input.request_evidence_sha256 =
+      request->request_evidence_sha256;
+  coordinator_input.executor_availability_generation =
+      view.ddl_create_procedure_executor_availability_generation;
+  const auto coordinated = scratchbird::engine::internal_api::
+      CompileSblrDdlCreateProcedureDescriptor(coordinator_input);
+  if (!coordinated.ok) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  coordinated.diagnostic.code,
+                  coordinated.diagnostic.message_key,
+                  coordinated.diagnostic.detail);
+  }
+  const auto descriptor_bytes = scratchbird::engine::sblr::
+      EncodeSblrDdlCreateProcedureDescriptorV1(coordinated.descriptor, false);
+  if (descriptor_bytes.empty()) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "SBLR.OPERAND_INVALID",
+                  "sblr.ddl_create_procedure.bind_descriptor_invalid");
+  }
+
+  StatementDdlCreateProcedureAuthorityV1 authority;
+  authority.occurrence = request->occurrence;
+  authority.procedure_occurrence = request->procedure_occurrence;
+  authority.command_identity = request->command_identity;
+  authority.body_profile = request->body_profile;
+  authority.name_atoms = request->name_atoms;
+  authority.exact_bind_request_bytes = request->exact_bind_request_bytes;
+  authority.request_evidence_sha256 = request->request_evidence_sha256;
+  authority.canonical_procedure_path_utf8 = canonical_path;
+  authority.procedure_leaf_name_utf8 = normalized_atoms.back();
+  authority.procedure_uuid = procedure_uuid;
+  authority.procedure_generation = 1;
+  authority.schema_uuid = schema_uuid;
+  authority.schema_generation = view.catalog_generation_id;
+  authority.database_uuid = context.database_uuid.canonical;
+  authority.owning_transaction_uuid = view.owning_transaction_uuid;
+  authority.owning_local_transaction_id = view.owning_local_transaction_id;
+  authority.statement_snapshot_uuid = view.statement_snapshot_uuid;
+  authority.catalog_epoch_uuid = view.catalog_epoch_uuid;
+  authority.catalog_generation = view.catalog_generation_id;
+  authority.security_context_uuid = view.security_context_uuid;
+  authority.security_epoch = view.security_epoch;
+  authority.policy_snapshot_uuid =
+      context.transaction_policy_snapshot_uuid.canonical;
+  authority.policy_generation =
+      context.transaction_policy_snapshot_generation;
+  authority.resource_grant_uuid = view.resource_admission_uuid;
+  authority.resource_generation = view.resource_epoch;
+  authority.owner_principal_uuid = context.principal_uuid.canonical;
+  authority.body_sblr_uuid = body_uuid;
+  authority.body_sblr_generation = 1;
+  authority.body_sblr_sha256 = body_sha;
+  authority.effect_set_sha256 = body.effect_set_sha256;
+  authority.canonical_body_sblr_bytes = body_bytes;
+  authority.procedure_abi_uuid = abi_uuid;
+  authority.procedure_abi_generation = 1;
+  authority.procedure_signature_sha256 = signature_sha;
+  authority.recovery_uuid = recovery_uuid;
+  authority.recovery_generation = 1;
+  authority.mutation_uuid = mutation_uuid;
+  authority.publication_barrier_uuid = publication_barrier_uuid;
+  authority.descriptor_evidence_sha256 = coordinated.descriptor.evidence;
+  authority.canonical_descriptor_bytes = descriptor_bytes;
+  authority.authorization_observation = context.authorization_context;
+
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.ddl_create_procedure.cancelled_before_publish");
+  }
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.ddl_create_procedure.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session != session || receipt.view.receipt_uuid != view.receipt_uuid ||
+        receipt.engine_context.transaction_uuid.canonical !=
+            context.transaction_uuid.canonical ||
+        receipt.engine_context.catalog_generation_id !=
+            context.catalog_generation_id ||
+        receipt.engine_context.security_epoch != context.security_epoch ||
+        receipt.engine_context.resource_epoch != context.resource_epoch ||
+        receipt.view.ddl_create_procedure_executor_availability_generation !=
+            view.ddl_create_procedure_executor_availability_generation) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.ddl_create_procedure.bind_publish_stale");
+    }
+    const auto existing_authority =
+        receipt.statement_ddl_create_procedure_authorities.find(key);
+    if (existing_authority !=
+        receipt.statement_ddl_create_procedure_authorities.end()) {
+      if (existing_authority->second.exact_bind_request_bytes ==
+          request->exact_bind_request_bytes) {
+        *out_authority = existing_authority->second;
+        return SB_ENGINE_STATUS_OK;
+      }
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.ddl_create_procedure.bind_replay_conflict");
+    }
+    const auto inserted =
+        receipt.statement_ddl_create_procedure_authorities.emplace(
+            key, std::move(authority));
+    if (!inserted.second) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.ddl_create_procedure.bind_publish_conflict");
+    }
+    *out_authority = inserted.first->second;
+  }
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t CopyStatementDdlCreateProcedureAuthorityV1(
+    StatementContextReceiptHandle receipt_handle, std::uint64_t occurrence,
+    std::uint32_t procedure_occurrence,
+    StatementDdlCreateProcedureAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  if (!receipt_handle || occurrence == 0 || procedure_occurrence == 0 ||
+      out_authority == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4130,
+                       "SBLR.OPERAND_INVALID",
+                       "sblr.ddl_create_procedure.authority_lookup_invalid");
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live =
+      g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4130,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.ddl_create_procedure.authority_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  if (live->second->released ||
+      live->second->magic != kStatementContextReceiptMagic) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4130,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.ddl_create_procedure.authority_hidden");
+  }
+  const auto found =
+      live->second->statement_ddl_create_procedure_authorities.find(
+          std::make_pair(occurrence, procedure_occurrence));
+  if (found ==
+      live->second->statement_ddl_create_procedure_authorities.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4130,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.ddl_create_procedure.authority_hidden");
+  }
+  *out_authority = found->second;
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
+    StatementContextReceiptHandle receipt_handle,
+    const StatementProcedureInvokeBindRequestV2* request,
+    StatementProcedureInvokeAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    return fail_result(status, out_result, 4131, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || request == nullptr || out_authority == nullptr ||
+      request->occurrence == 0 || request->invocation_occurrence == 0 ||
+      request->command_identity != 1 || request->name_atoms.empty() ||
+      request->name_atoms.size() > 3 ||
+      request->exact_bind_request_bytes.empty()) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.procedure_invoke.bind_request_invalid");
+  }
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 wire_request;
+  wire_request.receipt = TextToUuid(request->authenticated_receipt_uuid);
+  wire_request.occurrence = request->occurrence;
+  wire_request.invocation_occurrence = request->invocation_occurrence;
+  wire_request.command_identity = request->command_identity;
+  wire_request.evidence = request->request_evidence_sha256;
+  for (const auto& atom : request->name_atoms) {
+    wire_request.name_atoms.push_back({atom.raw_text, atom.quoted});
+  }
+  if (scratchbird::engine::sblr::EncodeSblrProcedureInvokeBindRequestV2(
+          wire_request) != request->exact_bind_request_bytes) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.procedure_invoke.bind_request_noncanonical");
+  }
+
+  StatementContextReceiptView view;
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  sb_engine_session_t session = nullptr;
+  const auto key =
+      std::make_pair(request->occurrence, request->invocation_occurrence);
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.procedure_invoke.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    const auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session == nullptr || receipt.session->closed ||
+        receipt.view.receipt_uuid != request->authenticated_receipt_uuid) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.procedure_invoke.bind_hidden");
+    }
+    const auto existing =
+        receipt.statement_procedure_invoke_authorities.find(key);
+    if (existing != receipt.statement_procedure_invoke_authorities.end()) {
+      if (existing->second.exact_bind_request_bytes ==
+          request->exact_bind_request_bytes) {
+        *out_authority = existing->second;
+        return SB_ENGINE_STATUS_OK;
+      }
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.procedure_invoke.bind_replay_conflict");
+    }
+    view = receipt.view;
+    context = receipt.engine_context;
+    session = receipt.session;
+  }
+
+  if (!context.security_context_present ||
+      !context.authorization_context.present || !view.inventory_authoritative ||
+      !view.snapshot_complete ||
+      !canonical_non_nil_uuid_text(view.receipt_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_snapshot_uuid) ||
+      !canonical_non_nil_uuid_text(view.statement_metadata_snapshot_uuid) ||
+      !canonical_non_nil_uuid_text(view.catalog_epoch_uuid) ||
+      !canonical_non_nil_uuid_text(view.security_context_uuid) ||
+      !canonical_non_nil_uuid_text(view.resource_admission_uuid) ||
+      !canonical_non_nil_uuid_text(view.owning_transaction_uuid) ||
+      !canonical_non_nil_uuid_text(context.database_uuid.canonical) ||
+      !canonical_non_nil_uuid_text(
+          context.transaction_policy_snapshot_uuid.canonical) ||
+      context.transaction_policy_snapshot_generation == 0 ||
+      view.catalog_generation_id == 0 || view.security_epoch == 0 ||
+      view.resource_epoch == 0 ||
+      view.procedure_invoke_executor_availability_generation == 0 ||
+      context.catalog_epoch_uuid.canonical != view.catalog_epoch_uuid ||
+      context.catalog_generation_id != view.catalog_generation_id ||
+      context.security_epoch != view.security_epoch ||
+      context.resource_epoch != view.resource_epoch ||
+      context.resource_admission_uuid.canonical !=
+          view.resource_admission_uuid ||
+      context.statement_uuid.canonical != view.statement_uuid ||
+      context.statement_snapshot_uuid.canonical !=
+          view.statement_snapshot_uuid ||
+      context.statement_metadata_snapshot_uuid.canonical !=
+          view.statement_metadata_snapshot_uuid ||
+      context.transaction_uuid.canonical != view.owning_transaction_uuid ||
+      context.local_transaction_id != view.owning_local_transaction_id ||
+      context.statement_transaction_inventory_snapshot == nullptr) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.procedure_invoke.bind_authority_stale");
+  }
+  const auto exact_transaction =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          context.statement_transaction_inventory_snapshot->inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              context.local_transaction_id));
+  if (!exact_transaction.ok() ||
+      !statement_context_transaction_active(exact_transaction.entry.state) ||
+      !exact_transaction.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          exact_transaction.entry.identity.transaction_uuid.value) !=
+          context.transaction_uuid.canonical) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
+                  "sblr.procedure_invoke.bind_transaction_invalid");
+  }
+  if (view.cluster_context_active || view.cluster_transaction_active ||
+      view.route_fence_present) {
+    return refuse(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+        "sblr.procedure_invoke.bind_cluster_fallthrough_forbidden");
+  }
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.procedure_invoke.cancelled_before_resolution");
+  }
+
+  std::vector<std::string> normalized_atoms;
+  std::string canonical_path;
+  if (!NormalizeStatementProcedureNameAtoms(request->name_atoms,
+                                             &normalized_atoms,
+                                             &canonical_path)) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "CATALOG.NAME_INVALID",
+                  "sblr.procedure_invoke.name_atom_invalid");
+  }
+  const auto resolved =
+      ResolveStatementProcedureName(context, request->name_atoms);
+  if (!resolved.ok || resolved.primary_object.object_kind != "procedure" ||
+      resolved.bound_object_identity.resolved_object_type != "procedure" ||
+      !canonical_non_nil_uuid_text(resolved.primary_object.uuid.canonical) ||
+      resolved.bound_object_identity.object_uuid.canonical !=
+          resolved.primary_object.uuid.canonical ||
+      !canonical_non_nil_uuid_text(
+          resolved.bound_object_identity.resolved_schema_uuid.canonical) ||
+      resolved.bound_object_identity.catalog_generation_id == 0 ||
+      resolved.bound_object_identity.catalog_generation_id >
+          view.catalog_generation_id ||
+      resolved.bound_object_identity.security_epoch != view.security_epoch) {
+    const auto diagnostic = resolved.diagnostics.empty()
+                                ? scratchbird::engine::internal_api::
+                                      MakeEngineApiDiagnostic(
+                                          "CATALOG.NAME.NOT_FOUND",
+                                          "sblr.procedure_invoke.name_not_found",
+                                          {})
+                                : resolved.diagnostics.front();
+    return refuse(diagnostic.code.rfind("SECURITY.", 0) == 0
+                      ? SB_ENGINE_STATUS_SECURITY_DENIED
+                      : SB_ENGINE_STATUS_NOT_FOUND,
+                  diagnostic.code, diagnostic.message_key,
+                  diagnostic.detail);
+  }
+  const auto lifecycle = scratchbird::engine::internal_api::
+      LoadExecutableObjectLifecycleState(context);
+  if (!lifecycle.ok) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, lifecycle.diagnostic.code,
+                  lifecycle.diagnostic.message_key,
+                  lifecycle.diagnostic.detail);
+  }
+  const auto object = std::find_if(
+      lifecycle.state.objects.begin(), lifecycle.state.objects.end(),
+      [&](const auto& row) {
+        return row.object_uuid == resolved.primary_object.uuid.canonical;
+      });
+  if (object == lifecycle.state.objects.end() ||
+      object->object_kind != "procedure" || object->deleted ||
+      object->invalidated || object->lifecycle_state != "active" ||
+      object->executable_generation == 0 || object->metadata_epoch == 0 ||
+      object->schema_uuid !=
+          resolved.bound_object_identity.resolved_schema_uuid.canonical ||
+      object->executor_kind != "sblr" || object->side_effect_class != "none" ||
+      object->stored_sblr_provenance !=
+          "engine.bound.procedural_body.v1") {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.procedure_invoke.lifecycle_mismatch",
+                  resolved.primary_object.uuid.canonical);
+  }
+  scratchbird::engine::internal_api::EngineAuthorizeRequest authorize;
+  authorize.context = context;
+  authorize.target_object = resolved.primary_object;
+  authorize.required_right = "EXECUTE";
+  const auto authorized =
+      scratchbird::engine::internal_api::EngineAuthorize(authorize);
+  if (!authorized.ok || !authorized.authorized) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                  "SECURITY.ACCESS_DENIED",
+                  "sblr.procedure_invoke.bind_authorization_denied",
+                  authorized.diagnostics.empty()
+                      ? std::string{}
+                      : authorized.diagnostics.front().detail);
+  }
+
+  const auto body_uuid = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_body_sblr_uuid:");
+  const auto body_generation_text = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_body_sblr_generation:");
+  const auto body_hex = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_body_bytes_hex:");
+  const auto body_sha_text = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_body_sha256:");
+  const auto abi_uuid = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_abi_uuid:");
+  const auto abi_generation_text = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_abi_generation:");
+  const auto effect_sha_text = TriggerLifecyclePayloadValue(
+      object->payload, "procedure_effect_set_sha256:");
+  std::uint64_t body_generation = 0;
+  std::uint64_t abi_generation = 0;
+  std::vector<std::uint8_t> body_bytes;
+  scratchbird::engine::sblr::SblrProceduralBodyV1 body;
+  std::string body_detail;
+  if (!canonical_non_nil_uuid_text(body_uuid) ||
+      !canonical_non_nil_uuid_text(abi_uuid) ||
+      !ParseTriggerLifecycleU64(body_generation_text, &body_generation) ||
+      !ParseTriggerLifecycleU64(abi_generation_text, &abi_generation) ||
+      body_generation == 0 || abi_generation == 0 ||
+      !ParseCanonicalHexBytes(body_hex, &body_bytes) ||
+      body_bytes.size() != scratchbird::engine::sblr::
+                               kSblrProceduralBodyV1Bytes ||
+      !scratchbird::engine::sblr::DecodeSblrProceduralBodyV1(
+          body_bytes.data(), body_bytes.size(), &body, &body_detail) ||
+      CanonicalUuidText(body.body_uuid) != body_uuid ||
+      CanonicalUuidText(body.procedure_uuid) != object->object_uuid ||
+      body.body_generation != body_generation ||
+      body.procedure_generation != object->executable_generation ||
+      scratchbird::core::hash::HexLower(body.effect_set_sha256) !=
+          effect_sha_text ||
+      scratchbird::core::hash::HexLower(
+          scratchbird::core::hash::ComputeSha256Digest(body_bytes).digest) !=
+          body_sha_text ||
+      object->stored_sblr_hash != "sha256:" + body_sha_text) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.procedure_invoke.body_authority_mismatch",
+                  body_detail);
+  }
+
+  std::unordered_set<std::string> identities{
+      view.receipt_uuid,
+      view.statement_uuid,
+      view.statement_snapshot_uuid,
+      view.statement_metadata_snapshot_uuid,
+      view.catalog_epoch_uuid,
+      view.security_context_uuid,
+      view.resource_admission_uuid,
+      view.owning_transaction_uuid,
+      context.database_uuid.canonical,
+      object->object_uuid,
+      body_uuid,
+      abi_uuid,
+  };
+  std::string invocation_uuid;
+  std::string argument_vector_uuid;
+  std::string output_descriptor_vector_uuid;
+  std::string result_set_shape_uuid;
+  std::string recovery_uuid;
+  std::string publication_barrier_uuid;
+  if (!generate_distinct_statement_context_uuid(&identities,
+                                                 &invocation_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities,
+                                                 &argument_vector_uuid) ||
+      !generate_distinct_statement_context_uuid(
+          &identities, &output_descriptor_vector_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities,
+                                                 &result_set_shape_uuid) ||
+      !generate_distinct_statement_context_uuid(&identities,
+                                                 &recovery_uuid) ||
+      !generate_distinct_statement_context_uuid(
+          &identities, &publication_barrier_uuid)) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
+                  "sblr.procedure_invoke.bind_identity_unavailable");
+  }
+  const std::string_view empty_argument_domain =
+      "ScratchBird.ProcedureArgumentVector.Empty.V1";
+  const auto argument_sha = scratchbird::core::hash::ComputeSha256Digest(
+      std::vector<std::uint8_t>(empty_argument_domain.begin(),
+                                empty_argument_domain.end())).digest;
+
+  scratchbird::engine::internal_api::SblrProcedureInvokeAuthorityInputV1
+      coordinator_input;
+  coordinator_input.invocation_uuid = TextToUuid(invocation_uuid);
+  coordinator_input.invocation_generation = 1;
+  coordinator_input.owning_transaction_uuid =
+      TextToUuid(view.owning_transaction_uuid);
+  coordinator_input.owning_local_transaction_id =
+      view.owning_local_transaction_id;
+  coordinator_input.statement_snapshot_uuid =
+      TextToUuid(view.statement_snapshot_uuid);
+  coordinator_input.catalog_epoch_uuid = TextToUuid(view.catalog_epoch_uuid);
+  coordinator_input.catalog_generation = view.catalog_generation_id;
+  coordinator_input.security_context_uuid =
+      TextToUuid(view.security_context_uuid);
+  coordinator_input.policy_snapshot_uuid = TextToUuid(
+      context.transaction_policy_snapshot_uuid.canonical);
+  coordinator_input.policy_generation =
+      context.transaction_policy_snapshot_generation;
+  coordinator_input.procedure_uuid = TextToUuid(object->object_uuid);
+  coordinator_input.procedure_generation = object->executable_generation;
+  coordinator_input.procedure_body_uuid = TextToUuid(body_uuid);
+  coordinator_input.procedure_body_generation = body_generation;
+  coordinator_input.procedure_body_sha256 =
+      scratchbird::core::hash::ComputeSha256Digest(body_bytes).digest;
+  coordinator_input.procedure_abi_uuid = TextToUuid(abi_uuid);
+  coordinator_input.procedure_abi_generation = abi_generation;
+  coordinator_input.argument_vector_uuid = TextToUuid(argument_vector_uuid);
+  coordinator_input.argument_count = 0;
+  coordinator_input.output_parameter_count = 0;
+  coordinator_input.invocation_flags = 0;
+  coordinator_input.argument_vector_sha256 = argument_sha;
+  coordinator_input.output_descriptor_vector_uuid =
+      TextToUuid(output_descriptor_vector_uuid);
+  coordinator_input.output_descriptor_vector_generation = 1;
+  coordinator_input.result_set_shape_uuid = TextToUuid(result_set_shape_uuid);
+  coordinator_input.result_set_shape_generation = 1;
+  coordinator_input.effect_set_sha256 = body.effect_set_sha256;
+  coordinator_input.recovery_uuid = TextToUuid(recovery_uuid);
+  coordinator_input.recovery_generation = 1;
+  coordinator_input.engine_snapshot_uuid =
+      TextToUuid(view.statement_metadata_snapshot_uuid);
+  coordinator_input.executor_availability_generation =
+      view.procedure_invoke_executor_availability_generation;
+  const auto coordinated = scratchbird::engine::internal_api::
+      CompileSblrProcedureInvokeDescriptor(coordinator_input);
+  if (!coordinated.ok) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
+                  coordinated.diagnostic.code,
+                  coordinated.diagnostic.message_key,
+                  coordinated.diagnostic.detail);
+  }
+  const auto descriptor_bytes = scratchbird::engine::sblr::
+      EncodeSblrProcedureInvokeDescriptorV1(coordinated.descriptor, false);
+  if (descriptor_bytes.empty()) {
+    return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR, "SBLR.OPERAND_INVALID",
+                  "sblr.procedure_invoke.bind_descriptor_invalid");
+  }
+
+  StatementProcedureInvokeAuthorityV1 authority;
+  authority.occurrence = request->occurrence;
+  authority.invocation_occurrence = request->invocation_occurrence;
+  authority.command_identity = request->command_identity;
+  authority.name_atoms = request->name_atoms;
+  authority.exact_bind_request_bytes = request->exact_bind_request_bytes;
+  authority.request_evidence_sha256 = request->request_evidence_sha256;
+  authority.canonical_procedure_path_utf8 = canonical_path;
+  authority.procedure_uuid = object->object_uuid;
+  authority.procedure_generation = object->executable_generation;
+  authority.procedure_metadata_epoch = object->metadata_epoch;
+  authority.schema_uuid = object->schema_uuid;
+  authority.database_uuid = context.database_uuid.canonical;
+  authority.owning_transaction_uuid = view.owning_transaction_uuid;
+  authority.owning_local_transaction_id = view.owning_local_transaction_id;
+  authority.statement_snapshot_uuid = view.statement_snapshot_uuid;
+  authority.catalog_epoch_uuid = view.catalog_epoch_uuid;
+  authority.catalog_generation = view.catalog_generation_id;
+  authority.security_context_uuid = view.security_context_uuid;
+  authority.security_epoch = view.security_epoch;
+  authority.policy_snapshot_uuid =
+      context.transaction_policy_snapshot_uuid.canonical;
+  authority.policy_generation =
+      context.transaction_policy_snapshot_generation;
+  authority.resource_grant_uuid = view.resource_admission_uuid;
+  authority.resource_generation = view.resource_epoch;
+  authority.body_sblr_uuid = body_uuid;
+  authority.body_sblr_generation = body_generation;
+  authority.body_sblr_sha256 = coordinator_input.procedure_body_sha256;
+  authority.canonical_body_sblr_bytes = std::move(body_bytes);
+  authority.procedure_abi_uuid = abi_uuid;
+  authority.procedure_abi_generation = abi_generation;
+  authority.argument_vector_uuid = argument_vector_uuid;
+  authority.argument_vector_generation = 1;
+  authority.argument_vector_sha256 = argument_sha;
+  authority.output_descriptor_vector_uuid = output_descriptor_vector_uuid;
+  authority.output_descriptor_vector_generation = 1;
+  authority.result_set_shape_uuid = result_set_shape_uuid;
+  authority.result_set_shape_generation = 1;
+  authority.effect_set_sha256 = body.effect_set_sha256;
+  authority.invocation_uuid = invocation_uuid;
+  authority.invocation_generation = 1;
+  authority.recovery_uuid = recovery_uuid;
+  authority.recovery_generation = 1;
+  authority.publication_barrier_uuid = publication_barrier_uuid;
+  authority.descriptor_evidence_sha256 = coordinated.descriptor.evidence;
+  authority.canonical_descriptor_bytes = descriptor_bytes;
+  authority.authorization_observation = context.authorization_context;
+
+  if (context.query_cancellation_requested &&
+      context.query_cancellation_requested()) {
+    return refuse(SB_ENGINE_STATUS_TIMEOUT, "PROCESS.CANCELLED",
+                  "sblr.procedure_invoke.cancelled_before_publish");
+  }
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED,
+                    "SECURITY.ACCESS_DENIED",
+                    "sblr.procedure_invoke.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        receipt.session != session || receipt.view.receipt_uuid != view.receipt_uuid ||
+        receipt.engine_context.transaction_uuid.canonical !=
+            context.transaction_uuid.canonical ||
+        receipt.engine_context.catalog_generation_id !=
+            context.catalog_generation_id ||
+        receipt.engine_context.security_epoch != context.security_epoch ||
+        receipt.engine_context.resource_epoch != context.resource_epoch ||
+        receipt.view.procedure_invoke_executor_availability_generation !=
+            view.procedure_invoke_executor_availability_generation) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.procedure_invoke.bind_publish_stale");
+    }
+    const auto existing_authority =
+        receipt.statement_procedure_invoke_authorities.find(key);
+    if (existing_authority !=
+        receipt.statement_procedure_invoke_authorities.end()) {
+      if (existing_authority->second.exact_bind_request_bytes ==
+          request->exact_bind_request_bytes) {
+        *out_authority = existing_authority->second;
+        return SB_ENGINE_STATUS_OK;
+      }
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.procedure_invoke.bind_replay_conflict");
+    }
+    const auto inserted = receipt.statement_procedure_invoke_authorities.emplace(
+        key, std::move(authority));
+    if (!inserted.second) {
+      return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                    "sblr.procedure_invoke.bind_publish_conflict");
+    }
+    *out_authority = inserted.first->second;
+  }
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t CopyStatementProcedureInvokeAuthorityV1(
+    StatementContextReceiptHandle receipt_handle, std::uint64_t occurrence,
+    std::uint32_t invocation_occurrence,
+    StatementProcedureInvokeAuthorityV1* out_authority,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_authority != nullptr) *out_authority = {};
+  if (!receipt_handle || occurrence == 0 || invocation_occurrence == 0 ||
+      out_authority == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4131,
+                       "SBLR.OPERAND_INVALID",
+                       "sblr.procedure_invoke.authority_lookup_invalid");
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live =
+      g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4131,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.procedure_invoke.authority_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  if (live->second->released ||
+      live->second->magic != kStatementContextReceiptMagic) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4131,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.procedure_invoke.authority_hidden");
+  }
+  const auto found =
+      live->second->statement_procedure_invoke_authorities.find(
+          std::make_pair(occurrence, invocation_occurrence));
+  if (found == live->second->statement_procedure_invoke_authorities.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4131,
+                       "SECURITY.ACCESS_DENIED",
+                       "sblr.procedure_invoke.authority_hidden");
   }
   *out_authority = found->second;
   return SB_ENGINE_STATUS_OK;
@@ -18290,6 +19400,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_create_trigger_owned_cancellation_candidate = false;
   bool ddl_alter_trigger_owned_cancellation_candidate = false;
   bool ddl_drop_trigger_owned_cancellation_candidate = false;
+  bool ddl_create_procedure_owned_cancellation_candidate = false;
+  bool procedure_invoke_owned_cancellation_candidate = false;
   std::uint32_t physical_operation_magic = 0;
   if (probe_u32(0, &physical_operation_magic) &&
       physical_operation_magic ==
@@ -18313,6 +19425,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
       ddl_create_trigger_owned_cancellation_candidate = opcode_code == 1551;
       ddl_alter_trigger_owned_cancellation_candidate = opcode_code == 1552;
       ddl_drop_trigger_owned_cancellation_candidate = opcode_code == 1553;
+      ddl_create_procedure_owned_cancellation_candidate = opcode_code == 1554;
+      procedure_invoke_owned_cancellation_candidate = opcode_code == 1030;
     }
   } else if (physical_operation_magic ==
              scratchbird::engine::sblr::kSblrOpcodeStreamMagic) {
@@ -18340,6 +19454,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
     bool contains_ddl_create_trigger_code = false;
     bool contains_ddl_alter_trigger_code = false;
     bool contains_ddl_drop_trigger_code = false;
+    bool contains_ddl_create_procedure_code = false;
+    bool contains_procedure_invoke_code = false;
     for (std::uint32_t index = 0; bounded && index != record_count; ++index) {
       std::uint64_t record_size = 0;
       bounded = probe_u64(offset, &record_size) &&
@@ -18367,6 +19483,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         contains_ddl_create_trigger_code |= opcode_code == 1551;
         contains_ddl_alter_trigger_code |= opcode_code == 1552;
         contains_ddl_drop_trigger_code |= opcode_code == 1553;
+        contains_ddl_create_procedure_code |= opcode_code == 1554;
+        contains_procedure_invoke_code |= opcode_code == 1030;
       }
       offset = record_offset + static_cast<std::size_t>(record_size);
     }
@@ -18398,6 +19516,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
         contains_ddl_alter_trigger_code;
     ddl_drop_trigger_owned_cancellation_candidate =
         contains_ddl_drop_trigger_code;
+    ddl_create_procedure_owned_cancellation_candidate =
+        contains_ddl_create_procedure_code;
+    procedure_invoke_owned_cancellation_candidate =
+        contains_procedure_invoke_code;
   }
   const bool physical_opcode_stream =
       physical_operation_magic ==
@@ -18606,6 +19728,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
       !ddl_create_trigger_owned_cancellation_candidate &&
       !ddl_alter_trigger_owned_cancellation_candidate &&
       !ddl_drop_trigger_owned_cancellation_candidate &&
+      !ddl_create_procedure_owned_cancellation_candidate &&
+      !procedure_invoke_owned_cancellation_candidate &&
       cancellation_observed()) {
     return fail_result(SB_ENGINE_STATUS_TIMEOUT, out_result, 4062,
                        "PROCESS.CANCELLED",
@@ -20274,6 +21398,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
   StatementDdlCreateTriggerAuthorityV1* ddl_create_trigger_authority = nullptr;
   StatementDdlAlterTriggerAuthorityV1* ddl_alter_trigger_authority = nullptr;
   StatementDdlDropTriggerAuthorityV1* ddl_drop_trigger_authority = nullptr;
+  StatementDdlCreateProcedureAuthorityV1* ddl_create_procedure_authority =
+      nullptr;
+  StatementProcedureInvokeAuthorityV1* procedure_invoke_authority = nullptr;
   StatementDdlCreateSchemaAuthorityV1* ddl_create_schema_authority = nullptr;
   StatementCatalogIntrospectAuthorityV1* catalog_introspect_authority =
       nullptr;
@@ -20517,6 +21644,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         !ddl_create_trigger_owned_cancellation_candidate &&
         !ddl_alter_trigger_owned_cancellation_candidate &&
         !ddl_drop_trigger_owned_cancellation_candidate &&
+        !ddl_create_procedure_owned_cancellation_candidate &&
+        !procedure_invoke_owned_cancellation_candidate &&
         cancellation_observed();
     stream_admission.resource_budget_available =
         resource_guard.ledger != nullptr && !resource_guard.token_id.empty();
@@ -25771,7 +26900,158 @@ sb_engine_status_t DispatchStatementContextReceipt(
     if(compare_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="comparison_descriptor"||member.operands.front().name!="compare"||!scratchbird::engine::sblr::DecodeSblrCompareDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&compare_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4078,"SBLR.OPERAND_INVALID","sblr.compare.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrCompareExecutorId,1027,"1.0",scratchbird::engine::internal_api::kSblrCompareOperandDescriptorId,scratchbird::engine::internal_api::kSblrCompareResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=compare_descriptor.availability_generation||a.snapshot.generation!=view.compare_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4078,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.compare.executor_unavailable");compare_availability_generation=a.snapshot.generation;}
     if(domain_operation_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="domain_operation_descriptor"||member.operands.front().name!="domain_operation"||!scratchbird::engine::sblr::DecodeSblrDomainOperationDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&domain_operation_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4080,"SBLR.OPERAND_INVALID","sblr.domain_operation.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDomainOperationExecutorId,1028,"1.0",scratchbird::engine::internal_api::kSblrDomainOperationOperandDescriptorId,scratchbird::engine::internal_api::kSblrDomainOperationResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=domain_operation_descriptor.availability_generation||a.snapshot.generation!=view.domain_operation_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4080,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.domain_operation.executor_unavailable");domain_operation_availability_generation=a.snapshot.generation;}
     if(udr_invoke_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="registered_cpp_udr_invocation"||member.operands.front().name!="udr"||!scratchbird::engine::sblr::DecodeSblrUdrInvokeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&udr_invoke_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4082,"SBLR.OPERAND_INVALID","sblr.udr_invoke.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrUdrInvokeExecutorId,1029,"1.0",scratchbird::engine::internal_api::kSblrUdrInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrUdrInvokeResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=udr_invoke_descriptor.availability||a.snapshot.generation!=view.udr_invoke_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4082,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.udr_invoke.executor_unavailable");udr_invoke_availability_generation=a.snapshot.generation;}
-    if(procedure_invoke_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="procedure_invoke_descriptor"||member.operands.front().name!="procedure"||!scratchbird::engine::sblr::DecodeSblrProcedureInvokeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&procedure_invoke_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4084,"SBLR.OPERAND_INVALID","sblr.procedure_invoke.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrProcedureInvokeExecutorId,1030,"1.0",scratchbird::engine::internal_api::kSblrProcedureInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrProcedureInvokeResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=procedure_invoke_descriptor.availability||a.snapshot.generation!=view.procedure_invoke_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4084,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.procedure_invoke.executor_unavailable");procedure_invoke_availability_generation=a.snapshot.generation;}
+    if (procedure_invoke_root) {
+      std::string detail;
+      if (member.operands.size() != 1 ||
+          member.operands.front().type != "procedure_invoke_descriptor" ||
+          member.operands.front().name != "procedure" ||
+          member.operands.front().value_kind !=
+              scratchbird::engine::sblr::SblrValueKind::
+                  procedure_invoke_descriptor ||
+          !scratchbird::engine::sblr::DecodeSblrProcedureInvokeDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(),
+              &procedure_invoke_descriptor, &detail, true)) {
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4084,
+                           "SBLR.OPERAND_INVALID",
+                           "sblr.procedure_invoke.operand_invalid", detail);
+      }
+      scratchbird::engine::internal_api::SblrProcedureInvokeAuthorityInputV1
+          decoded_authority;
+      if (!scratchbird::engine::internal_api::
+              DecodeSblrProcedureInvokeAuthorityInputV1(
+                  procedure_invoke_descriptor, &decoded_authority, &detail)) {
+        return fail_result(
+            SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4084,
+            "SBLR.OPERAND_INVALID",
+            "sblr.procedure_invoke.descriptor_authority_invalid", detail);
+      }
+      for (auto& [authority_key, candidate] :
+           receipt->statement_procedure_invoke_authorities) {
+        (void)authority_key;
+        auto exact_operand = candidate.canonical_descriptor_bytes;
+        if (exact_operand.size() != member.operands.front().value_body.size() ||
+            exact_operand.size() < 4 || exact_operand[0] != 'P' ||
+            exact_operand[1] != 'I' || exact_operand[2] != 'D' ||
+            exact_operand[3] != 'D') {
+          continue;
+        }
+        exact_operand[3] = 'O';
+        if (exact_operand != member.operands.front().value_body) continue;
+        if (procedure_invoke_authority != nullptr) {
+          return fail_result(
+              SB_ENGINE_STATUS_CONFLICT, out_result, 4084,
+              "MGA.AUTHORITY_MISMATCH",
+              "sblr.procedure_invoke.descriptor_authority_ambiguous");
+        }
+        procedure_invoke_authority = &candidate;
+      }
+      if (procedure_invoke_authority == nullptr) {
+        return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4084,
+                           "SECURITY.ACCESS_DENIED",
+                           "sblr.procedure_invoke.authority_hidden");
+      }
+      const auto authority_matches =
+          decoded_authority.invocation_uuid ==
+              TextToUuid(procedure_invoke_authority->invocation_uuid) &&
+          decoded_authority.invocation_generation ==
+              procedure_invoke_authority->invocation_generation &&
+          decoded_authority.owning_transaction_uuid ==
+              TextToUuid(procedure_invoke_authority->owning_transaction_uuid) &&
+          decoded_authority.owning_local_transaction_id ==
+              procedure_invoke_authority->owning_local_transaction_id &&
+          decoded_authority.statement_snapshot_uuid ==
+              TextToUuid(procedure_invoke_authority->statement_snapshot_uuid) &&
+          decoded_authority.catalog_epoch_uuid ==
+              TextToUuid(procedure_invoke_authority->catalog_epoch_uuid) &&
+          decoded_authority.catalog_generation ==
+              procedure_invoke_authority->catalog_generation &&
+          decoded_authority.security_context_uuid ==
+              TextToUuid(procedure_invoke_authority->security_context_uuid) &&
+          decoded_authority.policy_snapshot_uuid ==
+              TextToUuid(procedure_invoke_authority->policy_snapshot_uuid) &&
+          decoded_authority.policy_generation ==
+              procedure_invoke_authority->policy_generation &&
+          decoded_authority.procedure_uuid ==
+              TextToUuid(procedure_invoke_authority->procedure_uuid) &&
+          decoded_authority.procedure_generation ==
+              procedure_invoke_authority->procedure_generation &&
+          decoded_authority.procedure_body_uuid ==
+              TextToUuid(procedure_invoke_authority->body_sblr_uuid) &&
+          decoded_authority.procedure_body_generation ==
+              procedure_invoke_authority->body_sblr_generation &&
+          decoded_authority.procedure_body_sha256 ==
+              procedure_invoke_authority->body_sblr_sha256 &&
+          decoded_authority.procedure_abi_uuid ==
+              TextToUuid(procedure_invoke_authority->procedure_abi_uuid) &&
+          decoded_authority.procedure_abi_generation ==
+              procedure_invoke_authority->procedure_abi_generation &&
+          decoded_authority.argument_vector_uuid ==
+              TextToUuid(procedure_invoke_authority->argument_vector_uuid) &&
+          decoded_authority.argument_count == 0 &&
+          decoded_authority.output_parameter_count == 0 &&
+          decoded_authority.invocation_flags == 0 &&
+          decoded_authority.argument_vector_sha256 ==
+              procedure_invoke_authority->argument_vector_sha256 &&
+          decoded_authority.output_descriptor_vector_uuid ==
+              TextToUuid(
+                  procedure_invoke_authority->output_descriptor_vector_uuid) &&
+          decoded_authority.output_descriptor_vector_generation ==
+              procedure_invoke_authority
+                  ->output_descriptor_vector_generation &&
+          decoded_authority.result_set_shape_uuid ==
+              TextToUuid(procedure_invoke_authority->result_set_shape_uuid) &&
+          decoded_authority.result_set_shape_generation ==
+              procedure_invoke_authority->result_set_shape_generation &&
+          decoded_authority.effect_set_sha256 ==
+              procedure_invoke_authority->effect_set_sha256 &&
+          decoded_authority.recovery_uuid ==
+              TextToUuid(procedure_invoke_authority->recovery_uuid) &&
+          decoded_authority.recovery_generation ==
+              procedure_invoke_authority->recovery_generation &&
+          decoded_authority.engine_snapshot_uuid ==
+              TextToUuid(view.statement_metadata_snapshot_uuid) &&
+          procedure_invoke_descriptor.evidence ==
+              procedure_invoke_authority->descriptor_evidence_sha256 &&
+          procedure_invoke_descriptor.availability ==
+              view.procedure_invoke_executor_availability_generation;
+      if (!authority_matches) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4084,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.procedure_invoke.descriptor_authority_mismatch");
+      }
+      if (!procedure_invoke_authority->terminal_result_published) {
+        scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity
+            identity{
+                scratchbird::engine::internal_api::
+                    kSblrProcedureInvokeExecutorId,
+                1030, "1.0",
+                scratchbird::engine::internal_api::
+                    kSblrProcedureInvokeOperandDescriptorId,
+                scratchbird::engine::internal_api::
+                    kSblrProcedureInvokeResultDescriptorId,
+                1};
+        const auto availability = scratchbird::engine::internal_api::
+            LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,
+                                                 identity);
+        if (!availability.ok || !availability.snapshot.installed ||
+            availability.snapshot.generation !=
+                procedure_invoke_descriptor.availability ||
+            availability.snapshot.generation !=
+                view.procedure_invoke_executor_availability_generation) {
+          return fail_result(
+              SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4084,
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "sblr.procedure_invoke.executor_unavailable");
+        }
+        procedure_invoke_availability_generation =
+            availability.snapshot.generation;
+      } else {
+        procedure_invoke_availability_generation =
+            procedure_invoke_descriptor.availability;
+      }
+    }
     if(function_invoke_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="function_invoke_descriptor"||member.operands.front().name!="function"||!scratchbird::engine::sblr::DecodeSblrFunctionInvokeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&function_invoke_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4086,"SBLR.OPERAND_INVALID","sblr.function_invoke.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrFunctionInvokeExecutorId,1031,"1.0",scratchbird::engine::internal_api::kSblrFunctionInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrFunctionInvokeResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=function_invoke_descriptor.availability||a.snapshot.generation!=view.function_invoke_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4086,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.function_invoke.executor_unavailable");function_invoke_availability_generation=a.snapshot.generation;}
     if(aggregate_invoke_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="aggregate_invoke_descriptor"||member.operands.front().name!="aggregate"||!scratchbird::engine::sblr::DecodeSblrAggregateInvokeDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&aggregate_invoke_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4088,"SBLR.OPERAND_INVALID","sblr.aggregate_invoke.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrAggregateInvokeExecutorId,1032,"1.0",scratchbird::engine::internal_api::kSblrAggregateInvokeOperandDescriptorId,scratchbird::engine::internal_api::kSblrAggregateInvokeResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=aggregate_invoke_descriptor.availability||a.snapshot.generation!=view.aggregate_invoke_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4088,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.aggregate_invoke.executor_unavailable");aggregate_invoke_availability_generation=a.snapshot.generation;}
     if(sequence_nextval_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="sequence_nextval_descriptor"||member.operands.front().name!="sequence"||!scratchbird::engine::sblr::DecodeSblrSequenceNextvalDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&sequence_nextval_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4090,"SBLR.OPERAND_INVALID","sblr.sequence_nextval.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrSequenceNextvalExecutorId,1033,"1.0",scratchbird::engine::internal_api::kSblrSequenceNextvalOperandDescriptorId,scratchbird::engine::internal_api::kSblrSequenceNextvalResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=sequence_nextval_descriptor.availability||a.snapshot.generation!=view.sequence_nextval_executor_availability_generation)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4090,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.sequence_nextval.executor_unavailable");sequence_nextval_availability_generation=a.snapshot.generation;}
@@ -26383,7 +27663,164 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
             ddl_drop_trigger_descriptor.availability;
       }
     }
-    if(ddl_create_procedure_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="create_procedure_descriptor"||member.operands.front().name!="procedure"||!scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_create_procedure_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4127,"SBLR.OPERAND_INVALID","sblr.ddl_create_procedure.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlCreateProcedureExecutorId,1554,"1.0",scratchbird::engine::internal_api::kSblrDdlCreateProcedureOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlCreateProcedureResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_create_procedure_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4127,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_create_procedure.executor_unavailable");ddl_create_procedure_availability_generation=a.snapshot.generation;}
+    if (ddl_create_procedure_root) {
+      std::string detail;
+      if (member.operands.size() != 1 ||
+          member.operands.front().type != "create_procedure_descriptor" ||
+          member.operands.front().name != "procedure" ||
+          member.operands.front().value_kind !=
+              scratchbird::engine::sblr::SblrValueKind::
+                  create_procedure_descriptor ||
+          !scratchbird::engine::sblr::
+              DecodeSblrDdlCreateProcedureDescriptorV1(
+                  member.operands.front().value_body.data(),
+                  member.operands.front().value_body.size(),
+                  &ddl_create_procedure_descriptor, &detail, true)) {
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4127,
+                           "SBLR.OPERAND_INVALID",
+                           "sblr.ddl_create_procedure.operand_invalid", detail);
+      }
+      scratchbird::engine::internal_api::
+          SblrDdlCreateProcedureAuthorityInputV1 decoded_authority;
+      if (!scratchbird::engine::internal_api::
+              DecodeSblrDdlCreateProcedureAuthorityInputV1(
+                  ddl_create_procedure_descriptor, &decoded_authority,
+                  &detail)) {
+        return fail_result(
+            SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4127,
+            "SBLR.OPERAND_INVALID",
+            "sblr.ddl_create_procedure.descriptor_authority_invalid", detail);
+      }
+      const auto authority_key = std::make_pair(
+          decoded_authority.occurrence,
+          decoded_authority.procedure_occurrence);
+      const auto authority =
+          receipt->statement_ddl_create_procedure_authorities.find(
+              authority_key);
+      if (authority ==
+          receipt->statement_ddl_create_procedure_authorities.end()) {
+        return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4127,
+                           "SECURITY.ACCESS_DENIED",
+                           "sblr.ddl_create_procedure.authority_hidden");
+      }
+      ddl_create_procedure_authority = &authority->second;
+      auto exact_operand =
+          ddl_create_procedure_authority->canonical_descriptor_bytes;
+      if (exact_operand.size() != member.operands.front().value_body.size() ||
+          exact_operand.size() < 4 || exact_operand[0] != 'P' ||
+          exact_operand[1] != 'C' || exact_operand[2] != 'D' ||
+          exact_operand[3] != 'X') {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.bound_descriptor_invalid");
+      }
+      exact_operand[3] = 'O';
+      const auto authority_matches =
+          exact_operand == member.operands.front().value_body &&
+          decoded_authority.receipt == TextToUuid(view.receipt_uuid) &&
+          decoded_authority.occurrence ==
+              ddl_create_procedure_authority->occurrence &&
+          decoded_authority.procedure_occurrence ==
+              ddl_create_procedure_authority->procedure_occurrence &&
+          decoded_authority.command_identity ==
+              ddl_create_procedure_authority->command_identity &&
+          decoded_authority.body_profile ==
+              ddl_create_procedure_authority->body_profile &&
+          decoded_authority.procedure_uuid ==
+              TextToUuid(ddl_create_procedure_authority->procedure_uuid) &&
+          decoded_authority.procedure_generation ==
+              ddl_create_procedure_authority->procedure_generation &&
+          decoded_authority.schema_uuid ==
+              TextToUuid(ddl_create_procedure_authority->schema_uuid) &&
+          decoded_authority.schema_generation ==
+              ddl_create_procedure_authority->schema_generation &&
+          decoded_authority.owning_transaction_uuid ==
+              TextToUuid(
+                  ddl_create_procedure_authority->owning_transaction_uuid) &&
+          decoded_authority.owning_local_transaction_id ==
+              ddl_create_procedure_authority->owning_local_transaction_id &&
+          decoded_authority.statement_snapshot_uuid ==
+              TextToUuid(
+                  ddl_create_procedure_authority->statement_snapshot_uuid) &&
+          decoded_authority.catalog_epoch_uuid ==
+              TextToUuid(ddl_create_procedure_authority->catalog_epoch_uuid) &&
+          decoded_authority.catalog_generation ==
+              ddl_create_procedure_authority->catalog_generation &&
+          decoded_authority.security_context_uuid ==
+              TextToUuid(
+                  ddl_create_procedure_authority->security_context_uuid) &&
+          decoded_authority.security_epoch ==
+              ddl_create_procedure_authority->security_epoch &&
+          decoded_authority.policy_snapshot_uuid ==
+              TextToUuid(ddl_create_procedure_authority->policy_snapshot_uuid) &&
+          decoded_authority.policy_generation ==
+              ddl_create_procedure_authority->policy_generation &&
+          decoded_authority.resource_grant_uuid ==
+              TextToUuid(ddl_create_procedure_authority->resource_grant_uuid) &&
+          decoded_authority.resource_generation ==
+              ddl_create_procedure_authority->resource_generation &&
+          decoded_authority.owner_principal_uuid ==
+              TextToUuid(ddl_create_procedure_authority->owner_principal_uuid) &&
+          decoded_authority.body_sblr_uuid ==
+              TextToUuid(ddl_create_procedure_authority->body_sblr_uuid) &&
+          decoded_authority.body_sblr_generation ==
+              ddl_create_procedure_authority->body_sblr_generation &&
+          decoded_authority.body_sblr_sha256 ==
+              ddl_create_procedure_authority->body_sblr_sha256 &&
+          decoded_authority.procedure_abi_uuid ==
+              TextToUuid(ddl_create_procedure_authority->procedure_abi_uuid) &&
+          decoded_authority.procedure_abi_generation ==
+              ddl_create_procedure_authority->procedure_abi_generation &&
+          decoded_authority.effect_set_sha256 ==
+              ddl_create_procedure_authority->effect_set_sha256 &&
+          decoded_authority.recovery_uuid ==
+              TextToUuid(ddl_create_procedure_authority->recovery_uuid) &&
+          decoded_authority.recovery_generation ==
+              ddl_create_procedure_authority->recovery_generation &&
+          decoded_authority.request_evidence_sha256 ==
+              ddl_create_procedure_authority->request_evidence_sha256 &&
+          ddl_create_procedure_descriptor.evidence ==
+              ddl_create_procedure_authority->descriptor_evidence_sha256 &&
+          ddl_create_procedure_descriptor.availability ==
+              view.ddl_create_procedure_executor_availability_generation;
+      if (!authority_matches) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.descriptor_authority_mismatch");
+      }
+      if (!ddl_create_procedure_authority->terminal_result_published) {
+        scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity
+            identity{
+                scratchbird::engine::internal_api::
+                    kSblrDdlCreateProcedureExecutorId,
+                1554, "1.0",
+                scratchbird::engine::internal_api::
+                    kSblrDdlCreateProcedureOperandDescriptorId,
+                scratchbird::engine::internal_api::
+                    kSblrDdlCreateProcedureResultDescriptorId,
+                1};
+        const auto availability = scratchbird::engine::internal_api::
+            LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,
+                                                 identity);
+        if (!availability.ok || !availability.snapshot.installed ||
+            availability.snapshot.generation !=
+                ddl_create_procedure_descriptor.availability ||
+            availability.snapshot.generation !=
+                view.ddl_create_procedure_executor_availability_generation) {
+          return fail_result(
+              SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4127,
+              "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+              "sblr.ddl_create_procedure.executor_unavailable");
+        }
+        ddl_create_procedure_availability_generation =
+            availability.snapshot.generation;
+      } else {
+        ddl_create_procedure_availability_generation =
+            ddl_create_procedure_descriptor.availability;
+      }
+    }
     if(ddl_alter_procedure_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="alter_procedure_descriptor"||member.operands.front().name!="procedure"||!scratchbird::engine::sblr::DecodeSblrDdlAlterProcedureDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_alter_procedure_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4128,"SBLR.OPERAND_INVALID","sblr.ddl_alter_procedure.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlAlterProcedureExecutorId,1555,"1.0",scratchbird::engine::internal_api::kSblrDdlAlterProcedureOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlAlterProcedureResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_alter_procedure_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4128,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_alter_procedure.executor_unavailable");ddl_alter_procedure_availability_generation=a.snapshot.generation;}
     if(ddl_drop_procedure_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="drop_procedure_descriptor"||member.operands.front().name!="procedure"||!scratchbird::engine::sblr::DecodeSblrDdlDropProcedureDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_drop_procedure_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4129,"SBLR.OPERAND_INVALID","sblr.ddl_drop_procedure.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlDropProcedureExecutorId,1556,"1.0",scratchbird::engine::internal_api::kSblrDdlDropProcedureOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlDropProcedureResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_drop_procedure_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4129,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_drop_procedure.executor_unavailable");ddl_drop_procedure_availability_generation=a.snapshot.generation;}
     if(ddl_create_function_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="create_function_descriptor"||member.operands.front().name!="function"||!scratchbird::engine::sblr::DecodeSblrDdlCreateFunctionDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&ddl_create_function_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4130,"SBLR.OPERAND_INVALID","sblr.ddl_create_function.operand_invalid",detail);scratchbird::engine::internal_api::SblrExecutorAvailabilityRowIdentity id{scratchbird::engine::internal_api::kSblrDdlCreateFunctionExecutorId,1557,"1.0",scratchbird::engine::internal_api::kSblrDdlCreateFunctionOperandDescriptorId,scratchbird::engine::internal_api::kSblrDdlCreateFunctionResultDescriptorId,1};const auto a=scratchbird::engine::internal_api::LoadSblrExecutorAvailabilitySnapshot(receipt->engine_context,id);if(!a.ok||!a.snapshot.installed||a.snapshot.generation!=ddl_create_function_descriptor.availability)return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4130,"SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.ddl_create_function.executor_unavailable");ddl_create_function_availability_generation=a.snapshot.generation;}
@@ -26727,12 +28164,14 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
             "private_dml_plan_import_rows_consumer");
       }
       if (ddl_create_trigger_root || ddl_alter_trigger_root ||
-          ddl_drop_trigger_root) {
-        // The receipt-private trigger executor owns the exact cancellation
-        // checkpoints around descriptor revalidation, catalog mutation, and
-        // terminal TVRS publication. The generic semantic dispatcher is only
-        // the structural/API-admission leg for this root and must not consume
-        // the cancellation observation before those owned boundaries.
+          ddl_drop_trigger_root || ddl_create_procedure_root ||
+          procedure_invoke_root) {
+        // These receipt-private executors own the exact cancellation
+        // checkpoints around descriptor revalidation, lifecycle mutation or
+        // invocation, and immutable terminal-result publication. The generic
+        // semantic dispatcher is only the structural/API-admission leg and
+        // must not consume the cancellation observation before those owned
+        // boundaries.
         dispatch_context.query_cancellation_requested = {};
       }
       dispatched = scratchbird::engine::sblr::DispatchSblrOperation(
@@ -28229,7 +29668,335 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   std::vector<std::uint8_t> compare_result_bytes;if(compare_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_compare");auto consumed=scratchbird::engine::internal_api::ConsumeSblrCompareDescriptor(c,compare_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4079,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrCompareResultV1 rr;std::copy_n(compare_descriptor.canonical_body.begin(),16,rr.comparison_uuid.begin());rr.comparison_generation=1;rr.availability_generation=compare_availability_generation;rr.publication_barrier[0]=1;compare_result_bytes=scratchbird::engine::sblr::EncodeSblrCompareResultV1(rr);if(compare_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4079,"COMPARE.EXECUTION_FAILED","sblr.compare.result_encoding_failed");}
   std::vector<std::uint8_t> domain_operation_result_bytes;if(domain_operation_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_domain_operation");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDomainOperationDescriptor(c,domain_operation_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4081,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDomainOperationResultV1 rr;rr.canonical_body[0]=1;rr.canonical_body[40]=0;rr.availability_generation=domain_operation_availability_generation;domain_operation_result_bytes=scratchbird::engine::sblr::EncodeSblrDomainOperationResultV1(rr);if(domain_operation_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4081,"DOMAIN.OPERATION_FAILED","sblr.domain_operation.result_encoding_failed");}
   std::vector<std::uint8_t> udr_invoke_result_bytes;if(udr_invoke_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_udr_invoke");auto consumed=scratchbird::engine::internal_api::ConsumeSblrUdrInvokeDescriptor(c,udr_invoke_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4083,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrUdrInvokeResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.availability=udr_invoke_availability_generation;rr.barrier[0]=1;udr_invoke_result_bytes=scratchbird::engine::sblr::EncodeSblrUdrInvokeResultV1(rr);if(udr_invoke_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4083,"UDR.EXECUTION_FAILED","sblr.udr_invoke.result_encoding_failed");}
-  std::vector<std::uint8_t> procedure_invoke_result_bytes;if(procedure_invoke_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_procedure_invoke");auto consumed=scratchbird::engine::internal_api::ConsumeSblrProcedureInvokeDescriptor(c,procedure_invoke_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4085,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrProcedureInvokeResultV1 rr;rr.body[0]=1;rr.body[24]=1;rr.availability=procedure_invoke_availability_generation;rr.barrier[0]=1;procedure_invoke_result_bytes=scratchbird::engine::sblr::EncodeSblrProcedureInvokeResultV1(rr);if(procedure_invoke_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4085,"PROCEDURE.EXECUTION_FAILED","sblr.procedure_invoke.result_encoding_failed");}
+  std::vector<std::uint8_t> procedure_invoke_result_bytes;
+  if (procedure_invoke_root) {
+    if (procedure_invoke_authority == nullptr ||
+        receipt->engine_context.statement_transaction_inventory_snapshot ==
+            nullptr) {
+      return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4085,
+                         "SECURITY.ACCESS_DENIED",
+                         "sblr.procedure_invoke.result_authority_hidden");
+    }
+
+    const bool terminal_replay =
+        procedure_invoke_authority->terminal_result_published;
+    if (terminal_replay) {
+      procedure_invoke_result_bytes =
+          procedure_invoke_authority->canonical_terminal_result_bytes;
+    } else {
+      const auto& execution_context = receipt->engine_context;
+      const auto inventory_fence = scratchbird::storage::database::
+          RevalidateLocalTransactionInventorySnapshot(
+              *execution_context.statement_transaction_inventory_snapshot);
+      if (!inventory_fence.ok() && !statement_snapshot_matches()) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.procedure_invoke.transaction_inventory_stale",
+            statement_snapshot_mismatch_detail);
+      }
+      if (cancellation_observed()) {
+        return fail_result(
+            SB_ENGINE_STATUS_TIMEOUT, out_result, 4085,
+            "PROCESS.CANCELLED",
+            "sblr.procedure_invoke.cancelled_before_lifecycle_lookup");
+      }
+      const auto context_matches =
+          execution_context.database_uuid.canonical ==
+              procedure_invoke_authority->database_uuid &&
+          execution_context.transaction_uuid.canonical ==
+              procedure_invoke_authority->owning_transaction_uuid &&
+          execution_context.local_transaction_id ==
+              procedure_invoke_authority->owning_local_transaction_id &&
+          execution_context.statement_snapshot_uuid.canonical ==
+              procedure_invoke_authority->statement_snapshot_uuid &&
+          execution_context.catalog_epoch_uuid.canonical ==
+              procedure_invoke_authority->catalog_epoch_uuid &&
+          execution_context.catalog_generation_id ==
+              procedure_invoke_authority->catalog_generation &&
+          view.security_context_uuid ==
+              procedure_invoke_authority->security_context_uuid &&
+          execution_context.security_epoch ==
+              procedure_invoke_authority->security_epoch &&
+          execution_context.transaction_policy_snapshot_uuid.canonical ==
+              procedure_invoke_authority->policy_snapshot_uuid &&
+          execution_context.transaction_policy_snapshot_generation ==
+              procedure_invoke_authority->policy_generation &&
+          execution_context.resource_admission_uuid.canonical ==
+              procedure_invoke_authority->resource_grant_uuid &&
+          execution_context.resource_epoch ==
+              procedure_invoke_authority->resource_generation &&
+          execution_context.authorization_context.present &&
+          execution_context.authorization_context.authority_uuid.canonical ==
+              procedure_invoke_authority->authorization_observation
+                  .authority_uuid.canonical &&
+          execution_context.authorization_context
+                  .security_context_generation ==
+              procedure_invoke_authority->authorization_observation
+                  .security_context_generation;
+      if (!context_matches) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.procedure_invoke.execution_authority_stale");
+      }
+      const auto exact_transaction =
+          scratchbird::transaction::mga::LookupLocalTransaction(
+              execution_context.statement_transaction_inventory_snapshot
+                  ->inventory,
+              scratchbird::transaction::mga::MakeLocalTransactionId(
+                  execution_context.local_transaction_id));
+      if (!exact_transaction.ok() ||
+          !statement_context_transaction_active(exact_transaction.entry.state) ||
+          !exact_transaction.entry.identity.transaction_uuid.valid() ||
+          scratchbird::core::uuid::UuidToString(
+              exact_transaction.entry.identity.transaction_uuid.value) !=
+              execution_context.transaction_uuid.canonical) {
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
+                           "MGA.TRANSACTION_INVALID",
+                           "sblr.procedure_invoke.transaction_invalid");
+      }
+
+      scratchbird::engine::internal_api::EngineAuthorizeRequest authorize;
+      authorize.context = execution_context;
+      authorize.target_object.uuid.canonical =
+          procedure_invoke_authority->procedure_uuid;
+      authorize.target_object.object_kind = "procedure";
+      authorize.required_right = "EXECUTE";
+      const auto authorized =
+          scratchbird::engine::internal_api::EngineAuthorize(authorize);
+      if (!authorized.ok || !authorized.authorized) {
+        const auto diagnostic =
+            authorized.diagnostics.empty()
+                ? scratchbird::engine::internal_api::EngineApiDiagnostic{}
+                : authorized.diagnostics.front();
+        return fail_result(
+            SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4085,
+            diagnostic.code.empty() ? "SECURITY.ACCESS_DENIED"
+                                    : diagnostic.code,
+            "sblr.procedure_invoke.execution_authorization_denied",
+            diagnostic.detail);
+      }
+      if (cancellation_observed()) {
+        return fail_result(
+            SB_ENGINE_STATUS_TIMEOUT, out_result, 4085,
+            "PROCESS.CANCELLED",
+            "sblr.procedure_invoke.cancelled_before_invocation");
+      }
+
+      scratchbird::engine::internal_api::EngineInvokeExecutableObjectRequest
+          invoke;
+      invoke.context = execution_context;
+      invoke.context.statement_metadata_snapshot_engine_owned = true;
+      invoke.context.prepared_metadata_required_object_uuid.canonical =
+          procedure_invoke_authority->procedure_uuid;
+      invoke.context.prepared_metadata_required_executable_generation =
+          procedure_invoke_authority->procedure_generation;
+      invoke.context.prepared_metadata_required_metadata_epoch =
+          procedure_invoke_authority->procedure_metadata_epoch;
+      invoke.operation_id = "engine.op.procedure_invoke";
+      invoke.target_database.uuid = execution_context.database_uuid;
+      invoke.target_database.object_kind = "database";
+      invoke.target_schema.uuid.canonical =
+          procedure_invoke_authority->schema_uuid;
+      invoke.target_schema.object_kind = "schema";
+      invoke.target_object.uuid.canonical =
+          procedure_invoke_authority->procedure_uuid;
+      invoke.target_object.object_kind = "procedure";
+      invoke.option_envelopes.push_back(
+          "invocation_lease_uuid:" +
+          procedure_invoke_authority->invocation_uuid);
+      const auto invoked = scratchbird::engine::internal_api::
+          EngineInvokeExecutableObject(invoke);
+      if (!invoked.ok) {
+        const auto diagnostic =
+            invoked.diagnostics.empty()
+                ? scratchbird::engine::internal_api::EngineApiDiagnostic{}
+                : invoked.diagnostics.front();
+        return fail_result(
+            diagnostic.code.rfind("SECURITY.", 0) == 0
+                ? SB_ENGINE_STATUS_SECURITY_DENIED
+                : diagnostic.code == "PROCESS.CANCELLED"
+                      ? SB_ENGINE_STATUS_TIMEOUT
+                      : SB_ENGINE_STATUS_CONFLICT,
+            out_result, 4085,
+            diagnostic.code.empty() ? "PROCEDURE.EXECUTION_FAILED"
+                                    : diagnostic.code,
+            diagnostic.message_key.empty()
+                ? "sblr.procedure_invoke.lifecycle_execution_failed"
+                : diagnostic.message_key,
+            diagnostic.detail);
+      }
+      if (invoked.primary_object.object_kind != "procedure" ||
+          invoked.primary_object.uuid.canonical !=
+              procedure_invoke_authority->procedure_uuid ||
+          invoked.bound_object_identity.object_uuid.canonical !=
+              procedure_invoke_authority->procedure_uuid ||
+          invoked.bound_object_identity.resolved_object_type != "procedure" ||
+          invoked.bound_object_identity.resolved_schema_uuid.canonical !=
+              procedure_invoke_authority->schema_uuid ||
+          invoked.executable_generation !=
+              procedure_invoke_authority->procedure_generation ||
+          invoked.invocation_lease_uuid !=
+              procedure_invoke_authority->invocation_uuid ||
+          invoked.result_shape.result_kind !=
+              "procedure_invocation_result" ||
+          !invoked.result_shape.columns.empty() ||
+          !invoked.result_shape.rows.empty() ||
+          invoked.dml_summary.rows_changed != 0) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.procedure_invoke.lifecycle_result_authority_mismatch");
+      }
+
+      scratchbird::engine::sblr::SblrProcedureInvokeResultV1 terminal;
+      const auto write_u32 = [&](std::size_t offset, std::uint32_t value) {
+        for (std::size_t index = 0; index < 4; ++index) {
+          terminal.body[offset + index] =
+              static_cast<std::uint8_t>(value >> (index * 8));
+        }
+      };
+      const auto write_u64 = [&](std::size_t offset, std::uint64_t value) {
+        for (std::size_t index = 0; index < 8; ++index) {
+          terminal.body[offset + index] =
+              static_cast<std::uint8_t>(value >> (index * 8));
+        }
+      };
+      const auto invocation_uuid =
+          TextToUuid(procedure_invoke_authority->invocation_uuid);
+      const auto output_descriptor_uuid = TextToUuid(
+          procedure_invoke_authority->output_descriptor_vector_uuid);
+      std::copy(invocation_uuid.begin(), invocation_uuid.end(),
+                terminal.body.begin());
+      write_u64(16, procedure_invoke_authority->invocation_generation);
+      terminal.body[24] = 1;  // completed_without_result_set
+      terminal.body[25] = 0;  // result_set_state=none
+      std::copy(output_descriptor_uuid.begin(), output_descriptor_uuid.end(),
+                terminal.body.begin() + 32);
+      write_u64(
+          48,
+          procedure_invoke_authority->output_descriptor_vector_generation);
+      write_u32(56, 0);  // output_parameter_count
+      write_u32(60, 0);  // row_count
+      const std::string empty_output_domain =
+          "ScratchBird.ProcedureInvokeOutput.Empty.V1";
+      const std::vector<std::uint8_t> empty_output_material(
+          empty_output_domain.begin(), empty_output_domain.end());
+      const auto empty_output_sha =
+          scratchbird::core::hash::ComputeSha256Digest(
+              empty_output_material);
+      if (!empty_output_sha.ok()) {
+        return fail_result(
+            SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4085,
+            "PROCEDURE.EXECUTION_FAILED",
+            "sblr.procedure_invoke.output_evidence_failed");
+      }
+      std::copy(empty_output_sha.digest.begin(), empty_output_sha.digest.end(),
+                terminal.body.begin() + 176);
+      std::copy(procedure_invoke_authority->effect_set_sha256.begin(),
+                procedure_invoke_authority->effect_set_sha256.end(),
+                terminal.body.begin() + 208);
+      terminal.availability = procedure_invoke_availability_generation;
+      terminal.barrier = TextToUuid(
+          procedure_invoke_authority->publication_barrier_uuid);
+      procedure_invoke_result_bytes =
+          scratchbird::engine::sblr::EncodeSblrProcedureInvokeResultV1(
+              terminal);
+      if (procedure_invoke_result_bytes.empty()) {
+        return fail_result(
+            SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4085,
+            "PROCEDURE.EXECUTION_FAILED",
+            "sblr.procedure_invoke.result_encoding_failed");
+      }
+      procedure_invoke_authority->canonical_terminal_result_bytes =
+          procedure_invoke_result_bytes;
+      procedure_invoke_authority->terminal_result_published = true;
+      dispatched.api_result = invoked;
+    }
+
+    scratchbird::engine::sblr::SblrProcedureInvokeResultV1 terminal;
+    std::string detail;
+    const auto invocation_uuid =
+        TextToUuid(procedure_invoke_authority->invocation_uuid);
+    const auto output_descriptor_uuid = TextToUuid(
+        procedure_invoke_authority->output_descriptor_vector_uuid);
+    const auto publication_barrier = TextToUuid(
+        procedure_invoke_authority->publication_barrier_uuid);
+    const std::string empty_output_domain =
+        "ScratchBird.ProcedureInvokeOutput.Empty.V1";
+    const std::vector<std::uint8_t> empty_output_material(
+        empty_output_domain.begin(), empty_output_domain.end());
+    const auto empty_output_sha =
+        scratchbird::core::hash::ComputeSha256Digest(empty_output_material);
+    if (!empty_output_sha.ok() || procedure_invoke_result_bytes.empty() ||
+        !scratchbird::engine::sblr::DecodeSblrProcedureInvokeResultV1(
+            procedure_invoke_result_bytes.data(),
+            procedure_invoke_result_bytes.size(), &terminal, &detail) ||
+        !std::equal(invocation_uuid.begin(), invocation_uuid.end(),
+                    terminal.body.begin()) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 16) !=
+            procedure_invoke_authority->invocation_generation ||
+        terminal.body[24] != 1 || terminal.body[25] != 0 ||
+        std::any_of(terminal.body.begin() + 26, terminal.body.begin() + 32,
+                    [](auto value) { return value != 0; }) ||
+        !std::equal(output_descriptor_uuid.begin(),
+                    output_descriptor_uuid.end(), terminal.body.begin() + 32) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 48) !=
+            procedure_invoke_authority
+                ->output_descriptor_vector_generation ||
+        scratchbird::engine::SblrReadU32(terminal.body.data() + 56) != 0 ||
+        scratchbird::engine::SblrReadU32(terminal.body.data() + 60) != 0 ||
+        std::any_of(terminal.body.begin() + 64, terminal.body.begin() + 176,
+                    [](auto value) { return value != 0; }) ||
+        !std::equal(empty_output_sha.digest.begin(),
+                    empty_output_sha.digest.end(), terminal.body.begin() + 176) ||
+        !std::equal(procedure_invoke_authority->effect_set_sha256.begin(),
+                    procedure_invoke_authority->effect_set_sha256.end(),
+                    terminal.body.begin() + 208) ||
+        terminal.availability != procedure_invoke_descriptor.availability ||
+        terminal.barrier != publication_barrier) {
+      return fail_result(
+          SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
+          "MGA.AUTHORITY_MISMATCH",
+          "sblr.procedure_invoke.result_authority_mismatch", detail);
+    }
+    dispatched.accepted = true;
+    dispatched.envelope_validated = true;
+    dispatched.dispatched_to_api = true;
+    dispatched.api_result.ok = true;
+    dispatched.api_result.operation_id = "engine.op.procedure_invoke";
+    dispatched.api_result.result_shape.result_kind = "procedure_result";
+    dispatched.api_result.result_shape.columns.clear();
+    dispatched.api_result.result_shape.rows.clear();
+    dispatched.api_result.dml_summary.rows_changed = 0;
+    if (terminal_replay) {
+      dispatched.api_result.evidence.push_back(
+          {"procedure_invoke_result_replay", "immutable_recorded_pirs"});
+    }
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        procedure_invoke_result_bytes);
+    const char* path =
+        std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+    if (digest.ok() && path && *path) {
+      std::ofstream trace(path, std::ios::app | std::ios::binary);
+      if (trace) {
+        trace << "layer=procedure_invoke_executor"
+              << "\texecutor_id=engine.op.procedure_invoke"
+              << "\topcode=SBLR_PROCEDURE_INVOKE"
+              << "\topcode_code=1030\topcode_version=1.0"
+              << "\toperand_descriptor_id=procedure_invoke_descriptor"
+              << "\tresult_descriptor_id=procedure_result"
+              << "\tresult_descriptor_version=1"
+              << "\tprocedure_invoke_result_sha256=sha256:"
+              << scratchbird::core::hash::HexLower(digest.digest)
+              << "\texecutor_availability_generation="
+              << procedure_invoke_availability_generation
+              << "\tterminal_replay=" << (terminal_replay ? "true" : "false")
+              << "\tparent_success_barrier=passed\n";
+      }
+    }
+  }
   std::vector<std::uint8_t> function_invoke_result_bytes;if(function_invoke_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_function_invoke");auto consumed=scratchbird::engine::internal_api::ConsumeSblrFunctionInvokeDescriptor(c,function_invoke_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4087,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrFunctionInvokeResultV1 rr;rr.body[0]=1;rr.body[40]=0;rr.availability=function_invoke_availability_generation;function_invoke_result_bytes=scratchbird::engine::sblr::EncodeSblrFunctionInvokeResultV1(rr);if(function_invoke_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4087,"FUNCTION.EXECUTION_FAILED","sblr.function_invoke.result_encoding_failed");}
   std::vector<std::uint8_t> aggregate_invoke_result_bytes;if(aggregate_invoke_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_aggregate_invoke");auto consumed=scratchbird::engine::internal_api::ConsumeSblrAggregateInvokeDescriptor(c,aggregate_invoke_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4089,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrAggregateInvokeResultV1 rr;rr.body[0]=1;rr.body[40]=0;rr.availability=aggregate_invoke_availability_generation;aggregate_invoke_result_bytes=scratchbird::engine::sblr::EncodeSblrAggregateInvokeResultV1(rr);if(aggregate_invoke_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4089,"AGGREGATE.EXECUTION_FAILED","sblr.aggregate_invoke.result_encoding_failed");}
   std::vector<std::uint8_t> sequence_nextval_result_bytes;if(sequence_nextval_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_sequence_nextval");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSequenceNextvalDescriptor(c,sequence_nextval_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4091,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSequenceNextvalResultV1 rr;rr.body[0]=1;rr.body[40]=1;rr.body[44]=8;rr.body[48]=1;rr.availability=sequence_nextval_availability_generation;sequence_nextval_result_bytes=scratchbird::engine::sblr::EncodeSblrSequenceNextvalResultV1(rr);if(sequence_nextval_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4091,"SEQUENCE.ALLOCATION_FAILED","sblr.sequence_nextval.result_encoding_failed");}
@@ -29177,7 +30944,440 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       }
     }
   }
-if(ddl_create_procedure_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_procedure");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateProcedureDescriptor(c,ddl_create_procedure_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4127,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateProcedureResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_procedure_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateProcedureResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4127,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_procedure.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
+  if (ddl_create_procedure_root) {
+    if (ddl_create_procedure_authority == nullptr ||
+        receipt->engine_context.statement_transaction_inventory_snapshot ==
+            nullptr) {
+      return fail_result(
+          SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4127,
+          "SECURITY.ACCESS_DENIED",
+          "sblr.ddl_create_procedure.result_authority_hidden");
+    }
+
+    const bool terminal_replay =
+        ddl_create_procedure_authority->terminal_result_published;
+    std::vector<std::uint8_t> create_procedure_result_bytes;
+    if (terminal_replay) {
+      create_procedure_result_bytes =
+          ddl_create_procedure_authority->canonical_terminal_result_bytes;
+    } else {
+      const auto& execution_context = receipt->engine_context;
+      const auto inventory_fence = scratchbird::storage::database::
+          RevalidateLocalTransactionInventorySnapshot(
+              *execution_context.statement_transaction_inventory_snapshot);
+      if (!inventory_fence.ok() && !statement_snapshot_matches()) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.transaction_inventory_stale",
+            statement_snapshot_mismatch_detail);
+      }
+      if (cancellation_observed()) {
+        return fail_result(
+            SB_ENGINE_STATUS_TIMEOUT, out_result, 4127,
+            "PROCESS.CANCELLED",
+            "sblr.ddl_create_procedure.cancelled_before_catalog_lookup");
+      }
+      const auto context_matches =
+          execution_context.database_uuid.canonical ==
+              ddl_create_procedure_authority->database_uuid &&
+          execution_context.transaction_uuid.canonical ==
+              ddl_create_procedure_authority->owning_transaction_uuid &&
+          execution_context.local_transaction_id ==
+              ddl_create_procedure_authority->owning_local_transaction_id &&
+          execution_context.statement_snapshot_uuid.canonical ==
+              ddl_create_procedure_authority->statement_snapshot_uuid &&
+          execution_context.catalog_epoch_uuid.canonical ==
+              ddl_create_procedure_authority->catalog_epoch_uuid &&
+          execution_context.catalog_generation_id ==
+              ddl_create_procedure_authority->catalog_generation &&
+          view.security_context_uuid ==
+              ddl_create_procedure_authority->security_context_uuid &&
+          execution_context.security_epoch ==
+              ddl_create_procedure_authority->security_epoch &&
+          execution_context.transaction_policy_snapshot_uuid.canonical ==
+              ddl_create_procedure_authority->policy_snapshot_uuid &&
+          execution_context.transaction_policy_snapshot_generation ==
+              ddl_create_procedure_authority->policy_generation &&
+          execution_context.resource_admission_uuid.canonical ==
+              ddl_create_procedure_authority->resource_grant_uuid &&
+          execution_context.resource_epoch ==
+              ddl_create_procedure_authority->resource_generation &&
+          execution_context.principal_uuid.canonical ==
+              ddl_create_procedure_authority->owner_principal_uuid &&
+          execution_context.authorization_context.present &&
+          execution_context.authorization_context.authority_uuid.canonical ==
+              ddl_create_procedure_authority->authorization_observation
+                  .authority_uuid.canonical &&
+          execution_context.authorization_context
+                  .security_context_generation ==
+              ddl_create_procedure_authority->authorization_observation
+                  .security_context_generation;
+      if (!context_matches) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.execution_authority_stale");
+      }
+      const auto exact_transaction =
+          scratchbird::transaction::mga::LookupLocalTransaction(
+              execution_context.statement_transaction_inventory_snapshot
+                  ->inventory,
+              scratchbird::transaction::mga::MakeLocalTransactionId(
+                  execution_context.local_transaction_id));
+      if (!exact_transaction.ok() ||
+          !statement_context_transaction_active(exact_transaction.entry.state) ||
+          !exact_transaction.entry.identity.transaction_uuid.valid() ||
+          scratchbird::core::uuid::UuidToString(
+              exact_transaction.entry.identity.transaction_uuid.value) !=
+              execution_context.transaction_uuid.canonical) {
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+                           "MGA.TRANSACTION_INVALID",
+                           "sblr.ddl_create_procedure.transaction_invalid");
+      }
+
+      scratchbird::engine::internal_api::EngineAuthorizeRequest authorize;
+      authorize.context = execution_context;
+      authorize.target_object.uuid = execution_context.database_uuid;
+      authorize.target_object.object_kind = "database";
+      authorize.required_right = "CATALOG_MUTATE";
+      const auto authorized =
+          scratchbird::engine::internal_api::EngineAuthorize(authorize);
+      if (!authorized.ok || !authorized.authorized) {
+        const auto diagnostic =
+            authorized.diagnostics.empty()
+                ? scratchbird::engine::internal_api::EngineApiDiagnostic{}
+                : authorized.diagnostics.front();
+        return fail_result(
+            SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4127,
+            diagnostic.code.empty() ? "SECURITY.ACCESS_DENIED"
+                                    : diagnostic.code,
+            "sblr.ddl_create_procedure.execution_authorization_denied",
+            diagnostic.detail);
+      }
+      const auto existing = ResolveStatementProcedureName(
+          execution_context, ddl_create_procedure_authority->name_atoms);
+      if (existing.ok) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "CATALOG.NAME.AMBIGUOUS",
+            "sblr.ddl_create_procedure.name_already_exists",
+            ddl_create_procedure_authority
+                ->canonical_procedure_path_utf8);
+      }
+      if (!existing.diagnostics.empty() &&
+          existing.diagnostics.front().code != "CATALOG.NAME.NOT_FOUND") {
+        const auto& diagnostic = existing.diagnostics.front();
+        return fail_result(
+            diagnostic.code.rfind("SECURITY.", 0) == 0
+                ? SB_ENGINE_STATUS_SECURITY_DENIED
+                : SB_ENGINE_STATUS_CONFLICT,
+            out_result, 4127, diagnostic.code,
+            diagnostic.message_key.empty()
+                ? "sblr.ddl_create_procedure.name_preflight_failed"
+                : diagnostic.message_key,
+            diagnostic.detail);
+      }
+      if (cancellation_observed()) {
+        return fail_result(
+            SB_ENGINE_STATUS_TIMEOUT, out_result, 4127,
+            "PROCESS.CANCELLED",
+            "sblr.ddl_create_procedure.cancelled_before_publication");
+      }
+
+      const auto body_sha = scratchbird::core::hash::HexLower(
+          ddl_create_procedure_authority->body_sblr_sha256);
+      const auto signature_sha = scratchbird::core::hash::HexLower(
+          ddl_create_procedure_authority->procedure_signature_sha256);
+      const auto effect_sha = scratchbird::core::hash::HexLower(
+          ddl_create_procedure_authority->effect_set_sha256);
+      scratchbird::engine::internal_api::EngineCreateProcedureRequest create;
+      create.context = execution_context;
+      create.operation_id = "ddl.create_procedure";
+      create.target_database.uuid = execution_context.database_uuid;
+      create.target_database.object_kind = "database";
+      create.target_schema.uuid.canonical =
+          ddl_create_procedure_authority->schema_uuid;
+      create.target_schema.object_kind = "schema";
+      create.target_object.uuid.canonical =
+          ddl_create_procedure_authority->procedure_uuid;
+      create.target_object.object_kind = "procedure";
+      create.localized_names.push_back(
+          {"en", "primary",
+           ddl_create_procedure_authority->canonical_procedure_path_utf8,
+           ddl_create_procedure_authority->procedure_leaf_name_utf8, true});
+      create.option_envelopes = {
+          "executor:sblr",
+          "sblr_hash:sha256:" + body_sha,
+          "sblr_provenance:engine.bound.procedural_body.v1",
+          "compiled_body_provenance:engine.bound.procedural_body.v1",
+          "compiled_body_descriptor:sblr.psql.body.null.v1",
+          "side_effect_class:none",
+          "procedure_body_sblr_uuid:" +
+              ddl_create_procedure_authority->body_sblr_uuid,
+          "procedure_body_sblr_generation:" +
+              std::to_string(
+                  ddl_create_procedure_authority->body_sblr_generation),
+          "procedure_body_bytes_hex:" +
+              HexBytes(ddl_create_procedure_authority
+                           ->canonical_body_sblr_bytes),
+          "procedure_body_sha256:" + body_sha,
+          "procedure_abi_uuid:" +
+              ddl_create_procedure_authority->procedure_abi_uuid,
+          "procedure_abi_generation:" +
+              std::to_string(
+                  ddl_create_procedure_authority->procedure_abi_generation),
+          "procedure_signature_sha256:" + signature_sha,
+          "procedure_effect_set_sha256:" + effect_sha,
+          "procedure_recovery_uuid:" +
+              ddl_create_procedure_authority->recovery_uuid,
+          "procedure_mutation_uuid:" +
+              ddl_create_procedure_authority->mutation_uuid,
+          "procedure_publication_barrier_uuid:" +
+              ddl_create_procedure_authority->publication_barrier_uuid,
+      };
+      const auto created =
+          scratchbird::engine::internal_api::EngineCreateProcedure(create);
+      if (!created.ok) {
+        const auto diagnostic =
+            created.diagnostics.empty()
+                ? scratchbird::engine::internal_api::EngineApiDiagnostic{}
+                : created.diagnostics.front();
+        return fail_result(
+            diagnostic.code.rfind("SECURITY.", 0) == 0
+                ? SB_ENGINE_STATUS_SECURITY_DENIED
+                : SB_ENGINE_STATUS_CONFLICT,
+            out_result, 4127,
+            diagnostic.code.empty() ? "DDL.CREATE_PROCEDURE_FAILED"
+                                    : diagnostic.code,
+            diagnostic.message_key.empty()
+                ? "sblr.ddl_create_procedure.catalog_mutation_failed"
+                : diagnostic.message_key,
+            diagnostic.detail);
+      }
+      if (created.primary_object.object_kind != "procedure" ||
+          created.primary_object.uuid.canonical !=
+              ddl_create_procedure_authority->procedure_uuid ||
+          !canonical_non_nil_uuid_text(created.catalog_row_uuid.canonical)) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.catalog_result_authority_mismatch");
+      }
+      const auto lifecycle = scratchbird::engine::internal_api::
+          LoadExecutableObjectLifecycleState(execution_context);
+      const auto object =
+          lifecycle.ok
+              ? std::find_if(
+                    lifecycle.state.objects.begin(),
+                    lifecycle.state.objects.end(),
+                    [&](const auto& candidate) {
+                      return candidate.object_uuid ==
+                                 ddl_create_procedure_authority
+                                     ->procedure_uuid &&
+                             candidate.object_kind == "procedure";
+                    })
+              : lifecycle.state.objects.end();
+      const auto expected_payload_field = [](const std::string& payload,
+                                             const std::string& field) {
+        const auto framed = ";" + payload + ";";
+        return framed.find(";" + field + ";") != std::string::npos;
+      };
+      if (!lifecycle.ok || object == lifecycle.state.objects.end() ||
+          object->schema_uuid != ddl_create_procedure_authority->schema_uuid ||
+          object->executable_generation !=
+              ddl_create_procedure_authority->procedure_generation ||
+          object->executor_kind != "sblr" ||
+          object->stored_sblr_hash != "sha256:" + body_sha ||
+          object->stored_sblr_provenance !=
+              "engine.bound.procedural_body.v1" ||
+          object->side_effect_class != "none" ||
+          !expected_payload_field(
+              object->payload,
+              "compiled_body_descriptor:sblr.psql.body.null.v1") ||
+          !expected_payload_field(
+              object->payload,
+              "procedure_body_sblr_uuid:" +
+                  ddl_create_procedure_authority->body_sblr_uuid) ||
+          !expected_payload_field(object->payload,
+                                  "procedure_body_sha256:" + body_sha) ||
+          !expected_payload_field(
+              object->payload,
+              "procedure_abi_uuid:" +
+                  ddl_create_procedure_authority->procedure_abi_uuid) ||
+          !expected_payload_field(
+              object->payload,
+              "procedure_signature_sha256:" + signature_sha) ||
+          !expected_payload_field(
+              object->payload,
+              "procedure_effect_set_sha256:" + effect_sha)) {
+        return fail_result(
+            SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+            "MGA.AUTHORITY_MISMATCH",
+            "sblr.ddl_create_procedure.lifecycle_authority_mismatch",
+            lifecycle.ok ? std::string{} : lifecycle.diagnostic.detail);
+      }
+
+      scratchbird::engine::sblr::SblrDdlCreateProcedureResultV1 terminal;
+      const auto write_u64 = [&](std::size_t offset, std::uint64_t value) {
+        for (std::size_t index = 0; index < 8; ++index) {
+          terminal.body[offset + index] =
+              static_cast<std::uint8_t>(value >> (index * 8));
+        }
+      };
+      const auto procedure_uuid =
+          TextToUuid(ddl_create_procedure_authority->procedure_uuid);
+      const auto receipt_uuid = TextToUuid(view.receipt_uuid);
+      const auto schema_uuid =
+          TextToUuid(ddl_create_procedure_authority->schema_uuid);
+      const auto transaction_uuid = TextToUuid(
+          ddl_create_procedure_authority->owning_transaction_uuid);
+      const auto statement_snapshot_uuid = TextToUuid(
+          ddl_create_procedure_authority->statement_snapshot_uuid);
+      const auto catalog_row_uuid =
+          TextToUuid(created.catalog_row_uuid.canonical);
+      const auto mutation_uuid =
+          TextToUuid(ddl_create_procedure_authority->mutation_uuid);
+      const auto body_uuid =
+          TextToUuid(ddl_create_procedure_authority->body_sblr_uuid);
+      std::copy(procedure_uuid.begin(), procedure_uuid.end(),
+                terminal.body.begin());
+      write_u64(16, ddl_create_procedure_authority->procedure_generation);
+      terminal.body[24] = 1;  // created
+      std::copy(receipt_uuid.begin(), receipt_uuid.end(),
+                terminal.body.begin() + 32);
+      write_u64(48, ddl_create_procedure_authority->catalog_generation);
+      write_u64(56, ddl_create_procedure_authority->schema_generation);
+      std::copy(schema_uuid.begin(), schema_uuid.end(),
+                terminal.body.begin() + 64);
+      std::copy(transaction_uuid.begin(), transaction_uuid.end(),
+                terminal.body.begin() + 80);
+      write_u64(96,
+                ddl_create_procedure_authority->owning_local_transaction_id);
+      std::copy(statement_snapshot_uuid.begin(),
+                statement_snapshot_uuid.end(), terminal.body.begin() + 104);
+      std::copy(catalog_row_uuid.begin(), catalog_row_uuid.end(),
+                terminal.body.begin() + 120);
+      std::copy(mutation_uuid.begin(), mutation_uuid.end(),
+                terminal.body.begin() + 136);
+      std::copy(body_uuid.begin(), body_uuid.end(),
+                terminal.body.begin() + 152);
+      write_u64(168,
+                ddl_create_procedure_authority->body_sblr_generation);
+      std::copy(ddl_create_procedure_authority->body_sblr_sha256.begin(),
+                ddl_create_procedure_authority->body_sblr_sha256.end(),
+                terminal.body.begin() + 176);
+      std::copy(
+          ddl_create_procedure_authority->descriptor_evidence_sha256.begin(),
+          ddl_create_procedure_authority->descriptor_evidence_sha256.end(),
+          terminal.body.begin() + 208);
+      terminal.availability = ddl_create_procedure_availability_generation;
+      terminal.publication_barrier = TextToUuid(
+          ddl_create_procedure_authority->publication_barrier_uuid);
+      create_procedure_result_bytes = scratchbird::engine::sblr::
+          EncodeSblrDdlCreateProcedureResultV1(terminal);
+      if (create_procedure_result_bytes.empty()) {
+        return fail_result(
+            SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4127,
+            "DDL.CREATE_PROCEDURE_FAILED",
+            "sblr.ddl_create_procedure.result_encoding_failed");
+      }
+      ddl_create_procedure_authority->canonical_terminal_result_bytes =
+          create_procedure_result_bytes;
+      ddl_create_procedure_authority->terminal_result_published = true;
+    }
+
+    scratchbird::engine::sblr::SblrDdlCreateProcedureResultV1 terminal;
+    std::string detail;
+    const auto procedure_uuid =
+        TextToUuid(ddl_create_procedure_authority->procedure_uuid);
+    const auto receipt_uuid = TextToUuid(view.receipt_uuid);
+    const auto schema_uuid =
+        TextToUuid(ddl_create_procedure_authority->schema_uuid);
+    const auto transaction_uuid =
+        TextToUuid(ddl_create_procedure_authority->owning_transaction_uuid);
+    const auto statement_snapshot_uuid =
+        TextToUuid(ddl_create_procedure_authority->statement_snapshot_uuid);
+    const auto mutation_uuid =
+        TextToUuid(ddl_create_procedure_authority->mutation_uuid);
+    const auto body_uuid =
+        TextToUuid(ddl_create_procedure_authority->body_sblr_uuid);
+    const auto publication_barrier = TextToUuid(
+        ddl_create_procedure_authority->publication_barrier_uuid);
+    if (create_procedure_result_bytes.empty() ||
+        !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureResultV1(
+            create_procedure_result_bytes.data(),
+            create_procedure_result_bytes.size(), &terminal, &detail) ||
+        !std::equal(procedure_uuid.begin(), procedure_uuid.end(),
+                    terminal.body.begin()) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 16) !=
+            ddl_create_procedure_authority->procedure_generation ||
+        terminal.body[24] != 1 ||
+        std::any_of(terminal.body.begin() + 25, terminal.body.begin() + 32,
+                    [](auto value) { return value != 0; }) ||
+        !std::equal(receipt_uuid.begin(), receipt_uuid.end(),
+                    terminal.body.begin() + 32) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 48) !=
+            ddl_create_procedure_authority->catalog_generation ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 56) !=
+            ddl_create_procedure_authority->schema_generation ||
+        !std::equal(schema_uuid.begin(), schema_uuid.end(),
+                    terminal.body.begin() + 64) ||
+        !std::equal(transaction_uuid.begin(), transaction_uuid.end(),
+                    terminal.body.begin() + 80) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 96) !=
+            ddl_create_procedure_authority->owning_local_transaction_id ||
+        !std::equal(statement_snapshot_uuid.begin(),
+                    statement_snapshot_uuid.end(), terminal.body.begin() + 104) ||
+        !scratchbird::engine::SblrNonzeroUuid(terminal.body.data() + 120) ||
+        !std::equal(mutation_uuid.begin(), mutation_uuid.end(),
+                    terminal.body.begin() + 136) ||
+        !std::equal(body_uuid.begin(), body_uuid.end(),
+                    terminal.body.begin() + 152) ||
+        scratchbird::engine::SblrReadU64(terminal.body.data() + 168) !=
+            ddl_create_procedure_authority->body_sblr_generation ||
+        !std::equal(ddl_create_procedure_authority->body_sblr_sha256.begin(),
+                    ddl_create_procedure_authority->body_sblr_sha256.end(),
+                    terminal.body.begin() + 176) ||
+        !std::equal(
+            ddl_create_procedure_authority->descriptor_evidence_sha256.begin(),
+            ddl_create_procedure_authority->descriptor_evidence_sha256.end(),
+            terminal.body.begin() + 208) ||
+        terminal.availability != ddl_create_procedure_descriptor.availability ||
+        terminal.publication_barrier != publication_barrier) {
+      return fail_result(
+          SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
+          "MGA.AUTHORITY_MISMATCH",
+          "sblr.ddl_create_procedure.result_authority_mismatch", detail);
+    }
+    result->affected_rows = 0;
+    result->result_kind = "ddl_result";
+    result->payload.assign(
+        reinterpret_cast<const char*>(create_procedure_result_bytes.data()),
+        create_procedure_result_bytes.size());
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+        create_procedure_result_bytes);
+    const char* path =
+        std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
+    if (digest.ok() && path && *path) {
+      std::ofstream trace(path, std::ios::app | std::ios::binary);
+      if (trace) {
+        trace << "layer=ddl_create_procedure_executor"
+              << "\texecutor_id=engine.op.ddl_create_procedure"
+              << "\topcode=SBLR_DDL_CREATE_PROCEDURE"
+              << "\topcode_code=1554\topcode_version=1.0"
+              << "\toperand_descriptor_id=create_procedure_descriptor"
+              << "\tresult_descriptor_id=ddl_result"
+              << "\tresult_descriptor_version=1"
+              << "\tddl_create_procedure_result_sha256=sha256:"
+              << scratchbird::core::hash::HexLower(digest.digest)
+              << "\texecutor_availability_generation="
+              << ddl_create_procedure_availability_generation
+              << "\tterminal_replay=" << (terminal_replay ? "true" : "false")
+              << "\tparent_success_barrier=passed\n";
+      }
+    }
+  }
 if(ddl_alter_procedure_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_procedure");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlAlterProcedureDescriptor(c,ddl_alter_procedure_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4128,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlAlterProcedureResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_alter_procedure_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlAlterProcedureResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4128,"SYSTEM.CONFIG_FAILED","sblr.ddl_alter_procedure.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_drop_procedure_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_procedure");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlDropProcedureDescriptor(c,ddl_drop_procedure_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4129,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlDropProcedureResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_drop_procedure_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlDropProcedureResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4129,"SYSTEM.CONFIG_FAILED","sblr.ddl_drop_procedure.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
 if(ddl_create_function_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_ddl_create_procedure");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDdlCreateFunctionDescriptor(c,ddl_create_function_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4130,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDdlCreateFunctionResultV1 rr;rr.body[24]=1;rr.body[56]=1;rr.availability=ddl_create_function_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrDdlCreateFunctionResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4130,"SYSTEM.CONFIG_FAILED","sblr.ddl_create_function.result_encoding_failed");result->result_kind="ddl_result";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());}

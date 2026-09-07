@@ -30,10 +30,10 @@
       "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN",
       "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE"
     ],
-    "resource_hash": "sha256:5f79636cb9e89e9fc048623f177fc886f01954af5285dbfe6d0f19f0f1e65b14",
+    "resource_hash": "sha256:90caa964d41a9995e2fe2e5964a1815a4bc435337843c14ff0e5a1003b3ce096",
     "resource_identity": "sbsql.common_resource_pack.v1",
-    "resource_pack_common_resource_hash": "sha256:073521b422d8fd81d393143be0e2f882227cda867370fcc008bd490088259b10",
-    "resource_pack_manifest_sha256": "sha256:bdb8ae7c6d371300114d18cc336250c69a0cfba34ab12e5b82aae7bcc294aac8",
+    "resource_pack_common_resource_hash": "sha256:a4e4b793005f17d9beb08aae319134162aed4c9da216ae18e2fe055ee2462ce6",
+    "resource_pack_manifest_sha256": "sha256:410e187baed6709931747d0eeb8dd767b78c9174aea86945ec94785059f9b4bd",
     "resource_pack_path": "project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack",
     "support_state": "release_supported",
     "supported_exact_profiles": [

@@ -54,6 +54,10 @@ import sys
 from pathlib import Path
 
 from sbsql_trigger_command_surface import TRIGGER_COMMAND_BY_SURFACE_ID
+from procedural_lifecycle_generated_evidence import (
+    authenticated_route_override as procedural_lifecycle_authenticated_route_override,
+    validate_authoritative_runtime_inputs as validate_procedural_lifecycle_inputs,
+)
 
 from plan_import_rows_generated_evidence import (
     authenticated_route_override,
@@ -437,6 +441,7 @@ def main() -> int:
     validate_core_root_refusal_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
+    validate_procedural_lifecycle_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     if not surfaces:
@@ -455,6 +460,9 @@ def main() -> int:
             surface, classification
         )
         classification = unavailable_command_authenticated_route_override(
+            surface, classification
+        )
+        classification = procedural_lifecycle_authenticated_route_override(
             surface, classification
         )
         ledger_row = {

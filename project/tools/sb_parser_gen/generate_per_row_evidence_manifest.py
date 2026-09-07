@@ -56,6 +56,11 @@ from sbsql_trigger_command_surface import (
     PROCESS_TEST_SOURCE as TRIGGER_PROCESS_TEST_SOURCE,
     TRIGGER_COMMAND_BY_SURFACE_ID,
 )
+from procedural_lifecycle_generated_evidence import (
+    is_procedural_lifecycle_surface,
+    per_row_manifest_override as procedural_lifecycle_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_procedural_lifecycle_inputs,
+)
 from plan_import_rows_generated_evidence import (
     is_plan_import_rows_surface,
     per_row_manifest_override,
@@ -1293,30 +1298,6 @@ CREATE_EXECUTABLE_EXACT_ROUTE_ROW_EVIDENCE = {
         "fixture": "CREATE FUNCTION replay_function",
         "target_uuid": "019f0000-0000-7000-8000-000000e30001",
     },
-    "SBSQL-13F5A8364A50": {
-        "canonical_name": "create_procedure_stmt",
-        "canonical_sblr_operation_family": "sblr.catalog.mutation.v3",
-        "route_sblr_operation_family": "sblr.catalog.mutation.v3",
-        "row_role": "create_procedure_stmt",
-        "object_kind": "procedure",
-        "operation_id": "ddl.create_procedure",
-        "sblr_operation": "SBLR_DDL_CREATE_PROCEDURE",
-        "catalog_authority": "sys.catalog.procedure",
-        "fixture": "CREATE PROCEDURE replay_procedure",
-        "target_uuid": "019f0000-0000-7000-8000-000000e30002",
-    },
-    "SBSQL-B5E9C0943E63": {
-        "canonical_name": "procedure_signature",
-        "canonical_sblr_operation_family": "sblr.general.operation.v3",
-        "route_sblr_operation_family": "sblr.catalog.mutation.v3",
-        "row_role": "procedure_signature",
-        "object_kind": "procedure",
-        "operation_id": "ddl.create_procedure",
-        "sblr_operation": "SBLR_DDL_CREATE_PROCEDURE",
-        "catalog_authority": "sys.catalog.procedure",
-        "fixture": "CREATE PROCEDURE replay_procedure",
-        "target_uuid": "019f0000-0000-7000-8000-000000e30002",
-    },
 }
 
 DATABASE_LIFECYCLE_EXACT_ROUTE_ROW_EVIDENCE = {
@@ -2264,7 +2245,6 @@ SBSFC078_PROCEDURAL_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE = {
         ("SBSQL-4A737A655174", "signal", "canonical_surface", "SIGNAL SQLSTATE '45000';", "signal"),
         ("SBSQL-4B4DAC62299D", "variable_decl_form", "grammar_production", "VARIABLE DECL FORM v INT;", "procedural"),
         ("SBSQL-5AD1F33585EA", "single_var_form", "grammar_production", "SINGLE VAR FORM v;", "procedural"),
-        ("SBSQL-5AFD1BFCCEC8", "psql_null_stmt", "grammar_production", "PSQL NULL;", "procedural"),
         ("SBSQL-62256BEF9F1B", "call_arg_list", "grammar_production", "CALL ARG LIST a b;", "procedural"),
         ("SBSQL-66B35A56EFF8", "arg_list", "grammar_production", "ARG LIST a b;", "procedural"),
         ("SBSQL-6D4DE2A31C56", "param_mode", "grammar_production", "PARAM MODE INOUT;", "procedural"),
@@ -2808,7 +2788,6 @@ SBSFC085_GRAMMAR_SURFACE_EXACT_ROUTE_ROW_EVIDENCE = {
         "SBSQL-F24C10C05F96": ("call_result_clause", "grammar_production", "CALL RESULT CLAUSE row;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F2580B10CA17": ("psql_compound_stmt", "grammar_production", "PSQL COMPOUND STMT block;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F29DE2ED8D20": ("reference_profile_options", "grammar_production", "REFERENCE PROFILE OPTIONS local;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
-        "SBSQL-F3006C91D952": ("call", "canonical_surface", "CALL routine;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F375BA38C102": ("new_surface_stmt", "grammar_production", "NEW SURFACE STMT descriptor;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-F5E78906D903": ("psql_exit_stmt", "grammar_production", "PSQL EXIT STMT loop;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F6DE057B7557": ("ch_system_target", "grammar_production", "CH SYSTEM TARGET local;", "catalog_descriptor_validation", "catalog_descriptor", "sys.catalog.object_descriptor"),
@@ -2816,7 +2795,6 @@ SBSFC085_GRAMMAR_SURFACE_EXACT_ROUTE_ROW_EVIDENCE = {
         "SBSQL-F87CEF07BC0E": ("topology_assign", "grammar_production", "TOPOLOGY ASSIGN region;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-F8B5D61CE628": ("frame_bound", "grammar_production", "FRAME BOUND CURRENT;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"),
         "SBSQL-F9ED7C5325E9": ("object_path", "grammar_production", "OBJECT PATH schema.table;", "catalog_descriptor_validation", "catalog_descriptor", "sys.catalog.object_descriptor"),
-        "SBSQL-FAC34DDEAC9D": ("call_stmt", "grammar_production", "CALL STMT routine;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-FBE931BE7E40": ("fdb_tx_options", "grammar_production", "FDB TX OPTIONS snapshot;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-FDA029BA9834": ("server_action", "grammar_production", "SERVER ACTION restart;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-FDBD9AF96128": ("subpartition_spec_list", "grammar_production", "SUBPARTITION SPEC LIST range;", "catalog_descriptor_validation", "catalog_descriptor", "sys.catalog.object_descriptor"),
@@ -25164,9 +25142,9 @@ def classify(
             "promoter_slice": "SBSFC-020R-QU-SBSFC-030-create-executable-object-exact-route",
             "notes": (
                 "Bounded CREATE executable object exact-route row evidence. "
-                "Exactly SBSQL-4A5F97F6CC4E create_function_stmt, SBSQL-52EF59CC2556 function_signature, SBSQL-13F5A8364A50 create_procedure_stmt, and SBSQL-B5E9C0943E63 procedure_signature are promoted to e2e_passed using descriptor-only CREATE FUNCTION/PROCEDURE fixtures. "
-                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to the matching ddl.create_function/procedure operation and SBLR_DDL_CREATE_* opcode, server public ABI admission, active MGA transaction context, EngineCreateFunction/Procedure descriptor persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
-                "CREATE TRIGGER has a separate strict engine-bound public-route evidence branch. No routine signature semantics, PSQL/body compilation, runtime invocation, external UDR loading, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
+                "Exactly SBSQL-4A5F97F6CC4E create_function_stmt and SBSQL-52EF59CC2556 function_signature are promoted to e2e_passed using the descriptor-only CREATE FUNCTION fixture. "
+                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_function/SBLR_DDL_CREATE_FUNCTION, server public ABI admission, active MGA transaction context, EngineCreateFunction descriptor persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
+                "CREATE PROCEDURE and trigger lifecycle rows have separate strict engine-bound public-route evidence branches. No function body compilation, runtime function invocation, external UDR loading, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -25742,6 +25720,7 @@ def main() -> int:
     validate_core_route_reconciliation_inputs(root)
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
+    validate_procedural_lifecycle_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25871,7 +25850,16 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_core_unavailable_command_refusal(surface_id):
+        if is_procedural_lifecycle_surface(surface_id):
+            classification = procedural_lifecycle_per_row_manifest_override(
+                root, surface, ledger_by_id.get(surface_id)
+            )
+            if classification is None:
+                fail(
+                    f"{surface_id} procedural lifecycle manifest override "
+                    "unexpectedly missing"
+                )
+        elif is_core_unavailable_command_refusal(surface_id):
             classification = unavailable_command_per_row_manifest_override(
                 root, surface, ledger_by_id.get(surface_id)
             )

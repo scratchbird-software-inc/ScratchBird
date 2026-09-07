@@ -12,8 +12,8 @@
   },
   "diagnostic_counts": {
     "SBSQL.LANG_ELEMENT.CLUSTER_PROVIDER_GATED": 56,
-    "SBSQL.LANG_ELEMENT.EXACT_REFUSAL": 82,
-    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2481
+    "SBSQL.LANG_ELEMENT.EXACT_REFUSAL": 81,
+    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2482
   },
   "dialect_profile_uuid": "sbsql.v3",
   "element_kind_counts": {
@@ -28259,7 +28259,7 @@
       "canonical_name": "psql_null_stmt",
       "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
       "compatibility_id": "compat.d772478cec17928a",
-      "diagnostic_code": "SBSQL.LANG_ELEMENT.EXACT_REFUSAL",
+      "diagnostic_code": "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED",
       "dialect_profile_uuid": "sbsql.v3",
       "element_kind": "phrase_topology_slot",
       "exact_tag": "en",
@@ -28267,9 +28267,9 @@
       "governance_evidence_id": "SML-010.language_element_manifest.generator",
       "keyword_class": "not_keyword",
       "keyword_text": "",
-      "message_id": "message.af6bdc26629b9a05",
+      "message_id": "message.f4c2209b50c86f47",
       "phrase_id": "phrase.d772478cec17928a",
-      "predictive_state": "refusal_completion",
+      "predictive_state": "admitted_completion",
       "predictive_state_id": "predictive.d772478cec17928a",
       "profile_uuid": "sbsql.builtin.recovery.en",
       "provenance_id": "sbsql.language_element_manifest.provenance.v1",

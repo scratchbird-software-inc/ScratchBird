@@ -320,6 +320,14 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-grant"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-revoke"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-procedure"))
+    parser._actions[-1].choices = tuple((
+        *parser._actions[-1].choices,
+        "ddl-create-procedure-observe",
+        "ddl-create-procedure-observe-absent",
+        "ddl-create-procedure-rollback",
+        "ddl-create-procedure-invalid",
+        "procedure-invoke-invalid",
+    ))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-fdw"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint", "security-create-privilege-template", "security-create-user", "security-alter-user", "security-create-role", "security-create-policy", "security-drop-role", "security-alter-privilege-template", "security-drop-privilege-template", "database-create-template-clone", "ddl-create-aggregate", "ddl-alter-aggregate", "ddl-drop-aggregate", "ddl-purge-system-history", "ddl-set-index-optimizer-eligibility", "ddl-set-table-type-enforcement", "database-serialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "database-deserialize-logical-snapshot"))
@@ -406,6 +414,9 @@ def main() -> int:
         )
         env["SCRATCHBIRD_TEST_DDL_DROP_TRIGGER_RESULT_ARTIFACT"] = str(
             work / "ddl-drop-trigger-result.tdrs"
+        )
+        env["SCRATCHBIRD_TEST_DDL_CREATE_PROCEDURE_RESULT_ARTIFACT"] = str(
+            work / "ddl-create-procedure-result.pcrs"
         )
         server = subprocess.Popen(
             [args.server, "--foreground", "--no-listeners", "--control-dir",
@@ -524,6 +535,43 @@ def main() -> int:
             for trace_path in (server_trace, dispatch_trace):
                 if trace_path.exists():
                     trace_path.write_bytes(b"")
+        if args.operation == "procedure-invoke":
+            bootstrap_procedure = subprocess.run(
+                [
+                    args.client,
+                    f"unix:{endpoint}",
+                    str(database),
+                    "alice",
+                    evidence,
+                    "ddl-create-procedure",
+                    "sbsql-sblr-procedure-invoke-bootstrap",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            expected_bootstrap = (
+                "CSC-TEST-002633 CSC-TEST-005800 "
+                "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
+                "typed_null_body=true catalog_mutation=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if (
+                bootstrap_procedure.returncode != 0
+                or bootstrap_procedure.stdout != expected_bootstrap
+                or bootstrap_procedure.stderr
+            ):
+                raise ProofError(
+                    "PROCEDURE INVOKE prerequisite did not create a real "
+                    "committed typed procedure: "
+                    f"returncode={bootstrap_procedure.returncode} "
+                    f"stdout={bootstrap_procedure.stdout!r} "
+                    f"stderr={bootstrap_procedure.stderr!r}"
+                )
+            for trace_path in (server_trace, dispatch_trace):
+                if trace_path.exists():
+                    trace_path.write_bytes(b"")
         command = [args.client, f"unix:{endpoint}", str(database), "alice",
                    evidence, args.operation, f"sbsql-sblr-{args.operation}-e2e-first"]
         first = subprocess.run(
@@ -611,6 +659,29 @@ def main() -> int:
                 raise ProofError(
                     "DROP TRIGGER did not complete the exact committed "
                     "canonical tombstone route"
+                )
+        elif args.operation == "ddl-create-procedure":
+            expected_success = (
+                "CSC-TEST-002633 CSC-TEST-005800 "
+                "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
+                "typed_null_body=true catalog_mutation=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "CREATE PROCEDURE did not complete the exact committed "
+                    "typed-body canonical mutation route"
+                )
+        elif args.operation == "procedure-invoke":
+            expected_success = (
+                "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
+                "accepted canonical_sblr=true typed_null_body=true "
+                "output_count=0 commit=true publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "PROCEDURE INVOKE did not execute the exact committed "
+                    "typed NULL body"
                 )
         elif args.operation == "ddl-create-index":
             expected_refusal = (
@@ -1419,7 +1490,29 @@ def main() -> int:
                 "ddl_drop_trigger_result_sha256=",
                 "executor_availability_generation=",
             )
-        elif args.operation in ("ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
+        elif args.operation == "ddl-create-procedure":
+            expected = (
+                "executor_id=engine.op.ddl_create_procedure",
+                "opcode=SBLR_DDL_CREATE_PROCEDURE",
+                "opcode_code=1554",
+                "operand_descriptor_id=create_procedure_descriptor",
+                "result_descriptor_id=ddl_result",
+                "result_descriptor_version=1",
+                "ddl_create_procedure_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "procedure-invoke":
+            expected = (
+                "executor_id=engine.op.procedure_invoke",
+                "opcode=SBLR_PROCEDURE_INVOKE",
+                "opcode_code=1030",
+                "operand_descriptor_id=procedure_invoke_descriptor",
+                "result_descriptor_id=procedure_result",
+                "result_descriptor_version=1",
+                "procedure_invoke_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation in ("ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":
             expected = ("executor_id=engine.op.ddl_create_schema", "opcode=SBLR_DDL_CREATE_SCHEMA", "opcode_code=1536", "operand_descriptor_id=create_schema_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_schema_result_sha256=", "executor_availability_generation=")
@@ -1464,6 +1557,8 @@ def main() -> int:
             second[5] = "ddl-alter-trigger-observe"
         elif args.operation == "ddl-drop-trigger":
             second[5] = "ddl-drop-trigger-observe"
+        elif args.operation == "ddl-create-procedure":
+            second[5] = "ddl-create-procedure-observe"
         verified = subprocess.run(
             second, capture_output=True, text=True, timeout=30, env=env
         )
@@ -1809,6 +1904,373 @@ def main() -> int:
                 raise ProofError(
                     "ALTER/DROP TRIGGER restart observation changed the "
                     "executable-object journal"
+                )
+        elif args.operation == "ddl-create-procedure":
+            expected_observer = (
+                "CSC-TEST-005801 DDL_CREATE_PROCEDURE "
+                "observer_visible=true independent_session=true "
+                "exact_procedure_identity=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated CREATE PROCEDURE observer did "
+                    "not resolve the committed exact procedure identity: "
+                    f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+                )
+            api_event_path = Path(f"{database}.sb.api_events")
+            executable_event_path = Path(
+                f"{database}.sb.executable_object_events"
+            )
+            if not all(
+                path.exists()
+                for path in (
+                    catalog_event_path,
+                    api_event_path,
+                    executable_event_path,
+                )
+            ):
+                raise ProofError(
+                    "CREATE PROCEDURE durability proof requires catalog, "
+                    "name-registry, and executable-object journals"
+                )
+
+            def run_procedure_auxiliary(
+                auxiliary_operation: str,
+                session_suffix: str,
+                expected_stdout: str,
+                endpoint_override: Path | None = None,
+            ) -> None:
+                auxiliary = command.copy()
+                if endpoint_override is not None:
+                    auxiliary[1] = f"unix:{endpoint_override}"
+                auxiliary[5] = auxiliary_operation
+                auxiliary[-1] = (
+                    "sbsql-sblr-ddl-create-procedure-e2e-" + session_suffix
+                )
+                completed = subprocess.run(
+                    auxiliary,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+                if (
+                    completed.returncode != 0
+                    or completed.stdout != expected_stdout
+                    or completed.stderr
+                ):
+                    raise ProofError(
+                        f"CREATE PROCEDURE {auxiliary_operation} proof failed: "
+                        f"returncode={completed.returncode} "
+                        f"stdout={completed.stdout!r} "
+                        f"stderr={completed.stderr!r}"
+                    )
+
+            # Malformed parameter syntax must stop before receipt binding,
+            # canonical SBLR, catalog mutation, or executable publication.
+            catalog_before_invalid = catalog_event_path.read_bytes()
+            api_before_invalid = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_before_invalid = executable_event_path.read_bytes()
+            run_procedure_auxiliary(
+                "ddl-create-procedure-invalid",
+                "malformed",
+                "CSC-TEST-005804 DDL_CREATE_PROCEDURE "
+                "malformed_refusal=SBLR.OPERAND.INVALID "
+                "no_canonical_execution=true no_catalog_mutation=true\n",
+            )
+            if catalog_event_path.read_bytes() != catalog_before_invalid:
+                raise ProofError(
+                    "malformed CREATE PROCEDURE changed the catalog-object "
+                    "journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_before_invalid:
+                raise ProofError(
+                    "malformed CREATE PROCEDURE changed catalog/name authority"
+                )
+            if executable_event_path.read_bytes() != executable_before_invalid:
+                raise ProofError(
+                    "malformed CREATE PROCEDURE changed the executable-object "
+                    "journal"
+                )
+
+            # Execute the real canonical create path under a separate owning
+            # transaction, roll it back, then prove the name is absent from a
+            # fresh authenticated process before and after restart.
+            run_procedure_auxiliary(
+                "ddl-create-procedure-rollback",
+                "rollback",
+                "CSC-TEST-005803 DDL_CREATE_PROCEDURE rollback=true "
+                "no_visible_catalog_effect=true\n",
+            )
+            run_procedure_auxiliary(
+                "ddl-create-procedure-observe-absent",
+                "rollback-observer",
+                "CSC-TEST-005803 DDL_CREATE_PROCEDURE "
+                "observer_absent=true independent_session=true\n",
+            )
+            catalog_before_restart = catalog_event_path.read_bytes()
+            api_authority_before_restart = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_before_restart = executable_event_path.read_bytes()
+            stop(server)
+            server = None
+            restart_control = work / "create-procedure-restart-control"
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(work / "create-procedure-restart-runtime"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(work / "create-procedure-server-restart.out").open("wb"),
+                stderr=(work / "create-procedure-server-restart.err").open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            restart_observer = second.copy()
+            restart_observer[1] = f"unix:{restart_endpoint}"
+            restart_observer[-1] = (
+                "sbsql-sblr-ddl-create-procedure-e2e-restart-observer"
+            )
+            restarted = subprocess.run(
+                restart_observer,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if (
+                restarted.returncode != 0
+                or restarted.stdout != expected_observer
+                or restarted.stderr
+            ):
+                raise ProofError(
+                    "restarted authenticated CREATE PROCEDURE observer did "
+                    "not reconstruct the committed procedure identity: "
+                    f"returncode={restarted.returncode} "
+                    f"stdout={restarted.stdout!r} stderr={restarted.stderr!r}"
+                )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "CREATE PROCEDURE restart observation changed the "
+                    "catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "CREATE PROCEDURE restart observation changed durable "
+                    "catalog/name authority rows"
+                )
+            if executable_event_path.read_bytes() != executable_before_restart:
+                raise ProofError(
+                    "CREATE PROCEDURE restart observation changed the "
+                    "executable-object journal"
+                )
+            run_procedure_auxiliary(
+                "ddl-create-procedure-observe-absent",
+                "restart-rollback-observer",
+                "CSC-TEST-005803 DDL_CREATE_PROCEDURE "
+                "observer_absent=true independent_session=true\n",
+                restart_endpoint,
+            )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "rolled-back CREATE PROCEDURE restart observation changed "
+                    "the catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "rolled-back CREATE PROCEDURE restart observation changed "
+                    "durable catalog/name authority rows"
+                )
+            if executable_event_path.read_bytes() != executable_before_restart:
+                raise ProofError(
+                    "rolled-back CREATE PROCEDURE restart observation changed "
+                    "the executable-object journal"
+                )
+        elif args.operation == "procedure-invoke":
+            expected_invocation = (
+                "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
+                "accepted canonical_sblr=true typed_null_body=true "
+                "output_count=0 commit=true publication_barrier=passed\n"
+            )
+            if verified.stdout != expected_invocation or verified.stderr:
+                raise ProofError(
+                    "independent authenticated PROCEDURE INVOKE did not "
+                    "execute the committed typed body"
+                )
+            api_event_path = Path(f"{database}.sb.api_events")
+            executable_event_path = Path(
+                f"{database}.sb.executable_object_events"
+            )
+            if not all(
+                path.exists()
+                for path in (
+                    catalog_event_path,
+                    api_event_path,
+                    executable_event_path,
+                )
+            ):
+                raise ProofError(
+                    "PROCEDURE INVOKE proof requires catalog, name-registry, "
+                    "and executable-object journals"
+                )
+
+            def run_invalid_invocation(endpoint_override: Path) -> None:
+                invalid = command.copy()
+                invalid[1] = f"unix:{endpoint_override}"
+                invalid[5] = "procedure-invoke-invalid"
+                invalid[-1] = "sbsql-sblr-procedure-invoke-e2e-malformed"
+                completed = subprocess.run(
+                    invalid,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+                expected_invalid = (
+                    "CSC-TEST-005805 PROCEDURE_INVOKE "
+                    "malformed_refusal=SBLR.OPERAND.INVALID "
+                    "no_canonical_execution=true no_state_mutation=true\n"
+                )
+                if (
+                    completed.returncode != 0
+                    or completed.stdout != expected_invalid
+                    or completed.stderr
+                ):
+                    raise ProofError(
+                        "malformed PROCEDURE INVOKE did not fail before "
+                        "canonical execution: "
+                        f"returncode={completed.returncode} "
+                        f"stdout={completed.stdout!r} "
+                        f"stderr={completed.stderr!r}"
+                    )
+
+            catalog_before_invalid = catalog_event_path.read_bytes()
+            api_before_invalid = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_before_invalid = executable_event_path.read_bytes()
+            run_invalid_invocation(endpoint)
+            if catalog_event_path.read_bytes() != catalog_before_invalid:
+                raise ProofError(
+                    "malformed PROCEDURE INVOKE changed the catalog journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_before_invalid:
+                raise ProofError(
+                    "malformed PROCEDURE INVOKE changed catalog/name authority"
+                )
+            if executable_event_path.read_bytes() != executable_before_invalid:
+                raise ProofError(
+                    "malformed PROCEDURE INVOKE changed executable lifecycle"
+                )
+
+            catalog_before_restart = catalog_event_path.read_bytes()
+            api_authority_before_restart = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_size_before_restart = executable_event_path.stat().st_size
+            stop(server)
+            server = None
+            restart_control = work / "procedure-invoke-restart-control"
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(work / "procedure-invoke-restart-runtime"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(work / "procedure-invoke-server-restart.out").open("wb"),
+                stderr=(work / "procedure-invoke-server-restart.err").open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            restart_invocation = second.copy()
+            restart_invocation[1] = f"unix:{restart_endpoint}"
+            restart_invocation[-1] = (
+                "sbsql-sblr-procedure-invoke-e2e-restart"
+            )
+            restarted = subprocess.run(
+                restart_invocation,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if (
+                restarted.returncode != 0
+                or restarted.stdout != expected_invocation
+                or restarted.stderr
+            ):
+                raise ProofError(
+                    "restarted authenticated PROCEDURE INVOKE did not "
+                    "execute the durable typed body: "
+                    f"returncode={restarted.returncode} "
+                    f"stdout={restarted.stdout!r} stderr={restarted.stderr!r}"
+                )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "PROCEDURE INVOKE mutated the catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "PROCEDURE INVOKE mutated catalog/name authority rows"
+                )
+            if executable_event_path.stat().st_size <= executable_size_before_restart:
+                raise ProofError(
+                    "restarted PROCEDURE INVOKE did not durably record its "
+                    "balanced invocation lifecycle"
+                )
+            catalog_after_restart_invoke = catalog_event_path.read_bytes()
+            api_after_restart_invoke = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_after_restart_invoke = executable_event_path.read_bytes()
+            run_invalid_invocation(restart_endpoint)
+            if catalog_event_path.read_bytes() != catalog_after_restart_invoke:
+                raise ProofError(
+                    "restarted malformed PROCEDURE INVOKE changed the catalog "
+                    "journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_after_restart_invoke:
+                raise ProofError(
+                    "restarted malformed PROCEDURE INVOKE changed catalog/name "
+                    "authority"
+                )
+            if executable_event_path.read_bytes() != executable_after_restart_invoke:
+                raise ProofError(
+                    "restarted malformed PROCEDURE INVOKE changed executable "
+                    "lifecycle"
                 )
         elif verified.stdout != first.stdout and args.operation != "ddl-drop-operator":
             raise ProofError(

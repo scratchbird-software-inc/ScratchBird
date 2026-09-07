@@ -11967,7 +11967,121 @@ SessionOperationResult HandleCoordinateCast(ServerSessionRegistry*registry,const
 SessionOperationResult HandleCoordinateCompare(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=127;result.response_schema_id=sbps::kSchemaCoordinateCompareResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.compare_refused","COMPARE coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrCompareRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrCompareRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","compare_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_compare_binder");auto q=engine_api::CompileSblrCompareDescriptor(c,ru,v.occurrence,v.comparison_occurrence,r->view.compare_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrCompareDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("COMPARE.EXECUTION_FAILED","CPDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDomainOperation(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=129;result.response_schema_id=sbps::kSchemaCoordinateDomainOperationResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.domain_operation_refused","DOMAIN_OPERATION coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDomainOperationRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDomainOperationRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","domain_operation_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_domain_operation_binder");auto q=engine_api::CompileSblrDomainOperationDescriptor(c,ru,v.occurrence,v.domain_operation_occurrence,r->view.domain_operation_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDomainOperationDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DOMAIN.OPERATION_FAILED","DODD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateUdrInvoke(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=131;result.response_schema_id=sbps::kSchemaCoordinateUdrInvokeResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.udr_invoke_refused","UDR_INVOKE coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrUdrInvokeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrUdrInvokeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","udr_invoke_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_udr_invoke_binder");auto q=engine_api::CompileSblrUdrInvokeDescriptor(c,ru,v.occurrence,v.invocation_occurrence,r->view.udr_invoke_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrUdrInvokeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("UDR.EXECUTION_FAILED","UIDD_encode_failed");result.accepted=true;return result;}
-SessionOperationResult HandleCoordinateProcedureInvoke(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=133;result.response_schema_id=sbps::kSchemaCoordinateProcedureInvokeResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.procedure_invoke_refused","PROCEDURE_INVOKE coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrProcedureInvokeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrProcedureInvokeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","procedure_invoke_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_procedure_invoke_binder");auto q=engine_api::CompileSblrProcedureInvokeDescriptor(c,ru,v.occurrence,v.invocation_occurrence,r->view.procedure_invoke_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrProcedureInvokeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("PROCEDURE.EXECUTION_FAILED","PIDD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateProcedureInvoke(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = 133;
+  result.response_schema_id = sbps::kSchemaCoordinateProcedureInvokeResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.procedure_invoke_refused",
+        "PROCEDURE_INVOKE coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 decoded;
+  std::string detail;
+  if (registry == nullptr ||
+      !scratchbird::engine::sblr::DecodeSblrProcedureInvokeBindRequestV2(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", std::move(detail));
+  }
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+
+  const auto receipt_uuid = UuidBytesToText(decoded.receipt);
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "procedure_invoke_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "procedure_invoke_receipt_ended");
+  }
+  if (receipt.view.procedure_invoke_executor_availability_generation == 0) {
+    return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "procedure_invoke_executor_unavailable");
+  }
+
+  engine_bridge::StatementProcedureInvokeBindRequestV2 bind;
+  bind.authenticated_receipt_uuid = receipt_uuid;
+  bind.occurrence = decoded.occurrence;
+  bind.invocation_occurrence = decoded.invocation_occurrence;
+  bind.command_identity = decoded.command_identity;
+  bind.request_evidence_sha256 = decoded.evidence;
+  bind.exact_bind_request_bytes = request.payload;
+  for (const auto& atom : decoded.name_atoms) {
+    bind.name_atoms.push_back({atom.raw_utf8, atom.quoted});
+  }
+
+  engine_bridge::StatementProcedureInvokeAuthorityV1 authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::BindStatementProcedureInvokeAuthorityV1(
+      receipt.handle, &bind, &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  ReadFirstEngineDiagnostic(engine_result, &engine_code, &engine_detail);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrProcedureInvokeDescriptorV1 descriptor;
+  scratchbird::engine::internal_api::SblrProcedureInvokeAuthorityInputV1
+      descriptor_authority;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrProcedureInvokeDescriptorV1(
+          authority.canonical_descriptor_bytes.data(),
+          authority.canonical_descriptor_bytes.size(), &descriptor, &detail,
+          false) ||
+      !scratchbird::engine::internal_api::
+          DecodeSblrProcedureInvokeAuthorityInputV1(
+              descriptor, &descriptor_authority, &detail) ||
+      descriptor_authority.owning_transaction_uuid !=
+          TextToUuid(receipt.view.owning_transaction_uuid) ||
+      descriptor_authority.owning_local_transaction_id !=
+          receipt.view.owning_local_transaction_id ||
+      descriptor_authority.statement_snapshot_uuid !=
+          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+      descriptor_authority.procedure_uuid !=
+          TextToUuid(authority.procedure_uuid) ||
+      descriptor_authority.procedure_generation !=
+          authority.procedure_generation ||
+      descriptor_authority.procedure_body_uuid !=
+          TextToUuid(authority.body_sblr_uuid) ||
+      descriptor_authority.procedure_body_generation !=
+          authority.body_sblr_generation ||
+      descriptor_authority.procedure_body_sha256 !=
+          authority.body_sblr_sha256 ||
+      descriptor_authority.executor_availability_generation !=
+          receipt.view.procedure_invoke_executor_availability_generation ||
+      descriptor.evidence != authority.descriptor_evidence_sha256 ||
+      scratchbird::engine::sblr::EncodeSblrProcedureInvokeDescriptorV1(
+          descriptor, false) != authority.canonical_descriptor_bytes) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "procedure_invoke_descriptor_authority_mismatch"
+                       : std::move(detail));
+  }
+  result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateFunctionInvoke(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=135;result.response_schema_id=sbps::kSchemaCoordinateFunctionInvokeResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.function_invoke_refused","FUNCTION_INVOKE coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrFunctionInvokeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrFunctionInvokeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","function_invoke_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_function_invoke_binder");auto q=engine_api::CompileSblrFunctionInvokeDescriptor(c,ru,v.occurrence,v.invocation_occurrence,r->view.function_invoke_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrFunctionInvokeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("FUNCTION.EXECUTION_FAILED","FIDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateAggregateInvoke(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=137;result.response_schema_id=sbps::kSchemaCoordinateAggregateInvokeResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.aggregate_invoke_refused","AGGREGATE_INVOKE coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrAggregateInvokeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrAggregateInvokeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","aggregate_invoke_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_aggregate_invoke_binder");auto q=engine_api::CompileSblrAggregateInvokeDescriptor(c,ru,v.occurrence,v.invocation_occurrence,r->view.aggregate_invoke_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrAggregateInvokeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("AGGREGATE.EXECUTION_FAILED","AIDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSequenceNextval(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=139;result.response_schema_id=sbps::kSchemaCoordinateSequenceNextvalResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.sequence_nextval_refused","SEQUENCE_NEXTVAL coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSequenceNextvalRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSequenceNextvalRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","sequence_nextval_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sequence_nextval_binder");auto q=engine_api::CompileSblrSequenceNextvalDescriptor(c,ru,v.occurrence,v.nextval_occurrence,r->view.sequence_nextval_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSequenceNextvalDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SEQUENCE.ALLOCATION_FAILED","NVDD_encode_failed");result.accepted=true;return result;}
@@ -12691,7 +12805,130 @@ SessionOperationResult HandleCoordinateDdlDropTrigger(
   result.accepted = true;
   return result;
 }
-SessionOperationResult HandleCoordinateDdlCreateProcedure(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=201;result.response_schema_id=sbps::kSchemaCoordinateDdlCreateProcedureResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_create_procedure_refused","DDL create procedure coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlCreateProcedureRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_create_procedure_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_procedure_binder");auto q=engine_api::CompileSblrDdlCreateProcedureDescriptor(c,ru,v.occurrence,v.procedure_occurrence,r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlCreateProcedureDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.CREATE_PROCEDURE_FAILED","PCDX_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateDdlCreateProcedure(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = 201;
+  result.response_schema_id =
+      sbps::kSchemaCoordinateDdlCreateProcedureResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.ddl_create_procedure_refused",
+        "DDL create procedure coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2 decoded;
+  std::string detail;
+  if (registry == nullptr ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureBindRequestV2(
+          request.payload.data(), request.payload.size(), &decoded, &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", std::move(detail));
+  }
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+
+  const auto receipt_uuid = UuidBytesToText(decoded.receipt);
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "ddl_create_procedure_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "ddl_create_procedure_receipt_ended");
+  }
+  if (receipt.view.ddl_create_procedure_executor_availability_generation ==
+      0) {
+    return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "ddl_create_procedure_executor_unavailable");
+  }
+
+  engine_bridge::StatementDdlCreateProcedureBindRequestV2 bind;
+  bind.authenticated_receipt_uuid = receipt_uuid;
+  bind.occurrence = decoded.occurrence;
+  bind.procedure_occurrence = decoded.procedure_occurrence;
+  bind.command_identity = decoded.command_identity;
+  bind.body_profile = decoded.body_profile;
+  bind.request_evidence_sha256 = decoded.evidence;
+  bind.exact_bind_request_bytes = request.payload;
+  for (const auto& atom : decoded.name_atoms) {
+    bind.name_atoms.push_back({atom.raw_utf8, atom.quoted});
+  }
+
+  engine_bridge::StatementDdlCreateProcedureAuthorityV1 authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status =
+      engine_bridge::BindStatementDdlCreateProcedureAuthorityV1(
+          receipt.handle, &bind, &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  ReadFirstEngineDiagnostic(engine_result, &engine_code, &engine_detail);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 descriptor;
+  scratchbird::engine::internal_api::
+      SblrDdlCreateProcedureAuthorityInputV1 descriptor_authority;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureDescriptorV1(
+          authority.canonical_descriptor_bytes.data(),
+          authority.canonical_descriptor_bytes.size(), &descriptor, &detail,
+          false) ||
+      !scratchbird::engine::internal_api::
+          DecodeSblrDdlCreateProcedureAuthorityInputV1(
+              descriptor, &descriptor_authority, &detail) ||
+      descriptor_authority.receipt != decoded.receipt ||
+      descriptor_authority.occurrence != decoded.occurrence ||
+      descriptor_authority.procedure_occurrence !=
+          decoded.procedure_occurrence ||
+      descriptor_authority.command_identity != decoded.command_identity ||
+      descriptor_authority.body_profile != decoded.body_profile ||
+      descriptor_authority.procedure_uuid !=
+          TextToUuid(authority.procedure_uuid) ||
+      descriptor_authority.schema_uuid != TextToUuid(authority.schema_uuid) ||
+      descriptor_authority.owning_transaction_uuid !=
+          TextToUuid(receipt.view.owning_transaction_uuid) ||
+      descriptor_authority.owning_local_transaction_id !=
+          receipt.view.owning_local_transaction_id ||
+      descriptor_authority.statement_snapshot_uuid !=
+          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+      descriptor_authority.body_sblr_uuid !=
+          TextToUuid(authority.body_sblr_uuid) ||
+      descriptor_authority.body_sblr_generation !=
+          authority.body_sblr_generation ||
+      descriptor_authority.body_sblr_sha256 != authority.body_sblr_sha256 ||
+      descriptor_authority.request_evidence_sha256 != decoded.evidence ||
+      descriptor_authority.executor_availability_generation !=
+          receipt.view.ddl_create_procedure_executor_availability_generation ||
+      descriptor.evidence != authority.descriptor_evidence_sha256 ||
+      scratchbird::engine::sblr::EncodeSblrDdlCreateProcedureDescriptorV1(
+          descriptor, false) != authority.canonical_descriptor_bytes) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty() ? "ddl_create_procedure_descriptor_authority_mismatch"
+                       : std::move(detail));
+  }
+  result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateDdlAlterProcedure(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=203;result.response_schema_id=sbps::kSchemaCoordinateDdlAlterProcedureResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_alter_procedure_refused","DDL alter procedure coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlAlterProcedureRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlAlterProcedureRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_alter_procedure_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_procedure_binder");auto q=engine_api::CompileSblrDdlAlterProcedureDescriptor(c,ru,v.occurrence,v.procedure_occurrence,r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlAlterProcedureDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.ALTER_PROCEDURE_FAILED","PADX_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDdlDropProcedure(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=205;result.response_schema_id=sbps::kSchemaCoordinateDdlDropProcedureResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_drop_procedure_refused","DDL drop procedure coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlDropProcedureRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlDropProcedureRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_drop_procedure_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_procedure_binder");auto q=engine_api::CompileSblrDdlDropProcedureDescriptor(c,ru,v.occurrence,v.procedure_occurrence,r->view.kv_structured_mutate_executor_availability_generation ? r->view.kv_structured_mutate_executor_availability_generation : r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlDropProcedureDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.DROP_PROCEDURE_FAILED","PDDX_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDdlCreateFunction(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=207;result.response_schema_id=sbps::kSchemaCoordinateDdlCreateFunctionResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_create_function_refused","DDL create function coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlCreateFunctionRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlCreateFunctionRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_create_function_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_create_procedure_binder");auto q=engine_api::CompileSblrDdlCreateFunctionDescriptor(c,ru,v.occurrence,v.procedure_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlCreateFunctionDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.CREATE_FUNCTION_FAILED","FDDX_encode_failed");result.accepted=true;return result;}

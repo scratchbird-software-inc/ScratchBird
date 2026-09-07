@@ -10,6 +10,8 @@
 
 #include "crud_support/crud_store.hpp"
 #include "dml/delete_api.hpp"
+#include "engine/sblr/sblr_procedural_body_runtime.hpp"
+#include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -546,6 +548,17 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "side_effect_class:") ||
         StartsWith(option, "compiled_body_provenance:") ||
         StartsWith(option, "compiled_body_descriptor:") ||
+        StartsWith(option, "procedure_body_sblr_uuid:") ||
+        StartsWith(option, "procedure_body_sblr_generation:") ||
+        StartsWith(option, "procedure_body_bytes_hex:") ||
+        StartsWith(option, "procedure_body_sha256:") ||
+        StartsWith(option, "procedure_abi_uuid:") ||
+        StartsWith(option, "procedure_abi_generation:") ||
+        StartsWith(option, "procedure_signature_sha256:") ||
+        StartsWith(option, "procedure_effect_set_sha256:") ||
+        StartsWith(option, "procedure_recovery_uuid:") ||
+        StartsWith(option, "procedure_mutation_uuid:") ||
+        StartsWith(option, "procedure_publication_barrier_uuid:") ||
         StartsWith(option, "trigger_timing:") ||
         StartsWith(option, "trigger_event:") ||
         StartsWith(option, "trigger_scope:") ||
@@ -1538,6 +1551,92 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
     EngineApiResult* evidence_result) {
   const std::string descriptor =
       PayloadFieldValue(object.payload, "compiled_body_descriptor:");
+  if (descriptor == "sblr.psql.body.null.v1") {
+    const auto body_uuid =
+        PayloadFieldValue(object.payload, "procedure_body_sblr_uuid:");
+    const auto body_generation = ParseU64(PayloadFieldValue(
+        object.payload, "procedure_body_sblr_generation:"));
+    const auto body_hex =
+        PayloadFieldValue(object.payload, "procedure_body_bytes_hex:");
+    const auto body_sha =
+        PayloadFieldValue(object.payload, "procedure_body_sha256:");
+    const auto abi_uuid =
+        PayloadFieldValue(object.payload, "procedure_abi_uuid:");
+    const auto abi_generation = ParseU64(PayloadFieldValue(
+        object.payload, "procedure_abi_generation:"));
+    const auto signature_sha = PayloadFieldValue(
+        object.payload, "procedure_signature_sha256:");
+    const auto effect_sha = PayloadFieldValue(
+        object.payload, "procedure_effect_set_sha256:");
+    const auto recovery_uuid =
+        PayloadFieldValue(object.payload, "procedure_recovery_uuid:");
+    const auto mutation_uuid =
+        PayloadFieldValue(object.payload, "procedure_mutation_uuid:");
+    const auto publication_barrier_uuid = PayloadFieldValue(
+        object.payload, "procedure_publication_barrier_uuid:");
+    const auto decoded_bytes = HexDecode(body_hex);
+    scratchbird::engine::sblr::SblrProceduralBodyV1 body;
+    std::string body_detail;
+    const auto parsed_body_uuid = scratchbird::core::uuid::ParseUuid(body_uuid);
+    const auto parsed_procedure_uuid =
+        scratchbird::core::uuid::ParseUuid(object.object_uuid);
+    if (!parsed_body_uuid.ok() || !parsed_procedure_uuid.ok() ||
+        body_generation == 0 || body_hex.empty() || decoded_bytes.empty() ||
+        body_sha.empty() || !scratchbird::core::uuid::ParseUuid(abi_uuid).ok() ||
+        abi_generation == 0 || signature_sha.empty() || effect_sha.empty() ||
+        !scratchbird::core::uuid::ParseUuid(recovery_uuid).ok() ||
+        !scratchbird::core::uuid::ParseUuid(mutation_uuid).ok() ||
+        !scratchbird::core::uuid::ParseUuid(publication_barrier_uuid).ok() ||
+        !scratchbird::engine::sblr::DecodeSblrProceduralBodyV1(
+            reinterpret_cast<const std::uint8_t*>(decoded_bytes.data()),
+            decoded_bytes.size(), &body, &body_detail) ||
+        !std::equal(body.body_uuid.begin(), body.body_uuid.end(),
+                    parsed_body_uuid.value.bytes.begin()) ||
+        !std::equal(body.procedure_uuid.begin(), body.procedure_uuid.end(),
+                    parsed_procedure_uuid.value.bytes.begin()) ||
+        body.body_generation != body_generation ||
+        body.procedure_generation != object.executable_generation ||
+        scratchbird::core::hash::HexLower(body.effect_set_sha256) !=
+            effect_sha) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                            body_detail.empty()
+                                ? "procedural_null_body_authority_invalid"
+                                : body_detail);
+    }
+    const std::vector<std::uint8_t> canonical_bytes(decoded_bytes.begin(),
+                                                     decoded_bytes.end());
+    const auto actual_sha = scratchbird::core::hash::HexLower(
+        scratchbird::core::hash::ComputeSha256Digest(canonical_bytes).digest);
+    if (actual_sha != body_sha ||
+        object.stored_sblr_hash != "sha256:" + actual_sha ||
+        object.stored_sblr_provenance !=
+            "engine.bound.procedural_body.v1" ||
+        object.side_effect_class != "none") {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                            "procedural_null_body_persistence_mismatch");
+    }
+    if (request.context.query_cancellation_requested &&
+        request.context.query_cancellation_requested()) {
+      return MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                     "procedure.invoke.cancelled_before_node",
+                                     {}, true);
+    }
+    AddEvidence(evidence_result, "procedural_body_profile", "null_body_v1");
+    AddEvidence(evidence_result, "procedural_node",
+                "sblr.psql.node.psql_null_stmt.v1");
+    AddEvidence(evidence_result, "procedural_node_result",
+                "psql_ir_result.v1");
+    AddEvidence(evidence_result, "procedural_body_uuid", body_uuid);
+    AddEvidence(evidence_result, "procedure_abi_uuid", abi_uuid);
+    AddEvidence(evidence_result, "procedure_signature_sha256", signature_sha);
+    AddEvidence(evidence_result, "procedure_effect_set_sha256", effect_sha);
+    AddEvidence(evidence_result, "procedure_recovery_uuid", recovery_uuid);
+    AddEvidence(evidence_result, "procedure_mutation_uuid", mutation_uuid);
+    AddEvidence(evidence_result, "procedure_publication_barrier_uuid",
+                publication_barrier_uuid);
+    evidence_result->result_shape.result_kind = "procedure_invocation_result";
+    return OkDiagnostic();
+  }
   if (descriptor == "sbsql.compiled.procedural.process_tasks.v1") {
     return ExecuteProcessTasksProcedure(request, evidence_result);
   }

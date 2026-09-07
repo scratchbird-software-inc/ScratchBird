@@ -11,9 +11,9 @@
       ],
       "evidence_files": [
         {
-          "bytes": 240381,
+          "bytes": 242990,
           "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/SML_041_046_PRODUCT_QA_MANIFEST.json",
-          "sha256": "a36513958daf514a8016677aa4c1ed82901b41122c47bd17ee8bc7cf507cbea4"
+          "sha256": "9c641c8d245d572f2571bf53189b625d83889d1366bf2cec60398781f1e92c3a"
         },
         {
           "bytes": 18611,
@@ -23,7 +23,7 @@
         {
           "bytes": 12621,
           "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
-          "sha256": "07ea03088a660219a10614eca50a52f2fd2e8a9a8dfd19ba49e615d9fd6fa2da"
+          "sha256": "42f8fdaa63eb41f226c70eec9bc0d8ae569bb1b02d6d444a1f708d005a9506a3"
         },
         {
           "bytes": 10971,
@@ -47,7 +47,7 @@
         }
       ],
       "group_id": "SML-041-046",
-      "group_sha256": "1d97a3fa6e4d23ac0207049c859cb64fa4702625e7250b78eb95f117539a6b25",
+      "group_sha256": "a422f4821e351ddece76fa8aee3d85640e31130a652503d671010b5d52ab7c1b",
       "parser_executes_sql": false,
       "parser_owns_finality": false,
       "private_workplan_dependency": false,
@@ -203,7 +203,7 @@
   ],
   "gate_id": "SML-GATE-047",
   "generated_from_tracked_project_files": true,
-  "manifest_sha256": "0deaceba08242cf324300759c3cd18b4f454afa5d750986adfbcc1d977803ccf",
+  "manifest_sha256": "ff0a3b1d61f0495656b0dbde334b98d97455788d5d8f8d2b32fa22ac096cb400",
   "network_dependency": false,
   "private_workplan_dependency": false,
   "reference_tree_dependency": false,

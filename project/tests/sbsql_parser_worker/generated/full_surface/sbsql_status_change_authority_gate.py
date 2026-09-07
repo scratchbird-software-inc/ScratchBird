@@ -20,9 +20,10 @@ Cross-checks performed:
   1. SBSQL_SURFACE_STATUS_MATRIX.csv status == canonical status.
   2. STRICT_ROW_COVERAGE_LEDGER.csv status field == canonical status.
   3. STRICT_ROW_COVERAGE_LEDGER.csv current_state is consistent with
-     canonical status (native_future -> inventory_only; cluster_private ->
-     lowering_family_mapped; native_now -> lowering_family_mapped or a
-     promoted state — final states are allowed once row evidence lands).
+     canonical status. A native_now exact refusal is accepted only when an
+     owning authority module proves the pre-SBLR no-mutation boundary and
+     retains the functionality as implementation debt; it is never treated as
+     terminal implementation completion.
   4. FUNCTION_SEMANTIC_ORACLE_MATRIX.csv status == canonical status
      (for expression-runtime surfaces).
   5. AUTHENTICATED_FULL_ROUTE_MATRIX.csv status == canonical status.
@@ -73,6 +74,16 @@ CANONICAL_PRE_SBLR_REFUSAL_PROOFS = {
     "engine_dispatch_not_reached=true",
     "catalog_mutation=false",
     "no_wal_authority",
+}
+TEMPORARY_IMPLEMENTATION_REFUSAL_PROOFS = {
+    "SBSQL.IMPL.NOT_AVAILABLE",
+    "operation_id=not_admitted",
+    "sblr_operation=SBLR_DIAGNOSTIC_REFUSAL",
+    "executable_sblr_emitted=false",
+    "engine_dispatch_reached=false",
+    "catalog_mutation=false",
+    "row_mutation=false",
+    "durable_state_byte_identical=true",
 }
 
 # Allowed strict-ledger current_states per canonical status.
@@ -151,6 +162,14 @@ def main() -> int:
         is_core_root_exact_refusal,
         validate_authoritative_runtime_inputs as validate_core_root_refusals,
     )
+    from core_unavailable_command_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_core_unavailable_command_refusal,
+        validate_authoritative_runtime_inputs as validate_unfinished_command_refusals,
+    )
+    from sbsfc078_procedural_refusal_generated_evidence import (  # pylint: disable=import-outside-toplevel
+        is_sbsfc078_procedural_standalone_refusal,
+        validate_authoritative_runtime_inputs as validate_procedural_standalone_refusals,
+    )
 
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
@@ -168,6 +187,8 @@ def main() -> int:
     try:
         load_central_import_command_rows(root.parent / "Specifications/Core")
         validate_core_root_refusals(root)
+        validate_unfinished_command_refusals(root)
+        validate_procedural_standalone_refusals(root)
     except ValueError as exc:
         fail(f"Core exact-refusal authority validation failed: {exc}")
 
@@ -276,6 +297,29 @@ def main() -> int:
                     f"STRICT_ROW_COVERAGE_LEDGER row {sid} canonical pre-SBLR "
                     f"refusal authority drift: canonical={canonical} "
                     f"cluster_scope={cluster_scope}"
+                )
+        elif (
+            is_core_unavailable_command_refusal(sid)
+            or is_sbsfc078_procedural_standalone_refusal(sid)
+        ):
+            if (
+                canonical == "native_now"
+                and cluster_scope == "noncluster_or_profile_scoped"
+            ):
+                allowed = {"exact_refusal_passed"}
+                evidence = ";".join(row.values())
+                for token in sorted(TEMPORARY_IMPLEMENTATION_REFUSAL_PROOFS):
+                    if token not in evidence:
+                        errors.append(
+                            f"STRICT_ROW_COVERAGE_LEDGER row {sid} unfinished "
+                            f"implementation refusal missing proof token {token}"
+                        )
+            else:
+                allowed = set()
+                errors.append(
+                    f"STRICT_ROW_COVERAGE_LEDGER row {sid} unfinished "
+                    f"implementation refusal authority drift: "
+                    f"canonical={canonical} cluster_scope={cluster_scope}"
                 )
         else:
             allowed = allowed_ledger_states(canonical, cluster_scope)

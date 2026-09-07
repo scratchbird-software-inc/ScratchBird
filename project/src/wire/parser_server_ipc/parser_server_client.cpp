@@ -26,6 +26,8 @@
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
+#include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_read_runtime.hpp"
 #include "engine/sblr/sblr_optimizer_stats_drop_runtime.hpp"
 
@@ -10260,7 +10262,56 @@ ServerVariableBindingResult SbpsClient::CoordinateCast(const ParserSessionContex
 ServerVariableBindingResult SbpsClient::CoordinateCompare(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateCompareRequest,kSchemaCoordinateCompareRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateCompareResult||response.header.schema_id!=kSchemaCoordinateCompareResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateDomainOperation(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDomainOperationRequest,kSchemaCoordinateDomainOperationRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDomainOperationResult||response.header.schema_id!=kSchemaCoordinateDomainOperationResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateUdrInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateUdrInvokeRequest,kSchemaCoordinateUdrInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateUdrInvokeResult||response.header.schema_id!=kSchemaCoordinateUdrInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
-ServerVariableBindingResult SbpsClient::CoordinateProcedureInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateProcedureInvokeRequest,kSchemaCoordinateProcedureInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateProcedureInvokeResult||response.header.schema_id!=kSchemaCoordinateProcedureInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateProcedureInvoke(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrProcedureInvokeBindRequestV2(
+          payload.data(), payload.size(), &request, &detail)) {
+    messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", detail,
+        "parser_server_ipc.procedure_invoke_request"));
+    result.messages = std::move(messages);
+    return result;
+  }
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!SendRequest(
+          endpoint_,
+          BaseHeader(kMessageCoordinateProcedureInvokeRequest,
+                     kSchemaCoordinateProcedureInvokeRequestV1, session_uuid,
+                     connection_uuid),
+          payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrProcedureInvokeDescriptorV1 descriptor;
+  if (response.header.message_type !=
+          kMessageCoordinateProcedureInvokeResult ||
+      response.header.schema_id !=
+          kSchemaCoordinateProcedureInvokeResultV1 ||
+      IsErrorFrame(response) ||
+      !scratchbird::engine::sblr::DecodeSblrProcedureInvokeDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail, false)) {
+    AddFrameDiagnostics(response, &messages);
+    if (messages.diagnostics.empty()) {
+      messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR", detail,
+          "parser_server_ipc.procedure_invoke_response"));
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
 ServerVariableBindingResult SbpsClient::CoordinateFunctionInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateFunctionInvokeRequest,kSchemaCoordinateFunctionInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateFunctionInvokeResult||response.header.schema_id!=kSchemaCoordinateFunctionInvokeResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateAggregateInvoke(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateAggregateInvokeRequest,kSchemaCoordinateAggregateInvokeRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateAggregateInvokeResult||response.header.schema_id!=kSchemaCoordinateAggregateInvokeResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateSequenceNextval(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSequenceNextvalRequest,kSchemaCoordinateSequenceNextvalRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateSequenceNextvalResult||response.header.schema_id!=kSchemaCoordinateSequenceNextvalResultV1||response.payload.size()!=424||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
@@ -10398,7 +10449,56 @@ ServerVariableBindingResult SbpsClient::CoordinateDdlDropTrigger(
   result.canonical_payload = std::move(response.payload);
   return result;
 }
-ServerVariableBindingResult SbpsClient::CoordinateDdlCreateProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateProcedureRequest,kSchemaCoordinateDdlCreateProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlCreateProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
+ServerVariableBindingResult SbpsClient::CoordinateDdlCreateProcedure(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureBindRequestV2(
+          payload.data(), payload.size(), &request, &detail)) {
+    messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", detail,
+        "parser_server_ipc.ddl_create_procedure_request"));
+    result.messages = std::move(messages);
+    return result;
+  }
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!SendRequest(
+          endpoint_,
+          BaseHeader(kMessageCoordinateDdlCreateProcedureRequest,
+                     kSchemaCoordinateDdlCreateProcedureRequestV1,
+                     session_uuid, connection_uuid),
+          payload, &response, &messages, ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 descriptor;
+  if (response.header.message_type !=
+          kMessageCoordinateDdlCreateProcedureResult ||
+      response.header.schema_id !=
+          kSchemaCoordinateDdlCreateProcedureResultV1 ||
+      IsErrorFrame(response) ||
+      !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail, false)) {
+    AddFrameDiagnostics(response, &messages);
+    if (messages.diagnostics.empty()) {
+      messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR", detail,
+          "parser_server_ipc.ddl_create_procedure_response"));
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
 ServerVariableBindingResult SbpsClient::CoordinateDdlAlterProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlAlterProcedureRequest,kSchemaCoordinateDdlAlterProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlAlterProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlAlterProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateDdlDropProcedure(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlDropProcedureRequest,kSchemaCoordinateDdlDropProcedureRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlDropProcedureResult||response.header.schema_id!=kSchemaCoordinateDdlDropProcedureResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}
 ServerVariableBindingResult SbpsClient::CoordinateDdlCreateFunction(const ParserSessionContext&session,const std::vector<std::uint8_t>&payload)const{ServerVariableBindingResult result;MessageVectorSet messages;Frame response;const auto su=TextToUuid(session.session_uuid);const auto cu=TextToUuid(session.connection_uuid);if(!session.authenticated||payload.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateDdlCreateFunctionRequest,kSchemaCoordinateDdlCreateFunctionRequestV1,su,cu),payload,&response,&messages,ActiveSocketCacheKey())){result.messages=std::move(messages);return result;}if(response.header.message_type!=kMessageCoordinateDdlCreateFunctionResult||response.header.schema_id!=kSchemaCoordinateDdlCreateFunctionResultV1||response.payload.size()!=488||IsErrorFrame(response)){AddFrameDiagnostics(response,&messages);result.messages=std::move(messages);return result;}result.accepted=true;result.canonical_payload=std::move(response.payload);return result;}

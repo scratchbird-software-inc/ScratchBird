@@ -11,6 +11,24 @@ int main() {
       !s::DecodeSblrProcedureInvokeRequestV1(request_bytes.data(), request_bytes.size(), &decoded_request, &detail)) return 1;
   request_bytes[44] = 1;
   if (s::DecodeSblrProcedureInvokeRequestV1(request_bytes.data(), request_bytes.size(), &decoded_request, &detail)) return 2;
+  s::SblrProcedureInvokeBindRequestV2 bind_request;
+  bind_request.receipt = request.receipt;
+  bind_request.occurrence = bind_request.invocation_occurrence = 1;
+  bind_request.name_atoms = {{"app", false}, {"do_nothing", false}};
+  auto bind_bytes = s::EncodeSblrProcedureInvokeBindRequestV2(bind_request);
+  s::SblrProcedureInvokeBindRequestV2 decoded_bind;
+  if (bind_bytes.empty() ||
+      !s::DecodeSblrProcedureInvokeBindRequestV2(
+          bind_bytes.data(), bind_bytes.size(), &decoded_bind, &detail) ||
+      decoded_bind.name_atoms.size() != 2) return 7;
+  auto bad_bind = bind_bytes;
+  bad_bind[47] = 1;
+  if (s::DecodeSblrProcedureInvokeBindRequestV2(
+          bad_bind.data(), bad_bind.size(), &decoded_bind, &detail)) return 8;
+  bad_bind = bind_bytes;
+  bad_bind.back() ^= 1;
+  if (s::DecodeSblrProcedureInvokeBindRequestV2(
+          bad_bind.data(), bad_bind.size(), &decoded_bind, &detail)) return 9;
   s::SblrProcedureInvokeDescriptorV1 descriptor;
   descriptor.body[0] = 1; descriptor.availability = 1;
   auto descriptor_bytes = s::EncodeSblrProcedureInvokeDescriptorV1(descriptor, false);

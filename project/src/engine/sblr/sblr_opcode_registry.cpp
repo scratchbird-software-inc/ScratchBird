@@ -2853,7 +2853,7 @@ const SblrOpcodeEntry* LookupSblrOpcodeCode(std::uint16_t code) {
   const SblrOpcodeEntry* match = nullptr;
   for (const auto& entry : StaticSblrOpcodeRegistry()) {
     if (entry.code != code) continue;
-    if (match != nullptr) return nullptr;
+    if (match != nullptr && match->opcode != entry.opcode) return nullptr;
     match = &entry;
   }
   return match;
@@ -2870,9 +2870,10 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
     return result;
   }
 
-  // Numeric opcode identity is public wire authority.  A duplicated code is
-  // ambiguous even when the accompanying operation id happens to select one
-  // registry row, so reject it before consulting either textual component.
+  // Numeric opcode identity is public wire authority.  Registered operation
+  // aliases may share an exact code and mnemonic; the operation id remains
+  // their discriminator.  A code assigned to conflicting mnemonics is still
+  // ambiguous and must fail closed.
   const auto* code_entry = LookupSblrOpcodeCode(code);
   if (code_entry == nullptr) {
     result.diagnostic_id =
@@ -2889,7 +2890,8 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
     return result;
   }
   result.entry = entry;
-  if (entry != code_entry || entry->code != code || entry->opcode != opcode) {
+  if (entry->code != code || entry->opcode != opcode ||
+      code_entry->opcode != opcode) {
     result.diagnostic_id =
         OpcodeIdentityDiagnostic(code, operation_id, opcode);
     result.detail = "expected=" + entry->operation_id + "/" +

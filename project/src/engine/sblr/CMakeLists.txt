@@ -55,6 +55,7 @@ add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_domain_operation_runtime.cpp
   sblr_udr_invoke_runtime.cpp
   sblr_procedure_invoke_runtime.cpp
+  sblr_procedural_body_runtime.cpp
   sblr_function_invoke_runtime.cpp
   sblr_aggregate_invoke_runtime.cpp
   sblr_sequence_nextval_runtime.cpp

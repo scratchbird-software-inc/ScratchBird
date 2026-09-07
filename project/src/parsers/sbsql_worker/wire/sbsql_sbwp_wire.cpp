@@ -4633,7 +4633,10 @@ bool IsCommandCompletionOnlyDml(std::string_view sql) {
 bool IsCommandCompletionOnlyStatementManagement(std::string_view sql) {
   const std::string normalized = Upper(StripSqlTerminator(std::string(sql)));
   return StartsWithWord(normalized, "PREPARE") ||
-         StartsWithWord(normalized, "DEALLOCATE");
+         StartsWithWord(normalized, "DEALLOCATE") ||
+         StartsWithWord(normalized, "CALL") ||
+         normalized.starts_with("EXECUTE PROCEDURE ") ||
+         normalized == "EXECUTE PROCEDURE";
 }
 
 void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
@@ -5999,6 +6002,14 @@ bool ExecuteSql(SbsqlTestWireSession* session,
   if (completed && session != nullptr &&
       result.server_operation_id == "engine.op.ddl_drop_trigger") {
     session->AcknowledgeDdlDropTriggerCompletionForWire();
+  }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.ddl_create_procedure") {
+    session->AcknowledgeDdlCreateProcedureCompletionForWire();
+  }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.procedure_invoke") {
+    session->AcknowledgeProcedureInvokeCompletionForWire();
   }
   return completed;
 }
