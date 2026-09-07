@@ -11,6 +11,7 @@
 #include "crud_support/crud_store.hpp"
 #include "dml/delete_api.hpp"
 #include "engine/sblr/sblr_procedural_body_runtime.hpp"
+#include "engine/sblr/sblr_procedure_abi_runtime.hpp"
 #include "hash_digest.hpp"
 #include "local_transaction_store.hpp"
 #include "dml/insert_api.hpp"
@@ -554,6 +555,9 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "procedure_body_sha256:") ||
         StartsWith(option, "procedure_abi_uuid:") ||
         StartsWith(option, "procedure_abi_generation:") ||
+        StartsWith(option, "procedure_abi_bytes_hex:") ||
+        StartsWith(option, "procedure_abi_evidence_sha256:") ||
+        StartsWith(option, "procedure_parameter_count:") ||
         StartsWith(option, "procedure_signature_sha256:") ||
         StartsWith(option, "procedure_effect_set_sha256:") ||
         StartsWith(option, "procedure_recovery_uuid:") ||
@@ -1564,6 +1568,12 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
         PayloadFieldValue(object.payload, "procedure_abi_uuid:");
     const auto abi_generation = ParseU64(PayloadFieldValue(
         object.payload, "procedure_abi_generation:"));
+    const auto abi_bytes_hex =
+        PayloadFieldValue(object.payload, "procedure_abi_bytes_hex:");
+    const auto abi_evidence =
+        PayloadFieldValue(object.payload, "procedure_abi_evidence_sha256:");
+    const auto parameter_count = ParseU64(PayloadFieldValue(
+        object.payload, "procedure_parameter_count:"));
     const auto signature_sha = PayloadFieldValue(
         object.payload, "procedure_signature_sha256:");
     const auto effect_sha = PayloadFieldValue(
@@ -1583,7 +1593,8 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
     if (!parsed_body_uuid.ok() || !parsed_procedure_uuid.ok() ||
         body_generation == 0 || body_hex.empty() || decoded_bytes.empty() ||
         body_sha.empty() || !scratchbird::core::uuid::ParseUuid(abi_uuid).ok() ||
-        abi_generation == 0 || signature_sha.empty() || effect_sha.empty() ||
+        abi_generation == 0 || abi_bytes_hex.empty() || abi_evidence.empty() ||
+        parameter_count > 1 || signature_sha.empty() || effect_sha.empty() ||
         !scratchbird::core::uuid::ParseUuid(recovery_uuid).ok() ||
         !scratchbird::core::uuid::ParseUuid(mutation_uuid).ok() ||
         !scratchbird::core::uuid::ParseUuid(publication_barrier_uuid).ok() ||
@@ -1615,6 +1626,76 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
       return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
                             "procedural_null_body_persistence_mismatch");
     }
+    const auto persisted_abi_text = HexDecode(abi_bytes_hex);
+    const std::vector<std::uint8_t> persisted_abi_bytes(
+        persisted_abi_text.begin(), persisted_abi_text.end());
+    scratchbird::engine::sblr::SblrProcedureAbiV1 persisted_abi;
+    scratchbird::engine::sblr::SblrProcedureAbiV1 invocation_abi;
+    scratchbird::engine::sblr::SblrProcedureArgumentVectorV1 arguments;
+    std::string abi_detail;
+    std::string argument_detail;
+    if (persisted_abi_bytes.size() !=
+            scratchbird::engine::sblr::kSblrProcedureAbiV1Bytes ||
+        request.canonical_procedure_abi_bytes != persisted_abi_bytes ||
+        !scratchbird::engine::sblr::DecodeSblrProcedureAbiV1(
+            persisted_abi_bytes.data(), persisted_abi_bytes.size(),
+            &persisted_abi, &abi_detail) ||
+        !scratchbird::engine::sblr::DecodeSblrProcedureAbiV1(
+            request.canonical_procedure_abi_bytes.data(),
+            request.canonical_procedure_abi_bytes.size(), &invocation_abi,
+            &abi_detail) ||
+        persisted_abi.evidence != invocation_abi.evidence ||
+        scratchbird::core::hash::HexLower(persisted_abi.evidence) !=
+            abi_evidence ||
+        scratchbird::core::uuid::UuidToString(
+            scratchbird::core::uuid::Uuid{persisted_abi.abi_uuid}) !=
+            abi_uuid ||
+        persisted_abi.abi_generation != abi_generation ||
+        persisted_abi.procedure_generation != object.executable_generation ||
+        persisted_abi.parameters.size() != parameter_count ||
+        !std::equal(persisted_abi.procedure_uuid.begin(),
+                    persisted_abi.procedure_uuid.end(),
+                    parsed_procedure_uuid.value.bytes.begin()) ||
+        request.canonical_argument_vector_bytes.size() !=
+            scratchbird::engine::sblr::kSblrProcedureArgumentVectorV1Bytes ||
+        !scratchbird::engine::sblr::DecodeSblrProcedureArgumentVectorV1(
+            request.canonical_argument_vector_bytes.data(),
+            request.canonical_argument_vector_bytes.size(), &arguments,
+            &argument_detail) ||
+        arguments.procedure_abi_uuid != persisted_abi.abi_uuid ||
+        arguments.procedure_abi_generation != persisted_abi.abi_generation ||
+        arguments.argument_vector_generation == 0 ||
+        arguments.invocation_generation != 1 ||
+        arguments.arguments.size() != persisted_abi.parameters.size() ||
+        scratchbird::core::uuid::UuidToString(
+            scratchbird::core::uuid::Uuid{arguments.invocation_uuid}) !=
+            OptionValue(request, "invocation_lease_uuid:")) {
+      return ExecDiagnostic(
+          kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+          !argument_detail.empty() ? argument_detail
+                                   : (!abi_detail.empty()
+                                          ? abi_detail
+                                          : "procedure_abi_or_argument_authority_mismatch"));
+    }
+    std::optional<std::int64_t> canonical_argument;
+    if (parameter_count == 1) {
+      const auto& parameter = persisted_abi.parameters.front();
+      const auto& argument = arguments.arguments.front();
+      std::int64_t value = 0;
+      if (argument.ordinal != parameter.ordinal ||
+          argument.datatype_descriptor_uuid !=
+              parameter.datatype_descriptor_uuid ||
+          argument.datatype_descriptor_generation !=
+              parameter.datatype_descriptor_generation ||
+          argument.type_uuid != parameter.type_uuid ||
+          !scratchbird::engine::sblr::DecodeSblrProcedureInt64Value(
+              argument.canonical_value_bytes, &value)) {
+        return ExecDiagnostic(
+            kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+            "procedure_argument_descriptor_or_value_mismatch");
+      }
+      canonical_argument = value;
+    }
     if (request.context.query_cancellation_requested &&
         request.context.query_cancellation_requested()) {
       return MakeEngineApiDiagnostic("PROCESS.CANCELLED",
@@ -1628,6 +1709,12 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
                 "psql_ir_result.v1");
     AddEvidence(evidence_result, "procedural_body_uuid", body_uuid);
     AddEvidence(evidence_result, "procedure_abi_uuid", abi_uuid);
+    AddEvidence(evidence_result, "procedure_parameter_count",
+                std::to_string(parameter_count));
+    if (canonical_argument.has_value()) {
+      AddEvidence(evidence_result, "procedure_argument_0_int64",
+                  std::to_string(*canonical_argument));
+    }
     AddEvidence(evidence_result, "procedure_signature_sha256", signature_sha);
     AddEvidence(evidence_result, "procedure_effect_set_sha256", effect_sha);
     AddEvidence(evidence_result, "procedure_recovery_uuid", recovery_uuid);

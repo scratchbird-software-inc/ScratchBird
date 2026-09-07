@@ -7,14 +7,15 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Reviewed evidence for the bounded CREATE/CALL/NULL procedure profile.
+"""Reviewed evidence for the bounded typed CREATE/CALL/NULL procedure profile.
 
-The profile is deliberately closed: an empty procedure signature, one typed
-``psql_null_stmt`` body node, and zero-argument invocation.  The public proof
-crosses SBWP 1.1 over TLS, canonical SBLR admission, the engine public ABI,
-MGA-backed catalog/executable-object publication, explicit transaction
-finality, an independent session, and restart.  It does not promote procedure
-parameters, output values, nested calls, or any other procedural node.
+The profile is deliberately closed: one nullable ``IN BIGINT`` parameter, one
+typed ``psql_null_stmt`` body node, and one canonical signed-int64 argument.
+The public proof crosses SBWP 1.1 over TLS, canonical SBLR admission, the engine
+public ABI, MGA-backed catalog/executable-object publication, explicit
+transaction finality, an independent session, and restart.  It does not
+promote additional parameter modes/types, output values, nested calls, or any
+other procedural node.
 """
 
 from __future__ import annotations
@@ -71,6 +72,14 @@ class ProceduralLifecycleSurface:
     def is_null_node(self) -> bool:
         return self.canonical_name == "psql_null_stmt"
 
+    @property
+    def inherits_parent(self) -> bool:
+        return self.canonical_name in {
+            "procedure_signature",
+            "parameter_def",
+            "parameter_name",
+        }
+
 
 PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
     ProceduralLifecycleSurface(
@@ -79,7 +88,7 @@ PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
         "grammar_production",
         "sblr.catalog.mutation.v3",
         "create_root",
-        "CREATE PROCEDURE users.public.tls_null_procedure AS BEGIN NULL; END;",
+        "CREATE PROCEDURE users.public.tls_null_procedure(IN marker BIGINT) AS BEGIN NULL; END;",
         "engine.op.ddl_create_procedure",
         "SBLR_DDL_CREATE_PROCEDURE",
         1554,
@@ -93,8 +102,8 @@ PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
         "procedure_signature",
         "grammar_production",
         "sblr.general.operation.v3",
-        "empty_signature_child",
-        "CREATE PROCEDURE users.public.tls_null_procedure AS BEGIN NULL; END;",
+        "typed_parameter_signature_child",
+        "CREATE PROCEDURE users.public.tls_null_procedure(IN marker BIGINT) AS BEGIN NULL; END;",
         "engine.op.ddl_create_procedure",
         "SBLR_DDL_CREATE_PROCEDURE",
         1554,
@@ -104,12 +113,42 @@ PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
         5801,
     ),
     ProceduralLifecycleSurface(
+        "SBSQL-0B00DEA678E2",
+        "parameter_def",
+        "grammar_production",
+        "sblr.general.operation.v3",
+        "typed_parameter_definition_child",
+        "CREATE PROCEDURE users.public.tls_null_procedure(IN marker BIGINT) AS BEGIN NULL; END;",
+        "engine.op.ddl_create_procedure",
+        "SBLR_DDL_CREATE_PROCEDURE",
+        1554,
+        "create_procedure_descriptor",
+        "ddl_result",
+        "EngineCreateProcedure",
+        5812,
+    ),
+    ProceduralLifecycleSurface(
+        "SBSQL-C5D151D17944",
+        "parameter_name",
+        "grammar_production",
+        "sblr.general.operation.v3",
+        "typed_parameter_name_child",
+        "CREATE PROCEDURE users.public.tls_null_procedure(IN marker BIGINT) AS BEGIN NULL; END;",
+        "engine.op.ddl_create_procedure",
+        "SBLR_DDL_CREATE_PROCEDURE",
+        1554,
+        "create_procedure_descriptor",
+        "ddl_result",
+        "EngineCreateProcedure",
+        5812,
+    ),
+    ProceduralLifecycleSurface(
         "SBSQL-F3006C91D952",
         "call",
         "canonical_surface",
         "sblr.general.operation.v3",
         "invoke_root",
-        "CALL users.public.tls_null_procedure();",
+        "CALL users.public.tls_null_procedure(+8);",
         "engine.op.procedure_invoke",
         "SBLR_PROCEDURE_INVOKE",
         1030,
@@ -124,7 +163,7 @@ PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
         "grammar_production",
         "sblr.general.operation.v3",
         "invoke_subform",
-        "CALL users.public.tls_null_procedure();",
+        "CALL users.public.tls_null_procedure(+8);",
         "engine.op.procedure_invoke",
         "SBLR_PROCEDURE_INVOKE",
         1030,
@@ -139,7 +178,7 @@ PROCEDURAL_LIFECYCLE_SURFACES: tuple[ProceduralLifecycleSurface, ...] = (
         "grammar_production",
         "sblr.management.control.v3",
         "typed_body_child",
-        "CREATE PROCEDURE users.public.tls_null_procedure AS BEGIN NULL; END; CALL users.public.tls_null_procedure();",
+        "CREATE PROCEDURE users.public.tls_null_procedure(IN marker BIGINT) AS BEGIN NULL; END; CALL users.public.tls_null_procedure(+8);",
         "engine.op.procedure_invoke",
         "SBLR_PROCEDURE_INVOKE",
         1030,
@@ -189,7 +228,7 @@ def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
     command_ids = {
         row.surface_id
         for row in PROCEDURAL_LIFECYCLE_SURFACES
-        if row.canonical_name != "procedure_signature"
+        if not row.inherits_parent
     }
     command_rows = _read_rows(core / _COMMAND_REGISTRY, command_ids)
     grammar_rows = _read_rows(
@@ -200,7 +239,7 @@ def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
         grammar = grammar_rows.get(surface.surface_id)
         if grammar is None or grammar.get("canonical_name") != surface.canonical_name:
             raise ValueError(f"procedural grammar authority drift: {surface.surface_id}")
-        if surface.canonical_name == "procedure_signature":
+        if surface.inherits_parent:
             if grammar.get("normalization_decision") != "existing_sbsql_lowering":
                 raise ValueError("procedure signature parent-binding authority drift")
             continue
@@ -229,7 +268,7 @@ def validate_authoritative_runtime_inputs(repo_root: Path) -> None:
         tuple(row.surface_id for row in PROCEDURAL_LIFECYCLE_SURFACES)
         + (
             "CREATE PROCEDURE",
-            "CALL {name}()",
+            "CALL {name}({value})",
             "engine.op.ddl_create_procedure",
             "SBLR_DDL_CREATE_PROCEDURE",
             "engine.op.procedure_invoke",
@@ -291,14 +330,16 @@ def strict_ledger_override(
     if evidence is None:
         return None
     create_detail = (
-        "syntax_only_PCQX_v2=true;receipt_private_PCDX=true;"
+        "syntax_only_PCQX_v3=true;receipt_private_PCDX=true;"
         "engine_issued_PCDO_488=true;exact_PCRS_320=true;"
-        "empty_signature_v1=true;typed_null_body_288=true"
+        "persisted_PABI_256=true;one_IN_BIGINT_parameter=true;"
+        "typed_null_body_288=true"
     )
     invoke_detail = (
-        "syntax_only_PIRQ_v2=true;receipt_private_PIDX=true;"
+        "syntax_only_PIRQ_v3=true;receipt_private_PIDX=true;"
         "engine_issued_PIDO_488=true;exact_PIRS_320=true;"
-        "zero_arguments_v1=true;zero_outputs_v1=true;typed_null_body_executed=true"
+        "engine_issued_PARG_192=true;one_int64_argument=true;"
+        "zero_outputs_v1=true;typed_null_body_executed=true"
     )
     if evidence.is_create:
         authority_detail = create_detail
@@ -355,12 +396,13 @@ def strict_ledger_override(
                 "procedural_node=sblr.psql.node.psql_null_stmt.v1;"
                 "node_executor=engine.psql.ir.psql_null_stmt"
                 if evidence.is_null_node
-                else "bounded_profile=empty_signature_null_body_zero_arguments_v1"
+                else "bounded_profile=one_IN_BIGINT_null_body_one_int64_argument_v1"
             )
         ),
         "diagnostic_evidence": (
             f"ctest:{CREATE_PROCESS_CTEST};ctest:{INVOKE_PROCESS_CTEST};"
-            "SBLR.OPERAND.INVALID;SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;"
+            "SBLR.OPERAND.INVALID;PROCEDURE.ARGUMENT_SHAPE_INVALID;"
+            "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;"
             "PROCESS.CANCELLED;SECURITY.ACCESS_DENIED;CATALOG.NAME.NOT_FOUND;"
             "all_prepublication_refusals_preserve_catalog_name_and_executable_journals"
         ),
@@ -377,9 +419,10 @@ def strict_ledger_override(
             "public SBsql/SBWP TLS route, receipt-private engine binding, exact canonical "
             "SBLR carrier, engine public-ABI execution, explicit MGA transaction finality, "
             "independent post-state, restart reconstruction, rollback non-visibility, and "
-            "typed NULL-body execution. The admitted profile is limited to an empty "
-            "procedure signature, one psql_null_stmt body node, zero invocation arguments, "
-            "and zero outputs. Parameters, results, nested calls, other PSQL nodes, ALTER/"
+            "typed NULL-body execution. The admitted profile is limited to one nullable "
+            "IN BIGINT parameter, one canonical signed-int64 invocation argument, one "
+            "psql_null_stmt body node, and zero outputs. Additional parameter modes/types, "
+            "results, nested calls, other PSQL nodes, ALTER/"
             "DROP PROCEDURE, cluster-positive execution, parser-owned identity/finality, "
             "and WAL authority remain planned or in progress and are not claimed."
         ),
@@ -409,7 +452,7 @@ def per_row_manifest_override(
         "SBWP_1_1_TLS_listener_route=true;independent_post_state=true;"
         "explicit_transaction_finality=true;restart_recovery=true;"
         "rollback_nonvisibility=true;no_source_sql_execution_authority;"
-        "bounded_profile=empty_signature_null_body_zero_arguments_zero_outputs_v1"
+        "bounded_profile=one_IN_BIGINT_null_body_one_int64_argument_zero_outputs_v1"
     )
     if evidence.is_null_node:
         implementation_refs += (
@@ -451,7 +494,8 @@ def per_row_manifest_override(
         "diagnostic_proof": (
             "canonical_message_vector_set;"
             f"ctest:{CREATE_PROCESS_CTEST};ctest:{INVOKE_PROCESS_CTEST};"
-            "SBLR.OPERAND.INVALID;SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;"
+            "SBLR.OPERAND.INVALID;PROCEDURE.ARGUMENT_SHAPE_INVALID;"
+            "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;"
             "PROCESS.CANCELLED;SECURITY.ACCESS_DENIED;CATALOG.NAME.NOT_FOUND;"
             "prepublication_refusals_publish_no_catalog_name_or_executable_mutation"
         ),
@@ -462,20 +506,21 @@ def per_row_manifest_override(
             "explicit_commit=true;independent_authenticated_session=true;"
             "restart_post_state=true;rollback_nonvisibility=true;"
             "CONNECT_only_SECURITY_ACCESS_DENIED_no_mutation=true;"
-            "typed_null_body=true;zero_arguments=true;zero_outputs=true;"
+            "typed_null_body=true;typed_parameter_ABI=true;parameter_count=1;"
+            "canonical_int64_argument=true;argument_count=1;zero_outputs=true;"
             "publication_barrier=true"
         ),
         "evidence_collected_utc": "authenticated_tls_and_restart_process_evidence_2026-09-07",
-        "promoter_slice": "IA-06-PROCEDURE-LIFECYCLE-NULL-V1",
+        "promoter_slice": "IA-06-PROCEDURE-LIFECYCLE-ONE-IN-BIGINT-V1",
         "notes": (
             "Bounded CREATE PROCEDURE/CALL lifecycle evidence for "
             f"{evidence.surface_id} {evidence.canonical_name}. The public TLS route and "
             "independent direct-SBPS process route prove exact engine-bound descriptors, "
             "canonical opcodes, engine API execution, durable catalog/executable-object "
             "publication, explicit commit, independent and restarted post-state, rollback "
-            "non-visibility, and typed NULL-body execution. Only the empty-signature, "
-            "zero-argument, zero-output, single-NULL-node V1 profile is promoted; every "
-            "broader procedural shape remains planned or in progress."
+            "non-visibility, and typed NULL-body execution. Only the one-IN-BIGINT, "
+            "one-signed-int64-argument, zero-output, single-NULL-node V1 profile is "
+            "promoted; every broader procedural shape remains planned or in progress."
         ),
     }
 
@@ -510,7 +555,7 @@ def authenticated_route_override(
             ),
             "engine_admission_authority": (
                 "engine_owned_name_catalog_security_transaction_resource_and_executor_epochs;"
-                "PCQX_PCDX_PCDO_or_PIRQ_PIDX_PIDO_exact_authority;"
+                "PCQX_v3_PCDX_PCDO_PABI_or_PIRQ_v3_PIDX_PIDO_PARG_exact_authority;"
                 "parser_copies_only_engine_bound_descriptor"
             ),
             "mga_execution_authority": (
@@ -538,8 +583,9 @@ def authenticated_route_override(
                 "session and after restart; rollback remains invisible. A CONNECT-only "
                 "principal proves SECURITY.ACCESS_DENIED for both CREATE and CALL with "
                 "byte-identical durable catalog/name/executable state. The profile is limited "
-                "to an empty signature, a single typed NULL body node, zero arguments, and "
-                "zero outputs; broader procedural shapes remain planned or in progress."
+                "to one IN BIGINT parameter, one canonical signed-int64 argument, a single "
+                "typed NULL body node, and zero outputs; broader procedural shapes remain "
+                "planned or in progress."
             ),
         }
     )
@@ -556,11 +602,11 @@ def binary_round_trip_override(row: dict[str, str]) -> dict[str, str]:
             "oracle_authority_status": "per_row_manifest_procedural_lifecycle_v1",
             "expected_canonical_function_or_api_operation_id": evidence.operation_id,
             "parse_phase_expectation": (
-                "parse_exact_CREATE_PROCEDURE_or_CALL_and_typed_NULL_body_to_CST_pass"
+                "parse_exact_typed_CREATE_PROCEDURE_EXECUTE_or_CALL_and_NULL_body_to_CST_pass"
             ),
             "bind_phase_expectation": (
                 "bind_with_authenticated_receipt_private_engine_authority_"
-                "PCQX_PCDX_or_PIRQ_PIDX_pass"
+                "PCQX_v3_PCDX_PABI_or_PIRQ_v3_PIDX_PARG_pass"
             ),
             "lower_phase_expectation": (
                 f"lower_to_{evidence.operation_id}_{evidence.opcode}_with_exact_"
@@ -602,7 +648,8 @@ def binary_round_trip_override(row: dict[str, str]) -> dict[str, str]:
                 "identically, dispatches through the engine public ABI, and publishes the "
                 "exact result before SBWP command completion. The NULL node is carried only "
                 "inside the authenticated procedure body and never as a standalone package "
-                "root. Only the empty-signature, zero-argument, zero-output profile is proven."
+                "root. Only the one-IN-BIGINT, one-signed-int64-argument, zero-output "
+                "profile is proven."
             ),
         }
     )

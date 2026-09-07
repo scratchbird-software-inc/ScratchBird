@@ -179,6 +179,141 @@ bool DecodeSblrProcedureInvokeBindRequestV2(
   *out = std::move(value);
   return true;
 }
+
+std::vector<std::uint8_t> EncodeSblrProcedureInvokeBindRequestV3(
+    const SblrProcedureInvokeBindRequestV3& value) {
+  const auto valid_literal = [](std::string_view literal) {
+    if (literal.empty() || literal.size() > 20) return false;
+    std::size_t index = 0;
+    if (literal.front() == '+' || literal.front() == '-') index = 1;
+    return index < literal.size() &&
+           std::all_of(literal.begin() + index, literal.end(),
+                       [](char value) { return value >= '0' && value <= '9'; });
+  };
+  if (!Nonzero(value.receipt) || value.occurrence == 0 ||
+      value.invocation_occurrence == 0 || value.command_identity != 1 ||
+      value.name_atoms.empty() || value.name_atoms.size() > 3 ||
+      !std::all_of(value.name_atoms.begin(), value.name_atoms.end(), ValidAtom) ||
+      value.arguments.size() != 1 || value.arguments.front().ordinal != 1 ||
+      value.arguments.front().lexical_kind != 1 ||
+      !valid_literal(value.arguments.front().literal_utf8)) {
+    return {};
+  }
+  std::size_t total = 92 + value.arguments.front().literal_utf8.size();
+  for (const auto& atom : value.name_atoms) total += 4 + atom.raw_utf8.size();
+  if (total > 1024) return {};
+  std::vector<std::uint8_t> out{'P', 'I', 'R', 'Q'};
+  Put(&out, 3, 2);
+  Put(&out, total, 2);
+  Put(&out, total, 4);
+  Put(&out, 0, 4);
+  out.insert(out.end(), value.receipt.begin(), value.receipt.end());
+  Put(&out, value.occurrence, 8);
+  Put(&out, value.invocation_occurrence, 4);
+  Put(&out, value.command_identity, 2);
+  Put(&out, value.name_atoms.size(), 1);
+  Put(&out, 1, 1);
+  Put(&out, 0, 2);
+  Put(&out, 0, 2);
+  for (const auto& atom : value.name_atoms) {
+    Put(&out, atom.raw_utf8.size(), 2);
+    Put(&out, atom.quoted ? 1 : 0, 1);
+    Put(&out, 0, 1);
+    out.insert(out.end(), atom.raw_utf8.begin(), atom.raw_utf8.end());
+  }
+  const auto& argument = value.arguments.front();
+  Put(&out, argument.ordinal, 2);
+  Put(&out, argument.lexical_kind, 1);
+  Put(&out, 0, 1);
+  Put(&out, argument.literal_utf8.size(), 2);
+  Put(&out, 0, 2);
+  out.insert(out.end(), argument.literal_utf8.begin(),
+             argument.literal_utf8.end());
+  const auto evidence = Evidence("ScratchBird.SblrProcedureInvokeBindRequest.V3",
+                                 out.data() + 16, out.size() - 16);
+  if (Nonzero(value.evidence) && value.evidence != evidence) return {};
+  out.insert(out.end(), evidence.begin(), evidence.end());
+  return out.size() == total ? out : std::vector<std::uint8_t>{};
+}
+
+bool DecodeSblrProcedureInvokeBindRequestV3(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrProcedureInvokeBindRequestV3* out, std::string* detail) {
+  const auto refuse = [&](const char* reason) {
+    if (detail) *detail = reason;
+    return false;
+  };
+  if (!out || !bytes || size < 98 || size > 1024 ||
+      !std::equal(bytes, bytes + 4, "PIRQ") || Get(bytes + 4, 2) != 3 ||
+      Get(bytes + 6, 2) != size || Get(bytes + 8, 4) != size ||
+      std::any_of(bytes + 12, bytes + 16,
+                  [](auto value) { return value != 0; })) {
+    return refuse("PIRQ v3 header invalid");
+  }
+  SblrProcedureInvokeBindRequestV3 value;
+  std::copy_n(bytes + 16, 16, value.receipt.begin());
+  value.occurrence = Get(bytes + 32, 8);
+  value.invocation_occurrence = Get(bytes + 40, 4);
+  value.command_identity = static_cast<std::uint16_t>(Get(bytes + 44, 2));
+  const auto atom_count = Get(bytes + 46, 1);
+  if (atom_count < 1 || atom_count > 3 || bytes[47] != 1 ||
+      Get(bytes + 48, 2) != 0 || Get(bytes + 50, 2) != 0) {
+    return refuse("PIRQ v3 fixed shape invalid");
+  }
+  const std::size_t evidence_offset = size - 32;
+  std::size_t offset = 52;
+  for (std::size_t index = 0; index < atom_count; ++index) {
+    if (offset + 4 > evidence_offset) return refuse("PIRQ v3 atom truncated");
+    const auto length = Get(bytes + offset, 2);
+    const auto quoted = bytes[offset + 2];
+    if (length < 1 || length > 256 || quoted > 1 || bytes[offset + 3] != 0 ||
+        offset + 4 + length > evidence_offset) {
+      return refuse("PIRQ v3 atom invalid");
+    }
+    SblrProcedureInvokeNameAtomV2 atom;
+    atom.raw_utf8.assign(
+        reinterpret_cast<const char*>(bytes + offset + 4), length);
+    atom.quoted = quoted == 1;
+    if (!ValidAtom(atom)) return refuse("PIRQ v3 atom text invalid");
+    value.name_atoms.push_back(std::move(atom));
+    offset += 4 + length;
+  }
+  if (offset + 8 > evidence_offset) {
+    return refuse("PIRQ v3 argument truncated");
+  }
+  SblrProcedureInvokeArgumentDemandV3 argument;
+  argument.ordinal = static_cast<std::uint16_t>(Get(bytes + offset, 2));
+  argument.lexical_kind = bytes[offset + 2];
+  const auto literal_size = Get(bytes + offset + 4, 2);
+  if (bytes[offset + 3] != 0 || literal_size < 1 || literal_size > 20 ||
+      Get(bytes + offset + 6, 2) != 0 ||
+      offset + 8 + literal_size != evidence_offset) {
+    return refuse("PIRQ v3 argument shape invalid");
+  }
+  argument.literal_utf8.assign(
+      reinterpret_cast<const char*>(bytes + offset + 8), literal_size);
+  const auto canonical_probe = [&]() {
+    SblrProcedureInvokeBindRequestV3 probe = value;
+    probe.arguments.push_back(argument);
+    return EncodeSblrProcedureInvokeBindRequestV3(probe);
+  }();
+  if (argument.ordinal != 1 || argument.lexical_kind != 1 ||
+      canonical_probe.empty()) {
+    return refuse("PIRQ v3 argument demand invalid");
+  }
+  value.arguments.push_back(std::move(argument));
+  std::copy_n(bytes + evidence_offset, 32, value.evidence.begin());
+  const auto expected = Evidence("ScratchBird.SblrProcedureInvokeBindRequest.V3",
+                                 bytes + 16, evidence_offset - 16);
+  if (value.evidence != expected) return refuse("PIRQ v3 evidence invalid");
+  const auto canonical = EncodeSblrProcedureInvokeBindRequestV3(value);
+  if (canonical.size() != size ||
+      !std::equal(canonical.begin(), canonical.end(), bytes)) {
+    return refuse("PIRQ v3 canonical re-encoding differs");
+  }
+  *out = std::move(value);
+  return true;
+}
 std::vector<std::uint8_t> EncodeSblrProcedureInvokeDescriptorV1(
     const SblrProcedureInvokeDescriptorV1& value, bool operand) {
   if (!Nonzero(value.body) || value.availability == 0) return {};
@@ -221,7 +356,7 @@ bool ValidateSblrProcedureInvokeAuthorityV1(
       Nonzero(value.procedure_body_sha256) &&
       UuidV7(value.procedure_abi_uuid) &&
       value.procedure_abi_generation != 0 &&
-      UuidV7(value.argument_vector_uuid) && value.argument_count == 0 &&
+      UuidV7(value.argument_vector_uuid) && value.argument_count <= 1 &&
       value.output_parameter_count == 0 && value.invocation_flags == 0 &&
       Nonzero(value.argument_vector_sha256) &&
       UuidV7(value.output_descriptor_vector_uuid) &&

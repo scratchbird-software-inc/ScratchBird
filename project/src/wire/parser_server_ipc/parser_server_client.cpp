@@ -10267,11 +10267,17 @@ ServerVariableBindingResult SbpsClient::CoordinateProcedureInvoke(
     const std::vector<std::uint8_t>& payload) const {
   ServerVariableBindingResult result;
   MessageVectorSet messages;
-  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 request;
   std::string detail;
-  if (!session.authenticated ||
-      !scratchbird::engine::sblr::DecodeSblrProcedureInvokeBindRequestV2(
-          payload.data(), payload.size(), &request, &detail)) {
+  const bool request_is_v3 =
+      payload.size() >= 6 && payload[4] == 3 && payload[5] == 0;
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 request_v2;
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV3 request_v3;
+  const bool request_valid = request_is_v3
+      ? scratchbird::engine::sblr::DecodeSblrProcedureInvokeBindRequestV3(
+            payload.data(), payload.size(), &request_v3, &detail)
+      : scratchbird::engine::sblr::DecodeSblrProcedureInvokeBindRequestV2(
+            payload.data(), payload.size(), &request_v2, &detail);
+  if (!session.authenticated || !request_valid) {
     messages.diagnostics.push_back(MakeDiagnostic(
         "SBLR.OPERAND_INVALID", "ERROR", detail,
         "parser_server_ipc.procedure_invoke_request"));
@@ -10454,11 +10460,17 @@ ServerVariableBindingResult SbpsClient::CoordinateDdlCreateProcedure(
     const std::vector<std::uint8_t>& payload) const {
   ServerVariableBindingResult result;
   MessageVectorSet messages;
-  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2 request;
   std::string detail;
-  if (!session.authenticated ||
-      !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureBindRequestV2(
-          payload.data(), payload.size(), &request, &detail)) {
+  const bool request_is_v3 =
+      payload.size() >= 6 && payload[4] == 3 && payload[5] == 0;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2 request_v2;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV3 request_v3;
+  const bool request_valid = request_is_v3
+      ? scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureBindRequestV3(
+            payload.data(), payload.size(), &request_v3, &detail)
+      : scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureBindRequestV2(
+            payload.data(), payload.size(), &request_v2, &detail);
+  if (!session.authenticated || !request_valid) {
     messages.diagnostics.push_back(MakeDiagnostic(
         "SBLR.OPERAND_INVALID", "ERROR", detail,
         "parser_server_ipc.ddl_create_procedure_request"));

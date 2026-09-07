@@ -127,6 +127,151 @@ bool DecodeSblrDdlCreateProcedureBindRequestV2(
   *out = std::move(value);
   return true;
 }
+
+std::vector<std::uint8_t> EncodeSblrDdlCreateProcedureBindRequestV3(
+    const SblrDdlCreateProcedureBindRequestV3& value) {
+  const bool parameter_valid =
+      value.parameters.size() == 1 && value.parameters.front().ordinal == 1 &&
+      value.parameters.front().mode == 1 &&
+      valid_atom(value.parameters.front().name) &&
+      value.parameters.front().name.raw_utf8.size() <= 64 &&
+      valid_atom(value.parameters.front().type_name) &&
+      value.parameters.front().type_name.raw_utf8.size() <= 64;
+  if (!nz(value.receipt) || value.occurrence == 0 ||
+      value.procedure_occurrence == 0 || value.command_identity != 1 ||
+      value.body_profile != 1 || value.name_atoms.empty() ||
+      value.name_atoms.size() > 3 || !parameter_valid ||
+      !std::all_of(value.name_atoms.begin(), value.name_atoms.end(),
+                   valid_atom)) {
+    return {};
+  }
+  std::size_t total = 96 + value.parameters.front().name.raw_utf8.size() +
+                      value.parameters.front().type_name.raw_utf8.size();
+  for (const auto& atom : value.name_atoms) total += 4 + atom.raw_utf8.size();
+  if (total > 1152) return {};
+  std::vector<std::uint8_t> out{'P', 'C', 'Q', 'X'};
+  p(out, 3, 2);
+  p(out, total, 2);
+  p(out, total, 4);
+  p(out, 0, 4);
+  out.insert(out.end(), value.receipt.begin(), value.receipt.end());
+  p(out, value.occurrence, 8);
+  p(out, value.procedure_occurrence, 4);
+  p(out, value.command_identity, 2);
+  p(out, value.body_profile, 2);
+  p(out, value.name_atoms.size(), 1);
+  p(out, 1, 1);
+  p(out, 0, 1);
+  p(out, 0, 1);
+  for (const auto& atom : value.name_atoms) {
+    p(out, atom.raw_utf8.size(), 2);
+    p(out, atom.quoted ? 1 : 0, 1);
+    p(out, 0, 1);
+    out.insert(out.end(), atom.raw_utf8.begin(), atom.raw_utf8.end());
+  }
+  const auto& parameter = value.parameters.front();
+  p(out, parameter.ordinal, 2);
+  p(out, parameter.mode, 1);
+  p(out, 0, 1);
+  p(out, parameter.name.raw_utf8.size(), 2);
+  p(out, parameter.type_name.raw_utf8.size(), 2);
+  p(out, parameter.name.quoted ? 1 : 0, 1);
+  p(out, parameter.type_name.quoted ? 1 : 0, 1);
+  p(out, 0, 2);
+  out.insert(out.end(), parameter.name.raw_utf8.begin(),
+             parameter.name.raw_utf8.end());
+  out.insert(out.end(), parameter.type_name.raw_utf8.begin(),
+             parameter.type_name.raw_utf8.end());
+  const auto evidence = sha("ScratchBird.SblrDdlCreateProcedureBindRequest.V3",
+                            out.data() + 16, out.size() - 16);
+  if (nz(value.evidence) && value.evidence != evidence) return {};
+  out.insert(out.end(), evidence.begin(), evidence.end());
+  return out.size() == total ? out : std::vector<std::uint8_t>{};
+}
+
+bool DecodeSblrDdlCreateProcedureBindRequestV3(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlCreateProcedureBindRequestV3* out, std::string* detail) {
+  const auto refuse = [&](const char* reason) {
+    if (detail) *detail = reason;
+    return false;
+  };
+  if (!out || !bytes || size < 108 || size > 1152 ||
+      !std::equal(bytes, bytes + 4, "PCQX") || g(bytes + 4, 2) != 3 ||
+      g(bytes + 6, 2) != size || g(bytes + 8, 4) != size ||
+      std::any_of(bytes + 12, bytes + 16,
+                  [](auto value) { return value != 0; })) {
+    return refuse("PCQX v3 header invalid");
+  }
+  SblrDdlCreateProcedureBindRequestV3 value;
+  std::copy_n(bytes + 16, 16, value.receipt.begin());
+  value.occurrence = g(bytes + 32, 8);
+  value.procedure_occurrence = g(bytes + 40, 4);
+  value.command_identity = static_cast<std::uint16_t>(g(bytes + 44, 2));
+  value.body_profile = static_cast<std::uint16_t>(g(bytes + 46, 2));
+  const auto atom_count = g(bytes + 48, 1);
+  if (atom_count < 1 || atom_count > 3 || bytes[49] != 1 ||
+      bytes[50] != 0 || bytes[51] != 0) {
+    return refuse("PCQX v3 fixed shape invalid");
+  }
+  const std::size_t evidence_offset = size - 32;
+  std::size_t offset = 52;
+  for (std::size_t index = 0; index < atom_count; ++index) {
+    if (offset + 4 > evidence_offset) return refuse("PCQX v3 atom truncated");
+    const auto length = g(bytes + offset, 2);
+    const auto quoted = bytes[offset + 2];
+    if (length < 1 || length > 256 || quoted > 1 || bytes[offset + 3] != 0 ||
+        offset + 4 + length > evidence_offset) {
+      return refuse("PCQX v3 atom invalid");
+    }
+    SblrDdlCreateProcedureNameAtomV2 atom;
+    atom.raw_utf8.assign(
+        reinterpret_cast<const char*>(bytes + offset + 4), length);
+    atom.quoted = quoted == 1;
+    if (!valid_atom(atom)) return refuse("PCQX v3 atom text invalid");
+    value.name_atoms.push_back(std::move(atom));
+    offset += 4 + length;
+  }
+  if (offset + 12 > evidence_offset) {
+    return refuse("PCQX v3 parameter truncated");
+  }
+  SblrDdlCreateProcedureParameterDemandV3 parameter;
+  parameter.ordinal = static_cast<std::uint16_t>(g(bytes + offset, 2));
+  parameter.mode = bytes[offset + 2];
+  const auto name_size = g(bytes + offset + 4, 2);
+  const auto type_size = g(bytes + offset + 6, 2);
+  const auto name_quoted = bytes[offset + 8];
+  const auto type_quoted = bytes[offset + 9];
+  if (bytes[offset + 3] != 0 || name_size < 1 || name_size > 64 ||
+      type_size < 1 || type_size > 64 || name_quoted > 1 ||
+      type_quoted > 1 || g(bytes + offset + 10, 2) != 0 ||
+      offset + 12 + name_size + type_size != evidence_offset) {
+    return refuse("PCQX v3 parameter shape invalid");
+  }
+  parameter.name.raw_utf8.assign(
+      reinterpret_cast<const char*>(bytes + offset + 12), name_size);
+  parameter.name.quoted = name_quoted == 1;
+  parameter.type_name.raw_utf8.assign(
+      reinterpret_cast<const char*>(bytes + offset + 12 + name_size),
+      type_size);
+  parameter.type_name.quoted = type_quoted == 1;
+  if (parameter.ordinal != 1 || parameter.mode != 1 ||
+      !valid_atom(parameter.name) || !valid_atom(parameter.type_name)) {
+    return refuse("PCQX v3 parameter demand invalid");
+  }
+  value.parameters.push_back(std::move(parameter));
+  std::copy_n(bytes + evidence_offset, 32, value.evidence.begin());
+  const auto expected = sha("ScratchBird.SblrDdlCreateProcedureBindRequest.V3",
+                            bytes + 16, evidence_offset - 16);
+  if (value.evidence != expected) return refuse("PCQX v3 evidence invalid");
+  const auto canonical = EncodeSblrDdlCreateProcedureBindRequestV3(value);
+  if (canonical.size() != size ||
+      !std::equal(canonical.begin(), canonical.end(), bytes)) {
+    return refuse("PCQX v3 canonical re-encoding differs");
+  }
+  *out = std::move(value);
+  return true;
+}
 std::vector<uint8_t> EncodeSblrDdlCreateProcedureDescriptorV1(const SblrDdlCreateProcedureDescriptorV1&v,bool op){if(!nz(v.body)||!v.availability)return{};auto o=h(op?"PCDO":"PCDX",488);o.insert(o.end(),v.body.begin(),v.body.end());auto e=sha("ScratchBird.SblrDdlCreateProcedureDescriptor.V1",o.data()+16,400);if(nz(v.evidence)&&e!=v.evidence)return{};o.insert(o.end(),e.begin(),e.end());p(o,v.availability,8);o.insert(o.end(),32,0);return o;}
 bool DecodeSblrDdlCreateProcedureDescriptorV1(const uint8_t*b,size_t n,SblrDdlCreateProcedureDescriptorV1*out,std::string*d,bool op){if(!out||!vh(b,n,op?"PCDO":"PCDX",488)||std::any_of(b+456,b+488,[](auto v){return v;})){if(d)*d="PCDO invalid";return false;}SblrDdlCreateProcedureDescriptorV1 v;std::copy_n(b+16,400,v.body.begin());std::copy_n(b+416,32,v.evidence.begin());v.availability=g(b+448,8);if(EncodeSblrDdlCreateProcedureDescriptorV1(v,op).empty())return false;*out=v;return true;}
 bool ValidateSblrDdlCreateProcedureAuthorityV1(

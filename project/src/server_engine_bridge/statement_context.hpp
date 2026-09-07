@@ -580,17 +580,26 @@ struct StatementProcedureNameAtomV1 {
 };
 
 struct StatementDdlCreateProcedureBindRequestV2 {
+  std::uint16_t request_version = 2;
   std::string authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t procedure_occurrence = 0;
   std::uint16_t command_identity = 1;
   std::uint16_t body_profile = 1;
   std::vector<StatementProcedureNameAtomV1> name_atoms;
+  struct ParameterDemandV1 {
+    std::uint16_t ordinal = 1;
+    std::uint8_t mode = 1;
+    StatementProcedureNameAtomV1 name;
+    StatementProcedureNameAtomV1 type_name;
+  };
+  std::vector<ParameterDemandV1> parameters;
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::vector<std::uint8_t> exact_bind_request_bytes;
 };
 
 struct StatementDdlCreateProcedureAuthorityV1 {
+  std::uint16_t request_version = 2;
   std::uint64_t occurrence = 0;
   std::uint32_t procedure_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -624,6 +633,9 @@ struct StatementDdlCreateProcedureAuthorityV1 {
   std::vector<std::uint8_t> canonical_body_sblr_bytes;
   std::string procedure_abi_uuid;
   std::uint64_t procedure_abi_generation = 0;
+  std::vector<std::uint8_t> canonical_procedure_abi_bytes;
+  std::array<std::uint8_t, 32> procedure_abi_evidence_sha256{};
+  std::uint16_t parameter_count = 0;
   std::array<std::uint8_t, 32> procedure_signature_sha256{};
   std::string recovery_uuid;
   std::uint64_t recovery_generation = 0;
@@ -638,16 +650,24 @@ struct StatementDdlCreateProcedureAuthorityV1 {
 };
 
 struct StatementProcedureInvokeBindRequestV2 {
+  std::uint16_t request_version = 2;
   std::string authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t invocation_occurrence = 0;
   std::uint16_t command_identity = 1;
   std::vector<StatementProcedureNameAtomV1> name_atoms;
+  struct ArgumentDemandV1 {
+    std::uint16_t ordinal = 1;
+    std::uint8_t lexical_kind = 1;
+    std::string literal_utf8;
+  };
+  std::vector<ArgumentDemandV1> arguments;
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::vector<std::uint8_t> exact_bind_request_bytes;
 };
 
 struct StatementProcedureInvokeAuthorityV1 {
+  std::uint16_t request_version = 2;
   std::uint64_t occurrence = 0;
   std::uint32_t invocation_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -677,9 +697,13 @@ struct StatementProcedureInvokeAuthorityV1 {
   std::vector<std::uint8_t> canonical_body_sblr_bytes;
   std::string procedure_abi_uuid;
   std::uint64_t procedure_abi_generation = 0;
+  std::vector<std::uint8_t> canonical_procedure_abi_bytes;
+  std::array<std::uint8_t, 32> procedure_abi_evidence_sha256{};
   std::string argument_vector_uuid;
   std::uint64_t argument_vector_generation = 0;
+  std::uint32_t argument_count = 0;
   std::array<std::uint8_t, 32> argument_vector_sha256{};
+  std::vector<std::uint8_t> canonical_argument_vector_bytes;
   std::string output_descriptor_vector_uuid;
   std::uint64_t output_descriptor_vector_generation = 0;
   std::string result_set_shape_uuid;
@@ -1395,6 +1419,8 @@ struct StatementContextReceiptView {
   std::uint64_t ddl_alter_trigger_executor_availability_generation = 0;
   std::uint64_t ddl_drop_trigger_executor_availability_generation = 0;
   std::uint64_t ddl_create_procedure_executor_availability_generation = 0;
+  std::uint64_t ddl_alter_procedure_executor_availability_generation = 0;
+  std::uint64_t ddl_drop_procedure_executor_availability_generation = 0;
   // Exact engine-issued TXBH for the selected active transaction.  This is a
   // copy-only public projection; the corresponding private handle remains
   // owned by `session` and is the authority used by commit/rollback.

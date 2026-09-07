@@ -20,6 +20,22 @@ struct SblrDdlCreateProcedureBindRequestV2 {
   std::vector<SblrDdlCreateProcedureNameAtomV2> name_atoms;
   DdlCreateProcedureSha evidence{};
 };
+struct SblrDdlCreateProcedureParameterDemandV3 {
+  std::uint16_t ordinal = 1;
+  std::uint8_t mode = 1;
+  SblrDdlCreateProcedureNameAtomV2 name;
+  SblrDdlCreateProcedureNameAtomV2 type_name;
+};
+struct SblrDdlCreateProcedureBindRequestV3 {
+  DdlCreateProcedureUuid receipt{};
+  std::uint64_t occurrence = 0;
+  std::uint32_t procedure_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint16_t body_profile = 1;
+  std::vector<SblrDdlCreateProcedureNameAtomV2> name_atoms;
+  std::vector<SblrDdlCreateProcedureParameterDemandV3> parameters;
+  DdlCreateProcedureSha evidence{};
+};
 struct SblrDdlCreateProcedureDescriptorV1 { std::array<std::uint8_t,400> body{}; DdlCreateProcedureSha evidence{}; std::uint64_t availability=0; };
 struct SblrDdlCreateProcedureAuthorityV1 {
   DdlCreateProcedureUuid receipt{};
@@ -62,6 +78,11 @@ std::vector<std::uint8_t> EncodeSblrDdlCreateProcedureBindRequestV2(
 bool DecodeSblrDdlCreateProcedureBindRequestV2(
     const std::uint8_t*, std::size_t,
     SblrDdlCreateProcedureBindRequestV2*, std::string*);
+std::vector<std::uint8_t> EncodeSblrDdlCreateProcedureBindRequestV3(
+    const SblrDdlCreateProcedureBindRequestV3&);
+bool DecodeSblrDdlCreateProcedureBindRequestV3(
+    const std::uint8_t*, std::size_t,
+    SblrDdlCreateProcedureBindRequestV3*, std::string*);
 std::vector<std::uint8_t> EncodeSblrDdlCreateProcedureDescriptorV1(const SblrDdlCreateProcedureDescriptorV1&,bool);
 bool DecodeSblrDdlCreateProcedureDescriptorV1(const std::uint8_t*,std::size_t,SblrDdlCreateProcedureDescriptorV1*,std::string*,bool);
 bool ValidateSblrDdlCreateProcedureAuthorityV1(

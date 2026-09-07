@@ -2385,12 +2385,20 @@ EmbeddedEngineClient::CoordinateDdlCreateProcedure(
   ipc::ServerVariableBindingResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   namespace ddl = scratchbird::engine::sblr;
-  ddl::SblrDdlCreateProcedureBindRequestV2 request;
   std::string detail;
-  if (!session.authenticated ||
-      !ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
-          canonical_request.data(), canonical_request.size(), &request,
-          &detail)) {
+  const bool request_is_v3 = canonical_request.size() >= 6 &&
+                             canonical_request[4] == 3 &&
+                             canonical_request[5] == 0;
+  ddl::SblrDdlCreateProcedureBindRequestV2 request_v2;
+  ddl::SblrDdlCreateProcedureBindRequestV3 request_v3;
+  const bool request_valid = request_is_v3
+      ? ddl::DecodeSblrDdlCreateProcedureBindRequestV3(
+            canonical_request.data(), canonical_request.size(), &request_v3,
+            &detail)
+      : ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
+            canonical_request.data(), canonical_request.size(), &request_v2,
+            &detail);
+  if (!session.authenticated || !request_valid) {
     AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
                   "embedded CREATE PROCEDURE request is malformed", detail);
     return result;
@@ -2418,7 +2426,8 @@ EmbeddedEngineClient::CoordinateDdlCreateProcedure(
       !ddl::DecodeSblrDdlCreateProcedureDescriptorV1(
           operation.payload.data(), operation.payload.size(), &descriptor,
           &detail, false) ||
-      !std::equal(request.receipt.begin(), request.receipt.end(),
+      !std::equal((request_is_v3 ? request_v3.receipt : request_v2.receipt).begin(),
+                  (request_is_v3 ? request_v3.receipt : request_v2.receipt).end(),
                   descriptor.body.begin()) ||
       descriptor.availability == 0) {
     result.outcome_unknown = true;
@@ -2446,12 +2455,20 @@ EmbeddedEngineClient::CoordinateProcedureInvoke(
   ipc::ServerVariableBindingResult result;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
   namespace procedure = scratchbird::engine::sblr;
-  procedure::SblrProcedureInvokeBindRequestV2 request;
   std::string detail;
-  if (!session.authenticated ||
-      !procedure::DecodeSblrProcedureInvokeBindRequestV2(
-          canonical_request.data(), canonical_request.size(), &request,
-          &detail)) {
+  const bool request_is_v3 = canonical_request.size() >= 6 &&
+                             canonical_request[4] == 3 &&
+                             canonical_request[5] == 0;
+  procedure::SblrProcedureInvokeBindRequestV2 request_v2;
+  procedure::SblrProcedureInvokeBindRequestV3 request_v3;
+  const bool request_valid = request_is_v3
+      ? procedure::DecodeSblrProcedureInvokeBindRequestV3(
+            canonical_request.data(), canonical_request.size(), &request_v3,
+            &detail)
+      : procedure::DecodeSblrProcedureInvokeBindRequestV2(
+            canonical_request.data(), canonical_request.size(), &request_v2,
+            &detail);
+  if (!session.authenticated || !request_valid) {
     AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
                   "embedded PROCEDURE INVOKE request is malformed", detail);
     return result;

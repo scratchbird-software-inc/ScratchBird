@@ -177,7 +177,13 @@ struct EngineQuiesceExecutableObjectRequest : EngineApiRequest {};
 struct EngineUnloadExecutableObjectRequest : EngineApiRequest {};
 struct EngineBeginExecutableObjectInvocationRequest : EngineApiRequest {};
 struct EngineFinishExecutableObjectInvocationRequest : EngineApiRequest {};
-struct EngineInvokeExecutableObjectRequest : EngineApiRequest {};
+struct EngineInvokeExecutableObjectRequest : EngineApiRequest {
+  // Engine-private, receipt-bound carriers. These are populated only after the
+  // procedure binder has resolved the persisted ABI and canonicalized the
+  // invocation argument vector; they are never parser-authored option text.
+  std::vector<std::uint8_t> canonical_procedure_abi_bytes;
+  std::vector<std::uint8_t> canonical_argument_vector_bytes;
+};
 struct EngineFireExecutableEventTriggerRequest : EngineApiRequest {};
 struct EngineInspectExecutableObjectRequest : EngineApiRequest {};
 

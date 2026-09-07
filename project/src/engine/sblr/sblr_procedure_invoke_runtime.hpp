@@ -27,6 +27,20 @@ struct SblrProcedureInvokeBindRequestV2 {
   std::vector<SblrProcedureInvokeNameAtomV2> name_atoms;
   ProcedureInvokeSha evidence{};
 };
+struct SblrProcedureInvokeArgumentDemandV3 {
+  std::uint16_t ordinal = 1;
+  std::uint8_t lexical_kind = 1;
+  std::string literal_utf8;
+};
+struct SblrProcedureInvokeBindRequestV3 {
+  ProcedureInvokeUuid receipt{};
+  std::uint64_t occurrence{0};
+  std::uint32_t invocation_occurrence{0};
+  std::uint16_t command_identity{1};
+  std::vector<SblrProcedureInvokeNameAtomV2> name_atoms;
+  std::vector<SblrProcedureInvokeArgumentDemandV3> arguments;
+  ProcedureInvokeSha evidence{};
+};
 struct SblrProcedureInvokeDescriptorV1 {
   std::array<std::uint8_t, 416> body{};
   ProcedureInvokeSha evidence{};
@@ -81,6 +95,11 @@ std::vector<std::uint8_t> EncodeSblrProcedureInvokeBindRequestV2(
     const SblrProcedureInvokeBindRequestV2&);
 bool DecodeSblrProcedureInvokeBindRequestV2(
     const std::uint8_t*, std::size_t, SblrProcedureInvokeBindRequestV2*,
+    std::string*);
+std::vector<std::uint8_t> EncodeSblrProcedureInvokeBindRequestV3(
+    const SblrProcedureInvokeBindRequestV3&);
+bool DecodeSblrProcedureInvokeBindRequestV3(
+    const std::uint8_t*, std::size_t, SblrProcedureInvokeBindRequestV3*,
     std::string*);
 std::vector<std::uint8_t> EncodeSblrProcedureInvokeDescriptorV1(
     const SblrProcedureInvokeDescriptorV1&, bool operand);

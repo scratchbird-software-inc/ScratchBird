@@ -217,7 +217,19 @@ std::string ComputeStorePath(const EngineRequestContext& context,
   const auto ddl_create_trigger_suffix = identity.executor_id == kSblrDdlCreateTriggerExecutorId ? ".ddl_create_trigger" : ddl_create_index_suffix;
   const auto ddl_alter_trigger_suffix = identity.executor_id == kSblrDdlAlterTriggerExecutorId ? ".ddl_alter_trigger" : ddl_create_trigger_suffix;
   const auto ddl_drop_trigger_suffix = identity.executor_id == kSblrDdlDropTriggerExecutorId ? ".ddl_drop_trigger" : ddl_alter_trigger_suffix;
-  const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_drop_trigger_suffix;
+  const auto ddl_create_procedure_suffix =
+      identity.executor_id == kSblrDdlCreateProcedureExecutorId
+          ? ".ddl_create_procedure"
+          : ddl_drop_trigger_suffix;
+  const auto ddl_alter_procedure_suffix =
+      identity.executor_id == kSblrDdlAlterProcedureExecutorId
+          ? ".ddl_alter_procedure"
+          : ddl_create_procedure_suffix;
+  const auto ddl_drop_procedure_suffix =
+      identity.executor_id == kSblrDdlDropProcedureExecutorId
+          ? ".ddl_drop_procedure"
+          : ddl_alter_procedure_suffix;
+  const auto ddl_drop_index_suffix = identity.executor_id == kSblrDdlDropIndexExecutorId ? ".ddl_drop_index" : ddl_drop_procedure_suffix;
   const auto ddl_drop_synonym_suffix = identity.executor_id == kSblrDdlDropSynonymExecutorId ? ".ddl_drop_synonym" : ddl_drop_index_suffix;
   const auto ddl_drop_foreign_table_suffix = identity.executor_id == kSblrDdlDropForeignTableExecutorId ? ".ddl_drop_foreign_table" : ddl_drop_synonym_suffix;
   const auto contextual_text_literal_suffix =

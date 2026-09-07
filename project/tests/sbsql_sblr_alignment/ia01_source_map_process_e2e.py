@@ -554,7 +554,8 @@ def main() -> int:
             expected_bootstrap = (
                 "CSC-TEST-002633 CSC-TEST-005800 "
                 "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
-                "typed_null_body=true catalog_mutation=true commit=true "
+                "typed_null_body=true typed_parameter_abi=true "
+                "parameter_count=1 catalog_mutation=true commit=true "
                 "publication_barrier=passed\n"
             )
             if (
@@ -664,7 +665,8 @@ def main() -> int:
             expected_success = (
                 "CSC-TEST-002633 CSC-TEST-005800 "
                 "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
-                "typed_null_body=true catalog_mutation=true commit=true "
+                "typed_null_body=true typed_parameter_abi=true "
+                "parameter_count=1 catalog_mutation=true commit=true "
                 "publication_barrier=passed\n"
             )
             if first.stdout != expected_success or first.stderr:
@@ -676,7 +678,9 @@ def main() -> int:
             expected_success = (
                 "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
                 "accepted canonical_sblr=true typed_null_body=true "
-                "output_count=0 commit=true publication_barrier=passed\n"
+                "argument_count=1 canonical_int64=true "
+                "execute_and_call=true output_count=0 commit=true "
+                "publication_barrier=passed\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -2108,7 +2112,9 @@ def main() -> int:
             expected_invocation = (
                 "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
                 "accepted canonical_sblr=true typed_null_body=true "
-                "output_count=0 commit=true publication_barrier=passed\n"
+                "argument_count=1 canonical_int64=true "
+                "execute_and_call=true output_count=0 commit=true "
+                "publication_barrier=passed\n"
             )
             if verified.stdout != expected_invocation or verified.stderr:
                 raise ProofError(

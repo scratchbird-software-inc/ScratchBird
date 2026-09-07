@@ -1507,23 +1507,38 @@ END;)SBSQL";
     if (operation == "ddl-create-procedure-invalid" ||
         operation == "procedure-invoke-invalid") {
       const bool invoke_invalid = operation == "procedure-invoke-invalid";
-      auto refused = session.RunPipeline(
+      auto refused_shape = session.RunPipeline(
           invoke_invalid
-              ? "EXECUTE PROCEDURE app.alignment_null_procedure(1);"
-              : "CREATE PROCEDURE app.invalid_with_parameter(value BIGINT) "
+              ? "EXECUTE PROCEDURE app.alignment_null_procedure(1, 2);"
+              : "CREATE PROCEDURE app.invalid_with_parameter(value BIGINT, "
+                "other BIGINT) AS BEGIN NULL; END;",
+          true);
+      const bool exact_shape_refusal = exact_pre_sblr_refusal(
+          refused_shape, "SBLR.OPERAND.INVALID",
+          invoke_invalid ? "procedure_invoke_argument_shape_invalid"
+                         : "ddl_create_procedure_parameter_shape_invalid");
+      auto refused_authority = session.RunPipeline(
+          invoke_invalid
+              ? "EXECUTE PROCEDURE app.alignment_null_procedure("
+                "9223372036854775808);"
+              : "CREATE PROCEDURE app.invalid_parameter_type(value TEXT) "
                 "AS BEGIN NULL; END;",
           true);
-      const bool exact_refusal = exact_pre_sblr_refusal(
-          refused, "SBLR.OPERAND.INVALID",
-          invoke_invalid ? "procedure_invoke_arguments_not_admitted"
-                         : "ddl_create_procedure_parameters_not_admitted");
+      const bool exact_authority_refusal = exact_pre_sblr_refusal(
+          refused_authority,
+          invoke_invalid ? "PROCEDURE.ARGUMENT_SHAPE_INVALID"
+                         : "SBLR.OPERAND.INVALID",
+          invoke_invalid ? "9223372036854775808"
+                         : "ddl_create_procedure_parameter_type_invalid");
       const bool no_held_authority =
           invoke_invalid ? !session.HasHeldProcedureInvokeForWire()
                          : !session.HasHeldDdlCreateProcedureForWire();
       auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
-      if (!exact_refusal || !no_held_authority || !rolled_back.accepted ||
+      if (!exact_shape_refusal || !exact_authority_refusal ||
+          !no_held_authority || !rolled_back.accepted ||
           rolled_back.messages.has_errors()) {
-        dump_failure("pre_sblr_refusal_contract_failed", refused);
+        dump_failure("parameter_refusal_contract_failed",
+                     exact_shape_refusal ? refused_authority : refused_shape);
         return 4;
       }
       if (invoke_invalid) {
@@ -1613,10 +1628,11 @@ END;)SBSQL";
           operation == "ddl-create-procedure-rollback";
       const std::string_view kCreateProcedureSql =
           rollback_case
-              ? "CREATE PROCEDURE app.alignment_rolled_back_procedure AS "
+              ? "CREATE PROCEDURE app.alignment_rolled_back_procedure("
+                "IN marker BIGINT) AS "
                 "BEGIN NULL; END;"
-              : "CREATE PROCEDURE app.alignment_null_procedure AS BEGIN "
-                "NULL; END;";
+              : "CREATE PROCEDURE app.alignment_null_procedure("
+                "IN marker BIGINT) AS BEGIN NULL; END;";
       auto created = session.RunPipeline(kCreateProcedureSql, true);
       const auto container = scratchbird::engine::DecodeSblrContainerBytes(
           reinterpret_cast<const std::uint8_t*>(created.sblr_payload.data()),
@@ -1723,14 +1739,15 @@ END;)SBSQL";
       } else {
         std::cout << "CSC-TEST-002633 CSC-TEST-005800 "
                      "DDL_CREATE_PROCEDURE accepted canonical_sblr=true "
-                     "typed_null_body=true catalog_mutation=true commit=true "
+                     "typed_null_body=true typed_parameter_abi=true "
+                     "parameter_count=1 catalog_mutation=true commit=true "
                      "publication_barrier=passed\n";
       }
       return 0;
     }
 
     constexpr std::string_view kInvokeProcedureSql =
-        "EXECUTE PROCEDURE app.alignment_null_procedure;";
+        "EXECUTE PROCEDURE app.alignment_null_procedure(-7);";
     auto invoked = session.RunPipeline(kInvokeProcedureSql, true);
     const auto container = scratchbird::engine::DecodeSblrContainerBytes(
         reinterpret_cast<const std::uint8_t*>(invoked.sblr_payload.data()),
@@ -1779,6 +1796,9 @@ END;)SBSQL";
         !invoked.messages.has_errors() &&
         invoked.server_operation_id == "engine.op.procedure_invoke" &&
         invoked.server_row_count == 0 &&
+        authority.argument_count == 1 &&
+        nonzero(authority.argument_vector_uuid) &&
+        nonzero(authority.argument_vector_sha256) &&
         sblr::DecodeSblrProcedureInvokeResultV1(
             reinterpret_cast<const std::uint8_t*>(
                 invoked.server_result_payload.data()),
@@ -1806,6 +1826,26 @@ END;)SBSQL";
                    invoked);
       return 4;
     }
+    session.AcknowledgeProcedureInvokeCompletionForWire();
+    if (session.HasHeldProcedureInvokeForWire()) {
+      std::cerr << "procedure_invoke_execute_holder_not_released\n";
+      return 4;
+    }
+    auto called = session.RunPipeline(
+        "CALL app.alignment_null_procedure(+8);", true);
+    sblr::SblrProcedureInvokeResultV1 call_terminal;
+    if (!called.accepted || called.outcome_unknown ||
+        called.messages.has_errors() ||
+        called.server_operation_id != "engine.op.procedure_invoke" ||
+        called.server_row_count != 0 ||
+        !sblr::DecodeSblrProcedureInvokeResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                called.server_result_payload.data()),
+            called.server_result_payload.size(), &call_terminal, &detail) ||
+        !nonzero(call_terminal.evidence) || !nonzero(call_terminal.barrier)) {
+      dump_failure(detail.empty() ? "call_route_failed" : detail, called);
+      return 4;
+    }
     auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
     if (!committed.accepted || committed.messages.has_errors()) {
       dump_failure("commit_failed", committed);
@@ -1818,6 +1858,7 @@ END;)SBSQL";
     }
     std::cout << "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "
                  "accepted canonical_sblr=true typed_null_body=true "
+                 "argument_count=1 canonical_int64=true execute_and_call=true "
                  "output_count=0 commit=true publication_barrier=passed\n";
     return 0;
   }

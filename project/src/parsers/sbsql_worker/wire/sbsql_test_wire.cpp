@@ -17830,6 +17830,9 @@ struct DdlCreateProcedureWireCommand {
   std::vector<
       scratchbird::engine::sblr::SblrDdlCreateProcedureNameAtomV2>
       name_atoms;
+  std::vector<
+      scratchbird::engine::sblr::SblrDdlCreateProcedureParameterDemandV3>
+      parameters;
   std::string invalid_reason;
 };
 
@@ -17881,8 +17884,30 @@ DdlCreateProcedureWireCommand ParseDdlCreateProcedureWireCommand(
   }
   if (index < tokens.size() && tokens[index]->text == "(") {
     ++index;
+    if (index < tokens.size() && tokens[index]->text != ")") {
+      if (is_word(index, "IN")) ++index;
+      if (index >= tokens.size() ||
+          !IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+          tokens[index]->text.empty() || tokens[index]->text.size() > 64 ||
+          tokens[index]->text.find('.') != std::string::npos) {
+        return invalid("ddl_create_procedure_parameter_name_invalid");
+      }
+      scratchbird::engine::sblr::SblrDdlCreateProcedureParameterDemandV3
+          parameter;
+      parameter.ordinal = 1;
+      parameter.mode = 1;
+      parameter.name = {tokens[index]->text, tokens[index]->quoted};
+      ++index;
+      if (index >= tokens.size() || tokens[index]->quoted ||
+          ToUpperAscii(tokens[index]->text) != "BIGINT") {
+        return invalid("ddl_create_procedure_parameter_type_invalid");
+      }
+      parameter.type_name = {tokens[index]->text, false};
+      result.parameters.push_back(std::move(parameter));
+      ++index;
+    }
     if (index >= tokens.size() || tokens[index]->text != ")") {
-      return invalid("ddl_create_procedure_parameters_not_admitted");
+      return invalid("ddl_create_procedure_parameter_shape_invalid");
     }
     ++index;
   }
@@ -17909,6 +17934,8 @@ struct ProcedureInvokeWireCommand {
   bool valid{false};
   std::vector<scratchbird::engine::sblr::SblrProcedureInvokeNameAtomV2>
       name_atoms;
+  std::vector<scratchbird::engine::sblr::SblrProcedureInvokeArgumentDemandV3>
+      arguments;
   std::string invalid_reason;
 };
 
@@ -17956,8 +17983,34 @@ ProcedureInvokeWireCommand ParseProcedureInvokeWireCommand(
   }
   if (index < tokens.size() && tokens[index]->text == "(") {
     ++index;
+    if (index < tokens.size() && tokens[index]->text != ")") {
+      std::string literal;
+      if ((tokens[index]->text == "+" || tokens[index]->text == "-") &&
+          index + 1 < tokens.size() &&
+          tokens[index + 1]->kind == TokenKind::kNumericLiteral) {
+        literal = tokens[index]->text + tokens[index + 1]->text;
+        index += 2;
+      } else if (tokens[index]->kind == TokenKind::kNumericLiteral) {
+        literal = tokens[index]->text;
+        ++index;
+      } else {
+        return invalid("procedure_invoke_argument_literal_invalid");
+      }
+      if (literal.empty() || literal.size() > 20 ||
+          std::any_of(literal.begin() +
+                          ((literal.front() == '+' || literal.front() == '-')
+                               ? 1
+                               : 0),
+                      literal.end(),
+                      [](const char value) {
+                        return value < '0' || value > '9';
+                      })) {
+        return invalid("procedure_invoke_argument_literal_invalid");
+      }
+      result.arguments.push_back({1, 1, std::move(literal)});
+    }
     if (index >= tokens.size() || tokens[index]->text != ")") {
-      return invalid("procedure_invoke_arguments_not_admitted");
+      return invalid("procedure_invoke_argument_shape_invalid");
     }
     ++index;
   }
@@ -25292,6 +25345,8 @@ struct SbsqlTestWireSession::HeldDdlCreateProcedure {
   ipc::ParserStatementContext statement_context;
   scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV2
       bind_request;
+  scratchbird::engine::sblr::SblrDdlCreateProcedureBindRequestV3
+      bind_request_v3;
   scratchbird::engine::sblr::SblrDdlCreateProcedureDescriptorV1 descriptor;
   scratchbird::engine::sblr::SblrDdlCreateProcedureAuthorityV1
       descriptor_authority;
@@ -25301,6 +25356,7 @@ struct SbsqlTestWireSession::HeldDdlCreateProcedure {
   std::optional<ipc::ParserCanonicalSblrSubmission> submission;
   std::optional<PipelineResult> terminal_result;
   Phase phase{Phase::coordinating};
+  std::uint16_t request_version{2};
   bool execution_attempted{false};
   bool autocommit_emulation{false};
   bool autocommit_complete{false};
@@ -25316,6 +25372,7 @@ struct SbsqlTestWireSession::HeldProcedureInvoke {
   std::string exact_sql;
   ipc::ParserStatementContext statement_context;
   scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV2 bind_request;
+  scratchbird::engine::sblr::SblrProcedureInvokeBindRequestV3 bind_request_v3;
   scratchbird::engine::sblr::SblrProcedureInvokeDescriptorV1 descriptor;
   scratchbird::engine::sblr::SblrProcedureInvokeAuthorityV1
       descriptor_authority;
@@ -25325,6 +25382,7 @@ struct SbsqlTestWireSession::HeldProcedureInvoke {
   std::optional<ipc::ParserCanonicalSblrSubmission> submission;
   std::optional<PipelineResult> terminal_result;
   Phase phase{Phase::coordinating};
+  std::uint16_t request_version{2};
   bool execution_attempted{false};
   bool autocommit_emulation{false};
   bool autocommit_complete{false};
@@ -31420,29 +31478,60 @@ PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(
       return refuse("MGA.AUTHORITY_MISMATCH",
                     "procedure_invoke_statement_receipt_incomplete");
     }
-    invoke::SblrProcedureInvokeBindRequestV2 request;
-    request.receipt = *receipt;
-    request.occurrence = 1;
-    request.invocation_occurrence = 1;
-    request.command_identity = 1;
-    request.name_atoms = command.name_atoms;
-    const auto request_bytes =
-        invoke::EncodeSblrProcedureInvokeBindRequestV2(request);
-    invoke::SblrProcedureInvokeBindRequestV2 canonical_request;
     std::string detail;
-    if (request_bytes.empty() ||
-        !invoke::DecodeSblrProcedureInvokeBindRequestV2(
-            request_bytes.data(), request_bytes.size(), &canonical_request,
-            &detail)) {
-      return refuse("SBLR.OPERAND.INVALID",
-                    detail.empty() ? "procedure_invoke_bind_request_invalid"
-                                   : detail);
-    }
     auto held = std::make_unique<HeldProcedureInvoke>();
     held->exact_sql = std::string(sql);
     held->statement_context = acquired.context;
-    held->bind_request = canonical_request;
-    held->canonical_bind_request = request_bytes;
+    if (command.arguments.empty()) {
+      invoke::SblrProcedureInvokeBindRequestV2 request;
+      request.receipt = *receipt;
+      request.occurrence = 1;
+      request.invocation_occurrence = 1;
+      request.command_identity = 1;
+      request.name_atoms = command.name_atoms;
+      const auto request_bytes =
+          invoke::EncodeSblrProcedureInvokeBindRequestV2(request);
+      invoke::SblrProcedureInvokeBindRequestV2 canonical_request;
+      if (request_bytes.empty() ||
+          !invoke::DecodeSblrProcedureInvokeBindRequestV2(
+              request_bytes.data(), request_bytes.size(), &canonical_request,
+              &detail)) {
+        return refuse("SBLR.OPERAND.INVALID",
+                      detail.empty() ? "procedure_invoke_bind_request_invalid"
+                                     : detail);
+      }
+      held->bind_request = canonical_request;
+      held->canonical_bind_request = request_bytes;
+    } else {
+      invoke::SblrProcedureInvokeBindRequestV3 request;
+      request.receipt = *receipt;
+      request.occurrence = 1;
+      request.invocation_occurrence = 1;
+      request.command_identity = 1;
+      request.name_atoms = command.name_atoms;
+      request.arguments = command.arguments;
+      const auto request_bytes =
+          invoke::EncodeSblrProcedureInvokeBindRequestV3(request);
+      invoke::SblrProcedureInvokeBindRequestV3 canonical_request;
+      if (request_bytes.empty() ||
+          !invoke::DecodeSblrProcedureInvokeBindRequestV3(
+              request_bytes.data(), request_bytes.size(), &canonical_request,
+              &detail)) {
+        return refuse("SBLR.OPERAND.INVALID",
+                      detail.empty() ? "procedure_invoke_bind_request_invalid"
+                                     : detail);
+      }
+      held->request_version = 3;
+      held->bind_request_v3 = canonical_request;
+      held->bind_request.receipt = canonical_request.receipt;
+      held->bind_request.occurrence = canonical_request.occurrence;
+      held->bind_request.invocation_occurrence =
+          canonical_request.invocation_occurrence;
+      held->bind_request.command_identity = canonical_request.command_identity;
+      held->bind_request.name_atoms = canonical_request.name_atoms;
+      held->bind_request.evidence = canonical_request.evidence;
+      held->canonical_bind_request = request_bytes;
+    }
     held->phase = HeldProcedureInvoke::Phase::coordinating;
     held->autocommit_emulation = autocommit_emulation;
     held->autocommit_complete = !autocommit_emulation;
@@ -31514,7 +31603,8 @@ PipelineResult SbsqlTestWireSession::RunProcedureInvokeForWire(
       descriptor_authority.procedure_abi_generation == 0 ||
       descriptor_authority.invocation_generation == 0 ||
       descriptor_authority.recovery_generation == 0 ||
-      descriptor_authority.argument_count != 0 ||
+      descriptor_authority.argument_count !=
+          (held.request_version == 3 ? 1u : 0u) ||
       descriptor_authority.output_parameter_count != 0 ||
       descriptor_authority.invocation_flags != 0 ||
       !nonzero(descriptor_authority.invocation_uuid) ||
@@ -33352,31 +33442,65 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire(
       return refuse("MGA.AUTHORITY_MISMATCH",
                     "ddl_create_procedure_statement_receipt_incomplete");
     }
-    ddl::SblrDdlCreateProcedureBindRequestV2 request;
-    request.receipt = *receipt;
-    request.occurrence = 1;
-    request.procedure_occurrence = 1;
-    request.command_identity = 1;
-    request.body_profile = 1;
-    request.name_atoms = command.name_atoms;
-    const auto request_bytes =
-        ddl::EncodeSblrDdlCreateProcedureBindRequestV2(request);
-    ddl::SblrDdlCreateProcedureBindRequestV2 canonical_request;
     std::string detail;
-    if (request_bytes.empty() ||
-        !ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
-            request_bytes.data(), request_bytes.size(), &canonical_request,
-            &detail)) {
-      return refuse("SBLR.OPERAND.INVALID",
-                    detail.empty()
-                        ? "ddl_create_procedure_bind_request_invalid"
-                        : detail);
-    }
     auto held = std::make_unique<HeldDdlCreateProcedure>();
     held->exact_sql = std::string(sql);
     held->statement_context = acquired.context;
-    held->bind_request = canonical_request;
-    held->canonical_bind_request = request_bytes;
+    if (command.parameters.empty()) {
+      ddl::SblrDdlCreateProcedureBindRequestV2 request;
+      request.receipt = *receipt;
+      request.occurrence = 1;
+      request.procedure_occurrence = 1;
+      request.command_identity = 1;
+      request.body_profile = 1;
+      request.name_atoms = command.name_atoms;
+      const auto request_bytes =
+          ddl::EncodeSblrDdlCreateProcedureBindRequestV2(request);
+      ddl::SblrDdlCreateProcedureBindRequestV2 canonical_request;
+      if (request_bytes.empty() ||
+          !ddl::DecodeSblrDdlCreateProcedureBindRequestV2(
+              request_bytes.data(), request_bytes.size(), &canonical_request,
+              &detail)) {
+        return refuse("SBLR.OPERAND.INVALID",
+                      detail.empty()
+                          ? "ddl_create_procedure_bind_request_invalid"
+                          : detail);
+      }
+      held->bind_request = canonical_request;
+      held->canonical_bind_request = request_bytes;
+    } else {
+      ddl::SblrDdlCreateProcedureBindRequestV3 request;
+      request.receipt = *receipt;
+      request.occurrence = 1;
+      request.procedure_occurrence = 1;
+      request.command_identity = 1;
+      request.body_profile = 1;
+      request.name_atoms = command.name_atoms;
+      request.parameters = command.parameters;
+      const auto request_bytes =
+          ddl::EncodeSblrDdlCreateProcedureBindRequestV3(request);
+      ddl::SblrDdlCreateProcedureBindRequestV3 canonical_request;
+      if (request_bytes.empty() ||
+          !ddl::DecodeSblrDdlCreateProcedureBindRequestV3(
+              request_bytes.data(), request_bytes.size(), &canonical_request,
+              &detail)) {
+        return refuse("SBLR.OPERAND.INVALID",
+                      detail.empty()
+                          ? "ddl_create_procedure_bind_request_invalid"
+                          : detail);
+      }
+      held->request_version = 3;
+      held->bind_request_v3 = canonical_request;
+      held->bind_request.receipt = canonical_request.receipt;
+      held->bind_request.occurrence = canonical_request.occurrence;
+      held->bind_request.procedure_occurrence =
+          canonical_request.procedure_occurrence;
+      held->bind_request.command_identity = canonical_request.command_identity;
+      held->bind_request.body_profile = canonical_request.body_profile;
+      held->bind_request.name_atoms = canonical_request.name_atoms;
+      held->bind_request.evidence = canonical_request.evidence;
+      held->canonical_bind_request = request_bytes;
+    }
     held->phase = HeldDdlCreateProcedure::Phase::coordinating;
     held->autocommit_emulation = autocommit_emulation;
     held->autocommit_complete = !autocommit_emulation;

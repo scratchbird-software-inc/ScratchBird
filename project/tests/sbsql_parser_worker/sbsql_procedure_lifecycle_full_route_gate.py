@@ -54,13 +54,23 @@ ROLLED_BACK_NAME = "users.public.tls_rolled_back_procedure"
 UNAUTHORIZED_NAME = "users.public.tls_unauthorized_procedure"
 PROVEN_SURFACE_IDS = (
     "SBSQL-13F5A8364A50",  # create_procedure_stmt
-    "SBSQL-B5E9C0943E63",  # procedure_signature (empty V1 signature)
+    "SBSQL-B5E9C0943E63",  # procedure_signature (one-IN-BIGINT V1 ABI)
+    "SBSQL-0B00DEA678E2",  # parameter_def inside CREATE PROCEDURE
+    "SBSQL-C5D151D17944",  # parameter_name inside CREATE PROCEDURE
     "SBSQL-F3006C91D952",  # call
     "SBSQL-FAC34DDEAC9D",  # call_stmt
     "SBSQL-5AFD1BFCCEC8",  # psql_null_stmt inside the bound procedure body
 )
 PROVEN_CORE_ROUTE_IDENTITIES = {
     "SBSQL-13F5A8364A50": (
+        "SBLR_DDL_CREATE_PROCEDURE",
+        "engine.op.ddl_create_procedure",
+    ),
+    "SBSQL-0B00DEA678E2": (
+        "SBLR_DDL_CREATE_PROCEDURE",
+        "engine.op.ddl_create_procedure",
+    ),
+    "SBSQL-C5D151D17944": (
         "SBLR_DDL_CREATE_PROCEDURE",
         "engine.op.ddl_create_procedure",
     ),
@@ -103,15 +113,15 @@ def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
 
 
 def create_sql(name: str) -> str:
-    return f"CREATE PROCEDURE {name} AS BEGIN NULL; END;"
+    return f"CREATE PROCEDURE {name}(IN marker BIGINT) AS BEGIN NULL; END;"
 
 
-def invoke_sql(name: str) -> str:
-    return f"EXECUTE PROCEDURE {name};"
+def invoke_sql(name: str, value: int = -7) -> str:
+    return f"EXECUTE PROCEDURE {name}({value});"
 
 
-def call_sql(name: str) -> str:
-    return f"CALL {name}();"
+def call_sql(name: str, value: int = 8) -> str:
+    return f"CALL {name}({value});"
 
 
 def decode_command_complete(payload: bytes) -> tuple[int, bytes]:
@@ -261,7 +271,7 @@ def run_committed_call(port: int) -> None:
             sequence,
             attachment,
             txn_id,
-            call_sql(COMMITTED_NAME),
+            call_sql(COMMITTED_NAME, 8),
             b"CALL",
         )
         sequence, _ = commit_txn(
@@ -301,7 +311,7 @@ def run_restricted_refusals(port: int, database: Path) -> None:
             sequence,
             attachment,
             txn_id,
-            call_sql(COMMITTED_NAME),
+            call_sql(COMMITTED_NAME, 1),
             b"SECURITY.ACCESS_DENIED",
         )
         sequence, _ = rollback_txn(
@@ -326,6 +336,77 @@ def run_restricted_refusals(port: int, database: Path) -> None:
     if changed:
         raise ProcedureLifecycleError(
             "procedural authorization refusal changed durable state: "
+            + ", ".join(changed)
+        )
+
+
+def run_malformed_parameter_refusals(port: int, database: Path) -> None:
+    durable_paths = (
+        Path(f"{database}.sb.catalog_object_events"),
+        Path(f"{database}.sb.api_events"),
+        Path(f"{database}.sb.executable_object_events"),
+    )
+    before = {path: path.read_bytes() for path in durable_paths}
+    api_event_path = Path(f"{database}.sb.api_events")
+    api_authority_before = durable_api_authority_rows(before[api_event_path])
+    sock, attachment, sequence, txn_id = authenticate_tls(port)
+    try:
+        sequence, txn_id = execute_refusal(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "CREATE PROCEDURE users.public.tls_invalid_procedure("
+            "first BIGINT, second BIGINT) AS BEGIN NULL; END;",
+            b"SBLR.OPERAND.INVALID",
+        )
+        sequence, txn_id = execute_refusal(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "CREATE PROCEDURE users.public.tls_invalid_type_procedure("
+            "value TEXT) AS BEGIN NULL; END;",
+            b"SBLR.OPERAND.INVALID",
+        )
+        sequence, txn_id = execute_refusal(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            f"EXECUTE PROCEDURE {COMMITTED_NAME}(1, 2);",
+            b"SBLR.OPERAND.INVALID",
+        )
+        sequence, txn_id = execute_refusal(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            f"EXECUTE PROCEDURE {COMMITTED_NAME}(9223372036854775808);",
+            b"PROCEDURE.ARGUMENT_SHAPE_INVALID",
+        )
+        sequence, _ = rollback_txn(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "TLS malformed PROCEDURE parameter ROLLBACK",
+        )
+        terminate(sock, sequence, attachment)
+    finally:
+        sock.close()
+    changed = [
+        str(path)
+        for path in durable_paths
+        if (
+            durable_api_authority_rows(path.read_bytes()) != api_authority_before
+            if path == api_event_path
+            else path.read_bytes() != before[path]
+        )
+    ]
+    if changed:
+        raise ProcedureLifecycleError(
+            "procedural malformed-parameter refusal changed durable state: "
             + ", ".join(changed)
         )
 
@@ -462,6 +543,7 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
         )
         run_committed_create(route.port)
         require_durable_procedure_state(database)
+        run_malformed_parameter_refusals(route.port, database)
         run_committed_invoke(route.port)
         run_committed_call(route.port)
         run_restricted_refusals(route.port, database)
@@ -471,6 +553,7 @@ def run_gate(args: argparse.Namespace, work: Path) -> None:
             route,
             [
                 (200, 7195),
+                (132, 7127),
                 (132, 7127),
                 (132, 7127),
                 (200, 7195),
