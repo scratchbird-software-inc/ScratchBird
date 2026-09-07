@@ -12,6 +12,7 @@
 #include "sblr_local_gateway.hpp"
 #include "../server_engine_bridge/statement_context.hpp"
 
+#include "../engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "../engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
 #include "../engine/sblr/sblr_plan_import_rows_codec.hpp"
@@ -2171,6 +2172,37 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
         std::unique(artifact_context.admitted_node_ids.begin(),
                     artifact_context.admitted_node_ids.end()),
         artifact_context.admitted_node_ids.end());
+    if (artifact_operation->operation_id ==
+            "engine.op.ddl_create_schema" &&
+        artifact_operation->opcode == "SBLR_DDL_CREATE_SCHEMA" &&
+        artifact_operation->operands.size() == 1) {
+      const auto& operand = artifact_operation->operands.front();
+      source_artifact::SblrDdlCreateSchemaDescriptorV1 descriptor;
+      std::string descriptor_detail;
+      if (operand.ordinal == 1 &&
+          operand.type == "create_schema_descriptor" &&
+          operand.name == "schema" &&
+          operand.value_kind ==
+              source_artifact::SblrValueKind::create_schema_descriptor &&
+          source_artifact::DecodeSblrDdlCreateSchemaDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &descriptor_detail, true)) {
+        const auto admit_descriptor_object =
+            [&](const source_artifact::DdlCreateSchemaUuid& uuid) {
+              if (std::any_of(uuid.begin(), uuid.end(),
+                              [](std::uint8_t byte) { return byte != 0; }) &&
+                  std::find(artifact_context.admitted_object_uuids.begin(),
+                            artifact_context.admitted_object_uuids.end(),
+                            uuid) ==
+                      artifact_context.admitted_object_uuids.end()) {
+                artifact_context.admitted_object_uuids.push_back(uuid);
+              }
+            };
+        admit_descriptor_object(descriptor.database_uuid);
+        admit_descriptor_object(descriptor.parent_schema_uuid);
+        admit_descriptor_object(descriptor.schema_uuid);
+      }
+    }
     std::string artifact_detail;
     if (!source_artifact::ValidateSblrSourceArtifactMapV1(
             decoded_artifact.artifact, artifact_context,

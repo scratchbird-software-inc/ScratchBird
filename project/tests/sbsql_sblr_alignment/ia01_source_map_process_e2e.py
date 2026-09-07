@@ -15,6 +15,24 @@ from pathlib import Path
 from ia01_package_process_e2e import ProofError, allocate_work, seed_database, stop, wait_unix
 
 
+def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
+    """Return the byte-exact catalog/name rows from the multiplexed API journal."""
+    authority_prefixes = (b"SBAPI1\t", b"SBNAME1\t")
+    telemetry_prefix = b"SBAGENTHOOK1\t"
+    rows = raw_journal.splitlines(keepends=True)
+    unexpected = [
+        row for row in rows
+        if not row.startswith(authority_prefixes) and
+        not row.startswith(telemetry_prefix)
+    ]
+    if unexpected:
+        raise ProofError(
+            "CREATE SCHEMA recovery encountered an unknown durable API "
+            f"journal record: {unexpected[0]!r}"
+        )
+    return tuple(row for row in rows if row.startswith(authority_prefixes))
+
+
 STATIC_EXECUTOR_EVIDENCE_REFUSALS = {
     "diagnostic-refusal": (
         "CSC-TEST-003849", "DIAGNOSTIC_REFUSAL",
@@ -463,11 +481,13 @@ def main() -> int:
         if args.operation == "source-artifact-container":
             expected_success = (
                 "CSC-TEST-005770 CSC-TEST-005776 CSC-TEST-005778 "
+                "CSC-TEST-005786 "
                 "SOURCE_ARTIFACT_CONTAINER accepted "
                 "server_admission=true source_preserving_render=true "
                 "reparse=true transaction_controls=begin,commit,rollback "
                 "savepoint_controls=create,rollback_to,release "
-                "savepoint_labels=unquoted,double_quoted\n"
+                "savepoint_labels=unquoted,double_quoted "
+                "create_schema=quoted_descriptor_bound\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -477,12 +497,14 @@ def main() -> int:
         elif args.operation == "source-artifact-external":
             expected_success = (
                 "CSC-TEST-005774 CSC-TEST-005777 CSC-TEST-005779 "
+                "CSC-TEST-005787 "
                 "SOURCE_ARTIFACT_EXTERNAL_REFERENCE accepted "
                 "server_admission=true receipt_resolution=true "
                 "source_preserving_render=true reparse=true "
                 "transaction_controls=begin,commit,rollback "
                 "savepoint_controls=create,rollback_to,release "
-                "savepoint_labels=unquoted,double_quoted\n"
+                "savepoint_labels=unquoted,double_quoted "
+                "create_schema=quoted_descriptor_bound\n"
             )
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
@@ -774,6 +796,12 @@ def main() -> int:
                         "operand_descriptor_id=savepoint_release_handle",
                         "result_descriptor_id=savepoint_release_result",
                         "release_result_sha256=",
+                        "executor_id=engine.op.ddl_create_schema",
+                        "opcode=SBLR_DDL_CREATE_SCHEMA",
+                        "opcode_code=1536",
+                        "operand_descriptor_id=create_schema_descriptor",
+                        "result_descriptor_id=ddl_result",
+                        "ddl_create_schema_result_sha256=",
                         "executor_availability_generation=")
         elif args.operation == "error-vector":
             expected = ("executor_id=engine.op.error_vector", "opcode=SBLR_ERROR_VECTOR",
@@ -1403,18 +1431,16 @@ def main() -> int:
             )
             wait_unix(restart_endpoint)
             command[1] = f"unix:{restart_endpoint}"
-            durable_catalog_paths = (
-                catalog_event_path,
-                Path(f"{database}.sb.api_events"),
-            )
-            if not all(path.exists() for path in durable_catalog_paths):
+            api_event_path = Path(f"{database}.sb.api_events")
+            if not catalog_event_path.exists() or not api_event_path.exists():
                 raise ProofError(
                     "CREATE SCHEMA recovery requires both durable catalog "
                     "and name-registry journals"
                 )
-            durable_catalog_before_recovery = {
-                path: path.read_bytes() for path in durable_catalog_paths
-            }
+            catalog_before_recovery = catalog_event_path.read_bytes()
+            api_authority_before_recovery = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
             run_schema_auxiliary(
                 "ddl-create-schema-recover",
                 "restart-recovery",
@@ -1423,13 +1449,18 @@ def main() -> int:
                 "byte_identical_csrs=true exact_schema_visible=true "
                 "no_rebind=true\n",
             )
-            durable_catalog_after_recovery = {
-                path: path.read_bytes() for path in durable_catalog_paths
-            }
-            if durable_catalog_after_recovery != durable_catalog_before_recovery:
+            if catalog_event_path.read_bytes() != catalog_before_recovery:
                 raise ProofError(
                     "authenticated CREATE SCHEMA recovery changed the durable "
-                    "catalog or name-registry journals"
+                    "catalog-object journal"
+                )
+            api_authority_after_recovery = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            if api_authority_after_recovery != api_authority_before_recovery:
+                raise ProofError(
+                    "authenticated CREATE SCHEMA recovery changed byte-exact "
+                    "SBAPI1 or SBNAME1 authority rows"
                 )
             run_schema_auxiliary(
                 "ddl-create-schema-observe",

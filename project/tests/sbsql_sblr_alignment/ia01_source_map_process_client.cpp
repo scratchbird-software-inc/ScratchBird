@@ -628,22 +628,235 @@ int main(int argc, char** argv) {
         }
       }
     }
+
+    const auto schema_begin = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!schema_begin.accepted || schema_begin.messages.has_errors()) {
+      std::cerr << "source_artifact_create_schema_begin_failed\n";
+      return 4;
+    }
+    constexpr std::string_view kCreateSchemaSql =
+        "CREATE SCHEMA \"Source Schema\";";
+    scratchbird::parser::sbsql::SbsqlCanonicalExecutionObservation
+        schema_observation;
+    auto schema_created =
+        external
+            ? session.RunSourceArtifactExternalReferenceForWire(
+                  &schema_observation, kCreateSchemaSql)
+            : session.RunSourceArtifactContainerForWire(&schema_observation,
+                                                        kCreateSchemaSql);
+    if (!schema_created.accepted || schema_created.outcome_unknown ||
+        schema_created.messages.has_errors() || !schema_observation.captured ||
+        schema_observation.operation_id != "engine.op.ddl_create_schema" ||
+        schema_observation.external_source_artifact != external) {
+      std::cerr << "source_artifact_create_schema_execution_failed:accepted="
+                << schema_created.accepted
+                << ":unknown=" << schema_created.outcome_unknown
+                << ":captured=" << schema_observation.captured << '\n';
+      for (const auto& diagnostic : schema_created.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message;
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << ':' << field.name << '=' << field.value;
+        }
+        std::cerr << '\n';
+      }
+      return 4;
+    }
+    const auto schema_container = container::DecodeSblrContainerBytes(
+        schema_observation.canonical_container_bytes.data(),
+        schema_observation.canonical_container_bytes.size());
+    container::SblrExecutionEnvelopeSemanticView schema_ingress_view;
+    container::SblrDecodedExecutionEnvelopeV1 schema_ingress;
+    if (schema_container.status != container::SblrCodecStatus::ok ||
+        container::SblrReadU16(
+            schema_container.container.canonical_anchor.data() + 100) != 1 ||
+        (external ? !schema_container.container.source_map.empty()
+                  : schema_container.container.source_map.empty())) {
+      std::cerr << "source_artifact_create_schema_container_failed\n";
+      return 4;
+    }
+    if (external) {
+      schema_ingress = container::DecodeSblrExecutionEnvelopeV1Bytes(
+          schema_observation.canonical_execution_envelope_bytes.data(),
+          schema_observation.canonical_execution_envelope_bytes.size());
+      if (schema_ingress.status != container::SblrCodecStatus::ok ||
+          !container::SblrValidateExecutionEnvelopeFields(
+              schema_ingress.envelope, &schema_ingress_view) ||
+          !schema_ingress_view.source_artifact_present ||
+          schema_ingress_view.source_artifact_ref_kind != 4) {
+        std::cerr << "source_artifact_create_schema_external_ref_failed\n";
+        return 4;
+      }
+    }
+    const std::string_view schema_opcode_bytes(
+        reinterpret_cast<const char*>(
+            schema_container.container.operation_payload.data()),
+        schema_container.container.operation_payload.size());
+    const auto schema_stream =
+        sblr::DecodeSblrOpcodeStream(schema_opcode_bytes);
+    sblr::SblrDdlCreateSchemaDescriptorV1 schema_descriptor;
+    std::string schema_detail;
+    if (!schema_stream.ok || schema_stream.stream.operations.size() != 3 ||
+        schema_stream.stream.operations[1].operation_id !=
+            "engine.op.ddl_create_schema" ||
+        schema_stream.stream.operations[1].opcode !=
+            "SBLR_DDL_CREATE_SCHEMA" ||
+        schema_stream.stream.operations[1].operands.size() != 1 ||
+        schema_stream.stream.operations[1].operands[0].ordinal != 1 ||
+        schema_stream.stream.operations[1].operands[0].type !=
+            "create_schema_descriptor" ||
+        schema_stream.stream.operations[1].operands[0].name != "schema" ||
+        schema_stream.stream.operations[1].operands[0].value_kind !=
+            sblr::SblrValueKind::create_schema_descriptor ||
+        !sblr::DecodeSblrDdlCreateSchemaDescriptorV1(
+            schema_stream.stream.operations[1].operands[0].value_body.data(),
+            schema_stream.stream.operations[1].operands[0].value_body.size(),
+            &schema_descriptor, &schema_detail, true)) {
+      std::cerr << "source_artifact_create_schema_descriptor_failed:"
+                << schema_detail << '\n';
+      return 4;
+    }
+    sblr::SblrDdlCreateSchemaResultV1 schema_terminal;
+    if (!sblr::DecodeSblrDdlCreateSchemaResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                schema_created.server_result_payload.data()),
+            schema_created.server_result_payload.size(), &schema_terminal,
+            &schema_detail) ||
+        schema_terminal.schema_uuid != schema_descriptor.schema_uuid ||
+        schema_terminal.schema_generation !=
+            schema_descriptor.schema_generation) {
+      std::cerr << "source_artifact_create_schema_terminal_failed:"
+                << schema_detail << '\n';
+      return 4;
+    }
+    const auto& schema_artifact_bytes =
+        external ? schema_observation.external_source_artifact_bytes
+                 : schema_container.container.source_map;
+    const auto schema_artifact = sblr::DecodeSblrSourceArtifactMapV1(
+        schema_artifact_bytes.data(), schema_artifact_bytes.size());
+    const bool schema_binding =
+        external
+            ? std::all_of(
+                  schema_artifact.artifact.container_request_uuid.begin(),
+                  schema_artifact.artifact.container_request_uuid.end(),
+                  [](std::uint8_t byte) { return byte == 0; }) &&
+                  std::equal(
+                      schema_artifact.artifact.sblr_envelope_uuid.begin(),
+                      schema_artifact.artifact.sblr_envelope_uuid.end(),
+                      schema_ingress.envelope.fields[0].begin()) &&
+                  schema_artifact.artifact.artifact_uuid ==
+                      schema_ingress_view.source_artifact_uuid
+            : std::all_of(
+                  schema_artifact.artifact.sblr_envelope_uuid.begin(),
+                  schema_artifact.artifact.sblr_envelope_uuid.end(),
+                  [](std::uint8_t byte) { return byte == 0; }) &&
+                  std::equal(
+                      schema_artifact.artifact.container_request_uuid.begin(),
+                      schema_artifact.artifact.container_request_uuid.end(),
+                      schema_container.container.canonical_anchor.begin() +
+                          116);
+    if (schema_artifact.status !=
+            sblr::SblrSourceArtifactDecodeStatusV1::ok ||
+        !schema_binding || schema_artifact.artifact.source_text_ref.present ||
+        schema_artifact.artifact.symbols.size() != 1 ||
+        schema_artifact.artifact.source_spans.size() != 2 ||
+        schema_artifact.artifact.render_hints.size() != 1 ||
+        schema_artifact.artifact.symbols[0].symbol_id != 1 ||
+        schema_artifact.artifact.symbols[0].symbol_key !=
+            "schema.path.atom.1" ||
+        schema_artifact.artifact.symbols[0].symbol_kind !=
+            sblr::SblrSourceArtifactSymbolKindV1::object_display_name ||
+        schema_artifact.artifact.symbols[0].declaration_node_id != 2 ||
+        schema_artifact.artifact.symbols[0].scope_node_id != 1 ||
+        schema_artifact.artifact.symbols[0].related_object_uuid !=
+            schema_descriptor.schema_uuid ||
+        schema_artifact.artifact.symbols[0].raw_name_utf8 != "Source Schema" ||
+        schema_artifact.artifact.symbols[0].normalized_lookup_key !=
+            "Source Schema" ||
+        !schema_artifact.artifact.symbols[0].was_quoted ||
+        schema_artifact.artifact.symbols[0].quote_style !=
+            sblr::SblrSourceArtifactQuoteStyleV1::double_quote ||
+        schema_artifact.artifact.symbols[0].ordinal != 1 ||
+        schema_artifact.artifact.symbols[0].source_span_id != 2 ||
+        schema_artifact.artifact.source_spans[1].node_id != 2 ||
+        schema_artifact.artifact.source_spans[1].span_kind !=
+            sblr::SblrSourceArtifactSpanKindV1::identifier ||
+        schema_artifact.artifact.render_hints[0].node_id != 2 ||
+        schema_artifact.artifact.render_hints[0].symbol_id != 1 ||
+        schema_artifact.artifact.render_hints[0].delimiter_hint !=
+            sblr::SblrSourceArtifactQuoteStyleV1::double_quote ||
+        schema_artifact.artifact.render_hints[0].format_group !=
+            "source_preserving_ddl_create_schema_v1") {
+      std::cerr << "source_artifact_create_schema_symbol_profile_failed\n";
+      return 4;
+    }
+    const auto rendered_schema =
+        external
+            ? sblr::RenderSblrExternalSourceArtifactToSbsql(
+                  schema_observation.canonical_container_bytes.data(),
+                  schema_observation.canonical_container_bytes.size(),
+                  schema_observation.canonical_execution_envelope_bytes.data(),
+                  schema_observation.canonical_execution_envelope_bytes.size(),
+                  schema_observation.external_source_artifact_bytes.data(),
+                  schema_observation.external_source_artifact_bytes.size(),
+                  sblr::SblrToSbsqlOptions{.source_preserving = true})
+            : sblr::RenderSblrContainerToSbsql(
+                  schema_observation.canonical_container_bytes.data(),
+                  schema_observation.canonical_container_bytes.size(),
+                  sblr::SblrToSbsqlOptions{.source_preserving = true});
+    const auto schema_reparsed_cst =
+        scratchbird::parser::sbsql::BuildCst(rendered_schema.sbsql_text);
+    const auto schema_reparsed_ast =
+        scratchbird::parser::sbsql::BuildAst(schema_reparsed_cst);
+    if (!rendered_schema.ok || !rendered_schema.diagnostics.empty() ||
+        rendered_schema.sbsql_text != kCreateSchemaSql ||
+        schema_reparsed_cst.messages.has_errors() ||
+        schema_reparsed_ast.messages.has_errors() ||
+        schema_reparsed_ast.family !=
+            scratchbird::parser::sbsql::StatementFamily::kCatalog ||
+        schema_reparsed_ast.statement_surface_name != "create_object") {
+      std::cerr << "source_artifact_create_schema_render_reparse_failed:ok="
+                << rendered_schema.ok << ":text="
+                << rendered_schema.sbsql_text << ":diagnostics=";
+      for (const auto& diagnostic : rendered_schema.diagnostics) {
+        std::cerr << diagnostic.code << '/' << diagnostic.message << ';';
+      }
+      std::cerr << ":cst_errors="
+                << schema_reparsed_cst.messages.has_errors()
+                << ":ast_errors="
+                << schema_reparsed_ast.messages.has_errors()
+                << ":family="
+                << static_cast<int>(schema_reparsed_ast.family)
+                << ":surface="
+                << schema_reparsed_ast.statement_surface_name << '\n';
+      return 4;
+    }
+    session.AcknowledgeDdlCreateSchemaCompletionForWire();
+    const auto schema_rollback =
+        session.RunPipeline("ROLLBACK TRANSACTION", true);
+    if (!schema_rollback.accepted || schema_rollback.messages.has_errors()) {
+      std::cerr << "source_artifact_create_schema_rollback_failed\n";
+      return 4;
+    }
     if (external) {
       std::cout << "CSC-TEST-005774 CSC-TEST-005777 CSC-TEST-005779 "
+                   "CSC-TEST-005787 "
                    "SOURCE_ARTIFACT_EXTERNAL_REFERENCE "
                    "accepted server_admission=true receipt_resolution=true "
                    "source_preserving_render=true reparse=true "
                    "transaction_controls=begin,commit,rollback "
                    "savepoint_controls=create,rollback_to,release "
-                   "savepoint_labels=unquoted,double_quoted\n";
+                   "savepoint_labels=unquoted,double_quoted "
+                   "create_schema=quoted_descriptor_bound\n";
     } else {
       std::cout << "CSC-TEST-005770 CSC-TEST-005776 CSC-TEST-005778 "
+                   "CSC-TEST-005786 "
                    "SOURCE_ARTIFACT_CONTAINER accepted "
                    "server_admission=true source_preserving_render=true "
                    "reparse=true "
                    "transaction_controls=begin,commit,rollback "
                    "savepoint_controls=create,rollback_to,release "
-                   "savepoint_labels=unquoted,double_quoted\n";
+                   "savepoint_labels=unquoted,double_quoted "
+                   "create_schema=quoted_descriptor_bound\n";
     }
     return 0;
   }

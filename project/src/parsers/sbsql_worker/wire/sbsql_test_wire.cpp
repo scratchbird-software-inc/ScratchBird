@@ -14877,7 +14877,7 @@ if (lowered.operation_id == "engine.op.ddl_validate_constraint" && admitted_ddl_
 }
 
 template <typename NativeRouteClient>
-bool AttachExactTransactionControlSourceArtifact(
+bool AttachExactSourceArtifact(
     const CstDocument& cst,
     const AstDocument& ast,
     const SblrEnvelope& lowered,
@@ -14892,6 +14892,7 @@ bool AttachExactTransactionControlSourceArtifact(
   if (detail != nullptr) detail->clear();
   std::string_view expected_opcode;
   bool exact_savepoint_control = false;
+  bool exact_create_schema = false;
   if (lowered.operation_id == "engine.op.txn_begin") {
     expected_opcode = "SBLR_TXN_BEGIN";
   } else if (lowered.operation_id == "engine.op.txn_commit") {
@@ -14909,6 +14910,9 @@ bool AttachExactTransactionControlSourceArtifact(
              "engine.op.txn_rollback_to_savepoint") {
     expected_opcode = "SBLR_TXN_ROLLBACK_TO_SAVEPOINT";
     exact_savepoint_control = true;
+  } else if (lowered.operation_id == "engine.op.ddl_create_schema") {
+    expected_opcode = "SBLR_DDL_CREATE_SCHEMA";
+    exact_create_schema = true;
   } else {
     return true;
   }
@@ -14941,6 +14945,36 @@ bool AttachExactTransactionControlSourceArtifact(
   }
   const auto& executable = decoded_stream.stream.operations[1];
 
+  const auto safe_unquoted_identifier = [](std::string_view value) {
+    if (value.empty()) return false;
+    const auto first = static_cast<unsigned char>(value.front());
+    if ((!std::isalpha(first) && first != '_') || value.size() > 256) {
+      return false;
+    }
+    return std::all_of(value.begin() + 1, value.end(), [](char ch) {
+      const auto byte = static_cast<unsigned char>(ch);
+      return std::isalnum(byte) || byte == '_';
+    });
+  };
+  const auto supported_quote_style = [](const Token& token) {
+    if (!token.quoted) {
+      return artifact::SblrSourceArtifactQuoteStyleV1::none;
+    }
+    if (token.raw_text.empty()) {
+      return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
+    }
+    if (token.raw_text.front() == '"') {
+      return artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
+    }
+    if (token.raw_text.front() == '`') {
+      return artifact::SblrSourceArtifactQuoteStyleV1::backtick;
+    }
+    if (token.raw_text.front() == '[') {
+      return artifact::SblrSourceArtifactQuoteStyleV1::bracket;
+    }
+    return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
+  };
+
   const Token* savepoint_label = nullptr;
   if (exact_savepoint_control) {
     bool saw_savepoint_keyword = false;
@@ -14957,35 +14991,6 @@ bool AttachExactTransactionControlSourceArtifact(
         break;
       }
     }
-    const auto safe_unquoted_identifier = [](std::string_view value) {
-      if (value.empty()) return false;
-      const auto first = static_cast<unsigned char>(value.front());
-      if ((!std::isalpha(first) && first != '_') || value.size() > 256) {
-        return false;
-      }
-      return std::all_of(value.begin() + 1, value.end(), [](char ch) {
-        const auto byte = static_cast<unsigned char>(ch);
-        return std::isalnum(byte) || byte == '_';
-      });
-    };
-    const auto supported_quote_style = [](const Token& token) {
-      if (!token.quoted) {
-        return artifact::SblrSourceArtifactQuoteStyleV1::none;
-      }
-      if (token.raw_text.empty()) {
-        return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
-      }
-      if (token.raw_text.front() == '"') {
-        return artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
-      }
-      if (token.raw_text.front() == '`') {
-        return artifact::SblrSourceArtifactQuoteStyleV1::backtick;
-      }
-      if (token.raw_text.front() == '[') {
-        return artifact::SblrSourceArtifactQuoteStyleV1::bracket;
-      }
-      return artifact::SblrSourceArtifactQuoteStyleV1::native_sbsql;
-    };
     if (savepoint_label == nullptr || savepoint_label->text.empty() ||
         (!savepoint_label->quoted &&
          !safe_unquoted_identifier(savepoint_label->text)) ||
@@ -15035,6 +15040,75 @@ bool AttachExactTransactionControlSourceArtifact(
       }
       return false;
     }
+  }
+
+  std::vector<const Token*> create_schema_name_atoms;
+  std::optional<artifact::SblrDdlCreateSchemaDescriptorV1>
+      create_schema_descriptor;
+  if (exact_create_schema) {
+    std::vector<const Token*> tokens;
+    tokens.reserve(cst.tokens.size());
+    for (const auto& token : cst.tokens) {
+      if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+      tokens.push_back(&token);
+    }
+    if (!tokens.empty() &&
+        tokens.back()->kind == TokenKind::kStatementTerminator) {
+      tokens.pop_back();
+    }
+    if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "CREATE" ||
+        ToUpperAscii(tokens[1]->text) != "SCHEMA" ||
+        executable.operands.size() != 1 ||
+        executable.operands.front().ordinal != 1 ||
+        executable.operands.front().type != "create_schema_descriptor" ||
+        executable.operands.front().name != "schema" ||
+        executable.operands.front().value_kind !=
+            artifact::SblrValueKind::create_schema_descriptor) {
+      if (detail != nullptr) *detail = "ddl_create_schema_shape";
+      return false;
+    }
+    for (std::size_t index = 2; index < tokens.size();) {
+      const auto* token = tokens[index];
+      if ((token->kind != TokenKind::kIdentifier &&
+           token->kind != TokenKind::kKeyword) ||
+          token->text.empty() || token->text.size() > 256 ||
+          (!token->quoted && !safe_unquoted_identifier(token->text)) ||
+          (token->quoted && supported_quote_style(*token) ==
+                                artifact::SblrSourceArtifactQuoteStyleV1::
+                                    native_sbsql) ||
+          create_schema_name_atoms.size() == 3) {
+        if (detail != nullptr) *detail = "ddl_create_schema_name";
+        return false;
+      }
+      create_schema_name_atoms.push_back(token);
+      ++index;
+      if (index == tokens.size()) break;
+      if (tokens[index]->text != "." || ++index == tokens.size()) {
+        if (detail != nullptr) *detail = "ddl_create_schema_name";
+        return false;
+      }
+    }
+    artifact::SblrDdlCreateSchemaDescriptorV1 descriptor;
+    std::string carrier_detail;
+    if (create_schema_name_atoms.empty() ||
+        !artifact::DecodeSblrDdlCreateSchemaDescriptorV1(
+            executable.operands.front().value_body.data(),
+            executable.operands.front().value_body.size(), &descriptor,
+            &carrier_detail, true) ||
+        !std::ranges::any_of(descriptor.schema_uuid,
+                             [](std::uint8_t byte) { return byte != 0; }) ||
+        !std::ranges::any_of(descriptor.database_uuid,
+                             [](std::uint8_t byte) { return byte != 0; }) ||
+        (create_schema_name_atoms.size() > 1 &&
+         !std::ranges::any_of(descriptor.parent_schema_uuid,
+                              [](std::uint8_t byte) { return byte != 0; }))) {
+      if (detail != nullptr) {
+        *detail = carrier_detail.empty() ? "ddl_create_schema_authority"
+                                          : carrier_detail;
+      }
+      return false;
+    }
+    create_schema_descriptor = descriptor;
   }
 
   const auto statement_uuid =
@@ -15129,31 +15203,91 @@ bool AttachExactTransactionControlSourceArtifact(
     source_artifact.symbols.push_back(std::move(symbol));
   }
 
-  artifact::SblrSourceArtifactRenderHintV1 hint;
-  hint.render_hint_id = 1;
-  hint.node_id = savepoint_label == nullptr ? 1 : 2;
-  hint.symbol_id = savepoint_label == nullptr ? 0 : 1;
-  hint.dialect_family_uuid = *dialect_uuid;
-  hint.keyword_case =
-      artifact::SblrSourceArtifactKeywordCaseV1::preserve;
-  hint.identifier_render_policy =
-      artifact::SblrSourceArtifactIdentifierPolicyV1::preserve_source;
-  if (savepoint_label != nullptr && savepoint_label->quoted) {
-    if (savepoint_label->raw_text.front() == '"') {
-      hint.delimiter_hint =
-          artifact::SblrSourceArtifactQuoteStyleV1::double_quote;
-    } else if (savepoint_label->raw_text.front() == '`') {
-      hint.delimiter_hint =
-          artifact::SblrSourceArtifactQuoteStyleV1::backtick;
-    } else {
-      hint.delimiter_hint =
-          artifact::SblrSourceArtifactQuoteStyleV1::bracket;
+  if (exact_create_schema) {
+    const auto& descriptor = *create_schema_descriptor;
+    for (std::size_t index = 0; index < create_schema_name_atoms.size();
+         ++index) {
+      const auto* token = create_schema_name_atoms[index];
+      const auto record_id = static_cast<std::uint64_t>(index + 1);
+      artifact::SblrSourceArtifactSpanV1 name_span;
+      name_span.source_span_id = record_id + 1;
+      name_span.node_id = 2;
+      name_span.byte_start = token->offset;
+      name_span.byte_length = token->length;
+      name_span.line_start = static_cast<std::uint32_t>(token->line);
+      name_span.column_start = static_cast<std::uint32_t>(token->column);
+      name_span.line_end = static_cast<std::uint32_t>(token->end_line);
+      name_span.column_end = static_cast<std::uint32_t>(token->end_column);
+      name_span.span_kind =
+          artifact::SblrSourceArtifactSpanKindV1::identifier;
+      source_artifact.source_spans.push_back(std::move(name_span));
+
+      artifact::SblrSourceArtifactSymbolV1 symbol;
+      symbol.symbol_id = record_id;
+      symbol.symbol_key =
+          "schema.path.atom." + std::to_string(index + 1);
+      symbol.symbol_kind =
+          artifact::SblrSourceArtifactSymbolKindV1::object_display_name;
+      symbol.declaration_node_id = 2;
+      symbol.scope_node_id = 1;
+      if (create_schema_name_atoms.size() == 1) {
+        symbol.related_object_uuid = descriptor.schema_uuid;
+      } else if (create_schema_name_atoms.size() == 2) {
+        symbol.related_object_uuid =
+            index == 0 ? descriptor.parent_schema_uuid
+                       : descriptor.schema_uuid;
+      } else {
+        symbol.related_object_uuid =
+            index == 0 ? descriptor.database_uuid
+                       : index == 1 ? descriptor.parent_schema_uuid
+                                    : descriptor.schema_uuid;
+      }
+      symbol.raw_name_utf8 = token->text;
+      symbol.normalized_lookup_key =
+          token->quoted ? token->text
+                        : CanonicalUnquotedIdentifier(token->text);
+      symbol.was_quoted = token->quoted;
+      symbol.quote_style = supported_quote_style(*token);
+      symbol.language_tag = source_artifact.language_tag;
+      symbol.ordinal = static_cast<std::uint32_t>(record_id);
+      symbol.source_span_id = record_id + 1;
+      symbol.redaction_state =
+          artifact::SblrSourceArtifactSymbolRedactionV1::visible;
+      source_artifact.symbols.push_back(std::move(symbol));
     }
   }
-  hint.comment_policy =
-      artifact::SblrSourceArtifactCommentPolicyV1::preserve;
-  hint.format_group = "source_preserving_transaction_control_v1";
-  source_artifact.render_hints.push_back(std::move(hint));
+
+  const auto append_render_hint =
+      [&](std::uint64_t node_id, std::uint64_t symbol_id,
+          const Token* token, std::string format_group) {
+        artifact::SblrSourceArtifactRenderHintV1 hint;
+        hint.render_hint_id = source_artifact.render_hints.size() + 1;
+        hint.node_id = node_id;
+        hint.symbol_id = symbol_id;
+        hint.dialect_family_uuid = *dialect_uuid;
+        hint.keyword_case =
+            artifact::SblrSourceArtifactKeywordCaseV1::preserve;
+        hint.identifier_render_policy =
+            artifact::SblrSourceArtifactIdentifierPolicyV1::preserve_source;
+        if (token != nullptr && token->quoted) {
+          hint.delimiter_hint = supported_quote_style(*token);
+        }
+        hint.comment_policy =
+            artifact::SblrSourceArtifactCommentPolicyV1::preserve;
+        hint.format_group = std::move(format_group);
+        source_artifact.render_hints.push_back(std::move(hint));
+      };
+  if (exact_create_schema) {
+    for (std::size_t index = 0; index < create_schema_name_atoms.size();
+         ++index) {
+      append_render_hint(2, index + 1, create_schema_name_atoms[index],
+                         "source_preserving_ddl_create_schema_v1");
+    }
+  } else {
+    append_render_hint(savepoint_label == nullptr ? 1 : 2,
+                       savepoint_label == nullptr ? 0 : 1, savepoint_label,
+                       "source_preserving_transaction_control_v1");
+  }
 
   auto encoded = artifact::EncodeSblrSourceArtifactMapV1(source_artifact,
                                                           detail);
@@ -15186,6 +15320,18 @@ bool AttachExactTransactionControlSourceArtifact(
       std::unique(context.admitted_node_ids.begin(),
                   context.admitted_node_ids.end()),
       context.admitted_node_ids.end());
+  if (exact_create_schema) {
+    context.admitted_object_uuids.push_back(
+        create_schema_descriptor->database_uuid);
+    if (std::ranges::any_of(
+            create_schema_descriptor->parent_schema_uuid,
+            [](std::uint8_t byte) { return byte != 0; })) {
+      context.admitted_object_uuids.push_back(
+          create_schema_descriptor->parent_schema_uuid);
+    }
+    context.admitted_object_uuids.push_back(
+        create_schema_descriptor->schema_uuid);
+  }
   if (!artifact::ValidateSblrSourceArtifactMapV1(
           decoded_artifact.artifact, context, detail)) {
     return false;
@@ -24330,12 +24476,14 @@ struct SbsqlTestWireSession::HeldDdlCreateSchema {
   std::vector<std::uint8_t> canonical_descriptor;
   std::vector<std::uint8_t> canonical_operand;
   std::vector<std::uint8_t> canonical_recovery_request;
+  std::vector<std::uint8_t> external_source_artifact_bytes;
   std::optional<ipc::ParserCanonicalSblrSubmission> submission;
   std::optional<PipelineResult> terminal_result;
   Phase phase{Phase::coordinating};
   bool execution_attempted{false};
   bool autocommit_emulation{false};
   bool autocommit_complete{false};
+  bool external_source_artifact{false};
 };
 
 namespace {
@@ -25843,7 +25991,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CREATE SCHEMA")) {
-      return RunDdlCreateSchemaForWire(sql, autocommit_emulation);
+      return RunDdlCreateSchemaForWire(
+          sql, autocommit_emulation, canonical_execution_observation,
+          external_source_artifact);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CATALOG EPOCH CHECK")) {
@@ -28570,12 +28720,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         native_submission.has_value()) {
       std::string source_artifact_detail;
       const bool source_artifact_attached = embedded_native_route
-          ? AttachExactTransactionControlSourceArtifact(
+          ? AttachExactSourceArtifact(
                 cst, ast, lowered, *native_statement_context, session_,
                 external_source_artifact, embedded_client_.get(),
                 &*native_submission, &external_source_artifact_bytes,
                 &source_artifact_detail)
-          : AttachExactTransactionControlSourceArtifact(
+          : AttachExactSourceArtifact(
                 cst, ast, lowered, *native_statement_context, session_,
                 external_source_artifact, server_client_.get(),
                 &*native_submission, &external_source_artifact_bytes,
@@ -31230,8 +31380,13 @@ int SbsqlTestWireSession::ServeFd(std::intptr_t fd) {
 }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
-    std::string_view sql, bool autocommit_emulation) {
+    std::string_view sql, bool autocommit_emulation,
+    SbsqlCanonicalExecutionObservation* observation,
+    bool external_source_artifact) {
   namespace ddl = scratchbird::engine::sblr;
+  if (observation != nullptr) {
+    *observation = {};
+  }
   PipelineResult result;
   result.statement_family = "ddl_catalog";
   result.operation_family = "sblr.catalog.mutation.v3";
@@ -31252,6 +31407,33 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
   };
   const bool embedded =
       config_.embedded_engine_direct && embedded_client_ != nullptr;
+  const auto capture_observation =
+      [&](const HeldDdlCreateSchema& held, const PipelineResult& terminal) {
+        if (observation == nullptr || !terminal.accepted ||
+            terminal.messages.has_errors() || !held.submission.has_value()) {
+          return;
+        }
+        const auto decoded = scratchbird::engine::DecodeSblrContainerBytes(
+            held.submission->canonical_container_bytes.data(),
+            held.submission->canonical_container_bytes.size());
+        if (decoded.status != scratchbird::engine::SblrCodecStatus::ok ||
+            (held.external_source_artifact
+                 ? (!decoded.container.source_map.empty() ||
+                    held.external_source_artifact_bytes.empty())
+                 : decoded.container.source_map.empty())) {
+          return;
+        }
+        observation->captured = true;
+        observation->external_source_artifact =
+            held.external_source_artifact;
+        observation->operation_id = "engine.op.ddl_create_schema";
+        observation->canonical_container_bytes =
+            held.submission->canonical_container_bytes;
+        observation->canonical_execution_envelope_bytes =
+            held.submission->canonical_execution_envelope_bytes;
+        observation->external_source_artifact_bytes =
+            held.external_source_artifact_bytes;
+      };
   if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
     return refuse("SECURITY.ACCESS_DENIED",
                   "authenticated_create_schema_route_required");
@@ -31275,7 +31457,8 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
   if (held_ddl_create_schema_ != nullptr) {
     auto& held = *held_ddl_create_schema_;
     if (held.exact_sql != sql ||
-        held.autocommit_emulation != autocommit_emulation) {
+        held.autocommit_emulation != autocommit_emulation ||
+        held.external_source_artifact != external_source_artifact) {
       return refuse(
           "MGA.AUTHORITY_MISMATCH",
           "a held CREATE SCHEMA lifecycle may only resume its exact SQL and autocommit boundary");
@@ -31288,6 +31471,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
         }
         held.autocommit_complete = true;
       }
+      capture_observation(held, replay);
       return replay;
     }
     if (held.phase != HeldDdlCreateSchema::Phase::execution_pending ||
@@ -31316,6 +31500,7 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
       }
       held.autocommit_complete = true;
     }
+    capture_observation(held, replay);
     return replay;
   }
 
@@ -31473,6 +31658,29 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
                   "ddl_create_schema_canonical_submission_invalid");
   }
 
+  std::vector<std::uint8_t> external_artifact_bytes;
+  std::string source_artifact_detail;
+  const bool source_artifact_attached =
+      embedded
+          ? AttachExactSourceArtifact(
+                cst, ast, lowered, acquired.context, session_,
+                external_source_artifact, embedded_client_.get(),
+                &*submission, &external_artifact_bytes,
+                &source_artifact_detail)
+          : AttachExactSourceArtifact(
+                cst, ast, lowered, acquired.context, session_,
+                external_source_artifact, server_client_.get(), &*submission,
+                &external_artifact_bytes, &source_artifact_detail);
+  if (!source_artifact_attached) {
+    return refuse(
+        source_artifact_detail == "retain_outcome_unknown"
+            ? "MGA.AUTHORITY_MISMATCH"
+            : "SBLR.SOURCE_ARTIFACT.INVALID",
+        source_artifact_detail.empty()
+            ? "ddl_create_schema_source_artifact_invalid"
+            : source_artifact_detail);
+  }
+
   ddl::SblrDdlCreateSchemaRecoveryRequestV1 recovery_request;
   recovery_request.bind_request = canonical_request;
   recovery_request.operand_descriptor = operand_descriptor;
@@ -31498,11 +31706,13 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
   held->canonical_descriptor = coordinated.canonical_payload;
   held->canonical_operand = operand;
   held->canonical_recovery_request = recovery_request_bytes;
+  held->external_source_artifact_bytes = std::move(external_artifact_bytes);
   held->submission = *submission;
   held->phase = HeldDdlCreateSchema::Phase::execution_pending;
   held->execution_attempted = true;
   held->autocommit_emulation = autocommit_emulation;
   held->autocommit_complete = !autocommit_emulation;
+  held->external_source_artifact = external_source_artifact;
   held_ddl_create_schema_ = std::move(held);
 
   auto executed =
@@ -31555,6 +31765,9 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateSchemaForWire(
     result.accepted = false;
   } else if (autocommit_emulation) {
     held_ddl_create_schema_->autocommit_complete = true;
+  }
+  if (held_ddl_create_schema_ != nullptr) {
+    capture_observation(*held_ddl_create_schema_, result);
   }
   return result;
 }

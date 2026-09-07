@@ -26257,11 +26257,17 @@ if(ddl_drop_srs_root){auto c=receipt->engine_context;c.trace_tags.push_back("pri
           RevalidateLocalTransactionInventorySnapshot(
               *receipt->engine_context
                    .statement_transaction_inventory_snapshot);
-      if (!inventory_fence.ok()) {
+      // The transaction-inventory publication journal is database-wide.  A
+      // different statement may replace it without changing this receipt's
+      // owning transaction or immutable statement snapshot.  Preserve the
+      // metadata-only fast path, then authenticate the exact receipt snapshot
+      // on the changed-generation slow path before allowing catalog mutation.
+      if (!inventory_fence.ok() && !statement_snapshot_matches()) {
         return fail_result(
             SB_ENGINE_STATUS_CONFLICT, out_result, 4126,
             "MGA.AUTHORITY_MISMATCH",
-            "sblr.ddl_create_schema.transaction_inventory_stale");
+            "sblr.ddl_create_schema.transaction_inventory_stale",
+            statement_snapshot_mismatch_detail);
       }
       if (cancellation_observed()) {
         return fail_result(

@@ -503,7 +503,9 @@ class SbsqlTestWireSession {
   PipelineResult RunAdminUnregisterExternalRelationResolverForWire();
   PipelineResult RunDdlCreateSchemaForWire(
       std::string_view sql = "CREATE SCHEMA qa_schema;",
-      bool autocommit_emulation = false);
+      bool autocommit_emulation = false,
+      SbsqlCanonicalExecutionObservation* observation = nullptr,
+      bool external_source_artifact = false);
   PipelineResult RecoverDdlCreateSchemaForWire(
       const std::vector<std::uint8_t>& canonical_recovery_request);
   [[nodiscard]] std::vector<std::uint8_t>

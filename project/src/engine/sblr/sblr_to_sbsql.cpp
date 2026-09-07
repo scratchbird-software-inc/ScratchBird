@@ -10,6 +10,7 @@
 
 #include "sblr_opcode_registry.hpp"
 #include "sblr_opcode_stream.hpp"
+#include "sblr_ddl_create_schema_runtime.hpp"
 #include "sblr_source_artifact_runtime.hpp"
 #include "sblr_savepoint_runtime.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
@@ -236,6 +237,36 @@ DecodeExactSavepointRenderAuthority(const SblrOperationEnvelope& envelope) {
   return authority;
 }
 
+std::optional<SblrDdlCreateSchemaDescriptorV1>
+DecodeExactDdlCreateSchemaRenderAuthority(
+    const SblrOperationEnvelope& envelope) {
+  if (envelope.operation_id != "engine.op.ddl_create_schema" ||
+      envelope.opcode != "SBLR_DDL_CREATE_SCHEMA" ||
+      envelope.operands.size() != 1 ||
+      envelope.operands.front().ordinal != 1 ||
+      envelope.operands.front().type != "create_schema_descriptor" ||
+      envelope.operands.front().name != "schema" ||
+      envelope.operands.front().value_kind !=
+          SblrValueKind::create_schema_descriptor) {
+    return std::nullopt;
+  }
+  SblrDdlCreateSchemaDescriptorV1 descriptor;
+  std::string detail;
+  if (!DecodeSblrDdlCreateSchemaDescriptorV1(
+          envelope.operands.front().value_body.data(),
+          envelope.operands.front().value_body.size(), &descriptor, &detail,
+          true) ||
+      !NonZero(descriptor.schema_uuid) || descriptor.schema_generation == 0 ||
+      !NonZero(descriptor.database_uuid) ||
+      !NonZero(descriptor.owning_transaction_uuid) ||
+      descriptor.owning_local_transaction_id == 0 ||
+      !NonZero(descriptor.statement_snapshot_uuid) ||
+      !NonZero(descriptor.evidence) || descriptor.availability == 0) {
+    return std::nullopt;
+  }
+  return descriptor;
+}
+
 std::string FormatSha256(const SblrSourceArtifactSha256V1& sha256) {
   constexpr char kHex[] = "0123456789abcdef";
   std::string text = "sha256:";
@@ -417,7 +448,9 @@ SblrSourceArtifactMap ToLegacySourceArtifact(
     row.stable_key = symbol.symbol_key;
     row.resolved_uuid = ProjectSymbolAuthorityUuid(envelope, symbol);
     row.render_hint =
-        symbol.symbol_kind == SblrSourceArtifactSymbolKindV1::label
+        symbol.symbol_kind == SblrSourceArtifactSymbolKindV1::label ||
+                symbol.symbol_kind ==
+                    SblrSourceArtifactSymbolKindV1::object_display_name
             ? RenderSourceArtifactIdentifier(symbol)
             : symbol.raw_name_utf8;
     if (symbol.scope_node_id != 0) {
@@ -950,6 +983,87 @@ SblrToSbsqlResult RenderDdlCreateTable(const SblrOperationEnvelope& envelope) {
   return result;
 }
 
+SblrToSbsqlResult RenderDdlCreateSchema(
+    const SblrOperationEnvelope& envelope) {
+  SblrToSbsqlResult result;
+  const auto descriptor = DecodeExactDdlCreateSchemaRenderAuthority(envelope);
+  if (!descriptor.has_value()) {
+    return Refuse(
+        "SB_SBLR_TO_SBSQL_OPERAND_UNSUPPORTED",
+        "SBLR-to-SBsql CREATE SCHEMA rendering requires the exact typed engine authority carrier");
+  }
+
+  const auto symbol_count = envelope.source_artifact_map.symbols.size();
+  if (symbol_count == 0 || symbol_count > 3 ||
+      envelope.source_artifact_map.operation_render_hints.size() !=
+          symbol_count) {
+    return Refuse(
+        "SB_SBLR_TO_SBSQL_SYMBOL_REQUIRED",
+        "SBLR-to-SBsql CREATE SCHEMA rendering requires one to three exact path symbols and matching render hints");
+  }
+
+  std::array<SblrSourceArtifactUuidV1, 3> expected_authority{};
+  if (symbol_count == 1) {
+    expected_authority[0] = descriptor->schema_uuid;
+  } else if (symbol_count == 2) {
+    if (!NonZero(descriptor->parent_schema_uuid)) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_AUTHORITY_OBJECT_REQUIRED",
+          "qualified CREATE SCHEMA rendering requires the engine-issued parent schema UUID");
+    }
+    expected_authority[0] = descriptor->parent_schema_uuid;
+    expected_authority[1] = descriptor->schema_uuid;
+  } else {
+    if (!NonZero(descriptor->parent_schema_uuid) ||
+        !NonZero(descriptor->database_uuid)) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_AUTHORITY_OBJECT_REQUIRED",
+          "three-part CREATE SCHEMA rendering requires engine-issued database and parent schema UUIDs");
+    }
+    expected_authority[0] = descriptor->database_uuid;
+    expected_authority[1] = descriptor->parent_schema_uuid;
+    expected_authority[2] = descriptor->schema_uuid;
+  }
+
+  std::ostringstream text;
+  text << "CREATE SCHEMA ";
+  for (std::size_t index = 0; index < symbol_count; ++index) {
+    const auto stable_key =
+        std::string("schema.path.atom.") + std::to_string(index + 1);
+    const auto* symbol = RequiredSymbolByStableKey(
+        envelope, "object_display_name", stable_key, &result);
+    if (symbol == nullptr) return result;
+    if (symbol->resolved_uuid != FormatUuid(expected_authority[index])) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_AUTHORITY_MISMATCH",
+          "CREATE SCHEMA source artifact UUID does not match the typed schema descriptor path authority");
+    }
+    if (!RequireRenderedIdentifier(symbol->render_hint, "schema path atom",
+                                   &result)) {
+      return result;
+    }
+    const auto hint = std::find_if(
+        envelope.source_artifact_map.operation_render_hints.begin(),
+        envelope.source_artifact_map.operation_render_hints.end(),
+        [&](const SblrOperationRenderHint& candidate) {
+          return candidate.stable_key == stable_key;
+        });
+    if (hint == envelope.source_artifact_map.operation_render_hints.end() ||
+        hint->value != "source_preserving_ddl_create_schema_v1" ||
+        hint->authoritative || hint->contains_sql_text) {
+      return Refuse(
+          "SB_SBLR_TO_SBSQL_RENDER_FAMILY_UNSUPPORTED",
+          "CREATE SCHEMA source artifact render hints do not match the exact descriptor-bound profile");
+    }
+    if (index != 0) text << '.';
+    text << symbol->render_hint;
+  }
+  text << ';';
+  result.ok = true;
+  result.sbsql_text = text.str();
+  return result;
+}
+
 SblrToSbsqlResult RenderDdlCreateIndex(const SblrOperationEnvelope& envelope) {
   SblrToSbsqlResult result;
   if (!RequireRenderFamily(envelope, "source_preserving_ddl_create_index_v1",
@@ -1338,6 +1452,10 @@ SblrToSbsqlResult RenderSblrEnvelopeToSbsql(const SblrOperationEnvelope& envelop
   if (IsOperation(envelope, "ddl.create_table", "SBLR_DDL_CREATE_TABLE")) {
     return RenderDdlCreateTable(envelope);
   }
+  if (IsOperation(envelope, "engine.op.ddl_create_schema",
+                  "SBLR_DDL_CREATE_SCHEMA")) {
+    return RenderDdlCreateSchema(envelope);
+  }
   if (IsOperation(envelope, "ddl.create_index", "SBLR_DDL_CREATE_INDEX")) {
     return RenderDdlCreateIndex(envelope);
   }
@@ -1472,17 +1590,28 @@ SblrToSbsqlResult RenderBoundSourceArtifact(
   }
 
   validation_context.admitted_node_ids.push_back(1);
+  const auto admit_object_uuid = [&](const SblrSourceArtifactUuidV1& uuid) {
+    if (NonZero(uuid) &&
+        std::find(validation_context.admitted_object_uuids.begin(),
+                  validation_context.admitted_object_uuids.end(), uuid) ==
+            validation_context.admitted_object_uuids.end()) {
+      validation_context.admitted_object_uuids.push_back(uuid);
+    }
+  };
+  if (const auto create_schema =
+          DecodeExactDdlCreateSchemaRenderAuthority(operation);
+      create_schema.has_value()) {
+    admit_object_uuid(create_schema->database_uuid);
+    admit_object_uuid(create_schema->parent_schema_uuid);
+    admit_object_uuid(create_schema->schema_uuid);
+  }
   for (const auto& operand : operation.operands) {
     validation_context.admitted_node_ids.push_back(
         static_cast<std::uint64_t>(operand.ordinal) + 1U);
     if (!IsObjectAuthorityOperand(operand.name)) continue;
     SblrSourceArtifactUuidV1 object_uuid{};
-    if (ParseUuid(OperandValue(operation, operand.name), &object_uuid) &&
-        std::find(validation_context.admitted_object_uuids.begin(),
-                  validation_context.admitted_object_uuids.end(),
-                  object_uuid) ==
-            validation_context.admitted_object_uuids.end()) {
-      validation_context.admitted_object_uuids.push_back(object_uuid);
+    if (ParseUuid(OperandValue(operation, operand.name), &object_uuid)) {
+      admit_object_uuid(object_uuid);
     }
   }
   std::sort(validation_context.admitted_node_ids.begin(),
