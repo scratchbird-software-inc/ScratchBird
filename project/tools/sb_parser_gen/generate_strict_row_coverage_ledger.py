@@ -318,6 +318,30 @@ CREATE_EXECUTABLE_EXACT_ROUTE_CTEST = "sbsql_create_executable_exact_route_confo
 CREATE_EXECUTABLE_EXACT_ROUTE_TEST_SOURCE = (
     "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp"
 )
+CREATE_TRIGGER_PUBLIC_ROUTE_CTEST = (
+    "sbsql_sblr_alignment_ia08_ddl_create_trigger_process_e2e"
+)
+CREATE_TRIGGER_PUBLIC_ROUTE_TEST_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+)
+CREATE_TRIGGER_PUBLIC_ROUTE_CLIENT_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp"
+)
+CREATE_TRIGGER_FULL_ROUTE_CTEST = (
+    "sb_listener_sbp_sbsql_sbwp_tls_engine_auth_route_smoke"
+)
+CREATE_TRIGGER_FULL_ROUTE_TEST_SOURCE = (
+    "project/tests/sbsql_parser_worker/sbsql_sbwp_tls_engine_auth_route_smoke.py"
+)
+CREATE_TRIGGER_RUNTIME_CTEST = (
+    "sbsql_sblr_alignment_ia08_ddl_create_trigger_runtime"
+)
+CREATE_TRIGGER_AVAILABILITY_CTEST = (
+    "sbsql_sblr_alignment_ia08_ddl_create_trigger_availability"
+)
+CREATE_TRIGGER_CANCELLATION_CTEST = (
+    "sbsql_sblr_alignment_ia08_ddl_create_trigger_cancellation_fault"
+)
 
 DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST = "sbsql_database_lifecycle_exact_route_conformance"
 DATABASE_LIFECYCLE_EXACT_ROUTE_TEST_SOURCE = (
@@ -1041,18 +1065,6 @@ CREATE_EXECUTABLE_EXACT_ROUTE_ROW_EVIDENCE = {
         "catalog_authority": "sys.catalog.procedure",
         "fixture": "CREATE PROCEDURE replay_procedure",
         "target_uuid": "019f0000-0000-7000-8000-000000e30002",
-    },
-    "SBSQL-5127560F8031": {
-        "canonical_name": "create_trigger_stmt",
-        "canonical_sblr_operation_family": "sblr.catalog.mutation.v3",
-        "route_sblr_operation_family": "sblr.catalog.mutation.v3",
-        "row_role": "create_trigger_stmt",
-        "object_kind": "trigger",
-        "operation_id": "ddl.create_trigger",
-        "sblr_operation": "SBLR_DDL_CREATE_TRIGGER",
-        "catalog_authority": "sys.catalog.trigger",
-        "fixture": "CREATE TRIGGER replay_trigger",
-        "target_uuid": "019f0000-0000-7000-8000-000000e30003",
     },
 }
 
@@ -21044,6 +21056,93 @@ def classify_row(
             ),
         }
 
+    if surface["surface_id"] == "SBSQL-5127560F8031":
+        if surface["canonical_name"] != "create_trigger_stmt":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER canonical name drift")
+        if status_row["status"] != "native_now":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER requires native_now status")
+        if surface["cluster_scope"] != "noncluster_or_profile_scoped":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER requires noncluster/profile scope")
+        if surface["surface_kind"] != "grammar_production":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER requires grammar_production kind")
+        if surface["sblr_operation_family"] != "sblr.catalog.mutation.v3":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER SBLR family drift")
+        if op_row["sblr_operation_family"] != "sblr.catalog.mutation.v3":
+            fail("SBSQL-5127560F8031 CREATE TRIGGER operation matrix family drift")
+
+        operation_id = "engine.op.ddl_create_trigger"
+        sblr_operation = "SBLR_DDL_CREATE_TRIGGER"
+        fixture = "CREATE TRIGGER users.public.route_trig_items_ai AFTER INSERT ON TABLE users.public.trig_items FOR EACH ROW AS BEGIN INSERT INTO users.public.trig_audit (...) VALUES (...); END"
+        return {
+            "current_state": "e2e_passed",
+            "parser_evidence": (
+                f"{CREATE_TRIGGER_PUBLIC_ROUTE_CLIENT_SOURCE};sql={fixture};"
+                "registry_surface_id=SBSQL-5127560F8031;"
+                f"{CREATE_TRIGGER_FULL_ROUTE_TEST_SOURCE};"
+                "SBWP_1_1_over_TLS=true;parser_executes_sql=false"
+            ),
+            "binder_evidence": (
+                f"{CREATE_TRIGGER_PUBLIC_ROUTE_CLIENT_SOURCE};"
+                "authenticated_statement_receipt=true;syntax_only_TVQX_1664=true;"
+                "receipt_private_engine_authority=true;engine_bound_TVDX_488=true;"
+                "engine_issued_TVDO_488=true;TVDX_to_TVDO_magic_only_projection=true;"
+                "target_relation_and_schema_resolution=engine_owned;"
+                "trigger_identity_and_generation=engine_owned;body_profile_and_recovery=engine_owned;"
+                "duplicate_name_preflight=engine_owned;authority.parser.no_catalog_identity;"
+                "authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution"
+            ),
+            "lowering_evidence": (
+                f"{CREATE_TRIGGER_PUBLIC_ROUTE_CLIENT_SOURCE};operation_id={operation_id};"
+                f"sblr_operation={sblr_operation};opcode_code=1551;"
+                "operand=create_trigger_descriptor;result=ddl_result;"
+                "canonical_three_member_package=true;executable_sblr_emitted=true;"
+                "sql_text_included=false;name_text_included=false;parser_executes_sql=false"
+            ),
+            "server_admission_evidence": (
+                f"ctest:{CREATE_TRIGGER_FULL_ROUTE_CTEST};"
+                "SBWP_1_1_over_TLS=true;sb_listener=true;pool_allocated_sbp_sbsql=true;"
+                "SBPS=true;canonical_sblr_admission=true;requires_public_abi_dispatch=true;"
+                f"operation_id={operation_id};opcode={sblr_operation}"
+            ),
+            "engine_runtime_evidence": (
+                f"ctest:{CREATE_TRIGGER_FULL_ROUTE_CTEST};EngineCreateTrigger=true;"
+                "mga_catalog_trigger_definition=true;explicit_commit=true;"
+                "independent_authenticated_duplicate_refusal=true;rollback_absence=true;"
+                "missing_CATALOG_MUTATE_SECURITY_ACCESS_DENIED=true;"
+                f"ctest:{CREATE_TRIGGER_PUBLIC_ROUTE_CTEST};"
+                "exact_TVRS_320=true;restart_committed_identity_visibility=true;"
+                "restart_catalog_and_name_journal_stability=true;"
+                "trigger_firing_not_claimed=true;no_generic_sql_execution;no_wal_authority"
+            ),
+            "function_or_api_operation_id": (
+                f"{operation_id};opcode={sblr_operation};opcode_code=1551;"
+                "operand=create_trigger_descriptor;result=ddl_result;api=EngineCreateTrigger"
+            ),
+            "diagnostic_evidence": (
+                f"ctest:{CREATE_TRIGGER_RUNTIME_CTEST};SBLR.OPERAND.INVALID;"
+                f"ctest:{CREATE_TRIGGER_AVAILABILITY_CTEST};"
+                "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING;"
+                f"ctest:{CREATE_TRIGGER_CANCELLATION_CTEST};PROCESS.CANCELLED;"
+                "SECURITY.ACCESS_DENIED;CATALOG.NAME.AMBIGUOUS;"
+                "all_prepublication_refusals_preserve_catalog_and_name_journals"
+            ),
+            "fixture_evidence": (
+                f"ctest:{CREATE_TRIGGER_FULL_ROUTE_CTEST};"
+                f"source={CREATE_TRIGGER_FULL_ROUTE_TEST_SOURCE};fixture={fixture};"
+                f"ctest:{CREATE_TRIGGER_PUBLIC_ROUTE_CTEST};"
+                f"source={CREATE_TRIGGER_PUBLIC_ROUTE_TEST_SOURCE};"
+                f"client={CREATE_TRIGGER_PUBLIC_ROUTE_CLIENT_SOURCE};"
+                "surface_id=SBSQL-5127560F8031;authenticated_full_route=true;"
+                "independent_post_state=true;restart_post_state=true"
+            ),
+            "evidence_complete": "yes",
+            "notes": (
+                "CREATE TRIGGER definition-only V1 is implemented end to end for SBSQL-5127560F8031. "
+                "The authenticated SBWP/TLS listener route and independent direct-SBPS process route prove exact TVQX/TVDX/TVDO binding, canonical engine.op.ddl_create_trigger/SBLR_DDL_CREATE_TRIGGER admission, EngineCreateTrigger catalog mutation, exact TVRS, explicit commit, independent and restarted visibility, duplicate-name and missing-CATALOG_MUTATE no-mutation refusals, rollback absence, executor-evidence refusal, and cancellation atomicity. "
+                "Trigger firing, ALTER/DROP TRIGGER, cluster-positive execution, generic body compilation, parser-owned identity/finality, and WAL authority are separate planned or in-progress obligations and are not claimed by this row."
+            ),
+        }
+
     create_executable_evidence = CREATE_EXECUTABLE_EXACT_ROUTE_ROW_EVIDENCE.get(surface["surface_id"])
     if create_executable_evidence is not None:
         if surface["canonical_name"] != create_executable_evidence["canonical_name"]:
@@ -21126,9 +21225,9 @@ def classify_row(
             "evidence_complete": "yes",
             "notes": (
                 "SBSFC-020R-QU/SBSFC-030 bounded CREATE executable object exact-route evidence override; "
-                "exactly SBSQL-4A5F97F6CC4E create_function_stmt, SBSQL-52EF59CC2556 function_signature, SBSQL-13F5A8364A50 create_procedure_stmt, SBSQL-B5E9C0943E63 procedure_signature, and SBSQL-5127560F8031 create_trigger_stmt are promoted to e2e_passed using descriptor-only CREATE FUNCTION/PROCEDURE/TRIGGER fixtures. "
-                "Evidence proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to the matching ddl.create_function/procedure/trigger operation and SBLR_DDL_CREATE_* opcode, catalog_envelope_kind=create_executable_object_ddl, object-kind-specific catalog authority, server public ABI admission, active MGA transaction context, EngineCreateFunction/Procedure/Trigger dispatch, descriptor event persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side finality, no reference authority, and no WAL/recovery authority. "
-                "No routine signature semantics, PSQL/body compilation, trigger firing semantics, runtime invocation, external UDR loading, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
+                "exactly SBSQL-4A5F97F6CC4E create_function_stmt, SBSQL-52EF59CC2556 function_signature, SBSQL-13F5A8364A50 create_procedure_stmt, and SBSQL-B5E9C0943E63 procedure_signature are promoted to e2e_passed using descriptor-only CREATE FUNCTION/PROCEDURE fixtures. "
+                "Evidence proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to the matching ddl.create_function/procedure operation and SBLR_DDL_CREATE_* opcode, catalog_envelope_kind=create_executable_object_ddl, object-kind-specific catalog authority, server public ABI admission, active MGA transaction context, EngineCreateFunction/Procedure dispatch, descriptor event persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side finality, no reference authority, and no WAL/recovery authority. "
+                "CREATE TRIGGER has a separate strict engine-bound public-route evidence branch. No routine signature semantics, PSQL/body compilation, runtime invocation, external UDR loading, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 

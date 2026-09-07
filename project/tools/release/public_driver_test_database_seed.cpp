@@ -148,6 +148,7 @@ struct Args {
   scratchbird::core::platform::u32 page_size = kDriverFixturePageSize;
   bool overwrite = false;
   bool bulk_import_fixture = false;
+  bool trigger_fixture = false;
 };
 
 struct FixtureTable {
@@ -162,7 +163,7 @@ struct FixtureTable {
 void Usage() {
   std::cerr << "usage: public_driver_test_database_seed --output PATH --manifest PATH "
                "--resource-seed-pack-root PATH [--page-size BYTES] [--overwrite] "
-               "[--bulk-import-fixture]\n";
+               "[--bulk-import-fixture] [--trigger-fixture]\n";
 }
 
 bool ParsePageSize(const std::string& value, scratchbird::core::platform::u32* out) {
@@ -188,6 +189,10 @@ bool ParseArgs(int argc, char** argv, Args* args) {
     }
     if (key == "--bulk-import-fixture") {
       args->bulk_import_fixture = true;
+      continue;
+    }
+    if (key == "--trigger-fixture") {
+      args->trigger_fixture = true;
       continue;
     }
     if (i + 1 >= argc) {
@@ -526,7 +531,8 @@ void InsertRows(const api::EngineRequestContext& context,
   }
 }
 
-std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture) {
+std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture,
+                                        bool include_trigger_fixture) {
   std::vector<FixtureTable> fixtures{
       {
           "app.customers",
@@ -574,13 +580,66 @@ std::vector<FixtureTable> FixtureTables(bool include_bulk_import_fixture) {
         {},
     });
   }
+  if (include_trigger_fixture) {
+    fixtures.push_back({
+        "app.trig_items",
+        "app",
+        "trig_items",
+        "018f0a2b-0000-7000-9000-000000000601",
+        {{"item_id", "bigint"},
+         {"item_name", "text"},
+         {"item_price", "bigint"}},
+        {},
+    });
+    fixtures.push_back({
+        "app.trig_audit",
+        "app",
+        "trig_audit",
+        "018f0a2b-0000-7000-9000-000000000602",
+        {{"audit_id", "bigint"},
+         {"event_kind", "text"},
+         {"item_id", "bigint"},
+         {"old_price", "bigint"},
+         {"new_price", "bigint"},
+         {"audit_note", "text"}},
+        {},
+    });
+  }
   return fixtures;
 }
 
+void CreateTriggerFixtureSequence(const api::EngineRequestContext& context,
+                                  const std::string& schema_uuid) {
+  api::EngineCreateSequenceRequest request;
+  request.context = context;
+  request.target_schema.uuid.canonical = schema_uuid;
+  request.target_schema.object_kind = "schema";
+  request.target_object.uuid.canonical =
+      "018f0a2b-0000-7000-9000-000000000603";
+  request.target_object.object_kind = "sequence";
+  request.localized_names.push_back(
+      Name("app.trig_audit_seq", "trig_audit_seq"));
+  request.option_envelopes.push_back(
+      "sequence_lookup_key:app.trig_audit_seq");
+  request.option_envelopes.push_back("sequence_start_value:1");
+  request.option_envelopes.push_back("sequence_increment:1");
+  const auto result = api::EngineCreateSequence(request);
+  if (!result.ok) {
+    std::cerr << "sequence_create_failed=app.trig_audit_seq\n";
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
+    Fail("driver test database trigger sequence create failed");
+  }
+}
+
 void SeedFixtureObjects(const api::EngineRequestContext& context,
-                        bool include_bulk_import_fixture) {
+                        bool include_bulk_import_fixture,
+                        bool include_trigger_fixture) {
   CreateAppSchema(context);
-  for (const auto& fixture : FixtureTables(include_bulk_import_fixture)) {
+  for (const auto& fixture :
+       FixtureTables(include_bulk_import_fixture, include_trigger_fixture)) {
     const std::string schema_uuid = SchemaUuidForPath(context, fixture.schema_path);
     if (schema_uuid.empty()) {
       std::cerr << "schema_not_visible=" << fixture.schema_path << '\n';
@@ -588,6 +647,13 @@ void SeedFixtureObjects(const api::EngineRequestContext& context,
     }
     const auto table = CreateTable(context, fixture, schema_uuid);
     InsertRows(context, table, fixture);
+  }
+  if (include_trigger_fixture) {
+    const auto schema_uuid = SchemaUuidForPath(context, "app");
+    if (schema_uuid.empty()) {
+      Fail("driver test database trigger fixture schema not visible");
+    }
+    CreateTriggerFixtureSequence(context, schema_uuid);
   }
 }
 
@@ -682,10 +748,16 @@ void WriteManifest(const Args& args,
   out << "  \"minimal_resource_bootstrap\": false,\n";
   WriteResourceSeedCatalogJson(out, state.resource_seed_catalog);
   out << "  \"fixture_objects_seeded\": [\n";
-  const auto tables = FixtureTables(args.bulk_import_fixture);
+  const auto tables =
+      FixtureTables(args.bulk_import_fixture, args.trigger_fixture);
   for (std::size_t index = 0; index < tables.size(); ++index) {
     out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << tables[index].uuid << "\"}";
-    out << (index + 1 == tables.size() ? "\n" : ",\n");
+    out << (index + 1 == tables.size() && !args.trigger_fixture ? "\n"
+                                                                 : ",\n");
+  }
+  if (args.trigger_fixture) {
+    out << "    {\"path\": \"app.trig_audit_seq\", "
+           "\"uuid\": \"018f0a2b-0000-7000-9000-000000000603\"}\n";
   }
   out << "  ],\n";
   out << "  \"security\": {\n";
@@ -723,7 +795,7 @@ int main(int argc, char** argv) {
   ConfigureMemory();
   const CreatedDatabaseFixture fixture = CreateDatabase(args);
   const auto context = Begin(BaseContext(args, fixture.database_uuid));
-  SeedFixtureObjects(context, args.bulk_import_fixture);
+  SeedFixtureObjects(context, args.bulk_import_fixture, args.trigger_fixture);
   Commit(context);
   const auto bootstrap_security = db::ReadDatabaseBootstrapSecurityCatalog(
       args.output.string());
@@ -741,6 +813,8 @@ int main(int argc, char** argv) {
   std::cout << "public_driver_test_database_seed=passed database="
             << args.output.filename().string()
             << " full_create_database=true fixture_objects="
-            << FixtureTables(args.bulk_import_fixture).size() << '\n';
+            << (FixtureTables(args.bulk_import_fixture, args.trigger_fixture).size() +
+                (args.trigger_fixture ? 1U : 0U))
+            << '\n';
   return EXIT_SUCCESS;
 }

@@ -17818,6 +17818,331 @@ DdlCreateSchemaWireCommand ParseDdlCreateSchemaWireCommand(
   return result;
 }
 
+struct DdlCreateTriggerWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  scratchbird::engine::sblr::DdlCreateTriggerTimingV1 timing{
+      scratchbird::engine::sblr::DdlCreateTriggerTimingV1::kAfter};
+  scratchbird::engine::sblr::DdlCreateTriggerEventV1 event{
+      scratchbird::engine::sblr::DdlCreateTriggerEventV1::kInsert};
+  scratchbird::engine::sblr::DdlCreateTriggerScopeV1 scope{
+      scratchbird::engine::sblr::DdlCreateTriggerScopeV1::kRow};
+  scratchbird::engine::sblr::DdlCreateTriggerBodyProfileV1 body_profile{
+      scratchbird::engine::sblr::DdlCreateTriggerBodyProfileV1::
+          kAuditAfterInsertRow};
+  std::vector<scratchbird::engine::sblr::SblrDdlCreateTriggerNameAtomV1>
+      trigger_name_atoms;
+  std::vector<scratchbird::engine::sblr::SblrDdlCreateTriggerNameAtomV1>
+      target_name_atoms;
+  std::uint16_t position{0};
+  std::string invalid_reason;
+};
+
+DdlCreateTriggerWireCommand ParseDdlCreateTriggerWireCommand(
+    const CstDocument& cst) {
+  namespace ddl = scratchbird::engine::sblr;
+  DdlCreateTriggerWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 12 || ToUpperAscii(tokens[0]->text) != "CREATE" ||
+      ToUpperAscii(tokens[1]->text) != "TRIGGER") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto is_word = [&](std::size_t index, std::string_view word) {
+    return index < tokens.size() &&
+           ToUpperAscii(tokens[index]->text) == word;
+  };
+  const auto consume_word = [&](std::size_t* index,
+                                std::string_view word) {
+    if (index == nullptr || !is_word(*index, word)) return false;
+    ++(*index);
+    return true;
+  };
+  const auto consume_qualified_name =
+      [&](std::size_t* index,
+          std::vector<ddl::SblrDdlCreateTriggerNameAtomV1>* atoms) {
+        if (index == nullptr || atoms == nullptr) return false;
+        atoms->clear();
+        while (*index < tokens.size()) {
+          const auto* token = tokens[*index];
+          if (!IsIdentifierLikeForRouteExecution(*token) ||
+              token->text.empty() || token->text.size() > 256 ||
+              token->text.find('.') != std::string::npos ||
+              atoms->size() == 3) {
+            return false;
+          }
+          atoms->push_back({token->text, token->quoted});
+          ++(*index);
+          if (*index >= tokens.size() || tokens[*index]->text != ".") {
+            return true;
+          }
+          ++(*index);
+          if (*index >= tokens.size()) return false;
+        }
+        return !atoms->empty();
+      };
+  const auto lower_ascii = [](std::string_view value) {
+    std::string lowered(value);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](const unsigned char byte) {
+                     return static_cast<char>(std::tolower(byte));
+                   });
+    return lowered;
+  };
+  const auto normalized_atom = [&](const auto& atom) {
+    return atom.quoted ? atom.raw_utf8 : lower_ascii(atom.raw_utf8);
+  };
+  const auto same_prefix = [&](const auto& left, const auto& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index) {
+      if (left[index].quoted != right[index].quoted ||
+          normalized_atom(left[index]) != normalized_atom(right[index])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::size_t index = 2;
+  if (!consume_qualified_name(&index, &result.trigger_name_atoms)) {
+    return invalid("ddl_create_trigger_name_invalid");
+  }
+  if (!consume_word(&index, "AFTER")) {
+    return invalid("ddl_create_trigger_v1_requires_after_timing");
+  }
+  result.timing = ddl::DdlCreateTriggerTimingV1::kAfter;
+  if (consume_word(&index, "INSERT")) {
+    result.event = ddl::DdlCreateTriggerEventV1::kInsert;
+  } else if (consume_word(&index, "UPDATE")) {
+    result.event = ddl::DdlCreateTriggerEventV1::kUpdate;
+  } else if (consume_word(&index, "DELETE")) {
+    result.event = ddl::DdlCreateTriggerEventV1::kDelete;
+  } else {
+    return invalid("ddl_create_trigger_event_invalid");
+  }
+  if (!consume_word(&index, "ON") || !consume_word(&index, "TABLE") ||
+      !consume_qualified_name(&index, &result.target_name_atoms)) {
+    return invalid("ddl_create_trigger_table_target_invalid");
+  }
+
+  std::string old_alias = "old";
+  std::string new_alias = "new";
+  if (consume_word(&index, "REFERENCING")) {
+    if (!consume_word(&index, "OLD")) {
+      return invalid("ddl_create_trigger_old_reference_invalid");
+    }
+    (void)consume_word(&index, "ROW");
+    if (!consume_word(&index, "AS") || index >= tokens.size() ||
+        !IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->quoted) {
+      return invalid("ddl_create_trigger_old_alias_invalid");
+    }
+    old_alias = lower_ascii(tokens[index++]->text);
+    if (!consume_word(&index, "NEW")) {
+      return invalid("ddl_create_trigger_new_reference_invalid");
+    }
+    (void)consume_word(&index, "ROW");
+    if (!consume_word(&index, "AS") || index >= tokens.size() ||
+        !IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->quoted) {
+      return invalid("ddl_create_trigger_new_alias_invalid");
+    }
+    new_alias = lower_ascii(tokens[index++]->text);
+  }
+  if (!consume_word(&index, "FOR") || !consume_word(&index, "EACH")) {
+    return invalid("ddl_create_trigger_scope_missing");
+  }
+  if (consume_word(&index, "ROW")) {
+    result.scope = ddl::DdlCreateTriggerScopeV1::kRow;
+  } else if (consume_word(&index, "STATEMENT")) {
+    result.scope = ddl::DdlCreateTriggerScopeV1::kStatement;
+  } else {
+    return invalid("ddl_create_trigger_scope_invalid");
+  }
+  if (consume_word(&index, "POSITION")) {
+    if (index >= tokens.size() ||
+        tokens[index]->kind != TokenKind::kNumericLiteral) {
+      return invalid("ddl_create_trigger_position_invalid");
+    }
+    std::uint64_t parsed = 0;
+    const auto text = std::string_view(tokens[index]->text);
+    const auto conversion = std::from_chars(
+        text.data(), text.data() + text.size(), parsed);
+    if (conversion.ec != std::errc{} ||
+        conversion.ptr != text.data() + text.size() || parsed > 32767) {
+      return invalid("ddl_create_trigger_position_invalid");
+    }
+    result.position = static_cast<std::uint16_t>(parsed);
+    ++index;
+  }
+  if (!consume_word(&index, "AS") || !consume_word(&index, "BEGIN") ||
+      !consume_word(&index, "INSERT") || !consume_word(&index, "INTO")) {
+    return invalid("ddl_create_trigger_body_profile_invalid");
+  }
+
+  std::vector<ddl::SblrDdlCreateTriggerNameAtomV1> audit_name_atoms;
+  if (!consume_qualified_name(&index, &audit_name_atoms) ||
+      audit_name_atoms.back().quoted ||
+      lower_ascii(audit_name_atoms.back().raw_utf8) != "trig_audit") {
+    return invalid("ddl_create_trigger_audit_target_invalid");
+  }
+  std::vector<ddl::SblrDdlCreateTriggerNameAtomV1> target_prefix(
+      result.target_name_atoms.begin(), result.target_name_atoms.end() - 1);
+  std::vector<ddl::SblrDdlCreateTriggerNameAtomV1> audit_prefix(
+      audit_name_atoms.begin(), audit_name_atoms.end() - 1);
+  if (!same_prefix(target_prefix, audit_prefix)) {
+    return invalid("ddl_create_trigger_audit_schema_mismatch");
+  }
+  const auto consume_symbol = [&](std::size_t* cursor,
+                                  std::string_view symbol) {
+    if (cursor == nullptr || *cursor >= tokens.size() ||
+        tokens[*cursor]->text != symbol) {
+      return false;
+    }
+    ++(*cursor);
+    return true;
+  };
+  const auto consume_column = [&](std::size_t* cursor,
+                                  std::string_view column) {
+    if (cursor == nullptr || *cursor >= tokens.size() ||
+        tokens[*cursor]->quoted ||
+        !IsIdentifierLikeForRouteExecution(*tokens[*cursor]) ||
+        lower_ascii(tokens[*cursor]->text) != column) {
+      return false;
+    }
+    ++(*cursor);
+    return true;
+  };
+  static constexpr std::array<std::string_view, 6> kAuditColumns{
+      "audit_id", "event_kind", "item_id", "old_price", "new_price",
+      "audit_note"};
+  if (!consume_symbol(&index, "(")) {
+    return invalid("ddl_create_trigger_audit_columns_invalid");
+  }
+  for (std::size_t column = 0; column < kAuditColumns.size(); ++column) {
+    if (!consume_column(&index, kAuditColumns[column]) ||
+        (column + 1 < kAuditColumns.size() &&
+         !consume_symbol(&index, ","))) {
+      return invalid("ddl_create_trigger_audit_columns_invalid");
+    }
+  }
+  if (!consume_symbol(&index, ")") || !consume_word(&index, "VALUES") ||
+      !consume_symbol(&index, "(") || !consume_word(&index, "NEXT") ||
+      !consume_word(&index, "VALUE") || !consume_word(&index, "FOR")) {
+    return invalid("ddl_create_trigger_audit_values_invalid");
+  }
+  std::vector<ddl::SblrDdlCreateTriggerNameAtomV1> sequence_name_atoms;
+  if (!consume_qualified_name(&index, &sequence_name_atoms) ||
+      sequence_name_atoms.back().quoted ||
+      lower_ascii(sequence_name_atoms.back().raw_utf8) != "trig_audit_seq") {
+    return invalid("ddl_create_trigger_audit_sequence_invalid");
+  }
+  std::vector<ddl::SblrDdlCreateTriggerNameAtomV1> sequence_prefix(
+      sequence_name_atoms.begin(), sequence_name_atoms.end() - 1);
+  if (!same_prefix(target_prefix, sequence_prefix) ||
+      !consume_symbol(&index, ",") || index >= tokens.size() ||
+      tokens[index]->kind != TokenKind::kStringLiteral) {
+    return invalid("ddl_create_trigger_audit_sequence_invalid");
+  }
+  const auto event_literal = ToUpperAscii(tokens[index++]->text);
+
+  const auto consume_null = [&](std::size_t* cursor) {
+    if (cursor == nullptr || *cursor >= tokens.size() ||
+        ToUpperAscii(tokens[*cursor]->text) != "NULL") {
+      return false;
+    }
+    ++(*cursor);
+    return true;
+  };
+  const auto consume_image = [&](std::size_t* cursor,
+                                 std::string_view alias,
+                                 std::string_view column) {
+    return consume_column(cursor, alias) && consume_symbol(cursor, ".") &&
+           consume_column(cursor, column);
+  };
+  const auto consume_comma = [&]() { return consume_symbol(&index, ","); };
+  std::string_view expected_note;
+  if (result.event == ddl::DdlCreateTriggerEventV1::kInsert &&
+      result.scope == ddl::DdlCreateTriggerScopeV1::kRow &&
+      old_alias == "old" && new_alias == "new" &&
+      event_literal == "INSERT" && consume_comma() &&
+      consume_image(&index, "new", "item_id") && consume_comma() &&
+      consume_null(&index) && consume_comma() &&
+      consume_image(&index, "new", "item_price")) {
+    result.body_profile =
+        ddl::DdlCreateTriggerBodyProfileV1::kAuditAfterInsertRow;
+    expected_note = "item inserted";
+  } else if (result.event == ddl::DdlCreateTriggerEventV1::kUpdate &&
+             result.scope == ddl::DdlCreateTriggerScopeV1::kRow &&
+             old_alias == "old_item" && new_alias == "new_item" &&
+             event_literal == "UPDATE" && consume_comma() &&
+             consume_image(&index, "new_item", "item_id") &&
+             consume_comma() &&
+             consume_image(&index, "old_item", "item_price") &&
+             consume_comma() &&
+             consume_image(&index, "new_item", "item_price")) {
+    result.body_profile =
+        ddl::DdlCreateTriggerBodyProfileV1::kAuditAfterUpdateRow;
+    expected_note = "item price changed";
+  } else if (result.event == ddl::DdlCreateTriggerEventV1::kDelete &&
+             result.scope == ddl::DdlCreateTriggerScopeV1::kRow &&
+             old_alias == "old" && new_alias == "new" &&
+             event_literal == "DELETE" && consume_comma() &&
+             consume_image(&index, "old", "item_id") && consume_comma() &&
+             consume_image(&index, "old", "item_price") &&
+             consume_comma() && consume_null(&index)) {
+    result.body_profile =
+        ddl::DdlCreateTriggerBodyProfileV1::kAuditAfterDeleteRow;
+    expected_note = "item deleted";
+  } else if (result.event == ddl::DdlCreateTriggerEventV1::kUpdate &&
+             result.scope == ddl::DdlCreateTriggerScopeV1::kStatement &&
+             old_alias == "old" && new_alias == "new" &&
+             event_literal == "UPDATE_STMT" && consume_comma() &&
+             consume_null(&index) && consume_comma() &&
+             consume_null(&index) && consume_comma() &&
+             consume_null(&index)) {
+    result.body_profile =
+        ddl::DdlCreateTriggerBodyProfileV1::kAuditAfterUpdateStatement;
+    expected_note = "statement-level update audit";
+  } else {
+    return invalid("ddl_create_trigger_body_profile_invalid");
+  }
+  if (!consume_comma() || index >= tokens.size() ||
+      tokens[index]->kind != TokenKind::kStringLiteral ||
+      tokens[index]->text != expected_note) {
+    return invalid("ddl_create_trigger_audit_note_invalid");
+  }
+  ++index;
+  if (!consume_symbol(&index, ")")) {
+    return invalid("ddl_create_trigger_body_profile_invalid");
+  }
+  if (index < tokens.size() &&
+      tokens[index]->kind == TokenKind::kStatementTerminator) {
+    ++index;
+  }
+  if (!consume_word(&index, "END")) {
+    return invalid("ddl_create_trigger_body_end_invalid");
+  }
+  if (index < tokens.size() &&
+      tokens[index]->kind == TokenKind::kStatementTerminator) {
+    ++index;
+  }
+  if (index != tokens.size()) {
+    return invalid("ddl_create_trigger_trailing_clause_not_admitted");
+  }
+  result.valid = true;
+  return result;
+}
+
 enum class PreparedStatementWireCommandKind {
   kNone,
   kPrepare,
@@ -24486,6 +24811,28 @@ struct SbsqlTestWireSession::HeldDdlCreateSchema {
   bool external_source_artifact{false};
 };
 
+struct SbsqlTestWireSession::HeldDdlCreateTrigger {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrDdlCreateTriggerRequestV1 bind_request;
+  scratchbird::engine::sblr::SblrDdlCreateTriggerDescriptorV1 descriptor;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
 namespace {
 
 bool ExactDdlCreateSchemaTerminal(
@@ -24531,6 +24878,55 @@ bool ExactDdlCreateSchemaTerminal(
          terminal->catalog_row_uuid != terminal->schema_uuid &&
          terminal->mutation_uuid != terminal->schema_uuid &&
          terminal->publication_barrier != terminal->schema_uuid;
+}
+
+bool ExactDdlCreateTriggerTerminal(
+    const scratchbird::engine::sblr::SblrDdlCreateTriggerDescriptorV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrDdlCreateTriggerResultV1* terminal,
+    std::string* detail) {
+  namespace ddl = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      !ddl::DecodeSblrDdlCreateTriggerResultV1(bytes, size, terminal, detail) ||
+      ddl::EncodeSblrDdlCreateTriggerResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  return terminal->receipt == descriptor.receipt &&
+         terminal->trigger_uuid == descriptor.trigger_uuid &&
+         terminal->trigger_generation == descriptor.trigger_generation &&
+         terminal->target_relation_uuid == descriptor.target_relation_uuid &&
+         terminal->target_relation_generation ==
+             descriptor.target_relation_generation &&
+         terminal->schema_uuid == descriptor.schema_uuid &&
+         terminal->schema_generation == descriptor.schema_generation &&
+         terminal->owning_transaction_uuid ==
+             descriptor.owning_transaction_uuid &&
+         terminal->owning_local_transaction_id ==
+             descriptor.owning_local_transaction_id &&
+         terminal->statement_snapshot_uuid ==
+             descriptor.statement_snapshot_uuid &&
+         terminal->body_sblr_uuid == descriptor.body_sblr_uuid &&
+         terminal->body_sblr_generation == descriptor.body_sblr_generation &&
+         terminal->catalog_generation == descriptor.catalog_generation &&
+         terminal->security_epoch == descriptor.security_epoch &&
+         terminal->resource_generation == descriptor.resource_generation &&
+         terminal->descriptor_evidence_sha256 == descriptor.evidence &&
+         terminal->availability == descriptor.availability &&
+         nonzero(terminal->catalog_row_uuid) &&
+         nonzero(terminal->mutation_uuid) && nonzero(terminal->evidence) &&
+         nonzero(terminal->publication_barrier) &&
+         terminal->catalog_row_uuid != terminal->trigger_uuid &&
+         terminal->mutation_uuid != terminal->trigger_uuid &&
+         terminal->publication_barrier != terminal->trigger_uuid &&
+         terminal->catalog_row_uuid != terminal->mutation_uuid &&
+         terminal->catalog_row_uuid != terminal->publication_barrier &&
+         terminal->mutation_uuid != terminal->publication_barrier;
 }
 
 template <std::size_t N>
@@ -24684,6 +25080,19 @@ void SbsqlTestWireSession::AcknowledgeDdlCreateSchemaCompletionForWire() {
   if (held.phase == HeldDdlCreateSchema::Phase::result_recorded &&
       held.terminal_result.has_value() && held.autocommit_complete) {
     held_ddl_create_schema_.reset();
+  }
+}
+
+bool SbsqlTestWireSession::HasHeldDdlCreateTriggerForWire() const {
+  return held_ddl_create_trigger_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeDdlCreateTriggerCompletionForWire() {
+  if (held_ddl_create_trigger_ == nullptr) return;
+  const auto& held = *held_ddl_create_trigger_;
+  if (held.phase == HeldDdlCreateTrigger::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_ddl_create_trigger_.reset();
   }
 }
 
@@ -25920,6 +26329,25 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
+  if (held_ddl_create_trigger_ != nullptr &&
+      held_ddl_create_trigger_->phase !=
+          HeldDdlCreateTrigger::Phase::result_recorded &&
+      held_ddl_create_trigger_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "ddl_catalog";
+    result.operation_family = "sblr.catalog.mutation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "A CREATE TRIGGER operation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.ddl_create_trigger_recovery",
+        {{"detail", "exact_held_create_trigger_replay_required"}}));
+    mark_phase("ddl_create_trigger_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
 
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
@@ -25994,6 +26422,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       return RunDdlCreateSchemaForWire(
           sql, autocommit_emulation, canonical_execution_observation,
           external_source_artifact);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("CREATE TRIGGER")) {
+      return RunDdlCreateTriggerForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CATALOG EPOCH CHECK")) {
@@ -30532,35 +30964,360 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateViewForWire() {
   return result;
 }
 
-PipelineResult SbsqlTestWireSession::RunDdlCreateTriggerForWire() {
+PipelineResult SbsqlTestWireSession::RunDdlCreateTriggerForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace ddl = scratchbird::engine::sblr;
   PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
-  namespace c = scratchbird::engine::sblr;
-  c::SblrDdlCreateTriggerRequestV1 q;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) {
-    result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "CREATE TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result;
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical CREATE TRIGGER operation was refused.",
+        "sbp_sbsql.wire.ddl_create_trigger",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_create_trigger_route_required");
   }
-  q.receipt = *receipt; q.occurrence = 1; q.domain_occurrence = 1;
-  auto coordinated = server_client_->CoordinateDdlCreateTrigger(session_, c::EncodeSblrDdlCreateTriggerRequestV1(q));
-  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
-  c::SblrDdlCreateTriggerDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrDdlCreateTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) {
-    result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result;
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDdlCreateTriggerWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "ddl_create_trigger_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
   }
-  auto operand = c::EncodeSblrDdlCreateTriggerDescriptorV1(d, true);
-  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "CREATE TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_create_trigger"; g_ddl_create_trigger_operand = &operand;
-  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_ddl_create_trigger_ == nullptr ||
+        held_ddl_create_trigger_->phase !=
+            HeldDdlCreateTrigger::Phase::execution_pending ||
+        !held_ddl_create_trigger_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_trigger_held_execution_invalid");
+    }
+    auto& held = *held_ddl_create_trigger_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_ddl_create_trigger_.reset();
+      return result;
+    }
+    ddl::SblrDdlCreateTriggerResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.ddl_create_trigger" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactDdlCreateTriggerTerminal(
+            held.descriptor,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "ddl_create_trigger_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes = held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldDdlCreateTrigger::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_ddl_create_trigger_ != nullptr) {
+    auto& held = *held_ddl_create_trigger_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held CREATE TRIGGER lifecycle may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldDdlCreateTrigger::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldDdlCreateTrigger::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_trigger_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "ddl_create_trigger_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    const auto transaction_uuid =
+        CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+    const auto statement_snapshot =
+        CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+    const auto catalog_epoch =
+        CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+    const auto security_context =
+        CanonicalUuidBytes(acquired.context.security_context_uuid);
+    if (!receipt || !transaction_uuid || !statement_snapshot ||
+        !catalog_epoch || !security_context ||
+        acquired.context.transaction.local_transaction_id == 0 ||
+        acquired.context.preliminary_statement_catalog_generation == 0 ||
+        acquired.context.preliminary_security_epoch == 0 ||
+        acquired.context.preliminary_resource_epoch == 0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_create_trigger_statement_receipt_incomplete");
+    }
+
+    ddl::SblrDdlCreateTriggerRequestV1 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.trigger_occurrence = 1;
+    request.command_identity = 1;
+    request.timing = command.timing;
+    request.event = command.event;
+    request.scope = command.scope;
+    request.target_kind = ddl::DdlCreateTriggerTargetKindV1::kTable;
+    request.body_profile = command.body_profile;
+    request.trigger_name_atoms = command.trigger_name_atoms;
+    request.target_name_atoms = command.target_name_atoms;
+    request.position = command.position;
+    request.security_mode =
+        ddl::DdlCreateTriggerSecurityModeV1::kInvoker;
+    request.image_mode =
+        ddl::DdlCreateTriggerImageModeV1::kPolicyRedacted;
+    request.execution_mode =
+        ddl::DdlCreateTriggerExecutionModeV1::kSameTransaction;
+    request.enabled_state =
+        ddl::DdlCreateTriggerEnabledStateV1::kEnabled;
+    request.recursion_mode =
+        ddl::DdlCreateTriggerRecursionModeV1::kForbidSelf;
+    const auto request_bytes =
+        ddl::EncodeSblrDdlCreateTriggerRequestV1(request);
+    ddl::SblrDdlCreateTriggerRequestV1 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !ddl::DecodeSblrDdlCreateTriggerRequestV1(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty()
+                        ? "ddl_create_trigger_bind_request_invalid"
+                        : detail);
+    }
+    auto held = std::make_unique<HeldDdlCreateTrigger>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldDdlCreateTrigger::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_ddl_create_trigger_ = std::move(held);
+  }
+
+  auto& held = *held_ddl_create_trigger_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateDdlCreateTrigger(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateDdlCreateTrigger(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_ddl_create_trigger_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "ddl_create_trigger_coordinate_outcome_unknown"
+                        : "ddl_create_trigger_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  ddl::SblrDdlCreateTriggerDescriptorV1 descriptor;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  if (!transaction_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context ||
+      !ddl::DecodeSblrDdlCreateTriggerDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail, false) ||
+      descriptor.receipt != held.bind_request.receipt ||
+      descriptor.occurrence != held.bind_request.occurrence ||
+      descriptor.trigger_occurrence != held.bind_request.trigger_occurrence ||
+      descriptor.timing != held.bind_request.timing ||
+      descriptor.event != held.bind_request.event ||
+      descriptor.scope != held.bind_request.scope ||
+      descriptor.target_kind != held.bind_request.target_kind ||
+      descriptor.body_profile != held.bind_request.body_profile ||
+      descriptor.position != held.bind_request.position ||
+      descriptor.security_mode != held.bind_request.security_mode ||
+      descriptor.image_mode != held.bind_request.image_mode ||
+      descriptor.execution_mode != held.bind_request.execution_mode ||
+      descriptor.enabled_state != held.bind_request.enabled_state ||
+      descriptor.recursion_mode != held.bind_request.recursion_mode ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != context.preliminary_security_epoch ||
+      descriptor.resource_generation != context.preliminary_resource_epoch ||
+      descriptor.syntax_demand_sha256 != held.bind_request.evidence ||
+      descriptor.trigger_generation == 0 ||
+      descriptor.target_relation_generation == 0 ||
+      descriptor.target_relation_descriptor_generation == 0 ||
+      descriptor.schema_generation == 0 || descriptor.policy_generation == 0 ||
+      descriptor.body_sblr_generation == 0 ||
+      descriptor.recovery_generation == 0 || descriptor.availability == 0 ||
+      !nonzero(descriptor.trigger_uuid) ||
+      !nonzero(descriptor.target_relation_uuid) ||
+      !nonzero(descriptor.target_relation_descriptor_uuid) ||
+      !nonzero(descriptor.schema_uuid) ||
+      !nonzero(descriptor.policy_snapshot_uuid) ||
+      !nonzero(descriptor.resource_grant_uuid) ||
+      !nonzero(descriptor.owner_principal_uuid) ||
+      !nonzero(descriptor.body_sblr_uuid) ||
+      !nonzero(descriptor.recovery_uuid) ||
+      !nonzero(descriptor.authority_bundle_sha256) ||
+      !nonzero(descriptor.evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_create_trigger_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != ddl::kSblrDdlCreateTriggerDescriptorV1Bytes ||
+      !std::equal(operand.begin(), operand.begin() + 4, "TVDX")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_create_trigger_descriptor_transport_invalid");
+  }
+  std::copy_n("TVDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_trigger_descriptor_projection_changed_authority");
+  }
+  ddl::SblrDdlCreateTriggerDescriptorV1 operand_descriptor;
+  if (!ddl::DecodeSblrDdlCreateTriggerDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail, true) ||
+      operand_descriptor.receipt != descriptor.receipt ||
+      operand_descriptor.trigger_uuid != descriptor.trigger_uuid ||
+      operand_descriptor.target_relation_uuid !=
+          descriptor.target_relation_uuid ||
+      operand_descriptor.body_sblr_uuid != descriptor.body_sblr_uuid ||
+      operand_descriptor.recovery_uuid != descriptor.recovery_uuid ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_create_trigger_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_create_trigger";
+  g_ddl_create_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr);
   g_ddl_create_trigger_operand = nullptr;
-  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "CREATE TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (result.accepted) { c::SblrDdlCreateTriggerResultV1 rr; if (!c::DecodeSblrDdlCreateTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
-  return result;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_create_trigger_canonical_submission_invalid");
+  }
+
+  held.descriptor = descriptor;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldDdlCreateTrigger::Phase::execution_pending;
+  return execute_held();
 }
 
 PipelineResult SbsqlTestWireSession::RunDdlAlterTriggerForWire() {

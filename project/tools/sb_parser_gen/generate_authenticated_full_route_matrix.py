@@ -138,6 +138,9 @@ CREATE_SCHEMA_E2E_SURFACE_IDS = {
     "SBSQL-DE4B8AAF6326",
     "SBSQL-7BA0B928798B",
 }
+CREATE_TRIGGER_E2E_SURFACE_IDS = {
+    "SBSQL-5127560F8031",
+}
 
 
 def fail(message: str) -> None:
@@ -229,6 +232,27 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "expected_diagnostic_codes": "SECURITY.ACCESS_DENIED;CATALOG.NAME.AMBIGUOUS;PROCESS.CANCELLED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
             "fixture_status": "pending_authoring",
             "notes": "CREATE SCHEMA is proven through the public SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned CSQX/CSDX/CSDO binding, and EngineCreateSchema under MGA. The accepted branch explicitly commits and is visible to an independent authenticated parser worker. The refused branch authenticates a durable CONNECT-only principal and proves SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and rollback-absence branches preserve transaction authority. No parser-owned catalog identity, generic SQL execution, cluster-positive route, or WAL authority is admitted.",
+        }
+
+    if surface_id in CREATE_TRIGGER_E2E_SURFACE_IDS:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "durable_authenticated_principal_with_CONNECT_and_CATALOG_MUTATE",
+            "credential_profile_refused": "durable_authenticated_principal_with_CONNECT_without_CATALOG_MUTATE",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": TRANSACTION_PROFILE,
+            "transport_route": TRANSPORT_ROUTE,
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": IPC_ADMISSION_PATH,
+            "engine_admission_authority": "authenticated_statement_receipt;engine_bound_TVQX_TVDX_TVDO;canonical_sblr_admission;engine_internal_api_security_authority_api;catalog_authority_through_descriptor_and_uuid_only",
+            "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
+            "expected_authorization_accepted_outcome": "engine_op_ddl_create_trigger_executes_through_EngineCreateTrigger_then_explicit_MGA_commit_and_independent_authenticated_duplicate_observation",
+            "expected_authorization_refused_outcome": "missing_CATALOG_MUTATE_refuses_SECURITY_ACCESS_DENIED_before_catalog_mutation_and_duplicate_name_refuses_CATALOG_NAME_AMBIGUOUS",
+            "expected_diagnostic_codes": "SECURITY.ACCESS_DENIED;CATALOG.NAME.AMBIGUOUS;PROCESS.CANCELLED;SBLR.OPERAND.INVALID;SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "fixture_status": "pending_authoring",
+            "notes": "CREATE TRIGGER definition is proven through the public SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned TVQX/TVDX/TVDO binding, and EngineCreateTrigger under MGA. The accepted branch explicitly commits and an independent authenticated parser worker observes the durable name through exact duplicate refusal. The refused branch authenticates a durable CONNECT-only principal and proves SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and rollback-absence branches preserve transaction authority. Trigger firing is a separate in-progress tranche and is not claimed here. No parser-owned catalog identity, generic SQL execution, cluster-positive route, or WAL authority is admitted.",
         }
 
     if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:

@@ -39,7 +39,7 @@ _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-360A316CB38A": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
     "SBSQL-4A5F97F6CC4E": "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp",
     "SBSQL-4FAA221A7195": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
-    "SBSQL-5127560F8031": "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp",
+    "SBSQL-5127560F8031": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
     "SBSQL-57D59EB5A619": "project/tests/sbsql_parser_worker/sbsql_sbsfc_073_archive_replication_conformance.cpp",
     "SBSQL-58224DEE5BCA": "project/tests/sbsql_parser_worker/sbsql_alter_rename_exact_route_conformance.cpp",
     "SBSQL-6C4B02DAE3FF": "project/tests/sbsql_parser_worker/sbsql_dml_exact_route_conformance.cpp",

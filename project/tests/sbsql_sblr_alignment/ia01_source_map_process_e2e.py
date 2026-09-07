@@ -27,7 +27,7 @@ def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
     ]
     if unexpected:
         raise ProofError(
-            "CREATE SCHEMA recovery encountered an unknown durable API "
+            "DDL recovery encountered an unknown durable API "
             f"journal record: {unexpected[0]!r}"
         )
     return tuple(row for row in rows if row.startswith(authority_prefixes))
@@ -282,7 +282,7 @@ def main() -> int:
         (*parser._actions[-1].choices, "source-artifact-external")
     )
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-trigger-observe", "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add", "dml-conditional-mutate", "ddl-alter-timeseries-value-cache", "ddl-drop-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-timeseries-schema-write"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
@@ -379,13 +379,12 @@ def main() -> int:
                 )
         database = work / "source_map.sbdb"
         endpoint = work / "sc" / "s.sock"
-        evidence = seed_database(
-            Path(args.server),
-            database,
-            ("--bulk-import-fixture",)
-            if args.operation == "bulk-import-stream"
-            else (),
-        )
+        seed_args = ()
+        if args.operation == "bulk-import-stream":
+            seed_args = ("--bulk-import-fixture",)
+        elif args.operation == "ddl-create-trigger":
+            seed_args = ("--trigger-fixture",)
+        evidence = seed_database(Path(args.server), database, seed_args)
         server_trace = work / "server_phase.jsonl"
         dispatch_trace = work / "dispatch_phase.jsonl"
         env = os.environ.copy()
@@ -394,6 +393,9 @@ def main() -> int:
         env["SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE"] = str(dispatch_trace)
         env["SCRATCHBIRD_TEST_DDL_CREATE_SCHEMA_RECOVERY_ARTIFACT"] = str(
             work / "ddl-create-schema-recovery"
+        )
+        env["SCRATCHBIRD_TEST_DDL_CREATE_TRIGGER_RESULT_ARTIFACT"] = str(
+            work / "ddl-create-trigger-result.tvrs"
         )
         server = subprocess.Popen(
             [args.server, "--foreground", "--no-listeners", "--control-dir",
@@ -521,6 +523,18 @@ def main() -> int:
             if first.stdout != expected_success or first.stderr:
                 raise ProofError(
                     "CREATE SCHEMA did not complete the exact committed "
+                    "canonical mutation route"
+                )
+        elif args.operation == "ddl-create-trigger":
+            expected_success = (
+                "CSC-TEST-002621 DDL_CREATE_TRIGGER accepted "
+                "surface_id=SBSQL-5127560F8031 "
+                "canonical_sblr=true catalog_mutation=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "CREATE TRIGGER did not complete the exact committed "
                     "canonical mutation route"
                 )
         elif args.operation == "ddl-create-index":
@@ -1297,7 +1311,18 @@ def main() -> int:
                 "executor_availability_generation=",
                 "publication_barrier=passed",
             )
-        elif args.operation in ("ddl-create-trigger", "ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
+        elif args.operation == "ddl-create-trigger":
+            expected = (
+                "executor_id=engine.op.ddl_create_trigger",
+                "opcode=SBLR_DDL_CREATE_TRIGGER",
+                "opcode_code=1551",
+                "operand_descriptor_id=create_trigger_descriptor",
+                "result_descriptor_id=ddl_result",
+                "result_descriptor_version=1",
+                "ddl_create_trigger_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation in ("ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":
             expected = ("executor_id=engine.op.ddl_create_schema", "opcode=SBLR_DDL_CREATE_SCHEMA", "opcode_code=1536", "operand_descriptor_id=create_schema_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_schema_result_sha256=", "executor_availability_generation=")
@@ -1336,6 +1361,8 @@ def main() -> int:
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
         if args.operation == "ddl-create-schema":
             second[5] = "ddl-create-schema-observe"
+        elif args.operation == "ddl-create-trigger":
+            second[5] = "ddl-create-trigger-observe"
         verified = subprocess.run(
             second, capture_output=True, text=True, timeout=30, env=env
         )
@@ -1355,7 +1382,6 @@ def main() -> int:
                     "independent authenticated CREATE SCHEMA observer did not "
                     "resolve the committed exact schema identity"
                 )
-
             def run_schema_auxiliary(
                 operation: str, session_suffix: str, expected_stdout: str
             ) -> None:
@@ -1473,6 +1499,85 @@ def main() -> int:
                 "CSC-TEST-005783 DDL_CREATE_SCHEMA observer_absent=true "
                 "independent_session=true\n",
             )
+        elif args.operation == "ddl-create-trigger":
+            expected_observer = (
+                "CSC-TEST-002621 DDL_CREATE_TRIGGER observer_visible=true "
+                "surface_id=SBSQL-5127560F8031 "
+                "independent_session=true exact_trigger_identity=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated CREATE TRIGGER observer did "
+                    "not resolve the committed exact trigger identity"
+                )
+            api_event_path = Path(f"{database}.sb.api_events")
+            if not catalog_event_path.exists() or not api_event_path.exists():
+                raise ProofError(
+                    "CREATE TRIGGER durability proof requires both catalog "
+                    "and name-registry journals"
+                )
+            catalog_before_restart = catalog_event_path.read_bytes()
+            api_authority_before_restart = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            stop(server)
+            server = None
+            restart_control = work / "trigger-restart-control"
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(work / "trigger-restart-runtime"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(work / "trigger-server-restart.out").open("wb"),
+                stderr=(work / "trigger-server-restart.err").open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            restart_observer = second.copy()
+            restart_observer[1] = f"unix:{restart_endpoint}"
+            restart_observer[-1] = (
+                "sbsql-sblr-ddl-create-trigger-e2e-restart-observer"
+            )
+            restarted = subprocess.run(
+                restart_observer,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if (
+                restarted.returncode != 0
+                or restarted.stdout != expected_observer
+                or restarted.stderr
+            ):
+                raise ProofError(
+                    "restarted authenticated CREATE TRIGGER observer did "
+                    "not resolve the committed exact trigger identity: "
+                    f"returncode={restarted.returncode} "
+                    f"stdout={restarted.stdout!r} stderr={restarted.stderr!r}"
+                )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "CREATE TRIGGER restart observation changed the durable "
+                    "catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "CREATE TRIGGER restart observation changed durable "
+                    "catalog/name authority rows"
+                )
         elif verified.stdout != first.stdout and args.operation != "ddl-drop-operator":
             raise ProofError(
                 "independent authenticated process/receipt output differed: "

@@ -21,6 +21,7 @@
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
@@ -2359,6 +2360,77 @@ EmbeddedEngineClient::CoordinateDdlCreateSchema(
     AddDiagnostic(
         &result.messages, "MGA.AUTHORITY_MISMATCH",
         "embedded CREATE SCHEMA descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDdlCreateTrigger(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlCreateTriggerRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlCreateTriggerRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded CREATE TRIGGER request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateDdlCreateTriggerRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateDdlCreateTriggerRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateDdlCreateTrigger(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlCreateTriggerDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDdlCreateTriggerResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDdlCreateTriggerResultV1 ||
+      !ddl::DecodeSblrDdlCreateTriggerDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.trigger_occurrence != request.trigger_occurrence ||
+      descriptor.timing != request.timing || descriptor.event != request.event ||
+      descriptor.scope != request.scope ||
+      descriptor.target_kind != request.target_kind ||
+      descriptor.body_profile != request.body_profile ||
+      descriptor.position != request.position ||
+      descriptor.security_mode != request.security_mode ||
+      descriptor.image_mode != request.image_mode ||
+      descriptor.execution_mode != request.execution_mode ||
+      descriptor.enabled_state != request.enabled_state ||
+      descriptor.recursion_mode != request.recursion_mode ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded CREATE TRIGGER descriptor is not exactly correlated",
         detail);
     return result;
   }

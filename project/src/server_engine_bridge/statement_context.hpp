@@ -478,6 +478,97 @@ struct StatementDdlCreateSchemaAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Syntax-only private bind for the bounded CREATE TRIGGER v1 profile. The
+// parser supplies trigger/target name atoms and closed definition selectors;
+// every catalog identity, generation, compiled-body identity, authorization,
+// recovery identity, and terminal result remains receipt-private.
+struct StatementDdlCreateTriggerNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementDdlCreateTriggerBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t trigger_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint8_t timing = 0;
+  std::uint8_t event = 0;
+  std::uint8_t scope = 0;
+  std::uint8_t target_kind = 0;
+  std::uint16_t body_profile = 0;
+  std::vector<StatementDdlCreateTriggerNameAtomV1> trigger_name_atoms;
+  std::vector<StatementDdlCreateTriggerNameAtomV1> target_name_atoms;
+  std::uint16_t position = 0;
+  std::uint8_t security_mode = 0;
+  std::uint8_t image_mode = 0;
+  std::uint8_t execution_mode = 0;
+  std::uint8_t enabled_state = 0;
+  std::uint8_t recursion_mode = 0;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementDdlCreateTriggerAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t trigger_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint8_t timing = 0;
+  std::uint8_t event = 0;
+  std::uint8_t scope = 0;
+  std::uint8_t target_kind = 0;
+  std::uint16_t body_profile = 0;
+  std::uint16_t position = 0;
+  std::uint8_t security_mode = 0;
+  std::uint8_t image_mode = 0;
+  std::uint8_t execution_mode = 0;
+  std::uint8_t enabled_state = 0;
+  std::uint8_t recursion_mode = 0;
+  std::vector<StatementDdlCreateTriggerNameAtomV1> trigger_name_atoms;
+  std::vector<StatementDdlCreateTriggerNameAtomV1> target_name_atoms;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string canonical_trigger_path_utf8;
+  std::string trigger_leaf_name_utf8;
+  std::string canonical_target_path_utf8;
+  std::string trigger_uuid;
+  std::uint64_t trigger_generation = 0;
+  std::string target_relation_uuid;
+  std::uint64_t target_relation_generation = 0;
+  std::string target_relation_descriptor_uuid;
+  std::uint64_t target_relation_descriptor_generation = 0;
+  std::string schema_uuid;
+  std::uint64_t schema_generation = 0;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string owner_principal_uuid;
+  std::string body_sblr_uuid;
+  std::uint64_t body_sblr_generation = 0;
+  std::string body_profile_name;
+  std::string compiled_body_descriptor;
+  std::string recovery_uuid;
+  std::uint64_t recovery_generation = 0;
+  std::string mutation_uuid;
+  std::string publication_barrier_uuid;
+  std::array<std::uint8_t, 32> authority_bundle_sha256{};
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Receipt-private authority for one exact SHOW <singular> <object_ref>
 // inspection. The parser supplies only target-name atoms through the existing
 // name-bind request; identities, generations, rows, and carriers are produced
@@ -1038,6 +1129,7 @@ struct StatementContextReceiptView {
   std::uint64_t ddl_create_table_executor_availability_generation = 0;
   std::uint64_t ddl_create_index_executor_availability_generation = 0;
   std::uint64_t ddl_drop_index_executor_availability_generation = 0;
+  std::uint64_t ddl_create_trigger_executor_availability_generation = 0;
   // Exact engine-issued TXBH for the selected active transaction.  This is a
   // copy-only public projection; the corresponding private handle remains
   // owned by `session` and is the authority used by commit/rollback.
@@ -1403,6 +1495,20 @@ sb_engine_status_t CopyStatementDdlCreateSchemaAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     std::uint32_t schema_occurrence,
     StatementDdlCreateSchemaAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves and freezes one bounded CREATE TRIGGER syntax demand under the
+// exact live statement receipt. The parser cannot supply executable or
+// catalog identity through this request.
+sb_engine_status_t BindStatementDdlCreateTriggerAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementDdlCreateTriggerBindRequestV1* request,
+    StatementDdlCreateTriggerAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementDdlCreateTriggerAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t trigger_occurrence,
+    StatementDdlCreateTriggerAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 // Resolves and freezes a SHOW-object detail descriptor from an already-bound

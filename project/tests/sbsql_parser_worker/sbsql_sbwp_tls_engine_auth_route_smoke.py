@@ -786,6 +786,157 @@ def finish_explicit_transaction(
     return sequence
 
 
+def create_trigger_sql(trigger_name: str) -> str:
+    return f"""CREATE TRIGGER users.public.{trigger_name}
+AFTER INSERT
+ON TABLE users.public.trig_items
+FOR EACH ROW
+AS
+BEGIN
+  INSERT INTO users.public.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR users.public.trig_audit_seq,
+     'INSERT',
+     new.item_id,
+     NULL,
+     new.item_price,
+     'item inserted');
+END;"""
+
+
+def run_create_trigger_full_route(port: int) -> None:
+    committed_name = "route_trig_items_ai"
+    rolled_back_name = "route_trig_items_rolled_back"
+    unauthorized_name = "route_trig_items_unauthorized"
+
+    # A CONNECT-only principal must not acquire definition authority, and the
+    # refusal must preserve its exact transaction without publishing a name.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(
+            sock,
+            BENCHMARK_PASSWORD,
+            user=RESTRICTED_SCHEMA_PRINCIPAL,
+        )
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        send_frame(
+            sock,
+            MSG_QUERY,
+            sequence,
+            query_payload(create_trigger_sql(unauthorized_name)),
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"SECURITY.ACCESS_DENIED"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn != txn_id or frame_txn == 0:
+            raise RouteError(
+                "CREATE TRIGGER authorization refusal did not preserve transaction authority"
+            )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # An independent authorized route can use the same name after the refusal,
+    # proving the failed request published neither catalog nor name state.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            create_trigger_sql(unauthorized_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # The full public route must cross TLS, listener allocation, SBWP, the
+    # parser worker, SBPS, canonical SBLR admission, and EngineCreateTrigger.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            create_trigger_sql(committed_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=True
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # A fresh authenticated parser worker observes the committed namespace
+    # entry through the bind-time duplicate-name fence. The independent
+    # direct-SBPS process fixture separately compares the exact trigger UUID.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        send_frame(
+            sock,
+            MSG_QUERY,
+            sequence,
+            query_payload(create_trigger_sql(committed_name)),
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"CATALOG.NAME.AMBIGUOUS"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn != txn_id or frame_txn == 0:
+            raise RouteError(
+                "independent CREATE TRIGGER duplicate refusal did not preserve transaction authority"
+            )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # A successful definition remains transaction-local until commit.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            create_trigger_sql(rolled_back_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # The same definition succeeds in another session after rollback, proving
+    # absence rather than relying on parser-local state. Roll it back as well.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            create_trigger_sql(rolled_back_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
 def run_create_schema_full_route(port: int) -> None:
     committed_name = "route_create_schema_e2e"
     rolled_back_name = "route_create_schema_rolled_back"
@@ -1233,6 +1384,7 @@ def main() -> int:
           run_unknown_required_feature_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
           run_create_schema_full_route(port)
+          run_create_trigger_full_route(port)
           run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, False)
           run_negative_auth_route(port)

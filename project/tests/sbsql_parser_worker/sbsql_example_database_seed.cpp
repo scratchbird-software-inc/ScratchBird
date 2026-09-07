@@ -474,6 +474,52 @@ void CreateCurrentBenchmarkTables(const api::EngineRequestContext& context,
                          });
 }
 
+void CreateTriggerDefinitionFixtures(
+    const api::EngineRequestContext& context,
+    const std::string& public_schema_uuid) {
+  CreateTableWithColumns(context,
+                         NewUuid(UuidKind::object),
+                         public_schema_uuid,
+                         "trig_items",
+                         {
+                             {"item_id", "bigint"},
+                             {"item_name", "text"},
+                             {"item_price", "bigint"},
+                         });
+  CreateTableWithColumns(context,
+                         NewUuid(UuidKind::object),
+                         public_schema_uuid,
+                         "trig_audit",
+                         {
+                             {"audit_id", "bigint"},
+                             {"event_kind", "text"},
+                             {"item_id", "bigint"},
+                             {"old_price", "bigint"},
+                             {"new_price", "bigint"},
+                             {"audit_note", "text"},
+                         });
+
+  api::EngineCreateSequenceRequest sequence;
+  sequence.context = context;
+  sequence.operation_id = "ddl.create_sequence";
+  sequence.target_schema.uuid.canonical = public_schema_uuid;
+  sequence.target_schema.object_kind = "schema";
+  sequence.target_object.uuid.canonical = NewUuid(UuidKind::object);
+  sequence.target_object.object_kind = "sequence";
+  sequence.localized_names.push_back(Name("trig_audit_seq"));
+  sequence.option_envelopes.push_back(
+      "sequence_lookup_key:users.public.trig_audit_seq");
+  sequence.option_envelopes.push_back("sequence_start_value:1");
+  sequence.option_envelopes.push_back("sequence_increment:1");
+  const auto created = api::EngineCreateSequence(sequence);
+  if (!created.ok) {
+    for (const auto& diagnostic : created.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+    Fail("engine-owned trigger fixture sequence seed failed");
+  }
+}
+
 void SeedCopyStreamFixtureRow(const api::EngineRequestContext& context,
                               const std::string& table_uuid) {
   api::EngineInsertRowsRequest request;
@@ -530,6 +576,7 @@ void SeedUserSchemas(const std::filesystem::path& database_path,
               "benchmark_public_items");
   const std::string copy_stream_table_uuid = CreateCopyStreamFixtureTable(context, public_schema_uuid);
   CreateCurrentBenchmarkTables(context, public_schema_uuid);
+  CreateTriggerDefinitionFixtures(context, public_schema_uuid);
   CommitSeedTransaction(transaction);
 
   auto security_transaction =

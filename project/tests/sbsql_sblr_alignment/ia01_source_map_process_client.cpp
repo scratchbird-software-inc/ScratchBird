@@ -18,6 +18,7 @@
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
@@ -860,6 +861,207 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
+  if (operation == "ddl-create-trigger" ||
+      operation == "ddl-create-trigger-observe") {
+    namespace ddl = scratchbird::engine::sblr;
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& result) {
+      std::cerr << "CSC-TEST-002621 DDL_CREATE_TRIGGER " << phase
+                << " accepted=" << result.accepted
+                << " outcome_unknown=" << result.outcome_unknown
+                << " operation=" << result.server_operation_id << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+    const char* artifact_path =
+        std::getenv("SCRATCHBIRD_TEST_DDL_CREATE_TRIGGER_RESULT_ARTIFACT");
+    const auto write_artifact = [&](const std::string& bytes) {
+      if (artifact_path == nullptr || *artifact_path == '\0' ||
+          bytes.empty()) {
+        return false;
+      }
+      std::ofstream out(artifact_path, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      return out.good();
+    };
+    const auto read_artifact = [&]() {
+      std::vector<std::uint8_t> bytes;
+      if (artifact_path == nullptr || *artifact_path == '\0') return bytes;
+      std::ifstream in(artifact_path, std::ios::binary);
+      if (!in) return bytes;
+      in.seekg(0, std::ios::end);
+      const auto extent = in.tellg();
+      if (extent <= 0) return bytes;
+      bytes.resize(static_cast<std::size_t>(extent));
+      in.seekg(0, std::ios::beg);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+      if (!in) bytes.clear();
+      return bytes;
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+
+    if (operation == "ddl-create-trigger") {
+      constexpr std::string_view kCreateTriggerSql = R"SBSQL(CREATE TRIGGER app.trig_items_ai
+AFTER INSERT
+ON TABLE app.trig_items
+FOR EACH ROW
+AS
+BEGIN
+  INSERT INTO app.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR app.trig_audit_seq,
+     'INSERT',
+     new.item_id,
+     NULL,
+     new.item_price,
+     'item inserted');
+END;)SBSQL";
+      auto created = session.RunPipeline(kCreateTriggerSql, true);
+      ddl::SblrDdlCreateTriggerResultV1 terminal;
+      std::string detail;
+      const auto canonical_container =
+          scratchbird::engine::DecodeSblrContainerBytes(
+              reinterpret_cast<const std::uint8_t*>(
+                  created.sblr_payload.data()),
+              created.sblr_payload.size());
+      const auto canonical_stream =
+          canonical_container.status == scratchbird::engine::SblrCodecStatus::ok
+              ? ddl::DecodeSblrOpcodeStream(std::string_view(
+                    reinterpret_cast<const char*>(canonical_container.container
+                                                      .operation_payload.data()),
+                    canonical_container.container.operation_payload.size()))
+              : ddl::SblrOpcodeStreamResult{};
+      const bool exact_submission =
+          canonical_stream.ok &&
+          scratchbird::engine::EncodeSblrContainer(
+              canonical_container.container) ==
+              std::vector<std::uint8_t>(created.sblr_payload.begin(),
+                                        created.sblr_payload.end()) &&
+          canonical_stream.stream.operations.size() == 3 &&
+          canonical_stream.stream.operations[1].operation_id ==
+              "engine.op.ddl_create_trigger" &&
+          canonical_stream.stream.operations[1].opcode ==
+              "SBLR_DDL_CREATE_TRIGGER" &&
+          canonical_stream.stream.operations[1].opcode_code == 1551 &&
+          canonical_stream.stream.operations[1].operands.size() == 1 &&
+          canonical_stream.stream.operations[1].operands[0].type ==
+              "create_trigger_descriptor" &&
+          canonical_stream.stream.operations[1].operands[0].name ==
+              "trigger" &&
+          canonical_stream.stream.operations[1].operands[0].value_kind ==
+              ddl::SblrValueKind::create_trigger_descriptor;
+      const bool exact_terminal =
+          exact_submission && created.accepted && !created.outcome_unknown &&
+          !created.messages.has_errors() &&
+          created.server_operation_id == "engine.op.ddl_create_trigger" &&
+          !created.sblr_payload.empty() &&
+          created.server_request_payload_bytes ==
+              ddl::kSblrDdlCreateTriggerRequestV1Bytes &&
+          ddl::DecodeSblrDdlCreateTriggerResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  created.server_result_payload.data()),
+              created.server_result_payload.size(), &terminal, &detail) &&
+          ddl::EncodeSblrDdlCreateTriggerResultV1(terminal) ==
+              std::vector<std::uint8_t>(
+                  created.server_result_payload.begin(),
+                  created.server_result_payload.end()) &&
+          nonzero(terminal.receipt) && nonzero(terminal.trigger_uuid) &&
+          terminal.trigger_generation != 0 &&
+          nonzero(terminal.target_relation_uuid) &&
+          terminal.target_relation_generation != 0 &&
+          nonzero(terminal.schema_uuid) && terminal.schema_generation != 0 &&
+          nonzero(terminal.owning_transaction_uuid) &&
+          terminal.owning_local_transaction_id != 0 &&
+          nonzero(terminal.statement_snapshot_uuid) &&
+          nonzero(terminal.catalog_row_uuid) &&
+          nonzero(terminal.mutation_uuid) && nonzero(terminal.body_sblr_uuid) &&
+          terminal.body_sblr_generation != 0 &&
+          terminal.catalog_generation != 0 && terminal.security_epoch != 0 &&
+          terminal.resource_generation != 0 &&
+          nonzero(terminal.descriptor_evidence_sha256) &&
+          nonzero(terminal.evidence) && terminal.availability != 0 &&
+          nonzero(terminal.publication_barrier) &&
+          terminal.trigger_uuid != terminal.target_relation_uuid &&
+          terminal.trigger_uuid != terminal.schema_uuid &&
+          terminal.trigger_uuid != terminal.catalog_row_uuid &&
+          terminal.trigger_uuid != terminal.mutation_uuid &&
+          terminal.trigger_uuid != terminal.body_sblr_uuid &&
+          terminal.trigger_uuid != terminal.publication_barrier;
+      if (!exact_terminal || !write_artifact(created.server_result_payload)) {
+        dump_failure(detail.empty() ? "terminal_contract_failed" : detail,
+                     created);
+        return 4;
+      }
+      auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
+      if (!committed.accepted || committed.messages.has_errors()) {
+        dump_failure("commit_failed", committed);
+        return 4;
+      }
+      session.AcknowledgeDdlCreateTriggerCompletionForWire();
+      if (session.HasHeldDdlCreateTriggerForWire()) {
+        std::cerr << "ddl_create_trigger_terminal_holder_not_released\n";
+        return 4;
+      }
+      std::cout << "CSC-TEST-002621 DDL_CREATE_TRIGGER accepted "
+                   "surface_id=SBSQL-5127560F8031 "
+                   "canonical_sblr=true catalog_mutation=true commit=true "
+                   "publication_barrier=passed\n";
+      return 0;
+    }
+
+    const auto expected_bytes = read_artifact();
+    ddl::SblrDdlCreateTriggerResultV1 expected;
+    std::string detail;
+    auto observed = session.RunPipeline(
+        "RESOLVE NAME app.trig_items_ai AS TRIGGER;", true);
+    ddl::SblrNameResolveResultV1 resolved;
+    const bool exact_observer =
+        !expected_bytes.empty() &&
+        ddl::DecodeSblrDdlCreateTriggerResultV1(
+            expected_bytes.data(), expected_bytes.size(), &expected, &detail) &&
+        observed.accepted && !observed.outcome_unknown &&
+        !observed.messages.has_errors() &&
+        observed.server_operation_id == "engine.op.name_resolve" &&
+        ddl::DecodeSblrNameResolveResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                observed.server_result_payload.data()),
+            observed.server_result_payload.size(), &resolved, &detail) &&
+        resolved.status == 1 && resolved.visibility == 1 &&
+        resolved.object_class == 9 &&
+        resolved.resolved_object_uuid == expected.trigger_uuid &&
+        resolved.resolved_namespace_uuid == expected.schema_uuid &&
+        resolved.object_descriptor_generation != 0 &&
+        nonzero(resolved.publication_evidence_uuid) &&
+        nonzero(resolved.resolution_material_sha256) &&
+        nonzero(resolved.executor_evidence_sha256);
+    auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+    if (!exact_observer || !rolled_back.accepted ||
+        rolled_back.messages.has_errors()) {
+      dump_failure(detail.empty() ? "observer_contract_failed" : detail,
+                   observed);
+      return 4;
+    }
+    std::cout << "CSC-TEST-002621 DDL_CREATE_TRIGGER observer_visible=true "
+                 "surface_id=SBSQL-5127560F8031 "
+                 "independent_session=true exact_trigger_identity=true\n";
+    return 0;
+  }
   if (operation == "ddl-create-schema" ||
       operation == "ddl-create-schema-recover" ||
       operation == "ddl-create-schema-observe" ||
@@ -1672,7 +1874,9 @@ int main(int argc, char** argv) {
                     : operation == "ddl-drop-table"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTableForWire():begun; }()
                     : operation == "ddl-create-trigger"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateTriggerForWire():begun; }()
+                          ? session.RunPipeline(
+                                "CREATE TRIGGER app.trig_items_ai AFTER INSERT ON TABLE app.trig_items FOR EACH ROW AS BEGIN INSERT INTO app.trig_audit (audit_id, event_kind, item_id, old_price, new_price, audit_note) VALUES (NEXT VALUE FOR app.trig_audit_seq, 'INSERT', new.item_id, NULL, new.item_price, 'item inserted'); END;",
+                                true)
                     : operation == "ddl-alter-trigger"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterTriggerForWire():begun; }()
                     : operation == "ddl-drop-trigger"

@@ -407,7 +407,11 @@ class SbsqlTestWireSession {
   PipelineResult RunInternalTriggerDispatchForWire();
   PipelineResult RunInternalExceptionRaiseForWire();
   PipelineResult RunInternalExceptionResignalForWire();
-  PipelineResult RunDdlCreateTriggerForWire();
+  PipelineResult RunDdlCreateTriggerForWire(
+      std::string_view sql,
+      bool autocommit_emulation = false);
+  void AcknowledgeDdlCreateTriggerCompletionForWire();
+  [[nodiscard]] bool HasHeldDdlCreateTriggerForWire() const;
   PipelineResult RunDdlAlterTriggerForWire();
   PipelineResult RunDdlDropTriggerForWire();
   PipelineResult RunDdlCreateProcedureForWire();
@@ -566,6 +570,7 @@ class SbsqlTestWireSession {
  private:
   struct HeldBulkImportStream;
   struct HeldDdlCreateSchema;
+  struct HeldDdlCreateTrigger;
 
   ParserConfig config_;
   ParserMetrics* metrics_;
@@ -576,6 +581,7 @@ class SbsqlTestWireSession {
   std::unique_ptr<SbpsClient> server_client_;
   std::unique_ptr<HeldBulkImportStream> held_bulk_import_stream_;
   std::unique_ptr<HeldDdlCreateSchema> held_ddl_create_schema_;
+  std::unique_ptr<HeldDdlCreateTrigger> held_ddl_create_trigger_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;
