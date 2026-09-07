@@ -81,6 +81,19 @@ set_tests_properties(storage_module_authority_source_contract_gate PROPERTIES
 )
 unset(SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT)
 
+set(SB_CANONICAL_QUERY_EXECUTION_AUTHORITY_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/canonical_query_execution_authority_gate.py")
+add_test(
+  NAME canonical_query_execution_authority_source_contract_gate
+  COMMAND "${Python3_EXECUTABLE}"
+          "${SB_CANONICAL_QUERY_EXECUTION_AUTHORITY_GATE_SCRIPT}"
+)
+set_tests_properties(
+  canonical_query_execution_authority_source_contract_gate PROPERTIES
+  LABELS "source_contract;not_runtime_correctness;canonical_query_authority"
+)
+unset(SB_CANONICAL_QUERY_EXECUTION_AUTHORITY_GATE_SCRIPT)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

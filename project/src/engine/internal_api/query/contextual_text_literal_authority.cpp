@@ -1252,13 +1252,6 @@ ContextualTextExecutionAuthorityLeaseV2&
 ContextualTextExecutionAuthorityLeaseV2::operator=(
     ContextualTextExecutionAuthorityLeaseV2&&) noexcept = default;
 
-sblr::SblrExpressionNodeTableCodecResultV1
-DecodeContextualTextComposedSbxnV2(const std::uint8_t* bytes,
-                                   const std::size_t size) {
-  return sblr::DecodeSblrContextualComposedExpressionNodeTableV2(bytes,
-                                                                 size);
-}
-
 bool DecodeContextualTextComposedLiteralFinalizeRequestV2(
     const std::uint8_t* bytes, const std::size_t size,
     sblr::SblrLiteralFinalizeRequestV1* out) {

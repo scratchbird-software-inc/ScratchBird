@@ -37,7 +37,7 @@ namespace {
 constexpr std::string_view kCanonicalBooleanTypeUuid =
     "01000000-626f-7f6c-a561-6e0000000000";
 constexpr std::string_view kCanonicalInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d711";
+    "019d0000-0000-7000-8000-00000000d712";
 
 #if defined(__GNUC__) && !defined(__clang__)
 #define SB_QOW_TEST_NOINLINE __attribute__((noinline, noipa))
@@ -1446,6 +1446,11 @@ bool ValidateTwoKeyNotNotSumHavingParserBindingLoweringAndDispatch() {
 
   const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
       lowered, GroupingSetsEngineContext());
+  if (!dispatched.api_result.ok) {
+    for (const auto& diagnostic : dispatched.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&

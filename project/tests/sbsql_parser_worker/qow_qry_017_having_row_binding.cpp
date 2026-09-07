@@ -25,6 +25,10 @@ constexpr std::string_view kCountUuid =
     "019de5fc-2400-784a-9aec-371f8b95b7ea";
 constexpr std::string_view kSumUuid =
     "019de5fc-2400-72e4-8549-82b2eef5a777";
+constexpr std::string_view kInt64TypeUuid =
+    "019d0000-0000-7000-8000-00000000d712";
+constexpr std::string_view kBooleanTypeUuid =
+    "01000000-626f-7f6c-a561-6e0000000000";
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -100,22 +104,22 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
   api::TypedRelationalDag dag;
   dag.descriptors = {
       Descriptor(1, "019f3300-0000-7100-8000-000000000101",
-                 "019f3300-0000-7200-8000-000000000201",
+                 std::string(kInt64TypeUuid),
                  api::RelationalNullability::kNonNull),
       Descriptor(2, "019f3300-0000-7100-8000-000000000102",
-                 "019f3300-0000-7200-8000-000000000201",
+                 std::string(kInt64TypeUuid),
                  api::RelationalNullability::kNullable),
       Descriptor(3, "019f3300-0000-7100-8000-000000000103",
-                 "019f3300-0000-7200-8000-000000000201",
+                 std::string(kInt64TypeUuid),
                  api::RelationalNullability::kNonNull),
       Descriptor(4, "019f3300-0000-7100-8000-000000000104",
-                 "019f3300-0000-7200-8000-000000000202",
+                 std::string(kBooleanTypeUuid),
                  api::RelationalNullability::kNullable),
       Descriptor(5, "019f3300-0000-7100-8000-000000000105",
-                 "019f3300-0000-7200-8000-000000000203",
+                 std::string(kInt64TypeUuid),
                  api::RelationalNullability::kNullable),
       Descriptor(6, "019f3300-0000-7100-8000-000000000106",
-                 "019f3300-0000-7200-8000-000000000201",
+                 std::string(kInt64TypeUuid),
                  api::RelationalNullability::kNullable),
   };
   auto& decorated = dag.descriptors[4];
@@ -507,7 +511,7 @@ bool ValidateFullDescriptorIdentity() {
   changed[2].descriptor.descriptor_kind = "tuple";
   passed &= Refuses(dag, 7, binding, changed,
                     "descriptor kind drift was admitted");
-  passed &= mutate("type_uuid=019f3300-0000-7200-8000-000000000203",
+  passed &= mutate("type_uuid=019d0000-0000-7000-8000-00000000d712",
                    "type_uuid=019f3300-0000-7200-8000-000000000999",
                    "encoded type UUID drift was admitted");
   passed &= mutate("nullability=nullable", "nullability=non_null",

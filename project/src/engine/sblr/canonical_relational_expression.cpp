@@ -31,6 +31,51 @@
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
+
+void BindContractOnlyCanonicalPersistedRowDescriptorAuthorityV1(
+    CanonicalRelationalExpressionRuntimeServices* services) {
+  if (services == nullptr) return;
+  services->prevalidated_persisted_row_descriptor_authority =
+      [](const std::uint32_t bound_descriptor_id,
+         const api::RelationalTypeDescriptor& bound,
+         const api::EngineDescriptor& persisted,
+         const api::RelationalNullability effective_nullability)
+      -> std::optional<bool> {
+    if (bound.datatype_identity_authoritative) return std::nullopt;
+    if (bound_descriptor_id == 0 ||
+        bound_descriptor_id != bound.descriptor_id ||
+        bound.descriptor_uuid.empty() || bound.type_uuid.empty() ||
+        effective_nullability == api::RelationalNullability::kUnknown ||
+        persisted.descriptor_uuid.canonical != bound.descriptor_uuid ||
+        persisted.descriptor_kind != "scalar" ||
+        persisted.canonical_type_name.empty() ||
+        persisted.canonical_type_name == "unknown") {
+      return false;
+    }
+    std::string expected =
+        "type_uuid=" + bound.type_uuid + ";nullability=" +
+        (effective_nullability == api::RelationalNullability::kNullable
+             ? "nullable"
+             : "non_null");
+    if (bound.collation_uuid.has_value()) {
+      expected += ";collation_uuid=" + *bound.collation_uuid;
+    }
+    if (bound.timezone_profile_id.has_value()) {
+      expected += ";timezone_profile_id=" + *bound.timezone_profile_id;
+    }
+    if (bound.width.has_value()) {
+      expected += ";width=" + std::to_string(*bound.width);
+    }
+    if (bound.precision.has_value()) {
+      expected += ";precision=" + std::to_string(*bound.precision);
+    }
+    if (bound.scale.has_value()) {
+      expected += ";scale=" + std::to_string(*bound.scale);
+    }
+    return persisted.encoded_descriptor == expected;
+  };
+}
+
 namespace {
 
 std::string UpperAscii(std::string value) {

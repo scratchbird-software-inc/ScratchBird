@@ -210,6 +210,12 @@ struct CanonicalRelationalExpressionRuntimeServices {
       persisted_row_descriptor_authority;
 };
 
+// Installs the exact-record persisted descriptor matcher used by object-free
+// closure fixtures. It supplies no catalog, parser, storage, or transaction
+// authority and delegates authoritative datatype records to the live hook.
+void BindContractOnlyCanonicalPersistedRowDescriptorAuthorityV1(
+    CanonicalRelationalExpressionRuntimeServices* services);
+
 // Character and timezone-profile descriptors must be compared by the bound
 // engine catalog/resource service rather than the generic scalar comparator.
 bool CanonicalRelationalComparisonAuthorityRequiredV1(

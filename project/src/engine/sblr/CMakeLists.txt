@@ -298,8 +298,16 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-003-V1
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
+    canonical_query_descriptor_support.cpp
+    canonical_query_object_free_profile.cpp
+    canonical_query_physical_registration.cpp
+    canonical_query_relational_registration.cpp
+    canonical_query_window_registration.cpp
     canonical_relational_expression.cpp
     canonical_query_execute.cpp
+    canonical_query_json_support.cpp
+    canonical_query_runtime_memory_support.cpp
+    canonical_query_scalar_support.cpp
     sblr_dispatch.cpp
   )
   target_compile_features(sb_qow_sblr_query_route_contract PUBLIC cxx_std_20)
@@ -322,8 +330,17 @@ endif()
 
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
+  canonical_query_descriptor_support.cpp
+  canonical_query_object_free_profile.cpp
+  canonical_query_physical_registration.cpp
+  canonical_query_relational_registration.cpp
+  canonical_query_window_registration.cpp
   canonical_relational_expression.cpp
   canonical_query_execute.cpp
+  canonical_query_json_support.cpp
+  canonical_query_runtime_memory_support.cpp
+  canonical_query_scalar_support.cpp
+  canonical_query_time_series_endpoint.cpp
   dispatch/sblr_family_dispatch_landing_zone.cpp
   operators/sblr_operator_family_landing_zone.cpp
   special_forms/sblr_special_form_family_landing_zone.cpp
@@ -433,6 +450,32 @@ if(TARGET sb_cluster_provider)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(canonical_query_shared_support_test
+    ${CMAKE_SOURCE_DIR}/tests/optimizer/canonical_query_shared_support.cpp)
+  target_compile_features(canonical_query_shared_support_test PRIVATE
+    cxx_std_20)
+  target_link_libraries(canonical_query_shared_support_test PRIVATE
+    sb_engine_sblr)
+  add_test(NAME canonical_query_shared_support_boundary_v1
+    COMMAND canonical_query_shared_support_test)
+  set_tests_properties(canonical_query_shared_support_boundary_v1
+    PROPERTIES
+      LABELS "canonical_query_authority;runtime_correctness;stage_2;shared_support"
+  )
+
+  add_executable(canonical_query_time_series_endpoint_test
+    ${CMAKE_SOURCE_DIR}/tests/optimizer/canonical_query_time_series_endpoint.cpp)
+  target_compile_features(canonical_query_time_series_endpoint_test PRIVATE
+    cxx_std_20)
+  target_link_libraries(canonical_query_time_series_endpoint_test PRIVATE
+    sb_engine_sblr)
+  add_test(NAME canonical_query_time_series_endpoint_boundary_v1
+    COMMAND canonical_query_time_series_endpoint_test)
+  set_tests_properties(canonical_query_time_series_endpoint_boundary_v1
+    PROPERTIES
+      LABELS "canonical_query_authority;runtime_correctness;RCP-076;time_series"
+  )
+
   add_executable(sbsql_sblr_alignment_ia11_local_backup_archive ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia11_local_backup_archive_test.cpp)
   target_compile_features(sbsql_sblr_alignment_ia11_local_backup_archive PRIVATE cxx_std_20)
   target_include_directories(sbsql_sblr_alignment_ia11_local_backup_archive PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)

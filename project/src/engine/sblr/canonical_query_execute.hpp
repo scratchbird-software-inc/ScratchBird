@@ -120,6 +120,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
 // Deterministic proof of the production contextual RCP079 route, cancellation,
 // exact-key, and source-memory admission helpers. It owns no parser authority
 // and mutates no engine registry or receipt.
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
 std::uint32_t CanonicalContextualTextRcp079RuntimeProofMaskForTest();
+#endif
 
 }  // namespace scratchbird::engine::sblr

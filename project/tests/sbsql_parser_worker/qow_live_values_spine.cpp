@@ -7,15 +7,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "sblr_literal_runtime.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -40,13 +44,15 @@ constexpr std::string_view kSecurityContextUuid =
 constexpr std::string_view kCanonicalBooleanTypeUuid =
     "01000000-626f-7f6c-a561-6e0000000000";
 constexpr std::string_view kCanonicalInt64TypeUuid =
-    "019d0000-0000-7000-8000-00000000d711";
+    "019d0000-0000-7000-8000-00000000d712";
 constexpr std::string_view kCanonicalReal64TypeUuid =
     "8d000000-7265-716c-b634-000000000000";
 constexpr std::string_view kAggregateCollationUuid =
     "019f0000-0000-7200-8000-00000000c011";
 
 std::string EncodeHex(std::string_view value);
+sblr::SblrOperationEnvelope BindCanonicalNumericLiteralEvidence(
+    sblr::SblrOperationEnvelope envelope);
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -2170,7 +2176,7 @@ NodeDrivenRecursiveSearchCycleLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000cfc5|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000cfc7|"
@@ -2272,7 +2278,7 @@ sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
        "019f0000-0000-7400-8000-000000009002|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009003|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
@@ -2309,7 +2315,7 @@ sblr::SblrOperationEnvelope NodeDrivenCountStarLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c981|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "5", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2339,7 +2345,7 @@ sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
        "019f0000-0000-7400-8000-000000009102|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009103|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
@@ -2381,7 +2387,7 @@ sblr::SblrOperationEnvelope NodeDrivenCountExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c991|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2408,10 +2414,10 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-000000009201|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009203|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|35"},
       {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
       {"relational_expression_v1", "3", "1|-|1|-|-|1|-|2d32"},
@@ -2452,7 +2458,7 @@ sblr::SblrOperationEnvelope NodeDrivenSumExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000c9a1|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -2764,7 +2770,7 @@ sblr::SblrOperationEnvelope GlobalAvgExpressionValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-000000009301|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000009303|"
        "8d000000-7265-716c-b634-000000000000|2|-|-|-|-|-"},
@@ -2808,7 +2814,7 @@ sblr::SblrOperationEnvelope NodeDrivenAvgExpressionLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000ca01|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3167,16 +3173,16 @@ sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-00000000e001|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000e003|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000e005|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000e007|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
   };
 
   constexpr std::string_view kManyGroupKeys[] = {
@@ -3245,7 +3251,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedCountSumLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "5",
        "019f0000-0000-7300-8000-00000000cc01|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "17", "1|-|5|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3292,7 +3298,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedExpansionLimitEnvelope(
   envelope.operands.push_back(
       {"relational_descriptor_v1", "9",
        "019f0000-0000-7300-8000-00000000cd01|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "27", "1|-|9|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3320,7 +3326,7 @@ sblr::SblrOperationEnvelope TwoKeyGroupedCountSumHavingValuesEnvelope() {
       envelope.operands.end(),
       {{"relational_descriptor_v1", "9",
         "019f0000-0000-7300-8000-00000000ce01|"
-        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "10",
         "019f0000-0000-7300-8000-00000000ce02|"
         "01000000-626f-7f6c-a561-6e0000000000|2|-|-|-|-|-"},
@@ -3357,7 +3363,7 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedHavingLimitEnvelope() {
   envelope.operands.push_back(
       {"relational_descriptor_v1", "11",
        "019f0000-0000-7300-8000-00000000ce11|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "28", "1|-|11|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -3384,19 +3390,19 @@ sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-00000000e201|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-00000000e203|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
        "019f0000-0000-7300-8000-00000000e205|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
        "019f0000-0000-7300-8000-00000000e207|"
-       "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "5",
        "019f0000-0000-7300-8000-00000000e209|"
-       "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-"},
+       "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-"},
   };
 
   struct RollupRow {
@@ -3476,13 +3482,13 @@ sblr::SblrOperationEnvelope RollupCountSumGroupingValuesEnvelope() {
       envelope.operands.end(),
       {{"relational_descriptor_v1", "6",
         "019f0000-0000-7300-8000-00000000e20e|"
-        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "7",
         "019f0000-0000-7300-8000-00000000e210|"
-        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
        {"relational_descriptor_v1", "8",
         "019f0000-0000-7300-8000-00000000e212|"
-        "019d0000-0000-7000-8000-00000000d711|1|-|-|-|-|-"},
+        "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"},
        {"relational_expression_v1", "24",
         "5|19|6|-|-|-|67726f7570696e67|-"},
        {"relational_expression_v1", "25",
@@ -4130,7 +4136,8 @@ std::string OrderedSetProfileUuid(const std::string_view group,
 }
 
 sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
-    const OrderedSetAggregateProfile& profile) {
+    const OrderedSetAggregateProfile& profile,
+    const std::string_view direct_literal_override = {}) {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", std::string(profile.operation));
   envelope.result_shape = "query_execute_result";
@@ -4145,6 +4152,12 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
   const auto direct_type = std::string(
       profile.percentile_fraction ? kCanonicalReal64TypeUuid
                                   : kCanonicalInt64TypeUuid);
+  const auto direct_literal_hex = direct_literal_override.empty()
+                                      ? std::string_view(
+                                            profile.percentile_fraction
+                                                ? "302e3235"
+                                                : "3235")
+                                      : direct_literal_override;
   const auto result_descriptor =
       OrderedSetProfileUuid("7300", profile.uuid_family, "05");
   const auto result_type = std::string(
@@ -4186,11 +4199,14 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
   if (profile.direct_argument) {
     envelope.operands.push_back(
         {"relational_descriptor_v1", "2",
-         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+         direct_descriptor + "|" + direct_type +
+             (profile.percentile_fraction
+                  ? direct_literal_hex == "312e35" ? "|1|-|-|-|2|1"
+                                                    : "|1|-|-|-|2|2"
+                  : "|1|-|-|-|-|-")});
     envelope.operands.push_back(
         {"relational_expression_v1", "7",
-         profile.percentile_fraction ? "1|-|2|-|-|1|-|302e3235"
-                                     : "1|-|2|-|-|1|-|3235"});
+         "1|-|2|-|-|1|-|" + std::string(direct_literal_hex)});
   }
   envelope.operands.push_back(
       {"relational_expression_v1", "8",
@@ -4202,7 +4218,8 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|8|-|-|-"});
-  return FinalizeStatementContextEnvelope(std::move(envelope));
+  return BindCanonicalNumericLiteralEvidence(
+      FinalizeStatementContextEnvelope(std::move(envelope)));
 }
 
 sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
@@ -4301,7 +4318,9 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
   if (profile.direct_argument) {
     envelope.operands.push_back(
         {"relational_descriptor_v1", "2",
-         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+         direct_descriptor + "|" + direct_type +
+             (profile.percentile_fraction ? "|1|-|-|-|2|2"
+                                          : "|1|-|-|-|-|-")});
     envelope.operands.push_back(
         {"relational_expression_v1", "16",
          profile.percentile_fraction ? "1|-|2|-|-|1|-|302e3235"
@@ -4319,7 +4338,8 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|18|-|-|-"});
-  return FinalizeStatementContextEnvelope(std::move(envelope));
+  return BindCanonicalNumericLiteralEvidence(
+      FinalizeStatementContextEnvelope(std::move(envelope)));
 }
 
 struct ApproximateAggregateProfile {
@@ -4408,7 +4428,8 @@ std::string ApproximateProfileUuid(const std::string_view group,
 }
 
 sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
-    const ApproximateAggregateProfile& profile) {
+    const ApproximateAggregateProfile& profile,
+    const std::string_view direct_literal_override = {}) {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", std::string(profile.operation));
   envelope.result_shape = "query_execute_result";
@@ -4428,6 +4449,9 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
           ? ApproximateProfileUuid("7400", profile.uuid_family, "04")
           : profile.result_type == "real64" ? kCanonicalReal64TypeUuid
                                              : kCanonicalInt64TypeUuid);
+  const auto direct_literal_hex = direct_literal_override.empty()
+                                      ? profile.direct_literal_hex
+                                      : direct_literal_override;
   const auto result_descriptor =
       ApproximateProfileUuid("7300", profile.uuid_family, "05");
   const auto result_type = std::string(
@@ -4456,7 +4480,11 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
   if (!profile.direct_literal_hex.empty()) {
     envelope.operands.push_back(
         {"relational_descriptor_v1", "2",
-         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+         direct_descriptor + "|" + direct_type +
+             (profile.result_type == "real64"
+                  ? direct_literal_hex == "312e35" ? "|1|-|-|-|2|1"
+                                                    : "|1|-|-|-|2|2"
+                  : "|1|-|-|-|-|-")});
   }
   constexpr std::string_view kNumericValues[] = {
       "3130", "3230", "3330", "3430", "3530", "3630"};
@@ -4477,7 +4505,7 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
   if (!profile.direct_literal_hex.empty()) {
     envelope.operands.push_back(
         {"relational_expression_v1", "8",
-         "1|-|2|-|-|1|-|" + std::string(profile.direct_literal_hex)});
+         "1|-|2|-|-|1|-|" + std::string(direct_literal_hex)});
   }
   envelope.operands.push_back(
       {"relational_expression_v1", "9",
@@ -4504,7 +4532,8 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|9|-|-|-"});
-  return FinalizeStatementContextEnvelope(std::move(envelope));
+  return BindCanonicalNumericLiteralEvidence(
+      FinalizeStatementContextEnvelope(std::move(envelope)));
 }
 
 sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
@@ -4578,7 +4607,9 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
   if (!profile.direct_literal_hex.empty()) {
     envelope.operands.push_back(
         {"relational_descriptor_v1", "2",
-         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+         direct_descriptor + "|" + direct_type +
+             (profile.result_type == "real64" ? "|1|-|-|-|2|2"
+                                               : "|1|-|-|-|-|-")});
   }
   constexpr std::string_view kNumericValues[] = {
       "3130", "3130", "3130", "3230", "3330", "3430", "2d"};
@@ -4643,7 +4674,8 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|18|-|-|-"});
-  return FinalizeStatementContextEnvelope(std::move(envelope));
+  return BindCanonicalNumericLiteralEvidence(
+      FinalizeStatementContextEnvelope(std::move(envelope)));
 }
 
 sblr::SblrOperationEnvelope GlobalStringAggExpressionValuesEnvelope() {
@@ -4708,7 +4740,7 @@ sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
   const auto separator_descriptor = PairProfileUuid("7f10", "b3", "03");
   const auto separator_type = PairProfileUuid("7f20", "b3", "04");
   const auto order_descriptor = PairProfileUuid("7f10", "b3", "05");
-  const auto order_type = PairProfileUuid("7f20", "b3", "06");
+  const auto order_type = std::string(kCanonicalInt64TypeUuid);
   const auto result_descriptor = PairProfileUuid("7f10", "b3", "07");
   const auto result_type = PairProfileUuid("7f20", "b3", "08");
   const auto value_bound_name = PairProfileUuid("7f30", "b3", "09");
@@ -4726,7 +4758,7 @@ sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
       {"relational_descriptor_v1", "2",
        separator_descriptor + "|" + separator_type + "|1|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
-       order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
+       order_descriptor + "|" + order_type + "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "4",
        result_descriptor + "|" + result_type + "|2|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|2|-|62"},
@@ -5665,7 +5697,7 @@ sblr::SblrOperationEnvelope NodeDrivenComplexAggregateLimitEnvelope(
   envelope.operands.push_back(
       {"relational_descriptor_v1", "99",
        "019f0000-0000-7300-8000-00000000cf99|"
-       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+       "019d0000-0000-7000-8000-00000000d712|1|-|-|-|-|-"});
   envelope.operands.push_back(
       {"relational_expression_v1", "99", "1|-|99|-|-|1|-|31"});
   envelope.operands.push_back(
@@ -5674,6 +5706,216 @@ sblr::SblrOperationEnvelope NodeDrivenComplexAggregateLimitEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "3",
        "6c696d69742e626f756e642d636f756e742e7631|99|-|-|-"});
+  return BindCanonicalNumericLiteralEvidence(std::move(envelope));
+}
+
+sblr::SblrOperationEnvelope BindCanonicalNumericLiteralEvidence(
+    sblr::SblrOperationEnvelope envelope) {
+  struct DescriptorIdentity {
+    std::array<std::uint8_t, 16> uuid{};
+    std::string_view type_uuid;
+  };
+  const auto fields = [](const std::string_view value) {
+    std::vector<std::string_view> result;
+    std::size_t begin = 0;
+    while (begin <= value.size()) {
+      const auto end = value.find('|', begin);
+      result.push_back(value.substr(
+          begin, end == std::string_view::npos ? value.size() - begin
+                                               : end - begin));
+      if (end == std::string_view::npos) break;
+      begin = end + 1;
+    }
+    return result;
+  };
+  const auto unsigned_value = [](const std::string_view text,
+                                 std::uint64_t* value) {
+    if (text.empty() || value == nullptr) return false;
+    const auto [end, error] =
+        std::from_chars(text.data(), text.data() + text.size(), *value);
+    return error == std::errc{} && end == text.data() + text.size();
+  };
+  const auto uuid_bytes = [](const std::string_view text) {
+    std::optional<std::array<std::uint8_t, 16>> result;
+    if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+        text[18] != '-' || text[23] != '-') {
+      return result;
+    }
+    std::array<std::uint8_t, 16> bytes{};
+    std::size_t byte = 0;
+    const auto nibble = [](const char value) -> int {
+      if (value >= '0' && value <= '9') return value - '0';
+      if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+      return -1;
+    };
+    for (std::size_t index = 0; index < text.size();) {
+      if (text[index] == '-') {
+        ++index;
+        continue;
+      }
+      if (index + 1 >= text.size() || byte == bytes.size()) return result;
+      const auto high = nibble(text[index]);
+      const auto low = nibble(text[index + 1]);
+      if (high < 0 || low < 0) return result;
+      bytes[byte++] = static_cast<std::uint8_t>((high << 4) | low);
+      index += 2;
+    }
+    if (byte == bytes.size()) result = bytes;
+    return result;
+  };
+  const auto decode_hex = [](const std::string_view text) {
+    std::optional<std::string> result;
+    if ((text.size() & 1U) != 0) return result;
+    std::string decoded;
+    decoded.reserve(text.size() / 2);
+    const auto nibble = [](const char value) -> int {
+      if (value >= '0' && value <= '9') return value - '0';
+      if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+      return -1;
+    };
+    for (std::size_t index = 0; index < text.size(); index += 2) {
+      const auto high = nibble(text[index]);
+      const auto low = nibble(text[index + 1]);
+      if (high < 0 || low < 0) return result;
+      decoded.push_back(static_cast<char>((high << 4) | low));
+    }
+    result = std::move(decoded);
+    return result;
+  };
+
+  std::unordered_map<std::uint64_t, DescriptorIdentity> descriptors;
+  for (const auto& operand : envelope.operands) {
+    if (operand.type != "relational_descriptor_v1") continue;
+    std::uint64_t descriptor_id = 0;
+    const auto record = fields(operand.value);
+    if (!unsigned_value(operand.name, &descriptor_id) || record.size() != 8) {
+      continue;
+    }
+    const auto uuid = uuid_bytes(record[0]);
+    if (!uuid.has_value()) continue;
+    descriptors.emplace(
+        descriptor_id, DescriptorIdentity{*uuid, record[1]});
+  }
+  std::unordered_set<std::uint64_t> values_expressions;
+  for (const auto& operand : envelope.operands) {
+    if (operand.type != "relational_values_row_v1") continue;
+    std::size_t begin = 0;
+    while (begin <= operand.value.size()) {
+      const auto end = operand.value.find(',', begin);
+      std::uint64_t expression_id = 0;
+      const auto item = std::string_view(operand.value).substr(
+          begin, end == std::string::npos ? operand.value.size() - begin
+                                          : end - begin);
+      if (unsigned_value(item, &expression_id)) {
+        values_expressions.insert(expression_id);
+      }
+      if (end == std::string::npos) break;
+      begin = end + 1;
+    }
+  }
+
+  struct LiteralBinding {
+    std::uint64_t expression_id = 0;
+    sblr::SblrOperand* operand = nullptr;
+    DescriptorIdentity descriptor;
+    std::vector<std::uint8_t> body;
+  };
+  std::vector<LiteralBinding> literals;
+  for (auto& operand : envelope.operands) {
+    if (operand.type != "relational_expression_v1") continue;
+    std::uint64_t expression_id = 0;
+    const auto record = fields(operand.value);
+    if (!unsigned_value(operand.name, &expression_id) || record.size() != 8 ||
+        record[0] != "1" || record[5] != "1" || record[7] == "-") {
+      continue;
+    }
+    if (expression_id == 99 || values_expressions.contains(expression_id)) {
+      continue;
+    }
+    std::uint64_t descriptor_id = 0;
+    if (!unsigned_value(record[2], &descriptor_id)) continue;
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        (descriptor->second.type_uuid != kCanonicalInt64TypeUuid &&
+         descriptor->second.type_uuid != kCanonicalReal64TypeUuid)) {
+      continue;
+    }
+    const auto lexical = decode_hex(record[7]);
+    if (!lexical.has_value()) continue;
+    std::vector<std::uint8_t> body;
+    if (descriptor->second.type_uuid == kCanonicalInt64TypeUuid) {
+      std::int64_t value = 0;
+      const auto [end, error] = std::from_chars(
+          lexical->data(), lexical->data() + lexical->size(), value);
+      if (error != std::errc{} || end != lexical->data() + lexical->size()) {
+        continue;
+      }
+      const auto encoded = sblr::EncodeSblrLiteralInt64LeV1(value);
+      body.assign(encoded.begin(), encoded.end());
+    } else {
+      const auto encoded = sblr::EncodeSblrLiteralExactDecimalV1(*lexical);
+      if (!encoded.ok) continue;
+      body.assign(encoded.canonical_bytes.begin(), encoded.canonical_bytes.end());
+    }
+    literals.push_back(
+        {expression_id, &operand, descriptor->second, std::move(body)});
+  }
+  std::ranges::sort(literals, {}, &LiteralBinding::expression_id);
+  if (!literals.empty()) {
+    sblr::SblrExpressionNodeTableV1 table;
+    table.nodes.reserve(literals.size());
+    for (std::size_t index = 0; index < literals.size(); ++index) {
+      sblr::SblrExpressionLiteralNodeV1 node;
+      node.node_id = literals[index].expression_id;
+      node.parent_operand_ordinal = static_cast<std::uint32_t>(index + 1);
+      node.descriptor_generation = 1;
+      node.descriptor_uuid = literals[index].descriptor.uuid;
+      node.literal_body = literals[index].body;
+      table.nodes.push_back(std::move(node));
+    }
+    const auto encoded = sblr::EncodeSblrExpressionNodeTableV1(table);
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(encoded);
+    if (!encoded.empty() && digest.ok()) {
+      const auto append16 = [](std::vector<std::uint8_t>* bytes,
+                               const std::uint16_t value) {
+        bytes->push_back(static_cast<std::uint8_t>(value));
+        bytes->push_back(static_cast<std::uint8_t>(value >> 8U));
+      };
+      const auto append32 = [](std::vector<std::uint8_t>* bytes,
+                               const std::uint32_t value) {
+        for (unsigned shift = 0; shift != 32; shift += 8) {
+          bytes->push_back(static_cast<std::uint8_t>(value >> shift));
+        }
+      };
+      const auto append64 = [](std::vector<std::uint8_t>* bytes,
+                               const std::uint64_t value) {
+        for (unsigned shift = 0; shift != 64; shift += 8) {
+          bytes->push_back(static_cast<std::uint8_t>(value >> shift));
+        }
+      };
+      for (std::size_t index = 0; index < literals.size(); ++index) {
+        auto& operand = *literals[index].operand;
+        operand.value.clear();
+        operand.value_kind = sblr::SblrValueKind::expression_node_ref;
+        append16(&operand.value_body, 1);
+        append16(&operand.value_body, 0);
+        append32(&operand.value_body, static_cast<std::uint32_t>(index + 1));
+        append64(&operand.value_body, literals[index].expression_id);
+        operand.value_body.insert(operand.value_body.end(),
+                                  digest.digest.begin(), digest.digest.end());
+        operand.value_body.insert(operand.value_body.end(),
+                                  literals[index].descriptor.uuid.begin(),
+                                  literals[index].descriptor.uuid.end());
+        append64(&operand.value_body, 1);
+      }
+      sblr::SblrOperand table_operand;
+      table_operand.type = "expression.node_table.v1";
+      table_operand.name = "expression_nodes";
+      table_operand.value_kind = sblr::SblrValueKind::expression_node_table;
+      table_operand.value_body = encoded;
+      envelope.operands.push_back(std::move(table_operand));
+    }
+  }
   return envelope;
 }
 
@@ -11230,7 +11472,7 @@ bool ValidateGlobalCountStarRefusalIsAtomic() {
     if (operand.type == "relational_descriptor_v1" && operand.name == "2") {
       operand.value =
           "019f0000-0000-7300-8000-000000009003|"
-          "019d0000-0000-7000-8000-00000000d711|2|-|-|-|-|-";
+          "019d0000-0000-7000-8000-00000000d712|2|-|-|-|-|-";
     }
   }
   for (auto& operand : argument_drift.operands) {
@@ -12636,13 +12878,8 @@ bool ValidateGlobalOrderedSetAggregateRefusalIsAtomic() {
 
   for (const auto& profile : kOrderedSetAggregateProfiles) {
     if (!profile.percentile_fraction) continue;
-    auto invalid_fraction = GlobalOrderedSetAggregateValuesEnvelope(profile);
-    for (auto& operand : invalid_fraction.operands) {
-      if (operand.type == "relational_expression_v1" &&
-          operand.name == "7") {
-        operand.value = "1|-|2|-|-|1|-|312e35";
-      }
-    }
+    auto invalid_fraction =
+        GlobalOrderedSetAggregateValuesEnvelope(profile, "312e35");
     passed &= Require(
         refused_atomically(std::move(invalid_fraction),
                            "QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1"),
@@ -12991,15 +13228,8 @@ bool ValidateGlobalApproximateAggregateRefusalIsAtomic() {
             " expression published physical/result evidence");
 
     if (!profile.invalid_direct_literal_hex.empty()) {
-      auto invalid_direct =
-          GlobalApproximateAggregateValuesEnvelope(profile);
-      for (auto& operand : invalid_direct.operands) {
-        if (operand.type == "relational_expression_v1" &&
-            operand.name == "8") {
-          operand.value = "1|-|2|-|-|1|-|" +
-                          std::string(profile.invalid_direct_literal_hex);
-        }
-      }
+      auto invalid_direct = GlobalApproximateAggregateValuesEnvelope(
+          profile, profile.invalid_direct_literal_hex);
       passed &= Require(
           refused_atomically(std::move(invalid_direct),
                              "QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1"),

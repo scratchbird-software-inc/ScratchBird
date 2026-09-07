@@ -2850,8 +2850,6 @@ const SblrOpcodeEntry* LookupSblrOpcode(std::string_view opcode) {
 
 const SblrOpcodeEntry* LookupSblrOpcodeCode(std::uint16_t code) {
   if (code == 0) return nullptr;
-  if (code == 1651) return LookupSblrOpcode("SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE");
-  if (code == 1652) return LookupSblrOpcode("SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE");
   const SblrOpcodeEntry* match = nullptr;
   for (const auto& entry : StaticSblrOpcodeRegistry()) {
     if (entry.code != code) continue;
@@ -2872,10 +2870,17 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
     return result;
   }
 
-  // The operation id is part of the canonical SBOP identity.  Resolve it
-  // first so registered operations that intentionally share a wire opcode
-  // code or mnemonic remain distinguishable, while a mismatched alias still
-  // fails closed.  Code-only lookup remains ambiguous by design.
+  // Numeric opcode identity is public wire authority.  A duplicated code is
+  // ambiguous even when the accompanying operation id happens to select one
+  // registry row, so reject it before consulting either textual component.
+  const auto* code_entry = LookupSblrOpcodeCode(code);
+  if (code_entry == nullptr) {
+    result.diagnostic_id =
+        OpcodeIdentityDiagnostic(code, operation_id, opcode);
+    result.detail = "opcode_code_unknown_or_ambiguous:" +
+                    std::to_string(code);
+    return result;
+  }
   const auto* entry = LookupSblrOperation(operation_id);
   if (entry == nullptr) {
     result.diagnostic_id =
@@ -2884,7 +2889,7 @@ SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
     return result;
   }
   result.entry = entry;
-  if (entry->code != code || entry->opcode != opcode) {
+  if (entry != code_entry || entry->code != code || entry->opcode != opcode) {
     result.diagnostic_id =
         OpcodeIdentityDiagnostic(code, operation_id, opcode);
     result.detail = "expected=" + entry->operation_id + "/" +

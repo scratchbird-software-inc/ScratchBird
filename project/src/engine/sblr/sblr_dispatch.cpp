@@ -16,6 +16,7 @@
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_literal_runtime.hpp"
+#include "uuid.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
@@ -26,7 +27,6 @@
 #include "sblr_context_variables.hpp"
 #include "sblr_operator_runtime.hpp"
 #include "sblr_procedural_block_runtime.hpp"
-#include "uuid.hpp"
 
 #include "agents/agent_action_hooks_api.hpp"
 #include "agents/agent_management_api.hpp"

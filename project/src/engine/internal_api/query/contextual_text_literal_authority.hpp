@@ -260,9 +260,12 @@ struct EngineContextualTextLiteralTransferResultV2 {
 // Additive query.execute-1.1 decoders. They retain every SBXN/SBLF V1 byte and
 // field rule while applying only the composed contextual byte ceilings. The
 // ordinary V1 decoders and their smaller limits remain unchanged.
-scratchbird::engine::sblr::SblrExpressionNodeTableCodecResultV1
+inline scratchbird::engine::sblr::SblrExpressionNodeTableCodecResultV1
 DecodeContextualTextComposedSbxnV2(const std::uint8_t* bytes,
-                                   std::size_t size);
+                                   std::size_t size) {
+  return scratchbird::engine::sblr::
+      DecodeSblrContextualComposedExpressionNodeTableV2(bytes, size);
+}
 bool DecodeContextualTextComposedLiteralFinalizeRequestV2(
     const std::uint8_t* bytes, std::size_t size,
     scratchbird::engine::sblr::SblrLiteralFinalizeRequestV1* out);

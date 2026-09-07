@@ -23,6 +23,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-017-V1
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
+      canonical_relational_dag_planner.cpp
       optimizer_contract.cpp
       optimizer_planning_context.cpp
       optimizer_profile_factory.cpp
@@ -194,6 +195,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     partition_segment_pruning.cpp
     physical_plan.cpp
     physical_plan_prefetch.cpp
+    canonical_relational_dag_planner.cpp
     relational_planner.cpp
     runtime_consumption_benchmark_evidence.cpp
     runtime_consumption_evidence.cpp

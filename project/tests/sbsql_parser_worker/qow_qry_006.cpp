@@ -240,13 +240,13 @@ bool ValidateComposableScalarLowering() {
                     "typed scalar composition did not lower and verify");
   passed &= Require(lowered.payload == lowered_without_shape_input.payload,
                     "canonical lowering depended on SQL/CST shape input");
-  passed &= Require(
+  const bool exact_composition_records =
       HasOperand(lowered, "relational_expression_v1", "3",
                  "6|1,2|1|-|-|-|2b|-") &&
           HasOperand(lowered, "relational_expression_v1", "5",
                      "4|4|2|019f0000-0000-7500-8000-000000000608|-|-|-|-") &&
           HasOperand(lowered, "relational_expression_v1", "6",
-                     "2|-|1|-|-|-|-|3f") &&
+                     "2|-|1|-|-|-|-|-") &&
           HasOperand(lowered, "relational_expression_v1", "8",
                      "6|6,7|1|-|-|-|4953|-") &&
           HasOperand(lowered, "relational_expression_v1", "10",
@@ -254,7 +254,19 @@ bool ValidateComposableScalarLowering() {
           HasOperand(lowered, "relational_values_row_v1", "1", "3,5") &&
           HasOperand(lowered, "relational_values_row_v1", "2", "8,10") &&
           HasOperand(lowered, "relational_node_v1", "1",
-                     "13|0|-|1,2|1,2"),
+                     "13|0|-|1,2|1,2");
+  if (!exact_composition_records) {
+    for (const auto& operand : lowered.operands) {
+      if (operand.type == "relational_expression_v1" ||
+          operand.type == "relational_values_row_v1" ||
+          operand.type == "relational_node_v1") {
+        std::cerr << operand.type << ' ' << operand.name << '='
+                  << operand.value << '\n';
+      }
+    }
+  }
+  passed &= Require(
+      exact_composition_records,
       "typed scalar/operator/row composition records differ");
   passed &= Require(
       lowered.operands.size() > 10 &&
@@ -338,14 +350,14 @@ bool ValidateComposableScalarLowering() {
   context.authorization_context.catalog_generation_id = 602;
   const auto dispatched = sblr::DispatchTextualRelationalQueryForContractTest(
       {std::move(context), EngineQueryEnvelope(lowered), {}});
-  passed &= Require(
-      dispatched.envelope_validated && dispatched.accepted &&
-          dispatched.dispatched_to_api &&
-          dispatched.logical_graph_populated &&
-          dispatched.logical_properties_populated &&
-          dispatched.optimizer_admitted &&
-          dispatched.optimizer_admission_stage_count == 8 &&
-          dispatched.logical_node_count == 1 &&
+  const bool refused_unbound_parameter_atomically =
+      dispatched.envelope_validated && !dispatched.accepted &&
+          !dispatched.dispatched_to_api &&
+          !dispatched.logical_graph_populated &&
+          !dispatched.logical_properties_populated &&
+          !dispatched.optimizer_admitted &&
+          dispatched.optimizer_admission_stage_count == 0 &&
+          dispatched.logical_node_count == 0 &&
           dispatched.logical_property_count == 0 &&
           !dispatched.optimizer_selected &&
           !dispatched.physical_dag_published &&
@@ -357,8 +369,23 @@ bool ValidateComposableScalarLowering() {
           !dispatched.api_result.ok &&
           HasApiDiagnostic(
               dispatched,
-              "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
-      "composed VALUES expressions did not fail closed before plan publication");
+              "SBLR.PLAN_TREE.INVALID_HANDLE");
+  if (!refused_unbound_parameter_atomically) {
+    std::cerr << "flags envelope=" << dispatched.envelope_validated
+              << " accepted=" << dispatched.accepted
+              << " api=" << dispatched.dispatched_to_api
+              << " graph=" << dispatched.logical_graph_populated
+              << " properties=" << dispatched.logical_properties_populated
+              << " admission=" << dispatched.optimizer_admitted
+              << " stages=" << dispatched.optimizer_admission_stage_count
+              << " logical_nodes=" << dispatched.logical_node_count << '\n';
+    for (const auto& diagnostic : dispatched.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  passed &= Require(
+      refused_unbound_parameter_atomically,
+      "unbound VALUES parameter did not fail closed before graph publication");
   return passed;
 }
 
