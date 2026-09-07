@@ -77,6 +77,18 @@ bool BuildStrictBinaryOperatorLocalPhysicalDag(
     std::size_t* callback_memory_bound,
     std::string* detail);
 
+// Adapts the engine-owned cancellation callback and binds one exact
+// optimizer-published cancellation-policy evidence row to dispatch failure.
+bool InvokeLiveSortCancellationProbe(const void* context);
+
+const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(
+    const exec::TypedPhysicalNodeDag& dag);
+
+void BindLiveCancellationFailure(
+    exec::DescriptorRuntimeDiagnostic diagnostic,
+    const exec::PhysicalAdmissionEvidence* cancellation_policy,
+    exec::CanonicalPhysicalDispatchStepResult* step);
+
 template <typename ExecutionReceipt>
 bool CanonicalOperatorExecutionReceiptMatches(
     const ExecutionReceipt& receipt,

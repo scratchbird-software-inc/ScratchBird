@@ -301,8 +301,10 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
     canonical_query_descriptor_support.cpp
+    canonical_query_filter_registration.cpp
     canonical_query_object_free_profile.cpp
     canonical_query_physical_registration.cpp
+    canonical_query_predicate_support.cpp
     canonical_query_relational_registration.cpp
     canonical_query_window_registration.cpp
     canonical_relational_expression.cpp
@@ -333,8 +335,10 @@ endif()
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
   canonical_query_descriptor_support.cpp
+  canonical_query_filter_registration.cpp
   canonical_query_object_free_profile.cpp
   canonical_query_physical_registration.cpp
+  canonical_query_predicate_support.cpp
   canonical_query_relational_registration.cpp
   canonical_query_window_registration.cpp
   canonical_relational_expression.cpp

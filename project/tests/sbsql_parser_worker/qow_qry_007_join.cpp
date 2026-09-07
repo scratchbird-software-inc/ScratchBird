@@ -327,9 +327,10 @@ api::EngineDescriptor CanonicalBooleanAliasDescriptor(
 }
 
 exec::DescriptorBatch CanonicalBooleanAliasBatch(
-    api::EngineDescriptor descriptor = CanonicalBooleanAliasDescriptor(true)) {
+    api::EngineDescriptor descriptor = CanonicalBooleanAliasDescriptor(true),
+    const bool nullable = true) {
   return exec::MakeDescriptorBatch(
-      {{"boolean_value", std::move(descriptor), true, 801}}, {});
+      {{"boolean_value", std::move(descriptor), nullable, 801}}, {});
 }
 
 bool ValidateCanonicalBooleanJoinAliasException() {
@@ -345,7 +346,7 @@ bool ValidateCanonicalBooleanJoinAliasException() {
   passed &= Require(exact.ok,
                     "exact canonical boolean descriptor/type alias refused");
   const auto exact_non_null = exec::ValidateCanonicalJoinDescriptorRoleDomains(
-      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(false)),
+      CanonicalBooleanAliasBatch(CanonicalBooleanAliasDescriptor(false), false),
       right);
   passed &= Require(
       exact_non_null.ok,

@@ -17,9 +17,15 @@ AUTHORITY = SBLR_ROOT / "CANONICAL_QUERY_EXECUTION_AUTHORITY.md"
 
 MODULES = {
     "canonical_query_execute.cpp": (
-        67_040,
-        3_230_784,
+        64_923,
+        3_132_559,
         "SB_ENGINE_CANONICAL_QUERY_EXECUTE_COORDINATOR_AUTHORITY",
+        2,
+    ),
+    "canonical_query_filter_registration.cpp": (
+        383,
+        18_148,
+        "SB_ENGINE_CANONICAL_QUERY_FILTER_REGISTRATION_AUTHORITY",
         2,
     ),
     "canonical_query_object_free_profile.cpp": (
@@ -29,14 +35,20 @@ MODULES = {
         2,
     ),
     "canonical_query_physical_registration.cpp": (
-        929,
-        40_699,
+        972,
+        42_303,
         "SB_ENGINE_CANONICAL_QUERY_PHYSICAL_REGISTRATION_AUTHORITY",
         2,
     ),
+    "canonical_query_predicate_support.cpp": (
+        428,
+        18_613,
+        "SB_ENGINE_CANONICAL_QUERY_PREDICATE_SUPPORT_AUTHORITY",
+        2,
+    ),
     "canonical_query_relational_registration.cpp": (
-        701,
-        33_170,
+        1_891,
+        89_163,
         "SB_ENGINE_CANONICAL_QUERY_RELATIONAL_REGISTRATION_AUTHORITY",
         2,
     ),
@@ -232,6 +244,7 @@ def main() -> int:
         "canonical_query_json_support.cpp",
         "canonical_query_runtime_memory_support.cpp",
         "canonical_query_object_free_profile.cpp",
+        "canonical_query_predicate_support.cpp",
     ):
         support_path = SBLR_ROOT / support_name
         if not support_path.is_file():
@@ -244,6 +257,7 @@ def main() -> int:
                 )
 
     for registration_name in (
+        "canonical_query_filter_registration.cpp",
         "canonical_query_physical_registration.cpp",
         "canonical_query_relational_registration.cpp",
         "canonical_query_window_registration.cpp",
@@ -283,6 +297,25 @@ def main() -> int:
             "MakeLiveQueryDistinctRegistration(",
             "exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(",
             "exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveMatchRecognizeRegistration(",
+            "struct PreparedCardinalitySubqueryRoot {",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveCardinalitySubqueryRegistration(",
+            "struct PreparedPredicateSubqueryRoot {",
+            "bool EvaluateCanonicalQuantifiedSubqueryTruth(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLivePredicateSubqueryRegistration(",
+            "struct LiveProjectRuntimeNodeConfiguration {",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapSortRegistration(",
+            "struct LiveFilterRuntimeNodeConfiguration {",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(",
+            "struct LiveJoinPredicateScratchBound {",
+            "LiveJoinPredicateScratchBound BoundLiveJoinPredicateScratchBytes(",
+            "CanonicalPredicateScratchBound BoundCanonicalPredicateScratchBytes(",
             "struct LiveNonrecursiveCteRuntimeNodeConfiguration {",
             "exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(",
             "exec::CanonicalExecutionMgaAuthority BuildCanonicalExecutionMgaAuthority(",
@@ -293,6 +326,9 @@ def main() -> int:
             "bool RebindOperatorLocalPhysicalMemoryGrant(",
             "bool BuildStrictUnaryOperatorLocalPhysicalDag(",
             "bool BuildStrictBinaryOperatorLocalPhysicalDag(",
+            "bool InvokeLiveSortCancellationProbe(",
+            "const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(",
+            "void BindLiveCancellationFailure(",
         ):
             if extracted_definition in coordinator:
                 failures.append(

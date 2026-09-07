@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -83,6 +84,48 @@ exec::PhysicalMgaStatementContext PhysicalMgaContextFromResolvedSnapshot(
 #endif
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_PHYSICAL_REGISTRATION_AUTHORITY
+bool InvokeLiveSortCancellationProbe(const void* context) {
+  if (context == nullptr) return false;
+  return (*static_cast<const std::function<bool()>*>(context))();
+}
+
+const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(
+    const exec::TypedPhysicalNodeDag& dag) {
+  const exec::PhysicalAdmissionEvidence* policy = nullptr;
+  for (const auto& evidence : dag.admission_evidence) {
+    if (evidence.stage != exec::PhysicalAdmissionStage::kPolicyCapability) {
+      continue;
+    }
+    if (policy != nullptr || evidence.evidence_uuid.empty()) return nullptr;
+    policy = &evidence;
+  }
+  return policy;
+}
+
+void BindLiveCancellationFailure(
+    exec::DescriptorRuntimeDiagnostic diagnostic,
+    const exec::PhysicalAdmissionEvidence* cancellation_policy,
+    exec::CanonicalPhysicalDispatchStepResult* step) {
+  if (step == nullptr) return;
+  step->diagnostic = std::move(diagnostic);
+  if (step->diagnostic.diagnostic_code ==
+      "SB_MODEL_EXECUTION_CANCELLED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1";
+    step->cancellation_observed = true;
+    step->transient_state_cleanup_proven = true;
+    step->cancellation_evidence_uuid =
+        cancellation_policy == nullptr
+            ? std::string{}
+            : cancellation_policy->evidence_uuid;
+  } else if (step->diagnostic.diagnostic_code ==
+             "SB_MODEL_COORDINATOR_LEG_FAILED_V1") {
+    step->diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1";
+    step->transient_state_cleanup_proven = true;
+  }
+}
+
 exec::CanonicalExecutionMgaAuthority BuildCanonicalExecutionMgaAuthority(
     const api::EngineRequestContext& context,
     const exec::TypedPhysicalNodeDag& physical_dag) {

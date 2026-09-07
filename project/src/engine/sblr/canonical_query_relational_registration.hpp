@@ -24,6 +24,61 @@ struct LiveNonrecursiveCteRuntimeNodeConfiguration {
   std::uint32_t relational_node_id{0};
 };
 
+struct LiveProjectRuntimeNodeConfiguration {
+  std::uint32_t relational_node_id{0};
+  std::vector<std::size_t> projected_columns;
+};
+
+enum class LiveCardinalitySubqueryKind : std::uint8_t {
+  kScalar,
+  kRow,
+};
+
+struct LiveCardinalitySubqueryRegistrationProfile {
+  LiveCardinalitySubqueryKind kind{LiveCardinalitySubqueryKind::kScalar};
+  std::vector<exec::ExecutorColumnDescriptor> result_columns;
+  std::string implementation_id;
+};
+
+enum class LivePredicateSubqueryKind : std::uint8_t {
+  kExists,
+  kQuantified,
+};
+
+struct LivePredicateSubqueryRegistrationProfile {
+  LivePredicateSubqueryKind kind{LivePredicateSubqueryKind::kExists};
+  exec::ExecutorColumnDescriptor result_column;
+  exec::ExecutorColumnDescriptor left_operand_column;
+  scratchbird::engine::internal_api::EngineTypedValue left_value;
+  std::uint32_t right_expression_descriptor_id{0};
+  scratchbird::engine::internal_api::EngineComparisonPredicateOperator
+      comparison_operator = scratchbird::engine::internal_api::
+          EngineComparisonPredicateOperator::unspecified;
+  exec::CanonicalQuantifiedSubqueryQuantifier quantifier =
+      exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  bool comparison_authority_required{false};
+  std::string implementation_id;
+  std::string transformation_id;
+};
+
+struct CanonicalRelationalExpressionRuntimeServices;
+
+// Registers direct descriptor projection over a bounded materialized input.
+// The callback consumes an optimizer-published memory grant and either borrows
+// existing MGA authority or constructs only a revalidation handle over the
+// engine-selected statement context.
+exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
+    std::vector<std::size_t> projected_columns,
+    std::string capability_uuid,
+    std::size_t maximum_input_row_count,
+    scratchbird::engine::internal_api::EngineRequestContext mga_context,
+    const scratchbird::engine::internal_api::EngineRequestContext*
+        borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr,
+    std::vector<LiveProjectRuntimeNodeConfiguration>
+        runtime_node_configurations = {});
+
 // Registers query DISTINCT over a bounded, already-materialized input and
 // optimizer-published equality terms. The callback can only revalidate the
 // engine-selected MGA statement context.
@@ -64,6 +119,55 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
         borrowed_mga_context = nullptr,
     const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
         nullptr);
+
+// Registers canonical typed ordering over a bounded, already-materialized
+// input. The callback consumes optimizer-published comparison/memory bounds,
+// engine cancellation policy, and revalidation-only MGA authority.
+exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
+    std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
+    std::string deterministic_tie_evidence_uuid,
+    std::string capability_uuid,
+    std::size_t maximum_input_row_count,
+    std::size_t maximum_pair_comparisons,
+    scratchbird::engine::internal_api::EngineRequestContext mga_context,
+    const scratchbird::engine::internal_api::EngineRequestContext*
+        borrowed_mga_context = nullptr,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority =
+        nullptr);
+
+// Registers the bounded A+ row-pattern operator over one canonical int64
+// input. The callback consumes optimizer-published pattern/memory bounds,
+// engine cancellation policy, and revalidation-only MGA authority.
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveMatchRecognizeRegistration(
+    std::string capability_uuid,
+    std::size_t maximum_partition_rows,
+    std::size_t maximum_active_states,
+    std::size_t maximum_output_rows,
+    const scratchbird::engine::internal_api::EngineRequestContext*
+        borrowed_mga_context,
+    const exec::CanonicalExecutionMgaAuthority* borrowed_mga_authority);
+
+// Registers scalar and row cardinality subqueries over one bounded,
+// already-materialized typed input. The callback can only revalidate the
+// engine-selected MGA statement context.
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveCardinalitySubqueryRegistration(
+    LiveCardinalitySubqueryRegistrationProfile profile,
+    std::string capability_uuid,
+    std::size_t maximum_input_row_count,
+    scratchbird::engine::internal_api::EngineRequestContext mga_context);
+
+// Registers EXISTS and quantified predicate subqueries over one bounded,
+// already-materialized typed input. Comparison authority is supplied by the
+// engine and the callback can only revalidate the selected MGA context.
+exec::CanonicalPhysicalExecutorRegistration
+MakeLivePredicateSubqueryRegistration(
+    LivePredicateSubqueryRegistrationProfile profile,
+    std::string capability_uuid,
+    std::size_t maximum_input_row_count,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
+    scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
 // Registers inline or materialized nonrecursive CTE publication over an exact
 // bounded typed input. The callback consumes only optimizer-published runtime
