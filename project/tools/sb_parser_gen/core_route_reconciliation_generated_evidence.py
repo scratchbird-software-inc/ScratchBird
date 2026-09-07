@@ -40,6 +40,7 @@ _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-4A5F97F6CC4E": "project/tests/sbsql_parser_worker/sbsql_create_executable_exact_route_conformance.cpp",
     "SBSQL-4FAA221A7195": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
     "SBSQL-5127560F8031": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
+    "SBSQL-AA3896D3895F": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
     "SBSQL-57D59EB5A619": "project/tests/sbsql_parser_worker/sbsql_sbsfc_073_archive_replication_conformance.cpp",
     "SBSQL-58224DEE5BCA": "project/tests/sbsql_parser_worker/sbsql_alter_rename_exact_route_conformance.cpp",
     "SBSQL-6C4B02DAE3FF": "project/tests/sbsql_parser_worker/sbsql_dml_exact_route_conformance.cpp",
@@ -53,6 +54,7 @@ _COMMAND_SOURCES: dict[str, str] = {
     "SBSQL-D09825658F68": "project/tests/sbsql_parser_worker/sbsql_create_index_exact_route_conformance.cpp",
     "SBSQL-D0C7A3336A8B": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
     "SBSQL-D13498FA0EF4": "project/tests/sbsql_parser_worker/sbsql_sbsfc_075_catalog_descriptor_mutation_conformance.cpp",
+    "SBSQL-E64AF6FD5CD3": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
     "SBSQL-F15CCA3D7F79": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
     "SBSQL-F86AC3DCC60A": "project/tests/sbsql_parser_worker/sbsql_security_exact_route_conformance.cpp",
 }

@@ -14,7 +14,7 @@ All inputs are tracked public release artifacts. The generator reads them withou
 
 Each `SBSQL-<12 uppercase hexadecimal digits>.md` file contains one surface identity, route, closure, and oracle snapshot. There is no shared per-surface output file.
 
-Published surface snapshots: 2617
+Published surface snapshots: 2619
 
 ## Boundaries
 

@@ -23,8 +23,8 @@
 
 namespace {
 
-constexpr std::size_t kExpectedSurfaceCount = 2617;
-constexpr std::size_t kExpectedCanonicalSpecOracleCount = 1988;
+constexpr std::size_t kExpectedSurfaceCount = 2619;
+constexpr std::size_t kExpectedCanonicalSpecOracleCount = 1990;
 constexpr std::size_t kExpectedPromotionOrRefusalOracleCount = 573;
 constexpr std::size_t kExpectedClusterProfileOracleCount = 56;
 

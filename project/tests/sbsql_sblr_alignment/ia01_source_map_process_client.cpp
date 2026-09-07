@@ -1216,10 +1216,12 @@ END;)SBSQL";
       }
       if (alter_family) {
         std::cout << "CSC-TEST-002625 DDL_ALTER_TRIGGER "
+                     "surface_id=SBSQL-AA3896D3895F "
                      "observer_visible=true independent_session=true "
                      "exact_successor_generation=true\n";
       } else {
         std::cout << "CSC-TEST-002629 DDL_DROP_TRIGGER "
+                     "surface_id=SBSQL-E64AF6FD5CD3 "
                      "observer_absent=true independent_session=true "
                      "exact_tombstone_visible=true\n";
       }
@@ -1381,6 +1383,7 @@ END;)SBSQL";
         return 4;
       }
       std::cout << "CSC-TEST-002625 DDL_ALTER_TRIGGER accepted "
+                   "surface_id=SBSQL-AA3896D3895F "
                    "canonical_sblr=true catalog_successor=true commit=true "
                    "publication_barrier=passed\n";
     } else {
@@ -1390,6 +1393,7 @@ END;)SBSQL";
         return 4;
       }
       std::cout << "CSC-TEST-002629 DDL_DROP_TRIGGER accepted "
+                   "surface_id=SBSQL-E64AF6FD5CD3 "
                    "canonical_sblr=true catalog_tombstone=true commit=true "
                    "publication_barrier=passed\n";
     }

@@ -769,6 +769,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "ALTER" && second == "GPU") canonical_name = "public_exact_alter_gpu";
   else if (keyword == "ALTER" && second == "NATIVE" && third == "COMPILE") canonical_name = "public_exact_alter_native_compile";
   else if (keyword == "ALTER" && second == "MANAGEMENT") canonical_name = "public_exact_alter_management";
+  else if (keyword == "ALTER" && second == "TRIGGER") canonical_name = "alter_trigger_statement";
   else if (keyword == "ALTER" && second == "FILESPACE" && third == "ENCRYPTION") {
     canonical_name = "public_exact_encryption_maintenance";
   }
@@ -800,6 +801,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   }
   else if (keyword == "DROP" && second == "UDR" && third == "PACKAGE") canonical_name = "udr_package_stmt";
   else if (keyword == "DROP" && second == "JOB") canonical_name = "drop_job_stmt";
+  else if (keyword == "DROP" && second == "TRIGGER") canonical_name = "drop_trigger_statement";
   else if (keyword == "DROP") canonical_name = "drop_object";
   else if (keyword == "RENAME") canonical_name = "rename_object_stmt";
   else if (keyword == "COMMENT") canonical_name = "comment_on_stmt";

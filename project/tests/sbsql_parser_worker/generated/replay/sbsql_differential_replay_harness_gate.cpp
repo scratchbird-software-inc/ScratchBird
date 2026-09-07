@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr std::size_t kExpectedSurfaceCount = 2617;
+constexpr std::size_t kExpectedSurfaceCount = 2619;
 
 using CsvRow = std::unordered_map<std::string, std::string>;
 

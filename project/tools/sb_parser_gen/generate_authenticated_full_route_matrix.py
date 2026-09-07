@@ -53,6 +53,8 @@ import json
 import sys
 from pathlib import Path
 
+from sbsql_trigger_command_surface import TRIGGER_COMMAND_BY_SURFACE_ID
+
 from plan_import_rows_generated_evidence import (
     authenticated_route_override,
     normalize_fixture_status,
@@ -138,11 +140,6 @@ CREATE_SCHEMA_E2E_SURFACE_IDS = {
     "SBSQL-DE4B8AAF6326",
     "SBSQL-7BA0B928798B",
 }
-CREATE_TRIGGER_E2E_SURFACE_IDS = {
-    "SBSQL-5127560F8031",
-}
-
-
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
@@ -234,7 +231,33 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "notes": "CREATE SCHEMA is proven through the public SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned CSQX/CSDX/CSDO binding, and EngineCreateSchema under MGA. The accepted branch explicitly commits and is visible to an independent authenticated parser worker. The refused branch authenticates a durable CONNECT-only principal and proves SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and rollback-absence branches preserve transaction authority. No parser-owned catalog identity, generic SQL execution, cluster-positive route, or WAL authority is admitted.",
         }
 
-    if surface_id in CREATE_TRIGGER_E2E_SURFACE_IDS:
+    trigger = TRIGGER_COMMAND_BY_SURFACE_ID.get(surface_id)
+    if trigger is not None:
+        accepted_observation = {
+            "CREATE": "independent_authenticated_duplicate_observation",
+            "ALTER": "independent_authenticated_successor_generation_observation",
+            "DROP": "independent_authenticated_committed_absence_observation",
+        }[trigger.verb]
+        refused_outcome = (
+            "missing_CATALOG_MUTATE_refuses_SECURITY_ACCESS_DENIED_before_catalog_mutation;"
+            "hidden_trigger_refuses_CATALOG_NAME_NOT_FOUND_OR_NOT_VISIBLE"
+        )
+        diagnostics = (
+            "SECURITY.ACCESS_DENIED;CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE;"
+            "PROCESS.CANCELLED;SBLR.OPERAND_INVALID;"
+            "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING"
+        )
+        if trigger.verb == "CREATE":
+            refused_outcome = (
+                "missing_CATALOG_MUTATE_refuses_SECURITY_ACCESS_DENIED_before_catalog_mutation_"
+                "and_duplicate_name_refuses_CATALOG_NAME_AMBIGUOUS"
+            )
+            diagnostics = diagnostics.replace(
+                "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE", "CATALOG.NAME.AMBIGUOUS"
+            ).replace("SBLR.OPERAND_INVALID", "SBLR.OPERAND.INVALID")
+        elif trigger.verb == "DROP":
+            refused_outcome += ";RESTRICT_dependency_conflict_refuses_DDL_DEPENDENCY_CONFLICT"
+            diagnostics += ";DDL.DEPENDENCY_CONFLICT"
         return {
             "fixture_path": fixture_path,
             "credential_profile_accepted": "durable_authenticated_principal_with_CONNECT_and_CATALOG_MUTATE",
@@ -246,13 +269,46 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "tls_profile_ref": TLS_PROFILE_REF,
             "listener_path": LISTENER_PATH,
             "ipc_admission_path": IPC_ADMISSION_PATH,
-            "engine_admission_authority": "authenticated_statement_receipt;engine_bound_TVQX_TVDX_TVDO;canonical_sblr_admission;engine_internal_api_security_authority_api;catalog_authority_through_descriptor_and_uuid_only",
+            "engine_admission_authority": (
+                "authenticated_statement_receipt;"
+                f"engine_bound_{trigger.request_magic}_{trigger.bound_magic}_{trigger.operand_magic};"
+                "canonical_sblr_admission;engine_internal_api_security_authority_api;"
+                "catalog_authority_through_descriptor_and_uuid_only"
+            ),
             "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
-            "expected_authorization_accepted_outcome": "engine_op_ddl_create_trigger_executes_through_EngineCreateTrigger_then_explicit_MGA_commit_and_independent_authenticated_duplicate_observation",
-            "expected_authorization_refused_outcome": "missing_CATALOG_MUTATE_refuses_SECURITY_ACCESS_DENIED_before_catalog_mutation_and_duplicate_name_refuses_CATALOG_NAME_AMBIGUOUS",
-            "expected_diagnostic_codes": "SECURITY.ACCESS_DENIED;CATALOG.NAME.AMBIGUOUS;PROCESS.CANCELLED;SBLR.OPERAND.INVALID;SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "expected_authorization_accepted_outcome": (
+                f"{trigger.operation_id.replace('.', '_')}_executes_through_"
+                f"{trigger.engine_api}_then_explicit_MGA_commit_and_{accepted_observation}"
+            ),
+            "expected_authorization_refused_outcome": refused_outcome,
+            "expected_diagnostic_codes": diagnostics,
             "fixture_status": "pending_authoring",
-            "notes": "CREATE TRIGGER definition is proven through the public SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned TVQX/TVDX/TVDO binding, and EngineCreateTrigger under MGA. The accepted branch explicitly commits and an independent authenticated parser worker observes the durable name through exact duplicate refusal. The refused branch authenticates a durable CONNECT-only principal and proves SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and rollback-absence branches preserve transaction authority. Trigger firing is a separate in-progress tranche and is not claimed here. No parser-owned catalog identity, generic SQL execution, cluster-positive route, or WAL authority is admitted.",
+            "notes": (
+                "CREATE TRIGGER definition is proven through the public SBWP/TLS listener, "
+                "pool-allocated SBsql worker, SBPS, canonical SBLR admission, engine-owned "
+                "TVQX/TVDX/TVDO binding, and EngineCreateTrigger under MGA. The accepted "
+                "branch explicitly commits and an independent authenticated parser worker "
+                "observes the durable name through exact duplicate refusal. The refused "
+                "branch authenticates a durable CONNECT-only principal and proves "
+                "SECURITY.ACCESS_DENIED with no catalog mutation; duplicate-name and "
+                "rollback-absence branches preserve transaction authority. Trigger firing "
+                "is a separate in-progress tranche and is not claimed here. No parser-owned "
+                "catalog identity, generic SQL execution, cluster-positive route, or WAL "
+                "authority is admitted."
+                if trigger.verb == "CREATE"
+                else (
+                    f"{trigger.verb} TRIGGER lifecycle DDL is proven through the public "
+                    "SBWP/TLS listener, pool-allocated SBsql worker, SBPS, canonical SBLR "
+                    f"admission, engine-owned {trigger.request_magic}/{trigger.bound_magic}/"
+                    f"{trigger.operand_magic} binding, and {trigger.engine_api} under MGA. "
+                    "The accepted branch explicitly commits and an independent authenticated "
+                    "parser worker verifies the operation-specific catalog post-state. The "
+                    "refused and rollback branches prove no surviving catalog mutation. "
+                    "Trigger firing is a separate in-progress tranche. No parser-owned catalog "
+                    "identity, generic SQL execution, cluster-positive route, or WAL authority "
+                    "is admitted."
+                )
+            ),
         }
 
     if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:

@@ -2,23 +2,23 @@
   "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
   "compatibility_identity": "sbsql.resource.compat.v1",
   "counts": {
-    "compatibility_ids": 2617,
-    "diagnostics_messages": 2617,
+    "compatibility_ids": 2619,
+    "diagnostics_messages": 2619,
     "keywords": 198,
-    "phrase_topology_slots": 2617,
-    "predictive_states": 2617,
-    "renderers": 2617,
-    "surfaces": 2617
+    "phrase_topology_slots": 2619,
+    "predictive_states": 2619,
+    "renderers": 2619,
+    "surfaces": 2619
   },
   "diagnostic_counts": {
     "SBSQL.LANG_ELEMENT.CLUSTER_PROVIDER_GATED": 56,
     "SBSQL.LANG_ELEMENT.EXACT_REFUSAL": 82,
-    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2479
+    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2481
   },
   "dialect_profile_uuid": "sbsql.v3",
   "element_kind_counts": {
     "keyword": 198,
-    "phrase_topology_slot": 1044,
+    "phrase_topology_slot": 1046,
     "surface_canonical_surface": 39,
     "surface_function": 1317,
     "surface_operator": 18,
@@ -51896,6 +51896,36 @@
       "topology_slot_id": "slot.36280340339e843e"
     },
     {
+      "canonical_name": "alter_trigger_statement",
+      "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
+      "compatibility_id": "compat.b8eaf7186776a754",
+      "diagnostic_code": "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED",
+      "dialect_profile_uuid": "sbsql.v3",
+      "element_kind": "phrase_topology_slot",
+      "exact_tag": "en",
+      "family": "ddl_catalog",
+      "governance_evidence_id": "SML-010.language_element_manifest.generator",
+      "keyword_class": "not_keyword",
+      "keyword_text": "",
+      "message_id": "message.6773e8c2205f1f41",
+      "phrase_id": "phrase.b8eaf7186776a754",
+      "predictive_state": "admitted_completion",
+      "predictive_state_id": "predictive.b8eaf7186776a754",
+      "profile_uuid": "sbsql.builtin.recovery.en",
+      "provenance_id": "sbsql.language_element_manifest.provenance.v1",
+      "release_channel": "release_supported",
+      "release_status": "row_evidence_complete",
+      "renderer_id": "renderer.2a4174c601a3c16a",
+      "renderer_lossiness": "canonical_equivalent",
+      "sblr_operation_family": "sblr.catalog.mutation.v3",
+      "support_state": "release_supported",
+      "surface_id": "SBSQL-AA3896D3895F",
+      "surface_kind": "grammar_production",
+      "topology_profile_uuid": "topology.sbsql.canonical.v1",
+      "topology_role": "alter_trigger_statement",
+      "topology_slot_id": "slot.b8eaf7186776a754"
+    },
+    {
       "canonical_name": "first_value(expr)OVER(...)",
       "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
       "compatibility_id": "compat.1f88e93d2000f11e",
@@ -70466,6 +70496,36 @@
       "topology_slot_id": "slot.d91a33d04ef3d6c3"
     },
     {
+      "canonical_name": "drop_trigger_statement",
+      "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
+      "compatibility_id": "compat.63d1d55a5d6b5261",
+      "diagnostic_code": "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED",
+      "dialect_profile_uuid": "sbsql.v3",
+      "element_kind": "phrase_topology_slot",
+      "exact_tag": "en",
+      "family": "ddl_catalog",
+      "governance_evidence_id": "SML-010.language_element_manifest.generator",
+      "keyword_class": "not_keyword",
+      "keyword_text": "",
+      "message_id": "message.c9e2f53b09106cba",
+      "phrase_id": "phrase.63d1d55a5d6b5261",
+      "predictive_state": "admitted_completion",
+      "predictive_state_id": "predictive.63d1d55a5d6b5261",
+      "profile_uuid": "sbsql.builtin.recovery.en",
+      "provenance_id": "sbsql.language_element_manifest.provenance.v1",
+      "release_channel": "release_supported",
+      "release_status": "row_evidence_complete",
+      "renderer_id": "renderer.0ed73032866f3253",
+      "renderer_lossiness": "canonical_equivalent",
+      "sblr_operation_family": "sblr.catalog.mutation.v3",
+      "support_state": "release_supported",
+      "surface_id": "SBSQL-E64AF6FD5CD3",
+      "surface_kind": "grammar_production",
+      "topology_profile_uuid": "topology.sbsql.canonical.v1",
+      "topology_role": "drop_trigger_statement",
+      "topology_slot_id": "slot.63d1d55a5d6b5261"
+    },
+    {
       "canonical_name": "covar_pop(y,x)",
       "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
       "compatibility_id": "compat.f73551964d9e42a2",
@@ -78541,7 +78601,7 @@
     "artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
     "artifacts/STRICT_ROW_COVERAGE_LEDGER.csv"
   ],
-  "manifest_uuid": "manifest.12b7fc365efc2ee7",
+  "manifest_uuid": "manifest.1ce6dfa6a8389d09",
   "profile_uuid": "sbsql.builtin.recovery.en",
   "provenance": [
     {
@@ -78593,7 +78653,7 @@
     }
   },
   "release_status_counts": {
-    "row_evidence_complete": 2617
+    "row_evidence_complete": 2619
   },
   "required_sections": [
     "keywords",
@@ -78607,14 +78667,14 @@
     "release_channels_governance_provenance"
   ],
   "resource_manifest": {
-    "canonical_surface_registry_hash": "surface.registry.13d61412db18277d",
-    "diagnostic_pack_hash": "diagnostic.registry.13d61412db18277d",
+    "canonical_surface_registry_hash": "surface.registry.327e892542e0f409",
+    "diagnostic_pack_hash": "diagnostic.registry.327e892542e0f409",
     "governance_evidence_id": "SML-010.language_element_manifest.generator",
     "native_review_evidence_id": "SML-010.native_reviewed_resource_manifest",
-    "predictive_grammar_hash": "predictive.registry.13d61412db18277d",
+    "predictive_grammar_hash": "predictive.registry.327e892542e0f409",
     "release_channel": "release_supported",
-    "renderer_registry_hash": "renderer.registry.13d61412db18277d",
-    "sblr_registry_hash": "sblr.registry.13d61412db18277d",
+    "renderer_registry_hash": "renderer.registry.327e892542e0f409",
+    "sblr_registry_hash": "sblr.registry.327e892542e0f409",
     "support_owner_id": "scratchbird.release.sbsql",
     "support_state": "release_supported",
     "trace_oracle_id": "SML-010.surface_release_declaration"
