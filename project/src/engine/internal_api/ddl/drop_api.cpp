@@ -13,6 +13,7 @@
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "security/security_model.hpp"
@@ -339,6 +340,104 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
                             result.catalog_row_uuid.canonical,
                             "constraint_descriptor");
   }
+  return result;
+}
+
+EngineDropTriggerResult EngineDropTrigger(
+    const EngineDropTriggerRequest& request) {
+  constexpr const char* kOperation = "ddl.drop_trigger";
+  if (request.target_object.object_kind != "trigger" ||
+      request.target_object.uuid.canonical.empty() ||
+      request.expected_executable_generation == 0) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation,
+        MakeInvalidRequestDiagnostic(
+            kOperation, "exact_trigger_uuid_and_generation_required"));
+  }
+
+  const auto executable_state =
+      LoadExecutableObjectLifecycleState(request.context);
+  if (!executable_state.ok) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation, executable_state.diagnostic);
+  }
+  const auto executable = std::find_if(
+      executable_state.state.objects.begin(),
+      executable_state.state.objects.end(), [&](const auto& object) {
+        return object.object_uuid == request.target_object.uuid.canonical;
+      });
+  if (executable == executable_state.state.objects.end() ||
+      executable->object_kind != "trigger" || executable->deleted ||
+      executable->lifecycle_state != "active" || executable->invalidated ||
+      executable->executable_generation !=
+          request.expected_executable_generation) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "MGA.AUTHORITY_MISMATCH",
+            "ddl.drop_trigger.executable_generation_mismatch",
+            request.target_object.uuid.canonical, true));
+  }
+  const auto active_invocation = std::find_if(
+      executable_state.state.active_invocations.begin(),
+      executable_state.state.active_invocations.end(), [&](const auto& row) {
+        return row.object_uuid == request.target_object.uuid.canonical &&
+               row.lifecycle_state == "active";
+      });
+  if (active_invocation != executable_state.state.active_invocations.end()) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "DDL.DEPENDENCY_CONFLICT",
+            "ddl.drop_trigger.active_invocation_conflict",
+            request.target_object.uuid.canonical, true));
+  }
+
+  EngineCatalogDropObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = kOperation;
+  catalog_request.target_object.object_kind = "trigger";
+  catalog_request.cascade_dependencies = request.cascade_dependencies;
+  const auto catalog = EngineCatalogDropObject(catalog_request);
+  if (!catalog.ok) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation,
+        catalog.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(kOperation, "catalog_drop_failed")
+            : catalog.diagnostics.front());
+  }
+
+  EngineDropExecutableObjectRequest executable_request;
+  static_cast<EngineApiRequest&>(executable_request) = request;
+  executable_request.operation_id = kOperation;
+  executable_request.target_object.object_kind = "trigger";
+  const auto dropped = EngineDropExecutableObject(executable_request);
+  if (!dropped.ok) {
+    return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
+        request.context, kOperation,
+        dropped.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(kOperation,
+                                           "executable_drop_failed")
+            : dropped.diagnostics.front());
+  }
+
+  EngineDropTriggerResult result;
+  static_cast<EngineApiResult&>(result) =
+      static_cast<const EngineApiResult&>(dropped);
+  result.operation_id = kOperation;
+  result.primary_object = catalog.primary_object;
+  result.catalog_row_uuid = catalog.catalog_row_uuid;
+  result.bound_object_identity = dropped.bound_object_identity;
+  result.executable_generation = dropped.executable_generation;
+  result.metadata_cache_epoch = catalog.metadata_cache_epoch;
+  result.evidence.insert(result.evidence.end(), catalog.evidence.begin(),
+                         catalog.evidence.end());
+  AddApiBehaviorEvidence(&result, "trigger_tombstone_generation",
+                         std::to_string(result.executable_generation));
+  AddDdlPublicationResult(&result, kOperation, "trigger",
+                          result.primary_object.uuid.canonical,
+                          result.catalog_row_uuid.canonical,
+                          "trigger_tombstone_descriptor");
   return result;
 }
 

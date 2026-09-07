@@ -118,6 +118,12 @@ class EmbeddedEngineClient {
   ipc::ServerVariableBindingResult CoordinateDdlCreateTrigger(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDdlAlterTrigger(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateDdlDropTrigger(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult RecoverDdlCreateSchema(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

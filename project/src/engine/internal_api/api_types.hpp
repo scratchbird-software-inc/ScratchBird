@@ -129,6 +129,10 @@ struct EngineBoundObjectIdentity {
   std::string resolved_object_type;
   EngineUuid resolved_schema_uuid;
   EngineUuid parent_object_uuid;
+  // The immutable descriptor/definition generation of this exact object.
+  // This is distinct from catalog_generation_id, which fences the catalog
+  // snapshot in which the binding was observed.
+  EngineApiU64 object_descriptor_generation = 0;
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;

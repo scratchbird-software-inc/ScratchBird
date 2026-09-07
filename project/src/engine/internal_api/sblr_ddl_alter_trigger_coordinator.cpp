@@ -1,8 +1,55 @@
 #include "sblr_ddl_alter_trigger_coordinator.hpp"
+
 #include "api_diagnostics.hpp"
-#include <algorithm>
-#include <map>
-#include <mutex>
-namespace scratchbird::engine::internal_api { namespace { std::mutex m; std::map<std::string,scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1> live,used; std::string key(const scratchbird::engine::sblr::DdlAlterTriggerSha&h){return{reinterpret_cast<const char*>(h.data()),h.size()};} bool tag(const EngineRequestContext&c,const char*t){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();} EngineApiDiagnostic d(std::string c,std::string k){return MakeEngineApiDiagnostic(std::move(c),std::move(k),{});} }
-SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(const EngineRequestContext&c,const std::string&r,std::uint64_t occurrence,std::uint32_t trigger_occurrence,std::uint64_t availability){std::lock_guard l(m);SblrDdlAlterTriggerCoordinationResult o;if(!tag(c,"private_ddl_alter_trigger_binder")||!c.statement_metadata_snapshot_engine_owned||r!=c.statement_uuid.canonical||!occurrence||!trigger_occurrence||!availability){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.ddl_alter_trigger.coordination_invalid");return o;}o.descriptor.body[0]=1;o.descriptor.body[1]=uint8_t(occurrence);o.descriptor.body[2]=uint8_t(trigger_occurrence);o.descriptor.availability=availability;auto b=scratchbird::engine::sblr::EncodeSblrDdlAlterTriggerDescriptorV1(o.descriptor,false);if(!scratchbird::engine::sblr::DecodeSblrDdlAlterTriggerDescriptorV1(b.data(),b.size(),&o.descriptor,nullptr,false)){o.diagnostic=d("SBLR.OPERAND_INVALID","sblr.ddl_alter_trigger.descriptor_invalid");return o;}live[key(o.descriptor.evidence)]=o.descriptor;o.ok=true;o.diagnostic=d("OK","ok");return o;}
-SblrDdlAlterTriggerCoordinationResult ConsumeSblrDdlAlterTriggerDescriptor(const EngineRequestContext&c,const scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1&v){std::lock_guard l(m);SblrDdlAlterTriggerCoordinationResult o;auto k=key(v.evidence);auto it=live.find(k);if(!tag(c,"private_ddl_alter_trigger")){o.diagnostic=d("SECURITY.ACCESS_DENIED","sblr.ddl_alter_trigger.hidden");return o;}if(it==live.end()){o.diagnostic=used.count(k)?d("MGA.TRANSACTION.STALE","sblr.ddl_alter_trigger.stale"):d("SECURITY.ACCESS_DENIED","sblr.ddl_alter_trigger.hidden");return o;}if(c.query_cancellation_requested&&c.query_cancellation_requested()){o.diagnostic=d("PROCESS.CANCELLED","sblr.ddl_alter_trigger.cancelled");return o;}used[k]=v;live.erase(it);o.ok=true;o.descriptor=v;o.diagnostic=d("OK","ok");return o;}}
+
+namespace scratchbird::engine::internal_api {
+namespace {
+
+SblrDdlAlterTriggerCoordinationResult Refuse(std::string code,
+                                             std::string key,
+                                             std::string detail = {}) {
+  SblrDdlAlterTriggerCoordinationResult result;
+  result.diagnostic = MakeEngineApiDiagnostic(
+      std::move(code), std::move(key), std::move(detail));
+  return result;
+}
+
+}  // namespace
+
+SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
+    const SblrDdlAlterTriggerAuthorityInputV1& input) {
+  const auto bytes =
+      scratchbird::engine::sblr::EncodeSblrDdlAlterTriggerDescriptorV1(
+          input.descriptor, false);
+  if (bytes.size() !=
+      scratchbird::engine::sblr::kSblrDdlAlterTriggerDescriptorV1Bytes) {
+    return Refuse("SBLR.OPERAND_INVALID",
+                  "sblr.ddl_alter_trigger.authority_projection_invalid");
+  }
+  SblrDdlAlterTriggerCoordinationResult result;
+  std::string detail;
+  if (!scratchbird::engine::sblr::DecodeSblrDdlAlterTriggerDescriptorV1(
+          bytes.data(), bytes.size(), &result.descriptor, &detail, false)) {
+    return Refuse("SBLR.OPERAND_INVALID",
+                  "sblr.ddl_alter_trigger.descriptor_invalid", detail);
+  }
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {});
+  return result;
+}
+
+SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
+    const EngineRequestContext&, const std::string&, std::uint64_t,
+    std::uint32_t, std::uint64_t) {
+  return Refuse("MGA.AUTHORITY_MISMATCH",
+                "sblr.ddl_alter_trigger.receipt_private_bind_required");
+}
+
+SblrDdlAlterTriggerCoordinationResult ConsumeSblrDdlAlterTriggerDescriptor(
+    const EngineRequestContext&,
+    const scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1&) {
+  return Refuse("MGA.AUTHORITY_MISMATCH",
+                "sblr.ddl_alter_trigger.receipt_private_execution_required");
+}
+
+}  // namespace scratchbird::engine::internal_api

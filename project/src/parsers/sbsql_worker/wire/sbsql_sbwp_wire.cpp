@@ -5988,6 +5988,18 @@ bool ExecuteSql(SbsqlTestWireSession* session,
       result.server_operation_id == "engine.op.ddl_create_schema") {
     session->AcknowledgeDdlCreateSchemaCompletionForWire();
   }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.ddl_create_trigger") {
+    session->AcknowledgeDdlCreateTriggerCompletionForWire();
+  }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.ddl_alter_trigger") {
+    session->AcknowledgeDdlAlterTriggerCompletionForWire();
+  }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.ddl_drop_trigger") {
+    session->AcknowledgeDdlDropTriggerCompletionForWire();
+  }
   return completed;
 }
 

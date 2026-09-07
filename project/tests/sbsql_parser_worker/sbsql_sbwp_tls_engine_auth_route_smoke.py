@@ -805,6 +805,20 @@ BEGIN
 END;"""
 
 
+def alter_trigger_sql(trigger_name: str, *, active: bool = False) -> str:
+    state = "ACTIVE" if active else "INACTIVE"
+    position = 9 if active else 7
+    security = "INVOKER" if active else "DEFINER"
+    return (
+        f"ALTER TRIGGER users.public.{trigger_name} {state} "
+        f"SET ORDER {position} SET SECURITY {security} COMPILE VALIDATE;"
+    )
+
+
+def drop_trigger_sql(trigger_name: str) -> str:
+    return f"DROP TRIGGER users.public.{trigger_name} RESTRICT;"
+
+
 def run_create_trigger_full_route(port: int) -> None:
     committed_name = "route_trig_items_ai"
     rolled_back_name = "route_trig_items_rolled_back"
@@ -898,6 +912,168 @@ def run_create_trigger_full_route(port: int) -> None:
             raise RouteError(
                 "independent CREATE TRIGGER duplicate refusal did not preserve transaction authority"
             )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # ALTER and DROP use the same authenticated public boundary as CREATE.
+    # A CONNECT-only principal must reach neither mutation, and both refusals
+    # must preserve the exact transaction for an explicit rollback.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(
+            sock,
+            BENCHMARK_PASSWORD,
+            user=RESTRICTED_SCHEMA_PRINCIPAL,
+        )
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        for sql, label in (
+            (alter_trigger_sql(committed_name), "ALTER TRIGGER"),
+            (drop_trigger_sql(committed_name), "DROP TRIGGER"),
+        ):
+            send_frame(
+                sock,
+                MSG_QUERY,
+                sequence,
+                query_payload(sql),
+                attachment=attachment,
+                txn_id=txn_id,
+            )
+            sequence += 1
+            ready_payload, frame_txn = expect_error_then_ready(
+                sock, b"SECURITY.ACCESS_DENIED"
+            )
+            status, ready_txn = decode_ready(ready_payload)
+            if status == 0 or ready_txn != txn_id or frame_txn == 0:
+                raise RouteError(
+                    f"{label} authorization refusal did not preserve "
+                    "transaction authority"
+                )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Commit an exact ALTER successor through TLS/listener/SBWP/SBPS/SBLR.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            alter_trigger_sql(committed_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=True
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # A fresh session can bind and alter the committed successor. Roll this
+    # observer mutation back so the assertion itself leaves no durable state.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            alter_trigger_sql(committed_name, active=True),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # A DROP rolled back by its owning transaction must leave the committed
+    # trigger resolvable from a separate authenticated session.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            drop_trigger_sql(committed_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            alter_trigger_sql(committed_name, active=True),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Commit DROP, then require a separate session to observe the retired
+    # name rather than any parser-local state or stale resolution cache.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            drop_trigger_sql(committed_name),
+        )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=True
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        send_frame(
+            sock,
+            MSG_QUERY,
+            sequence,
+            query_payload(alter_trigger_sql(committed_name)),
+            attachment=attachment,
+            txn_id=txn_id,
+        )
+        sequence += 1
+        ready_payload, frame_txn = expect_error_then_ready(
+            sock, b"CATALOG.NAME.NOT_FOUND"
+        )
+        status, ready_txn = decode_ready(ready_payload)
+        if status == 0 or ready_txn != txn_id or frame_txn == 0:
+            raise RouteError(
+                "committed DROP TRIGGER absence observation did not preserve "
+                "transaction authority"
+            )
+        sequence = finish_explicit_transaction(
+            sock, sequence, attachment, txn_id, commit=False
+        )
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+    # Retirement releases the public name. A fresh CREATE with that exact
+    # spelling must bind successfully; roll it back to keep the fixture clean.
+    with connect_tls(port) as sock:
+        attachment, sequence, _ = authenticate(sock, BENCHMARK_PASSWORD)
+        sequence, txn_id = begin_explicit_transaction(sock, sequence, attachment)
+        sequence = execute_command(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            create_trigger_sql(committed_name),
+        )
         sequence = finish_explicit_transaction(
             sock, sequence, attachment, txn_id, commit=False
         )

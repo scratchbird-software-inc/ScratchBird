@@ -24,4 +24,18 @@ struct EngineAlterConstraintResult : EngineApiResult {
 };
 EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintRequest& request);
 
+// Exact trigger-definition successor publication. The request must carry the
+// engine-bound trigger UUID/generation and the complete successor definition;
+// parser text is never accepted as catalog authority.
+struct EngineAlterTriggerRequest : EngineApiRequest {
+  std::uint64_t expected_executable_generation = 0;
+};
+struct EngineAlterTriggerResult : EngineApiResult {
+  EngineBoundObjectIdentity bound_object_identity;
+  std::uint64_t executable_generation = 0;
+  std::uint64_t metadata_cache_epoch = 0;
+};
+EngineAlterTriggerResult EngineAlterTrigger(
+    const EngineAlterTriggerRequest& request);
+
 }  // namespace scratchbird::engine::internal_api

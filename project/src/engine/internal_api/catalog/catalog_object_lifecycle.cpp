@@ -1258,6 +1258,8 @@ void FillObjectResult(TResult* result,
   result->bound_object_identity.resolved_object_type = object.object_kind;
   result->bound_object_identity.resolved_schema_uuid.canonical = object.schema_uuid;
   result->bound_object_identity.parent_object_uuid.canonical = object.schema_uuid;
+  result->bound_object_identity.object_descriptor_generation =
+      object.definition_epoch;
   result->bound_object_identity.catalog_generation_id = metadata_epoch;
   result->bound_object_identity.security_epoch = context.security_epoch;
   result->bound_object_identity.resource_epoch = context.resource_epoch;
@@ -2135,8 +2137,11 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
     return DiagnosticResult<EngineCatalogDropObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticSchemaOwnerDenied, existing->schema_uuid));
   }
+  std::vector<EngineCatalogDependencyRecord> inbound_dependencies;
   for (const auto& dependency : loaded.state.dependencies) {
-    if (dependency.dependency_uuid == object_uuid) {
+    if (!dependency.deleted && dependency.dependency_uuid == object_uuid) {
+      inbound_dependencies.push_back(dependency);
+      if (request.cascade_dependencies) { continue; }
       return DiagnosticResult<EngineCatalogDropObjectResult>(
           request.context,
           kOperation,
@@ -2149,7 +2154,18 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   dropped.lifecycle_state = "dropped";
   dropped.deleted = true;
   dropped.metadata_epoch = epoch;
-  auto appended = AppendEvent(request.context, ObjectEvent(dropped));
+  EngineApiDiagnostic appended;
+  for (auto dependency : inbound_dependencies) {
+    dependency.creator_tx = request.context.local_transaction_id;
+    dependency.metadata_epoch = epoch;
+    dependency.deleted = true;
+    appended = AppendEvent(request.context, DependencyEvent(dependency));
+    if (appended.error) {
+      return DiagnosticResult<EngineCatalogDropObjectResult>(
+          request.context, kOperation, appended);
+    }
+  }
+  appended = AppendEvent(request.context, ObjectEvent(dropped));
   if (appended.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, appended); }
   appended = AppendEvent(request.context, RetireNamesEvent(request.context.local_transaction_id, object_uuid, epoch));
   if (appended.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, appended); }
@@ -2161,9 +2177,14 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   auto result = SuccessResult<EngineCatalogDropObjectResult>(request.context, kOperation);
   result.primary_object.uuid.canonical = object_uuid;
   result.primary_object.object_kind = existing->object_kind;
+  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
   result.metadata_cache_epoch = epoch;
   AddEvidence(&result, "catalog_metadata_epoch", std::to_string(epoch));
   AddEvidence(&result, "metadata_cache_invalidation", object_uuid + ":" + std::to_string(epoch));
+  AddEvidence(&result, "dependency_mode",
+              request.cascade_dependencies ? "cascade" : "restrict");
+  AddEvidence(&result, "retired_inbound_dependency_count",
+              std::to_string(inbound_dependencies.size()));
   AddRow(&result, {{"object_uuid", object_uuid}, {"object_kind", existing->object_kind}, {"lifecycle_state", "dropped"}});
   AddDdlPublicationResult(&result,
                           kOperation,

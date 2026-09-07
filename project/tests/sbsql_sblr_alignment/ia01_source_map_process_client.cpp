@@ -18,7 +18,9 @@
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
@@ -1062,6 +1064,337 @@ END;)SBSQL";
                  "independent_session=true exact_trigger_identity=true\n";
     return 0;
   }
+  if (operation == "ddl-alter-trigger" ||
+      operation == "ddl-alter-trigger-observe" ||
+      operation == "ddl-drop-trigger" ||
+      operation == "ddl-drop-trigger-observe") {
+    namespace ddl = scratchbird::engine::sblr;
+    const bool alter_family =
+        operation == "ddl-alter-trigger" ||
+        operation == "ddl-alter-trigger-observe";
+    const bool observer =
+        operation == "ddl-alter-trigger-observe" ||
+        operation == "ddl-drop-trigger-observe";
+    const char* artifact_path = std::getenv(
+        alter_family
+            ? "SCRATCHBIRD_TEST_DDL_ALTER_TRIGGER_RESULT_ARTIFACT"
+            : "SCRATCHBIRD_TEST_DDL_DROP_TRIGGER_RESULT_ARTIFACT");
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+    const auto dump_failure = [&](std::string_view phase,
+                                  const auto& result) {
+      std::cerr << (alter_family ? "CSC-TEST-002625 DDL_ALTER_TRIGGER "
+                                 : "CSC-TEST-002629 DDL_DROP_TRIGGER ")
+                << phase << " accepted=" << result.accepted
+                << " outcome_unknown=" << result.outcome_unknown
+                << " operation=" << result.server_operation_id << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto write_artifact = [&](const std::string& bytes) {
+      if (artifact_path == nullptr || *artifact_path == '\0' ||
+          bytes.empty()) {
+        return false;
+      }
+      std::ofstream out(artifact_path, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      return out.good();
+    };
+    const auto read_artifact = [&]() {
+      std::vector<std::uint8_t> bytes;
+      if (artifact_path == nullptr || *artifact_path == '\0') return bytes;
+      std::ifstream in(artifact_path, std::ios::binary);
+      if (!in) return bytes;
+      in.seekg(0, std::ios::end);
+      const auto extent = in.tellg();
+      if (extent <= 0) return bytes;
+      bytes.resize(static_cast<std::size_t>(extent));
+      in.seekg(0, std::ios::beg);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+      if (!in) bytes.clear();
+      return bytes;
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+
+    if (observer) {
+      const auto expected_bytes = read_artifact();
+      auto observed = session.RunPipeline(
+          "RESOLVE NAME app.trig_items_ai AS TRIGGER;", true);
+      ddl::SblrNameResolveResultV1 resolved;
+      std::string detail;
+      bool exact_observer = false;
+      if (alter_family) {
+        ddl::SblrDdlAlterTriggerResultV1 expected;
+        exact_observer =
+            !expected_bytes.empty() &&
+            ddl::DecodeSblrDdlAlterTriggerResultV1(
+                expected_bytes.data(), expected_bytes.size(), &expected,
+                &detail) &&
+            observed.accepted && !observed.outcome_unknown &&
+            !observed.messages.has_errors() &&
+            observed.server_operation_id == "engine.op.name_resolve" &&
+            ddl::DecodeSblrNameResolveResultV1(
+                reinterpret_cast<const std::uint8_t*>(
+                    observed.server_result_payload.data()),
+                observed.server_result_payload.size(), &resolved, &detail) &&
+            resolved.status == 1 && resolved.visibility == 1 &&
+            resolved.object_class == 9 &&
+            resolved.resolved_object_uuid == expected.trigger_uuid &&
+            resolved.resolved_namespace_uuid == expected.schema_uuid &&
+            resolved.object_descriptor_generation ==
+                expected.trigger_generation &&
+            nonzero(resolved.publication_evidence_uuid) &&
+            nonzero(resolved.resolution_material_sha256) &&
+            nonzero(resolved.executor_evidence_sha256);
+      } else {
+        ddl::SblrDdlDropTriggerResultV1 expected;
+        exact_observer =
+            !expected_bytes.empty() &&
+            ddl::DecodeSblrDdlDropTriggerResultV1(
+                expected_bytes.data(), expected_bytes.size(), &expected,
+                &detail) &&
+            observed.accepted && !observed.outcome_unknown &&
+            !observed.messages.has_errors() &&
+            observed.server_operation_id == "engine.op.name_resolve" &&
+            ddl::DecodeSblrNameResolveResultV1(
+                reinterpret_cast<const std::uint8_t*>(
+                    observed.server_result_payload.data()),
+                observed.server_result_payload.size(), &resolved, &detail) &&
+            resolved.status == 2 && resolved.visibility == 2 &&
+            resolved.object_class == 9 &&
+            !nonzero(resolved.resolved_object_uuid) &&
+            !nonzero(resolved.resolved_namespace_uuid);
+      }
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_observer || !rolled_back.accepted ||
+          rolled_back.messages.has_errors()) {
+        if (alter_family) {
+          ddl::SblrDdlAlterTriggerResultV1 expected;
+          const bool decoded_expected =
+              !expected_bytes.empty() &&
+              ddl::DecodeSblrDdlAlterTriggerResultV1(
+                  expected_bytes.data(), expected_bytes.size(), &expected,
+                  &detail);
+          std::cerr << "observer_fields decoded_expected=" << decoded_expected
+                    << " status=" << static_cast<unsigned>(resolved.status)
+                    << " visibility="
+                    << static_cast<unsigned>(resolved.visibility)
+                    << " object_class=" << resolved.object_class
+                    << " object_uuid_match="
+                    << (decoded_expected &&
+                        resolved.resolved_object_uuid == expected.trigger_uuid)
+                    << " namespace_uuid_match="
+                    << (decoded_expected &&
+                        resolved.resolved_namespace_uuid == expected.schema_uuid)
+                    << " descriptor_generation="
+                    << resolved.object_descriptor_generation
+                    << " expected_generation="
+                    << (decoded_expected ? expected.trigger_generation : 0)
+                    << " publication="
+                    << nonzero(resolved.publication_evidence_uuid)
+                    << " material="
+                    << nonzero(resolved.resolution_material_sha256)
+                    << " executor="
+                    << nonzero(resolved.executor_evidence_sha256) << '\n';
+        }
+        dump_failure(detail.empty() ? "observer_contract_failed" : detail,
+                     observed);
+        return 4;
+      }
+      if (alter_family) {
+        std::cout << "CSC-TEST-002625 DDL_ALTER_TRIGGER "
+                     "observer_visible=true independent_session=true "
+                     "exact_successor_generation=true\n";
+      } else {
+        std::cout << "CSC-TEST-002629 DDL_DROP_TRIGGER "
+                     "observer_absent=true independent_session=true "
+                     "exact_tombstone_visible=true\n";
+      }
+      return 0;
+    }
+
+    auto changed = session.RunPipeline(
+        alter_family
+            ? "ALTER TRIGGER app.trig_items_ai INACTIVE SET ORDER 7 SET "
+              "SECURITY DEFINER COMPILE VALIDATE;"
+            : "DROP TRIGGER app.trig_items_ai RESTRICT;",
+        true);
+    const auto canonical_container =
+        scratchbird::engine::DecodeSblrContainerBytes(
+            reinterpret_cast<const std::uint8_t*>(changed.sblr_payload.data()),
+            changed.sblr_payload.size());
+    const auto canonical_stream =
+        canonical_container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? ddl::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(canonical_container.container
+                                                    .operation_payload.data()),
+                  canonical_container.container.operation_payload.size()))
+            : ddl::SblrOpcodeStreamResult{};
+    const auto& expected_operation =
+        alter_family ? "engine.op.ddl_alter_trigger"
+                     : "engine.op.ddl_drop_trigger";
+    const auto& expected_opcode =
+        alter_family ? "SBLR_DDL_ALTER_TRIGGER" : "SBLR_DDL_DROP_TRIGGER";
+    const auto& expected_operand =
+        alter_family ? "alter_trigger_descriptor" : "drop_trigger_descriptor";
+    const std::uint16_t expected_code = alter_family ? 1552 : 1553;
+    const bool exact_submission =
+        canonical_stream.ok &&
+        scratchbird::engine::EncodeSblrContainer(
+            canonical_container.container) ==
+            std::vector<std::uint8_t>(changed.sblr_payload.begin(),
+                                      changed.sblr_payload.end()) &&
+        canonical_stream.stream.operations.size() == 3 &&
+        canonical_stream.stream.operations[1].operation_id ==
+            expected_operation &&
+        canonical_stream.stream.operations[1].opcode == expected_opcode &&
+        canonical_stream.stream.operations[1].opcode_code == expected_code &&
+        canonical_stream.stream.operations[1].operands.size() == 1 &&
+        canonical_stream.stream.operations[1].operands[0].type ==
+            expected_operand &&
+        canonical_stream.stream.operations[1].operands[0].name == "trigger";
+    std::string detail;
+    bool exact_terminal = false;
+    if (alter_family && exact_submission) {
+      ddl::SblrDdlAlterTriggerDescriptorV1 descriptor;
+      ddl::SblrDdlAlterTriggerResultV1 terminal;
+      const auto& operand = canonical_stream.stream.operations[1].operands[0];
+      exact_terminal =
+          operand.value_kind == ddl::SblrValueKind::alter_trigger_descriptor &&
+          ddl::DecodeSblrDdlAlterTriggerDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail, true) &&
+          changed.accepted && !changed.outcome_unknown &&
+          !changed.messages.has_errors() &&
+          changed.server_operation_id == expected_operation &&
+          changed.server_request_payload_bytes ==
+              ddl::kSblrDdlAlterTriggerRequestV1Bytes &&
+          ddl::DecodeSblrDdlAlterTriggerResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  changed.server_result_payload.data()),
+              changed.server_result_payload.size(), &terminal, &detail) &&
+          ddl::EncodeSblrDdlAlterTriggerResultV1(terminal) ==
+              std::vector<std::uint8_t>(
+                  changed.server_result_payload.begin(),
+                  changed.server_result_payload.end()) &&
+          terminal.receipt == descriptor.receipt &&
+          terminal.trigger_uuid == descriptor.trigger_uuid &&
+          terminal.trigger_generation == descriptor.trigger_generation + 1 &&
+          terminal.target_relation_uuid == descriptor.target_relation_uuid &&
+          terminal.target_relation_generation ==
+              descriptor.target_relation_generation &&
+          terminal.schema_uuid == descriptor.schema_uuid &&
+          terminal.schema_generation == descriptor.schema_generation &&
+          terminal.owning_transaction_uuid ==
+              descriptor.owning_transaction_uuid &&
+          terminal.owning_local_transaction_id ==
+              descriptor.owning_local_transaction_id &&
+          terminal.statement_snapshot_uuid ==
+              descriptor.statement_snapshot_uuid &&
+          terminal.body_sblr_uuid == descriptor.body_sblr_uuid &&
+          terminal.body_sblr_generation == descriptor.body_sblr_generation &&
+          terminal.catalog_generation == descriptor.catalog_generation &&
+          terminal.security_epoch == descriptor.security_epoch &&
+          terminal.resource_generation == descriptor.resource_generation &&
+          terminal.descriptor_evidence_sha256 == descriptor.evidence &&
+          terminal.availability == descriptor.availability &&
+          nonzero(terminal.catalog_row_uuid) &&
+          nonzero(terminal.mutation_uuid) && nonzero(terminal.evidence) &&
+          nonzero(terminal.publication_barrier) &&
+          write_artifact(changed.server_result_payload);
+    } else if (!alter_family && exact_submission) {
+      ddl::SblrDdlDropTriggerDescriptorV1 descriptor;
+      ddl::SblrDdlDropTriggerResultV1 terminal;
+      const auto& operand = canonical_stream.stream.operations[1].operands[0];
+      exact_terminal =
+          operand.value_kind == ddl::SblrValueKind::drop_trigger_descriptor &&
+          ddl::DecodeSblrDdlDropTriggerDescriptorV1(
+              operand.value_body.data(), operand.value_body.size(),
+              &descriptor, &detail, true) &&
+          changed.accepted && !changed.outcome_unknown &&
+          !changed.messages.has_errors() &&
+          changed.server_operation_id == expected_operation &&
+          changed.server_request_payload_bytes ==
+              ddl::kSblrDdlDropTriggerRequestV1Bytes &&
+          ddl::DecodeSblrDdlDropTriggerResultV1(
+              reinterpret_cast<const std::uint8_t*>(
+                  changed.server_result_payload.data()),
+              changed.server_result_payload.size(), &terminal, &detail) &&
+          ddl::EncodeSblrDdlDropTriggerResultV1(terminal) ==
+              std::vector<std::uint8_t>(
+                  changed.server_result_payload.begin(),
+                  changed.server_result_payload.end()) &&
+          terminal.receipt == descriptor.receipt &&
+          terminal.trigger_uuid == descriptor.trigger_uuid &&
+          terminal.trigger_generation == descriptor.trigger_generation + 1 &&
+          terminal.target_relation_uuid == descriptor.target_relation_uuid &&
+          terminal.target_relation_generation ==
+              descriptor.target_relation_generation &&
+          terminal.schema_uuid == descriptor.schema_uuid &&
+          terminal.schema_generation == descriptor.schema_generation &&
+          terminal.owning_transaction_uuid ==
+              descriptor.owning_transaction_uuid &&
+          terminal.owning_local_transaction_id ==
+              descriptor.owning_local_transaction_id &&
+          terminal.statement_snapshot_uuid ==
+              descriptor.statement_snapshot_uuid &&
+          terminal.body_sblr_uuid == descriptor.body_sblr_uuid &&
+          terminal.body_sblr_generation == descriptor.body_sblr_generation &&
+          terminal.catalog_generation == descriptor.catalog_generation &&
+          terminal.security_epoch == descriptor.security_epoch &&
+          terminal.resource_generation == descriptor.resource_generation &&
+          terminal.descriptor_evidence_sha256 == descriptor.evidence &&
+          terminal.availability == descriptor.availability &&
+          nonzero(terminal.catalog_row_uuid) &&
+          nonzero(terminal.mutation_uuid) && nonzero(terminal.evidence) &&
+          nonzero(terminal.publication_barrier) &&
+          write_artifact(changed.server_result_payload);
+    }
+    if (!exact_terminal) {
+      dump_failure(detail.empty() ? "terminal_contract_failed" : detail,
+                   changed);
+      return 4;
+    }
+
+    auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
+    if (!committed.accepted || committed.messages.has_errors()) {
+      dump_failure("commit_failed", committed);
+      return 4;
+    }
+    if (alter_family) {
+      session.AcknowledgeDdlAlterTriggerCompletionForWire();
+      if (session.HasHeldDdlAlterTriggerForWire()) {
+        std::cerr << "ddl_alter_trigger_terminal_holder_not_released\n";
+        return 4;
+      }
+      std::cout << "CSC-TEST-002625 DDL_ALTER_TRIGGER accepted "
+                   "canonical_sblr=true catalog_successor=true commit=true "
+                   "publication_barrier=passed\n";
+    } else {
+      session.AcknowledgeDdlDropTriggerCompletionForWire();
+      if (session.HasHeldDdlDropTriggerForWire()) {
+        std::cerr << "ddl_drop_trigger_terminal_holder_not_released\n";
+        return 4;
+      }
+      std::cout << "CSC-TEST-002629 DDL_DROP_TRIGGER accepted "
+                   "canonical_sblr=true catalog_tombstone=true commit=true "
+                   "publication_barrier=passed\n";
+    }
+    return 0;
+  }
   if (operation == "ddl-create-schema" ||
       operation == "ddl-create-schema-recover" ||
       operation == "ddl-create-schema-observe" ||
@@ -1878,9 +2211,13 @@ END;)SBSQL";
                                 "CREATE TRIGGER app.trig_items_ai AFTER INSERT ON TABLE app.trig_items FOR EACH ROW AS BEGIN INSERT INTO app.trig_audit (audit_id, event_kind, item_id, old_price, new_price, audit_note) VALUES (NEXT VALUE FOR app.trig_audit_seq, 'INSERT', new.item_id, NULL, new.item_price, 'item inserted'); END;",
                                 true)
                     : operation == "ddl-alter-trigger"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterTriggerForWire():begun; }()
+                          ? session.RunPipeline(
+                                "ALTER TRIGGER app.trig_items_ai INACTIVE;",
+                                true)
                     : operation == "ddl-drop-trigger"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlDropTriggerForWire():begun; }()
+                          ? session.RunPipeline(
+                                "DROP TRIGGER app.trig_items_ai RESTRICT;",
+                                true)
                     : operation == "ddl-create-procedure"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreateProcedureForWire():begun; }()
                     : operation == "ddl-alter-procedure"

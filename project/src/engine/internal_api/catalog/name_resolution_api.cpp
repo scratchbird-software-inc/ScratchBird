@@ -609,7 +609,32 @@ EngineResolveNameResult MakeNameRegistryResolveResult(
   result.bound_object_identity.resolved_object_type = match.object_class;
   result.bound_object_identity.resolved_schema_uuid.canonical = match.scope_uuid;
   result.bound_object_identity.parent_object_uuid.canonical = match.parent_object_uuid;
+  // The legacy name registry has no independent object-definition generation.
+  // Preserve its existing projection for registry-only objects, then enrich
+  // it from the catalog lifecycle by exact UUID when that engine-owned record
+  // exists.  Qualified lookup may legitimately reach this fallback when an
+  // older bootstrap schema name exists only in SBNAME1, while the resolved
+  // child already has an SBCATOBJ1 lifecycle record.
+  result.bound_object_identity.object_descriptor_generation =
+      match.catalog_generation_id;
   result.bound_object_identity.catalog_generation_id = match.catalog_generation_id;
+  EngineCatalogLookupObjectRequest lifecycle_request;
+  static_cast<EngineApiRequest&>(lifecycle_request) =
+      static_cast<const EngineApiRequest&>(request);
+  lifecycle_request.target_object.uuid.canonical = match.object_uuid;
+  lifecycle_request.target_object.object_kind = match.object_class;
+  const auto lifecycle = EngineCatalogLookupObjectByUuid(lifecycle_request);
+  if (lifecycle.ok &&
+      lifecycle.primary_object.uuid.canonical == match.object_uuid &&
+      lifecycle.primary_object.object_kind == match.object_class &&
+      lifecycle.bound_object_identity.object_descriptor_generation != 0) {
+    result.bound_object_identity.object_descriptor_generation =
+        lifecycle.bound_object_identity.object_descriptor_generation;
+    result.bound_object_identity.catalog_generation_id =
+        lifecycle.bound_object_identity.catalog_generation_id;
+    AddApiBehaviorEvidence(&result, "object_descriptor_authority",
+                           "catalog_object_lifecycle_exact_uuid");
+  }
   result.bound_object_identity.security_epoch = request.context.security_epoch;
   result.bound_object_identity.resource_epoch = match.resource_epoch;
   AddApiBehaviorRow(&result, {{"object_uuid", match.object_uuid},

@@ -7,6 +7,8 @@
 #define SCRATCHBIRD_IA05_QUERY_EXPLAIN_FIXTURE_ONLY
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
+#include "engine/internal_api/catalog/catalog_object_lifecycle.hpp"
+#include "engine/internal_api/catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
 #include "engine/internal_api/mga_relation_store/mga_relation_store.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
@@ -98,20 +100,85 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture,
                *context, table, {}, &target.descriptor)
                .error,
           "002624 target-table descriptor publication failed");
-  api::EngineLocalizedName name;
-  name.name = table.default_name;
-  name.raw_name_text = table.default_name;
-  name.display_name = table.default_name;
-  name.language_tag = "en";
-  name.name_class = "primary";
-  name.default_name = true;
-  name.identifier_profile_uuid = "sbsql_v3";
+  const auto lifecycle_name = [](std::string value) {
+    api::EngineLocalizedName name;
+    name.name = value;
+    name.raw_name_text = value;
+    name.display_name = value;
+    name.language_tag = "en";
+    name.name_class = "primary";
+    name.default_name = true;
+    name.identifier_profile_uuid = "sbsql_v3";
+    return name;
+  };
+  api::EngineCatalogCreateObjectRequest schema;
+  schema.context = *context;
+  schema.target_object.uuid.canonical = Text(target.schema_uuid);
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back(lifecycle_name("app"));
+  Require(api::EngineCatalogCreateObject(schema).ok,
+          "002624 target schema lifecycle publication failed");
+  api::EngineCatalogCreateObjectRequest relation;
+  relation.context = *context;
+  relation.target_object.uuid.canonical = table.table_uuid;
+  relation.target_object.object_kind = "table";
+  relation.target_schema.uuid.canonical = Text(target.schema_uuid);
+  relation.target_schema.object_kind = "schema";
+  relation.localized_names.push_back(lifecycle_name(table.default_name));
+  Require(api::EngineCatalogCreateObject(relation).ok,
+          "002624 target-table lifecycle publication failed");
+  const auto lifecycle = api::LoadCatalogObjectLifecycleState(*context);
+  Require(lifecycle.ok && lifecycle.state.metadata_epoch != 0,
+          "002624 catalog lifecycle epoch was unavailable");
+  context->catalog_generation_id = lifecycle.state.metadata_epoch;
+  context->authorization_context.catalog_generation_id =
+      lifecycle.state.metadata_epoch;
   Require(!api::PersistNameRegistryEntriesForObject(
                *context, "test.ddl_create_trigger.cancellation",
-               table.table_uuid, "table", Text(target.schema_uuid), {name},
-               table.default_name)
+               table.table_uuid, "table", Text(target.schema_uuid),
+               {lifecycle_name(table.default_name)}, table.default_name)
                .error,
-          "002624 target-table name publication failed");
+          "002624 target-table resolver publication failed");
+  const auto names =
+      api::LoadNameRegistryState(*context, context->local_transaction_id);
+  Require(names.ok &&
+              std::count_if(
+                  names.state.entries.begin(), names.state.entries.end(),
+                  [&](const api::NameRegistryEntry& entry) {
+                    return !entry.deleted &&
+                           entry.object_uuid == table.table_uuid &&
+                           entry.object_class == "table" &&
+                           entry.parent_schema_uuid == Text(target.schema_uuid);
+                  }) >= 1,
+          "002624 target-table resolver entry was not visible");
+  api::EngineResolveNameRequest resolve;
+  resolve.context = *context;
+  resolve.operation_id = "catalog.resolve_name";
+  resolve.sql_object_reference.expected_object_type = "table";
+  resolve.sql_object_reference.path_type = "qualified";
+  resolve.sql_object_reference.no_search_path = true;
+  api::EngineIdentifierAtom schema_atom;
+  schema_atom.raw_text = "app";
+  schema_atom.quote_style = "none";
+  schema_atom.identifier_profile_uuid = "sbsql_v3";
+  resolve.sql_object_reference.path_components.push_back(schema_atom);
+  api::EngineIdentifierAtom table_atom;
+  table_atom.raw_text = table.default_name;
+  table_atom.quote_style = "none";
+  table_atom.identifier_profile_uuid = "sbsql_v3";
+  resolve.sql_object_reference.object_name = table_atom;
+  const auto resolved = api::EngineResolveName(resolve);
+  if (!resolved.ok) {
+    for (const auto& diagnostic : resolved.diagnostics) {
+      std::cerr << "002624 target resolve observation: " << diagnostic.code
+                << ';' << diagnostic.message_key << ';' << diagnostic.detail
+                << '\n';
+    }
+  }
+  Require(resolved.ok &&
+              resolved.primary_object.uuid.canonical == table.table_uuid &&
+              resolved.primary_object.object_kind == "table",
+          "002624 target-table engine resolution failed");
   return target;
 }
 
@@ -128,8 +195,8 @@ bridge::StatementDdlCreateTriggerBindRequestV1 TriggerDemand(
   request.target_kind = sblr::DdlCreateTriggerTargetKindV1::kTable;
   request.body_profile =
       sblr::DdlCreateTriggerBodyProfileV1::kAuditAfterInsertRow;
-  request.trigger_name_atoms = {{"trig_items_ai", false}};
-  request.target_name_atoms = {{"trig_items", false}};
+  request.trigger_name_atoms = {{"app", false}, {"trig_items_ai", false}};
+  request.target_name_atoms = {{"app", false}, {"trig_items", false}};
   request.security_mode = sblr::DdlCreateTriggerSecurityModeV1::kInvoker;
   request.image_mode =
       sblr::DdlCreateTriggerImageModeV1::kPolicyRedacted;
@@ -255,8 +322,77 @@ void RequireCancellation(
           "002624 cancelled CREATE TRIGGER changed durable state");
 }
 
+void PublishBaselineTrigger(
+    const Fixture& fixture, PublicSession& session,
+    api::EngineRequestContext* context, std::string_view parser_uuid) {
+  Require(context != nullptr,
+          "002624 baseline CREATE TRIGGER context is required");
+  bridge::StatementContextAcquireRequest acquire;
+  acquire.engine_context = context;
+  acquire.exact_transaction_uuid = context->transaction_uuid.canonical;
+  bridge::StatementContextReceiptHandle receipt;
+  bridge::StatementContextReceiptView view;
+  sb_engine_result_t result = nullptr;
+  Require(bridge::AcquireStatementContextReceipt(
+              session.session, &acquire, &receipt, &view, &result) ==
+              SB_ENGINE_STATUS_OK,
+          "002624 baseline CREATE TRIGGER receipt acquisition failed");
+  if (result != nullptr) (void)sb_engine_result_release(result);
+  Require(view.ddl_create_trigger_executor_availability_generation != 0,
+          "002624 baseline receipt omitted CREATE TRIGGER availability");
+
+  const auto demand = TriggerDemand(view);
+  bridge::StatementDdlCreateTriggerAuthorityV1 authority;
+  result = nullptr;
+  const auto bind_status = bridge::BindStatementDdlCreateTriggerAuthorityV1(
+      receipt, &demand, &authority, &result);
+  if (bind_status != SB_ENGINE_STATUS_OK || result != nullptr ||
+      authority.canonical_descriptor_bytes.empty()) {
+    std::cerr << "002624 baseline bind observation: status="
+              << sb_engine_status_name(bind_status);
+    if (result != nullptr) {
+      std::cerr << ";code=" << DiagnosticCode(result)
+                << ";key=" << DiagnosticKey(result)
+                << ";detail=" << DiagnosticDetail(result);
+    }
+    std::cerr << '\n';
+  }
+  Require(bind_status == SB_ENGINE_STATUS_OK && result == nullptr &&
+              !authority.canonical_descriptor_bytes.empty(),
+          "002624 baseline CREATE TRIGGER bind failed");
+  const auto submission = PackageWithMember(
+      fixture, view, parser_uuid, TriggerMember(view, parser_uuid, authority));
+  bridge::StatementPackageAdmissionReservationHandle reservation;
+  auto dispatch = Admit(fixture, session, view, receipt, parser_uuid,
+                        submission, &reservation);
+  result = nullptr;
+  Require(bridge::DispatchStatementContextReceipt(&dispatch, &result) ==
+                  SB_ENGINE_STATUS_OK &&
+              result != nullptr,
+          "002624 baseline CREATE TRIGGER dispatch failed");
+  const auto payload = ResultPayload(result);
+  sblr::SblrDdlCreateTriggerResultV1 terminal;
+  std::string detail;
+  Require(payload.size() == sblr::kSblrDdlCreateTriggerResultV1Bytes &&
+              sblr::DecodeSblrDdlCreateTriggerResultV1(
+                  payload.data(), payload.size(), &terminal, &detail) &&
+              terminal.trigger_generation == authority.trigger_generation,
+          "002624 baseline CREATE TRIGGER terminal result drifted");
+  (void)sb_engine_result_release(result);
+  const auto lifecycle = api::LoadCatalogObjectLifecycleState(*context);
+  Require(lifecycle.ok && lifecycle.state.metadata_epoch != 0,
+          "002624 baseline catalog lifecycle epoch was unavailable");
+  context->catalog_generation_id = lifecycle.state.metadata_epoch;
+  context->authorization_context.catalog_generation_id =
+      lifecycle.state.metadata_epoch;
+  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
+              SB_ENGINE_STATUS_OK,
+          "002624 baseline CREATE TRIGGER receipt cleanup failed");
+}
+
 }  // namespace
 
+#ifndef SCRATCHBIRD_IA08_CREATE_TRIGGER_CANCELLATION_FIXTURE_ONLY
 int main() {
   auto fixture = CreateFixture();
   PublicSession session(fixture);
@@ -311,9 +447,21 @@ int main() {
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
   result = nullptr;
-  Require(bridge::BindStatementDdlCreateTriggerAuthorityV1(
-              receipt, &demand, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              result == nullptr &&
+  const auto retry_bind_status =
+      bridge::BindStatementDdlCreateTriggerAuthorityV1(
+          receipt, &demand, &authority, &result);
+  if (retry_bind_status != SB_ENGINE_STATUS_OK || result != nullptr ||
+      authority.canonical_descriptor_bytes.empty()) {
+    std::cerr << "002624 retry bind observation: status="
+              << sb_engine_status_name(retry_bind_status);
+    if (result != nullptr) {
+      std::cerr << ";code=" << DiagnosticCode(result)
+                << ";key=" << DiagnosticKey(result)
+                << ";detail=" << DiagnosticDetail(result);
+    }
+    std::cerr << '\n';
+  }
+  Require(retry_bind_status == SB_ENGINE_STATUS_OK && result == nullptr &&
               !authority.canonical_descriptor_bytes.empty(),
           "002624 retry did not publish exact trigger authority");
   Require(bridge::CopyStatementDdlCreateTriggerAuthorityV1(
@@ -394,3 +542,4 @@ int main() {
           "002624 fixture transaction rollback failed");
   return EXIT_SUCCESS;
 }
+#endif

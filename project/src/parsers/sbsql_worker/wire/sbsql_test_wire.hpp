@@ -412,8 +412,16 @@ class SbsqlTestWireSession {
       bool autocommit_emulation = false);
   void AcknowledgeDdlCreateTriggerCompletionForWire();
   [[nodiscard]] bool HasHeldDdlCreateTriggerForWire() const;
-  PipelineResult RunDdlAlterTriggerForWire();
-  PipelineResult RunDdlDropTriggerForWire();
+  PipelineResult RunDdlAlterTriggerForWire(
+      std::string_view sql,
+      bool autocommit_emulation = false);
+  void AcknowledgeDdlAlterTriggerCompletionForWire();
+  [[nodiscard]] bool HasHeldDdlAlterTriggerForWire() const;
+  PipelineResult RunDdlDropTriggerForWire(
+      std::string_view sql,
+      bool autocommit_emulation = false);
+  void AcknowledgeDdlDropTriggerCompletionForWire();
+  [[nodiscard]] bool HasHeldDdlDropTriggerForWire() const;
   PipelineResult RunDdlCreateProcedureForWire();
   PipelineResult RunDdlAlterProcedureForWire();
   PipelineResult RunDdlDropProcedureForWire();
@@ -571,6 +579,8 @@ class SbsqlTestWireSession {
   struct HeldBulkImportStream;
   struct HeldDdlCreateSchema;
   struct HeldDdlCreateTrigger;
+  struct HeldDdlAlterTrigger;
+  struct HeldDdlDropTrigger;
 
   ParserConfig config_;
   ParserMetrics* metrics_;
@@ -582,6 +592,8 @@ class SbsqlTestWireSession {
   std::unique_ptr<HeldBulkImportStream> held_bulk_import_stream_;
   std::unique_ptr<HeldDdlCreateSchema> held_ddl_create_schema_;
   std::unique_ptr<HeldDdlCreateTrigger> held_ddl_create_trigger_;
+  std::unique_ptr<HeldDdlAlterTrigger> held_ddl_alter_trigger_;
+  std::unique_ptr<HeldDdlDropTrigger> held_ddl_drop_trigger_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;

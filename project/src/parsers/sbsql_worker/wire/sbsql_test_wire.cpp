@@ -18143,6 +18143,256 @@ DdlCreateTriggerWireCommand ParseDdlCreateTriggerWireCommand(
   return result;
 }
 
+struct DdlAlterTriggerWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::uint16_t action_mask{0};
+  scratchbird::engine::sblr::DdlAlterTriggerEnabledStateV1 enabled_state{
+      scratchbird::engine::sblr::DdlAlterTriggerEnabledStateV1::kPreserve};
+  std::uint16_t position{0};
+  scratchbird::engine::sblr::DdlAlterTriggerSecurityModeV1 security_mode{
+      scratchbird::engine::sblr::DdlAlterTriggerSecurityModeV1::kPreserve};
+  scratchbird::engine::sblr::DdlAlterTriggerFailurePolicyV1 failure_policy{
+      scratchbird::engine::sblr::DdlAlterTriggerFailurePolicyV1::kPreserve};
+  std::vector<scratchbird::engine::sblr::SblrDdlAlterTriggerNameAtomV1>
+      trigger_name_atoms;
+  std::string invalid_reason;
+};
+
+DdlAlterTriggerWireCommand ParseDdlAlterTriggerWireCommand(
+    const CstDocument& cst) {
+  namespace ddl = scratchbird::engine::sblr;
+  DdlAlterTriggerWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 4 || ToUpperAscii(tokens[0]->text) != "ALTER" ||
+      ToUpperAscii(tokens[1]->text) != "TRIGGER") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto terminator_count =
+      std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      });
+  if (terminator_count > 1 ||
+      (terminator_count == 1 &&
+       tokens.back()->kind != TokenKind::kStatementTerminator)) {
+    return invalid("ddl_alter_trigger_statement_terminator_invalid");
+  }
+  if (terminator_count == 1) tokens.pop_back();
+  const auto is_word = [&](std::size_t index, std::string_view word) {
+    return index < tokens.size() && ToUpperAscii(tokens[index]->text) == word;
+  };
+  const auto consume_word = [&](std::size_t* index, std::string_view word) {
+    if (index == nullptr || !is_word(*index, word)) return false;
+    ++(*index);
+    return true;
+  };
+  const auto consume_name = [&]() {
+    std::size_t index = std::size_t{2};
+    while (index < tokens.size()) {
+      const auto* token = tokens[index];
+      if (!IsIdentifierLikeForRouteExecution(*token) || token->text.empty() ||
+          token->text.size() > 256 ||
+          token->text.find('.') != std::string::npos ||
+          result.trigger_name_atoms.size() == 3) {
+        return std::optional<std::size_t>{};
+      }
+      result.trigger_name_atoms.push_back({token->text, token->quoted});
+      ++index;
+      if (index >= tokens.size() || tokens[index]->text != ".") {
+        return std::optional<std::size_t>{index};
+      }
+      ++index;
+      if (index >= tokens.size()) return std::optional<std::size_t>{};
+    }
+    return std::optional<std::size_t>{};
+  };
+  auto parsed_index = consume_name();
+  if (!parsed_index || result.trigger_name_atoms.empty()) {
+    return invalid("ddl_alter_trigger_name_invalid");
+  }
+  std::size_t index = *parsed_index;
+  const auto claim_action = [&](std::uint16_t flag) {
+    if ((result.action_mask & flag) != 0) return false;
+    result.action_mask = static_cast<std::uint16_t>(result.action_mask | flag);
+    return true;
+  };
+  while (index < tokens.size()) {
+    if (is_word(index, "ACTIVE") || is_word(index, "ENABLE")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionEnabled)) {
+        return invalid("ddl_alter_trigger_enabled_action_duplicate");
+      }
+      result.enabled_state = ddl::DdlAlterTriggerEnabledStateV1::kEnabled;
+      ++index;
+      continue;
+    }
+    if (is_word(index, "INACTIVE") || is_word(index, "DISABLE")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionEnabled)) {
+        return invalid("ddl_alter_trigger_enabled_action_duplicate");
+      }
+      result.enabled_state = ddl::DdlAlterTriggerEnabledStateV1::kDisabled;
+      ++index;
+      continue;
+    }
+    if (consume_word(&index, "COMPILE")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionCompile)) {
+        return invalid("ddl_alter_trigger_compile_action_duplicate");
+      }
+      continue;
+    }
+    if (consume_word(&index, "VALIDATE")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionValidate)) {
+        return invalid("ddl_alter_trigger_validate_action_duplicate");
+      }
+      continue;
+    }
+    if (!consume_word(&index, "SET")) {
+      return invalid("ddl_alter_trigger_action_invalid");
+    }
+    if (consume_word(&index, "ORDER")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionPosition) ||
+          index >= tokens.size() ||
+          tokens[index]->kind != TokenKind::kNumericLiteral) {
+        return invalid("ddl_alter_trigger_order_invalid");
+      }
+      std::uint64_t parsed = 0;
+      const auto text = std::string_view(tokens[index]->text);
+      const auto conversion = std::from_chars(
+          text.data(), text.data() + text.size(), parsed);
+      if (conversion.ec != std::errc{} ||
+          conversion.ptr != text.data() + text.size() || parsed > 32767) {
+        return invalid("ddl_alter_trigger_order_invalid");
+      }
+      result.position = static_cast<std::uint16_t>(parsed);
+      ++index;
+      continue;
+    }
+    if (consume_word(&index, "SECURITY")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionSecurity)) {
+        return invalid("ddl_alter_trigger_security_action_duplicate");
+      }
+      if (consume_word(&index, "INVOKER")) {
+        result.security_mode =
+            ddl::DdlAlterTriggerSecurityModeV1::kInvoker;
+      } else if (consume_word(&index, "DEFINER")) {
+        result.security_mode =
+            ddl::DdlAlterTriggerSecurityModeV1::kDefiner;
+      } else {
+        return invalid("ddl_alter_trigger_security_mode_invalid");
+      }
+      continue;
+    }
+    if (consume_word(&index, "FAILURE") &&
+        consume_word(&index, "POLICY")) {
+      if (!claim_action(ddl::kDdlAlterTriggerActionFailurePolicy) ||
+          !consume_word(&index, "MANDATORY")) {
+        return invalid("ddl_alter_trigger_failure_policy_invalid");
+      }
+      result.failure_policy =
+          ddl::DdlAlterTriggerFailurePolicyV1::kMandatory;
+      continue;
+    }
+    return invalid("ddl_alter_trigger_set_action_invalid");
+  }
+  if (result.action_mask == 0) {
+    return invalid("ddl_alter_trigger_action_missing");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct DdlDropTriggerWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  scratchbird::engine::sblr::DdlDropTriggerDependencyModeV1 dependency_mode{
+      scratchbird::engine::sblr::DdlDropTriggerDependencyModeV1::kRestrict};
+  std::vector<scratchbird::engine::sblr::SblrDdlDropTriggerNameAtomV1>
+      trigger_name_atoms;
+  std::string invalid_reason;
+};
+
+DdlDropTriggerWireCommand ParseDdlDropTriggerWireCommand(
+    const CstDocument& cst) {
+  namespace ddl = scratchbird::engine::sblr;
+  DdlDropTriggerWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "DROP" ||
+      ToUpperAscii(tokens[1]->text) != "TRIGGER") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto terminator_count =
+      std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      });
+  if (terminator_count > 1 ||
+      (terminator_count == 1 &&
+       tokens.back()->kind != TokenKind::kStatementTerminator)) {
+    return invalid("ddl_drop_trigger_statement_terminator_invalid");
+  }
+  if (terminator_count == 1) tokens.pop_back();
+  std::size_t index = 2;
+  while (index < tokens.size()) {
+    const auto upper = ToUpperAscii(tokens[index]->text);
+    if (!result.trigger_name_atoms.empty() &&
+        (upper == "RESTRICT" || upper == "CASCADE")) {
+      break;
+    }
+    const auto* token = tokens[index];
+    if (!IsIdentifierLikeForRouteExecution(*token) || token->text.empty() ||
+        token->text.size() > 256 || token->text.find('.') != std::string::npos ||
+        result.trigger_name_atoms.size() == 3) {
+      return invalid("ddl_drop_trigger_name_invalid");
+    }
+    result.trigger_name_atoms.push_back({token->text, token->quoted});
+    ++index;
+    if (index >= tokens.size() || tokens[index]->text != ".") break;
+    ++index;
+    if (index >= tokens.size()) {
+      return invalid("ddl_drop_trigger_name_invalid");
+    }
+  }
+  if (result.trigger_name_atoms.empty()) {
+    return invalid("ddl_drop_trigger_name_missing");
+  }
+  if (index < tokens.size()) {
+    const auto behavior = ToUpperAscii(tokens[index++]->text);
+    if (behavior == "RESTRICT") {
+      result.dependency_mode =
+          ddl::DdlDropTriggerDependencyModeV1::kRestrict;
+    } else if (behavior == "CASCADE") {
+      result.dependency_mode = ddl::DdlDropTriggerDependencyModeV1::kCascade;
+    } else {
+      return invalid("ddl_drop_trigger_dependency_mode_invalid");
+    }
+  }
+  if (index != tokens.size()) {
+    return invalid("ddl_drop_trigger_trailing_clause_not_admitted");
+  }
+  result.valid = true;
+  return result;
+}
+
 enum class PreparedStatementWireCommandKind {
   kNone,
   kPrepare,
@@ -24833,6 +25083,50 @@ struct SbsqlTestWireSession::HeldDdlCreateTrigger {
   bool autocommit_complete{false};
 };
 
+struct SbsqlTestWireSession::HeldDdlAlterTrigger {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrDdlAlterTriggerRequestV1 bind_request;
+  scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1 descriptor;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
+struct SbsqlTestWireSession::HeldDdlDropTrigger {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrDdlDropTriggerRequestV1 bind_request;
+  scratchbird::engine::sblr::SblrDdlDropTriggerDescriptorV1 descriptor;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
 namespace {
 
 bool ExactDdlCreateSchemaTerminal(
@@ -24900,6 +25194,108 @@ bool ExactDdlCreateTriggerTerminal(
   return terminal->receipt == descriptor.receipt &&
          terminal->trigger_uuid == descriptor.trigger_uuid &&
          terminal->trigger_generation == descriptor.trigger_generation &&
+         terminal->target_relation_uuid == descriptor.target_relation_uuid &&
+         terminal->target_relation_generation ==
+             descriptor.target_relation_generation &&
+         terminal->schema_uuid == descriptor.schema_uuid &&
+         terminal->schema_generation == descriptor.schema_generation &&
+         terminal->owning_transaction_uuid ==
+             descriptor.owning_transaction_uuid &&
+         terminal->owning_local_transaction_id ==
+             descriptor.owning_local_transaction_id &&
+         terminal->statement_snapshot_uuid ==
+             descriptor.statement_snapshot_uuid &&
+         terminal->body_sblr_uuid == descriptor.body_sblr_uuid &&
+         terminal->body_sblr_generation == descriptor.body_sblr_generation &&
+         terminal->catalog_generation == descriptor.catalog_generation &&
+         terminal->security_epoch == descriptor.security_epoch &&
+         terminal->resource_generation == descriptor.resource_generation &&
+         terminal->descriptor_evidence_sha256 == descriptor.evidence &&
+         terminal->availability == descriptor.availability &&
+         nonzero(terminal->catalog_row_uuid) &&
+         nonzero(terminal->mutation_uuid) && nonzero(terminal->evidence) &&
+         nonzero(terminal->publication_barrier) &&
+         terminal->catalog_row_uuid != terminal->trigger_uuid &&
+         terminal->mutation_uuid != terminal->trigger_uuid &&
+         terminal->publication_barrier != terminal->trigger_uuid &&
+         terminal->catalog_row_uuid != terminal->mutation_uuid &&
+         terminal->catalog_row_uuid != terminal->publication_barrier &&
+         terminal->mutation_uuid != terminal->publication_barrier;
+}
+
+bool ExactDdlAlterTriggerTerminal(
+    const scratchbird::engine::sblr::SblrDdlAlterTriggerDescriptorV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrDdlAlterTriggerResultV1* terminal,
+    std::string* detail) {
+  namespace ddl = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      descriptor.trigger_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      !ddl::DecodeSblrDdlAlterTriggerResultV1(bytes, size, terminal, detail) ||
+      ddl::EncodeSblrDdlAlterTriggerResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  return terminal->receipt == descriptor.receipt &&
+         terminal->trigger_uuid == descriptor.trigger_uuid &&
+         terminal->trigger_generation == descriptor.trigger_generation + 1 &&
+         terminal->target_relation_uuid == descriptor.target_relation_uuid &&
+         terminal->target_relation_generation ==
+             descriptor.target_relation_generation &&
+         terminal->schema_uuid == descriptor.schema_uuid &&
+         terminal->schema_generation == descriptor.schema_generation &&
+         terminal->owning_transaction_uuid ==
+             descriptor.owning_transaction_uuid &&
+         terminal->owning_local_transaction_id ==
+             descriptor.owning_local_transaction_id &&
+         terminal->statement_snapshot_uuid ==
+             descriptor.statement_snapshot_uuid &&
+         terminal->body_sblr_uuid == descriptor.body_sblr_uuid &&
+         terminal->body_sblr_generation == descriptor.body_sblr_generation &&
+         terminal->catalog_generation == descriptor.catalog_generation &&
+         terminal->security_epoch == descriptor.security_epoch &&
+         terminal->resource_generation == descriptor.resource_generation &&
+         terminal->descriptor_evidence_sha256 == descriptor.evidence &&
+         terminal->availability == descriptor.availability &&
+         nonzero(terminal->catalog_row_uuid) &&
+         nonzero(terminal->mutation_uuid) && nonzero(terminal->evidence) &&
+         nonzero(terminal->publication_barrier) &&
+         terminal->catalog_row_uuid != terminal->trigger_uuid &&
+         terminal->mutation_uuid != terminal->trigger_uuid &&
+         terminal->publication_barrier != terminal->trigger_uuid &&
+         terminal->catalog_row_uuid != terminal->mutation_uuid &&
+         terminal->catalog_row_uuid != terminal->publication_barrier &&
+         terminal->mutation_uuid != terminal->publication_barrier;
+}
+
+bool ExactDdlDropTriggerTerminal(
+    const scratchbird::engine::sblr::SblrDdlDropTriggerDescriptorV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrDdlDropTriggerResultV1* terminal,
+    std::string* detail) {
+  namespace ddl = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      descriptor.trigger_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      !ddl::DecodeSblrDdlDropTriggerResultV1(bytes, size, terminal, detail) ||
+      ddl::EncodeSblrDdlDropTriggerResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  return terminal->receipt == descriptor.receipt &&
+         terminal->trigger_uuid == descriptor.trigger_uuid &&
+         terminal->trigger_generation == descriptor.trigger_generation + 1 &&
          terminal->target_relation_uuid == descriptor.target_relation_uuid &&
          terminal->target_relation_generation ==
              descriptor.target_relation_generation &&
@@ -25093,6 +25489,32 @@ void SbsqlTestWireSession::AcknowledgeDdlCreateTriggerCompletionForWire() {
   if (held.phase == HeldDdlCreateTrigger::Phase::result_recorded &&
       held.terminal_result.has_value() && held.autocommit_complete) {
     held_ddl_create_trigger_.reset();
+  }
+}
+
+bool SbsqlTestWireSession::HasHeldDdlAlterTriggerForWire() const {
+  return held_ddl_alter_trigger_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeDdlAlterTriggerCompletionForWire() {
+  if (held_ddl_alter_trigger_ == nullptr) return;
+  const auto& held = *held_ddl_alter_trigger_;
+  if (held.phase == HeldDdlAlterTrigger::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_ddl_alter_trigger_.reset();
+  }
+}
+
+bool SbsqlTestWireSession::HasHeldDdlDropTriggerForWire() const {
+  return held_ddl_drop_trigger_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeDdlDropTriggerCompletionForWire() {
+  if (held_ddl_drop_trigger_ == nullptr) return;
+  const auto& held = *held_ddl_drop_trigger_;
+  if (held.phase == HeldDdlDropTrigger::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_ddl_drop_trigger_.reset();
   }
 }
 
@@ -26348,6 +26770,44 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
+  if (held_ddl_alter_trigger_ != nullptr &&
+      held_ddl_alter_trigger_->phase !=
+          HeldDdlAlterTrigger::Phase::result_recorded &&
+      held_ddl_alter_trigger_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "ddl_catalog";
+    result.operation_family = "sblr.catalog.mutation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "An ALTER TRIGGER operation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.ddl_alter_trigger_recovery",
+        {{"detail", "exact_held_alter_trigger_replay_required"}}));
+    mark_phase("ddl_alter_trigger_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+  if (held_ddl_drop_trigger_ != nullptr &&
+      held_ddl_drop_trigger_->phase !=
+          HeldDdlDropTrigger::Phase::result_recorded &&
+      held_ddl_drop_trigger_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "ddl_catalog";
+    result.operation_family = "sblr.catalog.mutation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "A DROP TRIGGER operation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.ddl_drop_trigger_recovery",
+        {{"detail", "exact_held_drop_trigger_replay_required"}}));
+    mark_phase("ddl_drop_trigger_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
 
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
@@ -26426,6 +26886,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (canonical_compile_output == nullptr &&
         starts_with_command("CREATE TRIGGER")) {
       return RunDdlCreateTriggerForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("ALTER TRIGGER")) {
+      return RunDdlAlterTriggerForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("DROP TRIGGER")) {
+      return RunDdlDropTriggerForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CATALOG EPOCH CHECK")) {
@@ -31320,58 +31788,668 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateTriggerForWire(
   return execute_held();
 }
 
-PipelineResult SbsqlTestWireSession::RunDdlAlterTriggerForWire() {
+PipelineResult SbsqlTestWireSession::RunDdlAlterTriggerForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace ddl = scratchbird::engine::sblr;
   PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
-  namespace c = scratchbird::engine::sblr;
-  c::SblrDdlAlterTriggerRequestV1 q;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "ALTER TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
-  q.receipt = *receipt; q.occurrence = 1; q.trigger_occurrence = 1;
-  auto coordinated = server_client_->CoordinateDdlAlterTrigger(session_, c::EncodeSblrDdlAlterTriggerRequestV1(q));
-  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
-  c::SblrDdlAlterTriggerDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrDdlAlterTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
-  auto operand = c::EncodeSblrDdlAlterTriggerDescriptorV1(d, true);
-  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "ALTER TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_alter_trigger"; g_ddl_alter_trigger_operand = &operand;
-  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical ALTER TRIGGER operation was refused.",
+        "sbp_sbsql.wire.ddl_alter_trigger",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_alter_trigger_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDdlAlterTriggerWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "ddl_alter_trigger_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_ddl_alter_trigger_ == nullptr ||
+        held_ddl_alter_trigger_->phase !=
+            HeldDdlAlterTrigger::Phase::execution_pending ||
+        !held_ddl_alter_trigger_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_alter_trigger_held_execution_invalid");
+    }
+    auto& held = *held_ddl_alter_trigger_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {}, false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {}, false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_ddl_alter_trigger_.reset();
+      return result;
+    }
+    ddl::SblrDdlAlterTriggerResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.ddl_alter_trigger" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactDdlAlterTriggerTerminal(
+            held.descriptor,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "ddl_alter_trigger_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes = held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldDdlAlterTrigger::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_ddl_alter_trigger_ != nullptr) {
+    auto& held = *held_ddl_alter_trigger_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held ALTER TRIGGER lifecycle may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldDdlAlterTrigger::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldDdlAlterTrigger::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_alter_trigger_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "ddl_alter_trigger_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    const auto transaction_uuid =
+        CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+    const auto statement_snapshot =
+        CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+    const auto catalog_epoch =
+        CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+    const auto security_context =
+        CanonicalUuidBytes(acquired.context.security_context_uuid);
+    if (!receipt || !transaction_uuid || !statement_snapshot ||
+        !catalog_epoch || !security_context ||
+        acquired.context.transaction.local_transaction_id == 0 ||
+        acquired.context.preliminary_statement_catalog_generation == 0 ||
+        acquired.context.preliminary_security_epoch == 0 ||
+        acquired.context.preliminary_resource_epoch == 0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_alter_trigger_statement_receipt_incomplete");
+    }
+
+    ddl::SblrDdlAlterTriggerRequestV1 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.trigger_occurrence = 1;
+    request.command_identity = 1;
+    request.action_mask = command.action_mask;
+    request.enabled_state = command.enabled_state;
+    request.position = command.position;
+    request.security_mode = command.security_mode;
+    request.failure_policy = command.failure_policy;
+    request.trigger_name_atoms = command.trigger_name_atoms;
+    const auto request_bytes = ddl::EncodeSblrDdlAlterTriggerRequestV1(request);
+    ddl::SblrDdlAlterTriggerRequestV1 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !ddl::DecodeSblrDdlAlterTriggerRequestV1(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty()
+                        ? "ddl_alter_trigger_bind_request_invalid"
+                        : detail);
+    }
+    auto held = std::make_unique<HeldDdlAlterTrigger>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldDdlAlterTrigger::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_ddl_alter_trigger_ = std::move(held);
+  }
+
+  auto& held = *held_ddl_alter_trigger_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateDdlAlterTrigger(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateDdlAlterTrigger(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_ddl_alter_trigger_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "ddl_alter_trigger_coordinate_outcome_unknown"
+                        : "ddl_alter_trigger_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  ddl::SblrDdlAlterTriggerDescriptorV1 descriptor;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  if (!transaction_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context ||
+      !ddl::DecodeSblrDdlAlterTriggerDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail, false) ||
+      descriptor.receipt != held.bind_request.receipt ||
+      descriptor.occurrence != held.bind_request.occurrence ||
+      descriptor.trigger_occurrence != held.bind_request.trigger_occurrence ||
+      descriptor.action_mask != held.bind_request.action_mask ||
+      descriptor.enabled_state != held.bind_request.enabled_state ||
+      descriptor.position != held.bind_request.position ||
+      descriptor.security_mode != held.bind_request.security_mode ||
+      descriptor.failure_policy != held.bind_request.failure_policy ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != context.preliminary_security_epoch ||
+      descriptor.resource_generation != context.preliminary_resource_epoch ||
+      descriptor.syntax_demand_sha256 != held.bind_request.evidence ||
+      descriptor.trigger_generation == 0 ||
+      descriptor.trigger_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      descriptor.target_relation_generation == 0 ||
+      descriptor.target_relation_descriptor_generation == 0 ||
+      descriptor.schema_generation == 0 || descriptor.policy_generation == 0 ||
+      descriptor.body_sblr_generation == 0 ||
+      descriptor.recovery_generation == 0 || descriptor.availability == 0 ||
+      !nonzero(descriptor.trigger_uuid) ||
+      !nonzero(descriptor.target_relation_uuid) ||
+      !nonzero(descriptor.target_relation_descriptor_uuid) ||
+      !nonzero(descriptor.schema_uuid) ||
+      !nonzero(descriptor.policy_snapshot_uuid) ||
+      !nonzero(descriptor.resource_grant_uuid) ||
+      !nonzero(descriptor.owner_principal_uuid) ||
+      !nonzero(descriptor.body_sblr_uuid) ||
+      !nonzero(descriptor.recovery_uuid) ||
+      !nonzero(descriptor.authority_bundle_sha256) ||
+      !nonzero(descriptor.evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_alter_trigger_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != ddl::kSblrDdlAlterTriggerDescriptorV1Bytes ||
+      !std::equal(operand.begin(), operand.begin() + 4, "TADX")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_alter_trigger_descriptor_transport_invalid");
+  }
+  std::copy_n("TADO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_alter_trigger_descriptor_projection_changed_authority");
+  }
+  ddl::SblrDdlAlterTriggerDescriptorV1 operand_descriptor;
+  if (!ddl::DecodeSblrDdlAlterTriggerDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail, true) ||
+      operand_descriptor.receipt != descriptor.receipt ||
+      operand_descriptor.trigger_uuid != descriptor.trigger_uuid ||
+      operand_descriptor.target_relation_uuid !=
+          descriptor.target_relation_uuid ||
+      operand_descriptor.body_sblr_uuid != descriptor.body_sblr_uuid ||
+      operand_descriptor.recovery_uuid != descriptor.recovery_uuid ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_alter_trigger_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_alter_trigger";
+  g_ddl_alter_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr);
   g_ddl_alter_trigger_operand = nullptr;
-  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "ALTER TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (result.accepted) { c::SblrDdlAlterTriggerResultV1 rr; if (!c::DecodeSblrDdlAlterTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
-  return result;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_alter_trigger_canonical_submission_invalid");
+  }
+  held.descriptor = descriptor;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldDdlAlterTrigger::Phase::execution_pending;
+  return execute_held();
 }
 
-PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire() {
+PipelineResult SbsqlTestWireSession::RunDdlDropTriggerForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace ddl = scratchbird::engine::sblr;
   PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
-  namespace c = scratchbird::engine::sblr;
-  c::SblrDdlDropTriggerRequestV1 q;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt || !acquired.context.preliminary_ddl_create_domain_executor_availability_generation) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", "DROP TRIGGER preliminary authority was missing.", "sbp_sbsql.wire")); return result; }
-  q.receipt = *receipt; q.occurrence = 1; q.trigger_occurrence = 1;
-  auto coordinated = server_client_->CoordinateDdlDropTrigger(session_, c::EncodeSblrDdlDropTriggerRequestV1(q));
-  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
-  c::SblrDdlDropTriggerDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrDdlDropTriggerDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND_INVALID", "ERROR", detail, "sbp_sbsql.wire")); return result; }
-  auto operand = c::EncodeSblrDdlDropTriggerDescriptorV1(d, true);
-  if (operand.empty()) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "DROP TRIGGER descriptor encoding failed.", "sbp_sbsql.wire")); return result; }
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.ddl_drop_trigger"; g_ddl_drop_trigger_operand = &operand;
-  auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+  result.statement_family = "ddl_catalog";
+  result.operation_family = "sblr.catalog.mutation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR",
+        "The canonical DROP TRIGGER operation was refused.",
+        "sbp_sbsql.wire.ddl_drop_trigger",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_drop_trigger_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseDdlDropTriggerWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "ddl_drop_trigger_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_ddl_drop_trigger_ == nullptr ||
+        held_ddl_drop_trigger_->phase !=
+            HeldDdlDropTrigger::Phase::execution_pending ||
+        !held_ddl_drop_trigger_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_drop_trigger_held_execution_invalid");
+    }
+    auto& held = *held_ddl_drop_trigger_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {}, false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {}, false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_ddl_drop_trigger_.reset();
+      return result;
+    }
+    ddl::SblrDdlDropTriggerResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.ddl_drop_trigger" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactDdlDropTriggerTerminal(
+            held.descriptor,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "ddl_drop_trigger_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes = held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldDdlDropTrigger::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_ddl_drop_trigger_ != nullptr) {
+    auto& held = *held_ddl_drop_trigger_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held DROP TRIGGER lifecycle may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldDdlDropTrigger::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldDdlDropTrigger::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_drop_trigger_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "ddl_drop_trigger_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    const auto transaction_uuid =
+        CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+    const auto statement_snapshot =
+        CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+    const auto catalog_epoch =
+        CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+    const auto security_context =
+        CanonicalUuidBytes(acquired.context.security_context_uuid);
+    if (!receipt || !transaction_uuid || !statement_snapshot ||
+        !catalog_epoch || !security_context ||
+        acquired.context.transaction.local_transaction_id == 0 ||
+        acquired.context.preliminary_statement_catalog_generation == 0 ||
+        acquired.context.preliminary_security_epoch == 0 ||
+        acquired.context.preliminary_resource_epoch == 0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "ddl_drop_trigger_statement_receipt_incomplete");
+    }
+
+    ddl::SblrDdlDropTriggerRequestV1 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.trigger_occurrence = 1;
+    request.command_identity = 1;
+    request.dependency_mode = command.dependency_mode;
+    request.trigger_name_atoms = command.trigger_name_atoms;
+    const auto request_bytes = ddl::EncodeSblrDdlDropTriggerRequestV1(request);
+    ddl::SblrDdlDropTriggerRequestV1 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !ddl::DecodeSblrDdlDropTriggerRequestV1(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty()
+                        ? "ddl_drop_trigger_bind_request_invalid"
+                        : detail);
+    }
+    auto held = std::make_unique<HeldDdlDropTrigger>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldDdlDropTrigger::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_ddl_drop_trigger_ = std::move(held);
+  }
+
+  auto& held = *held_ddl_drop_trigger_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateDdlDropTrigger(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateDdlDropTrigger(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_ddl_drop_trigger_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "ddl_drop_trigger_coordinate_outcome_unknown"
+                        : "ddl_drop_trigger_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  ddl::SblrDdlDropTriggerDescriptorV1 descriptor;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  if (!transaction_uuid || !statement_snapshot || !catalog_epoch ||
+      !security_context ||
+      !ddl::DecodeSblrDdlDropTriggerDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail, false) ||
+      descriptor.receipt != held.bind_request.receipt ||
+      descriptor.occurrence != held.bind_request.occurrence ||
+      descriptor.trigger_occurrence != held.bind_request.trigger_occurrence ||
+      descriptor.dependency_mode != held.bind_request.dependency_mode ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_epoch != context.preliminary_security_epoch ||
+      descriptor.resource_generation != context.preliminary_resource_epoch ||
+      descriptor.syntax_demand_sha256 != held.bind_request.evidence ||
+      descriptor.trigger_generation == 0 ||
+      descriptor.trigger_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      descriptor.target_relation_generation == 0 ||
+      descriptor.target_relation_descriptor_generation == 0 ||
+      descriptor.schema_generation == 0 || descriptor.policy_generation == 0 ||
+      descriptor.body_sblr_generation == 0 ||
+      descriptor.recovery_generation == 0 || descriptor.availability == 0 ||
+      !nonzero(descriptor.trigger_uuid) ||
+      !nonzero(descriptor.target_relation_uuid) ||
+      !nonzero(descriptor.target_relation_descriptor_uuid) ||
+      !nonzero(descriptor.schema_uuid) ||
+      !nonzero(descriptor.policy_snapshot_uuid) ||
+      !nonzero(descriptor.resource_grant_uuid) ||
+      !nonzero(descriptor.owner_principal_uuid) ||
+      !nonzero(descriptor.body_sblr_uuid) ||
+      !nonzero(descriptor.recovery_uuid) ||
+      !nonzero(descriptor.authority_bundle_sha256) ||
+      !nonzero(descriptor.evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "ddl_drop_trigger_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != ddl::kSblrDdlDropTriggerDescriptorV1Bytes ||
+      !std::equal(operand.begin(), operand.begin() + 4, "TDDX")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "ddl_drop_trigger_descriptor_transport_invalid");
+  }
+  std::copy_n("TDDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_drop_trigger_descriptor_projection_changed_authority");
+  }
+  ddl::SblrDdlDropTriggerDescriptorV1 operand_descriptor;
+  if (!ddl::DecodeSblrDdlDropTriggerDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail, true) ||
+      operand_descriptor.receipt != descriptor.receipt ||
+      operand_descriptor.trigger_uuid != descriptor.trigger_uuid ||
+      operand_descriptor.target_relation_uuid !=
+          descriptor.target_relation_uuid ||
+      operand_descriptor.body_sblr_uuid != descriptor.body_sblr_uuid ||
+      operand_descriptor.recovery_uuid != descriptor.recovery_uuid ||
+      operand_descriptor.evidence != descriptor.evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "ddl_drop_trigger_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.ddl_drop_trigger";
+  g_ddl_drop_trigger_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr);
   g_ddl_drop_trigger_operand = nullptr;
-  if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "DROP TRIGGER canonical submission failed.", "sbp_sbsql.wire")); return result; }
-  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (result.accepted) { c::SblrDdlDropTriggerResultV1 rr; if (!c::DecodeSblrDdlDropTriggerResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
-  return result;
+  if (!submission.has_value()) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  "ddl_drop_trigger_canonical_submission_invalid");
+  }
+  held.descriptor = descriptor;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldDdlDropTrigger::Phase::execution_pending;
+  return execute_held();
 }
 
 PipelineResult SbsqlTestWireSession::RunDdlCreateProcedureForWire() {

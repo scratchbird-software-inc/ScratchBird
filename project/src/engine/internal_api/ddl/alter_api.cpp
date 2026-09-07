@@ -14,6 +14,7 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "sblr_sequence_runtime.hpp"
@@ -1638,6 +1639,93 @@ EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintReq
                             result.catalog_row_uuid.canonical,
                             "constraint_descriptor");
   }
+  return result;
+}
+
+EngineAlterTriggerResult EngineAlterTrigger(
+    const EngineAlterTriggerRequest& request) {
+  constexpr const char* kOperation = "ddl.alter_trigger";
+  if (request.target_object.object_kind != "trigger" ||
+      request.target_object.uuid.canonical.empty() ||
+      request.expected_executable_generation == 0) {
+    return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
+        request.context, kOperation,
+        MakeInvalidRequestDiagnostic(
+            kOperation, "exact_trigger_uuid_and_generation_required"));
+  }
+
+  const auto executable_state =
+      LoadExecutableObjectLifecycleState(request.context);
+  if (!executable_state.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
+        request.context, kOperation, executable_state.diagnostic);
+  }
+  const auto executable = std::find_if(
+      executable_state.state.objects.begin(),
+      executable_state.state.objects.end(), [&](const auto& object) {
+        return object.object_uuid == request.target_object.uuid.canonical;
+      });
+  if (executable == executable_state.state.objects.end() ||
+      executable->object_kind != "trigger" || executable->deleted ||
+      executable->lifecycle_state != "active" || executable->invalidated ||
+      executable->executable_generation !=
+          request.expected_executable_generation) {
+    return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "MGA.AUTHORITY_MISMATCH",
+            "ddl.alter_trigger.executable_generation_mismatch",
+            request.target_object.uuid.canonical, true));
+  }
+
+  EngineCatalogAlterObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = kOperation;
+  catalog_request.target_object.object_kind = "trigger";
+  catalog_request.option_envelopes.push_back(
+      "payload:trigger_definition_generation=" +
+      std::to_string(request.expected_executable_generation + 1));
+  const auto catalog = EngineCatalogAlterObject(catalog_request);
+  if (!catalog.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
+        request.context, kOperation,
+        catalog.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(kOperation,
+                                           "catalog_successor_failed")
+            : catalog.diagnostics.front());
+  }
+
+  EngineAlterExecutableObjectRequest executable_request;
+  static_cast<EngineApiRequest&>(executable_request) = request;
+  executable_request.operation_id = kOperation;
+  executable_request.target_object.object_kind = "trigger";
+  const auto altered = EngineAlterExecutableObject(executable_request);
+  if (!altered.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
+        request.context, kOperation,
+        altered.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(kOperation,
+                                           "executable_successor_failed")
+            : altered.diagnostics.front());
+  }
+
+  EngineAlterTriggerResult result;
+  static_cast<EngineApiResult&>(result) =
+      static_cast<const EngineApiResult&>(altered);
+  result.operation_id = kOperation;
+  result.primary_object = catalog.primary_object;
+  result.catalog_row_uuid = catalog.catalog_row_uuid;
+  result.bound_object_identity = altered.bound_object_identity;
+  result.executable_generation = altered.executable_generation;
+  result.metadata_cache_epoch = catalog.metadata_cache_epoch;
+  result.evidence.insert(result.evidence.end(), catalog.evidence.begin(),
+                         catalog.evidence.end());
+  AddApiBehaviorEvidence(&result, "trigger_successor_generation",
+                         std::to_string(result.executable_generation));
+  AddDdlPublicationResult(&result, kOperation, "trigger",
+                          result.primary_object.uuid.canonical,
+                          result.catalog_row_uuid.canonical,
+                          "trigger_successor_descriptor");
   return result;
 }
 

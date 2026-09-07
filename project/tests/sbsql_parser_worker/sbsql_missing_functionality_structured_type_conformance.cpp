@@ -323,7 +323,15 @@ void ValidateAdmissionAndRegistry() {
           sblr::EncodeSblrDdlDropTypeDescriptorV1(descriptor, true);
     } else if (route.operation_id == "engine.op.catalog_introspect") {
       sblr::SblrCatalogIntrospectDescriptorV1 descriptor;
-      descriptor.body[0] = 1;
+      descriptor.object_kind =
+          sblr::kSblrCatalogIntrospectObjectKindTableV1;
+      descriptor.profile =
+          sblr::kSblrCatalogIntrospectProfileShowObjectDetailV1;
+      descriptor.flags = sblr::kSblrCatalogIntrospectDetailFlagV1;
+      descriptor.object_uuid[15] = 1;
+      descriptor.catalog_epoch = 1;
+      descriptor.security_epoch = 1;
+      descriptor.canonical_path_utf8 = "SYS.STRUCTURED_TYPE";
       descriptor.availability = 1;
       operand.type = "catalog_introspect_descriptor";
       operand.name = "object_detail";

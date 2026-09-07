@@ -306,7 +306,31 @@ void RequireAdmissionAndOpcodeRegistry() {
           "CREATE SCHEMA canonical registry tuple drifted");
 
   sblr::SblrDdlCreateSchemaDescriptorV1 descriptor;
-  descriptor.body[0] = 1;
+  descriptor.receipt[15] = 1;
+  descriptor.occurrence = 1;
+  descriptor.schema_occurrence = 1;
+  descriptor.schema_uuid[15] = 2;
+  descriptor.schema_generation = 1;
+  descriptor.database_uuid[15] = 3;
+  descriptor.owning_transaction_uuid[15] = 4;
+  descriptor.owning_local_transaction_id = 1;
+  descriptor.statement_snapshot_uuid[15] = 5;
+  descriptor.catalog_epoch_uuid[15] = 6;
+  descriptor.catalog_generation = 1;
+  descriptor.security_context_uuid[15] = 7;
+  descriptor.security_epoch = 1;
+  descriptor.policy_snapshot_uuid[15] = 8;
+  descriptor.policy_generation = 1;
+  descriptor.resource_grant_uuid[15] = 9;
+  descriptor.resource_generation = 1;
+  descriptor.owner_principal_uuid[15] = 10;
+  descriptor.binding_uuid[15] = 11;
+  descriptor.recovery_uuid[15] = 12;
+  descriptor.binding_generation = 1;
+  descriptor.recovery_generation = 1;
+  descriptor.normalized_path_sha256[31] = 1;
+  descriptor.syntax_demand_sha256[31] = 2;
+  descriptor.authorization_evidence_sha256[31] = 3;
   descriptor.availability = 1;
   auto operation = sblr::MakeSblrEnvelope(
       std::string(kCreateSchemaOperation), std::string(kCreateSchemaOpcode),

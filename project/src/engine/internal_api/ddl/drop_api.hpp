@@ -21,4 +21,16 @@ struct EngineDropConstraintRequest : EngineApiRequest {};
 struct EngineDropConstraintResult : EngineApiResult {};
 EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintRequest& request);
 
+struct EngineDropTriggerRequest : EngineApiRequest {
+  std::uint64_t expected_executable_generation = 0;
+  bool cascade_dependencies = false;
+};
+struct EngineDropTriggerResult : EngineApiResult {
+  EngineBoundObjectIdentity bound_object_identity;
+  std::uint64_t executable_generation = 0;
+  std::uint64_t metadata_cache_epoch = 0;
+};
+EngineDropTriggerResult EngineDropTrigger(
+    const EngineDropTriggerRequest& request);
+
 }  // namespace scratchbird::engine::internal_api

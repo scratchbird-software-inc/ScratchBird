@@ -282,12 +282,12 @@ def main() -> int:
         (*parser._actions[-1].choices, "source-artifact-external")
     )
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "system-config-get", "system-config-reset", "ddl-create-rule", "ddl-drop-rule", "ddl-create-publication", "ddl-alter-publication", "ddl-drop-publication", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator", "ddl-drop-operator", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-trigger-observe", "ddl-alter-trigger", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-trigger-observe", "ddl-alter-trigger", "ddl-alter-trigger-observe", "ddl-refresh-materialized-view", "ddl-create-materialized-view", "ddl-drop-materialized-view", "ddl-drop-package", "ddl-drop-synonym", "ddl-drop-foreign-table", "ddl-alter-package", "ddl-alter-sequence", "ddl-drop-sequence", "ddl-create-type", "ddl-alter-type", "ddl-drop-type", "ddl-drop-table", "ddl-create-table-as-query-with-data", "ddl-create-table-as-query-with-no-data", "ddl-create-sequence"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-counter-add", "dml-conditional-mutate", "ddl-alter-timeseries-value-cache", "ddl-drop-timeseries-value-cache"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "dml-timeseries-schema-write"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-timeseries-series-cardinality-policy"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-timeseries-value-cache"))
-    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger", "ddl-drop-trigger-observe"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "parameter-bind-multi-nullable", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-create"))
@@ -382,7 +382,11 @@ def main() -> int:
         seed_args = ()
         if args.operation == "bulk-import-stream":
             seed_args = ("--bulk-import-fixture",)
-        elif args.operation == "ddl-create-trigger":
+        elif args.operation in (
+            "ddl-create-trigger",
+            "ddl-alter-trigger",
+            "ddl-drop-trigger",
+        ):
             seed_args = ("--trigger-fixture",)
         evidence = seed_database(Path(args.server), database, seed_args)
         server_trace = work / "server_phase.jsonl"
@@ -396,6 +400,12 @@ def main() -> int:
         )
         env["SCRATCHBIRD_TEST_DDL_CREATE_TRIGGER_RESULT_ARTIFACT"] = str(
             work / "ddl-create-trigger-result.tvrs"
+        )
+        env["SCRATCHBIRD_TEST_DDL_ALTER_TRIGGER_RESULT_ARTIFACT"] = str(
+            work / "ddl-alter-trigger-result.tars"
+        )
+        env["SCRATCHBIRD_TEST_DDL_DROP_TRIGGER_RESULT_ARTIFACT"] = str(
+            work / "ddl-drop-trigger-result.tdrs"
         )
         server = subprocess.Popen(
             [args.server, "--foreground", "--no-listeners", "--control-dir",
@@ -473,6 +483,47 @@ def main() -> int:
                     trace_path.write_bytes(b"")
             catalog_event_before = catalog_event_path.read_bytes()
             executor_availability_before = executor_availability_snapshot()
+        if args.operation in ("ddl-alter-trigger", "ddl-drop-trigger"):
+            # ALTER and DROP must consume a genuinely committed trigger from a
+            # different authenticated statement/session.  The trigger fixture
+            # seeds only the schema, target table, body target, and sequence;
+            # it does not pre-authorize or fabricate the trigger identity.
+            bootstrap_trigger = subprocess.run(
+                [
+                    args.client,
+                    f"unix:{endpoint}",
+                    str(database),
+                    "alice",
+                    evidence,
+                    "ddl-create-trigger",
+                    "sbsql-sblr-trigger-lifecycle-bootstrap",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            expected_bootstrap = (
+                "CSC-TEST-002621 DDL_CREATE_TRIGGER accepted "
+                "surface_id=SBSQL-5127560F8031 "
+                "canonical_sblr=true catalog_mutation=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if (
+                bootstrap_trigger.returncode != 0
+                or bootstrap_trigger.stdout != expected_bootstrap
+                or bootstrap_trigger.stderr
+            ):
+                raise ProofError(
+                    "ALTER/DROP TRIGGER prerequisite did not create a real "
+                    "committed trigger: "
+                    f"returncode={bootstrap_trigger.returncode} "
+                    f"stdout={bootstrap_trigger.stdout!r} "
+                    f"stderr={bootstrap_trigger.stderr!r}"
+                )
+            for trace_path in (server_trace, dispatch_trace):
+                if trace_path.exists():
+                    trace_path.write_bytes(b"")
         command = [args.client, f"unix:{endpoint}", str(database), "alice",
                    evidence, args.operation, f"sbsql-sblr-{args.operation}-e2e-first"]
         first = subprocess.run(
@@ -536,6 +587,28 @@ def main() -> int:
                 raise ProofError(
                     "CREATE TRIGGER did not complete the exact committed "
                     "canonical mutation route"
+                )
+        elif args.operation == "ddl-alter-trigger":
+            expected_success = (
+                "CSC-TEST-002625 DDL_ALTER_TRIGGER accepted "
+                "canonical_sblr=true catalog_successor=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "ALTER TRIGGER did not complete the exact committed "
+                    "canonical successor route"
+                )
+        elif args.operation == "ddl-drop-trigger":
+            expected_success = (
+                "CSC-TEST-002629 DDL_DROP_TRIGGER accepted "
+                "canonical_sblr=true catalog_tombstone=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "DROP TRIGGER did not complete the exact committed "
+                    "canonical tombstone route"
                 )
         elif args.operation == "ddl-create-index":
             expected_refusal = (
@@ -1322,7 +1395,29 @@ def main() -> int:
                 "ddl_create_trigger_result_sha256=",
                 "executor_availability_generation=",
             )
-        elif args.operation in ("ddl-alter-trigger", "ddl-drop-trigger", "ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
+        elif args.operation == "ddl-alter-trigger":
+            expected = (
+                "executor_id=engine.op.ddl_alter_trigger",
+                "opcode=SBLR_DDL_ALTER_TRIGGER",
+                "opcode_code=1552",
+                "operand_descriptor_id=alter_trigger_descriptor",
+                "result_descriptor_id=ddl_result",
+                "result_descriptor_version=1",
+                "ddl_alter_trigger_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation == "ddl-drop-trigger":
+            expected = (
+                "executor_id=engine.op.ddl_drop_trigger",
+                "opcode=SBLR_DDL_DROP_TRIGGER",
+                "opcode_code=1553",
+                "operand_descriptor_id=drop_trigger_descriptor",
+                "result_descriptor_id=ddl_result",
+                "result_descriptor_version=1",
+                "ddl_drop_trigger_result_sha256=",
+                "executor_availability_generation=",
+            )
+        elif args.operation in ("ddl-create-procedure", "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule"):
             expected = ()
         elif args.operation == "ddl-create-schema":
             expected = ("executor_id=engine.op.ddl_create_schema", "opcode=SBLR_DDL_CREATE_SCHEMA", "opcode_code=1536", "operand_descriptor_id=create_schema_descriptor", "result_descriptor_id=ddl_result", "result_descriptor_version=1", "ddl_create_schema_result_sha256=", "executor_availability_generation=")
@@ -1363,6 +1458,10 @@ def main() -> int:
             second[5] = "ddl-create-schema-observe"
         elif args.operation == "ddl-create-trigger":
             second[5] = "ddl-create-trigger-observe"
+        elif args.operation == "ddl-alter-trigger":
+            second[5] = "ddl-alter-trigger-observe"
+        elif args.operation == "ddl-drop-trigger":
+            second[5] = "ddl-drop-trigger-observe"
         verified = subprocess.run(
             second, capture_output=True, text=True, timeout=30, env=env
         )
@@ -1577,6 +1676,135 @@ def main() -> int:
                 raise ProofError(
                     "CREATE TRIGGER restart observation changed durable "
                     "catalog/name authority rows"
+                )
+        elif args.operation in ("ddl-alter-trigger", "ddl-drop-trigger"):
+            alter_family = args.operation == "ddl-alter-trigger"
+            expected_observer = (
+                "CSC-TEST-002625 DDL_ALTER_TRIGGER "
+                "observer_visible=true independent_session=true "
+                "exact_successor_generation=true\n"
+                if alter_family
+                else "CSC-TEST-002629 DDL_DROP_TRIGGER "
+                "observer_absent=true independent_session=true "
+                "exact_tombstone_visible=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated ALTER/DROP TRIGGER observer "
+                    "did not prove the committed successor/tombstone: "
+                    f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+                )
+            api_event_path = Path(f"{database}.sb.api_events")
+            executable_event_path = Path(
+                f"{database}.sb.executable_object_events"
+            )
+            if not all(
+                path.exists()
+                for path in (
+                    catalog_event_path,
+                    api_event_path,
+                    executable_event_path,
+                )
+            ):
+                raise ProofError(
+                    "ALTER/DROP TRIGGER durability proof requires catalog, "
+                    "name-registry, and executable-object journals"
+                )
+            catalog_before_restart = catalog_event_path.read_bytes()
+            api_authority_before_restart = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            executable_before_restart = executable_event_path.read_bytes()
+            stop(server)
+            server = None
+            restart_control = work / (
+                "alter-trigger-restart-control"
+                if alter_family
+                else "drop-trigger-restart-control"
+            )
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(
+                        work
+                        / (
+                            "alter-trigger-restart-runtime"
+                            if alter_family
+                            else "drop-trigger-restart-runtime"
+                        )
+                    ),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(
+                    work
+                    / (
+                        "alter-trigger-server-restart.out"
+                        if alter_family
+                        else "drop-trigger-server-restart.out"
+                    )
+                ).open("wb"),
+                stderr=(
+                    work
+                    / (
+                        "alter-trigger-server-restart.err"
+                        if alter_family
+                        else "drop-trigger-server-restart.err"
+                    )
+                ).open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            restart_observer = second.copy()
+            restart_observer[1] = f"unix:{restart_endpoint}"
+            restart_observer[-1] = (
+                "sbsql-sblr-ddl-alter-trigger-e2e-restart-observer"
+                if alter_family
+                else "sbsql-sblr-ddl-drop-trigger-e2e-restart-observer"
+            )
+            restarted = subprocess.run(
+                restart_observer,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if (
+                restarted.returncode != 0
+                or restarted.stdout != expected_observer
+                or restarted.stderr
+            ):
+                raise ProofError(
+                    "restarted authenticated ALTER/DROP TRIGGER observer "
+                    "did not reconstruct the committed state: "
+                    f"returncode={restarted.returncode} "
+                    f"stdout={restarted.stdout!r} "
+                    f"stderr={restarted.stderr!r}"
+                )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "ALTER/DROP TRIGGER restart observation changed the "
+                    "catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "ALTER/DROP TRIGGER restart observation changed durable "
+                    "catalog/name authority rows"
+                )
+            if executable_event_path.read_bytes() != executable_before_restart:
+                raise ProofError(
+                    "ALTER/DROP TRIGGER restart observation changed the "
+                    "executable-object journal"
                 )
         elif verified.stdout != first.stdout and args.operation != "ddl-drop-operator":
             raise ProofError(

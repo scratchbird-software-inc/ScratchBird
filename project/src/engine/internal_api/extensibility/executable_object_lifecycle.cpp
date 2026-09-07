@@ -551,6 +551,19 @@ std::string PayloadFromRequest(const EngineApiRequest& request) {
         StartsWith(option, "trigger_scope:") ||
         StartsWith(option, "trigger_target_table_uuid:") ||
         StartsWith(option, "trigger_target_table_name:") ||
+        StartsWith(option, "trigger_body_sblr_uuid:") ||
+        StartsWith(option, "trigger_body_sblr_generation:") ||
+        StartsWith(option, "trigger_recovery_uuid:") ||
+        StartsWith(option, "trigger_mutation_uuid:") ||
+        StartsWith(option, "trigger_enabled_state:") ||
+        StartsWith(option, "trigger_position:") ||
+        StartsWith(option, "trigger_security_mode:") ||
+        StartsWith(option, "trigger_image_mode:") ||
+        StartsWith(option, "trigger_execution_mode:") ||
+        StartsWith(option, "trigger_recursion_mode:") ||
+        StartsWith(option, "trigger_failure_policy:") ||
+        StartsWith(option, "trigger_origin_filter:") ||
+        StartsWith(option, "trigger_definition_generation:") ||
         StartsWith(option, "related_object_") ||
         StartsWith(option, "routine_parameter_count:") ||
         StartsWith(option, "routine_parameter_") ||

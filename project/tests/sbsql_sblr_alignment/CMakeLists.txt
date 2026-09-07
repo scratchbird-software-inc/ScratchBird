@@ -1207,9 +1207,9 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_trigger_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-create-trigger --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_create_trigger_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_trigger_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-08;SBLR_DDL_CREATE_TRIGGER;CSC-TEST-002621;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_alter_trigger_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-alter-trigger --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_alter_trigger_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_alter_trigger_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_ALTER_TRIGGER;CSC-TEST-002625;e2e" TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_alter_trigger_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-08;SBLR_DDL_ALTER_TRIGGER;CSC-TEST-002625;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_drop_trigger_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-drop-trigger --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_drop_trigger_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_drop_trigger_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_DROP_TRIGGER;CSC-TEST-002629;e2e" TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_ia08_ddl_drop_trigger_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;IA-08;SBLR_DDL_DROP_TRIGGER;CSC-TEST-002629;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_procedure_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-create-procedure --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_create_procedure_e2e")
   set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_procedure_process_e2e PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_PROCEDURE;CSC-TEST-002633;e2e" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia08_ddl_alter_procedure_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation ddl-alter-procedure --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia08_ddl_alter_procedure_e2e")
@@ -2917,7 +2917,9 @@ add_test(NAME sbsql_sblr_alignment_ia08_ddl_alter_trigger_availability COMMAND s
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_alter_trigger_availability PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_ALTER_TRIGGER;CSC-TEST-002627;missing_executor_evidence")
 add_executable(sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault ia08_ddl_alter_trigger_cancellation_fault_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault PRIVATE sb_engine_internal_api sb_sblr_parameter_wire_codec)
+target_link_libraries(
+  sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_alter_trigger_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_ALTER_TRIGGER;CSC-TEST-002628;cancellation_atomicity")
 add_executable(sbsql_sblr_alignment_ia08_ddl_drop_trigger_runtime ia08_ddl_drop_trigger_runtime_test.cpp)
@@ -2932,7 +2934,9 @@ add_test(NAME sbsql_sblr_alignment_ia08_ddl_drop_trigger_availability COMMAND sb
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_drop_trigger_availability PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_DROP_TRIGGER;CSC-TEST-002631;missing_executor_evidence")
 add_executable(sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault ia08_ddl_drop_trigger_cancellation_fault_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault PRIVATE sb_engine_internal_api sb_sblr_parameter_wire_codec)
+target_link_libraries(
+  sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_drop_trigger_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_DROP_TRIGGER;CSC-TEST-002632;cancellation_atomicity")
 add_executable(sbsql_sblr_alignment_ia08_ddl_drop_function_runtime ia08_ddl_drop_function_runtime_test.cpp)

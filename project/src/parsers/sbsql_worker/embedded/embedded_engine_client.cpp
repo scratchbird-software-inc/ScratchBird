@@ -22,6 +22,8 @@
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
+#include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
 #include "engine/sblr/sblr_parse_text_runtime.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
@@ -2431,6 +2433,134 @@ EmbeddedEngineClient::CoordinateDdlCreateTrigger(
     AddDiagnostic(
         &result.messages, "MGA.AUTHORITY_MISMATCH",
         "embedded CREATE TRIGGER descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDdlAlterTrigger(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlAlterTriggerRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlAlterTriggerRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded ALTER TRIGGER request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateDdlAlterTriggerRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateDdlAlterTriggerRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateDdlAlterTrigger(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlAlterTriggerDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDdlAlterTriggerResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDdlAlterTriggerResultV1 ||
+      !ddl::DecodeSblrDdlAlterTriggerDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.trigger_occurrence != request.trigger_occurrence ||
+      descriptor.action_mask != request.action_mask ||
+      descriptor.enabled_state != request.enabled_state ||
+      descriptor.position != request.position ||
+      descriptor.security_mode != request.security_mode ||
+      descriptor.failure_policy != request.failure_policy ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded ALTER TRIGGER descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDdlDropTrigger(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace ddl = scratchbird::engine::sblr;
+  ddl::SblrDdlDropTriggerRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !ddl::DecodeSblrDdlDropTriggerRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "embedded DROP TRIGGER request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kCoordinateDdlDropTriggerRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaCoordinateDdlDropTriggerRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::HandleCoordinateDdlDropTrigger(
+      &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  ddl::SblrDdlDropTriggerDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDdlDropTriggerResult) ||
+      operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDdlDropTriggerResultV1 ||
+      !ddl::DecodeSblrDdlDropTriggerDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.trigger_occurrence != request.trigger_occurrence ||
+      descriptor.dependency_mode != request.dependency_mode ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded DROP TRIGGER descriptor is not exactly correlated",
         detail);
     return result;
   }

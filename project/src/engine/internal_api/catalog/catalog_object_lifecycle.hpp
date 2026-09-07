@@ -269,7 +269,12 @@ struct EngineCatalogRenameObjectResult : EngineApiResult {
 };
 EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRenameObjectRequest& request);
 
-struct EngineCatalogDropObjectRequest : EngineApiRequest {};
+struct EngineCatalogDropObjectRequest : EngineApiRequest {
+  // False is the historical and SQL-default RESTRICT behavior. True permits
+  // the engine to retire exact inbound UUID dependency rows atomically with
+  // the object tombstone; callers cannot name or omit individual dependencies.
+  bool cascade_dependencies = false;
+};
 struct EngineCatalogDropObjectResult : EngineApiResult {
   std::uint64_t metadata_cache_epoch = 0;
 };

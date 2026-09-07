@@ -784,8 +784,48 @@ EngineCreateProcedureResult EngineCreateProcedure(const EngineCreateProcedureReq
 }
 
 EngineCreateTriggerResult EngineCreateTrigger(const EngineCreateTriggerRequest& request) {
-  return PersistedExecutableCreateWithLifecycle<EngineCreateTriggerResult>(
-      request, "ddl.create_trigger", "trigger");
+  constexpr const char* kOperation = "ddl.create_trigger";
+  auto result = PersistedExecutableCreateWithLifecycle<EngineCreateTriggerResult>(
+      request, kOperation, "trigger");
+  if (!result.ok) {
+    return result;
+  }
+
+  // Trigger ALTER/DROP are catalog-successor operations.  Publish the same
+  // engine-issued trigger identity into the catalog-object lifecycle while the
+  // creating MGA transaction is still active; parser text and the public name
+  // projection are not used as identity authority here.
+  EngineCatalogCreateObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = kOperation;
+  catalog_request.target_object = result.primary_object;
+  catalog_request.target_object.object_kind = "trigger";
+  const auto catalog = EngineCatalogCreateObject(catalog_request);
+  if (!catalog.ok) {
+    return MakeApiBehaviorDiagnostic<EngineCreateTriggerResult>(
+        request.context, kOperation,
+        catalog.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(kOperation,
+                                           "catalog_lifecycle_create_failed")
+            : catalog.diagnostics.front());
+  }
+  if (catalog.primary_object.uuid.canonical !=
+          result.primary_object.uuid.canonical ||
+      catalog.primary_object.object_kind != "trigger" ||
+      catalog.catalog_row_uuid.canonical.empty()) {
+    return MakeApiBehaviorDiagnostic<EngineCreateTriggerResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "MGA.AUTHORITY_MISMATCH",
+            "ddl.create_trigger.catalog_lifecycle_identity_mismatch",
+            result.primary_object.uuid.canonical, true));
+  }
+  result.catalog_row_uuid = catalog.catalog_row_uuid;
+  result.evidence.insert(result.evidence.end(), catalog.evidence.begin(),
+                         catalog.evidence.end());
+  AddApiBehaviorEvidence(&result, "trigger_catalog_lifecycle",
+                         result.primary_object.uuid.canonical);
+  return result;
 }
 
 }  // namespace scratchbird::engine::internal_api
