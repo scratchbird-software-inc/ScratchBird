@@ -68,6 +68,14 @@ inline constexpr const char* kSecurityPrincipalDiagnosticAuditEvidenceRequired =
     "SECURITY.AUDIT.EVIDENCE_REQUIRED";
 inline constexpr const char* kSecurityPrincipalDiagnosticCatalogAuthorityRequired =
     "SECURITY.CATALOG_AUTHORITY_REQUIRED";
+inline constexpr const char* kSecurityPrivilegeTemplateDiagnosticUnauthorized =
+    "SECURITY.PRIVILEGE_TEMPLATE_UNAUTHORIZED";
+inline constexpr const char* kSecurityPrivilegeTemplateDiagnosticInvalidScope =
+    "SECURITY.PRIVILEGE_TEMPLATE_INVALID_SCOPE";
+inline constexpr const char* kSecurityPrivilegeTemplateDiagnosticGrantForbidden =
+    "SECURITY.PRIVILEGE_TEMPLATE_GRANT_FORBIDDEN";
+inline constexpr const char* kSecurityPrivilegeTemplateDiagnosticApplicationFailed =
+    "SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED";
 
 struct EngineSecurityPrincipalRecord {
   std::uint64_t creator_tx = 0;
@@ -128,6 +136,33 @@ struct EngineSecurityPrivilegeGrantRecord {
   std::string grant_effect = "allow";
   std::uint64_t security_generation = 0;
   bool revoked = false;
+};
+
+// Durable engine-owned metadata used to initialize ACL rows for objects
+// created after the template's committed publication boundary.  The vectors
+// are canonical, sorted, and duplicate-free.  They are never parser-authored
+// authority: an authenticated binder resolves names and the execution API
+// revalidates every UUID and grant before publishing this row.
+struct EngineSecurityPrivilegeTemplateRecord {
+  std::uint64_t creator_tx = 0;
+  std::uint64_t event_sequence = 0;
+  std::string template_uuid;
+  std::string template_name;
+  std::string owner_principal_uuid;
+  std::string schema_uuid;
+  std::vector<std::string> object_kinds;
+  std::vector<std::string> grantee_uuids;
+  std::vector<std::string> privileges;
+  std::vector<std::string> grant_option_privileges;
+  bool enabled = true;
+  std::uint64_t template_generation = 0;
+  std::string creation_transaction_uuid;
+  std::string alter_transaction_uuid;
+  std::string idempotency_key;
+  std::uint64_t source_policy_generation = 0;
+  std::uint64_t source_catalog_generation = 0;
+  std::uint64_t source_security_generation = 0;
+  bool deleted = false;
 };
 
 struct EngineSecurityRowPolicyRecord {
@@ -209,6 +244,7 @@ struct EngineSecurityPrincipalLifecycleState {
   std::vector<EngineSecurityGroupRecord> groups;
   std::vector<EngineSecurityMembershipRecord> memberships;
   std::vector<EngineSecurityPrivilegeGrantRecord> grants;
+  std::vector<EngineSecurityPrivilegeTemplateRecord> privilege_templates;
   std::vector<EngineSecurityRowPolicyRecord> row_policies;
   std::vector<EngineSecurityDefinerRightsCacheRecord> definer_rights_cache;
   std::vector<EngineSecurityAuditRecord> audit_records;
@@ -448,6 +484,31 @@ struct EngineSecurityRevokePrivilegeResult : EngineApiResult {
 };
 EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
     const EngineSecurityRevokePrivilegeRequest& request);
+
+struct EngineSecurityCreatePrivilegeTemplateRequest : EngineApiRequest {
+  std::string template_uuid;
+  std::string template_name;
+  std::string owner_principal_uuid;
+  std::string schema_uuid;
+  std::vector<std::string> object_kinds;
+  std::vector<std::string> grantee_uuids;
+  std::vector<std::string> privileges;
+  std::vector<std::string> grant_option_privileges;
+  bool enabled = true;
+  std::string idempotency_key;
+};
+
+struct EngineSecurityCreatePrivilegeTemplateResult : EngineApiResult {
+  bool template_created = false;
+  bool exact_idempotent_replay = false;
+  std::uint64_t template_generation = 0;
+  std::uint64_t cache_invalidation_epoch = 0;
+  EngineSecurityPrivilegeTemplateRecord privilege_template;
+};
+
+EngineSecurityCreatePrivilegeTemplateResult
+EngineSecurityCreatePrivilegeTemplate(
+    const EngineSecurityCreatePrivilegeTemplateRequest& request);
 
 struct EngineSecuritySetRoleRequest : EngineApiRequest {
   std::string role_uuid;

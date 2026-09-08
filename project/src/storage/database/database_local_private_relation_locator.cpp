@@ -660,6 +660,7 @@ std::size_t ExactLifecycleFieldCount(std::string_view kind) {
   if (kind == "AUDIT") return 10;
   if (kind == "CACHE_INVALIDATE") return 6;
   if (kind == "ROW_POLICY") return 27;
+  if (kind == "PRIVILEGE_TEMPLATE") return 20;
   if (kind == kSuccessorKind) return 5;
   return 0;
 }
@@ -672,13 +673,14 @@ std::size_t LifecycleGenerationField(std::string_view kind) {
   if (kind == "AUDIT") return 9;
   if (kind == "CACHE_INVALIDATE") return 5;
   if (kind == "ROW_POLICY") return 10;
+  if (kind == "PRIVILEGE_TEMPLATE") return 12;
   return std::numeric_limits<std::size_t>::max();
 }
 
 bool IsAuthorityLifecycleKind(std::string_view kind) {
-  static constexpr std::array<std::string_view, 7> kKinds = {
+  static constexpr std::array<std::string_view, 8> kKinds = {
       "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE",
-      "ROW_POLICY"};
+      "ROW_POLICY", "PRIVILEGE_TEMPLATE"};
   return std::find(kKinds.begin(), kKinds.end(), kind) != kKinds.end();
 }
 

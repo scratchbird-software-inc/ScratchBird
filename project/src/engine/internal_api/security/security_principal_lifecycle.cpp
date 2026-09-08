@@ -606,6 +606,62 @@ std::string RevokeEvent(std::uint64_t creator_tx,
          privilege + "\t" + revoker + "\t" + std::to_string(generation);
 }
 
+std::string JoinCanonicalList(const std::vector<std::string>& values) {
+  std::string joined;
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index != 0) joined.push_back(',');
+    joined.append(values[index]);
+  }
+  return joined;
+}
+
+bool DecodeCanonicalList(const std::string& encoded,
+                         std::vector<std::string>* values) {
+  if (values == nullptr) return false;
+  values->clear();
+  if (encoded.empty()) return true;
+  std::size_t begin = 0;
+  while (begin <= encoded.size()) {
+    const auto separator = encoded.find(',', begin);
+    const auto end = separator == std::string::npos ? encoded.size() : separator;
+    if (end == begin) {
+      values->clear();
+      return false;
+    }
+    values->push_back(encoded.substr(begin, end - begin));
+    if (separator == std::string::npos) break;
+    begin = separator + 1;
+  }
+  if (!std::is_sorted(values->begin(), values->end()) ||
+      std::adjacent_find(values->begin(), values->end()) != values->end()) {
+    values->clear();
+    return false;
+  }
+  return true;
+}
+
+std::string PrivilegeTemplateEvent(
+    const EngineSecurityPrivilegeTemplateRecord& record) {
+  return std::string(kSecurityPrincipalLifecycleEventMagic) +
+         "\tPRIVILEGE_TEMPLATE\t" + std::to_string(record.creator_tx) +
+         "\t" + record.template_uuid + "\t" +
+         HexEncode(record.template_name) + "\t" +
+         record.owner_principal_uuid + "\t" + record.schema_uuid + "\t" +
+         JoinCanonicalList(record.object_kinds) + "\t" +
+         JoinCanonicalList(record.grantee_uuids) + "\t" +
+         JoinCanonicalList(record.privileges) + "\t" +
+         JoinCanonicalList(record.grant_option_privileges) + "\t" +
+         (record.enabled ? "1" : "0") + "\t" +
+         std::to_string(record.template_generation) + "\t" +
+         record.creation_transaction_uuid + "\t" +
+         record.alter_transaction_uuid + "\t" +
+         HexEncode(record.idempotency_key) + "\t" +
+         std::to_string(record.source_policy_generation) + "\t" +
+         std::to_string(record.source_catalog_generation) + "\t" +
+         std::to_string(record.source_security_generation) + "\t" +
+         (record.deleted ? "1" : "0");
+}
+
 std::string RowPolicyEvent(const EngineSecurityRowPolicyRecord& record) {
   return std::string(kSecurityPrincipalLifecycleEventMagic) + "\tROW_POLICY\t" +
          std::to_string(record.creator_tx) + "\t" + record.policy_uuid + "\t" +
@@ -635,6 +691,96 @@ bool CanonicalNonzeroUuid(std::string_view text) {
   const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
   return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
          scratchbird::core::uuid::UuidToString(parsed.value) == text;
+}
+
+bool CanonicalOptionalUuid(std::string_view text) {
+  return text.empty() || CanonicalNonzeroUuid(text);
+}
+
+std::string NormalizePrivilegeTemplateObjectKind(std::string kind) {
+  kind = LowerAscii(std::move(kind));
+  if (kind == "tables") return "table";
+  if (kind == "sequences") return "sequence";
+  if (kind == "routines") return "routine";
+  if (kind == "types") return "type";
+  if (kind == "schemas") return "schema";
+  return kind;
+}
+
+bool PrivilegeTemplateObjectKindValid(std::string_view kind) {
+  return kind == "table" || kind == "sequence" || kind == "routine" ||
+         kind == "type" || kind == "schema";
+}
+
+template <typename TNormalize>
+bool CanonicalizeTemplateVector(std::vector<std::string>* values,
+                                std::size_t maximum,
+                                TNormalize normalize) {
+  if (values == nullptr || values->empty() || values->size() > maximum) {
+    return false;
+  }
+  for (auto& value : *values) {
+    value = normalize(std::move(value));
+    if (value.empty() || value.find('\0') != std::string::npos ||
+        value.find(',') != std::string::npos) {
+      return false;
+    }
+  }
+  std::sort(values->begin(), values->end());
+  values->erase(std::unique(values->begin(), values->end()), values->end());
+  return !values->empty();
+}
+
+bool PrivilegeTemplateRecordShapeValid(
+    const EngineSecurityPrivilegeTemplateRecord& record) {
+  if (!CanonicalNonzeroUuid(record.template_uuid) ||
+      record.template_name.empty() || record.template_name.size() > 1024 ||
+      record.template_name.find('\0') != std::string::npos ||
+      !CanonicalOptionalUuid(record.owner_principal_uuid) ||
+      !CanonicalOptionalUuid(record.schema_uuid) ||
+      record.object_kinds.empty() || record.object_kinds.size() > 16 ||
+      record.grantee_uuids.empty() || record.grantee_uuids.size() > 1024 ||
+      record.privileges.empty() || record.privileges.size() > 128 ||
+      record.grant_option_privileges.size() > 128 ||
+      record.template_generation == 0 ||
+      !CanonicalNonzeroUuid(record.creation_transaction_uuid) ||
+      !CanonicalOptionalUuid(record.alter_transaction_uuid) ||
+      record.idempotency_key.empty() || record.idempotency_key.size() > 1024 ||
+      record.idempotency_key.find('\0') != std::string::npos ||
+      record.source_policy_generation == 0 ||
+      record.source_catalog_generation == 0 ||
+      record.source_security_generation == 0) {
+    return false;
+  }
+  const auto canonical_sorted_unique = [](const auto& values) {
+    return std::is_sorted(values.begin(), values.end()) &&
+           std::adjacent_find(values.begin(), values.end()) == values.end();
+  };
+  if (!canonical_sorted_unique(record.object_kinds) ||
+      !canonical_sorted_unique(record.grantee_uuids) ||
+      !canonical_sorted_unique(record.privileges) ||
+      !canonical_sorted_unique(record.grant_option_privileges)) {
+    return false;
+  }
+  for (const auto& kind : record.object_kinds) {
+    if (!PrivilegeTemplateObjectKindValid(kind)) return false;
+  }
+  for (const auto& grantee : record.grantee_uuids) {
+    if (!CanonicalNonzeroUuid(grantee)) return false;
+  }
+  for (const auto& privilege : record.privileges) {
+    if (NormalizePrivilege(privilege) != privilege ||
+        !IsKnownSecurityRight(privilege)) {
+      return false;
+    }
+  }
+  for (const auto& privilege : record.grant_option_privileges) {
+    if (!std::binary_search(record.privileges.begin(),
+                            record.privileges.end(), privilege)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool NativeRowPolicyAuthorityValid(
@@ -738,9 +884,9 @@ std::string AuditEvent(const EngineSecurityAuditRecord& record) {
 std::mutex g_security_lifecycle_event_append_mutex;
 
 bool AdvancesAuthorizationContext(const std::string& event) {
-  static constexpr std::array<std::string_view, 7> kAuthorityEvents = {
+  static constexpr std::array<std::string_view, 8> kAuthorityEvents = {
       "PRINCIPAL", "ROLE", "GROUP", "MEMBERSHIP", "GRANT", "REVOKE",
-      "ROW_POLICY"};
+      "ROW_POLICY", "PRIVILEGE_TEMPLATE"};
   for (const auto kind : kAuthorityEvents) {
     const std::string prefix =
         std::string(kSecurityPrincipalLifecycleEventMagic) + "\t" +
@@ -893,6 +1039,8 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
   std::map<std::string, EngineSecurityGroupRecord> groups;
   std::map<std::string, EngineSecurityMembershipRecord> memberships;
   std::map<std::string, EngineSecurityPrivilegeGrantRecord> grants;
+  std::map<std::string, EngineSecurityPrivilegeTemplateRecord>
+      privilege_templates;
   std::map<std::string, EngineSecurityRowPolicyRecord> row_policies;
   std::map<std::string, EngineSecurityDefinerRightsCacheRecord> cache;
   std::vector<std::string> event_lines;
@@ -1159,6 +1307,48 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
       result.state.security_generation = std::max(result.state.security_generation, generation);
       result.state.policy_generation = std::max(result.state.policy_generation, generation);
       grants.erase(GrantKey(grantee_uuid, target_uuid, privilege));
+    } else if (event == "PRIVILEGE_TEMPLATE" && parts.size() == 20) {
+      EngineSecurityPrivilegeTemplateRecord record;
+      record.creator_tx = creator_tx;
+      record.event_sequence = event_sequence;
+      record.template_uuid = parts[3];
+      record.template_name = HexDecode(parts[4]);
+      record.owner_principal_uuid = parts[5];
+      record.schema_uuid = parts[6];
+      const bool decoded_lists =
+          DecodeCanonicalList(parts[7], &record.object_kinds) &&
+          DecodeCanonicalList(parts[8], &record.grantee_uuids) &&
+          DecodeCanonicalList(parts[9], &record.privileges) &&
+          DecodeCanonicalList(parts[10], &record.grant_option_privileges);
+      record.enabled = ParseBool(parts[11]);
+      record.template_generation = ParseU64(parts[12]);
+      record.creation_transaction_uuid = parts[13];
+      record.alter_transaction_uuid = parts[14];
+      record.idempotency_key = HexDecode(parts[15]);
+      record.source_policy_generation = ParseU64(parts[16]);
+      record.source_catalog_generation = ParseU64(parts[17]);
+      record.source_security_generation = ParseU64(parts[18]);
+      record.deleted = ParseBool(parts[19]);
+      if (!decoded_lists ||
+          HexEncode(record.template_name) != parts[4] ||
+          HexEncode(record.idempotency_key) != parts[15] ||
+          (parts[11] != "0" && parts[11] != "1") ||
+          (parts[19] != "0" && parts[19] != "1") ||
+          !PrivilegeTemplateRecordShapeValid(record)) {
+        result.diagnostic = PrincipalDiagnostic(
+            kSecurityPrincipalDiagnosticDatabaseWriteFailed,
+            "privilege_template_event_invalid");
+        return result;
+      }
+      result.state.security_generation = std::max(
+          result.state.security_generation, record.template_generation);
+      result.state.policy_generation = std::max(
+          result.state.policy_generation, record.template_generation);
+      if (record.deleted) {
+        privilege_templates.erase(record.template_uuid);
+      } else {
+        privilege_templates[record.template_uuid] = std::move(record);
+      }
     } else if (event == "ROW_POLICY" && parts.size() >= 12) {
       EngineSecurityRowPolicyRecord record;
       record.creator_tx = creator_tx;
@@ -1298,6 +1488,9 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
   for (auto& [_, record] : groups) { result.state.groups.push_back(std::move(record)); }
   for (auto& [_, record] : memberships) { result.state.memberships.push_back(std::move(record)); }
   for (auto& [_, record] : grants) { result.state.grants.push_back(std::move(record)); }
+  for (auto& [_, record] : privilege_templates) {
+    result.state.privilege_templates.push_back(std::move(record));
+  }
   for (auto& [_, record] : row_policies) { result.state.row_policies.push_back(std::move(record)); }
   for (auto& [_, record] : cache) { result.state.definer_rights_cache.push_back(std::move(record)); }
 
@@ -1341,6 +1534,43 @@ bool FindAnySecuritySubject(const EngineSecurityPrincipalLifecycleState& state,
   return FindPrincipal(state, subject_uuid) != nullptr ||
          FindRole(state, subject_uuid) != nullptr ||
          FindGroup(state, subject_uuid) != nullptr;
+}
+
+const EngineSecurityPrivilegeTemplateRecord* FindPrivilegeTemplateByUuid(
+    const EngineSecurityPrincipalLifecycleState& state,
+    const std::string& template_uuid) {
+  for (const auto& record : state.privilege_templates) {
+    if (record.template_uuid == template_uuid) return &record;
+  }
+  return nullptr;
+}
+
+const EngineSecurityPrivilegeTemplateRecord* FindPrivilegeTemplateByName(
+    const EngineSecurityPrincipalLifecycleState& state,
+    const std::string& template_name) {
+  for (const auto& record : state.privilege_templates) {
+    if (record.template_name == template_name) return &record;
+  }
+  return nullptr;
+}
+
+bool ExactPrivilegeTemplateReplay(
+    const EngineSecurityPrivilegeTemplateRecord& existing,
+    const EngineSecurityCreatePrivilegeTemplateRequest& request,
+    const std::vector<std::string>& object_kinds,
+    const std::vector<std::string>& grantee_uuids,
+    const std::vector<std::string>& privileges,
+    const std::vector<std::string>& grant_option_privileges) {
+  return !existing.deleted && existing.template_uuid == request.template_uuid &&
+         existing.template_name == request.template_name &&
+         existing.owner_principal_uuid == request.owner_principal_uuid &&
+         existing.schema_uuid == request.schema_uuid &&
+         existing.object_kinds == object_kinds &&
+         existing.grantee_uuids == grantee_uuids &&
+         existing.privileges == privileges &&
+         existing.grant_option_privileges == grant_option_privileges &&
+         existing.enabled == request.enabled &&
+         existing.idempotency_key == request.idempotency_key;
 }
 
 std::set<std::string> EffectiveGranteeSet(const EngineSecurityPrincipalLifecycleState& state,
@@ -2790,6 +3020,231 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
           {"target_object_uuid", request.target_object_uuid},
           {"privilege", privilege},
           {"security_generation", std::to_string(generation)}});
+  return result;
+}
+
+EngineSecurityCreatePrivilegeTemplateResult
+EngineSecurityCreatePrivilegeTemplate(
+    const EngineSecurityCreatePrivilegeTemplateRequest& request) {
+  constexpr const char* kOperation =
+      "engine.op.security_create_privilege_template";
+
+  const auto boundary = ValidateEngineAuthorityBoundary(request, kOperation);
+  if (boundary.error) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation, boundary);
+  }
+  if (!request.context.security_context_present ||
+      !ContextHasRight(request.context, "POLICY_ADMIN") ||
+      !ContextHasRight(request.context, "SEC_GRANT_ADMIN")) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticUnauthorized,
+                            "security_and_grant_administration_required"));
+  }
+  const auto context = ValidateMutatingContext(request.context);
+  if (context.error) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation, context);
+  }
+  if (!request.context.cluster_uuid.canonical.empty() ||
+      request.context.cluster_transaction_active ||
+      request.context.route_fence_present) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+                            "privilege_template_create_is_local_only"));
+  }
+  if (!CanonicalNonzeroUuid(request.template_uuid) ||
+      request.template_name.empty() || request.template_name.size() > 1024 ||
+      request.template_name.find('\0') != std::string::npos ||
+      !CanonicalOptionalUuid(request.owner_principal_uuid) ||
+      !CanonicalOptionalUuid(request.schema_uuid) ||
+      !CanonicalNonzeroUuid(request.context.transaction_uuid.canonical) ||
+      request.context.catalog_generation_id == 0 ||
+      request.context.security_epoch == 0 ||
+      request.idempotency_key.empty() || request.idempotency_key.size() > 1024 ||
+      request.idempotency_key.find('\0') != std::string::npos) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                            "template_identity_scope_or_generation_invalid"));
+  }
+
+  auto object_kinds = request.object_kinds;
+  auto grantee_uuids = request.grantee_uuids;
+  auto privileges = request.privileges;
+  auto grant_option_privileges = request.grant_option_privileges;
+  const auto identity = [](std::string value) { return value; };
+  if (!CanonicalizeTemplateVector(
+          &object_kinds, 16, NormalizePrivilegeTemplateObjectKind) ||
+      !CanonicalizeTemplateVector(&grantee_uuids, 1024, identity) ||
+      !CanonicalizeTemplateVector(&privileges, 128, NormalizePrivilege) ||
+      (!grant_option_privileges.empty() &&
+       !CanonicalizeTemplateVector(&grant_option_privileges, 128,
+                                   NormalizePrivilege))) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                            "template_vector_shape_invalid"));
+  }
+  for (const auto& kind : object_kinds) {
+    if (!PrivilegeTemplateObjectKindValid(kind)) {
+      return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                              "unsupported_future_object_kind:" + kind));
+    }
+  }
+  for (const auto& grantee : grantee_uuids) {
+    if (!CanonicalNonzeroUuid(grantee)) {
+      return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticGrantForbidden,
+                              "grantee_identity_invalid"));
+    }
+  }
+  for (const auto& privilege : privileges) {
+    if (!IsKnownSecurityRight(privilege)) {
+      return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticGrantForbidden,
+                              "unknown_privilege:" + privilege));
+    }
+  }
+  for (const auto& privilege : grant_option_privileges) {
+    if (!std::binary_search(privileges.begin(), privileges.end(), privilege)) {
+      return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticGrantForbidden,
+                              "grant_option_not_in_privilege_set:" + privilege));
+    }
+  }
+
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation, loaded.diagnostic);
+  }
+  if (!request.owner_principal_uuid.empty() &&
+      FindPrincipal(loaded.state, request.owner_principal_uuid) == nullptr) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                            "owner_principal_not_visible"));
+  }
+  for (const auto& grantee : grantee_uuids) {
+    if (!FindAnySecuritySubject(loaded.state, grantee)) {
+      return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+          request.context, kOperation,
+          PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticGrantForbidden,
+                              "grantee_not_visible:" + grantee));
+    }
+  }
+
+  const auto* existing_uuid =
+      FindPrivilegeTemplateByUuid(loaded.state, request.template_uuid);
+  if (existing_uuid != nullptr &&
+      ExactPrivilegeTemplateReplay(*existing_uuid, request, object_kinds,
+                                   grantee_uuids, privileges,
+                                   grant_option_privileges)) {
+    auto result = SuccessResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation);
+    result.template_created = true;
+    result.exact_idempotent_replay = true;
+    result.template_generation = existing_uuid->template_generation;
+    result.cache_invalidation_epoch = existing_uuid->template_generation;
+    result.privilege_template = *existing_uuid;
+    result.primary_object.uuid.canonical = existing_uuid->template_uuid;
+    result.primary_object.object_kind = "security_privilege_template";
+    FillMutationEvidence(&result, kOperation, existing_uuid->template_uuid,
+                         existing_uuid->template_generation);
+    AddEvidence(&result, "privilege_template_replay", "exact");
+    return result;
+  }
+  const auto* existing_name =
+      FindPrivilegeTemplateByName(loaded.state, request.template_name);
+  if (existing_uuid != nullptr || existing_name != nullptr) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                            existing_uuid != nullptr
+                                ? "template_identity_conflict"
+                                : "template_name_conflict"));
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic("PROCESS.CANCELLED",
+                            "privilege_template_create_cancelled"));
+  }
+
+  const std::uint64_t generation = NextGeneration(loaded.state);
+  EngineSecurityPrivilegeTemplateRecord record;
+  record.creator_tx = request.context.local_transaction_id;
+  record.template_uuid = request.template_uuid;
+  record.template_name = request.template_name;
+  record.owner_principal_uuid = request.owner_principal_uuid;
+  record.schema_uuid = request.schema_uuid;
+  record.object_kinds = std::move(object_kinds);
+  record.grantee_uuids = std::move(grantee_uuids);
+  record.privileges = std::move(privileges);
+  record.grant_option_privileges = std::move(grant_option_privileges);
+  record.enabled = request.enabled;
+  record.template_generation = generation;
+  record.creation_transaction_uuid = request.context.transaction_uuid.canonical;
+  record.idempotency_key = request.idempotency_key;
+  record.source_policy_generation = loaded.state.policy_generation;
+  record.source_catalog_generation = request.context.catalog_generation_id;
+  record.source_security_generation = loaded.state.security_generation;
+  if (!PrivilegeTemplateRecordShapeValid(record)) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation,
+        PrincipalDiagnostic(kSecurityPrivilegeTemplateDiagnosticInvalidScope,
+                            "canonical_template_record_invalid"));
+  }
+
+  const auto audit = MakeAudit(
+      request.context, kOperation, record.template_uuid, generation,
+      "template=" + record.template_name +
+          ";object_kinds=" + JoinCanonicalList(record.object_kinds) +
+          ";grantee_count=" + std::to_string(record.grantee_uuids.size()) +
+          ";privileges=" + JoinCanonicalList(record.privileges));
+  const auto appended = AppendEvents(
+      request.context,
+      {PrivilegeTemplateEvent(record), AuditEvent(audit),
+       CacheInvalidationEvent(request.context, kOperation,
+                              record.template_uuid, generation)});
+  if (appended.error) {
+    return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
+        request.context, kOperation, appended);
+  }
+
+  auto result = SuccessResult<EngineSecurityCreatePrivilegeTemplateResult>(
+      request.context, kOperation);
+  result.template_created = true;
+  result.template_generation = generation;
+  result.cache_invalidation_epoch = generation;
+  result.privilege_template = record;
+  result.primary_object.uuid.canonical = record.template_uuid;
+  result.primary_object.object_kind = "security_privilege_template";
+  FillMutationEvidence(&result, kOperation, record.template_uuid, generation);
+  AddEvidence(&result, "privilege_template_catalog",
+              "sys.security.privilege_templates");
+  AddEvidence(&result, "privilege_template_non_retroactive", "true");
+  AddRow(&result,
+         {{"template_uuid", record.template_uuid},
+          {"template_name", record.template_name},
+          {"owner_principal_uuid", record.owner_principal_uuid},
+          {"schema_uuid", record.schema_uuid},
+          {"object_kinds", JoinCanonicalList(record.object_kinds)},
+          {"grantee_uuids", JoinCanonicalList(record.grantee_uuids)},
+          {"privileges", JoinCanonicalList(record.privileges)},
+          {"grant_option_privileges",
+           JoinCanonicalList(record.grant_option_privileges)},
+          {"enabled", record.enabled ? "true" : "false"},
+          {"template_generation", std::to_string(generation)}});
   return result;
 }
 
