@@ -1253,7 +1253,7 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   add_test(NAME sbsql_sblr_alignment_ia09_security_create_policy_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-create-policy --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_create_policy_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_drop_policy_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-drop-policy --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_drop_policy_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_alter_policy_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-alter-policy --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_alter_policy_e2e")
-  set_tests_properties(sbsql_sblr_alignment_ia09_security_alter_policy_process_e2e PROPERTIES LABELS "sbsql_surface_to_sblr_full_implementation_closure;sbsql_parser_worker;sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_e2e_passed;IA-09;SBLR_SEC_ALTER_POLICY;SBLR_SECURITY_POLICY_SHOW;SBSQL-5BC7985C2B11;SBSQL-CCE2E0A8B006;CSC-TEST-002989;CSC-TEST-005821;CSC-TEST-005824;e2e;commit_rollback_visibility;restart_recovery;malformed_operand" TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_ia09_security_alter_policy_process_e2e PROPERTIES LABELS "sbsql_surface_to_sblr_full_implementation_closure;sbsql_parser_worker;sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_e2e_passed;IA-09;SBLR_SEC_ALTER_POLICY;SBLR_SECURITY_POLICY_SHOW;SBSQL-5BC7985C2B11;SBSQL-CCE2E0A8B006;CSC-TEST-002164;CSC-TEST-002989;CSC-TEST-005821;CSC-TEST-005824;e2e;resource_budget;commit_rollback_visibility;restart_recovery;malformed_operand" TIMEOUT 240)
   add_test(NAME sbsql_sblr_alignment_ia09_security_drop_user_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-drop-user --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_drop_user_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_authenticate_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-authenticate --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_authenticate_e2e")
   add_test(NAME sbsql_sblr_alignment_ia09_security_deauthenticate_process_e2e COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py" --server $<TARGET_FILE:sb_server> --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client> --operation security-deauthenticate --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_deauthenticate_e2e")
@@ -4460,6 +4460,25 @@ set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_table_as_query_cancell
   target_link_libraries(sbsql_sblr_alignment_ia08_security_alter_policy_cancellation_fault PRIVATE sb_engine_internal_api)
   add_test(NAME sbsql_sblr_alignment_ia08_security_alter_policy_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_security_alter_policy_cancellation_fault)
   set_tests_properties(sbsql_sblr_alignment_ia08_security_alter_policy_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-09;SBLR_SEC_ALTER_POLICY;CSC-TEST-002992;cancellation_atomicity" TIMEOUT 60)
+  add_executable(
+    sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault
+    ia09_security_policy_show_cancellation_fault_test.cpp)
+  target_compile_features(
+    sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault PRIVATE
+    cxx_std_20)
+  target_include_directories(
+    sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(
+    sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault PRIVATE
+    sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+  add_test(
+    NAME sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault
+    COMMAND sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault)
+  set_tests_properties(
+    sbsql_sblr_alignment_ia09_security_policy_show_cancellation_fault PROPERTIES
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-09;SBLR_SECURITY_POLICY_SHOW;CSC-TEST-002164;cancellation_atomicity;receipt_bound_public_abi"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_ia08_security_drop_user_runtime ia08_security_drop_user_runtime_test.cpp)
   target_include_directories(sbsql_sblr_alignment_ia08_security_drop_user_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(sbsql_sblr_alignment_ia08_security_drop_user_runtime PRIVATE sb_engine_sblr)

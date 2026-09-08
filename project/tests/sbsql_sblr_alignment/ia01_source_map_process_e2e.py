@@ -2214,6 +2214,26 @@ def main() -> int:
                 )
 
             run_policy_auxiliary(
+                "security-policy-show-budget",
+                "show-resource-budget-refusal",
+                "CSC-TEST-002164 SECURITY_POLICY_SHOW "
+                "budget_refused=true no_sblr=true "
+                "no_server_dispatch=true no_publication=true\n",
+            )
+            if catalog_event_path.read_bytes() != catalog_before_refusals:
+                raise ProofError(
+                    "resource-budget SHOW SECURITY POLICY changed the "
+                    "catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_before_refusals:
+                raise ProofError(
+                    "resource-budget SHOW SECURITY POLICY changed durable "
+                    "catalog/name authority rows"
+                )
+
+            run_policy_auxiliary(
                 "security-alter-policy-rollback",
                 "rollback",
                 "CSC-TEST-002989 SEC_ALTER_POLICY rollback=true "

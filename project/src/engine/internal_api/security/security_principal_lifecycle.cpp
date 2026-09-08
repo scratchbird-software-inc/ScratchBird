@@ -3532,6 +3532,15 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyMissing, "policy_uuid_required"));
   }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return DiagnosticResult<EngineSecurityShowPolicyResult>(
+        request.context,
+        kOperation,
+        MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                "security.policy.show.cancelled_before_snapshot",
+                                {}, true));
+  }
   const auto loaded = LoadState(request.context, {.enforce_visibility = true});
   if (!loaded.ok) {
     return DiagnosticResult<EngineSecurityShowPolicyResult>(request.context,
@@ -3564,6 +3573,15 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
             {"definer_principal_uuid", policy->definer_principal_uuid},
             {"lifecycle_state", policy->lifecycle_state},
             {"policy_generation", std::to_string(policy->policy_generation)}});
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return DiagnosticResult<EngineSecurityShowPolicyResult>(
+        request.context,
+        kOperation,
+        MakeEngineApiDiagnostic(
+            "PROCESS.CANCELLED",
+            "security.policy.show.cancelled_before_publication", {}, true));
   }
   return result;
 }

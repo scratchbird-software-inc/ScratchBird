@@ -45,9 +45,13 @@ int main(int argc, char** argv) {
     std::cerr << "usage: descriptor-client ENDPOINT DATABASE USER PASSWORD OPERATION APPLICATION\n";
     return 2;
   }
+  const std::string operation = argv[5];
   scratchbird::parser::sbsql::ParserConfig config;
   config.server_endpoint = argv[1];
   config.database_token = argv[2];
+  if (operation == "security-policy-show-budget") {
+    config.resource_budget.max_statement_bytes = 24;
+  }
   scratchbird::parser::sbsql::SbsqlTestWireSession session(config, nullptr, nullptr);
   scratchbird::parser::sbsql::AuthCredentialEnvelope credentials;
   credentials.provider_family = "local_password";
@@ -62,17 +66,18 @@ int main(int argc, char** argv) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
     return 3;
   }
-  const std::string operation = argv[5];
   if (operation == "security-alter-policy" ||
       operation == "security-alter-policy-observe" ||
       operation == "security-alter-policy-rollback" ||
-      operation == "security-alter-policy-invalid") {
+      operation == "security-alter-policy-invalid" ||
+      operation == "security-policy-show-budget") {
     namespace sblr = scratchbird::engine::sblr;
     constexpr std::string_view kPolicyUuid =
         "018f0a2b-0000-7000-9000-000000000701";
     const bool observer = operation == "security-alter-policy-observe";
     const bool rollback = operation == "security-alter-policy-rollback";
     const bool invalid = operation == "security-alter-policy-invalid";
+    const bool budget = operation == "security-policy-show-budget";
     const char* artifact_path =
         std::getenv("SCRATCHBIRD_TEST_SECURITY_ALTER_POLICY_RESULT_ARTIFACT");
     const auto nonzero = [](const auto& value) {
@@ -130,6 +135,34 @@ int main(int argc, char** argv) {
     if (!begun.accepted || begun.messages.has_errors()) {
       dump_failure("begin_failed", begun);
       return 4;
+    }
+
+    if (budget) {
+      auto refused = session.RunPipeline(
+          "SHOW SECURITY POLICY app.app_policy;", true);
+      const bool no_canonical_or_server_result =
+          refused.sblr_payload.empty() &&
+          refused.server_operation_id.empty() &&
+          refused.server_cursor_uuid.empty() &&
+          refused.server_row_count == 0 &&
+          refused.server_affected_rows == 0 &&
+          !refused.server_affected_rows_present &&
+          refused.server_result_payload.empty();
+      const bool exact_refusal =
+          !refused.accepted && !refused.outcome_unknown &&
+          no_canonical_or_server_result &&
+          refused.messages.diagnostics.size() == 1 &&
+          refused.messages.diagnostics.front().code ==
+              "SBSQL.RESOURCE.STATEMENT_TOO_LARGE";
+      auto ended = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_refusal || !ended.accepted || ended.messages.has_errors()) {
+        dump_failure("resource_budget_refusal_failed", refused);
+        return 4;
+      }
+      std::cout << "CSC-TEST-002164 SECURITY_POLICY_SHOW "
+                   "budget_refused=true no_sblr=true "
+                   "no_server_dispatch=true no_publication=true\n";
+      return 0;
     }
 
     if (observer) {

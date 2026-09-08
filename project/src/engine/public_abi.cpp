@@ -5453,6 +5453,9 @@ sb_engine_status_t operation_envelope_failure_status(const scratchbird::engine::
           result, "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN")) {
     return SB_ENGINE_STATUS_CONFLICT;
   }
+  if (dispatch_has_diagnostic(result, "PROCESS.CANCELLED")) {
+    return SB_ENGINE_STATUS_TIMEOUT;
+  }
   if (dispatch_has_diagnostic(result, "SB_SBLR_DISPATCH_UNKNOWN_OPERATION") ||
       dispatch_has_diagnostic(
           result, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING")) {
@@ -20403,6 +20406,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool ddl_create_procedure_owned_cancellation_candidate = false;
   bool procedure_invoke_owned_cancellation_candidate = false;
   bool security_alter_policy_owned_cancellation_candidate = false;
+  bool security_policy_show_owned_cancellation_candidate = false;
   std::uint32_t physical_operation_magic = 0;
   if (probe_u32(0, &physical_operation_magic) &&
       physical_operation_magic ==
@@ -20430,6 +20434,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
       procedure_invoke_owned_cancellation_candidate = opcode_code == 1030;
       security_alter_policy_owned_cancellation_candidate =
           opcode_code == 1798;
+      security_policy_show_owned_cancellation_candidate =
+          opcode_code == 1807;
     }
   } else if (physical_operation_magic ==
              scratchbird::engine::sblr::kSblrOpcodeStreamMagic) {
@@ -20460,6 +20466,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
     bool contains_ddl_create_procedure_code = false;
     bool contains_procedure_invoke_code = false;
     bool contains_security_alter_policy_code = false;
+    bool contains_security_policy_show_code = false;
     for (std::uint32_t index = 0; bounded && index != record_count; ++index) {
       std::uint64_t record_size = 0;
       bounded = probe_u64(offset, &record_size) &&
@@ -20490,6 +20497,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
         contains_ddl_create_procedure_code |= opcode_code == 1554;
         contains_procedure_invoke_code |= opcode_code == 1030;
         contains_security_alter_policy_code |= opcode_code == 1798;
+        contains_security_policy_show_code |= opcode_code == 1807;
       }
       offset = record_offset + static_cast<std::size_t>(record_size);
     }
@@ -20527,6 +20535,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         contains_procedure_invoke_code;
     security_alter_policy_owned_cancellation_candidate =
         contains_security_alter_policy_code;
+    security_policy_show_owned_cancellation_candidate =
+        contains_security_policy_show_code;
   }
   const bool physical_opcode_stream =
       physical_operation_magic ==
@@ -20738,6 +20748,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       !ddl_create_procedure_owned_cancellation_candidate &&
       !procedure_invoke_owned_cancellation_candidate &&
       !security_alter_policy_owned_cancellation_candidate &&
+      !security_policy_show_owned_cancellation_candidate &&
       cancellation_observed()) {
     return fail_result(SB_ENGINE_STATUS_TIMEOUT, out_result, 4062,
                        "PROCESS.CANCELLED",
@@ -22661,6 +22672,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         !ddl_drop_trigger_owned_cancellation_candidate &&
         !ddl_create_procedure_owned_cancellation_candidate &&
         !procedure_invoke_owned_cancellation_candidate &&
+        !security_alter_policy_owned_cancellation_candidate &&
+        !security_policy_show_owned_cancellation_candidate &&
         cancellation_observed();
     stream_admission.resource_budget_available =
         resource_guard.ledger != nullptr && !resource_guard.token_id.empty();
@@ -28363,6 +28376,11 @@ sb_engine_status_t DispatchStatementContextReceipt(
             "SBLR.OPERAND_INVALID",
             "sblr.security_policy_show.operand_invalid");
       }
+      // Observe cancellation at the Core-owned pre-evidence checkpoint, but
+      // do not publish it until the higher-precedence executor authority has
+      // been revalidated below.
+      const bool cancelled_before_executor_evidence =
+          cancellation_observed();
       const scratchbird::engine::internal_api::
           SblrExecutorAvailabilityRowIdentity availability_identity{
               scratchbird::engine::internal_api::
@@ -28391,6 +28409,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
       }
       security_policy_show_availability_generation =
           availability.snapshot.generation;
+      if (cancelled_before_executor_evidence) {
+        return fail_result(
+            SB_ENGINE_STATUS_TIMEOUT, out_result, 4210,
+            "PROCESS.CANCELLED",
+            "sblr.security_policy_show.cancelled_before_executor_evidence");
+      }
     }
     if(security_drop_user_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="user_descriptor"||member.operands.front().name!="user"||!scratchbird::engine::sblr::DecodeSblrSecDropUserDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&security_drop_user_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4211,"SBLR.OPERAND_INVALID","sblr.sec_drop_user.operand_invalid",detail);security_drop_user_availability_generation=security_drop_user_descriptor.availability;}
     if(security_authenticate_root){std::string detail;if(member.operands.size()!=1||member.operands.front().type!="authenticate_descriptor"||member.operands.front().name!="authenticate"||!scratchbird::engine::sblr::DecodeSblrSecAuthenticateDescriptorV1(member.operands.front().value_body.data(),member.operands.front().value_body.size(),&security_authenticate_descriptor,&detail,true))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4230,"SBLR.OPERAND_INVALID","sblr.sec_authenticate.operand_invalid",detail);security_authenticate_availability_generation=security_authenticate_descriptor.availability;}
@@ -29871,12 +29895,22 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                failure_code == "TIMEOUT") {
       resource_guard.reason = ResourceReleaseReason::kTimeout;
     }
+    const auto failure_message_key = [&]() -> std::string {
+      if (security_policy_show_root) {
+        for (const auto& diagnostic : dispatched.api_result.diagnostics) {
+          if (!diagnostic.message_key.empty()) {
+            return diagnostic.message_key;
+          }
+        }
+      }
+      return "sblr.operation_envelope.rejected";
+    }();
     return fail_result(
         operation_envelope_failure_status(dispatched),
         out_result,
         4063,
         failure_code,
-        "sblr.operation_envelope.rejected",
+        failure_message_key,
         first_dispatch_diagnostic_detail(dispatched),
         first_dispatch_diagnostic_fields(dispatched));
   }
