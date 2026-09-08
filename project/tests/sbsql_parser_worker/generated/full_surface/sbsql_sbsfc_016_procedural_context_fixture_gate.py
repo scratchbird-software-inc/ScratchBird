@@ -179,7 +179,7 @@ EXPECTED_CASES = {
     "SBSFC016-parameter-marker": ("SBSQL-CE7F2EE0D34E", "sb.scalar.parameter_marker", "token.parameter_marker", "character", ""),
     "SBSFC016-security": ("SBSQL-D437EC74B872", "sb.scalar.security", "management.security", "character", ""),
     "SBSFC016-localized-label": ("SBSQL-DC3ADB63538F", "sb.scalar.localized_label", "label.localized", "character", ""),
-    "SBSFC016-policy-blocked": ("SBSQL-E302317C73E2", "sb.scalar.policy_blocked", "decision.policy_blocked", "character", ""),
+    "SBSFC016-policy-blocked": ("SBSQL-E302317C73E2", "sb.scalar.policy_blocked", "0", "boolean", ""),
     "SBSFC016-notice": ("SBSQL-E9EC607BA6D8", "sb.scalar.notice", "NOTICE", "character", ""),
     "SBSFC016-dictionary-encoded": ("SBSQL-F1C822127E64", "sb.scalar.dictionary_encoded", "encoding.dictionary", "character", ""),
     "SBSFC016-unresolved": ("SBSQL-06DAC31C3A89", "sb.scalar.unresolved", "decision.unresolved", "character", ""),
@@ -228,7 +228,7 @@ EXPECTED_CASES = {
     "SBSFC016-error-diagnostic-uuid": ("SBSQL-B8E49C049ECB", "sb.scalar.error_diagnostic_uuid", "019e1600-0000-7000-8000-0000000000cc", "uuid", ""),
     "SBSFC016-transaction": ("SBSQL-91F466E96DE4", "sb.scalar.transaction", "fixture.identifier.transaction", "character", ""),
     "SBSFC016-context-ambiguous": ("SBSQL-BB49C3D09E24", "sb.scalar.context_ambiguous", "diagnostic.context_ambiguous", "character", ""),
-    "SBSFC016-policy-blocked-diagnostic": ("SBSQL-CE3790BA0486", "sb.scalar.policy_blocked_diagnostic", "decision.policy_blocked", "character", ""),
+    "SBSFC016-policy-blocked-diagnostic": ("SBSQL-CE3790BA0486", "SBSQL.POLICY_BLOCKED", "", "diagnostic_identity", "SB_DIAG_FUNCTION_NOT_REGISTERED"),
     "SBSFC016-diag-sqlstate": ("SBSQL-CB2705E35D88", "sb.scalar.diag_sqlstate", "00000", "character", ""),
     "SBSFC016-canonical-function-idempotency-requirement": ("SBSQL-D2A2D11E9991", "sb.scalar.canonical_function_idempotency_requirement", "metadata.idempotency_requirement", "character", ""),
     "SBSFC016-deprecation-warning": ("SBSQL-D4C7802D088A", "sb.scalar.deprecation_warning", "warning.deprecation", "character", ""),
@@ -429,7 +429,6 @@ METADATA_POLICY_CASES = {
     "SBSFC016-error-diagnostic-uuid",
     "SBSFC016-transaction",
     "SBSFC016-context-ambiguous",
-    "SBSFC016-policy-blocked-diagnostic",
     "SBSFC016-diag-sqlstate",
     "SBSFC016-canonical-function-idempotency-requirement",
     "SBSFC016-deprecation-warning",
@@ -474,6 +473,10 @@ METADATA_POLICY_CASES = {
     "SBSFC016-contextual-keyword-when",
     "SBSFC016-contextual-keyword-with",
     "SBSFC016-stmt-null",
+}
+
+DIAGNOSTIC_IDENTITY_CASES = {
+    "SBSFC016-policy-blocked-diagnostic",
 }
 
 PROCEDURAL_DIAGNOSTIC_CASES = {
@@ -557,17 +560,24 @@ def main() -> int:
             fail(f"{fixture_id}: surface {surface_id} missing from surface registry")
         if row["function_id"] != function_id or row["canonical_builtin_id"] != function_id:
             fail(f"{fixture_id}: function/canonical id mismatch")
-        uses_builtin_oracle = "builtin-expression-registry.yaml" in row["oracle_authority_ref"]
-        uses_surface_oracle = "SBSQL_SURFACE_REGISTRY.csv" in row["oracle_authority_ref"]
-        if uses_builtin_oracle and function_id not in builtins:
-            fail(f"{fixture_id}: builtin id {function_id} missing from builtin-expression-registry")
-        if not uses_builtin_oracle and not uses_surface_oracle:
-            fail(f"{fixture_id}: oracle authority must include builtin-expression-registry.yaml or SBSQL_SURFACE_REGISTRY.csv")
-        if f'"{function_id}"' not in seed_text:
-            fail(f"{fixture_id}: seed registry entry missing for {function_id}")
-        dispatch_key = function_id.split(".")[-1]
-        if dispatch_key not in dispatch_text:
-            fail(f"{fixture_id}: dispatch source does not mention {dispatch_key}")
+        if fixture_id in DIAGNOSTIC_IDENTITY_CASES:
+            if (
+                "normalized-builtin-surface-classification.csv" not in row["oracle_authority_ref"]
+                or "consolidated-diagnostic-code-registry.csv" not in row["oracle_authority_ref"]
+            ):
+                fail(f"{fixture_id}: diagnostic identity authority is incomplete")
+        else:
+            uses_builtin_oracle = "builtin-expression-registry.yaml" in row["oracle_authority_ref"]
+            uses_surface_oracle = "SBSQL_SURFACE_REGISTRY.csv" in row["oracle_authority_ref"]
+            if uses_builtin_oracle and function_id not in builtins:
+                fail(f"{fixture_id}: builtin id {function_id} missing from builtin-expression-registry")
+            if not uses_builtin_oracle and not uses_surface_oracle:
+                fail(f"{fixture_id}: oracle authority must include builtin-expression-registry.yaml or SBSQL_SURFACE_REGISTRY.csv")
+            if f'"{function_id}"' not in seed_text:
+                fail(f"{fixture_id}: seed registry entry missing for {function_id}")
+            dispatch_key = function_id.split(".")[-1]
+            if dispatch_key not in dispatch_text:
+                fail(f"{fixture_id}: dispatch source does not mention {dispatch_key}")
         if row["expected_result_value"] != expected_value:
             fail(f"{fixture_id}: expected value {expected_value!r}, got {row['expected_result_value']!r}")
         if row["expected_result_descriptor"] != descriptor:
@@ -617,6 +627,17 @@ def main() -> int:
         dispatch_key = row["function_id"].split(".")[-1]
         if f"data_scalar_functions_06_system_session_catalog.inc#{dispatch_key}" not in row["oracle_authority_ref"]:
             fail(f"{fixture_id}: procedural diagnostic row must cite dispatch source")
+
+    for fixture_id in DIAGNOSTIC_IDENTITY_CASES:
+        row = by_case[fixture_id]
+        if row["case_kind"] != "diagnostic_identity_non_callable":
+            fail(f"{fixture_id}: diagnostic identity must be non-callable")
+        if row["evaluation_mode"] != "refusal":
+            fail(f"{fixture_id}: diagnostic identity must use refusal evaluation")
+        if json.loads(row["arguments_json"]) != []:
+            fail(f"{fixture_id}: diagnostic identity fixture must be nullary")
+        if row["expected_diagnostic_code"] != "SB_DIAG_FUNCTION_NOT_REGISTERED":
+            fail(f"{fixture_id}: diagnostic identity refusal drifted")
 
     for fixture_id in FIXED_POLICY_LIMIT_CASES:
         row = by_case[fixture_id]

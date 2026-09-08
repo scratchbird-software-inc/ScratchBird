@@ -58,6 +58,7 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-B1816929AD45",
     "SBSQL-5CC9FDFFE6F7",
 }
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = (
     CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
     | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
@@ -284,6 +285,8 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
             "SBSQL.IMPL.NOT_AVAILABLE",
             "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
             "UDR.BRIDGE.UNSUPPORTED",
+            "SB_DIAG_FUNCTION_NOT_REGISTERED",
+            "SBSQL.SURFACE.NOT_ADMITTED",
         )
     ):
         fail(f"{surface_id} exact-refusal fixture is missing refusal message-vector proof")
@@ -357,14 +360,17 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
     elif manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
         fail(f"{surface_id} noncluster authenticated fixture has an unsupported final state")
     elif manifest["final_state"] == "exact_refusal_passed":
-        expected_refusal = (
-            "SBSQL.IMPL.NOT_AVAILABLE"
-            if (
-                is_central_import_refusal_surface(surface_id)
-                or surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
+        if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+            expected_refusal = "SBSQL.SURFACE.NOT_ADMITTED"
+        else:
+            expected_refusal = (
+                "SBSQL.IMPL.NOT_AVAILABLE"
+                if (
+                    is_central_import_refusal_surface(surface_id)
+                    or surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
+                )
+                else "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
             )
-            else "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
-        )
         if expected_refusal not in fields.get("expected_diagnostic_codes", ""):
             fail(
                 f"{surface_id} exact-refusal authenticated fixture lacks "
@@ -405,7 +411,19 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     if "sql_text" not in forbidden or "operation_family_only_routing" not in forbidden:
         fail(f"{surface_id} round-trip fixture lost forbidden authority sources")
     authority = fields.get("execution_authority_model", "")
-    if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+    if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        if not all(
+            token in authority
+            for token in (
+                "diagnostic_identity_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_mutation",
+                "no_wal_authority",
+            )
+        ):
+            fail(f"{surface_id} diagnostic-identity refusal authority model drifted")
+    elif surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
         if not all(
             token in authority
             for token in (
@@ -438,7 +456,25 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     else:
         if manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
             fail(f"{surface_id} noncluster round-trip fixture has an unsupported final state")
-        if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
+        if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+            if (
+                manifest["final_state"] != "exact_refusal_passed"
+                or fields.get("byte_identical_round_trip_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("canonical_container_magic", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("canonical_container_header_size_bytes", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("crc32c_check_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or fields.get("engine_anchored_uuids_required", "")
+                != "not_applicable_pre_sblr_exact_refusal"
+                or op_id != "not_admitted_diagnostic_identity_SBSQL.POLICY_BLOCKED"
+                or "no_executable_sblr" not in fields.get("lower_phase_expectation", "")
+                or "no_server_or_engine_dispatch" not in fields.get("dispatch_phase_expectation", "")
+            ):
+                fail(f"{surface_id} diagnostic-identity refusal proof drifted")
+        elif surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
             expected_parent_operation = (
                 "not_admitted_diagnostic_refusal"
                 if (
@@ -563,7 +599,10 @@ def main() -> int:
         validate_round(surface_id, round_validation_fields, manifest, round_row)
 
         target_status = fixture_status_for_manifest(manifest)
-        pre_sblr_refusal = surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
+        pre_sblr_refusal = (
+            surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS
+            or surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID
+        )
         if not args.dry_run and write_fixture(
                 auth_path,
                 auth_fields,

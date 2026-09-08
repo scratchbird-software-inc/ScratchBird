@@ -13,8 +13,20 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_POLICY_API
-struct EngineEvaluatePolicyRequest : EngineApiRequest {};
-struct EngineEvaluatePolicyResult : EngineApiResult {};
+enum class EnginePolicyObservationKind {
+  current_statement_gate,
+  current_diagnostic_policy_refusal,
+};
+
+struct EngineEvaluatePolicyRequest : EngineApiRequest {
+  EnginePolicyObservationKind observation_kind =
+      EnginePolicyObservationKind::current_statement_gate;
+};
+struct EngineEvaluatePolicyResult : EngineApiResult {
+  bool policy_blocked = false;
+  EnginePolicyObservationKind observation_kind =
+      EnginePolicyObservationKind::current_statement_gate;
+};
 EngineEvaluatePolicyResult EngineEvaluatePolicy(const EngineEvaluatePolicyRequest& request);
 
 // SEARCH_KEY: POLICY_MUTATION_COMMANDS

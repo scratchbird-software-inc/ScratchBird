@@ -291,6 +291,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "parameter-bind-multi-nullable", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-visibility-parent"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-policy-evaluation-parent"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-create"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-merge"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-set"))
@@ -435,6 +436,25 @@ def main() -> int:
         catalog_event_path = Path(f"{database}.sb.catalog_object_events")
         catalog_event_before = None
         executor_availability_before = None
+        policy_observer_api_event_path = Path(f"{database}.sb.api_events")
+        policy_observer_protected_paths = (
+            catalog_event_path,
+            Path(f"{database}.sb.security_principal_events"),
+        )
+        policy_observer_protected_before = {}
+        policy_observer_api_before = ()
+        if args.operation == "security-policy-evaluation-parent":
+            policy_observer_protected_before = {
+                path: (path.exists(), path.read_bytes() if path.exists() else b"")
+                for path in policy_observer_protected_paths
+            }
+            policy_observer_api_before = (
+                durable_api_authority_rows(
+                    policy_observer_api_event_path.read_bytes()
+                )
+                if policy_observer_api_event_path.exists()
+                else ()
+            )
         executor_availability_pattern = (
             f"{database.name}.sb.sblr_executor_availability_registry.v1*"
         )
@@ -704,6 +724,20 @@ def main() -> int:
                 raise ProofError(
                     "security visibility predicates did not complete the "
                     "exact public query-projection parent route"
+                )
+        elif args.operation == "security-policy-evaluation-parent":
+            expected_success = (
+                "CSC-TEST-005827 CSC-TEST-005828 "
+                "SECURITY_POLICY_EVALUATION_PARENT accepted "
+                "canonical_sblr=true internal_evaluator_hidden=true "
+                "policy_blocked=false diagnostic_policy_blocked=false "
+                "diagnostic_identity_non_callable=true "
+                "replay=true transaction_rolled_back=true\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "policy observations did not complete the exact public "
+                    "query-projection parent route"
                 )
         elif args.operation == "procedure-invoke":
             expected_success = (
@@ -1542,6 +1576,12 @@ def main() -> int:
                 "opcode=SBLR_QUERY_EVALUATE_PROJECTION",
                 "code=1038",
             )
+        elif args.operation == "security-policy-evaluation-parent":
+            expected = (
+                "preflight_observe op=query.evaluate_projection",
+                "opcode=SBLR_QUERY_EVALUATE_PROJECTION",
+                "code=1038",
+            )
         elif args.operation == "ddl-create-procedure":
             expected = (
                 "executor_id=engine.op.ddl_create_procedure",
@@ -1606,6 +1646,13 @@ def main() -> int:
             raise ProofError(
                 "internal security visibility evaluator escaped as a public "
                 "SBLR operation"
+            )
+        if args.operation == "security-policy-evaluation-parent" and (
+            "operation_id=security.evaluate_policy" in audit or
+            "opcode=SBLR_SECURITY_EVALUATE_POLICY" in audit
+        ):
+            raise ProofError(
+                "internal policy evaluator escaped as a public SBLR operation"
             )
         second = command.copy()
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
@@ -2507,6 +2554,92 @@ def main() -> int:
                 raise ProofError(
                     "restarted malformed PROCEDURE INVOKE changed executable "
                     "lifecycle"
+                )
+        elif args.operation == "security-policy-evaluation-parent":
+            if verified.stdout != expected_success or verified.stderr:
+                raise ProofError(
+                    "independent authenticated policy observation did not "
+                    "preserve the exact public parent result"
+                )
+
+            stop(server)
+            server = None
+            restart_control = work / "policy-observer-restart-control"
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(work / "policy-observer-restart-runtime"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(work / "policy-observer-server-restart.out").open("wb"),
+                stderr=(work / "policy-observer-server-restart.err").open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            recovered = command.copy()
+            recovered[1] = f"unix:{restart_endpoint}"
+            recovered[-1] = (
+                "sbsql-sblr-security-policy-evaluation-parent-"
+                "e2e-restart-observer"
+            )
+            restarted = subprocess.run(
+                recovered,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if (
+                restarted.returncode != 0
+                or restarted.stdout != expected_success
+                or restarted.stderr
+            ):
+                raise ProofError(
+                    "restarted policy observer did not reconstruct the exact "
+                    "read-only statement authority: "
+                    f"returncode={restarted.returncode} "
+                    f"stdout={restarted.stdout!r} stderr={restarted.stderr!r}"
+                )
+            for path, before in policy_observer_protected_before.items():
+                after = (
+                    path.exists(), path.read_bytes() if path.exists() else b""
+                )
+                if after != before:
+                    raise ProofError(
+                        "policy observation changed protected durable state: "
+                        f"{path}"
+                    )
+            policy_observer_api_after = (
+                durable_api_authority_rows(
+                    policy_observer_api_event_path.read_bytes()
+                )
+                if policy_observer_api_event_path.exists()
+                else ()
+            )
+            if policy_observer_api_after != policy_observer_api_before:
+                raise ProofError(
+                    "policy observation changed durable catalog/name authority"
+                )
+            restart_audit = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in audit_paths
+                if path.exists()
+            )
+            if (
+                "operation_id=security.evaluate_policy" in restart_audit
+                or "opcode=SBLR_SECURITY_EVALUATE_POLICY" in restart_audit
+            ):
+                raise ProofError(
+                    "restarted route exposed the internal policy evaluator"
                 )
         elif verified.stdout != first.stdout and args.operation != "ddl-drop-operator":
             raise ProofError(

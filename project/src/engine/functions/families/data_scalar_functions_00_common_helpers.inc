@@ -17,6 +17,7 @@
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
+#include "security/policy_api.hpp"
 #include "security/visibility_api.hpp"
 #include "sblr/sblr_domain_runtime.hpp"
 #include "sblr/sblr_sequence_runtime.hpp"

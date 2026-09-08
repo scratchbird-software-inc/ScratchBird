@@ -157,6 +157,7 @@ FORBIDDEN_AUTHORITY = "sql_text;identifier_names;parser_branch_names;reference_c
 EXECUTION_AUTHORITY = "mga_copy_on_write;no_wal_authority;sblr_envelope_with_uuid_and_descriptor_authority_only"
 PENDING = "pending_canonical_authority_entry"
 BRIDGE_CLUSTER_ROUTE_SURFACE_ID = "SBSQL-D50EC7C4422E"
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 FIXTURE_KIND = "sblr_binary_round_trip"
 ALLOWED_AUTHORED_FIXTURE_STATUSES = {
     "fixture_authored",
@@ -331,6 +332,28 @@ def pre_sblr_exact_refusal_manifest_phases(
     }
 
 
+def policy_diagnostic_identity_refusal_phases(authority_status: str) -> dict[str, str]:
+    return {
+        "expected_canonical_function_or_api_operation_id": "not_admitted_diagnostic_identity_SBSQL.POLICY_BLOCKED",
+        "parse_phase_expectation": "parse_presented_function_syntax_then_classify_SBSQL_POLICY_BLOCKED_as_diagnostic_identity",
+        "bind_phase_expectation": "bind_refuses_non_callable_diagnostic_identity_with_SBSQL_SURFACE_NOT_ADMITTED",
+        "lower_phase_expectation": "not_reached_no_executable_sblr_emitted",
+        "binary_serialize_phase_expectation": "not_applicable_no_sblr_envelope_to_serialize",
+        "verify_phase_expectation": "not_applicable_no_container_to_verify",
+        "binary_deserialize_phase_expectation": "not_applicable_no_container_to_deserialize",
+        "dispatch_phase_expectation": "not_applicable_no_server_or_engine_dispatch",
+        "execute_phase_expectation": "not_applicable_no_engine_execution_or_mutation",
+        "render_phase_expectation": "renderer_emit_SBSQL_SURFACE_NOT_ADMITTED_for_raw_diagnostic_identity_call",
+        "canonical_container_magic": "not_applicable_pre_sblr_exact_refusal",
+        "canonical_container_header_size_bytes": "not_applicable_pre_sblr_exact_refusal",
+        "byte_identical_round_trip_required": "not_applicable_pre_sblr_exact_refusal",
+        "crc32c_check_required": "not_applicable_pre_sblr_exact_refusal",
+        "engine_anchored_uuids_required": "not_applicable_pre_sblr_exact_refusal",
+        "execution_authority_model": "diagnostic_identity_only;no_executable_sblr;no_engine_execution;no_mutation;no_wal_authority",
+        "notes": "SBSQL.POLICY_BLOCKED is a registered diagnostic identity, not a callable function or SBLR root. Its raw public call refuses before executable SBLR with SBSQL.SURFACE.NOT_ADMITTED. The distinct sb.scalar.policy_blocked_diagnostic() builtin provides authenticated statement-scoped boolean observation. Round-trip authority source=" + authority_status + ".",
+    }
+
+
 def native_future_phases() -> dict[str, str]:
     return {
         "expected_canonical_function_or_api_operation_id": "not_applicable_status_native_future_lower_refuses_before_envelope",
@@ -439,7 +462,14 @@ def main() -> int:
         manifest_row = manifest_by_id.get(surface_id)
         manifest_operation_id, manifest_authority = canonical_operation_from_manifest(manifest_row)
 
-        if surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:
+        if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+            if not manifest_row or manifest_row.get("final_state") != "exact_refusal_passed":
+                fail("SBSQL-CE3790BA0486 requires exact-refusal per-row evidence")
+            if "diagnostic_identity=SBSQL.POLICY_BLOCKED" not in manifest_row.get("implementation_refs", ""):
+                fail("SBSQL-CE3790BA0486 diagnostic identity evidence drift")
+            oracle_status = "normalized_diagnostic_identity_and_per_row_exact_refusal"
+            phases = policy_diagnostic_identity_refusal_phases(oracle_status)
+        elif surface_id == BRIDGE_CLUSTER_ROUTE_SURFACE_ID:
             oracle_status = f"per_row_manifest_{manifest_authority}"
             phases = bridge_cluster_exact_refusal_phases(oracle_status)
         elif surface["cluster_scope"] == "cluster_private":

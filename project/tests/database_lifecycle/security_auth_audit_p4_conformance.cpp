@@ -556,17 +556,53 @@ void TestEngineAuthenticationAndPolicy(const std::filesystem::path& database_pat
 
   api::EngineEvaluatePolicyRequest policy;
   policy.context = Context(database_path);
-  policy.target_object.uuid.canonical = "security-policy-p4";
-  policy.policy_profile.encoded_profiles.push_back("allow:policy-admin");
+  policy.operation_id = "security.evaluate_policy";
+  policy.context.statement_uuid.canonical =
+      "019e1d7e-7010-7000-8000-0000000000a4";
+  policy.context.transaction_policy_snapshot_uuid.canonical =
+      "019e1d7e-7011-7000-8000-0000000000a4";
+  policy.context.transaction_policy_snapshot_generation = 1;
+  policy.context.current_policy_gate.present = true;
+  policy.context.current_policy_gate.blocked = false;
+  policy.context.current_policy_gate.statement_uuid =
+      policy.context.statement_uuid;
+  policy.context.current_policy_gate.transaction_uuid =
+      policy.context.transaction_uuid;
+  policy.context.current_policy_gate.local_transaction_id =
+      policy.context.local_transaction_id;
+  policy.context.current_policy_gate.authorization_context_uuid =
+      policy.context.authorization_context.authority_uuid;
+  policy.context.current_policy_gate.authorization_context_generation =
+      policy.context.authorization_context.security_context_generation;
+  policy.context.current_policy_gate.policy_snapshot_uuid =
+      policy.context.transaction_policy_snapshot_uuid;
+  policy.context.current_policy_gate.policy_snapshot_generation =
+      policy.context.transaction_policy_snapshot_generation;
+  policy.context.current_policy_gate.security_epoch =
+      policy.context.security_epoch;
+  policy.context.current_policy_gate.policy_epoch =
+      policy.context.authorization_context.policy_epoch;
+  policy.context.current_policy_gate.catalog_generation_id =
+      policy.context.catalog_generation_id;
+  policy.context.current_policy_gate.resource_epoch =
+      policy.context.resource_epoch;
   const auto policy_ok = api::EngineEvaluatePolicy(policy);
-  Require(policy_ok.ok && HasEvidence(policy_ok, "policy_decision"),
-          "P4 engine policy evaluation failed");
+  Require(policy_ok.ok && !policy_ok.policy_blocked &&
+              HasEvidence(policy_ok, "policy_gate_observation"),
+          "P4 engine statement policy observation failed");
+
+  api::EngineEvaluatePolicyRequest blocked_policy = policy;
+  blocked_policy.context.current_policy_gate.blocked = true;
+  const auto blocked = api::EngineEvaluatePolicy(blocked_policy);
+  Require(blocked.ok && blocked.policy_blocked,
+          "P4 engine-owned blocked policy state was not observed");
 
   api::EngineEvaluatePolicyRequest invalid_policy = policy;
-  invalid_policy.policy_profile.encoded_profiles.push_back("unsafe:policy");
+  invalid_policy.target_object.uuid.canonical = "security-policy-p4";
+  invalid_policy.policy_profile.encoded_profiles.push_back("caller-policy");
   const auto denied = api::EngineEvaluatePolicy(invalid_policy);
-  Require(!denied.ok && HasDiagnostic(denied, "SECURITY.AUTHORIZATION.DENIED"),
-          "P4 unsafe policy profile was accepted");
+  Require(!denied.ok && HasDiagnostic(denied, "SBLR.OPERAND_INVALID"),
+          "P4 caller-authored policy input was accepted");
 }
 
 void TestAuthRegistryMethodPosture(const std::filesystem::path& database_path) {

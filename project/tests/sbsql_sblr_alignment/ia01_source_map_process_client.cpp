@@ -166,6 +166,94 @@ int main(int argc, char** argv) {
                  "invalid_right=false transaction_rolled_back=true\n";
     return 0;
   }
+  if (operation == "security-policy-evaluation-parent") {
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& failed) {
+      std::cerr << "CSC-TEST-005827 CSC-TEST-005828 "
+                   "SECURITY_POLICY_EVALUATION_PARENT "
+                << phase << " accepted=" << failed.accepted
+                << " outcome_unknown=" << failed.outcome_unknown
+                << " operation=" << failed.server_operation_id
+                << " row_count=" << failed.server_row_count
+                << " result=" << failed.server_result_payload << '\n';
+      for (const auto& diagnostic : failed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+    };
+    const auto require_projection = [&](std::string_view sql,
+                                        std::string_view field) {
+      auto projected = session.RunPipeline(sql, true);
+      const std::string expected_row =
+          "row[0]=" + std::string(field) + "=0";
+      const std::string expected_metadata =
+          "row_meta[0]=" + std::string(field) + ":boolean:not_null";
+      const bool exact =
+          projected.accepted && !projected.outcome_unknown &&
+          !projected.messages.has_errors() &&
+          projected.server_operation_id == "query.evaluate_projection" &&
+          projected.server_cursor_uuid.empty() &&
+          projected.server_row_count == 1 &&
+          projected.server_result_payload.find(
+              "operation_id=query.evaluate_projection") !=
+              std::string::npos &&
+          projected.server_result_payload.find(expected_row) !=
+              std::string::npos &&
+          projected.server_result_payload.find(expected_metadata) !=
+              std::string::npos &&
+          projected.sblr_payload.find("security.evaluate_policy") ==
+              std::string::npos &&
+          projected.sblr_payload.find(sql) == std::string::npos;
+      if (!exact) dump_failure(field, projected);
+      return exact;
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.outcome_unknown ||
+        begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+    const bool first_observation = require_projection(
+        "SELECT policy_blocked() AS policy_blocked;", "policy_blocked");
+    const bool exact_replay = require_projection(
+        "SELECT policy_blocked() AS policy_blocked;", "policy_blocked");
+    const bool diagnostic_observation = require_projection(
+        "SELECT policy_blocked_diagnostic() AS diagnostic_policy_blocked;",
+        "diagnostic_policy_blocked");
+    const auto diagnostic_identity_call = session.RunPipeline(
+        "SELECT \"SBSQL.POLICY_BLOCKED\"() AS invalid_diagnostic_call;", true);
+    const bool diagnostic_identity_refused =
+        !diagnostic_identity_call.accepted &&
+        !diagnostic_identity_call.outcome_unknown &&
+        diagnostic_identity_call.sblr_payload.empty() &&
+        diagnostic_identity_call.messages.has_errors() &&
+        std::ranges::any_of(
+            diagnostic_identity_call.messages.diagnostics,
+            [](const auto& diagnostic) {
+              return diagnostic.code == "SBSQL.SURFACE.NOT_ADMITTED";
+            });
+    if (!diagnostic_identity_refused) {
+      dump_failure("diagnostic_identity_call_not_refused",
+                   diagnostic_identity_call);
+    }
+    auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+    if (!rolled_back.accepted || rolled_back.outcome_unknown ||
+        rolled_back.messages.has_errors()) {
+      dump_failure("rollback_failed", rolled_back);
+      return 4;
+    }
+    if (!first_observation || !exact_replay || !diagnostic_observation ||
+        !diagnostic_identity_refused) {
+      return 4;
+    }
+    std::cout << "CSC-TEST-005827 CSC-TEST-005828 "
+                 "SECURITY_POLICY_EVALUATION_PARENT accepted "
+                 "canonical_sblr=true internal_evaluator_hidden=true "
+                 "policy_blocked=false diagnostic_policy_blocked=false "
+                 "diagnostic_identity_non_callable=true replay=true "
+                 "transaction_rolled_back=true\n";
+    return 0;
+  }
   if (operation == "security-alter-policy" ||
       operation == "security-alter-policy-observe" ||
       operation == "security-alter-policy-rollback" ||

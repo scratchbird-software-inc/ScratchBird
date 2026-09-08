@@ -152,6 +152,8 @@ CREATE_SCHEMA_E2E_SURFACE_IDS = {
     "SBSQL-DE4B8AAF6326",
     "SBSQL-7BA0B928798B",
 }
+POLICY_OBSERVER_SURFACE_ID = "SBSQL-E302317C73E2"
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
@@ -200,6 +202,51 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
     cluster_scope = surface["cluster_scope"]
 
     fixture_path = f"project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route/{surface_id}.route.yaml"
+
+    if surface_id == POLICY_OBSERVER_SURFACE_ID:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "durable_authenticated_principal_with_live_statement_receipt",
+            "credential_profile_refused": "missing_or_stale_session_statement_security_or_policy_authority",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": "active_mga_transaction;exact_statement_uuid;receipt_bound_policy_snapshot_security_catalog_and_resource_generations",
+            "transport_route": TRANSPORT_ROUTE,
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": IPC_ADMISSION_PATH,
+            "engine_admission_authority": "authenticated_statement_receipt;engine_owned_policy_gate_observation;query.evaluate_projection;internal_security.evaluate_policy_not_publicly_addressable",
+            "mga_execution_authority": "read_only_statement_observation;mutation_attempted=false;mutation_committed=false;no_wal_authority",
+            "expected_authorization_accepted_outcome": "boolean_non_null_policy_blocked_value_from_exact_statement_receipt_with_replay_independent_session_and_restart_proof",
+            "expected_authorization_refused_outcome": "missing_or_stale_authority_refuses_SBSQL_NO_STATEMENT_SECURITY_ACCESS_DENIED_or_PROCESS_CANCELLED_before_observation",
+            "expected_diagnostic_codes": "SBSQL.NO_STATEMENT;SBLR.OPERAND_INVALID;SECURITY.ACCESS_DENIED;PROCESS.CANCELLED",
+            "fixture_status": "pending_authoring",
+            "notes": "POLICY_BLOCKED() is an authenticated, statement-scoped, read-only boolean observer. The public listener/SBWP/parser/SBPS/server route lowers only through query.evaluate_projection and reads the exact engine-issued receipt policy cohort. It has no object-grant branch and performs no catalog, security, policy, MGA, or finality mutation. Internal security.evaluate_policy is not a public SBLR operation.",
+        }
+
+    if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "not_applicable_diagnostic_identity_is_not_callable",
+            "credential_profile_refused": "authenticated_sbsql_session_raw_diagnostic_function_spelling_refused",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": "not_applicable_refusal_before_executable_sblr",
+            "transport_route": (
+                f"{TRANSPORT_ROUTE};"
+                "parser_refusal_before_sbps_submission"
+            ),
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": "not_reached_no_executable_sblr_emitted",
+            "engine_admission_authority": "not_reached_SBSQL_POLICY_BLOCKED_is_diagnostic_identity_not_function",
+            "mga_execution_authority": "not_reached_no_mutation_no_wal_authority",
+            "expected_authorization_accepted_outcome": "not_applicable_use_separate_policy_blocked_diagnostic_observer_builtin",
+            "expected_authorization_refused_outcome": "raw_SBSQL_POLICY_BLOCKED_function_call_refused_SBSQL_SURFACE_NOT_ADMITTED_before_sblr_dispatch",
+            "expected_diagnostic_codes": "SBSQL.SURFACE.NOT_ADMITTED;SBSQL.POLICY_BLOCKED",
+            "fixture_status": "pending_authoring",
+            "notes": "SBSQL.POLICY_BLOCKED is a registered diagnostic identity and never a callable function or SBLR root. The authenticated public route refuses its raw function spelling before executable SBLR and mutation. Boolean diagnostic-area observation is provided by the distinct implemented sb.scalar.policy_blocked_diagnostic() builtin.",
+        }
 
     if surface_id in CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS:
         return {

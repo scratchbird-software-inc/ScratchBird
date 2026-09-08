@@ -313,7 +313,7 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-CE7F2EE0D34E", "parameter_marker", "sb.scalar.parameter_marker", "character", "token.parameter_marker"},
     {"SBSQL-D437EC74B872", "security", "sb.scalar.security", "character", "management.security"},
     {"SBSQL-DC3ADB63538F", "localized_label", "sb.scalar.localized_label", "character", "label.localized"},
-    {"SBSQL-E302317C73E2", "policy_blocked", "sb.scalar.policy_blocked", "character", "decision.policy_blocked"},
+    {"SBSQL-E302317C73E2", "policy_blocked", "sb.scalar.policy_blocked", "boolean", "0"},
     {"SBSQL-E9EC607BA6D8", "notice", "sb.scalar.notice", "character", "NOTICE"},
     {"SBSQL-F1C822127E64", "dictionary_encoded", "sb.scalar.dictionary_encoded", "character", "encoding.dictionary"},
     {"SBSQL-06DAC31C3A89", "unresolved", "sb.scalar.unresolved", "character", "decision.unresolved"},
@@ -362,7 +362,6 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-B8E49C049ECB", "error_diagnostic_uuid", "sb.scalar.error_diagnostic_uuid", "uuid", "019f0000-0000-7000-8000-000000003128"},
     {"SBSQL-91F466E96DE4", "transaction", "sb.scalar.transaction", "character", "fixture.identifier.transaction"},
     {"SBSQL-BB49C3D09E24", "context_ambiguous", "sb.scalar.context_ambiguous", "character", "diagnostic.context_ambiguous"},
-    {"SBSQL-CE3790BA0486", "policy_blocked_diagnostic", "sb.scalar.policy_blocked_diagnostic", "character", "decision.policy_blocked"},
     {"SBSQL-CB2705E35D88", "diag_sqlstate", "sb.scalar.diag_sqlstate", "character", "00000"},
     {"SBSQL-D2A2D11E9991", "canonical_function_idempotency_requirement", "sb.scalar.canonical_function_idempotency_requirement", "character", "metadata.idempotency_requirement"},
     {"SBSQL-D4C7802D088A", "deprecation_warning", "sb.scalar.deprecation_warning", "character", "warning.deprecation"},
@@ -1455,6 +1454,40 @@ api::EngineRequestContext EngineContext() {
   context.deterministic_random_u64_present = true;
   context.deterministic_uuid_text = "550e8400-e29b-41d4-a716-446655440000";
   context.security_context_present = true;
+  context.catalog_generation_id = 11;
+  context.security_epoch = 7;
+  context.resource_epoch = 13;
+  context.transaction_policy_snapshot_uuid.canonical =
+      "019f0000-0000-7000-8000-000000003129";
+  context.transaction_policy_snapshot_generation = 3;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7000-8000-00000000312a";
+  context.authorization_context.security_context_generation = 2;
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = 9;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  context.current_policy_gate.present = true;
+  context.current_policy_gate.blocked = false;
+  context.current_policy_gate.statement_uuid = context.statement_uuid;
+  context.current_policy_gate.transaction_uuid = context.transaction_uuid;
+  context.current_policy_gate.local_transaction_id = context.local_transaction_id;
+  context.current_policy_gate.authorization_context_uuid =
+      context.authorization_context.authority_uuid;
+  context.current_policy_gate.authorization_context_generation =
+      context.authorization_context.security_context_generation;
+  context.current_policy_gate.policy_snapshot_uuid =
+      context.transaction_policy_snapshot_uuid;
+  context.current_policy_gate.policy_snapshot_generation =
+      context.transaction_policy_snapshot_generation;
+  context.current_policy_gate.security_epoch = context.security_epoch;
+  context.current_policy_gate.policy_epoch =
+      context.authorization_context.policy_epoch;
+  context.current_policy_gate.catalog_generation_id =
+      context.catalog_generation_id;
+  context.current_policy_gate.resource_epoch = context.resource_epoch;
   context.trace_tags.push_back("right:QUERY_PROJECTION_TEST");
   return context;
 }

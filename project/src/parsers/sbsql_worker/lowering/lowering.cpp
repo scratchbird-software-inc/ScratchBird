@@ -12461,7 +12461,7 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
   if (lowered == "parameter_marker") return ScalarFunctionProjectionDescriptor{"sb.scalar.parameter_marker", "character"};
   if (lowered == "security") return ScalarFunctionProjectionDescriptor{"sb.scalar.security", "character"};
   if (lowered == "localized_label") return ScalarFunctionProjectionDescriptor{"sb.scalar.localized_label", "character"};
-  if (lowered == "policy_blocked") return ScalarFunctionProjectionDescriptor{"sb.scalar.policy_blocked", "character"};
+  if (lowered == "policy_blocked") return ScalarFunctionProjectionDescriptor{"sb.scalar.policy_blocked", "boolean"};
   if (lowered == "notice") return ScalarFunctionProjectionDescriptor{"sb.scalar.notice", "character"};
   if (lowered == "dictionary_encoded") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.dictionary_encoded", "character"};
@@ -12572,7 +12572,7 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
   }
   if (lowered == "policy_blocked_diagnostic") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.policy_blocked_diagnostic",
-                                              "character",
+                                              "boolean",
                                               "SBSQL.POLICY_BLOCKED"};
   }
   if (lowered == "diag_sqlstate") {
@@ -17143,6 +17143,38 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
   }
   info.valid = !info.items.empty();
   return info;
+}
+
+bool IsNonCallablePolicyBlockedDiagnosticProjection(const CstDocument& cst) {
+  const auto tokens = MeaningfulTokens(cst);
+  if (tokens.size() < 4 || !TokenTextEquals(tokens, 0, "SELECT")) return false;
+
+  std::size_t cursor = 1;
+  bool exact_identity = false;
+  if (tokens[cursor]->quoted &&
+      tokens[cursor]->text == "SBSQL.POLICY_BLOCKED") {
+    exact_identity = true;
+    ++cursor;
+  } else if (cursor + 2 < tokens.size() &&
+             TokenTextEquals(tokens, cursor, "SBSQL") &&
+             tokens[cursor + 1]->text == "." &&
+             TokenTextEquals(tokens, cursor + 2, "POLICY_BLOCKED")) {
+    exact_identity = true;
+    cursor += 3;
+  }
+  if (!exact_identity || cursor + 1 >= tokens.size() ||
+      tokens[cursor]->text != "(" || tokens[cursor + 1]->text != ")") {
+    return false;
+  }
+  cursor += 2;
+  if (cursor < tokens.size() && TokenTextEquals(tokens, cursor, "AS")) {
+    ++cursor;
+    if (cursor >= tokens.size() || !IsIdentifierLikeToken(*tokens[cursor])) {
+      return false;
+    }
+    ++cursor;
+  }
+  return cursor == tokens.size();
 }
 
 bool IsCursorFetchDirectionKeyword(std::string_view word) {
@@ -44618,7 +44650,14 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                        {{"feature", *unsupported_query}});
     }
   }
-  if (scalar_projection.active && !scalar_projection.valid) {
+  if (IsNonCallablePolicyBlockedDiagnosticProjection(cst)) {
+    AddVerifierError(
+        &envelope.messages, "SBSQL.SURFACE.NOT_ADMITTED",
+        "SBSQL.POLICY_BLOCKED is a diagnostic identity and is not callable",
+        {{"surface_id", "SBSQL-CE3790BA0486"},
+         {"diagnostic_identity", "SBSQL.POLICY_BLOCKED"},
+         {"observer_builtin", "sb.scalar.policy_blocked_diagnostic"}});
+  } else if (scalar_projection.active && !scalar_projection.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.QUERY.PROJECTION_INVALID",
                      "constant SELECT projection requires one or more literal projection operands");
   }

@@ -6539,6 +6539,7 @@ SBSFC016_FIXED_POLICY_FIXTURE_CSV = (
     "SBSFC_016_PROCEDURAL_CONTEXT_FIXTURES.csv"
 )
 SBSFC016_FIXED_POLICY_RUNTIME_CTEST = "sbsql_sbsfc_016_procedural_context_runtime_conformance"
+SBSFC016_FIXED_POLICY_FIXTURE_CTEST = "sbsql_sbsfc_016_procedural_context_fixture_gate"
 SBSFC016_FIXED_POLICY_RUNTIME_SOURCE = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "sbsql_sbsfc_016_procedural_context_runtime_conformance.cpp"
@@ -6547,6 +6548,21 @@ SBSFC016_FIXED_POLICY_PROJECTION_CTEST = "sbsql_query_scalar_projection_conforma
 SBSFC016_FIXED_POLICY_PROJECTION_SOURCE = (
     "project/tests/sbsql_parser_worker/sbsql_query_scalar_projection_conformance.cpp"
 )
+SECURITY_POLICY_EVALUATION_COMPONENT_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_policy_evaluation_parent_route"
+)
+SECURITY_POLICY_EVALUATION_PROCESS_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_policy_evaluation_parent_process_e2e"
+)
+SECURITY_POLICY_EVALUATION_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/"
+    "ia09_security_policy_evaluation_parent_route_test.cpp"
+)
+SECURITY_POLICY_EVALUATION_PROCESS_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+)
+SBSFC016_POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
+SBSFC016_POLICY_DIAGNOSTIC_UUID = "cd16f861-90a2-520e-97a7-79d2f28cc355"
 
 SBSFC016_CONTEXT_CURRENT_SETTING_ROW_EVIDENCE = {
     "SBSQL-9A39831606E7": {
@@ -8098,14 +8114,6 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "expected_result": "label.localized",
         "result_descriptor": "character",
     },
-    "SBSQL-E302317C73E2": {
-        "canonical_name": "POLICY_BLOCKED",
-        "function_id": "sb.scalar.policy_blocked",
-        "engine_entrypoint": "policy_blocked",
-        "sblr_binding": "sblr.expr.policy_blocked.v3",
-        "expected_result": "decision.policy_blocked",
-        "result_descriptor": "character",
-    },
     "SBSQL-E9EC607BA6D8": {
         "canonical_name": "NOTICE",
         "function_id": "sb.scalar.notice",
@@ -8488,14 +8496,6 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "engine_entrypoint": "context_ambiguous",
         "sblr_binding": "sblr.expr.context_ambiguous.v3",
         "expected_result": "diagnostic.context_ambiguous",
-        "result_descriptor": "character",
-    },
-    "SBSQL-CE3790BA0486": {
-        "canonical_name": "SBSQL.POLICY_BLOCKED",
-        "function_id": "sb.scalar.policy_blocked_diagnostic",
-        "engine_entrypoint": "policy_blocked_diagnostic",
-        "sblr_binding": "sblr.expr.policy_blocked_diagnostic.v3",
-        "expected_result": "decision.policy_blocked",
         "result_descriptor": "character",
     },
     "SBSQL-CB2705E35D88": {
@@ -16904,6 +16904,58 @@ def classify_row(
             "fixture_evidence": f"{SBSFC016_FIXED_POLICY_FIXTURE_CSV};fixture_id={fixture_id};ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};ctest:{SBSFC016_FIXED_POLICY_PROJECTION_CTEST};source={SBSFC016_FIXED_POLICY_RUNTIME_SOURCE};projection_source={SBSFC016_FIXED_POLICY_PROJECTION_SOURCE}",
             "evidence_complete": "yes",
             "notes": "SBSFC-016R-D/E/F/J/K bounded context/current_setting/alias/row_count/procedural condition and diagnostic scalar row-evidence override; only row-specific entries listed in this override are published as e2e_passed. Evidence names row-labeled fixture/runtime/projection proof, canonical function and SBLR bindings, server admission, engine dispatch, result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. No broader SBSFC-016 closure, cursor lifecycle, dynamic SQL, PSQL block/autonomous/CALL/RETURNING, automatic DML/FETCH last_row_count propagation, UDR/security management, mutable autocommit, reference execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or transaction-finality change is claimed.",
+        }
+
+    if surface["surface_id"] == "SBSQL-E302317C73E2":
+        if surface["canonical_name"] != "POLICY_BLOCKED":
+            fail("SBSQL-E302317C73E2 policy observer canonical name drift")
+        if status_row["status"] != "native_now":
+            fail("SBSQL-E302317C73E2 policy observer requires native_now status")
+        if surface["cluster_scope"] != "noncluster_or_profile_scoped":
+            fail("SBSQL-E302317C73E2 policy observer requires noncluster/profile scope")
+        if surface["surface_kind"] != "function":
+            fail("SBSQL-E302317C73E2 policy observer requires function kind")
+        if surface["sblr_operation_family"] != "sblr.expression.runtime.v3":
+            fail("SBSQL-E302317C73E2 policy observer SBLR family drift")
+        if op_row["sblr_operation_family"] != "sblr.expression.runtime.v3":
+            fail("SBSQL-E302317C73E2 operation matrix family drift")
+        if oracle_row is None or oracle_row.get("oracle_authority_status") != "full_oracle":
+            fail("SBSQL-E302317C73E2 policy observer requires full oracle")
+        if oracle_row.get("matched_builtin_id") != "sb.scalar.policy_blocked":
+            fail("SBSQL-E302317C73E2 policy observer builtin identity drift")
+        if oracle_row.get("sblr_binding") != "sblr.expr.scalar_policy_blocked.v3":
+            fail("SBSQL-E302317C73E2 policy observer SBLR binding drift")
+        return {
+            "current_state": "e2e_passed",
+            "parser_evidence": f"{SBSFC016_FIXED_POLICY_PROJECTION_SOURCE};surface_id=SBSQL-E302317C73E2;nullary_boolean_policy_observer_projection",
+            "binder_evidence": f"{SBSFC016_FIXED_POLICY_PROJECTION_SOURCE};function_id=sb.scalar.policy_blocked;exact_zero_arguments;result_descriptor=boolean;statement_scoped_authority=true",
+            "lowering_evidence": f"{SBSFC016_FIXED_POLICY_PROJECTION_SOURCE};SBLR_QUERY_EVALUATE_PROJECTION;sblr_binding=sblr.expr.scalar_policy_blocked.v3;no_source_sql_text;no_internal_security_evaluator_opcode",
+            "server_admission_evidence": f"ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};listener_to_sbwp_to_parser_to_sbps_to_server_to_public_abi=true;operation_id=query.evaluate_projection",
+            "engine_runtime_evidence": f"ctest:{SECURITY_POLICY_EVALUATION_COMPONENT_CTEST};ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};engine_entrypoint=policy_blocked;receipt_bound_policy_gate=true;boolean_false_and_true=true;replay=true;restart=true;independent_authenticated_session=true;no_mutation=true",
+            "function_or_api_operation_id": "sb.scalar.policy_blocked;sblr_binding=sblr.expr.scalar_policy_blocked.v3;engine_entrypoint=policy_blocked;operation_id=query.evaluate_projection",
+            "diagnostic_evidence": "SBSQL.NO_STATEMENT;SBLR.OPERAND_INVALID;SECURITY.ACCESS_DENIED;PROCESS.CANCELLED;internal_security_evaluate_policy_not_publicly_addressable",
+            "fixture_evidence": f"{SBSFC016_FIXED_POLICY_FIXTURE_CSV};ctest:{SBSFC016_FIXED_POLICY_FIXTURE_CTEST};ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};ctest:{SECURITY_POLICY_EVALUATION_COMPONENT_CTEST};ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};source={SECURITY_POLICY_EVALUATION_SOURCE};process_source={SECURITY_POLICY_EVALUATION_PROCESS_SOURCE}",
+            "evidence_complete": "yes",
+            "notes": "POLICY_BLOCKED() is a non-NULL boolean statement observer backed by the exact engine-issued receipt authority cohort. Public execution uses only the closed query.evaluate_projection route; the internal security.evaluate_policy API is not addressable as public SBLR. Component and authenticated process evidence cover admitted and blocked state, diagnostic observation, malformed and stale authority, cancellation, replay, independent session, restart, and zero mutation.",
+        }
+
+    if surface["surface_id"] == SBSFC016_POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        if surface["canonical_name"] != "SBSQL.POLICY_BLOCKED":
+            fail("SBSQL-CE3790BA0486 policy diagnostic canonical name drift")
+        if status_row["status"] != "native_now":
+            fail("SBSQL-CE3790BA0486 policy diagnostic requires native_now status")
+        return {
+            "current_state": "exact_refusal_passed",
+            "parser_evidence": f"{SBSFC016_FIXED_POLICY_FIXTURE_CSV};surface_id=SBSQL-CE3790BA0486;classification=diagnostic_identity;diagnostic_code=SBSQL.POLICY_BLOCKED",
+            "binder_evidence": "Specifications/Core/registries/normalized-builtin-surface-classification.csv;parent_kind=diagnostic;callable_function=false;observer_builtin=sb.scalar.policy_blocked_diagnostic",
+            "lowering_evidence": f"{SECURITY_POLICY_EVALUATION_PROCESS_SOURCE};raw_identity_function_call_refused=SBSQL.SURFACE.NOT_ADMITTED;pre_sblr_refusal=true;executable_sblr=false",
+            "server_admission_evidence": "not_reached_non_callable_diagnostic_identity_no_sblr_submission",
+            "engine_runtime_evidence": f"ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};public_SBSQL.POLICY_BLOCKED_call_refused=SBSQL.SURFACE.NOT_ADMITTED;ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};internal_registry_lookup_refused=SB_DIAG_FUNCTION_NOT_REGISTERED;separate_observer_builtin=sb.scalar.policy_blocked_diagnostic;no_mutation=true",
+            "function_or_api_operation_id": f"diagnostic_identity=SBSQL.POLICY_BLOCKED;diagnostic_uuid={SBSFC016_POLICY_DIAGNOSTIC_UUID};callable_function=false;observer_builtin=sb.scalar.policy_blocked_diagnostic",
+            "diagnostic_evidence": "SBSQL.SURFACE.NOT_ADMITTED;SB_DIAG_FUNCTION_NOT_REGISTERED_internal_registry_check;SBSQL.POLICY_BLOCKED_registered_diagnostic_identity;no_function_alias",
+            "fixture_evidence": f"ctest:{SBSFC016_FIXED_POLICY_FIXTURE_CTEST};ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};fixture={SBSFC016_FIXED_POLICY_FIXTURE_CSV};source={SBSFC016_FIXED_POLICY_RUNTIME_SOURCE};process_source={SECURITY_POLICY_EVALUATION_PROCESS_SOURCE}",
+            "evidence_complete": "yes",
+            "notes": "SBSQL.POLICY_BLOCKED is a registered diagnostic identity, not a callable function or SBLR operation. Calling that spelling through public SBsql is rejected with SBSQL.SURFACE.NOT_ADMITTED before executable SBLR; policy-gated diagnostic observation is exposed separately through the implemented sb.scalar.policy_blocked_diagnostic() builtin.",
         }
 
     fixed_policy_evidence = SBSFC016_FIXED_POLICY_ROW_EVIDENCE.get(surface["surface_id"])

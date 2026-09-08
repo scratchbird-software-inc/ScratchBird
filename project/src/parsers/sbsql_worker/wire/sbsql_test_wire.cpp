@@ -20799,6 +20799,12 @@ DecodeExactSecurityPrivilegeProjectionRoute(const SblrEnvelope& lowered) {
 
   const auto required_argument_count = [&]() -> std::optional<std::size_t> {
     if (!function_id.present) return std::nullopt;
+    if (function_id.value == "sb.scalar.policy_blocked" ||
+        function_id.value == "sb.scalar.policy_blocked_diagnostic") {
+      return argument_count.value == "0"
+                 ? std::optional<std::size_t>{0}
+                 : std::nullopt;
+    }
     if (function_id.value == "sb.scalar.has_table_privilege" ||
         function_id.value == "sb.scalar.has_function_privilege" ||
         function_id.value == "sb.scalar.has_schema_privilege") {
@@ -20886,7 +20892,11 @@ DecodeExactSecurityPrivilegeProjectionRoute(const SblrEnvelope& lowered) {
 std::optional<std::string>
 BuildCanonicalSecurityPrivilegeProjectionRouteTextEnvelope(
     const ExactSecurityPrivilegeProjectionRoute& projection) {
-  if (projection.output_name.empty() || projection.arguments.empty()) {
+  const bool exact_policy_observer =
+      projection.function_id == "sb.scalar.policy_blocked" ||
+      projection.function_id == "sb.scalar.policy_blocked_diagnostic";
+  if (projection.output_name.empty() ||
+      (projection.arguments.empty() && !exact_policy_observer)) {
     return std::nullopt;
   }
   std::string route =

@@ -348,7 +348,10 @@ bool CanonicalSecurityPrivilegeProjectionTextOperands(
   }
 
   std::size_t expected_argument_count = 0;
-  if (*function_id == "sb.scalar.has_table_privilege" ||
+  if (*function_id == "sb.scalar.policy_blocked" ||
+      *function_id == "sb.scalar.policy_blocked_diagnostic") {
+    if (*argument_count != "0") return false;
+  } else if (*function_id == "sb.scalar.has_table_privilege" ||
       *function_id == "sb.scalar.has_function_privilege" ||
       *function_id == "sb.scalar.has_schema_privilege") {
     if (*argument_count == "2") {

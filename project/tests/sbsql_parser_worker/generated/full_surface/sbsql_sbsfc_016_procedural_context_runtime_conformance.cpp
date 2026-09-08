@@ -8,6 +8,7 @@
 
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
+#include "api_types.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -141,6 +142,9 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::vector<SblrValue> values = {},
                                           std::optional<std::uint64_t> last_row_count = std::nullopt,
                                           std::optional<std::string> current_sqlstate = std::nullopt) {
+  const bool policy_observer =
+      function_id == "sb.scalar.policy_blocked" ||
+      function_id == "sb.scalar.policy_blocked_diagnostic";
   FunctionCallRequest request;
   request.context.function_id = std::move(function_id);
   request.context.security_allowed = true;
@@ -165,6 +169,61 @@ scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
   if (last_row_count.has_value()) {
     request.context.sblr_context.last_row_count = *last_row_count;
     request.context.sblr_context.last_row_count_present = true;
+  }
+  scratchbird::engine::internal_api::EngineRequestContext engine_context;
+  if (policy_observer) {
+    engine_context.database_uuid.canonical =
+        request.context.sblr_context.database_uuid;
+    engine_context.principal_uuid.canonical =
+        request.context.sblr_context.user_uuid;
+    engine_context.session_uuid.canonical =
+        request.context.sblr_context.session_uuid;
+    engine_context.transaction_uuid.canonical =
+        request.context.sblr_context.transaction_uuid;
+    engine_context.statement_uuid.canonical =
+        request.context.sblr_context.statement_uuid;
+    engine_context.local_transaction_id =
+        request.context.sblr_context.local_transaction_id;
+    engine_context.security_context_present = true;
+    engine_context.catalog_generation_id = 11;
+    engine_context.security_epoch = 7;
+    engine_context.resource_epoch = 13;
+    engine_context.current_diagnostic_uuid.canonical =
+        request.context.sblr_context.current_diagnostic_uuid;
+    engine_context.transaction_policy_snapshot_uuid.canonical =
+        "019e1600-0000-7000-8000-0000000000f1";
+    engine_context.transaction_policy_snapshot_generation = 3;
+    auto& authorization = engine_context.authorization_context;
+    authorization.present = true;
+    authorization.authority_uuid.canonical =
+        "019e1600-0000-7000-8000-0000000000f2";
+    authorization.security_context_generation = 2;
+    authorization.principal_uuid = engine_context.principal_uuid;
+    authorization.security_epoch = engine_context.security_epoch;
+    authorization.policy_epoch = 9;
+    authorization.catalog_generation_id =
+        engine_context.catalog_generation_id;
+    authorization.effective_subjects.push_back(
+        {engine_context.principal_uuid, "principal"});
+    auto& observation = engine_context.current_policy_gate;
+    observation.present = true;
+    observation.blocked = false;
+    observation.statement_uuid = engine_context.statement_uuid;
+    observation.transaction_uuid = engine_context.transaction_uuid;
+    observation.local_transaction_id = engine_context.local_transaction_id;
+    observation.authorization_context_uuid = authorization.authority_uuid;
+    observation.authorization_context_generation =
+        authorization.security_context_generation;
+    observation.policy_snapshot_uuid =
+        engine_context.transaction_policy_snapshot_uuid;
+    observation.policy_snapshot_generation =
+        engine_context.transaction_policy_snapshot_generation;
+    observation.security_epoch = engine_context.security_epoch;
+    observation.policy_epoch = authorization.policy_epoch;
+    observation.catalog_generation_id =
+        engine_context.catalog_generation_id;
+    observation.resource_epoch = engine_context.resource_epoch;
+    request.context.engine_request_context = &engine_context;
   }
   for (std::size_t i = 0; i < values.size(); ++i) {
     request.arguments.push_back(FunctionArgument{"arg" + std::to_string(i), std::move(values[i])});
@@ -674,9 +733,9 @@ int main() {
   ok = ExpectText("SBSQL-DC3ADB63538F-localized_label-metadata",
                   Run(registry, "sb.scalar.localized_label"),
                   "label.localized") && ok;
-  ok = ExpectText("SBSQL-E302317C73E2-policy_blocked-metadata",
-                  Run(registry, "sb.scalar.policy_blocked"),
-                  "decision.policy_blocked") && ok;
+  ok = ExpectBoolean("SBSQL-E302317C73E2-policy_blocked-observation",
+                     Run(registry, "sb.scalar.policy_blocked"),
+                     false) && ok;
   ok = ExpectText("SBSQL-E9EC607BA6D8-notice-metadata",
                   Run(registry, "sb.scalar.notice"),
                   "NOTICE") && ok;
@@ -822,9 +881,11 @@ int main() {
   ok = ExpectText("SBSQL-BB49C3D09E24-context_ambiguous-metadata",
                   Run(registry, "sb.scalar.context_ambiguous"),
                   "diagnostic.context_ambiguous") && ok;
-  ok = ExpectText("SBSQL-CE3790BA0486-policy_blocked_diagnostic-metadata",
-                  Run(registry, "sb.scalar.policy_blocked_diagnostic"),
-                  "decision.policy_blocked") && ok;
+  ok = ExpectFailureDetail(
+           "SBSQL-CE3790BA0486-policy-blocked-diagnostic-identity",
+           Run(registry, "SBSQL.POLICY_BLOCKED"),
+           "SB_DIAG_FUNCTION_NOT_REGISTERED",
+           "function_id is not present in the active function registry") && ok;
   ok = ExpectText("SBSQL-CB2705E35D88-diag_sqlstate-metadata",
                   Run(registry, "sb.scalar.diag_sqlstate"),
                   "00000") && ok;

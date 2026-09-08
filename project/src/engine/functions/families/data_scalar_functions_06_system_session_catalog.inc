@@ -1790,7 +1790,29 @@
 
   if (IdIs(id, {"data.scalar.policy_blocked", "sb.scalar.policy_blocked", "policy_blocked"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "policy_blocked expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "decision.policy_blocked")});
+    scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+    scratchbird::engine::internal_api::EngineEvaluatePolicyRequest policy_request;
+    policy_request.context =
+        EngineRequestContextForFunction(request, &fallback_context);
+    policy_request.operation_id = "security.evaluate_policy";
+    policy_request.observation_kind = scratchbird::engine::internal_api::
+        EnginePolicyObservationKind::current_statement_gate;
+    const auto evaluated = scratchbird::engine::internal_api::
+        EngineEvaluatePolicy(policy_request);
+    if (!evaluated.ok) {
+      const auto diagnostic = evaluated.diagnostics.empty()
+          ? scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+                "SECURITY.ACCESS_DENIED",
+                "security.policy_observation.missing_diagnostic",
+                "policy observation failed without a diagnostic")
+          : evaluated.diagnostics.front();
+      return RefuseFunctionWithDiagnostic(
+          request,
+          scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+          diagnostic.code, diagnostic.detail);
+    }
+    return MakeFunctionSuccess(
+        request, {MakeBooleanValue(evaluated.policy_blocked)});
   }
 
   if (IdIs(id, {"data.scalar.notice", "sb.scalar.notice", "notice"})) {
@@ -2087,7 +2109,29 @@
 
   if (IdIs(id, {"data.scalar.policy_blocked_diagnostic", "sb.scalar.policy_blocked_diagnostic", "policy_blocked_diagnostic"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "policy_blocked_diagnostic expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "decision.policy_blocked")});
+    scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+    scratchbird::engine::internal_api::EngineEvaluatePolicyRequest policy_request;
+    policy_request.context =
+        EngineRequestContextForFunction(request, &fallback_context);
+    policy_request.operation_id = "security.evaluate_policy";
+    policy_request.observation_kind = scratchbird::engine::internal_api::
+        EnginePolicyObservationKind::current_diagnostic_policy_refusal;
+    const auto evaluated = scratchbird::engine::internal_api::
+        EngineEvaluatePolicy(policy_request);
+    if (!evaluated.ok) {
+      const auto diagnostic = evaluated.diagnostics.empty()
+          ? scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+                "SECURITY.ACCESS_DENIED",
+                "security.policy_observation.missing_diagnostic",
+                "policy observation failed without a diagnostic")
+          : evaluated.diagnostics.front();
+      return RefuseFunctionWithDiagnostic(
+          request,
+          scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+          diagnostic.code, diagnostic.detail);
+    }
+    return MakeFunctionSuccess(
+        request, {MakeBooleanValue(evaluated.policy_blocked)});
   }
 
   if (IdIs(id, {"data.scalar.diag_sqlstate", "sb.scalar.diag_sqlstate", "diag_sqlstate"})) {

@@ -30,6 +30,7 @@ ALLOWED_STATUSES = {
     "exact_refusal_passed",
 }
 BRIDGE_EXACT_REFUSAL_SURFACE_ID = "SBSQL-D50EC7C4422E"
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-A57CFDE0BBA9",
     "SBSQL-28F16A4C7DD0",
@@ -185,7 +186,19 @@ def main() -> int:
         if "sql_text" not in forbidden or "operation_family_only_routing" not in forbidden:
             errors.append(f"{surface_id} fixture lost forbidden authority source coverage")
         authority = fields.get("execution_authority_model", "")
-        if surface_id in (
+        if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+            for token in (
+                "diagnostic_identity_only",
+                "no_executable_sblr",
+                "no_engine_execution",
+                "no_mutation",
+                "no_wal_authority",
+            ):
+                if token not in authority:
+                    errors.append(
+                        f"{surface_id} diagnostic-identity refusal authority model missing {token}"
+                    )
+        elif surface_id in (
             CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
             | CORE_ROOT_EXACT_REFUSAL_SURFACE_IDS
             | PROCEDURAL_STANDALONE_REFUSAL_SURFACE_IDS
@@ -227,6 +240,26 @@ def main() -> int:
                     "cluster_provider_route_passed",
                     "SBLR.CLUSTER.STUB_RESPONSE",
                     "UDR.BRIDGE.UNLICENSED",
+                )
+            elif surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+                required = (
+                    "not_admitted_diagnostic_identity_SBSQL.POLICY_BLOCKED",
+                    "SBSQL.SURFACE.NOT_ADMITTED",
+                    "callable_function=false",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr=false",
+                    "not_applicable_pre_sblr_exact_refusal",
+                    "not_applicable_no_sblr_envelope_to_serialize",
+                    "not_applicable_no_server_or_engine_dispatch",
+                    "server_dispatch=false",
+                    "engine_mutation=false",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "security.evaluate_policy",
+                    "byte_identical_round_trip_required=yes",
+                    "server_dispatch=true",
+                    "engine_mutation=true",
                 )
             elif is_central_import_refusal_surface(surface_id):
                 required = (

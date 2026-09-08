@@ -12,6 +12,8 @@
 #include "catalog/pinned_descriptor_cache.hpp"
 #include "security/security_model.hpp"
 
+#include <string_view>
+
 namespace scratchbird::engine::internal_api {
 namespace {
 
@@ -66,6 +68,127 @@ bool ValidPolicyMutationKind(const std::string& kind) {
   return kind == "create" || kind == "modify" || kind == "remove";
 }
 
+constexpr std::string_view kPolicyBlockedDiagnosticUuid =
+    "cd16f861-90a2-520e-97a7-79d2f28cc355";
+
+bool UuidPresent(const EngineUuid& value) {
+  return !value.canonical.empty();
+}
+
+bool ObjectReferenceEmpty(const EngineObjectReference& value) {
+  return value.uuid.canonical.empty() && value.object_kind.empty();
+}
+
+bool SqlObjectReferenceEmpty(const EngineSqlObjectReference& value) {
+  return value.expected_object_type.empty() &&
+         value.path_type == "unqualified" && !value.no_search_path &&
+         value.path_components.empty() && value.object_name.raw_text.empty() &&
+         value.object_name.quote_style.empty() &&
+         value.object_name.identifier_profile_uuid.empty() &&
+         value.object_name.normalized_lookup_key.empty() &&
+         value.object_name.exact_lookup_key.empty() &&
+         !value.object_name.was_quoted &&
+         !value.object_name.requires_exact_match &&
+         value.object_name.source_span.empty();
+}
+
+bool BoundObjectIdentityEmpty(const EngineBoundObjectIdentity& value) {
+  return value.object_uuid.canonical.empty() &&
+         value.resolved_object_type.empty() &&
+         value.resolved_schema_uuid.canonical.empty() &&
+         value.parent_object_uuid.canonical.empty() &&
+         value.object_descriptor_generation == 0 &&
+         value.catalog_generation_id == 0 && value.security_epoch == 0 &&
+         value.resource_epoch == 0;
+}
+
+bool PolicyObservationInputsAreClosed(
+    const EngineEvaluatePolicyRequest& request) {
+  const auto& packet = request.native_row_packet;
+  return ObjectReferenceEmpty(request.target_database) &&
+         ObjectReferenceEmpty(request.target_schema) &&
+         ObjectReferenceEmpty(request.target_object) &&
+         request.related_objects.empty() && request.localized_names.empty() &&
+         SqlObjectReferenceEmpty(request.sql_object_reference) &&
+         BoundObjectIdentityEmpty(request.bound_object_identity) &&
+         request.descriptors.empty() && request.columns.empty() &&
+         request.constraints.empty() && request.indexes.empty() &&
+         !packet.present && packet.version == 0 && packet.row_count == 0 &&
+         packet.column_count == 0 && packet.field_order.empty() &&
+         packet.column_type_tags.empty() && packet.packet_bytes.empty() &&
+         packet.row_offsets.empty() && packet.row_sizes.empty() &&
+         request.rows.empty() && request.shared_row_field_order.empty() &&
+         request.assignments.empty() && request.predicate.predicate_kind.empty() &&
+         request.predicate.canonical_predicate_envelope.empty() &&
+         request.predicate.bound_values.empty() &&
+         request.projection.canonical_projection_envelopes.empty() &&
+         request.ordering.canonical_ordering_envelopes.empty() &&
+         request.physical_profile.names.empty() &&
+         request.physical_profile.encoded_profiles.empty() &&
+         request.policy_profile.names.empty() &&
+         request.policy_profile.encoded_profiles.empty() &&
+         request.compatibility_profile.names.empty() &&
+         request.compatibility_profile.encoded_profiles.empty() &&
+         request.option_envelopes.empty() &&
+         request.diagnostic_options.empty();
+}
+
+bool PolicyObservationKindIsValid(EnginePolicyObservationKind kind) {
+  return kind == EnginePolicyObservationKind::current_statement_gate ||
+         kind ==
+             EnginePolicyObservationKind::current_diagnostic_policy_refusal;
+}
+
+EngineEvaluatePolicyResult PolicyObservationFailure(
+    const EngineEvaluatePolicyRequest& request,
+    std::string code,
+    std::string detail) {
+  auto result = SecurityFailure<EngineEvaluatePolicyResult>(
+      request.context, "security.evaluate_policy",
+      MakeSecurityDiagnostic(std::move(code), std::move(detail)));
+  result.policy_blocked = false;
+  result.observation_kind = request.observation_kind;
+  AddApiBehaviorEvidence(&result, "policy_gate_observation", "refused");
+  return result;
+}
+
+bool PolicyObservationCohortMatches(const EngineRequestContext& context) {
+  const auto& authorization = context.authorization_context;
+  const auto& observation = context.current_policy_gate;
+  return observation.present && UuidPresent(context.statement_uuid) &&
+         UuidPresent(context.transaction_uuid) &&
+         context.local_transaction_id != 0 &&
+         UuidPresent(context.session_uuid) && UuidPresent(context.principal_uuid) &&
+         context.security_context_present && authorization.present &&
+         UuidPresent(authorization.authority_uuid) &&
+         authorization.security_context_generation != 0 &&
+         authorization.principal_uuid.canonical == context.principal_uuid.canonical &&
+         authorization.security_epoch != 0 &&
+         authorization.security_epoch == context.security_epoch &&
+         authorization.policy_epoch != 0 &&
+         authorization.catalog_generation_id != 0 &&
+         authorization.catalog_generation_id == context.catalog_generation_id &&
+         context.resource_epoch != 0 &&
+         UuidPresent(context.transaction_policy_snapshot_uuid) &&
+         context.transaction_policy_snapshot_generation != 0 &&
+         observation.statement_uuid.canonical == context.statement_uuid.canonical &&
+         observation.transaction_uuid.canonical ==
+             context.transaction_uuid.canonical &&
+         observation.local_transaction_id == context.local_transaction_id &&
+         observation.authorization_context_uuid.canonical ==
+             authorization.authority_uuid.canonical &&
+         observation.authorization_context_generation ==
+             authorization.security_context_generation &&
+         observation.policy_snapshot_uuid.canonical ==
+             context.transaction_policy_snapshot_uuid.canonical &&
+         observation.policy_snapshot_generation ==
+             context.transaction_policy_snapshot_generation &&
+         observation.security_epoch == context.security_epoch &&
+         observation.policy_epoch == authorization.policy_epoch &&
+         observation.catalog_generation_id == context.catalog_generation_id &&
+         observation.resource_epoch == context.resource_epoch;
+}
+
 EnginePolicyMutationResult PolicyMutationFailure(const EnginePolicyMutationRequest& request,
                                                  std::string detail) {
   EnginePolicyMutationResult result = SecurityFailure<EnginePolicyMutationResult>(
@@ -80,32 +203,59 @@ EnginePolicyMutationResult PolicyMutationFailure(const EnginePolicyMutationReque
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_POLICY_API_BEHAVIOR
 EngineEvaluatePolicyResult EngineEvaluatePolicy(const EngineEvaluatePolicyRequest& request) {
-  auto result = MakeApiBehaviorSuccess<EngineEvaluatePolicyResult>(request.context, "security.evaluate_policy");
-  for (const auto& profile : request.policy_profile.encoded_profiles) {
-    if (profile.find("invalid") != std::string::npos || profile.find("unsafe") != std::string::npos) {
-      result.ok = false;
-      result.diagnostics.push_back(MakeSecurityDiagnostic("SECURITY.AUTHORIZATION.DENIED", "invalid_policy_profile"));
-      AddApiBehaviorEvidence(&result, "policy_decision", "deny_invalid_profile");
-      AddApiBehaviorRow(&result, {{"decision", "deny"}, {"reason", "invalid_policy_profile"}});
-      return result;
-    }
+  if (!request.operation_id.empty() &&
+      request.operation_id != "security.evaluate_policy") {
+    return PolicyObservationFailure(request, "SBLR.OPERAND_INVALID",
+                                    "policy_observation_operation_invalid");
   }
-  if (!request.context.security_context_present && !request.target_object.uuid.canonical.empty()) {
-    result.ok = false;
-    result.diagnostics.push_back(MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.REQUEST_INVALID", "security_context_required"));
-    AddApiBehaviorEvidence(&result, "policy_decision", "deny_missing_security_context");
-    AddApiBehaviorRow(&result, {{"decision", "deny"}, {"reason", "security_context_required"}});
-    return result;
+  if (!PolicyObservationKindIsValid(request.observation_kind)) {
+    return PolicyObservationFailure(request, "SBLR.OPERAND_INVALID",
+                                    "policy_observation_kind_invalid");
   }
-  if (!request.target_object.uuid.canonical.empty() && !SecurityContextHasRight(request.context, "POLICY_ADMIN")) {
-    result.ok = false;
-    result.diagnostics.push_back(MakeSecurityDiagnostic("SECURITY.AUTHORIZATION.DENIED", "POLICY_ADMIN"));
-    AddApiBehaviorEvidence(&result, "policy_decision", "deny_missing_policy_admin");
-    AddApiBehaviorRow(&result, {{"decision", "deny"}, {"reason", "POLICY_ADMIN"}});
-    return result;
+  if (!PolicyObservationInputsAreClosed(request)) {
+    return PolicyObservationFailure(
+        request, "SBLR.OPERAND_INVALID",
+        "policy_observation_accepts_no_caller_policy_or_target_input");
   }
-  AddApiBehaviorEvidence(&result, "policy_decision", "allow_explicit_policy");
-  AddApiBehaviorRow(&result, {{"decision", "allow"}, {"policy_profile_count", std::to_string(request.policy_profile.encoded_profiles.size())}, {"payload", ApiBehaviorPayloadFromRequest(request)}});
+  if (!UuidPresent(request.context.statement_uuid)) {
+    return PolicyObservationFailure(request, "SBSQL.NO_STATEMENT",
+                                    "statement_policy_observation_unavailable");
+  }
+  if (!PolicyObservationCohortMatches(request.context)) {
+    return PolicyObservationFailure(request, "SECURITY.ACCESS_DENIED",
+                                    "statement_policy_authority_mismatch");
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return PolicyObservationFailure(request, "PROCESS.CANCELLED",
+                                    "policy_observation_cancelled");
+  }
+
+  auto result = MakeApiBehaviorSuccess<EngineEvaluatePolicyResult>(
+      request.context, "security.evaluate_policy");
+  result.observation_kind = request.observation_kind;
+  result.policy_blocked =
+      request.observation_kind ==
+              EnginePolicyObservationKind::current_statement_gate
+          ? request.context.current_policy_gate.blocked
+          : request.context.current_diagnostic_uuid.canonical ==
+                kPolicyBlockedDiagnosticUuid;
+  AddApiBehaviorEvidence(&result, "policy_gate_observation",
+                         result.policy_blocked ? "blocked" : "not_blocked");
+  AddApiBehaviorRow(
+      &result,
+      {{"policy_blocked", result.policy_blocked ? "true" : "false"},
+       {"observation_kind",
+        request.observation_kind ==
+                EnginePolicyObservationKind::current_statement_gate
+            ? "current_statement_gate"
+            : "current_diagnostic_policy_refusal"},
+       {"statement_uuid", request.context.statement_uuid.canonical},
+       {"policy_snapshot_uuid",
+        request.context.transaction_policy_snapshot_uuid.canonical},
+       {"policy_snapshot_generation",
+        std::to_string(
+            request.context.transaction_policy_snapshot_generation)}});
   return result;
 }
 

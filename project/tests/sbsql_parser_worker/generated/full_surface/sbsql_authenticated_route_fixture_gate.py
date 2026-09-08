@@ -30,6 +30,7 @@ ALLOWED_STATUSES = {
     "exact_refusal_passed",
 }
 BRIDGE_EXACT_REFUSAL_SURFACE_ID = "SBSQL-D50EC7C4422E"
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-A57CFDE0BBA9",
     "SBSQL-28F16A4C7DD0",
@@ -200,6 +201,26 @@ def main() -> int:
                     "cluster_provider_route_passed",
                     "SBLR.CLUSTER.STUB_RESPONSE",
                     "UDR.BRIDGE.UNLICENSED",
+                )
+            elif surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+                required = (
+                    "diagnostic_identity=SBSQL.POLICY_BLOCKED",
+                    "callable_function=false",
+                    "pre_sblr_refusal=true",
+                    "executable_sblr=false",
+                    "SBSQL.SURFACE.NOT_ADMITTED",
+                    "parser_refusal_before_sbps_submission",
+                    "ipc_admission_path=not_reached_no_executable_sblr_emitted",
+                    "server_dispatch=false",
+                    "engine_mutation=false",
+                    "separate_policy_blocked_diagnostic_observer_boolean=true",
+                    "fixture_status=exact_refusal_passed",
+                )
+                forbidden = (
+                    "security.evaluate_policy",
+                    "executable_sblr=true",
+                    "server_dispatch=true",
+                    "engine_mutation=true",
                 )
             elif is_central_import_refusal_surface(surface_id):
                 required = (

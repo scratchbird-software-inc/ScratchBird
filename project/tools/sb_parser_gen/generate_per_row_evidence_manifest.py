@@ -7141,6 +7141,7 @@ SBSFC016_FIXED_POLICY_FIXTURE_CSV = (
     "SBSFC_016_PROCEDURAL_CONTEXT_FIXTURES.csv"
 )
 SBSFC016_FIXED_POLICY_RUNTIME_CTEST = "sbsql_sbsfc_016_procedural_context_runtime_conformance"
+SBSFC016_FIXED_POLICY_FIXTURE_CTEST = "sbsql_sbsfc_016_procedural_context_fixture_gate"
 SBSFC016_FIXED_POLICY_RUNTIME_SOURCE = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "sbsql_sbsfc_016_procedural_context_runtime_conformance.cpp"
@@ -7154,6 +7155,21 @@ SBSFC016_FIXED_POLICY_CTEST_LABEL = (
     "sbsql_parser_worker;SBSFC-016R-C-fixed-policy-procedural-scalar;"
     "sbsql_e2e_passed"
 )
+SECURITY_POLICY_EVALUATION_COMPONENT_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_policy_evaluation_parent_route"
+)
+SECURITY_POLICY_EVALUATION_PROCESS_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_policy_evaluation_parent_process_e2e"
+)
+SECURITY_POLICY_EVALUATION_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/"
+    "ia09_security_policy_evaluation_parent_route_test.cpp"
+)
+SECURITY_POLICY_EVALUATION_PROCESS_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+)
+SBSFC016_POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
+SBSFC016_POLICY_DIAGNOSTIC_UUID = "cd16f861-90a2-520e-97a7-79d2f28cc355"
 SBSFC016_CONTEXT_CURRENT_SETTING_CTEST_LABEL = (
     "sbsql_surface_to_sblr_full_implementation_closure;"
     "sbsql_parser_worker;SBSFC-016R-D-context-current-setting-procedural-scalar;"
@@ -8500,15 +8516,6 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-I-surface-classification-metadata-row-evidence-publication",
     },
-    "SBSQL-E302317C73E2": {
-        "canonical_name": "POLICY_BLOCKED",
-        "function_id": "sb.scalar.policy_blocked",
-        "engine_entrypoint": "policy_blocked",
-        "sblr_binding": "sblr.expr.policy_blocked.v3",
-        "expected_result": "decision.policy_blocked",
-        "result_descriptor": "character",
-        "promoter_slice": "SBSFC-016R-I-surface-classification-metadata-row-evidence-publication",
-    },
     "SBSQL-E9EC607BA6D8": {
         "canonical_name": "NOTICE",
         "function_id": "sb.scalar.notice",
@@ -8938,15 +8945,6 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "engine_entrypoint": "context_ambiguous",
         "sblr_binding": "sblr.expr.context_ambiguous.v3",
         "expected_result": "diagnostic.context_ambiguous",
-        "result_descriptor": "character",
-        "promoter_slice": "SBSFC-016R-K-diagnostic-fixture-metadata-row-evidence-publication",
-    },
-    "SBSQL-CE3790BA0486": {
-        "canonical_name": "SBSQL.POLICY_BLOCKED",
-        "function_id": "sb.scalar.policy_blocked_diagnostic",
-        "engine_entrypoint": "policy_blocked_diagnostic",
-        "sblr_binding": "sblr.expr.policy_blocked_diagnostic.v3",
-        "expected_result": "decision.policy_blocked",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-K-diagnostic-fixture-metadata-row-evidence-publication",
     },
@@ -20084,6 +20082,113 @@ def classify(
                 "Only row-specific entries listed in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical function and SBLR bindings, server admission, engine dispatch, deterministic result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
                 "No broader SBSFC-016 closure, cursor lifecycle, dynamic SQL, PSQL block/autonomous/CALL/RETURNING, automatic DML/FETCH last_row_count propagation, UDR/security management, mutable autocommit, reference execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or transaction-finality change is claimed."
+            ),
+        }
+
+    if surface_id == "SBSQL-E302317C73E2":
+        if surface["canonical_name"] != "POLICY_BLOCKED":
+            fail("SBSQL-E302317C73E2 policy observer canonical name drift")
+        if status != "native_now" or cluster_scope != "noncluster_or_profile_scoped":
+            fail("SBSQL-E302317C73E2 policy observer status/scope drift")
+        if surface["surface_kind"] != "function":
+            fail("SBSQL-E302317C73E2 policy observer requires function kind")
+        if ledger_row is None or ledger_row.get("current_state") != "e2e_passed":
+            fail("SBSQL-E302317C73E2 policy observer requires e2e strict-ledger evidence")
+        if not ledger_row.get("function_or_api_operation_id", "").startswith("sb.scalar.policy_blocked;"):
+            fail("SBSQL-E302317C73E2 policy observer strict-ledger identity drift")
+        return {
+            "final_state": "e2e_passed",
+            "ctest_label": (
+                "sbsql_surface_to_sblr_full_implementation_closure;"
+                "sbsql_parser_worker;SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1;"
+                "CSC-TEST-005827;CSC-TEST-005828;sbsql_e2e_passed"
+            ),
+            "fixture_path": (
+                f"{SBSFC016_FIXED_POLICY_FIXTURE_CSV};"
+                f"{SBSFC016_FIXED_POLICY_RUNTIME_SOURCE};"
+                f"{SBSFC016_FIXED_POLICY_PROJECTION_SOURCE};"
+                f"{SECURITY_POLICY_EVALUATION_SOURCE};"
+                f"{SECURITY_POLICY_EVALUATION_PROCESS_SOURCE}"
+            ),
+            "implementation_refs": (
+                "function_id=sb.scalar.policy_blocked;"
+                "sblr_binding=sblr.expr.scalar_policy_blocked.v3;"
+                "engine_entrypoint=policy_blocked;operation_id=query.evaluate_projection;"
+                "statement_receipt_policy_gate_authority=true;"
+                "internal_security_evaluate_policy_not_publicly_addressable=true;"
+                "mutation_attempted=false;mutation_committed=false"
+            ),
+            "diagnostic_proof": (
+                "canonical_message_vector_set;SBSQL.NO_STATEMENT;"
+                "SBLR.OPERAND_INVALID;SECURITY.ACCESS_DENIED;"
+                "PROCESS.CANCELLED;stale_statement_policy_cohort_refused;"
+                "arbitrary_zero_argument_function_refused"
+            ),
+            "result_proof": (
+                f"ctest:{SBSFC016_FIXED_POLICY_FIXTURE_CTEST};"
+                f"ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};"
+                f"ctest:{SECURITY_POLICY_EVALUATION_COMPONENT_CTEST};"
+                f"ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};"
+                "surface_id=SBSQL-E302317C73E2;function_id=sb.scalar.policy_blocked;"
+                "descriptor=boolean;admitted_result=false;engine_blocked_result=true;"
+                "replay=true;restart=true;independent_authenticated_session=true;"
+                "no_source_sql_text;no_generic_sql_execution;no_mutation=true"
+            ),
+            "evidence_collected_utc": "static_existing_ctest_evidence",
+            "promoter_slice": "SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1",
+            "notes": (
+                "Authenticated statement-scoped policy observer implementation and E2E evidence. "
+                "POLICY_BLOCKED() returns a non-NULL boolean through the closed public projection "
+                "carrier and exact receipt cohort. Internal evaluator identity remains hidden."
+            ),
+        }
+
+    if surface_id == SBSFC016_POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        if surface["canonical_name"] != "SBSQL.POLICY_BLOCKED":
+            fail("SBSQL-CE3790BA0486 policy diagnostic canonical name drift")
+        if status != "native_now" or cluster_scope != "noncluster_or_profile_scoped":
+            fail("SBSQL-CE3790BA0486 policy diagnostic status/scope drift")
+        if ledger_row is None or ledger_row.get("current_state") != "exact_refusal_passed":
+            fail("SBSQL-CE3790BA0486 policy diagnostic requires exact-refusal strict-ledger evidence")
+        return {
+            "final_state": "exact_refusal_passed",
+            "ctest_label": (
+                "sbsql_surface_to_sblr_full_implementation_closure;"
+                "sbsql_parser_worker;SBSFC-016R-K;"
+                "SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1"
+            ),
+            "fixture_path": (
+                f"{SBSFC016_FIXED_POLICY_FIXTURE_CSV};"
+                f"{SBSFC016_FIXED_POLICY_RUNTIME_SOURCE};"
+                f"{SECURITY_POLICY_EVALUATION_SOURCE}"
+            ),
+            "implementation_refs": (
+                f"diagnostic_identity=SBSQL.POLICY_BLOCKED;"
+                f"diagnostic_uuid={SBSFC016_POLICY_DIAGNOSTIC_UUID};"
+                "callable_function=false;pre_sblr_refusal=true;executable_sblr=false;"
+                "observer_builtin=sb.scalar.policy_blocked_diagnostic;"
+                "observer_engine_entrypoint=policy_blocked_diagnostic"
+            ),
+            "diagnostic_proof": (
+                "SBSQL.SURFACE.NOT_ADMITTED;SB_DIAG_FUNCTION_NOT_REGISTERED_internal_registry_check;"
+                "SBSQL.POLICY_BLOCKED_registered_diagnostic_identity;"
+                "raw_diagnostic_spelling_not_callable"
+            ),
+            "result_proof": (
+                f"ctest:{SBSFC016_FIXED_POLICY_FIXTURE_CTEST};"
+                f"ctest:{SBSFC016_FIXED_POLICY_RUNTIME_CTEST};"
+                f"ctest:{SECURITY_POLICY_EVALUATION_COMPONENT_CTEST};"
+                f"ctest:{SECURITY_POLICY_EVALUATION_PROCESS_CTEST};"
+                "surface_id=SBSQL-CE3790BA0486;public_diagnostic=SBSQL.SURFACE.NOT_ADMITTED;pre_sblr_refusal=true;"
+                "server_dispatch=false;engine_mutation=false;"
+                "separate_policy_blocked_diagnostic_observer_boolean=true"
+            ),
+            "evidence_collected_utc": "static_existing_ctest_evidence",
+            "promoter_slice": "SBSFC-016R-K-diagnostic-identity-reconciliation",
+            "notes": (
+                "SBSQL.POLICY_BLOCKED is reconciled as an exact registered diagnostic identity, "
+                "not a callable function. Its raw call is rejected before SBLR; the separately "
+                "registered policy_blocked_diagnostic() observer implements boolean diagnostic-area observation."
             ),
         }
 

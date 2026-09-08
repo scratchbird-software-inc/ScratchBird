@@ -12,8 +12,8 @@
   },
   "diagnostic_counts": {
     "SBSQL.LANG_ELEMENT.CLUSTER_PROVIDER_GATED": 56,
-    "SBSQL.LANG_ELEMENT.EXACT_REFUSAL": 81,
-    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2482
+    "SBSQL.LANG_ELEMENT.EXACT_REFUSAL": 82,
+    "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED": 2481
   },
   "dialect_profile_uuid": "sbsql.v3",
   "element_kind_counts": {
@@ -62519,7 +62519,7 @@
       "canonical_name": "SBSQL.POLICY_BLOCKED",
       "common_resource_hash": "common.sbsql.language_elements.c60c57ff9b5a8b7d",
       "compatibility_id": "compat.2974a590ec63e9ec",
-      "diagnostic_code": "SBSQL.LANG_ELEMENT.RELEASE_SUPPORTED",
+      "diagnostic_code": "SBSQL.LANG_ELEMENT.EXACT_REFUSAL",
       "dialect_profile_uuid": "sbsql.v3",
       "element_kind": "surface_function",
       "exact_tag": "en",
@@ -62527,9 +62527,9 @@
       "governance_evidence_id": "SML-010.language_element_manifest.generator",
       "keyword_class": "not_keyword",
       "keyword_text": "",
-      "message_id": "message.cc30cd4d8b1fa789",
+      "message_id": "message.f7820dd36b8c1f7b",
       "phrase_id": "phrase.1a1f384f13026148",
-      "predictive_state": "admitted_completion",
+      "predictive_state": "refusal_completion",
       "predictive_state_id": "predictive.2974a590ec63e9ec",
       "profile_uuid": "sbsql.builtin.recovery.en",
       "provenance_id": "sbsql.language_element_manifest.provenance.v1",

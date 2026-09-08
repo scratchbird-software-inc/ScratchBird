@@ -346,6 +346,26 @@ struct EngineMaterializedAuthorizationContext {
   std::vector<std::string> evidence_tags;
 };
 
+// Engine-owned observation of the policy gate for one admitted statement.
+// The parser, client, SBOP, and SBOS layers never populate this record. It is
+// stamped only after receipt-bound canonical admission and validated again
+// before a policy observer publishes a value.
+struct EngineStatementPolicyGateObservation {
+  bool present = false;
+  bool blocked = false;
+  EngineUuid statement_uuid;
+  EngineUuid transaction_uuid;
+  EngineApiU64 local_transaction_id = 0;
+  EngineUuid authorization_context_uuid;
+  EngineApiU64 authorization_context_generation = 0;
+  EngineUuid policy_snapshot_uuid;
+  EngineApiU64 policy_snapshot_generation = 0;
+  EngineApiU64 security_epoch = 0;
+  EngineApiU64 policy_epoch = 0;
+  EngineApiU64 catalog_generation_id = 0;
+  EngineApiU64 resource_epoch = 0;
+};
+
 enum class EngineTrustMode {
   server_isolated,
   embedded_in_process,
@@ -477,6 +497,7 @@ struct EngineRequestContext {
   EngineApiU64 last_row_count = 0;
   bool last_row_count_present = false;
   EngineMaterializedAuthorizationContext authorization_context;
+  EngineStatementPolicyGateObservation current_policy_gate;
   std::vector<std::string> trace_tags;
   // Engine-owned asynchronous query cancellation source. Parsers, dialect
   // adapters, and SBLR operands cannot populate this authority. A missing

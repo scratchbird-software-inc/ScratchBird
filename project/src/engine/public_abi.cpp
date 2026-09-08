@@ -29394,6 +29394,30 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                !optimizer_stats_read_root && !optimizer_stats_drop_root &&
                !catalog_introspect_root) {
       auto dispatch_context = context;
+      dispatch_context.current_policy_gate.present = true;
+      dispatch_context.current_policy_gate.blocked = false;
+      dispatch_context.current_policy_gate.statement_uuid =
+          dispatch_context.statement_uuid;
+      dispatch_context.current_policy_gate.transaction_uuid =
+          dispatch_context.transaction_uuid;
+      dispatch_context.current_policy_gate.local_transaction_id =
+          dispatch_context.local_transaction_id;
+      dispatch_context.current_policy_gate.authorization_context_uuid =
+          dispatch_context.authorization_context.authority_uuid;
+      dispatch_context.current_policy_gate.authorization_context_generation =
+          dispatch_context.authorization_context.security_context_generation;
+      dispatch_context.current_policy_gate.policy_snapshot_uuid =
+          dispatch_context.transaction_policy_snapshot_uuid;
+      dispatch_context.current_policy_gate.policy_snapshot_generation =
+          dispatch_context.transaction_policy_snapshot_generation;
+      dispatch_context.current_policy_gate.security_epoch =
+          dispatch_context.security_epoch;
+      dispatch_context.current_policy_gate.policy_epoch =
+          dispatch_context.authorization_context.policy_epoch;
+      dispatch_context.current_policy_gate.catalog_generation_id =
+          dispatch_context.catalog_generation_id;
+      dispatch_context.current_policy_gate.resource_epoch =
+          dispatch_context.resource_epoch;
       if (transaction_characteristics_root) {
         // The statement receipt remains the authority for the canonical
         // package, session, catalog, security, and resource cohort.  SET
@@ -29866,8 +29890,34 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     }
   } else {
     scratchbird::engine::internal_api::EngineApiRequest api_request;
+    auto dispatch_context = context;
+    dispatch_context.current_policy_gate.present = true;
+    dispatch_context.current_policy_gate.blocked = false;
+    dispatch_context.current_policy_gate.statement_uuid =
+        dispatch_context.statement_uuid;
+    dispatch_context.current_policy_gate.transaction_uuid =
+        dispatch_context.transaction_uuid;
+    dispatch_context.current_policy_gate.local_transaction_id =
+        dispatch_context.local_transaction_id;
+    dispatch_context.current_policy_gate.authorization_context_uuid =
+        dispatch_context.authorization_context.authority_uuid;
+    dispatch_context.current_policy_gate.authorization_context_generation =
+        dispatch_context.authorization_context.security_context_generation;
+    dispatch_context.current_policy_gate.policy_snapshot_uuid =
+        dispatch_context.transaction_policy_snapshot_uuid;
+    dispatch_context.current_policy_gate.policy_snapshot_generation =
+        dispatch_context.transaction_policy_snapshot_generation;
+    dispatch_context.current_policy_gate.security_epoch =
+        dispatch_context.security_epoch;
+    dispatch_context.current_policy_gate.policy_epoch =
+        dispatch_context.authorization_context.policy_epoch;
+    dispatch_context.current_policy_gate.catalog_generation_id =
+        dispatch_context.catalog_generation_id;
+    dispatch_context.current_policy_gate.resource_epoch =
+        dispatch_context.resource_epoch;
     dispatched = scratchbird::engine::sblr::DispatchSblrOperation(
-        {context, std::move(dispatch_operation), std::move(api_request),
+        {std::move(dispatch_context), std::move(dispatch_operation),
+         std::move(api_request),
          admitted_parameter_values, contextual_text_activation});
   }
   if (ddl_create_aggregate_root && !dispatched.accepted) {

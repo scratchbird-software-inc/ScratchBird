@@ -41,6 +41,7 @@ CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS = {
     "SBSQL-5CC9FDFFE6F7",
 }
 PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS = CREATE_TABLE_CONSTRAINT_CHILD_SURFACE_IDS
+POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID = "SBSQL-CE3790BA0486"
 
 
 def fail(message: str) -> None:
@@ -167,6 +168,15 @@ def selectable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict[
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
         )
 
+    if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == "not_admitted_diagnostic_identity_SBSQL.POLICY_BLOCKED"
+        )
+
     if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
         return (
             auth.get("status") == "native_now"
@@ -216,6 +226,14 @@ def refreshable(auth: dict[str, str], round_trip: dict[str, str], manifest: dict
         return (
             manifest.get("final_state") in {"exact_refusal_passed", "cluster_provider_route_passed"}
             and round_trip_required == "not_applicable_no_round_trip_in_public_build"
+        )
+    if surface_id == POLICY_DIAGNOSTIC_IDENTITY_SURFACE_ID:
+        return (
+            auth.get("status") == "native_now"
+            and auth.get("cluster_scope") == "noncluster_or_profile_scoped"
+            and manifest.get("final_state") == "exact_refusal_passed"
+            and round_trip_required == "not_applicable_pre_sblr_exact_refusal"
+            and operation_id == "not_admitted_diagnostic_identity_SBSQL.POLICY_BLOCKED"
         )
     if surface_id in PRE_SBLR_EXACT_REFUSAL_SURFACE_IDS:
         return (
