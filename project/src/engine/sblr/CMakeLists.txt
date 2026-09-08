@@ -300,16 +300,23 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-003-V1
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
+    canonical_query_aggregate_registration.cpp
+    canonical_query_correlated_registration.cpp
     canonical_query_descriptor_support.cpp
     canonical_query_filter_registration.cpp
     canonical_query_object_free_profile.cpp
     canonical_query_physical_registration.cpp
     canonical_query_predicate_support.cpp
+    canonical_query_projection_registration.cpp
+    canonical_query_recursive_registration.cpp
     canonical_query_relational_registration.cpp
+    canonical_query_set_registration.cpp
+    canonical_query_sort_registration.cpp
     canonical_query_window_registration.cpp
     canonical_relational_expression.cpp
     canonical_query_execute.cpp
     canonical_query_json_support.cpp
+    canonical_query_join_registration.cpp
     canonical_query_runtime_memory_support.cpp
     canonical_query_scalar_support.cpp
     sblr_dispatch.cpp
@@ -334,16 +341,23 @@ endif()
 
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
+  canonical_query_aggregate_registration.cpp
+  canonical_query_correlated_registration.cpp
   canonical_query_descriptor_support.cpp
   canonical_query_filter_registration.cpp
   canonical_query_object_free_profile.cpp
   canonical_query_physical_registration.cpp
   canonical_query_predicate_support.cpp
+  canonical_query_projection_registration.cpp
+  canonical_query_recursive_registration.cpp
   canonical_query_relational_registration.cpp
+  canonical_query_set_registration.cpp
+  canonical_query_sort_registration.cpp
   canonical_query_window_registration.cpp
   canonical_relational_expression.cpp
   canonical_query_execute.cpp
   canonical_query_json_support.cpp
+  canonical_query_join_registration.cpp
   canonical_query_runtime_memory_support.cpp
   canonical_query_scalar_support.cpp
   canonical_query_time_series_endpoint.cpp

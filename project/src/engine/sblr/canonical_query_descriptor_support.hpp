@@ -11,6 +11,10 @@
 #include "engine/executor/descriptor_value_runtime.hpp"
 #include "query/plan_api.hpp"
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 namespace scratchbird::engine::sblr {
 
 // Owns exact descriptor/result-shape comparison and nullability projection.
@@ -41,5 +45,9 @@ bool CanonicalQueryDescriptorTuplePayloadExactlyEqual(
 bool CanonicalQueryDescriptorBatchesExactlyEqual(
     const scratchbird::engine::executor::DescriptorBatch& left,
     const scratchbird::engine::executor::DescriptorBatch& right);
+
+std::optional<std::string> ExactEncodedDescriptorField(
+    std::string_view descriptor,
+    std::string_view key);
 
 }  // namespace scratchbird::engine::sblr

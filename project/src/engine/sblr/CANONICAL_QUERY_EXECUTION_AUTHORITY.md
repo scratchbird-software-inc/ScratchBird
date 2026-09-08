@@ -34,14 +34,21 @@ separate reviewed change after the affected route has an isolated test gate.
 | Module | Owns | Must not own |
 | --- | --- | --- |
 | `canonical_query_execute.cpp` | Canonical query route selection, admitted planning/execution coordination, and public execution entry points | Parser lowering, durable transaction finality, storage mutation publication |
+| `canonical_query_aggregate_registration.cpp` | Exact aggregate datatype, value/key binding, FILTER truth, equality-authority, and grouped/global aggregate callback registration over bounded typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_correlated_registration.cpp` | Bounded comparison-authority binding and correlated-subquery/LATERAL/APPLY registrations over two already-materialized typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_filter_registration.cpp` | Exact-cardinality and bounded object-heap three-valued `FILTER` registrations over already-materialized typed batches | Predicate-receipt construction, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_object_free_profile.cpp` | Immutable object-free executor capability projection, physical-DAG planning input construction, and separately carried runtime-memory receipts | Physical callback execution, data access, MGA visibility/finality |
 | `canonical_query_physical_registration.cpp` | Revalidation-only MGA authority handles, operator-local physical-DAG scoping and memory preflight, execution-receipt identity checks, cancellation-policy evidence adaptation, and bounded already-materialized source/VALUES registrations | Snapshot construction, transaction begin/commit/rollback/recovery, optimizer grant authority, storage reads, expression evaluation |
 | `canonical_query_predicate_support.cpp` | Conservative payload and structural scratch bounds for admitted row-predicate expressions shared by FILTER and JOIN registrations | Predicate evaluation, optimizer grant authority, data access, snapshot construction, transaction finality |
+| `canonical_query_projection_registration.cpp` | Direct-column and expression `PROJECT` registration plus descriptor-exact expression materialization over one bounded, already-materialized typed input | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_join_registration.cpp` | Bounded JOIN-kind registration, runtime predicate evaluation, memory preflight, cancellation handling, and exact result receipt validation over two already-materialized typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_recursive_registration.cpp` | Bounded signed-`int64` recursive-term preparation/execution, recursive-root memory binding, exact node binding, descriptor-only term registration, and recursive UNION/SEARCH/CYCLE root registration | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_relational_registration.cpp` | Bounded relational physical registrations over already-materialized typed batches, including direct descriptor projection, scalar/row cardinality and predicate subqueries, query `DISTINCT`, typed `SORT`, `MATCH_RECOGNIZE`, `LIMIT`/`OFFSET`/`FETCH FIRST`, global `COUNT(*)`, and nonrecursive CTE publication | Snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_set_registration.cpp` | Binary set-operation registration and execution/memory receipt validation over two bounded, already-materialized typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
+| `canonical_query_sort_registration.cpp` | Expression-key materialization, exact sort-key receipt issuance, and expression-aware SORT registration over one bounded typed input | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_window_registration.cpp` | Bounded window physical registrations for row numbering, peer ranking/distribution, bucketing, navigation, and aggregate frames | Snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_scalar_support.cpp` | Canonical UUID validation/derivation, scalar equality-key normalization, and exact `int64` wire decoding | Catalog-bound comparison, descriptor construction, provider execution, transaction state |
-| `canonical_query_descriptor_support.cpp` | Exact descriptor/result-shape comparison and result-nullability projection | Catalog lookup, persisted descriptor authorization, descriptor construction, transaction state |
+| `canonical_query_descriptor_support.cpp` | Exact descriptor/result-shape comparison, encoded descriptor-field lookup, and result-nullability projection | Catalog lookup, persisted descriptor authorization, descriptor construction, transaction state |
 | `canonical_query_json_support.cpp` | Bounded wildcard scanning over already-canonical JSON values | SQL/JSON parsing, document-provider execution, result publication, transaction state |
 | `canonical_query_runtime_memory_support.cpp` | Overflow-safe logical/live memory accounting over typed values and descriptor batches | Memory grants, plan selection, storage accounting, MGA visibility/finality |
 | `canonical_query_time_series_endpoint.cpp` | Exact timestamp-with-zone endpoint validation and normalization to nanoseconds | Snapshot resolution, time-series provider execution, result publication, transaction state |
@@ -54,7 +61,7 @@ separate reviewed change after the affected route has an isolated test gate.
 | 0 | Add the dedicated source-contract gate, baseline ratchets, authority ledger, and public-entry-point ownership checks | Source gate self-test | complete |
 | 1 | Extract dependency-free time-series endpoint parsing | Production SBLR link and RCP-076 production query route | complete |
 | 2 | Separate shared scalar, descriptor, JSON, and runtime-memory support | Contract-only query route plus scalar/result conformance | complete |
-| 3 | Separate object-free profile preparation and physical executor registrations | QRY-003/QRY-005 and object-free query matrix | in progress: profile publication, source/VALUES/direct-descriptor-PROJECT/exact-and-bounded-FILTER/table-subquery/scalar-row-cardinality-subquery/predicate-subquery/query-DISTINCT/typed-SORT/MATCH-RECOGNIZE/LIMIT-OFFSET-FETCH/global-COUNT/nonrecursive-CTE/ROW_NUMBER/peer-ranking/NTILE/navigation/aggregate-window registration, shared registration preflight, predicate scratch analysis, and cancellation-policy adaptation separated |
+| 3 | Separate object-free profile preparation and physical executor registrations | QRY-003/QRY-005 and object-free query matrix | complete |
 | 4 | Separate object-free composition coordinators | Set, join, aggregate, window, sort, distinct, limit, pivot and unpivot routes | pending |
 | 5 | Extract time-series, vector, search, key-value, graph, and document model-family routes one family per change | The matching RCP production-route test for each family | pending |
 | 6 | Extract spatial/columnar and captured multileg model composition | RCP-079/RCP-080 and cross-family join tests | pending |
@@ -295,8 +302,53 @@ limited to operator-local revalidation of the engine-selected statement
 context. The module cannot construct a snapshot or begin, commit, roll back,
 persist, or recover a transaction.
 
-These Stage 3 slices reduce the coordinator to 64,923 lines and 3,132,559
-bytes, removing another 4,806 lines and 225,018 bytes. The first slice's clean
+The twenty-second slice creates a focused projection-registration boundary and
+moves the direct-column and expression `PROJECT` callback factory together
+with descriptor-exact expression materialization. The coordinator publishes a
+narrow immutable profile containing only selected column ordinals, expression
+bindings, and output descriptors; preparation diagnostics, result bindings,
+and broader prepared-root state do not cross the boundary. The callback
+consumes only an already-materialized typed input and optimizer-published
+memory bounds, while MGA handling remains limited to revalidation of the
+engine-selected statement context. The module cannot select a plan, construct
+a snapshot, access storage, or begin, commit, roll back, persist, or recover a
+transaction.
+
+The twenty-third slice creates a focused correlated-registration boundary and
+moves the shared bounded comparison-authority binder together with ordinary
+correlated-subquery and `LATERAL`/`APPLY` callback factories. The coordinator
+and the module share one immutable profile containing only selected correlation
+columns, descriptor identities, admitted row/pair/output bounds, comparison
+memory, and implementation identity. Both callbacks consume two
+already-materialized typed inputs, poll the admitted cancellation policy, and
+either construct only a revalidation handle or borrow the engine-selected MGA
+authority. The module cannot select a plan, construct a snapshot, access
+storage, or begin, commit, roll back, persist, or recover a transaction.
+
+The twenty-fourth slice creates a focused binary set-operation registration
+boundary and moves the `UNION`/`INTERSECT`/`EXCEPT` callback together with its
+execution and logical-memory receipt validators. The coordinator publishes a
+narrow immutable node map containing only the admitted set semantics, result
+columns, collation bindings, implementation identity, and hard comparison and
+output bounds; preparation diagnostics and result bindings do not cross the
+boundary. The callback consumes two already-materialized typed inputs and an
+optimizer-published operator-local memory grant, while MGA handling is limited
+to constructing a revalidation handle for the engine-selected statement
+context. The module cannot select a plan, construct a snapshot, access
+storage, or begin, commit, roll back, persist, or recover a transaction.
+
+The twenty-fifth slice starts a focused recursive-registration boundary by
+moving the immutable recursive profile and bounded signed-`int64` term
+preparation, execution, node-binding, and descriptor-only leaf callback. The
+callback emits no rows itself: it publishes the exact empty typed term schema
+and revalidates only the engine-selected MGA statement context. Recursive
+working-table iteration remains owned by the coordinator until the larger root
+callback can move as one authority unit. The module cannot select a plan,
+construct a snapshot, access storage, or begin, commit, roll back, persist, or
+recover a transaction.
+
+These Stage 3 slices reduce the coordinator to 63,172 lines and 3,053,444
+bytes, removing another 6,557 lines and 304,133 bytes. The first slice's clean
 benchmark-profile build completed 1,332 actions with all instrumentation
 families off, followed by an 11-action incremental link proof for the physical
 registration extraction. The affected object-free matrix passes:
@@ -514,9 +566,102 @@ cross-family JOIN route. Configure, closure build, focused test-build, CTest,
 and final policy-gate output is retained in
 `/tmp/scratchbird-canonical-query-stage3u-*.log`.
 
-Stage 3 remains open until the remaining object-free physical callback
-factories have been moved behind the same authority boundary and the complete
-matrix has been rerun.
+The twenty-second slice completed a fresh 1,304-action benchmark-clean closure
+build with all four instrumentation families disabled. The focused PROJECT
+module and reduced coordinator compiled in both profiles, and both contract
+and production SBLR libraries linked. A 117-action focused build produced the
+same thirty-four-test matrix used for the predicate-support and FILTER
+boundaries; all thirty-four passed. The live VALUES spine directly covered
+row-dependent expression projection, empty filtered projection, and PROJECT
+compositions with FILTER, SORT, DISTINCT, LIMIT/OFFSET/FETCH, JOIN, aggregate,
+and set-operation routes. Configure, closure build, focused test-build, CTest,
+and final policy-gate output is retained in
+`/tmp/scratchbird-canonical-query-stage3v-*.log`.
+
+The twenty-third slice completed a fresh 1,306-action benchmark-clean closure
+graph across one targeted mechanical compile repair and resume, with all four
+instrumentation families disabled. The focused correlated/LATERAL registration
+module and reduced coordinator compiled in both profiles, and both contract
+and production SBLR libraries linked. A 123-action focused build produced
+thirty-seven tests; all thirty-seven passed. Dedicated correlated and
+LATERAL/APPLY executors, the live VALUES spine's typed and integer variants,
+and the spatial-columnar production route directly exercise the comparison and
+row-registration authority moved in this slice. Configure, closure build and
+repair diagnostics, focused test-build, CTest, and final policy-gate output is
+retained in `/tmp/scratchbird-canonical-query-stage3w-*.log`.
+
+The twenty-fourth slice completed an uninterrupted fresh 1,308-action
+benchmark-clean closure build with all four instrumentation families disabled.
+The focused set-operation module and reduced coordinator compiled in both
+profiles, and both contract and production SBLR libraries linked. A 135-action
+focused build produced forty-three tests; all forty-three passed. The matrix
+adds the six dedicated QRY-016 ALL, DISTINCT, BY NAME, nesting, type
+reconciliation, and NULL/collation executors, while the live VALUES spine and
+the time-series and search production routes exercise the extracted binary
+set-operation registration through the canonical coordinator. Configure,
+closure build, focused target-resolution diagnostic and test-build, CTest, and
+final policy-gate output is retained in
+`/tmp/scratchbird-canonical-query-stage3x-*.log`.
+
+The twenty-fifth slice completed an uninterrupted fresh 1,310-action
+benchmark-clean closure build with all four instrumentation families disabled.
+The recursive-term module and reduced coordinator compiled in both profiles,
+and both contract and production SBLR libraries linked. A 147-action focused
+build produced forty-nine tests; the first run exposed a stale standalone
+SEARCH/CYCLE fixture that still encoded catalog descriptor UUIDs where the
+executor now requires datatype codec type UUIDs. Aligning that test carrier
+with the executor's canonical type-codec lookup required no runtime change.
+The focused recheck and final forty-nine-test matrix then passed, including all
+six QRY-014 working, UNION, SEARCH/CYCLE, resource, cancellation, and MGA
+executors; the live VALUES spine; and five production routes. Configure, clean
+closure build, focused build, initial failure, fixture recheck, final CTest,
+and policy-gate output is retained in
+`/tmp/scratchbird-canonical-query-stage3y-*.log`.
+
+The twenty-sixth slice completes the recursive-registration boundary by moving
+the recursive root profile, peak payload and resident-structure binding, and
+the full UNION/SEARCH/CYCLE callback beside the already-separated recursive
+term. The callback consumes exact optimizer-published resource and cancellation
+evidence, scopes only the selected physical subgraph, and revalidates the
+engine-selected MGA statement context without creating or finalizing it.
+
+The twenty-seventh slice creates the focused JOIN-registration boundary. It
+moves the full bounded JOIN callback and its per-node runtime predicate profile
+as one authority unit, including retained-memory preflight, cancellation
+polling, three-valued predicate evaluation, join-kind execution, descriptor
+rebinding, and receipt validation. It cannot select a plan, read storage, or
+alter MGA transaction authority.
+
+The twenty-eighth slice creates the expression SORT-registration boundary. It
+moves expression-key materialization, the private one-shot sort-key receipt
+issuer, and the complete expression-aware SORT callback together. The module
+validates exact logical/physical order identity, accounts key and sorting
+workspace against the published grant, binds cancellation evidence, and only
+revalidates the supplied MGA statement context.
+
+The twenty-ninth slice creates the aggregate-registration boundary and closes
+Stage 3. It moves exact aggregate datatype and value/key binding, FILTER truth
+materialization, descriptor equality authority, and both global registry and
+grouped COUNT/SUM callbacks. The callbacks consume bounded typed input and
+optimizer-published memory/comparison limits, verify runtime receipts, and
+cannot construct a snapshot or begin, commit, roll back, persist, or recover a
+transaction.
+
+After these moves, no Stage 3 physical callback factory remains defined in the
+coordinator. Captured-model/RCP-079 callbacks remain deliberately assigned to
+Stage 6 rather than being mixed into this object-free registration stage.
+
+The completed Stage 3 layout reduces the coordinator to 59,207 lines and
+2,868,800 bytes: 10,522 lines and 488,777 bytes below the Stage 2 exit, and
+11,542 lines and 526,806 bytes below the project baseline. A fresh 1,316-action
+benchmark-clean closure graph compiled the final nineteen-module source layout
+with all four instrumentation families disabled and linked both
+`sb_qow_sblr_query_route_contract` and `sb_engine_sblr`. A 147-action focused
+build then produced the complete forty-nine-test query, recursive, set,
+aggregate, JOIN, SORT, window, correlated, and production-route matrix; all
+forty-nine tests passed. Configure, clean build, focused build, CTest, and final
+policy-gate output is retained in
+`/tmp/scratchbird-canonical-query-stage3-final-*.log`.
 
 ## Review rule
 

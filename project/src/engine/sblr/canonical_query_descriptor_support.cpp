@@ -13,6 +13,28 @@ namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
 
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_DESCRIPTOR_SUPPORT_AUTHORITY
+std::optional<std::string> ExactEncodedDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::optional<std::string> value;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    if (field.starts_with(prefix)) {
+      if (value.has_value()) return std::nullopt;
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  if (value.has_value() && value->empty()) return std::nullopt;
+  return value;
+}
+
 exec::CanonicalResultNullability ResultNullability(
     const api::RelationalNullability nullability) {
   switch (nullability) {

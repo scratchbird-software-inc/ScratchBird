@@ -17,15 +17,33 @@ AUTHORITY = SBLR_ROOT / "CANONICAL_QUERY_EXECUTION_AUTHORITY.md"
 
 MODULES = {
     "canonical_query_execute.cpp": (
-        64_923,
-        3_132_559,
+        59_207,
+        2_868_800,
         "SB_ENGINE_CANONICAL_QUERY_EXECUTE_COORDINATOR_AUTHORITY",
+        2,
+    ),
+    "canonical_query_aggregate_registration.cpp": (
+        1_409,
+        62_559,
+        "SB_ENGINE_CANONICAL_QUERY_AGGREGATE_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_correlated_registration.cpp": (
+        893,
+        40_698,
+        "SB_ENGINE_CANONICAL_QUERY_CORRELATED_REGISTRATION_AUTHORITY",
         2,
     ),
     "canonical_query_filter_registration.cpp": (
         383,
         18_148,
         "SB_ENGINE_CANONICAL_QUERY_FILTER_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_join_registration.cpp": (
+        857,
+        42_577,
+        "SB_ENGINE_CANONICAL_QUERY_JOIN_REGISTRATION_AUTHORITY",
         2,
     ),
     "canonical_query_object_free_profile.cpp": (
@@ -46,10 +64,34 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_PREDICATE_SUPPORT_AUTHORITY",
         2,
     ),
+    "canonical_query_projection_registration.cpp": (
+        395,
+        18_036,
+        "SB_ENGINE_CANONICAL_QUERY_PROJECTION_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_recursive_registration.cpp": (
+        971,
+        43_851,
+        "SB_ENGINE_CANONICAL_QUERY_RECURSIVE_REGISTRATION_AUTHORITY",
+        2,
+    ),
     "canonical_query_relational_registration.cpp": (
         1_891,
         89_163,
         "SB_ENGINE_CANONICAL_QUERY_RELATIONAL_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_set_registration.cpp": (
+        279,
+        12_709,
+        "SB_ENGINE_CANONICAL_QUERY_SET_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_sort_registration.cpp": (
+        998,
+        45_155,
+        "SB_ENGINE_CANONICAL_QUERY_SORT_REGISTRATION_AUTHORITY",
         2,
     ),
     "canonical_query_window_registration.cpp": (
@@ -65,8 +107,8 @@ MODULES = {
         2,
     ),
     "canonical_query_descriptor_support.cpp": (
-        128,
-        5_241,
+        150,
+        6_049,
         "SB_ENGINE_CANONICAL_QUERY_DESCRIPTOR_SUPPORT_AUTHORITY",
         2,
     ),
@@ -223,6 +265,7 @@ def main() -> int:
             "bool CanonicalQueryTypedValuePayloadExactlyEqual(",
             "bool CanonicalQueryDescriptorTuplePayloadExactlyEqual(",
             "bool CanonicalQueryDescriptorBatchesExactlyEqual(",
+            "std::optional<std::string> ExactEncodedDescriptorField(",
         ):
             if extracted_definition in coordinator:
                 failures.append(
@@ -257,9 +300,16 @@ def main() -> int:
                 )
 
     for registration_name in (
+        "canonical_query_correlated_registration.cpp",
+        "canonical_query_aggregate_registration.cpp",
         "canonical_query_filter_registration.cpp",
+        "canonical_query_join_registration.cpp",
         "canonical_query_physical_registration.cpp",
+        "canonical_query_projection_registration.cpp",
+        "canonical_query_recursive_registration.cpp",
         "canonical_query_relational_registration.cpp",
+        "canonical_query_set_registration.cpp",
+        "canonical_query_sort_registration.cpp",
         "canonical_query_window_registration.cpp",
     ):
         registration_path = SBLR_ROOT / registration_name
@@ -329,6 +379,48 @@ def main() -> int:
             "bool InvokeLiveSortCancellationProbe(",
             "const exec::PhysicalAdmissionEvidence* FindLiveCancellationPolicy(",
             "void BindLiveCancellationFailure(",
+            "bool MaterializeExpressionProjectBatch(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(",
+            "BoundCanonicalCorrelatedComparisonAuthorityV1\n"
+            "BindCanonicalCorrelatedComparisonAuthorityV1(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveCorrelatedSubqueryRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(",
+            "bool ValidateLiveSetMemoryReceipt(",
+            "bool CanonicalSetOperationExecutionReceiptMatches(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(",
+            "struct LiveRecursiveCteProfile {",
+            "enum class LiveRecursiveCteTermMode : std::uint8_t {",
+            "PreparedRecursiveCteTerm PrepareLiveRecursiveCteTerm(",
+            "bool LiveRecursiveCteTermNodeBound(",
+            "LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveRecursiveCteTermRegistration(",
+            "struct PreparedRecursiveCteRoot {",
+            "bool BoundPreparedRecursiveCtePeakPayload(",
+            "bool BindPreparedRecursiveCtePeakMemory(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveRecursiveCteRegistration(",
+            "struct LiveJoinRuntimeNodeConfiguration {",
+            "exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(",
+            "struct PreparedSortExpression {",
+            "struct PreparedSortRoot {",
+            "bool MaterializeExpressionSortBatch(",
+            "class CanonicalDescriptorSortKeyReceiptIssuer {",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveExpressionSortRegistration(",
+            "struct PreparedAggregateValueBindingReceipt {",
+            "struct PreparedGlobalAggregateRoot {",
+            "struct PreparedGroupedCountSumRoot {",
+            "bool RevalidatePreparedAggregateValueBindings(",
+            "bool BindPreparedGroupedComparisonCeilings(",
+            "bool RevalidatePreparedGroupedKeyBindings(",
+            "bool MaterializeAggregateFilterTruthValues(",
+            "bool BindCanonicalAggregateEqualityTerms(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveAggregateRegistryRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration\n"
+            "MakeLiveGroupedCountSumRegistration(",
         ):
             if extracted_definition in coordinator:
                 failures.append(

@@ -130,7 +130,13 @@ std::string CoreTypeUuid(const std::string_view stable_name) {
   if (!manifest.ok()) return {};
   for (const auto& row : manifest.manifest.descriptor_rows) {
     if (row.stable_name == stable_name && row.descriptor_uuid.valid()) {
-      return uuid::UuidToString(row.descriptor_uuid.value);
+      const auto descriptor_uuid =
+          uuid::UuidToString(row.descriptor_uuid.value);
+      const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+          "019d0000-0000-7000-8000-00000000d701",
+          manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+          row.descriptor_epoch);
+      return identity.ok ? identity.row.type_uuid : std::string{};
     }
   }
   return {};
