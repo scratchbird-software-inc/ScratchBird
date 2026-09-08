@@ -17221,6 +17221,30 @@ std::vector<ObjectReference> ExtractSecurityPolicyObjectReferences(const CstDocu
     return refs;
   }
 
+  if (IsWord(cst.tokens[first_token], "SHOW")) {
+    const std::size_t security =
+        NextNonTriviaIndex(cst, first_token + 1);
+    const std::size_t policy = NextNonTriviaIndex(cst, security + 1);
+    if (security < cst.tokens.size() && policy < cst.tokens.size() &&
+        IsWord(cst.tokens[security], "SECURITY") &&
+        IsWord(cst.tokens[policy], "POLICY")) {
+      push_ref_at(policy + 1, "security_policy");
+    }
+    return refs;
+  }
+
+  if (IsWord(cst.tokens[first_token], "ACTIVATE") ||
+      IsWord(cst.tokens[first_token], "DEACTIVATE") ||
+      IsWord(cst.tokens[first_token], "VALIDATE")) {
+    const std::size_t policy =
+        NextNonTriviaIndex(cst, first_token + 1);
+    if (policy < cst.tokens.size() &&
+        IsWord(cst.tokens[policy], "POLICY")) {
+      push_ref_at(policy + 1, "security_policy");
+    }
+    return refs;
+  }
+
   if (!IsWord(cst.tokens[first_token], "CREATE")) return refs;
   const std::size_t second = NextNonTriviaIndex(cst, first_token + 1);
   if (second >= cst.tokens.size()) return refs;
@@ -17819,6 +17843,71 @@ DdlCreateSchemaWireCommand ParseDdlCreateSchemaWireCommand(
   }
   if (result.name_atoms.empty()) {
     return invalid("ddl_create_schema_name_missing");
+  }
+  result.valid = true;
+  return result;
+}
+
+struct SecurityAlterPolicyWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  std::vector<
+      scratchbird::engine::sblr::SblrSecAlterPolicyNameAtomV1>
+      name_atoms;
+  std::string invalid_reason;
+};
+
+SecurityAlterPolicyWireCommand ParseSecurityAlterPolicyWireCommand(
+    const CstDocument& cst) {
+  SecurityAlterPolicyWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "ACTIVATE" ||
+      ToUpperAscii(tokens[1]->text) != "POLICY") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto terminator_count =
+      std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      });
+  if (terminator_count > 1 ||
+      (terminator_count == 1 &&
+       tokens.back()->kind != TokenKind::kStatementTerminator)) {
+    return invalid("security_alter_policy_statement_terminator_invalid");
+  }
+  if (terminator_count == 1) tokens.pop_back();
+  std::size_t index = 2;
+  while (index < tokens.size()) {
+    if (!IsIdentifierLikeForRouteExecution(*tokens[index]) ||
+        tokens[index]->text.empty() || tokens[index]->text.size() > 256 ||
+        tokens[index]->text.find('.') != std::string::npos ||
+        result.name_atoms.size() == 3) {
+      return invalid("security_alter_policy_name_invalid");
+    }
+    result.name_atoms.push_back(
+        {tokens[index]->text, tokens[index]->quoted});
+    ++index;
+    if (index == tokens.size()) break;
+    if (tokens[index]->text != ".") {
+      return invalid("security_alter_policy_options_not_admitted");
+    }
+    ++index;
+    if (index == tokens.size()) {
+      return invalid("security_alter_policy_name_invalid");
+    }
+  }
+  if (result.name_atoms.empty()) {
+    return invalid("security_alter_policy_name_missing");
   }
   result.valid = true;
   return result;
@@ -25243,6 +25332,28 @@ struct SbsqlTestWireSession::HeldBulkImportStream {
   }
 };
 
+struct SbsqlTestWireSession::HeldSecurityAlterPolicy {
+  enum class Phase : std::uint8_t {
+    coordinating = 0,
+    execution_pending = 1,
+    result_recorded = 2,
+  };
+
+  std::string exact_sql;
+  ipc::ParserStatementContext statement_context;
+  scratchbird::engine::sblr::SblrSecAlterPolicyRequestV1 bind_request;
+  scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1 descriptor;
+  std::vector<std::uint8_t> canonical_bind_request;
+  std::vector<std::uint8_t> canonical_descriptor;
+  std::vector<std::uint8_t> canonical_operand;
+  std::optional<ipc::ParserCanonicalSblrSubmission> submission;
+  std::optional<PipelineResult> terminal_result;
+  Phase phase{Phase::coordinating};
+  bool execution_attempted{false};
+  bool autocommit_emulation{false};
+  bool autocommit_complete{false};
+};
+
 struct SbsqlTestWireSession::HeldDdlCreateSchema {
   enum class Phase : std::uint8_t {
     coordinating = 0,
@@ -25389,6 +25500,53 @@ struct SbsqlTestWireSession::HeldProcedureInvoke {
 };
 
 namespace {
+
+bool ExactSecurityAlterPolicyTerminal(
+    const scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1&
+        descriptor,
+    const std::uint8_t* bytes, std::size_t size,
+    scratchbird::engine::sblr::SblrSecAlterPolicyResultV1* terminal,
+    std::string* detail) {
+  namespace security = scratchbird::engine::sblr;
+  if (terminal == nullptr || bytes == nullptr || size == 0 ||
+      !security::DecodeSblrSecAlterPolicyResultV1(
+          bytes, size, terminal, detail) ||
+      security::EncodeSblrSecAlterPolicyResultV1(*terminal) !=
+          std::vector<std::uint8_t>(bytes, bytes + size)) {
+    return false;
+  }
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  return terminal->receipt == descriptor.receipt &&
+         terminal->policy_uuid == descriptor.policy_uuid &&
+         descriptor.expected_generation !=
+             std::numeric_limits<std::uint64_t>::max() &&
+         terminal->previous_generation == descriptor.expected_generation &&
+         terminal->generation == descriptor.expected_generation + 1 &&
+         terminal->database_uuid == descriptor.database_uuid &&
+         terminal->owning_transaction_uuid ==
+             descriptor.owning_transaction_uuid &&
+         terminal->owning_local_transaction_id ==
+             descriptor.owning_local_transaction_id &&
+         terminal->statement_snapshot_uuid ==
+             descriptor.statement_snapshot_uuid &&
+         terminal->action == descriptor.action && terminal->status == 1 &&
+         terminal->publication_barrier == 1 &&
+         terminal->descriptor_evidence == descriptor.descriptor_evidence &&
+         terminal->availability == descriptor.availability &&
+         terminal->recovery_uuid == descriptor.recovery_uuid &&
+         terminal->security_generation >= descriptor.security_generation &&
+         terminal->cache_invalidation_generation != 0 &&
+         nonzero(terminal->mutation_uuid) &&
+         nonzero(terminal->effect_evidence) &&
+         nonzero(terminal->result_evidence) &&
+         nonzero(terminal->publication_barrier_uuid) &&
+         terminal->mutation_uuid != terminal->policy_uuid &&
+         terminal->publication_barrier_uuid != terminal->policy_uuid &&
+         terminal->publication_barrier_uuid != terminal->mutation_uuid;
+}
 
 bool ExactDdlCreateSchemaTerminal(
     const scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1&
@@ -25841,6 +25999,19 @@ SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* m
 }
 
 SbsqlTestWireSession::~SbsqlTestWireSession() = default;
+
+bool SbsqlTestWireSession::HasHeldSecurityAlterPolicyForWire() const {
+  return held_security_alter_policy_ != nullptr;
+}
+
+void SbsqlTestWireSession::AcknowledgeSecurityAlterPolicyCompletionForWire() {
+  if (held_security_alter_policy_ == nullptr) return;
+  const auto& held = *held_security_alter_policy_;
+  if (held.phase == HeldSecurityAlterPolicy::Phase::result_recorded &&
+      held.terminal_result.has_value() && held.autocommit_complete) {
+    held_security_alter_policy_.reset();
+  }
+}
 
 bool SbsqlTestWireSession::HasHeldDdlCreateSchemaForWire() const {
   return held_ddl_create_schema_ != nullptr;
@@ -27143,6 +27314,26 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         return result;
       };
 
+  if (held_security_alter_policy_ != nullptr &&
+      held_security_alter_policy_->phase !=
+          HeldSecurityAlterPolicy::Phase::result_recorded &&
+      held_security_alter_policy_->exact_sql != sql) {
+    PipelineResult result;
+    result.accepted = false;
+    result.outcome_unknown = true;
+    result.statement_family = "security";
+    result.operation_family = "sblr.policy.operation.v3";
+    result.parser_executes_sql = false;
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "An ACTIVATE POLICY operation with unknown finality must be replayed before another command.",
+        "sbp_sbsql.wire.security_alter_policy_recovery",
+        {{"detail", "exact_held_security_alter_policy_replay_required"}}));
+    mark_phase("security_alter_policy_recovery_required");
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+
   if (held_ddl_create_schema_ != nullptr &&
       held_ddl_create_schema_->phase !=
           HeldDdlCreateSchema::Phase::result_recorded &&
@@ -27325,6 +27516,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (canonical_compile_output == nullptr &&
         starts_with_command("SHOW TABLE")) {
       return RunShowObjectDetailForWire(sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
+        starts_with_command("ACTIVATE POLICY")) {
+      return RunSecurityAlterPolicyForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
         starts_with_command("CREATE SCHEMA")) {
@@ -29731,6 +29926,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       lowered.operation_family == "sblr.observability.inspect.v3" &&
       lowered.operation_id == "observability.show_database" &&
       lowered.sblr_opcode == "SBLR_OBSERVABILITY_SHOW_DATABASE";
+  const bool canonical_security_policy_show_route =
+      lowered.operation_family == "sblr.policy.operation.v3" &&
+      lowered.operation_id == "security.policy.show" &&
+      lowered.sblr_opcode == "SBLR_SECURITY_POLICY_SHOW" &&
+      lowered.resolved_object_uuids.size() == 1;
   const bool canonical_zero_operand_direct_route =
       canonical_show_database_direct_route ||
       lowered.operation_id == "observability.show_transactions" ||
@@ -29758,6 +29958,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
        (canonical_dml_plan_import_rows_route && !canonical_copy_stream_route) ||
        canonical_show_version_direct_route ||
        canonical_zero_operand_direct_route ||
+       canonical_security_policy_show_route ||
        canonical_parameter_projection_route)) {
     const bool embedded_native_route =
         config_.embedded_engine_direct && embedded_client_ != nullptr;
@@ -29916,6 +30117,32 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               *native_statement_context, session_,
               coordinated.canonical_payload);
         }
+      }
+    } else if (canonical_security_policy_show_route) {
+      auto envelope = BuildCanonicalRegistryEnvelope(
+          lowered.operation_id, *native_statement_context, session_);
+      const auto policy_uuid =
+          CanonicalUuidBytes(lowered.resolved_object_uuids.front());
+      if (envelope && policy_uuid &&
+          envelope->opcode == "SBLR_SECURITY_POLICY_SHOW" &&
+          envelope->opcode_code == 1807 && envelope->operands.empty()) {
+        scratchbird::engine::sblr::SblrOperand operand;
+        operand.ordinal = 1;
+        operand.type = "security_policy_show_descriptor";
+        operand.name = "policy";
+        operand.value_kind =
+            scratchbird::engine::sblr::SblrValueKind::uuid_ref;
+        operand.value_body.assign(policy_uuid->begin(), policy_uuid->end());
+        envelope->operands.push_back(std::move(operand));
+        native_submission = BuildCanonicalRegistryOperationSubmission(
+            *envelope, *native_statement_context, session_);
+      }
+      if (!native_submission.has_value()) {
+        result.accepted = false;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "SHOW SECURITY POLICY could not package the exact engine-resolved policy UUID.",
+            "sbp_sbsql.wire"));
       }
     } else if (canonical_zero_operand_direct_route) {
       auto envelope = BuildCanonicalRegistryEnvelope(
@@ -37365,7 +37592,346 @@ PipelineResult SbsqlTestWireSession::RunSecurityCreateGroupMappingForWire(){Pipe
 PipelineResult SbsqlTestWireSession::RunSecurityDropGroupMappingForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecDropGroupMappingRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityDropGroupMapping(session_,c::EncodeSblrSecDropGroupMappingRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecDropGroupMappingDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecDropGroupMappingDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecDropGroupMappingDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_drop_group_mapping";g_security_drop_group_mapping_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_drop_group_mapping_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunSecurityGrantForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecGrantRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityGrant(session_,c::EncodeSblrSecGrantRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecGrantDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecGrantDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecGrantDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_grant";g_security_grant_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_grant_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunSecurityRevokeForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecRevokeRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityRevoke(session_,c::EncodeSblrSecRevokeRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecRevokeDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecRevokeDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecRevokeDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_revoke";g_security_revoke_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_revoke_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
-PipelineResult SbsqlTestWireSession::RunSecurityAlterPolicyForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecAlterPolicyRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityAlterPolicy(session_,c::EncodeSblrSecAlterPolicyRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecAlterPolicyDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecAlterPolicyDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecAlterPolicyDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_alter_policy";g_security_alter_policy_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_alter_policy_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
+PipelineResult SbsqlTestWireSession::RunSecurityAlterPolicyForWire(
+    std::string_view sql, bool autocommit_emulation) {
+  namespace security = scratchbird::engine::sblr;
+  PipelineResult result;
+  result.statement_family = "security";
+  result.operation_family = "sblr.policy.operation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          std::move(code), "ERROR",
+          "The canonical ACTIVATE POLICY operation was refused.",
+          "sbp_sbsql.wire.security_alter_policy",
+          {{"detail", std::move(detail)}}));
+    }
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  const bool embedded =
+      config_.embedded_engine_direct && embedded_client_ != nullptr;
+  if (!session_.authenticated || (!embedded && server_client_ == nullptr)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_security_alter_policy_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseSecurityAlterPolicyWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid ||
+      ast.family != StatementFamily::kSecurity) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "security_alter_policy_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  const auto execute_held = [&]() -> PipelineResult {
+    if (held_security_alter_policy_ == nullptr ||
+        held_security_alter_policy_->phase !=
+            HeldSecurityAlterPolicy::Phase::execution_pending ||
+        !held_security_alter_policy_->submission.has_value()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "security_alter_policy_held_execution_invalid");
+    }
+    auto& held = *held_security_alter_policy_;
+    held.execution_attempted = true;
+    auto executed =
+        embedded
+            ? embedded_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false)
+            : server_client_->ExecuteCanonicalSblrWithDataPacket(
+                  session_, held.statement_context, *held.submission, {},
+                  false);
+    result.messages = std::move(executed.messages);
+    if (!executed.accepted || result.messages.has_errors()) {
+      result.outcome_unknown =
+          executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+      if (!result.outcome_unknown) held_security_alter_policy_.reset();
+      return result;
+    }
+    security::SblrSecAlterPolicyResultV1 terminal;
+    std::string detail;
+    if (executed.operation_id != "engine.op.sec_alter_policy" ||
+        !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+        (executed.affected_rows_present && executed.affected_rows != 0) ||
+        !ExactSecurityAlterPolicyTerminal(
+            held.descriptor,
+            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+            executed.row_packet.size(), &terminal, &detail)) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    detail.empty()
+                        ? "security_alter_policy_result_authority_mismatch"
+                        : detail);
+    }
+    result.accepted = true;
+    result.server_operation_id = executed.operation_id;
+    result.server_row_count = 0;
+    result.server_affected_rows = 0;
+    result.server_affected_rows_present = executed.affected_rows_present;
+    result.server_request_payload_bytes =
+        held.canonical_bind_request.size();
+    result.server_result_payload = executed.row_packet;
+    result.sblr_payload.assign(
+        reinterpret_cast<const char*>(
+            held.submission->canonical_container_bytes.data()),
+        held.submission->canonical_container_bytes.size());
+    ApplyExecutedTransactionState(executed, &session_);
+    held.phase = HeldSecurityAlterPolicy::Phase::result_recorded;
+    held.terminal_result = result;
+    if (held.autocommit_emulation && !held.autocommit_complete) {
+      if (!FinalizeSuccessfulAutocommitForWire(&result)) {
+        result.accepted = false;
+        held.terminal_result = result;
+        return result;
+      }
+      held.autocommit_complete = true;
+      held.terminal_result = result;
+    }
+    return result;
+  };
+
+  if (held_security_alter_policy_ != nullptr) {
+    auto& held = *held_security_alter_policy_;
+    if (held.exact_sql != sql ||
+        held.autocommit_emulation != autocommit_emulation) {
+      return refuse(
+          "MGA.AUTHORITY_MISMATCH",
+          "a held ACTIVATE POLICY lifecycle may only replay its exact SQL and autocommit boundary");
+    }
+    if (held.terminal_result.has_value()) {
+      auto replay = *held.terminal_result;
+      if (held.autocommit_emulation && !held.autocommit_complete) {
+        if (!FinalizeSuccessfulAutocommitForWire(&replay)) return replay;
+        held.autocommit_complete = true;
+        held.terminal_result = replay;
+      }
+      return replay;
+    }
+    if (held.phase == HeldSecurityAlterPolicy::Phase::execution_pending) {
+      return execute_held();
+    }
+    if (held.phase != HeldSecurityAlterPolicy::Phase::coordinating ||
+        held.canonical_bind_request.empty()) {
+      result.outcome_unknown = true;
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "security_alter_policy_held_coordination_invalid");
+    }
+  } else {
+    ParserTransactionSelector selector{session_.local_transaction_id,
+                                       session_.transaction_uuid};
+    auto acquired = embedded
+                        ? embedded_client_->AcquireNativeStatementContext(
+                              session_, selector)
+                        : server_client_->AcquireNativeStatementContext(
+                              session_, selector);
+    if (!acquired.accepted) {
+      result.messages = std::move(acquired.messages);
+      if (!result.messages.has_errors()) {
+        return refuse("MGA.TRANSACTION.INVALID",
+                      "security_alter_policy_statement_context_unavailable");
+      }
+      return result;
+    }
+    const auto receipt =
+        CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+    const auto transaction_uuid =
+        CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+    const auto statement_snapshot =
+        CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+    const auto catalog_epoch =
+        CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+    const auto security_context =
+        CanonicalUuidBytes(acquired.context.security_context_uuid);
+    if (!receipt || !transaction_uuid || !statement_snapshot ||
+        !catalog_epoch || !security_context ||
+        acquired.context.transaction.local_transaction_id == 0 ||
+        acquired.context.preliminary_statement_catalog_generation == 0 ||
+        acquired.context.preliminary_security_epoch == 0 ||
+        acquired.context.preliminary_resource_epoch == 0) {
+      return refuse("MGA.AUTHORITY_MISMATCH",
+                    "security_alter_policy_statement_receipt_incomplete");
+    }
+
+    security::SblrSecAlterPolicyRequestV1 request;
+    request.receipt = *receipt;
+    request.occurrence = 1;
+    request.policy_occurrence = 1;
+    request.command_identity = 1;
+    request.name_atoms = command.name_atoms;
+    const auto request_bytes =
+        security::EncodeSblrSecAlterPolicyRequestV1(request);
+    security::SblrSecAlterPolicyRequestV1 canonical_request;
+    std::string detail;
+    if (request_bytes.empty() ||
+        !security::DecodeSblrSecAlterPolicyRequestV1(
+            request_bytes.data(), request_bytes.size(), &canonical_request,
+            &detail)) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    detail.empty()
+                        ? "security_alter_policy_bind_request_invalid"
+                        : detail);
+    }
+    auto held = std::make_unique<HeldSecurityAlterPolicy>();
+    held->exact_sql = std::string(sql);
+    held->statement_context = acquired.context;
+    held->bind_request = canonical_request;
+    held->canonical_bind_request = request_bytes;
+    held->phase = HeldSecurityAlterPolicy::Phase::coordinating;
+    held->autocommit_emulation = autocommit_emulation;
+    held->autocommit_complete = !autocommit_emulation;
+    held_security_alter_policy_ = std::move(held);
+  }
+
+  auto& held = *held_security_alter_policy_;
+  auto coordinated =
+      embedded
+          ? embedded_client_->CoordinateSecurityAlterPolicy(
+                session_, held.canonical_bind_request)
+          : server_client_->CoordinateSecurityAlterPolicy(
+                session_, held.canonical_bind_request);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    result.messages = std::move(coordinated.messages);
+    if (!coordinated.outcome_unknown) held_security_alter_policy_.reset();
+    if (!result.messages.has_errors()) {
+      return refuse(coordinated.outcome_unknown
+                        ? "MGA.AUTHORITY_MISMATCH"
+                        : "SBLR.OPERAND.INVALID",
+                    coordinated.outcome_unknown
+                        ? "security_alter_policy_coordinate_outcome_unknown"
+                        : "security_alter_policy_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  security::SblrSecAlterPolicyDescriptorV1 descriptor;
+  std::string detail;
+  const auto& context = held.statement_context;
+  const auto database_uuid = CanonicalUuidBytes(session_.database_uuid);
+  const auto transaction_uuid =
+      CanonicalUuidBytes(context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(context.statement_snapshot_uuid);
+  const auto catalog_epoch = CanonicalUuidBytes(context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(context.security_context_uuid);
+  if (!database_uuid || !transaction_uuid || !statement_snapshot ||
+      !catalog_epoch || !security_context ||
+      !security::DecodeSblrSecAlterPolicyDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &descriptor, &detail,
+          false) ||
+      descriptor.receipt != held.bind_request.receipt ||
+      descriptor.occurrence != held.bind_request.occurrence ||
+      descriptor.policy_occurrence != held.bind_request.policy_occurrence ||
+      descriptor.action != held.bind_request.command_identity ||
+      descriptor.database_uuid != *database_uuid ||
+      descriptor.owning_transaction_uuid != *transaction_uuid ||
+      descriptor.owning_local_transaction_id !=
+          context.transaction.local_transaction_id ||
+      descriptor.statement_snapshot_uuid != *statement_snapshot ||
+      descriptor.catalog_epoch_uuid != *catalog_epoch ||
+      descriptor.catalog_generation !=
+          context.preliminary_statement_catalog_generation ||
+      descriptor.security_context_uuid != *security_context ||
+      descriptor.security_generation != context.preliminary_security_epoch ||
+      descriptor.resource_generation != context.preliminary_resource_epoch ||
+      descriptor.syntax_demand_sha256 != held.bind_request.evidence ||
+      descriptor.expected_generation == 0 ||
+      descriptor.expected_generation ==
+          std::numeric_limits<std::uint64_t>::max() ||
+      descriptor.policy_generation == 0 ||
+      descriptor.binding_generation == 0 ||
+      descriptor.recovery_generation == 0 || descriptor.availability == 0 ||
+      !nonzero(descriptor.policy_uuid) ||
+      !nonzero(descriptor.policy_snapshot_uuid) ||
+      !nonzero(descriptor.resource_grant_uuid) ||
+      !nonzero(descriptor.principal_uuid) ||
+      !nonzero(descriptor.binding_uuid) ||
+      !nonzero(descriptor.recovery_uuid) ||
+      !nonzero(descriptor.normalized_path_sha256) ||
+      !nonzero(descriptor.authorization_evidence_sha256) ||
+      !nonzero(descriptor.frozen_policy_record_sha256) ||
+      !nonzero(descriptor.descriptor_evidence)) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "security_alter_policy_descriptor_authority_mismatch"
+                      : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() != 488 ||
+      !std::equal(operand.begin(), operand.begin() + 4, "SAPD")) {
+    result.outcome_unknown = true;
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  "security_alter_policy_descriptor_transport_invalid");
+  }
+  std::copy_n("SAPO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    result.outcome_unknown = true;
+    return refuse(
+        "SBLR.OPERAND.INVALID",
+        "security_alter_policy_descriptor_projection_changed_authority");
+  }
+  security::SblrSecAlterPolicyDescriptorV1 operand_descriptor;
+  if (!security::DecodeSblrSecAlterPolicyDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      operand_descriptor.receipt != descriptor.receipt ||
+      operand_descriptor.policy_uuid != descriptor.policy_uuid ||
+      operand_descriptor.expected_generation !=
+          descriptor.expected_generation ||
+      operand_descriptor.binding_uuid != descriptor.binding_uuid ||
+      operand_descriptor.recovery_uuid != descriptor.recovery_uuid ||
+      operand_descriptor.descriptor_evidence !=
+          descriptor.descriptor_evidence ||
+      operand_descriptor.availability != descriptor.availability) {
+    result.outcome_unknown = true;
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "security_alter_policy_operand_projection_invalid"
+                      : detail);
+  }
+
+  BoundStatement bound_statement;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.sec_alter_policy";
+  g_security_alter_policy_operand = &operand;
+  auto submission = BuildCanonicalNativeSubmission(
+      bound_statement, lowered, held.statement_context, session_, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr);
+  g_security_alter_policy_operand = nullptr;
+  if (!submission.has_value()) {
+    result.outcome_unknown = true;
+    return refuse("SBLR.OPERAND.INVALID",
+                  "security_alter_policy_canonical_submission_invalid");
+  }
+
+  held.descriptor = descriptor;
+  held.canonical_descriptor = coordinated.canonical_payload;
+  held.canonical_operand = operand;
+  held.submission = *submission;
+  held.phase = HeldSecurityAlterPolicy::Phase::execution_pending;
+  return execute_held();
+}
 PipelineResult SbsqlTestWireSession::RunSecurityDropUserForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecDropUserRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityDropUser(session_,c::EncodeSblrSecDropUserRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecDropUserDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecDropUserDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecDropUserDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_drop_user";g_security_drop_user_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_drop_user_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunSecurityAuthenticateForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecAuthenticateRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityAuthenticate(session_,c::EncodeSblrSecAuthenticateRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecAuthenticateDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecAuthenticateDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecAuthenticateDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_authenticate";g_security_authenticate_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_authenticate_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunSecurityDeauthenticateForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrSecDeauthenticateRequestV1 q;q.receipt=*receipt;q.occurrence=1;auto coordinated=server_client_->CoordinateSecurityDeauthenticate(session_,c::EncodeSblrSecDeauthenticateRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrSecDeauthenticateDescriptorV1 d;std::string detail;if(!c::DecodeSblrSecDeauthenticateDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrSecDeauthenticateDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.sec_deauthenticate";g_security_deauthenticate_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_security_deauthenticate_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}

@@ -2501,8 +2501,8 @@ EngineApiWireIdentity EngineApiCommandWireIdentity(
   }
   if (spec.operation_id == "security.evaluate_visibility" ||
       spec.operation_id == "security.evaluate_policy") {
-    return {"security.policy.show", "SBLR_SECURITY_POLICY_SHOW",
-            "sblr.policy.operation.v3",
+    return {"catalog.get_descriptor", "SBLR_CATALOG_GET_DESCRIPTOR",
+            "sblr.catalog.introspect.v3",
             EngineApiExternalAdmission::internal_only};
   }
   if (spec.operation_id == "management.inspect_config") {

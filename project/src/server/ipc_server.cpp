@@ -3670,7 +3670,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDropGroupMappingRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityGrantRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityRevokeRequest) ||
-      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityAlterPolicyRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kSecurityAlterPolicyBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDropUserRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityAuthenticateRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateSecurityDeauthenticateRequest) ||
@@ -4436,7 +4436,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==354&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityDropGroupMappingRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityDropGroupMapping(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==356&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityGrantRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityGrant(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==358&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityRevokeRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityRevoke(session_registry,engine_state,frame)));return true;}
-  if(frame.header.message_type==360&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityAlterPolicyRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityAlterPolicy(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kSecurityAlterPolicyBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaSecurityAlterPolicyBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityAlterPolicy(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==362&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityDropUserRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityDropUser(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==364&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityAuthenticateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityAuthenticate(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==366&&frame.header.payload_schema_id==sbps::kSchemaCoordinateSecurityDeauthenticateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateSecurityDeauthenticate(session_registry,engine_state,frame)));return true;}

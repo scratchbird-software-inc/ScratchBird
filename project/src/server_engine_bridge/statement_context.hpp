@@ -478,6 +478,66 @@ struct StatementDdlCreateSchemaAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Syntax-only private bind for the ACTIVATE POLICY subform of the canonical
+// ALTER POLICY operation. The parser supplies only the admitted action,
+// occurrence pair, and presented policy-name atoms. Policy identity,
+// generations, authorization, recovery, and terminal result authority remain
+// receipt-private and engine-produced.
+struct StatementSecurityAlterPolicyNameAtomV1 {
+  std::string raw_text;
+  bool quoted = false;
+};
+
+struct StatementSecurityAlterPolicyBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t policy_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementSecurityAlterPolicyNameAtomV1> name_atoms;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementSecurityAlterPolicyAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t policy_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::vector<StatementSecurityAlterPolicyNameAtomV1> name_atoms;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string canonical_path_utf8;
+  std::string policy_uuid;
+  std::uint64_t expected_policy_generation = 0;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_generation = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_snapshot_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string principal_uuid;
+  std::string binding_uuid;
+  std::string recovery_uuid;
+  std::uint64_t binding_generation = 0;
+  std::uint64_t recovery_generation = 0;
+  std::string mutation_uuid;
+  std::string publication_barrier_uuid;
+  std::array<std::uint8_t, 32> normalized_path_sha256{};
+  std::array<std::uint8_t, 32> authorization_evidence_sha256{};
+  std::array<std::uint8_t, 32> frozen_policy_record_sha256{};
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Syntax-only private bind for the bounded CREATE TRIGGER v1 profile. The
 // parser supplies trigger/target name atoms and closed definition selectors;
 // every catalog identity, generation, compiled-body identity, authorization,
@@ -1412,6 +1472,8 @@ struct StatementContextReceiptView {
   std::uint64_t system_config_set_executor_availability_generation = 0;
   std::uint64_t ddl_create_domain_executor_availability_generation = 0;
   std::uint64_t ddl_create_schema_executor_availability_generation = 0;
+  std::uint64_t security_alter_policy_executor_availability_generation = 0;
+  std::uint64_t security_policy_show_executor_availability_generation = 0;
   std::uint64_t ddl_create_table_executor_availability_generation = 0;
   std::uint64_t ddl_create_index_executor_availability_generation = 0;
   std::uint64_t ddl_drop_index_executor_availability_generation = 0;
@@ -1786,6 +1848,20 @@ sb_engine_status_t CopyStatementDdlCreateSchemaAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     std::uint32_t schema_occurrence,
     StatementDdlCreateSchemaAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+// Resolves and freezes one ACTIVATE POLICY syntax demand under the exact live
+// statement receipt. The parser cannot supply policy UUIDs, generations,
+// authorization decisions, recovery identity, or result authority.
+sb_engine_status_t BindStatementSecurityAlterPolicyAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementSecurityAlterPolicyBindRequestV1* request,
+    StatementSecurityAlterPolicyAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementSecurityAlterPolicyAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t policy_occurrence,
+    StatementSecurityAlterPolicyAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 // Resolves and freezes one bounded CREATE TRIGGER syntax demand under the

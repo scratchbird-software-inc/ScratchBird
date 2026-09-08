@@ -1233,7 +1233,11 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
           std::max(result.state.security_generation, record.policy_generation);
       result.state.policy_generation =
           std::max(result.state.policy_generation, record.policy_generation);
-      if (record.deleted || record.lifecycle_state != "active") {
+      // Retain inactive policy definitions in the lifecycle catalog.  They are
+      // not authorization inputs (consumers must require lifecycle_state ==
+      // "active"), but lifecycle mutations such as ACTIVATE/ALTER/DROP must
+      // still resolve the exact existing policy and generation.
+      if (record.deleted) {
         row_policies.erase(record.policy_uuid);
       } else {
         row_policies[record.policy_uuid] = std::move(record);
@@ -3105,6 +3109,17 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
         kOperation,
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyMissing, policy_uuid));
   }
+  if (request.expected_policy_generation != 0 &&
+      existing->policy_generation != request.expected_policy_generation) {
+    return DiagnosticResult<EngineSecurityAlterPolicyResult>(
+        request.context, kOperation,
+        MakeEngineApiDiagnostic(
+            "MGA.AUTHORITY_MISMATCH",
+            "security.policy.alter.generation_mismatch",
+            "expected=" +
+                std::to_string(request.expected_policy_generation) +
+                ";actual=" + std::to_string(existing->policy_generation)));
+  }
   std::string lifecycle = NormalizePolicyLifecycle(request.lifecycle_state);
   if (lifecycle.empty()) {
     lifecycle = existing->lifecycle_state.empty() ? "active" : existing->lifecycle_state;
@@ -3169,6 +3184,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
 
   auto result = SuccessResult<EngineSecurityAlterPolicyResult>(request.context, kOperation);
   result.policy_altered = true;
+  result.previous_policy_generation = existing->policy_generation;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
   result.primary_object.uuid.canonical = policy_uuid;
@@ -3777,6 +3793,7 @@ EngineSecurityEvaluateRowPolicyResult EngineSecurityEvaluateRowPolicy(
       ? request.target_object_uuid
       : request.target_object.uuid.canonical;
   for (const auto& policy : loaded.state.row_policies) {
+    if (policy.deleted || policy.lifecycle_state != "active") { continue; }
     if (policy.target_object_uuid != target_uuid) { continue; }
     bool allow = false;
     if (policy.policy_effect == "allow_all") {

@@ -23,6 +23,7 @@
 #include "engine/sblr/sblr_database_attach_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_alter_trigger_runtime.hpp"
 #include "engine/sblr/sblr_ddl_drop_trigger_runtime.hpp"
@@ -924,10 +925,10 @@ constexpr std::uint32_t kSchemaCoordinateSecurityRevokeRequestV1 = 7371;
 constexpr std::uint32_t kSchemaCoordinateSecurityRevokeResultV1 = 7372;
 constexpr std::uint16_t kMessageCoordinateSecurityRevokeRequest = 358;
 constexpr std::uint16_t kMessageCoordinateSecurityRevokeResult = 359;
-constexpr std::uint32_t kSchemaCoordinateSecurityAlterPolicyRequestV1 = 7373;
-constexpr std::uint32_t kSchemaCoordinateSecurityAlterPolicyResultV1 = 7374;
-constexpr std::uint16_t kMessageCoordinateSecurityAlterPolicyRequest = 360;
-constexpr std::uint16_t kMessageCoordinateSecurityAlterPolicyResult = 361;
+constexpr std::uint32_t kSchemaSecurityAlterPolicyBindRequestV1 = 7755;
+constexpr std::uint32_t kSchemaSecurityAlterPolicyBindResultV1 = 7756;
+constexpr std::uint16_t kMessageSecurityAlterPolicyBindRequest = 742;
+constexpr std::uint16_t kMessageSecurityAlterPolicyBindResult = 743;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropUserRequestV1 = 7375;
 constexpr std::uint32_t kSchemaCoordinateSecurityDropUserResultV1 = 7376;
 constexpr std::uint16_t kMessageCoordinateSecurityDropUserRequest = 362;
@@ -10593,7 +10594,64 @@ ServerVariableBindingResult SbpsClient::CoordinateSecurityCreateGroupMapping(con
 ServerVariableBindingResult SbpsClient::CoordinateSecurityDropGroupMapping(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityDropGroupMappingRequest,kSchemaCoordinateSecurityDropGroupMappingRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityDropGroupMappingResult||f.header.schema_id!=kSchemaCoordinateSecurityDropGroupMappingResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateSecurityGrant(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityGrantRequest,kSchemaCoordinateSecurityGrantRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityGrantResult||f.header.schema_id!=kSchemaCoordinateSecurityGrantResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateSecurityRevoke(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityRevokeRequest,kSchemaCoordinateSecurityRevokeRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityRevokeResult||f.header.schema_id!=kSchemaCoordinateSecurityRevokeResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
-ServerVariableBindingResult SbpsClient::CoordinateSecurityAlterPolicy(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityAlterPolicyRequest,kSchemaCoordinateSecurityAlterPolicyRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityAlterPolicyResult||f.header.schema_id!=kSchemaCoordinateSecurityAlterPolicyResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
+ServerVariableBindingResult SbpsClient::CoordinateSecurityAlterPolicy(
+    const ParserSessionContext& session,
+    const std::vector<std::uint8_t>& payload) const {
+  ServerVariableBindingResult result;
+  MessageVectorSet messages;
+  Frame response;
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  scratchbird::engine::sblr::SblrSecAlterPolicyRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !scratchbird::engine::sblr::DecodeSblrSecAlterPolicyRequestV1(
+          payload.data(), payload.size(), &request, &detail) ||
+      !SendRequest(endpoint_,
+                   BaseHeader(kMessageSecurityAlterPolicyBindRequest,
+                              kSchemaSecurityAlterPolicyBindRequestV1,
+                              session_uuid, connection_uuid),
+                   payload, &response, &messages, ActiveSocketCacheKey())) {
+    if (!detail.empty()) {
+      messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR",
+          "ACTIVATE POLICY bind request is not canonical.",
+          "parser_server_ipc.security_alter_policy_bind_request",
+          {{"detail", detail}}));
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageSecurityAlterPolicyBindResult ||
+      response.header.schema_id != kSchemaSecurityAlterPolicyBindResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    result.messages = std::move(messages);
+    return result;
+  }
+  scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1 descriptor;
+  if (!scratchbird::engine::sblr::DecodeSblrSecAlterPolicyDescriptorV1(
+          response.payload.data(), response.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.policy_occurrence != request.policy_occurrence ||
+      descriptor.action != request.command_identity ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    messages.diagnostics.push_back(MakeDiagnostic(
+        "MGA.AUTHORITY_MISMATCH", "ERROR",
+        "ACTIVATE POLICY bind result is not exactly correlated.",
+        "parser_server_ipc.security_alter_policy_bind_result",
+        {{"detail", detail}}));
+    result.messages = std::move(messages);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = std::move(response.payload);
+  return result;
+}
 ServerVariableBindingResult SbpsClient::CoordinateSecurityDropUser(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityDropUserRequest,kSchemaCoordinateSecurityDropUserRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityDropUserResult||f.header.schema_id!=kSchemaCoordinateSecurityDropUserResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateSecurityAuthenticate(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityAuthenticateRequest,kSchemaCoordinateSecurityAuthenticateRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityAuthenticateResult||f.header.schema_id!=kSchemaCoordinateSecurityAuthenticateResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }
 ServerVariableBindingResult SbpsClient::CoordinateSecurityDeauthenticate(const ParserSessionContext& s,const std::vector<std::uint8_t>& p) const { ServerVariableBindingResult r; MessageVectorSet m; Frame f; const auto su=TextToUuid(s.session_uuid), cu=TextToUuid(s.connection_uuid); if(!s.authenticated||p.size()!=64||!SendRequest(endpoint_,BaseHeader(kMessageCoordinateSecurityDeauthenticateRequest,kSchemaCoordinateSecurityDeauthenticateRequestV1,su,cu),p,&f,&m,ActiveSocketCacheKey())){r.messages=std::move(m);return r;} if(f.header.message_type!=kMessageCoordinateSecurityDeauthenticateResult||f.header.schema_id!=kSchemaCoordinateSecurityDeauthenticateResultV1||f.payload.size()!=128||IsErrorFrame(f)){AddFrameDiagnostics(f,&m);r.messages=std::move(m);return r;} r.accepted=true;r.canonical_payload=std::move(f.payload);return r; }

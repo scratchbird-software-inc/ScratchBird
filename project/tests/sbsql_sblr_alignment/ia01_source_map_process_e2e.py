@@ -396,6 +396,8 @@ def main() -> int:
             "ddl-drop-trigger",
         ):
             seed_args = ("--trigger-fixture",)
+        elif args.operation == "security-alter-policy":
+            seed_args = ("--security-alter-policy-fixture",)
         evidence = seed_database(Path(args.server), database, seed_args)
         server_trace = work / "server_phase.jsonl"
         dispatch_trace = work / "dispatch_phase.jsonl"
@@ -414,6 +416,9 @@ def main() -> int:
         )
         env["SCRATCHBIRD_TEST_DDL_DROP_TRIGGER_RESULT_ARTIFACT"] = str(
             work / "ddl-drop-trigger-result.tdrs"
+        )
+        env["SCRATCHBIRD_TEST_SECURITY_ALTER_POLICY_RESULT_ARTIFACT"] = str(
+            work / "security-alter-policy-result.sapr"
         )
         env["SCRATCHBIRD_TEST_DDL_CREATE_PROCEDURE_RESULT_ARTIFACT"] = str(
             work / "ddl-create-procedure-result.pcrs"
@@ -673,6 +678,18 @@ def main() -> int:
                 raise ProofError(
                     "CREATE PROCEDURE did not complete the exact committed "
                     "typed-body canonical mutation route"
+                )
+        elif args.operation == "security-alter-policy":
+            expected_success = (
+                "CSC-TEST-002989 SEC_ALTER_POLICY accepted "
+                "surface_id=SBSQL-5BC7985C2B11 canonical_sblr=true "
+                "policy_generation_incremented=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "ACTIVATE POLICY did not complete the exact committed "
+                    "canonical security-policy mutation route"
                 )
         elif args.operation == "procedure-invoke":
             expected_success = (
@@ -1494,6 +1511,17 @@ def main() -> int:
                 "ddl_drop_trigger_result_sha256=",
                 "executor_availability_generation=",
             )
+        elif args.operation == "security-alter-policy":
+            expected = (
+                "executor_id=engine.op.sec_alter_policy",
+                "opcode=SBLR_SEC_ALTER_POLICY",
+                "opcode_code=1798",
+                "operand_descriptor_id=security_policy_descriptor",
+                "result_descriptor_id=security_result",
+                "result_descriptor_version=1",
+                "security_alter_policy_result_sha256=sha256:",
+                "executor_availability_generation=",
+            )
         elif args.operation == "ddl-create-procedure":
             expected = (
                 "executor_id=engine.op.ddl_create_procedure",
@@ -1563,6 +1591,8 @@ def main() -> int:
             second[5] = "ddl-drop-trigger-observe"
         elif args.operation == "ddl-create-procedure":
             second[5] = "ddl-create-procedure-observe"
+        elif args.operation == "security-alter-policy":
+            second[5] = "security-alter-policy-observe"
         verified = subprocess.run(
             second, capture_output=True, text=True, timeout=30, env=env
         )
@@ -2108,6 +2138,158 @@ def main() -> int:
                     "rolled-back CREATE PROCEDURE restart observation changed "
                     "the executable-object journal"
                 )
+        elif args.operation == "security-alter-policy":
+            expected_observer = (
+                "CSC-TEST-002989 SEC_ALTER_POLICY observer_active=true "
+                "independent_session=true exact_policy_identity=true "
+                "exact_generation=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated ACTIVATE POLICY observer did "
+                    "not prove the committed active lifecycle and generation: "
+                    f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+                )
+
+            api_event_path = Path(f"{database}.sb.api_events")
+            if not catalog_event_path.exists() or not api_event_path.exists():
+                raise ProofError(
+                    "ACTIVATE POLICY proof requires catalog and name-registry "
+                    "authority journals"
+                )
+
+            def run_policy_auxiliary(
+                operation: str,
+                session_suffix: str,
+                expected_stdout: str,
+                endpoint_override: Path = endpoint,
+            ) -> None:
+                auxiliary = command.copy()
+                auxiliary[1] = f"unix:{endpoint_override}"
+                auxiliary[5] = operation
+                auxiliary[-1] = (
+                    "sbsql-sblr-security-alter-policy-e2e-" + session_suffix
+                )
+                completed = subprocess.run(
+                    auxiliary,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+                if (
+                    completed.returncode != 0
+                    or completed.stdout != expected_stdout
+                    or completed.stderr
+                ):
+                    raise ProofError(
+                        f"ACTIVATE POLICY {operation} proof failed: "
+                        f"returncode={completed.returncode} "
+                        f"stdout={completed.stdout!r} "
+                        f"stderr={completed.stderr!r}"
+                    )
+
+            catalog_before_refusals = catalog_event_path.read_bytes()
+            api_before_refusals = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            run_policy_auxiliary(
+                "security-alter-policy-invalid",
+                "missing-policy-refusal",
+                "CSC-TEST-002989 SEC_ALTER_POLICY "
+                "missing_policy_refused=true no_execution=true "
+                "no_publication=true\n",
+            )
+            if catalog_event_path.read_bytes() != catalog_before_refusals:
+                raise ProofError(
+                    "missing-policy ACTIVATE POLICY changed the catalog-object "
+                    "journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_before_refusals:
+                raise ProofError(
+                    "missing-policy ACTIVATE POLICY changed durable catalog/name "
+                    "authority rows"
+                )
+
+            run_policy_auxiliary(
+                "security-alter-policy-rollback",
+                "rollback",
+                "CSC-TEST-002989 SEC_ALTER_POLICY rollback=true "
+                "statement_publication=true "
+                "transaction_visibility_unchanged=true\n",
+            )
+            run_policy_auxiliary(
+                "security-alter-policy-observe",
+                "rollback-observer",
+                expected_observer,
+            )
+
+            catalog_before_restart = catalog_event_path.read_bytes()
+            api_authority_before_restart = durable_api_authority_rows(
+                api_event_path.read_bytes()
+            )
+            stop(server)
+            server = None
+            restart_control = work / "security-alter-policy-restart-control"
+            restart_endpoint = restart_control / "s.sock"
+            server = subprocess.Popen(
+                [
+                    args.server,
+                    "--foreground",
+                    "--no-listeners",
+                    "--control-dir",
+                    str(restart_control),
+                    "--runtime-dir",
+                    str(work / "security-alter-policy-restart-runtime"),
+                    "--database",
+                    str(database),
+                    "--sbps-endpoint",
+                    str(restart_endpoint),
+                ],
+                stdout=(
+                    work / "security-alter-policy-server-restart.out"
+                ).open("wb"),
+                stderr=(
+                    work / "security-alter-policy-server-restart.err"
+                ).open("wb"),
+                env=env,
+            )
+            wait_unix(restart_endpoint)
+            run_policy_auxiliary(
+                "security-alter-policy-observe",
+                "restart-observer",
+                expected_observer,
+                restart_endpoint,
+            )
+            if catalog_event_path.read_bytes() != catalog_before_restart:
+                raise ProofError(
+                    "ACTIVATE POLICY restart observation changed the "
+                    "catalog-object journal"
+                )
+            if durable_api_authority_rows(
+                api_event_path.read_bytes()
+            ) != api_authority_before_restart:
+                raise ProofError(
+                    "ACTIVATE POLICY restart observation changed durable "
+                    "catalog/name authority rows"
+                )
+
+            run_policy_auxiliary(
+                "security-alter-policy-invalid",
+                "restart-missing-policy-refusal",
+                "CSC-TEST-002989 SEC_ALTER_POLICY "
+                "missing_policy_refused=true no_execution=true "
+                "no_publication=true\n",
+                restart_endpoint,
+            )
+            run_policy_auxiliary(
+                "security-alter-policy-observe",
+                "restart-post-refusal-observer",
+                expected_observer,
+                restart_endpoint,
+            )
         elif args.operation == "procedure-invoke":
             expected_invocation = (
                 "CSC-TEST-002501 CSC-TEST-005802 PROCEDURE_INVOKE "

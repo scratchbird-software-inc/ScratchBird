@@ -4216,6 +4216,18 @@ SECURITY_EXACT_ROUTE_ROW_EVIDENCE = {
         "sblr_operation": "SBLR_SECURITY_POLICY_SHOW",
         "sql_fixture": "SHOW SECURITY POLICY app_policy",
         "engine_entrypoint": "EngineSecurityShowPolicy",
+        "e2e_ctest": "sbsql_sblr_alignment_ia09_security_alter_policy_process_e2e",
+        "e2e_source": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
+        "carrier_detail": (
+            "operand_descriptor=security_policy_show_descriptor;"
+            "operand_value_kind=uuid_ref;result_descriptor=security_policy_result"
+        ),
+        "result_evidence": (
+            "public_sbsql_listener_route=true;independent_authenticated_observer=true;"
+            "committed_policy_identity_and_generation_visible=true;"
+            "rollback_visibility_unchanged=true;restart_recovery=true;"
+            "malformed_and_missing_policy_no_mutation=true"
+        ),
     },
     "SBSQL-360A316CB38A": {
         "canonical_name": "set_role_stmt",
@@ -14202,16 +14214,22 @@ def classify_row(
         sblr_operation = security_evidence["sblr_operation"]
         sql_fixture = security_evidence["sql_fixture"]
         engine_entrypoint = security_evidence["engine_entrypoint"]
+        evidence_ctest = security_evidence.get("e2e_ctest", SECURITY_EXACT_ROUTE_CTEST)
+        evidence_source = security_evidence.get(
+            "e2e_source", SECURITY_EXACT_ROUTE_TEST_SOURCE
+        )
+        carrier_detail = security_evidence.get("carrier_detail", "")
+        result_evidence = security_evidence.get("result_evidence", "")
         return {
             "current_state": "e2e_passed",
             "parser_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};surface_id={surface['surface_id']};sql_fixture={sql_fixture};source_family={source_family};parser_handler_key={security_evidence.get('parser_handler_key', 'parser.statement_family.security')}",
             "binder_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};registry_surface_id_and_canonical_name_asserted;bound_statement=true;security_names_resolved_to_uuid_operands;right.security_admin;authority.parser.no_security_authorization",
             "lowering_evidence": f"{SECURITY_EXACT_ROUTE_TEST_SOURCE};operation_id={operation_id};sblr_operation={sblr_operation};operation_family={source_sblr_family};UUID_payload_bound;authority.parser.no_storage_or_finality;authority.parser.no_sql_text_execution;no_source_sql_text",
-            "server_admission_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};server_admission_admitted;requires_public_abi_dispatch;operation_id={operation_id};operation_family={source_sblr_family}",
-            "engine_runtime_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};DispatchSblrOperation.accepted;dispatched_to_internal_api;api_result.operation_id={operation_id};engine_entrypoint={engine_entrypoint};contains_sql_text=false",
-            "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};engine_entrypoint={engine_entrypoint}",
+            "server_admission_evidence": f"ctest:{evidence_ctest};server_admission_admitted;requires_public_abi_dispatch;operation_id={operation_id};operation_family={source_sblr_family}",
+            "engine_runtime_evidence": f"ctest:{evidence_ctest};DispatchSblrOperation.accepted;dispatched_to_internal_api;api_result.operation_id={operation_id};engine_entrypoint={engine_entrypoint};contains_sql_text=false{';' + result_evidence if result_evidence else ''}",
+            "function_or_api_operation_id": f"{operation_id};opcode={sblr_operation};engine_entrypoint={engine_entrypoint}{';' + carrier_detail if carrier_detail else ''}",
             "diagnostic_evidence": "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;unresolved_security_names_fail_closed;SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix",
-            "fixture_evidence": f"ctest:{SECURITY_EXACT_ROUTE_CTEST};source={SECURITY_EXACT_ROUTE_TEST_SOURCE}",
+            "fixture_evidence": f"ctest:{evidence_ctest};source={evidence_source}",
             "evidence_complete": "yes",
             "notes": "SBSFC-023R-C/D bounded security route override; exactly these 29 GRANT/REVOKE, SET ROLE, security policy attach/activate/deactivate/validate/show, create/alter principal, create/alter policy, privilege-name/set, and principal-attribute rows are published as e2e_passed. Evidence names exact security operation ids/opcodes, generated registry row proof with canonical source family preserved, UUID-bound parser bind/lower evidence, server admission, engine SBLR dispatch, no SQL text authority except the create-principal requested name payload, parser no-authorization/no-finality authority, principal/policy lifecycle API evidence, and unresolved-name fail-closed diagnostics. No broader audit closure, reference execution, parser-side finality, WAL/recovery, transaction finality, or cluster-private behavior is claimed.",
         }

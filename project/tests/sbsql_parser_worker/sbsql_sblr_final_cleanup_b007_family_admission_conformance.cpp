@@ -8,6 +8,7 @@
 
 #include "cluster_provider/cluster_provider.hpp"
 #include "engine/sblr/sblr_bulk_import_stream_runtime.hpp"
+#include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
@@ -87,7 +88,7 @@ constexpr std::array<FamilyRow, 47> kFamilies{{
     {"sblr.routine.execute.v3", "engine.op.procedure_invoke", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
     {"sblr.session.management.v3", "connection.open", false},
-    {"sblr.statement.management.v3", "statement.prepare", false},
+    {"sblr.statement.management.v3", "engine.op.stmt_prepare", false},
     {"sblr.vector.execution.v3", "vector.search", false},
 }};
 
@@ -140,6 +141,73 @@ sblr::SblrOperationEnvelope BuildFamilyAdmissionOperation(
   auto operation = sblr::MakeSblrEnvelope(
       std::string(row.operation_id), registry_entry.opcode,
       "final-cleanup-b007-family-admission");
+  if (row.operation_id == "engine.op.diagnostic_refusal") {
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "diagnostic.refusal";
+    operand.name = "refusal";
+    operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+    operand.value_body.assign(16, 0);
+    operand.value_body[0] = 1;
+    operation.result_shape = "diagnostic_refusal_result";
+    operation.diagnostic_shape = "diagnostic_vector";
+    operation.operands.push_back(std::move(operand));
+    return operation;
+  }
+  if (row.operation_id == "security.policy.show") {
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "security_policy_show_descriptor";
+    operand.name = "policy";
+    operand.value_kind = sblr::SblrValueKind::uuid_ref;
+    operand.value_body.assign(16, 0);
+    operand.value_body[0] = 1;
+    operand.value_body[6] = 0x70;
+    operand.value_body[8] = 0x80;
+    operand.value_body[15] = 1;
+    operation.result_shape = "security_policy_result";
+    operation.diagnostic_shape = "diagnostic_vector";
+    operation.operands.push_back(std::move(operand));
+    return operation;
+  }
+  if (row.operation_id == "engine.op.stmt_prepare") {
+    const auto uuid = [](std::uint8_t tail) {
+      sblr::SblrStmtPrepareUuidV1 value{};
+      value[0] = 1;
+      value[6] = 0x70;
+      value[8] = 0x80;
+      value[15] = tail;
+      return value;
+    };
+    sblr::SblrStmtPrepareDescriptorV1 descriptor;
+    descriptor.statement_uuid = uuid(1);
+    descriptor.statement_name_uuid = uuid(2);
+    descriptor.statement_receipt_uuid = uuid(3);
+    descriptor.catalog_snapshot_uuid = uuid(4);
+    descriptor.catalog_generation = 1;
+    descriptor.security_epoch = 1;
+    descriptor.resource_epoch = 1;
+    descriptor.mga_snapshot_uuid = uuid(5);
+    descriptor.statement_kind = 1;
+    descriptor.parameter_mode = 0;
+    descriptor.result_mode = 0;
+    descriptor.executor_availability_generation = 1;
+    descriptor.parser_package_uuid = uuid(6);
+    descriptor.canonical_sblr_bytes = {0x53, 0x42, 0x4f, 0x50};
+
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = "stmt_prepare_descriptor";
+    operand.name = "statement";
+    operand.value_kind = sblr::SblrValueKind::stmt_prepare_descriptor;
+    operand.value_body = sblr::EncodeSblrStmtPrepareDescriptorV1(descriptor);
+    Require(!operand.value_body.empty(),
+            EvidenceMessage(row, "canonical", "SBPD fixture did not encode"));
+    operation.result_shape = "stmt_prepare_result";
+    operation.diagnostic_shape = "diagnostic_vector";
+    operation.operands.push_back(std::move(operand));
+    return operation;
+  }
   if (row.operation_id != "engine.op.bulk_import_stream") {
     return operation;
   }

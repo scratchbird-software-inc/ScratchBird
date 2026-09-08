@@ -2659,7 +2659,7 @@ CanonicalEntry("engine.op.ddl_create_or_replace_srs", "SBLR_DDL_CREATE_OR_REPLAC
       Entry("security.policy.activate", "SBLR_SECURITY_POLICY_ACTIVATE", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, true, true),
       Entry("security.policy.deactivate", "SBLR_SECURITY_POLICY_DEACTIVATE", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, true, true),
       Entry("security.policy.validate", "SBLR_SECURITY_POLICY_VALIDATE", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, true, false),
-      CanonicalEntry("security.policy.show", "SBLR_SECURITY_POLICY_SHOW", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::admin_authorized, false),
+      CanonicalEntry("security.policy.show", "SBLR_SECURITY_POLICY_SHOW", "security-management", SblrOpcodeCategory::security, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::admin_authorized, true),
       Entry("op.gpu.artifact_quarantine", "SBLR_OP_GPU_ARTIFACT_QUARANTINE", SblrOpcodeCategory::extensibility, SblrOpcodeSupport::implemented, true, false),
       Entry("op.gpu.cache_clear", "SBLR_OP_GPU_CACHE_CLEAR", SblrOpcodeCategory::extensibility, SblrOpcodeSupport::implemented, true, false),
       Entry("op.gpu.device_quarantine", "SBLR_OP_GPU_DEVICE_QUARANTINE", SblrOpcodeCategory::extensibility, SblrOpcodeSupport::implemented, true, false),

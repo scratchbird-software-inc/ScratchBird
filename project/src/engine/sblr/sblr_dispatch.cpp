@@ -6328,11 +6328,6 @@ std::string_view CanonicalParentForPublicExactOperation(
     return "management.inspect_runtime";
   }
   if (IsSecurityInspectionOperation(operation_id)) {
-    if (operation_id == "op.show.policies" ||
-        operation_id == "op.show.masks" ||
-        operation_id == "op.show.rls") {
-      return "security.policy.show";
-    }
     return "catalog.get_descriptor";
   }
   if (operation_id == "op.show.index_health") {
@@ -6353,7 +6348,7 @@ std::string_view CanonicalParentForInternalEngineApiOperation(
     std::string_view operation_id) {
   if (operation_id == "security.evaluate_visibility" ||
       operation_id == "security.evaluate_policy") {
-    return "security.policy.show";
+    return "catalog.get_descriptor";
   }
   if (operation_id == "management.inspect_config") {
     return "management.inspect_runtime";
@@ -10449,9 +10444,26 @@ api::EngineSecurityShowPolicyRequest TypedSecurityShowPolicyRequest(
   api::EngineSecurityShowPolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
-                          : api::SecurityOptionValue(base, "policy_uuid:");
+  if (request.envelope.operation_id == "security.policy.show" &&
+      request.envelope.opcode == "SBLR_SECURITY_POLICY_SHOW" &&
+      request.envelope.opcode_code == 1807 &&
+      request.envelope.operands.size() == 1) {
+    const auto& operand = request.envelope.operands.front();
+    if (operand.ordinal == 1 &&
+        operand.type == "security_policy_show_descriptor" &&
+        operand.name == "policy" &&
+        operand.value_kind == SblrValueKind::uuid_ref &&
+        operand.value_body.size() == 16) {
+      scratchbird::core::uuid::Uuid policy_uuid{};
+      std::copy(operand.value_body.begin(), operand.value_body.end(),
+                policy_uuid.bytes.begin());
+      if (!scratchbird::core::uuid::IsNilUuid(policy_uuid) &&
+          scratchbird::core::uuid::IsValidUuidVariant(policy_uuid)) {
+        typed.policy_uuid =
+            scratchbird::core::uuid::UuidToString(policy_uuid);
+      }
+    }
+  }
   typed.include_rows = api::SecurityOptionBool(base, "include_rows:", true);
   return typed;
 }
@@ -10678,6 +10690,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   const bool exact_security_grant = request.envelope.operation_id=="engine.op.sec_grant"&&request.envelope.opcode=="SBLR_SEC_GRANT"&&request.envelope.opcode_code==1795;
   const bool exact_security_revoke = request.envelope.operation_id=="engine.op.sec_revoke"&&request.envelope.opcode=="SBLR_SEC_REVOKE"&&request.envelope.opcode_code==1796;
   const bool exact_security_alter_policy = request.envelope.operation_id=="engine.op.sec_alter_policy"&&request.envelope.opcode=="SBLR_SEC_ALTER_POLICY"&&request.envelope.opcode_code==1798;
+  const bool exact_security_policy_show = request.envelope.operation_id=="security.policy.show"&&request.envelope.opcode=="SBLR_SECURITY_POLICY_SHOW"&&request.envelope.opcode_code==1807;
   const bool exact_security_drop_user = request.envelope.operation_id=="engine.op.sec_drop_user"&&request.envelope.opcode=="SBLR_SEC_DROP_USER"&&request.envelope.opcode_code==1799;
   const bool exact_security_authenticate = request.envelope.operation_id=="engine.op.sec_authenticate"&&request.envelope.opcode=="SBLR_SEC_AUTHENTICATE"&&request.envelope.opcode_code==1804;
   const bool exact_security_deauthenticate = request.envelope.operation_id=="engine.op.sec_deauthenticate"&&request.envelope.opcode=="SBLR_SEC_DEAUTHENTICATE"&&request.envelope.opcode_code==1805;
@@ -10983,7 +10996,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       !exact_optimizer_stats_drop &&
       !exact_txn_savepoint &&
       !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_evaluate_projection && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_show_management && !exact_show_agents_extended && !exact_show_acceleration && !exact_show_acceleration_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
+      !exact_security_drop_privilege_template && !exact_security_policy_show && !exact_show_management && !exact_show_agents_extended && !exact_show_acceleration && !exact_show_acceleration_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -11152,7 +11165,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       exact_optimizer_stats_read || exact_optimizer_stats_drop ||
       exact_txn_savepoint ||
       exact_txn_release_savepoint || exact_txn_rollback_to_savepoint || exact_psql_autonomous_frame || exact_reservation_release || exact_temporary_cleanup || exact_cursor_open || exact_cursor_fetch || exact_cursor_close || exact_read_by_key || exact_read_range || exact_read_stream || exact_result_set_pass || exact_access_cursor_open || exact_access_cursor_fetch || exact_access_cursor_close || exact_insert || exact_update || exact_delete || exact_merge || exact_table_truncate || exact_table_analyze || exact_bulk_import_stream || exact_bulk_export_stream || exact_statement_batch || exact_atomic_cas || exact_atomic_rmw || exact_advisory_lock || exact_advisory_lock_release || exact_function_call || exact_operator_call || exact_cast || exact_compare || exact_domain_operation || exact_udr || exact_procedure || exact_function_invoke || exact_aggregate_invoke || exact_sequence_nextval || exact_sequence_currval || exact_sequence_setval || exact_query_numeric || exact_evaluate_projection || exact_advanced_datatype_family || exact_management_envelope ||
-      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_database || exact_show_transactions || exact_show_management || exact_show_agents_extended || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
+      exact_project || exact_security_create_privilege_template || exact_security_create_user || exact_security_alter_user || exact_security_alter_privilege_template || exact_security_drop_privilege_template || exact_security_policy_show || exact_database_create_template_clone || exact_ddl_create_aggregate || exact_ddl_alter_aggregate || exact_ddl_drop_aggregate || exact_ddl_drop_dictionary || exact_ddl_purge_system_history || exact_ddl_set_index_optimizer_eligibility || exact_ddl_set_table_type_enforcement || exact_database_deserialize_logical_snapshot || exact_ddl_drop_rewrite_rule || exact_ddl_validate_constraint || exact_aggregate || exact_group || exact_sort || exact_limit || exact_window || exact_show_version || exact_show_database || exact_show_transactions || exact_show_management || exact_show_agents_extended || exact_catalog_introspect || exact_kv_structured_read || exact_kv_structured_mutate || exact_kv_structured_scan || exact_kv_structured_stream_read || exact_kv_structured_stream_append || exact_kv_structured_timeseries || exact_system_config_set || exact_ddl_create_domain || exact_ddl_create_schema || exact_ddl_create_table || exact_ddl_create_index || exact_ddl_drop_index || exact_ddl_alter_domain || exact_ddl_create_view || exact_ddl_drop_materialized_view || exact_ddl_alter_view || exact_ddl_drop_view || exact_ddl_alter_package || exact_ddl_create_trigger || exact_ddl_alter_trigger || exact_ddl_drop_trigger || exact_ddl_create_procedure || exact_ddl_alter_procedure || exact_ddl_drop_procedure || exact_ddl_create_function || exact_ddl_alter_function || exact_ddl_drop_function || exact_ddl_create_package || exact_ddl_create_temporary_table || exact_ddl_drop_temporary_table || exact_ddl_rename_object_vector || exact_ddl_rename_object || exact_ddl_create_or_replace_srs || exact_ddl_drop_srs || exact_ddl_create_rewrite_rule || exact_local_metrics_read || exact_event_notification || exact_local_backup_archive) {
     if (exact_srs_rewrite_validate) {
       const auto opcode_validation =
           ValidateSblrOpcodeForEnvelope(request.envelope);
@@ -11175,6 +11188,15 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       return result;
     }
     if (exact_event_notification) {
+      const auto opcode_validation =
+          ValidateSblrOpcodeForEnvelope(request.envelope);
+      if (!opcode_validation.ok) {
+        result.diagnostic_id = opcode_validation.diagnostic_id;
+        result.detail = opcode_validation.detail;
+        return result;
+      }
+    }
+    if (exact_security_policy_show) {
       const auto opcode_validation =
           ValidateSblrOpcodeForEnvelope(request.envelope);
       if (!opcode_validation.ok) {

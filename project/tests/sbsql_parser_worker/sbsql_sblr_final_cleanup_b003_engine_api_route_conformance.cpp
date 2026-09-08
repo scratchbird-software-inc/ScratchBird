@@ -171,8 +171,8 @@ WireIdentity WireIdentityFor(const B003Row& row) {
   }
   if (row.operation_id == "security.evaluate_visibility" ||
       row.operation_id == "security.evaluate_policy") {
-    return {"security.policy.show", "SBLR_SECURITY_POLICY_SHOW",
-            "sblr.policy.operation.v3", admission};
+    return {"catalog.get_descriptor", "SBLR_CATALOG_GET_DESCRIPTOR",
+            "sblr.catalog.introspect.v3", admission};
   }
   if (row.operation_id == "management.inspect_config") {
     return {"management.inspect_runtime", "SBLR_MANAGEMENT_INSPECT_RUNTIME",
@@ -550,8 +550,21 @@ void RequireLowering(const B003Row& row) {
     std::cerr << RenderMessageVectorSet(artifacts.verifier.messages) << '\n';
   }
   Require(artifacts.bound.bound, EvidenceMessage(row, "parser_bind_lower", "row did not bind"));
-  Require(artifacts.verifier.admitted,
-          EvidenceMessage(row, "parser_bind_lower", "SBLR verifier rejected row"));
+  const bool engine_only_policy_evaluation =
+      row.operation_id == "security.evaluate_visibility" ||
+      row.operation_id == "security.evaluate_policy";
+  if (engine_only_policy_evaluation) {
+    Require(!artifacts.verifier.admitted &&
+                HasDiagnosticCode(
+                    artifacts.verifier.messages,
+                    "SBSQL.SBLR.CATALOG_DESCRIPTOR_AUTHORITY_INVALID"),
+            EvidenceMessage(
+                row, "parser_bind_lower",
+                "internal policy evaluation did not fail closed at the public parser boundary"));
+  } else {
+    Require(artifacts.verifier.admitted,
+            EvidenceMessage(row, "parser_bind_lower", "SBLR verifier rejected row"));
+  }
   Require(artifacts.envelope.operation_id == wire.operation_id,
           EvidenceMessage(row, "parser_bind_lower", "operation id mismatch"));
   Require(artifacts.envelope.sblr_opcode == wire.opcode,

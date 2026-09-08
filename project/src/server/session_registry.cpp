@@ -13247,7 +13247,131 @@ SessionOperationResult HandleCoordinateSecurityCreateGroupMapping(ServerSessionR
 SessionOperationResult HandleCoordinateSecurityDropGroupMapping(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=355;result.response_schema_id=7368;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_drop_group_mapping_refused","Group mapping drop coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecDropGroupMappingRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecDropGroupMappingRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_drop_group_mapping_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecDropGroupMappingDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecDropGroupMappingDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.GROUP_MAPPING_FAILED","SGDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityGrant(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=357;result.response_schema_id=7370;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_grant_refused","Security grant coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecGrantRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecGrantRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_grant_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecGrantDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecGrantDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.GRANT_FAILED","SGRD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityRevoke(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=359;result.response_schema_id=7372;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_revoke_refused","Security revoke coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecRevokeRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecRevokeRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_revoke_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecRevokeDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecRevokeDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.REVOKE_FAILED","SRVD_encode_failed");result.accepted=true;return result;}
-SessionOperationResult HandleCoordinateSecurityAlterPolicy(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=361;result.response_schema_id=7374;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_alter_policy_refused","Security policy alteration coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecAlterPolicyRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecAlterPolicyRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_alter_policy_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecAlterPolicyDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecAlterPolicyDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.POLICY_FAILED","SAPD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateSecurityAlterPolicy(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kSecurityAlterPolicyBindResult);
+  result.response_schema_id =
+      sbps::kSchemaSecurityAlterPolicyBindResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code),
+        "parser_server_ipc.security_alter_policy_refused",
+        "ACTIVATE POLICY binding was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  scratchbird::engine::sblr::SblrSecAlterPolicyRequestV1 decoded;
+  std::string detail;
+  if (registry == nullptr ||
+      !scratchbird::engine::sblr::DecodeSblrSecAlterPolicyRequestV1(
+          request.payload.data(), request.payload.size(), &decoded,
+          &detail)) {
+    return refuse("SBLR.OPERAND_INVALID", detail);
+  }
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+
+  const auto receipt_uuid = UuidBytesToText(decoded.receipt);
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "security_alter_policy_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "security_alter_policy_receipt_ended");
+  }
+  if (receipt.view.security_alter_policy_executor_availability_generation ==
+      0) {
+    return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "security_alter_policy_executor_unavailable");
+  }
+
+  engine_bridge::StatementSecurityAlterPolicyBindRequestV1 bind;
+  bind.authenticated_receipt_uuid = receipt_uuid;
+  bind.occurrence = decoded.occurrence;
+  bind.policy_occurrence = decoded.policy_occurrence;
+  bind.command_identity = decoded.command_identity;
+  bind.request_evidence_sha256 = decoded.evidence;
+  bind.exact_bind_request_bytes = request.payload;
+  for (const auto& atom : decoded.name_atoms) {
+    bind.name_atoms.push_back({atom.raw_utf8, atom.quoted});
+  }
+
+  engine_bridge::StatementSecurityAlterPolicyAuthorityV1 authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status =
+      engine_bridge::BindStatementSecurityAlterPolicyAuthorityV1(
+          receipt.handle, &bind, &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  ReadFirstEngineDiagnostic(engine_result, &engine_code, &engine_detail);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1 descriptor;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrSecAlterPolicyDescriptorV1(
+          authority.canonical_descriptor_bytes.data(),
+          authority.canonical_descriptor_bytes.size(), &descriptor, &detail,
+          false) ||
+      descriptor.receipt != decoded.receipt ||
+      descriptor.occurrence != decoded.occurrence ||
+      descriptor.policy_occurrence != decoded.policy_occurrence ||
+      descriptor.action != decoded.command_identity ||
+      descriptor.policy_uuid != TextToUuid(authority.policy_uuid) ||
+      descriptor.expected_generation !=
+          authority.expected_policy_generation ||
+      descriptor.database_uuid != TextToUuid(authority.database_uuid) ||
+      descriptor.owning_transaction_uuid !=
+          TextToUuid(receipt.view.owning_transaction_uuid) ||
+      descriptor.owning_local_transaction_id !=
+          receipt.view.owning_local_transaction_id ||
+      descriptor.statement_snapshot_uuid !=
+          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+      descriptor.catalog_epoch_uuid !=
+          TextToUuid(receipt.view.catalog_epoch_uuid) ||
+      descriptor.catalog_generation != receipt.view.catalog_generation_id ||
+      descriptor.security_context_uuid !=
+          TextToUuid(receipt.view.security_context_uuid) ||
+      descriptor.security_generation != receipt.view.security_epoch ||
+      descriptor.resource_grant_uuid !=
+          TextToUuid(receipt.view.resource_admission_uuid) ||
+      descriptor.resource_generation != receipt.view.resource_epoch ||
+      descriptor.syntax_demand_sha256 != decoded.evidence ||
+      descriptor.descriptor_evidence !=
+          authority.descriptor_evidence_sha256 ||
+      descriptor.availability != receipt.view
+          .security_alter_policy_executor_availability_generation ||
+      scratchbird::engine::sblr::EncodeSblrSecAlterPolicyDescriptorV1(
+          descriptor, false) != authority.canonical_descriptor_bytes) {
+    return refuse("MGA.AUTHORITY_MISMATCH",
+                  detail.empty()
+                      ? "security_alter_policy_descriptor_authority_mismatch"
+                      : std::move(detail));
+  }
+  result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateSecurityDropUser(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=363;result.response_schema_id=7376;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_drop_user_refused","Security user drop coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecDropUserRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecDropUserRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_drop_user_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecDropUserDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecDropUserDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.USER_FAILED","SDUD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityAuthenticate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=365;result.response_schema_id=7378;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_authenticate_refused","Security authenticate coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecAuthenticateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecAuthenticateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_authenticate_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecAuthenticateDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecAuthenticateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.AUTHENTICATE_FAILED","SAUD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityDeauthenticate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=367;result.response_schema_id=7380;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_deauthenticate_refused","Security deauthenticate coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecDeauthenticateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecDeauthenticateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_sec_deauthenticate_binder");auto q=scratchbird::engine::internal_api::CompileSblrSecDeauthenticateDescriptor(c,ru,v.occurrence,v.occurrence);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecDeauthenticateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.DEAUTHENTICATE_FAILED","SADD_encode_failed");result.accepted=true;return result;}

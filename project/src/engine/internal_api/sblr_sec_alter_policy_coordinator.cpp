@@ -1,8 +1,65 @@
 #include "sblr_sec_alter_policy_coordinator.hpp"
+
 #include "api_diagnostics.hpp"
-#include <algorithm>
-#include <map>
-#include <mutex>
-namespace scratchbird::engine::internal_api{namespace{std::mutex m;using D=scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1;std::map<std::string,D>live,used;std::string key(const D&v){return{(const char*)v.descriptor_evidence.data(),v.descriptor_evidence.size()};}EngineApiDiagnostic d(std::string c,std::string k){return MakeEngineApiDiagnostic(std::move(c),std::move(k),{});}bool tag(const EngineRequestContext&c,const char*t){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();}}
-SblrSecAlterPolicyCoordinationResult CompileSblrSecAlterPolicyDescriptor(const EngineRequestContext&c,const std::string&r,uint64_t o,uint64_t a){SblrSecAlterPolicyCoordinationResult x;if(!tag(c,"private_sec_alter_policy_binder")||r!=c.statement_uuid.canonical||!o||!a){x.diagnostic=d("SBLR.OPERAND.INVALID","sblr.sec_alter_policy.coordination_invalid");return x;}x.descriptor.policy_uuid[0]=uint8_t(o);x.descriptor.expected_generation=o;x.descriptor.catalog_generation=o;x.descriptor.security_generation=o;x.descriptor.availability=a;x.descriptor.descriptor_evidence[0]=uint8_t(o);std::lock_guard l(m);live[key(x.descriptor)]=x.descriptor;x.ok=true;return x;}
-SblrSecAlterPolicyCoordinationResult ConsumeSblrSecAlterPolicyDescriptor(const EngineRequestContext&c,const D&v){SblrSecAlterPolicyCoordinationResult x;if(!tag(c,"private_sec_alter_policy")){x.diagnostic=d("SECURITY.ACCESS_DENIED","sblr.sec_alter_policy.hidden");return x;}std::lock_guard l(m);auto i=live.find(key(v));if(i==live.end()){x.diagnostic=d(used.count(key(v))?"MGA.TRANSACTION.STALE":"SECURITY.ACCESS_DENIED","sblr.sec_alter_policy.replay");return x;}if(c.query_cancellation_requested&&c.query_cancellation_requested()){x.diagnostic=d("PROCESS.CANCELLED","sblr.sec_alter_policy.cancelled");return x;}used[key(v)]=v;live.erase(i);x.ok=true;x.descriptor=v;return x;}}
+
+namespace scratchbird::engine::internal_api {
+namespace {
+
+EngineApiDiagnostic Diagnostic(std::string code, std::string key,
+                               std::string detail = {}) {
+  return MakeEngineApiDiagnostic(std::move(code), std::move(key),
+                                 std::move(detail));
+}
+
+}  // namespace
+
+SblrSecAlterPolicyCoordinationResult CompileSblrSecAlterPolicyDescriptor(
+    const SblrSecAlterPolicyAuthorityInputV1& authority) {
+  SblrSecAlterPolicyCoordinationResult result;
+  const auto encoded =
+      scratchbird::engine::sblr::EncodeSblrSecAlterPolicyDescriptorV1(
+          authority.descriptor, false);
+  std::string detail;
+  if (encoded.empty() ||
+      !scratchbird::engine::sblr::DecodeSblrSecAlterPolicyDescriptorV1(
+          encoded.data(), encoded.size(), &result.descriptor, &detail,
+          false)) {
+    result.diagnostic = Diagnostic(
+        "SBLR.OPERAND_INVALID",
+        "sblr.sec_alter_policy.descriptor_invalid", std::move(detail));
+    return result;
+  }
+  result.ok = true;
+  result.diagnostic = Diagnostic("OK", "ok");
+  return result;
+}
+
+SblrSecAlterPolicyCoordinationResult ValidateSblrSecAlterPolicyDescriptor(
+    const SblrSecAlterPolicyAuthorityInputV1& authority,
+    const scratchbird::engine::sblr::SblrSecAlterPolicyDescriptorV1& operand,
+    bool cancellation_requested) {
+  SblrSecAlterPolicyCoordinationResult result;
+  if (cancellation_requested) {
+    result.diagnostic =
+        Diagnostic("PROCESS.CANCELLED", "sblr.sec_alter_policy.cancelled");
+    return result;
+  }
+  const auto expected =
+      scratchbird::engine::sblr::EncodeSblrSecAlterPolicyDescriptorV1(
+          authority.descriptor, true);
+  const auto actual =
+      scratchbird::engine::sblr::EncodeSblrSecAlterPolicyDescriptorV1(
+          operand, true);
+  if (expected.empty() || actual.empty() || actual != expected) {
+    result.diagnostic = Diagnostic(
+        "MGA.AUTHORITY_MISMATCH",
+        "sblr.sec_alter_policy.descriptor_authority_mismatch");
+    return result;
+  }
+  result.ok = true;
+  result.descriptor = operand;
+  result.diagnostic = Diagnostic("OK", "ok");
+  return result;
+}
+
+}  // namespace scratchbird::engine::internal_api

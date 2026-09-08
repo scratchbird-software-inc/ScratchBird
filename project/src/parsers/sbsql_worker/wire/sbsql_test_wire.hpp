@@ -458,7 +458,11 @@ class SbsqlTestWireSession {
   PipelineResult RunSecurityDropRoleForWire();
   PipelineResult RunSecurityCreatePolicyForWire();
   PipelineResult RunSecurityDropPolicyForWire();
-  PipelineResult RunSecurityAlterPolicyForWire();
+  PipelineResult RunSecurityAlterPolicyForWire(
+      std::string_view sql = "ACTIVATE POLICY app_policy;",
+      bool autocommit_emulation = false);
+  void AcknowledgeSecurityAlterPolicyCompletionForWire();
+  [[nodiscard]] bool HasHeldSecurityAlterPolicyForWire() const;
   PipelineResult RunSecurityDropUserForWire();
   PipelineResult RunSecurityAuthenticateForWire();
   PipelineResult RunSecurityDeauthenticateForWire();
@@ -591,6 +595,7 @@ class SbsqlTestWireSession {
   struct HeldDdlDropTrigger;
   struct HeldDdlCreateProcedure;
   struct HeldProcedureInvoke;
+  struct HeldSecurityAlterPolicy;
 
   ParserConfig config_;
   ParserMetrics* metrics_;
@@ -606,6 +611,7 @@ class SbsqlTestWireSession {
   std::unique_ptr<HeldDdlDropTrigger> held_ddl_drop_trigger_;
   std::unique_ptr<HeldDdlCreateProcedure> held_ddl_create_procedure_;
   std::unique_ptr<HeldProcedureInvoke> held_procedure_invoke_;
+  std::unique_ptr<HeldSecurityAlterPolicy> held_security_alter_policy_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::vector<std::uint8_t> admitted_transaction_handle_;
   std::vector<std::uint8_t> retired_transaction_handle_;

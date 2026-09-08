@@ -6026,6 +6026,10 @@ bool ExecuteSql(SbsqlTestWireSession* session,
       result.server_operation_id == "engine.op.procedure_invoke") {
     session->AcknowledgeProcedureInvokeCompletionForWire();
   }
+  if (completed && session != nullptr &&
+      result.server_operation_id == "engine.op.sec_alter_policy") {
+    session->AcknowledgeSecurityAlterPolicyCompletionForWire();
+  }
   return completed;
 }
 

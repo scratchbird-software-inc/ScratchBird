@@ -21,6 +21,7 @@
 #include "engine/sblr/sblr_name_resolve_runtime.hpp"
 #include "engine/sblr/sblr_catalog_introspect_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_schema_runtime.hpp"
+#include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_procedure_runtime.hpp"
 #include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_ddl_create_trigger_runtime.hpp"
@@ -2364,6 +2365,69 @@ EmbeddedEngineClient::CoordinateDdlCreateSchema(
     AddDiagnostic(
         &result.messages, "MGA.AUTHORITY_MISMATCH",
         "embedded CREATE SCHEMA descriptor is not exactly correlated",
+        detail);
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+
+ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateSecurityAlterPolicy(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  namespace security = scratchbird::engine::sblr;
+  security::SblrSecAlterPolicyRequestV1 request;
+  std::string detail;
+  if (!session.authenticated ||
+      !security::DecodeSblrSecAlterPolicyRequestV1(
+          canonical_request.data(), canonical_request.size(), &request,
+          &detail)) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND.INVALID",
+                  "embedded ACTIVATE POLICY request is malformed", detail);
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(scratchbird::server::sbps::MessageType::
+                                     kSecurityAlterPolicyBindRequest),
+      session);
+  frame.header.payload_schema_id =
+      scratchbird::server::sbps::kSchemaSecurityAlterPolicyBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation =
+      scratchbird::server::HandleCoordinateSecurityAlterPolicy(
+          &impl_->registry, impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  security::SblrSecAlterPolicyDescriptorV1 descriptor;
+  if (operation.response_message_type != static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kSecurityAlterPolicyBindResult) ||
+      operation.response_schema_id !=
+          scratchbird::server::sbps::kSchemaSecurityAlterPolicyBindResultV1 ||
+      !security::DecodeSblrSecAlterPolicyDescriptorV1(
+          operation.payload.data(), operation.payload.size(), &descriptor,
+          &detail, false) ||
+      descriptor.receipt != request.receipt ||
+      descriptor.occurrence != request.occurrence ||
+      descriptor.policy_occurrence != request.policy_occurrence ||
+      descriptor.action != request.command_identity ||
+      descriptor.syntax_demand_sha256 != request.evidence) {
+    result.outcome_unknown = true;
+    AddDiagnostic(
+        &result.messages, "MGA.AUTHORITY_MISMATCH",
+        "embedded ACTIVATE POLICY descriptor is not exactly correlated",
         detail);
     return result;
   }

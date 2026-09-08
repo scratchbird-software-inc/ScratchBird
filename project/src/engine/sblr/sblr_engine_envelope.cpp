@@ -1367,6 +1367,10 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       envelope.operation_id == "engine.op.bulk_import_stream" &&
       envelope.opcode == "SBLR_BULK_IMPORT_STREAM" &&
       envelope.opcode_code == 775;
+  const bool exact_security_policy_show =
+      envelope.operation_id == "security.policy.show" &&
+      envelope.opcode == "SBLR_SECURITY_POLICY_SHOW" &&
+      envelope.opcode_code == 1807;
   const bool exact_name_resolve =
       envelope.operation_id == "engine.op.name_resolve" &&
       envelope.opcode == "SBLR_NAME_RESOLVE" &&
@@ -1680,7 +1684,8 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
              << ";value_body_canonical="
              << (canonical_value_body ? "true" : "false");
       fail((exact_ddl_create_index || exact_ddl_type || query_execute_v1_1 ||
-            exact_diagnostic_descriptor_operation)
+            exact_diagnostic_descriptor_operation ||
+            exact_security_policy_show)
                ? "SBLR.OPERAND_INVALID"
                : (limit_exceeded ? "SBLR.OPERATION.LIMIT_EXCEEDED"
                                  : "SBLR.OPERATION.OPERAND_INVALID"),
@@ -1831,6 +1836,25 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         break;
       }
       variable_node_references.push_back(reference);
+    }
+  }
+  if (exact_security_policy_show && result.ok) {
+    bool canonical_policy_selector = false;
+    if (envelope.operands.size() == 1 &&
+        envelope.result_shape == "security_policy_result" &&
+        envelope.diagnostic_shape == "diagnostic_vector") {
+      const auto& operand = envelope.operands.front();
+      canonical_policy_selector =
+          operand.ordinal == 1 &&
+          operand.type == "security_policy_show_descriptor" &&
+          operand.name == "policy" &&
+          operand.value_kind == SblrValueKind::uuid_ref &&
+          operand.value_body.size() == 16 &&
+          IsNonzeroUuidBytes(operand.value_body.data());
+    }
+    if (!canonical_policy_selector) {
+      fail("SBLR.OPERAND_INVALID",
+           "SHOW SECURITY POLICY requires one exact engine-resolved policy UUID operand");
     }
   }
   if ((exact_txn_begin || exact_txn_commit || exact_txn_rollback) && result.ok) {

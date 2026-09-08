@@ -1253,7 +1253,13 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id == "engine.op.bulk_import_stream") {
     return "sblr.bulk.import.v3";
   }
-  if (operation_id == "engine.op.result_page") {
+  if (operation_id == "engine.op.stmt_prepare" ||
+      operation_id == "engine.op.stmt_execute" ||
+      operation_id == "engine.op.stmt_execute_direct" ||
+      operation_id == "engine.op.stmt_free" ||
+      operation_id == "engine.op.stmt_cancel" ||
+      operation_id == "engine.op.parameter_bind" ||
+      operation_id == "engine.op.result_page") {
     return "sblr.statement.management.v3";
   }
   if (operation_id == "engine.op.event_channel_create") {

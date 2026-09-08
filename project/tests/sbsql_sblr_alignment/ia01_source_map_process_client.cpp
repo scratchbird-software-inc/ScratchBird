@@ -25,6 +25,7 @@
 #include "engine/sblr/sblr_procedure_invoke_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
+#include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_to_sbsql.hpp"
 #include "ast/ast.hpp"
@@ -62,6 +63,244 @@ int main(int argc, char** argv) {
     return 3;
   }
   const std::string operation = argv[5];
+  if (operation == "security-alter-policy" ||
+      operation == "security-alter-policy-observe" ||
+      operation == "security-alter-policy-rollback" ||
+      operation == "security-alter-policy-invalid") {
+    namespace sblr = scratchbird::engine::sblr;
+    constexpr std::string_view kPolicyUuid =
+        "018f0a2b-0000-7000-9000-000000000701";
+    const bool observer = operation == "security-alter-policy-observe";
+    const bool rollback = operation == "security-alter-policy-rollback";
+    const bool invalid = operation == "security-alter-policy-invalid";
+    const char* artifact_path =
+        std::getenv("SCRATCHBIRD_TEST_SECURITY_ALTER_POLICY_RESULT_ARTIFACT");
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& failed) {
+      std::cerr << "CSC-TEST-002989 SEC_ALTER_POLICY " << phase
+                << " accepted=" << failed.accepted
+                << " outcome_unknown=" << failed.outcome_unknown
+                << " operation=" << failed.server_operation_id << '\n';
+      for (const auto& diagnostic : failed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto read_artifact = [&]() {
+      std::vector<std::uint8_t> bytes;
+      if (artifact_path == nullptr || *artifact_path == '\0') return bytes;
+      std::ifstream in(artifact_path, std::ios::binary);
+      if (!in) return bytes;
+      in.seekg(0, std::ios::end);
+      const auto extent = in.tellg();
+      if (extent <= 0) return bytes;
+      bytes.resize(static_cast<std::size_t>(extent));
+      in.seekg(0, std::ios::beg);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+      if (!in) bytes.clear();
+      return bytes;
+    };
+    const auto write_artifact = [&](const std::string& bytes) {
+      if (artifact_path == nullptr || *artifact_path == '\0' ||
+          bytes.empty()) {
+        return false;
+      }
+      std::ofstream out(artifact_path, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      return out.good();
+    };
+
+    sblr::SblrSecAlterPolicyResultV1 committed_terminal;
+    std::string detail;
+    const auto committed_bytes = read_artifact();
+    const bool committed_terminal_available =
+        sblr::DecodeSblrSecAlterPolicyResultV1(
+            committed_bytes.data(), committed_bytes.size(),
+            &committed_terminal, &detail);
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+
+    if (observer) {
+      auto observed = session.RunPipeline(
+          "SHOW SECURITY POLICY app.app_policy;", true);
+      const std::string generation_marker =
+          committed_terminal_available
+              ? "policy_generation=" +
+                    std::to_string(committed_terminal.generation)
+              : std::string{};
+      const bool exact_observer =
+          committed_terminal_available && observed.accepted &&
+          !observed.outcome_unknown && !observed.messages.has_errors() &&
+          observed.server_operation_id == "security.policy.show" &&
+          observed.server_row_count == 1 &&
+          observed.server_result_payload.find(
+              "policy_uuid=" + std::string(kPolicyUuid)) !=
+              std::string::npos &&
+          observed.server_result_payload.find("lifecycle_state=active") !=
+              std::string::npos &&
+          observed.server_result_payload.find(generation_marker) !=
+              std::string::npos;
+      auto ended = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_observer || !ended.accepted || ended.messages.has_errors()) {
+        dump_failure(detail.empty() ? "observer_contract_failed" : detail,
+                     observed);
+        return 4;
+      }
+      std::cout << "CSC-TEST-002989 SEC_ALTER_POLICY "
+                   "observer_active=true independent_session=true "
+                   "exact_policy_identity=true exact_generation=true\n";
+      return 0;
+    }
+
+    if (invalid) {
+      auto refused = session.RunPipeline(
+          "ACTIVATE POLICY app.missing_policy;", true);
+      const bool exact_refusal =
+          !refused.accepted && !refused.outcome_unknown &&
+          refused.server_operation_id.empty() &&
+          refused.server_result_payload.empty() &&
+          refused.messages.diagnostics.size() == 1 &&
+          refused.messages.diagnostics.front().code ==
+              "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE";
+      auto ended = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_refusal || !ended.accepted || ended.messages.has_errors()) {
+        dump_failure("missing_policy_refusal_failed", refused);
+        return 4;
+      }
+      std::cout << "CSC-TEST-002989 SEC_ALTER_POLICY "
+                   "missing_policy_refused=true no_execution=true "
+                   "no_publication=true\n";
+      return 0;
+    }
+
+    auto altered = session.RunPipeline(
+        "ACTIVATE POLICY app.app_policy;", true);
+    sblr::SblrSecAlterPolicyResultV1 terminal;
+    const auto canonical_container =
+        scratchbird::engine::DecodeSblrContainerBytes(
+            reinterpret_cast<const std::uint8_t*>(altered.sblr_payload.data()),
+            altered.sblr_payload.size());
+    const auto canonical_stream =
+        canonical_container.status == scratchbird::engine::SblrCodecStatus::ok
+            ? sblr::DecodeSblrOpcodeStream(std::string_view(
+                  reinterpret_cast<const char*>(canonical_container.container
+                                                    .operation_payload.data()),
+                  canonical_container.container.operation_payload.size()))
+            : sblr::SblrOpcodeStreamResult{};
+    sblr::SblrSecAlterPolicyDescriptorV1 operand;
+    const bool exact_submission =
+        canonical_stream.ok &&
+        scratchbird::engine::EncodeSblrContainer(
+            canonical_container.container) ==
+            std::vector<std::uint8_t>(altered.sblr_payload.begin(),
+                                      altered.sblr_payload.end()) &&
+        canonical_stream.stream.operations.size() == 3 &&
+        canonical_stream.stream.operations[1].operation_id ==
+            "engine.op.sec_alter_policy" &&
+        canonical_stream.stream.operations[1].opcode ==
+            "SBLR_SEC_ALTER_POLICY" &&
+        canonical_stream.stream.operations[1].opcode_code == 1798 &&
+        canonical_stream.stream.operations[1].operands.size() == 1 &&
+        canonical_stream.stream.operations[1].operands[0].type ==
+            "security_policy_descriptor" &&
+        canonical_stream.stream.operations[1].operands[0].name == "policy" &&
+        canonical_stream.stream.operations[1].operands[0].value_kind ==
+            sblr::SblrValueKind::security_alter_policy_descriptor &&
+        sblr::DecodeSblrSecAlterPolicyDescriptorV1(
+            canonical_stream.stream.operations[1].operands[0]
+                .value_body.data(),
+            canonical_stream.stream.operations[1].operands[0]
+                .value_body.size(),
+            &operand, &detail, true);
+    const bool exact_terminal =
+        exact_submission && altered.accepted && !altered.outcome_unknown &&
+        !altered.messages.has_errors() &&
+        altered.server_operation_id == "engine.op.sec_alter_policy" &&
+        altered.server_request_payload_bytes == 896 &&
+        altered.server_row_count == 0 &&
+        sblr::DecodeSblrSecAlterPolicyResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                altered.server_result_payload.data()),
+            altered.server_result_payload.size(), &terminal, &detail) &&
+        sblr::EncodeSblrSecAlterPolicyResultV1(terminal) ==
+            std::vector<std::uint8_t>(altered.server_result_payload.begin(),
+                                      altered.server_result_payload.end()) &&
+        terminal.receipt == operand.receipt &&
+        terminal.policy_uuid == operand.policy_uuid &&
+        terminal.previous_generation == operand.expected_generation &&
+        terminal.generation == terminal.previous_generation + 1 &&
+        terminal.database_uuid == operand.database_uuid &&
+        terminal.owning_transaction_uuid == operand.owning_transaction_uuid &&
+        terminal.owning_local_transaction_id ==
+            operand.owning_local_transaction_id &&
+        terminal.statement_snapshot_uuid == operand.statement_snapshot_uuid &&
+        terminal.cache_invalidation_generation == terminal.generation &&
+        terminal.security_generation == terminal.generation &&
+        terminal.action == 1 && terminal.status == 1 &&
+        terminal.publication_barrier == 1 &&
+        terminal.descriptor_evidence == operand.descriptor_evidence &&
+        terminal.availability == operand.availability &&
+        terminal.recovery_uuid == operand.recovery_uuid &&
+        nonzero(terminal.mutation_uuid) && nonzero(terminal.effect_evidence) &&
+        nonzero(terminal.result_evidence) &&
+        nonzero(terminal.publication_barrier_uuid) &&
+        terminal.mutation_uuid != terminal.policy_uuid &&
+        terminal.publication_barrier_uuid != terminal.policy_uuid &&
+        terminal.publication_barrier_uuid != terminal.mutation_uuid;
+    if (!exact_terminal || !session.HasHeldSecurityAlterPolicyForWire()) {
+      dump_failure(detail.empty() ? "terminal_contract_failed" : detail,
+                   altered);
+      return 4;
+    }
+
+    if (rollback) {
+      if (!committed_terminal_available ||
+          terminal.previous_generation != committed_terminal.generation) {
+        dump_failure("rollback_predecessor_mismatch", altered);
+        return 4;
+      }
+      auto ended = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      session.AcknowledgeSecurityAlterPolicyCompletionForWire();
+      if (!ended.accepted || ended.messages.has_errors() ||
+          session.HasHeldSecurityAlterPolicyForWire()) {
+        dump_failure("rollback_failed", ended);
+        return 4;
+      }
+      std::cout << "CSC-TEST-002989 SEC_ALTER_POLICY "
+                   "rollback=true statement_publication=true "
+                   "transaction_visibility_unchanged=true\n";
+      return 0;
+    }
+
+    auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
+    if (!committed.accepted || committed.messages.has_errors() ||
+        !write_artifact(altered.server_result_payload)) {
+      dump_failure("commit_or_artifact_failed", committed);
+      return 4;
+    }
+    session.AcknowledgeSecurityAlterPolicyCompletionForWire();
+    if (session.HasHeldSecurityAlterPolicyForWire()) {
+      std::cerr << "security_alter_policy_terminal_holder_not_released\n";
+      return 4;
+    }
+    std::cout << "CSC-TEST-002989 SEC_ALTER_POLICY accepted "
+                 "surface_id=SBSQL-5BC7985C2B11 canonical_sblr=true "
+                 "policy_generation_incremented=true commit=true "
+                 "publication_barrier=passed\n";
+    return 0;
+  }
   if (operation == "stmt-prepare-boundaries" ||
       operation == "stmt-execute-boundaries" ||
       operation == "stmt-free-boundaries") {

@@ -178,11 +178,6 @@ std::string_view ExpectedAdmissionFamily(const B002Row& row) {
   if (StartsWith(row.operation_id, "op.show.management.")) {
     return "sblr.management.report.v3";
   }
-  if (row.operation_id == "op.show.policies" ||
-      row.operation_id == "op.show.rls" ||
-      row.operation_id == "op.show.masks") {
-    return "sblr.policy.operation.v3";
-  }
   if (ExpectedEngineApiFunction(row) == "EngineSecurityInspectOperation") {
     return "sblr.catalog.introspect.v3";
   }
@@ -212,11 +207,6 @@ std::string_view CanonicalOperationId(const B002Row& row) {
   }
   if (StartsWith(row.operation_id, "op.show.management.")) {
     return "management.inspect_runtime";
-  }
-  if (row.operation_id == "op.show.policies" ||
-      row.operation_id == "op.show.masks" ||
-      row.operation_id == "op.show.rls") {
-    return "security.policy.show";
   }
   if (ExpectedEngineApiFunction(row) == "EngineSecurityInspectOperation") {
     return "catalog.get_descriptor";

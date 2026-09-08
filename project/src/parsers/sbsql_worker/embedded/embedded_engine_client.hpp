@@ -115,6 +115,9 @@ class EmbeddedEngineClient {
   ipc::ServerVariableBindingResult CoordinateDdlCreateSchema(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);
+  ipc::ServerVariableBindingResult CoordinateSecurityAlterPolicy(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult CoordinateDdlCreateProcedure(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

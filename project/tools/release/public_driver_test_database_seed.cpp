@@ -10,10 +10,14 @@
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
+#include "hash_digest.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +30,7 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace core_hash = scratchbird::core::hash;
 namespace db = scratchbird::storage::database;
 namespace memory = scratchbird::core::memory;
 namespace resources = scratchbird::core::resources;
@@ -40,6 +45,26 @@ constexpr std::string_view kAliceBootstrapCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
 constexpr std::string_view kAppSchemaUuid = "018f0a2b-0000-7000-9000-000000000100";
+constexpr std::string_view kCustomersRelationUuid =
+    "018f0a2b-0000-7000-9000-000000000101";
+constexpr std::string_view kSecurityAlterPolicyFixtureUuid =
+    "018f0a2b-0000-7000-9000-000000000701";
+constexpr std::string_view kSecurityAlterPolicyStatementUuid =
+    "018f0a2b-0000-7000-9000-000000000702";
+constexpr std::string_view kSecurityAlterPolicyStatementSnapshotUuid =
+    "018f0a2b-0000-7000-9000-000000000703";
+constexpr std::string_view kSecurityAlterPolicyStatementReceiptUuid =
+    "018f0a2b-0000-7000-9000-000000000704";
+constexpr std::string_view kSecurityAlterPolicyMetadataSnapshotUuid =
+    "018f0a2b-0000-7000-9000-000000000705";
+constexpr std::string_view kSecurityAlterPolicyVersionUuid =
+    "018f0a2b-0000-7000-9000-000000000706";
+constexpr std::string_view kSecurityAlterPolicyEffectiveUuid =
+    "018f0a2b-0000-7000-9000-000000000707";
+constexpr std::string_view kSecurityAlterPolicyEffectiveExpressionUuid =
+    "018f0a2b-0000-7000-9000-000000000708";
+constexpr std::string_view kSecurityAlterPolicySourceExpressionUuid =
+    "018f0a2b-0000-7000-9000-000000000709";
 constexpr std::string_view kDatatypeCatalogSnapshotUuid =
     "019d0000-0000-7000-8000-00000000d701";
 
@@ -149,6 +174,7 @@ struct Args {
   bool overwrite = false;
   bool bulk_import_fixture = false;
   bool trigger_fixture = false;
+  bool security_alter_policy_fixture = false;
 };
 
 struct FixtureTable {
@@ -163,7 +189,8 @@ struct FixtureTable {
 void Usage() {
   std::cerr << "usage: public_driver_test_database_seed --output PATH --manifest PATH "
                "--resource-seed-pack-root PATH [--page-size BYTES] [--overwrite] "
-               "[--bulk-import-fixture] [--trigger-fixture]\n";
+               "[--bulk-import-fixture] [--trigger-fixture] "
+               "[--security-alter-policy-fixture]\n";
 }
 
 bool ParsePageSize(const std::string& value, scratchbird::core::platform::u32* out) {
@@ -195,6 +222,10 @@ bool ParseArgs(int argc, char** argv, Args* args) {
       args->trigger_fixture = true;
       continue;
     }
+    if (key == "--security-alter-policy-fixture") {
+      args->security_alter_policy_fixture = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       return false;
     }
@@ -220,6 +251,16 @@ bool ParseArgs(int argc, char** argv, Args* args) {
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
   std::exit(EXIT_FAILURE);
+}
+
+std::array<std::uint8_t, 32> EvidenceSha256(std::string_view value) {
+  const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
+      value.data());
+  const auto digest = core_hash::ComputeSha256Digest(bytes, value.size());
+  if (!digest.ok()) {
+    Fail("driver test database evidence SHA-256 failed");
+  }
+  return digest.digest;
 }
 
 scratchbird::core::platform::TypedUuid MakeIdentity(UuidKind kind,
@@ -634,9 +675,102 @@ void CreateTriggerFixtureSequence(const api::EngineRequestContext& context,
   }
 }
 
+void CreateSecurityAlterPolicyFixture(
+    const api::EngineRequestContext& context,
+    const std::string& schema_uuid) {
+  // Fixture publication is an engine-internal bootstrap action.  Keep this
+  // authority local to the seeder: the authenticated parser session used by
+  // the process E2E must obtain its own materialized POLICY_ADMIN authority.
+  auto fixture_context = context;
+  fixture_context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  fixture_context.trace_tags.push_back("security.fixture_trace_authority");
+  fixture_context.trace_tags.push_back("right:POLICY_ADMIN");
+  fixture_context.statement_uuid.canonical =
+      std::string(kSecurityAlterPolicyStatementUuid);
+  fixture_context.statement_snapshot_uuid.canonical =
+      std::string(kSecurityAlterPolicyStatementSnapshotUuid);
+  fixture_context.statement_snapshot_generation = 1;
+  fixture_context.statement_receipt_uuid.canonical =
+      std::string(kSecurityAlterPolicyStatementReceiptUuid);
+  fixture_context.statement_metadata_snapshot_engine_owned = true;
+  fixture_context.statement_metadata_snapshot_uuid.canonical =
+      std::string(kSecurityAlterPolicyMetadataSnapshotUuid);
+
+  const auto relation = api::LoadMgaRelationStorageDescriptor(
+      fixture_context, std::string(kCustomersRelationUuid));
+  if (!relation.ok || relation.descriptor.relation_generation == 0) {
+    std::cerr << "security_policy_target_load_failed=app.customers\n";
+    if (relation.diagnostic.error) {
+      std::cerr << relation.diagnostic.code << ':'
+                << relation.diagnostic.message_key << ':'
+                << relation.diagnostic.detail << '\n';
+    }
+    Fail("driver test database security policy target load failed");
+  }
+
+  api::EngineSecurityCreatePolicyRequest create;
+  create.context = fixture_context;
+  create.policy_uuid = std::string(kSecurityAlterPolicyFixtureUuid);
+  create.policy_name = "app_policy";
+  create.target_schema_uuid = schema_uuid;
+  create.target_object_uuid = std::string(kCustomersRelationUuid);
+  create.target_object_kind = "relation";
+  create.policy_effect = "row_filter";
+  create.predicate_envelope = "predicate:true";
+  create.definer_principal_uuid = std::string(kAlicePrincipalUuid);
+  create.localized_names.push_back(Name("app.app_policy", "app_policy"));
+  create.native_authority.present = true;
+  create.native_authority.policy_version_uuid =
+      std::string(kSecurityAlterPolicyVersionUuid);
+  create.native_authority.target_relation_generation =
+      relation.descriptor.relation_generation;
+  create.native_authority.phase = 1;
+  create.native_authority.effective_policy_uuid =
+      std::string(kSecurityAlterPolicyEffectiveUuid);
+  create.native_authority.effective_policy_generation = 1;
+  create.native_authority.effective_expression_uuid =
+      std::string(kSecurityAlterPolicyEffectiveExpressionUuid);
+  create.native_authority.effective_expression_generation = 1;
+  create.native_authority.effective_expression_evidence_sha256 =
+      EvidenceSha256("ScratchBird.PublicDriverFixture.AppPolicy.EffectiveExpression.V1");
+  create.native_authority.source_expression_uuid =
+      std::string(kSecurityAlterPolicySourceExpressionUuid);
+  create.native_authority.source_expression_generation = 1;
+  create.native_authority.source_expression_evidence_sha256 =
+      EvidenceSha256("ScratchBird.PublicDriverFixture.AppPolicy.SourceExpression.V1");
+  const auto created = api::EngineSecurityCreatePolicy(create);
+  if (!created.ok || !created.policy_created ||
+      created.policy_generation == 0) {
+    std::cerr << "security_policy_create_failed=app.app_policy\n";
+    for (const auto& diagnostic : created.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
+    Fail("driver test database security policy fixture create failed");
+  }
+
+  api::EngineSecurityAlterPolicyRequest disable;
+  disable.context = fixture_context;
+  disable.policy_uuid = std::string(kSecurityAlterPolicyFixtureUuid);
+  disable.expected_policy_generation = created.policy_generation;
+  disable.lifecycle_state = "disabled";
+  const auto disabled = api::EngineSecurityAlterPolicy(disable);
+  if (!disabled.ok || !disabled.policy_altered ||
+      disabled.previous_policy_generation != created.policy_generation ||
+      disabled.policy_generation != created.policy_generation + 1) {
+    std::cerr << "security_policy_disable_failed=app.app_policy\n";
+    for (const auto& diagnostic : disabled.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':'
+                << diagnostic.detail << '\n';
+    }
+    Fail("driver test database security policy fixture disable failed");
+  }
+}
+
 void SeedFixtureObjects(const api::EngineRequestContext& context,
                         bool include_bulk_import_fixture,
-                        bool include_trigger_fixture) {
+                        bool include_trigger_fixture,
+                        bool include_security_alter_policy_fixture) {
   CreateAppSchema(context);
   for (const auto& fixture :
        FixtureTables(include_bulk_import_fixture, include_trigger_fixture)) {
@@ -654,6 +788,13 @@ void SeedFixtureObjects(const api::EngineRequestContext& context,
       Fail("driver test database trigger fixture schema not visible");
     }
     CreateTriggerFixtureSequence(context, schema_uuid);
+  }
+  if (include_security_alter_policy_fixture) {
+    const auto schema_uuid = SchemaUuidForPath(context, "app");
+    if (schema_uuid.empty()) {
+      Fail("driver test database security policy fixture schema not visible");
+    }
+    CreateSecurityAlterPolicyFixture(context, schema_uuid);
   }
 }
 
@@ -752,12 +893,19 @@ void WriteManifest(const Args& args,
       FixtureTables(args.bulk_import_fixture, args.trigger_fixture);
   for (std::size_t index = 0; index < tables.size(); ++index) {
     out << "    {\"path\": \"" << tables[index].path << "\", \"uuid\": \"" << tables[index].uuid << "\"}";
-    out << (index + 1 == tables.size() && !args.trigger_fixture ? "\n"
-                                                                 : ",\n");
+    out << (index + 1 == tables.size() && !args.trigger_fixture &&
+                    !args.security_alter_policy_fixture
+                ? "\n"
+                : ",\n");
   }
   if (args.trigger_fixture) {
     out << "    {\"path\": \"app.trig_audit_seq\", "
-           "\"uuid\": \"018f0a2b-0000-7000-9000-000000000603\"}\n";
+           "\"uuid\": \"018f0a2b-0000-7000-9000-000000000603\"}";
+    out << (args.security_alter_policy_fixture ? ",\n" : "\n");
+  }
+  if (args.security_alter_policy_fixture) {
+    out << "    {\"path\": \"app.app_policy\", \"uuid\": \""
+        << kSecurityAlterPolicyFixtureUuid << "\"}\n";
   }
   out << "  ],\n";
   out << "  \"security\": {\n";
@@ -795,7 +943,8 @@ int main(int argc, char** argv) {
   ConfigureMemory();
   const CreatedDatabaseFixture fixture = CreateDatabase(args);
   const auto context = Begin(BaseContext(args, fixture.database_uuid));
-  SeedFixtureObjects(context, args.bulk_import_fixture, args.trigger_fixture);
+  SeedFixtureObjects(context, args.bulk_import_fixture, args.trigger_fixture,
+                     args.security_alter_policy_fixture);
   Commit(context);
   const auto bootstrap_security = db::ReadDatabaseBootstrapSecurityCatalog(
       args.output.string());
@@ -814,7 +963,8 @@ int main(int argc, char** argv) {
             << args.output.filename().string()
             << " full_create_database=true fixture_objects="
             << (FixtureTables(args.bulk_import_fixture, args.trigger_fixture).size() +
-                (args.trigger_fixture ? 1U : 0U))
+                (args.trigger_fixture ? 1U : 0U) +
+                (args.security_alter_policy_fixture ? 1U : 0U))
             << '\n';
   return EXIT_SUCCESS;
 }

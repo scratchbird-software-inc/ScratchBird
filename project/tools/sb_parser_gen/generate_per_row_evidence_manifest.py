@@ -4629,6 +4629,24 @@ SECURITY_EXACT_ROUTE_ROW_EVIDENCE = {
         "sblr_operation": "SBLR_SECURITY_POLICY_SHOW",
         "sql_fixture": "SHOW SECURITY POLICY app_policy",
         "engine_entrypoint": "EngineSecurityShowPolicy",
+        "e2e_ctest": "sbsql_sblr_alignment_ia09_security_alter_policy_process_e2e",
+        "e2e_source": "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp",
+        "e2e_ctest_label": (
+            "sbsql_surface_to_sblr_full_implementation_closure;"
+            "sbsql_parser_worker;sbsql_sblr_alignment;"
+            "sbsql_sblr_alignment_e2e;IA-09;"
+            "SBLR_SECURITY_POLICY_SHOW;SBSQL-CCE2E0A8B006;sbsql_e2e_passed"
+        ),
+        "carrier_detail": (
+            "operand_descriptor=security_policy_show_descriptor;"
+            "operand_value_kind=uuid_ref;result_descriptor=security_policy_result"
+        ),
+        "result_evidence": (
+            "public_sbsql_listener_route=true;independent_authenticated_observer=true;"
+            "committed_policy_identity_and_generation_visible=true;"
+            "rollback_visibility_unchanged=true;restart_recovery=true;"
+            "malformed_and_missing_policy_no_mutation=true"
+        ),
     },
     "SBSQL-360A316CB38A": {
         "canonical_name": "set_role_stmt",
@@ -13803,11 +13821,20 @@ def classify(
         sblr_operation = security_evidence["sblr_operation"]
         sql_fixture = security_evidence["sql_fixture"]
         engine_entrypoint = security_evidence["engine_entrypoint"]
+        evidence_ctest = security_evidence.get("e2e_ctest", SECURITY_EXACT_ROUTE_CTEST)
+        evidence_source = security_evidence.get(
+            "e2e_source", SECURITY_EXACT_ROUTE_TEST_SOURCE
+        )
+        evidence_ctest_label = security_evidence.get(
+            "e2e_ctest_label", SECURITY_EXACT_ROUTE_CTEST_LABEL
+        )
+        carrier_detail = security_evidence.get("carrier_detail", "")
+        result_evidence = security_evidence.get("result_evidence", "")
         source_sblr_key = source_sblr_family.replace(".", "_")
         return {
             "final_state": "e2e_passed",
-            "ctest_label": SECURITY_EXACT_ROUTE_CTEST_LABEL,
-            "fixture_path": SECURITY_EXACT_ROUTE_TEST_SOURCE,
+            "ctest_label": evidence_ctest_label,
+            "fixture_path": evidence_source,
             "implementation_refs": (
                 f"operation_id={operation_id};opcode={sblr_operation};"
                 f"engine_entrypoint={engine_entrypoint};"
@@ -13816,6 +13843,7 @@ def classify(
                 f"lowering_handler_key=lowering.sblr_family.{source_sblr_key};"
                 f"server_admission_key=server.admission.{source_sblr_key};"
                 f"engine_rule_key=engine.rule.{source_sblr_key}"
+                f"{';' + carrier_detail if carrier_detail else ''}"
             ),
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
@@ -13823,15 +13851,20 @@ def classify(
                 "SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix"
             ),
             "result_proof": (
-                f"ctest:{SECURITY_EXACT_ROUTE_CTEST};surface_id={surface_id};"
+                f"ctest:{evidence_ctest};surface_id={surface_id};"
                 f"sql_fixture={sql_fixture};operation_id={operation_id};opcode={sblr_operation};"
                 "parser_bound=true;verifier_admitted=true;server_admission_admitted=true;"
                 "requires_public_abi_dispatch=true;engine_dispatch_accepted=true;"
                 "dispatched_to_internal_api=true;UUID_payload_bound=true;"
                 "parser_no_security_authorization=true;parser_no_storage_or_finality=true;"
                 "parser_no_sql_text_execution=true;no_source_sql_text;contains_sql_text=false"
+                f"{';' + result_evidence if result_evidence else ''}"
             ),
-            "evidence_collected_utc": "static_existing_ctest_evidence",
+            "evidence_collected_utc": (
+                "focused_process_e2e_2026-09-08"
+                if security_evidence.get("e2e_ctest")
+                else "static_existing_ctest_evidence"
+            ),
             "promoter_slice": "SBSFC-023R-C-D-security-principal-policy-row-evidence-publication",
             "notes": (
                 "Bounded security route evidence from exact-route CTest. Exactly these 29 GRANT/REVOKE, "

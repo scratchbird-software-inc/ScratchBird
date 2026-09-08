@@ -500,6 +500,10 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
 
 struct EngineSecurityAlterPolicyRequest : EngineApiRequest {
   std::string policy_uuid;
+  // Exact receipt-bound SBLR execution supplies the engine-observed policy
+  // generation. A nonzero value is a mandatory compare-and-alter fence;
+  // legacy direct API callers may leave it zero until their carriers migrate.
+  std::uint64_t expected_policy_generation = 0;
   std::string target_object_uuid;
   std::string target_object_kind;
   std::string policy_effect;
@@ -510,6 +514,7 @@ struct EngineSecurityAlterPolicyRequest : EngineApiRequest {
 };
 struct EngineSecurityAlterPolicyResult : EngineApiResult {
   bool policy_altered = false;
+  std::uint64_t previous_policy_generation = 0;
   std::uint64_t policy_generation = 0;
   std::uint64_t cache_invalidation_epoch = 0;
 };

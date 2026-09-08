@@ -13,10 +13,10 @@ namespace {
 namespace profile = scratchbird::server::sbps::private_narrow;
 using scratchbird::core::platform::byte;
 
-static_assert(profile::kPairUniverseCountV1 == 67);
-static_assert(profile::kRequiredPairCountV1 == 49);
+static_assert(profile::kPairUniverseCountV1 == 69);
+static_assert(profile::kRequiredPairCountV1 == 51);
 static_assert(profile::kForbiddenPairCountV1 == 18);
-static_assert(profile::kSuccessOnlyPairCountV1 == 20);
+static_assert(profile::kSuccessOnlyPairCountV1 == 21);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
@@ -79,10 +79,10 @@ void CoreRecordAndPendingEvidenceStayInactive() {
   const auto core = profile::CorePrivateNarrowProfileRecordV1();
   Require(profile::ValidateCorePrivateNarrowProfileRecordV1(core).ok(),
           "compiled Core private profile record failed validation");
-  Require(core.pair_universe.size() == 67 &&
-              core.required_pairs.size() == 49 &&
+  Require(core.pair_universe.size() == 69 &&
+              core.required_pairs.size() == 51 &&
               core.forbidden_pairs.size() == 18 &&
-              core.candidate_activation_records.size() == 49 &&
+              core.candidate_activation_records.size() == 51 &&
               core.actual_active_pairs.empty(),
           "compiled Core pair projection drifted");
   const auto contains = [](const auto& pairs, std::uint16_t message,
@@ -193,6 +193,18 @@ void CoreRecordAndPendingEvidenceStayInactive() {
           "the CREATE SCHEMA recovery request was marked success-only");
   Require(contains(core.success_only_pairs, 741, 7754),
           "the CREATE SCHEMA recovery result lacks success-only role");
+  for (const auto [message, schema] : {
+           profile::PairV1{742, 7755}, profile::PairV1{743, 7756}}) {
+    Require(contains(core.pair_universe, message, schema) &&
+                contains(core.required_pairs, message, schema) &&
+                !contains(core.forbidden_pairs, message, schema),
+            "one exact SECURITY ALTER POLICY bind pair is not in the "
+            "compiled SFPS1 required universe");
+  }
+  Require(!contains(core.success_only_pairs, 742, 7755),
+          "the SECURITY ALTER POLICY bind request was marked success-only");
+  Require(contains(core.success_only_pairs, 743, 7756),
+          "the SECURITY ALTER POLICY bind result lacks success-only role");
   for (const auto& record : core.candidate_activation_records) {
     Require(!record.exact_nul_serialization.empty() &&
                 record.exact_nul_serialization.back() == 0 &&
@@ -349,6 +361,18 @@ void SyntheticUsableFixtureProvesExactDispatchOnly() {
   Require(create_schema_recovery_result.admitted &&
               create_schema_recovery_result.success_only,
           "741/7754 CREATE SCHEMA recovery result dispatch failed");
+  const auto security_alter_policy_bind =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(742, 7755));
+  Require(security_alter_policy_bind.admitted &&
+              !security_alter_policy_bind.success_only,
+          "742/7755 SECURITY ALTER POLICY bind dispatch failed");
+  const auto security_alter_policy_bind_result =
+      profile::AdmitPrivateNarrowDispatchV1(
+          core, activation.state, key(743, 7756));
+  Require(security_alter_policy_bind_result.admitted &&
+              security_alter_policy_bind_result.success_only,
+          "743/7756 SECURITY ALTER POLICY bind result dispatch failed");
 
   const auto mixed_pair = profile::AdmitPrivateNarrowDispatchV1(
       core, activation.state, key(42, 1043));
