@@ -29,7 +29,6 @@ TARGETS = {
     "SBSQL-755DD39EA853": "sb.scalar.future_version",
     "SBSQL-B30BB888C751": "sb.scalar.gap",
     "SBSQL-CD2216F125FB": "sb.scalar.immutable",
-    "SBSQL-14EDC2636B45": "sb.scalar.match_recognize",
     "SBSQL-C4027F6E6C8A": "sb.scalar.open",
     "SBSQL-67B876B5339F": "sb.scalar.reserved",
     "SBSQL-4AF1FA4C5BBC": "sb.scalar.sbsql_syntax_future_version",

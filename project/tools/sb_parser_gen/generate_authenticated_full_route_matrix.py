@@ -58,6 +58,10 @@ from procedural_lifecycle_generated_evidence import (
     authenticated_route_override as procedural_lifecycle_authenticated_route_override,
     validate_authoritative_runtime_inputs as validate_procedural_lifecycle_inputs,
 )
+from match_recognize_generated_evidence import (
+    authenticated_route_override as match_recognize_authenticated_route_override,
+    validate_authoritative_runtime_inputs as validate_match_recognize_inputs,
+)
 
 from plan_import_rows_generated_evidence import (
     authenticated_route_override,
@@ -442,6 +446,7 @@ def main() -> int:
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
     validate_procedural_lifecycle_inputs(root)
+    validate_match_recognize_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     if not surfaces:
@@ -463,6 +468,9 @@ def main() -> int:
             surface, classification
         )
         classification = procedural_lifecycle_authenticated_route_override(
+            surface, classification
+        )
+        classification = match_recognize_authenticated_route_override(
             surface, classification
         )
         ledger_row = {

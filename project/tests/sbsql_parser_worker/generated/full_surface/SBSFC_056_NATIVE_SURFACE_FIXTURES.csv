@@ -4,7 +4,6 @@ SBSFC056-close-marker,SBSQL-8CBB8186C7CC,CLOSE,sb.scalar.close,sb.scalar.close,p
 SBSFC056-future-version-marker,SBSQL-755DD39EA853,FUTURE_VERSION,sb.scalar.future_version,sb.scalar.future_version,positive,[],character,syntax.future_version,,future version marker is implemented
 SBSFC056-gap-marker,SBSQL-B30BB888C751,GAP,sb.scalar.gap,sb.scalar.gap,positive,[],character,surface.gap,,gap marker is implemented
 SBSFC056-immutable-marker,SBSQL-CD2216F125FB,IMMUTABLE,sb.scalar.immutable,sb.scalar.immutable,positive,[],character,volatility.immutable,,immutable volatility marker is implemented
-SBSFC056-match-recognize-marker,SBSQL-14EDC2636B45,MATCH_RECOGNIZE,sb.scalar.match_recognize,sb.scalar.match_recognize,positive,[],json_document,"{""kind"":""match_recognize"",""version"":""v1"",""pattern"":""""}",,match_recognize descriptor marker is implemented
 SBSFC056-open-marker,SBSQL-C4027F6E6C8A,OPEN,sb.scalar.open,sb.scalar.open,positive,[],character,keyword.open,,open keyword marker is implemented
 SBSFC056-reserved-marker,SBSQL-67B876B5339F,RESERVED,sb.scalar.reserved,sb.scalar.reserved,positive,[],character,syntax.reserved,,reserved marker is implemented
 SBSFC056-syntax-future-marker,SBSQL-4AF1FA4C5BBC,SBSQL.SYNTAX_FUTURE_VERSION,sb.scalar.sbsql_syntax_future_version,sb.scalar.sbsql_syntax_future_version,positive,[],character,sbsql.syntax.future_version,,SBsql syntax future marker is implemented

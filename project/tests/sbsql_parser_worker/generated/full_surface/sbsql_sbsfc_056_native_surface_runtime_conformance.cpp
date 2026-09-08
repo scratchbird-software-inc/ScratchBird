@@ -238,9 +238,6 @@ int main() {
   ok = ExpectText("SBSQL-CD2216F125FB SBSFC056-immutable-marker",
                   Run(registry, "sb.scalar.immutable"),
                   "character", "volatility.immutable") && ok;
-  ok = ExpectText("SBSQL-14EDC2636B45 SBSFC056-match-recognize-marker",
-                  Run(registry, "sb.scalar.match_recognize"),
-                  "json_document", "{\"kind\":\"match_recognize\",\"version\":\"v1\",\"pattern\":\"\"}") && ok;
   ok = ExpectText("SBSQL-C4027F6E6C8A SBSFC056-open-marker",
                   Run(registry, "sb.scalar.open"),
                   "character", "keyword.open") && ok;

@@ -14,6 +14,7 @@
 #include "database_ownership.hpp"
 #include "database_lifecycle.hpp"
 #include "sblr_bulk_import_stream_registry.hpp"
+#include "sblr_prepared_coordination_registry.hpp"
 #include "scratchbird/engine/engine.h"
 #include "uuid.hpp"
 
@@ -326,6 +327,50 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
         "The canonical database path for the durable bulk-import stream registry is unavailable.",
         {{"database_path", snapshot.database_path},
          {"detail", "database_path_canonicalization_failed"}}});
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
+
+  // Prepared parameter coordination is deliberately durable so a torn
+  // prepare/execute cannot be mistaken for a fresh statement.  Once this
+  // process owns and has opened the database, however, every persisted
+  // begun/acquired coordination is necessarily orphaned from its former
+  // engine session.  Recover that journal before admitting any new session;
+  // sealed prepared capabilities remain intact while orphaned coordination
+  // identities are durably revoked and the generation high-water mark is
+  // retained.
+  engine::internal_api::EngineRequestContext prepared_recovery_context;
+  prepared_recovery_context.database_path = snapshot.database_path;
+  prepared_recovery_context.database_uuid.canonical = snapshot.database_uuid;
+  prepared_recovery_context.security_context_present = true;
+  prepared_recovery_context.trace_tags.push_back(
+      "right:SBLR_PREPARED_COORDINATION_ADMIN");
+  const auto prepared_recovery =
+      engine::internal_api::RecoverSblrPreparedCoordinationRegistry(
+          prepared_recovery_context);
+  if (prepared_recovery.code != "OK") {
+    if (engine != nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      engine = nullptr;
+    }
+    snapshot.state = HostedDatabaseState::kQuarantined;
+    snapshot.database_open = false;
+    snapshot.write_admission_fenced = true;
+    snapshot.diagnostic_code = prepared_recovery.code.empty()
+                                   ? "SBLR.PARAMETER.STALE"
+                                   : prepared_recovery.code;
+    snapshot.diagnostic_message_key =
+        prepared_recovery.message_key.empty()
+            ? "sblr.prepared_coordination.startup_recovery_failed"
+            : prepared_recovery.message_key;
+    result.diagnostics.push_back(ServerDiagnostic{
+        snapshot.diagnostic_code,
+        snapshot.diagnostic_message_key,
+        ServerDiagnosticSeverity::kError,
+        "The durable prepared-parameter coordination journal could not be "
+        "recovered before session admission.",
+        {{"database_path", snapshot.database_path},
+         {"detail", prepared_recovery.detail}}});
     result.state.databases.push_back(snapshot);
     return result;
   }

@@ -61,6 +61,11 @@ from procedural_lifecycle_generated_evidence import (
     per_row_manifest_override as procedural_lifecycle_per_row_manifest_override,
     validate_authoritative_runtime_inputs as validate_procedural_lifecycle_inputs,
 )
+from match_recognize_generated_evidence import (
+    is_match_recognize_surface,
+    per_row_manifest_override as match_recognize_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_match_recognize_inputs,
+)
 from plan_import_rows_generated_evidence import (
     is_plan_import_rows_surface,
     per_row_manifest_override,
@@ -10927,7 +10932,6 @@ SBSFC056_NATIVE_SURFACE_ROW_EVIDENCE = {
     "SBSQL-755DD39EA853": _sbsfc056_evidence("sb.scalar.future_version", "future_version", "SBSFC056-future-version-marker"),
     "SBSQL-B30BB888C751": _sbsfc056_evidence("sb.scalar.gap", "gap", "SBSFC056-gap-marker"),
     "SBSQL-CD2216F125FB": _sbsfc056_evidence("sb.scalar.immutable", "immutable", "SBSFC056-immutable-marker"),
-    "SBSQL-14EDC2636B45": _sbsfc056_evidence("sb.scalar.match_recognize", "match_recognize", "SBSFC056-match-recognize-marker"),
     "SBSQL-C4027F6E6C8A": _sbsfc056_evidence("sb.scalar.open", "open", "SBSFC056-open-marker"),
     "SBSQL-67B876B5339F": _sbsfc056_evidence("sb.scalar.reserved", "reserved", "SBSFC056-reserved-marker"),
     "SBSQL-4AF1FA4C5BBC": _sbsfc056_evidence("sb.scalar.sbsql_syntax_future_version", "sbsql_syntax_future_version", "SBSFC056-syntax-future-marker"),
@@ -25721,6 +25725,7 @@ def main() -> int:
     validate_sbsfc078_refusal_inputs(root)
     validate_unavailable_command_inputs(root)
     validate_procedural_lifecycle_inputs(root)
+    validate_match_recognize_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25850,7 +25855,16 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_procedural_lifecycle_surface(surface_id):
+        if is_match_recognize_surface(surface_id):
+            classification = match_recognize_per_row_manifest_override(
+                root, surface, ledger_by_id.get(surface_id)
+            )
+            if classification is None:
+                fail(
+                    f"{surface_id} MATCH_RECOGNIZE manifest override "
+                    "unexpectedly missing"
+                )
+        elif is_procedural_lifecycle_surface(surface_id):
             classification = procedural_lifecycle_per_row_manifest_override(
                 root, surface, ledger_by_id.get(surface_id)
             )

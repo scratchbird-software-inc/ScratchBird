@@ -2779,6 +2779,248 @@ bool statement_management_source_free_parameterized_query_template(
   return true;
 }
 
+bool statement_management_source_free_match_recognize_parameterized_query_template(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
+    std::string* detail) {
+  const auto fail = [&](std::string_view reason) {
+    if (detail != nullptr) *detail = std::string(reason);
+    return false;
+  };
+  using scratchbird::engine::sblr::SblrValueKind;
+  struct ExpectedOperand {
+    std::string_view type;
+    std::string_view name;
+    SblrValueKind value_kind;
+  };
+  static constexpr std::array<ExpectedOperand, 11> kExactPrefix{{
+      {"uint16", "relational_wire_version", SblrValueKind::literal_typed},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       SblrValueKind::literal_typed},
+      {"uuid", "relational_catalog_epoch_uuid",
+       SblrValueKind::literal_typed},
+      {"uuid", "relational_security_context_uuid",
+       SblrValueKind::literal_typed},
+      {"uuid", "relational_statement_uuid", SblrValueKind::literal_typed},
+      {"uuid", "relational_owning_transaction_uuid",
+       SblrValueKind::literal_typed},
+      {"uuid", "relational_statement_snapshot_uuid",
+       SblrValueKind::literal_typed},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       SblrValueKind::literal_typed},
+      {"uint64", "relational_local_transaction_id",
+       SblrValueKind::literal_typed},
+      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+       SblrValueKind::literal_typed},
+      {"uint32", "relational_root_node_id", SblrValueKind::literal_typed},
+  }};
+  if (operation.operation_id != "query.execute" ||
+      operation.opcode != "SBLR_QUERY_EXECUTE" ||
+      operation.opcode_code != 4615 ||
+      operation.operation_version_major != 1 ||
+      operation.operation_version_minor != 0 ||
+      operation.result_shape != "query_execute_result" ||
+      operation.contains_sql_text || operation.operands.size() < 28) {
+    return fail(
+        "stmt_prepare_bind.match_recognize_template_profile_invalid");
+  }
+  for (std::size_t index = 0; index < kExactPrefix.size(); ++index) {
+    const auto& operand = operation.operands[index];
+    const auto& expected = kExactPrefix[index];
+    if (operand.ordinal != index + 1 || operand.type != expected.type ||
+        operand.name != expected.name ||
+        operand.value_kind != expected.value_kind || operand.value_flags != 0) {
+      return fail(
+          "stmt_prepare_bind.match_recognize_template_operand_invalid");
+    }
+  }
+
+  const auto& table_operand = operation.operands.back();
+  if (table_operand.ordinal != operation.operands.size() ||
+      table_operand.type != "expression.parameter_node_table.v1" ||
+      table_operand.name != "parameter_nodes" ||
+      table_operand.value_kind != SblrValueKind::parameter_node_table ||
+      table_operand.value_flags != 0) {
+    return fail(
+        "stmt_prepare_bind.match_recognize_template_operand_invalid");
+  }
+  const auto table =
+      scratchbird::engine::sblr::DecodeSblrParameterNodeTableV1(
+          table_operand.value_body.data(), table_operand.value_body.size());
+  const std::size_t parameter_count = table.ok ? table.table.nodes.size() : 0;
+  if ((parameter_count != 2 && parameter_count != 3) ||
+      operation.operands.size() != 24 + parameter_count * 2) {
+    return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
+  }
+
+  const std::size_t descriptor_begin = kExactPrefix.size();
+  const std::size_t descriptor_count = parameter_count + 1;
+  const std::size_t expression_begin = descriptor_begin + descriptor_count;
+  const std::size_t expression_count = parameter_count + 1;
+  const std::size_t output_begin = expression_begin + expression_count;
+  const std::size_t tail_begin = output_begin + 2;
+  if (tail_begin + 9 != operation.operands.size()) {
+    return fail(
+        "stmt_prepare_bind.match_recognize_template_operand_invalid");
+  }
+
+  for (std::size_t index = 0; index < descriptor_count; ++index) {
+    const auto& descriptor = operation.operands[descriptor_begin + index];
+    std::string_view payload;
+    if (descriptor.ordinal != descriptor_begin + index + 1 ||
+        descriptor.type != "relational_descriptor_v1" ||
+        descriptor.name != "slot_" + std::to_string(index + 1) ||
+        descriptor.value_kind != SblrValueKind::literal_typed ||
+        descriptor.value_flags != 0 ||
+        !statement_management_typed_payload(descriptor, &payload) ||
+        payload.empty()) {
+      return fail(
+          "stmt_prepare_bind.match_recognize_template_descriptor_invalid");
+    }
+  }
+
+  std::vector<scratchbird::engine::sblr::SblrParameterNodeReferenceV1>
+      references;
+  references.reserve(parameter_count);
+  std::string canonical_handles;
+  for (std::size_t index = 0; index < parameter_count; ++index) {
+    const auto ordinal = index + 1;
+    if (index != 0) canonical_handles.push_back(',');
+    canonical_handles.append(std::to_string(ordinal));
+    const auto& expression = operation.operands[expression_begin + index];
+    if (expression.ordinal != expression_begin + index + 1 ||
+        expression.type != "relational_expression_v1" ||
+        expression.name != std::to_string(ordinal) ||
+        expression.value_kind != SblrValueKind::parameter_node_ref ||
+        expression.value_flags != 0) {
+      return fail(
+          "stmt_prepare_bind.match_recognize_template_operand_invalid");
+    }
+    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
+    if (!scratchbird::engine::sblr::DecodeSblrParameterNodeReferenceV1(
+            expression.value_body.data(), expression.value_body.size(),
+            &reference)) {
+      return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
+    }
+    references.push_back(reference);
+  }
+
+  const auto exact_typed_operand = [&](const std::size_t index,
+                                       const std::string_view type,
+                                       const std::string_view name,
+                                       const std::string_view expected) {
+    if (index >= operation.operands.size()) return false;
+    const auto& operand = operation.operands[index];
+    std::string_view payload;
+    return operand.ordinal == index + 1 && operand.type == type &&
+           operand.name == name &&
+           operand.value_kind == SblrValueKind::literal_typed &&
+           operand.value_flags == 0 &&
+           statement_management_typed_payload(operand, &payload) &&
+           payload == expected;
+  };
+  const auto output_expression_id = parameter_count + 1;
+  const std::string output_expression_name =
+      "slot_" + std::to_string(output_expression_id);
+  const std::string output_expression =
+      "4|" + canonical_handles +
+      "|1|019dffbb-f000-7e2c-b437-ebbbc2d4f35b|-|-|-|-";
+  const std::string output_name_hex =
+      "67656e65726174655f736572696573";
+  const std::string source_output =
+      "1|" + std::to_string(output_expression_id) +
+      "|1|1|0|" + output_name_hex;
+  const std::string match_output =
+      "2|" + std::to_string(output_expression_id) +
+      "|1|1|0|" + output_name_hex;
+  if (!exact_typed_operand(expression_begin + parameter_count,
+                           "relational_expression_v1",
+                           output_expression_name, output_expression) ||
+      !exact_typed_operand(output_begin, "relational_output_v1", "slot_1",
+                           source_output) ||
+      !exact_typed_operand(output_begin + 1, "relational_output_v1",
+                           "slot_2", match_output)) {
+    return fail(
+        "stmt_prepare_bind.match_recognize_template_output_invalid");
+  }
+
+  static constexpr std::string_view kPartitionPropertyUuid =
+      "019dffbb-f000-7e2c-b437-ebbbc2d4f360";
+  static constexpr std::string_view kOrderingPropertyUuid =
+      "019dffbb-f000-7e2c-b437-ebbbc2d4f361";
+  const std::string source_binding =
+      "7461626c652d66756e6374696f6e2e67656e65726174652d7365726965732e7631|" +
+      std::to_string(output_expression_id) +
+      "|019dffbb-f000-7e2c-b437-ebbbc2d4f35b|-|-";
+  const std::string match_binding =
+      "6d617463682d7265636f676e697a652e612d706c75732e747275652e616c6c2d726f77732e7631|" +
+      std::to_string(output_expression_id) + "|-|" +
+      std::string(kPartitionPropertyUuid) + "," +
+      std::string(kOrderingPropertyUuid) + "|" +
+      std::string(kPartitionPropertyUuid) + "," +
+      std::string(kOrderingPropertyUuid);
+  const std::string row_pattern =
+      "1|" + std::to_string(output_expression_id) + "|" +
+      std::to_string(output_expression_id) +
+      ":1:2:-|61:1:-:0:-:1|-|2|1|-|10000|2|10000|1";
+  const std::string partition_property =
+      "3|2|" + std::to_string(output_expression_id) + "|-|-|-";
+  const std::string ordering_property =
+      "1|2|-|" + std::to_string(output_expression_id) + ":1:2:-|-|-";
+  if (!exact_typed_operand(tail_begin, "relational_node_v1", "slot_1",
+                           "17|0|-|1|-") ||
+      !exact_typed_operand(tail_begin + 1, "relational_node_binding_v1",
+                           "slot_1", source_binding) ||
+      !exact_typed_operand(tail_begin + 2, "relational_table_function_v1",
+                           "slot_1", canonical_handles) ||
+      !exact_typed_operand(tail_begin + 3, "relational_node_v1", "slot_2",
+                           "16|0|1|1|-") ||
+      !exact_typed_operand(tail_begin + 4, "relational_node_binding_v1",
+                           "slot_2", match_binding) ||
+      !exact_typed_operand(tail_begin + 5, "relational_row_pattern_v1",
+                           "slot_2", row_pattern) ||
+      !exact_typed_operand(
+          tail_begin + 6, "relational_property_v1",
+          "property_019dffbbf0007e2cb437ebbbc2d4f360",
+          partition_property) ||
+      !exact_typed_operand(
+          tail_begin + 7, "relational_property_v1",
+          "property_019dffbbf0007e2cb437ebbbc2d4f361",
+          ordering_property)) {
+    return fail(
+        "stmt_prepare_bind.match_recognize_template_shape_invalid");
+  }
+
+  std::string_view root;
+  if (!statement_management_typed_payload(operation.operands[10], &root) ||
+      root != "2" ||
+      !scratchbird::engine::sblr::ValidateSblrParameterReferenceBijectionV1(
+          table, references)) {
+    return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
+  }
+  const auto nonzero = [](const auto& bytes) {
+    return std::ranges::any_of(bytes,
+                               [](std::uint8_t byte) { return byte != 0; });
+  };
+  for (std::size_t index = 0; index < parameter_count; ++index) {
+    const auto& parameter_node = table.table.nodes[index];
+    const auto& parameter_reference = references[index];
+    if (parameter_node.node_id != index + 1 ||
+        parameter_node.parent_operand_ordinal != index + 1 ||
+        parameter_node.slot_ordinal != index ||
+        !nonzero(parameter_node.parameter_set_descriptor_uuid) ||
+        parameter_node.parameter_set_generation == 0 ||
+        !nonzero(parameter_node.datatype_descriptor_uuid) ||
+        parameter_node.datatype_descriptor_generation == 0 ||
+        parameter_reference.occurrence_ordinal != index + 1 ||
+        parameter_reference.node_id != index + 1 ||
+        parameter_reference.slot_ordinal != index) {
+      return fail(
+          "stmt_prepare_bind.match_recognize_template_binding_invalid");
+    }
+  }
+  return true;
+}
+
 bool statement_management_rebind_source_free_query_template(
     scratchbird::engine::sblr::SblrOperationEnvelope* operation,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
@@ -2807,7 +3049,10 @@ bool statement_management_rebind_source_free_query_template(
   const bool parameterized =
       statement_management_source_free_parameterized_query_template(
           *operation, &profile_detail);
-  if (!parameterless && !parameterized) {
+  const bool match_recognize_parameterized =
+      statement_management_source_free_match_recognize_parameterized_query_template(
+          *operation, &profile_detail);
+  if (!parameterless && !parameterized && !match_recognize_parameterized) {
     return fail(profile_detail.empty()
                     ? "stmt_execute.body_template_profile_invalid"
                     : profile_detail);
@@ -2977,6 +3222,9 @@ bool statement_management_validate_body(
     const bool exact_source_free_parameterized_template =
         statement_management_source_free_parameterized_query_template(
             preflight_operation, &template_detail);
+    const bool exact_source_free_match_recognize_parameterized_template =
+        statement_management_source_free_match_recognize_parameterized_query_template(
+            preflight_operation, &template_detail);
     scratchbird::engine::internal_api::EngineApiRequest preflight_request;
     const auto preflight = scratchbird::engine::sblr::
         PreflightSblrQueryOperation(
@@ -2986,7 +3234,8 @@ bool statement_management_validate_body(
     body.source_free_parameterless_query_template =
         exact_source_free_parameterless_template && preflight.ok;
     body.source_free_parameterized_query_template =
-        exact_source_free_parameterized_template;
+        exact_source_free_parameterized_template ||
+        exact_source_free_match_recognize_parameterized_template;
   }
   switch (validated.entry->transaction_effect) {
     case scratchbird::engine::sblr::SblrOpcodeTransactionEffect::read:

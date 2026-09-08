@@ -5377,21 +5377,35 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   if (off + 2 > payload.size()) return std::nullopt;
   const std::uint16_t format_count = ReadU16(payload, off);
   off += 2;
+  if (format_count != 0 && format_count != 1 &&
+      format_count != statement.param_types.size()) {
+    return std::nullopt;
+  }
   std::vector<std::uint16_t> formats;
-  for (std::uint16_t i = 0; i < format_count && off + 2 <= payload.size(); ++i) {
-    formats.push_back(ReadU16(payload, off));
+  formats.reserve(format_count);
+  for (std::uint16_t i = 0; i < format_count; ++i) {
+    if (off + 2 > payload.size()) return std::nullopt;
+    const std::uint16_t format = ReadU16(payload, off);
+    if (format > 1) return std::nullopt;
+    formats.push_back(format);
     off += 2;
   }
   if (off + 4 > payload.size()) return std::nullopt;
   const std::uint16_t value_count = ReadU16(payload, off);
+  const std::uint16_t reserved = ReadU16(payload, off + 2);
   off += 4;
+  if (reserved != 0 || value_count != statement.param_types.size()) {
+    return std::nullopt;
+  }
   std::vector<std::optional<std::string>> values;
   std::vector<PreparedParameterWireValue> wire_values;
   values.reserve(value_count);
   wire_values.reserve(value_count);
-  for (std::uint16_t i = 0; i < value_count && off + 4 <= payload.size(); ++i) {
+  for (std::uint16_t i = 0; i < value_count; ++i) {
+    if (off + 4 > payload.size()) return std::nullopt;
     const std::int32_t length = ReadI32(payload, off);
     off += 4;
+    if (length < -1) return std::nullopt;
     std::optional<std::vector<std::uint8_t>> data;
     if (length >= 0) {
       const auto bytes = static_cast<std::size_t>(length);
@@ -5414,6 +5428,7 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
     wire_value.public_type_metadata = oid;
     wire_values.push_back(std::move(wire_value));
   }
+  if (off != payload.size()) return std::nullopt;
   BoundPortal bound;
   // Preserve parameter markers through parse/bind/lower. Values travel in
   // the engine-issued parameter-set carrier and never become SQL text.

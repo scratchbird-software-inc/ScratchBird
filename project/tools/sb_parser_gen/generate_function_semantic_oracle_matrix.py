@@ -80,6 +80,12 @@ from pathlib import Path
 
 import yaml
 
+from match_recognize_generated_evidence import (
+    SURFACE_ID as MATCH_RECOGNIZE_SURFACE_ID,
+    oracle_record as match_recognize_oracle_record,
+    validate_authoritative_runtime_inputs as validate_match_recognize_inputs,
+)
+
 
 REGISTRY_CSV = (
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
@@ -1589,7 +1595,6 @@ SBSFC056_NATIVE_SURFACE_ORACLE_OVERRIDES = {
     "SBSQL-755DD39EA853": _sbsfc056_oracle_record("sb.scalar.future_version", "FUTURE_VERSION", "no arguments", "character syntax marker", "sblr.expr.native_surface.future_version.v3", "future_version", "SBSFC056-future-version-marker"),
     "SBSQL-B30BB888C751": _sbsfc056_oracle_record("sb.scalar.gap", "GAP", "no arguments", "character surface marker", "sblr.expr.native_surface.gap.v3", "gap", "SBSFC056-gap-marker"),
     "SBSQL-CD2216F125FB": _sbsfc056_oracle_record("sb.scalar.immutable", "IMMUTABLE", "no arguments", "character volatility marker", "sblr.expr.native_surface.immutable.v3", "immutable", "SBSFC056-immutable-marker"),
-    "SBSQL-14EDC2636B45": _sbsfc056_oracle_record("sb.scalar.match_recognize", "MATCH_RECOGNIZE", "optional pattern descriptor", "match_recognize JSON descriptor", "sblr.expr.native_surface.match_recognize.v3", "match_recognize", "SBSFC056-match-recognize-marker"),
     "SBSQL-C4027F6E6C8A": _sbsfc056_oracle_record("sb.scalar.open", "OPEN", "no arguments", "character keyword marker", "sblr.expr.native_surface.open.v3", "open", "SBSFC056-open-marker"),
     "SBSQL-67B876B5339F": _sbsfc056_oracle_record("sb.scalar.reserved", "RESERVED", "no arguments", "character syntax marker", "sblr.expr.native_surface.reserved.v3", "reserved", "SBSFC056-reserved-marker"),
     "SBSQL-4AF1FA4C5BBC": _sbsfc056_oracle_record("sb.scalar.sbsql_syntax_future_version", "SBSQL.SYNTAX_FUTURE_VERSION", "no arguments", "character SBsql syntax marker", "sblr.expr.native_surface.sbsql_syntax_future_version.v3", "sbsql_syntax_future_version", "SBSFC056-syntax-future-marker"),
@@ -3042,6 +3047,7 @@ def main() -> int:
     parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
     args = parser.parse_args()
     root = Path(args.repo_root)
+    validate_match_recognize_inputs(root)
     artifact_root = Path(args.artifact_root)
     if not artifact_root.is_absolute():
         artifact_root = root / artifact_root
@@ -3116,7 +3122,14 @@ def main() -> int:
         spatial_tail_override = SBSFC038_SPATIAL_TAIL_SCALAR_ORACLE_OVERRIDES.get(
             surface["surface_id"]
         )
-        if spatial_tail_override is not None:
+        if surface["surface_id"] == MATCH_RECOGNIZE_SURFACE_ID:
+            classification = _full_oracle_row(
+                surface,
+                normalize_name(surface["canonical_name"]),
+                match_recognize_oracle_record(),
+                "reviewed MATCH_RECOGNIZE query-child V1 evidence",
+            )
+        elif spatial_tail_override is not None:
             classification = _full_oracle_row(
                 surface,
                 normalize_name(surface["canonical_name"]),
