@@ -62,6 +62,10 @@ from match_recognize_generated_evidence import (
     authenticated_route_override as match_recognize_authenticated_route_override,
     validate_authoritative_runtime_inputs as validate_match_recognize_inputs,
 )
+from acceleration_generated_evidence import (
+    authenticated_route_override as acceleration_authenticated_route_override,
+    validate_authoritative_runtime_inputs as validate_acceleration_inputs,
+)
 
 from plan_import_rows_generated_evidence import (
     authenticated_route_override,
@@ -447,6 +451,7 @@ def main() -> int:
     validate_unavailable_command_inputs(root)
     validate_procedural_lifecycle_inputs(root)
     validate_match_recognize_inputs(root)
+    validate_acceleration_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     if not surfaces:
@@ -471,6 +476,9 @@ def main() -> int:
             surface, classification
         )
         classification = match_recognize_authenticated_route_override(
+            surface, classification
+        )
+        classification = acceleration_authenticated_route_override(
             surface, classification
         )
         ledger_row = {

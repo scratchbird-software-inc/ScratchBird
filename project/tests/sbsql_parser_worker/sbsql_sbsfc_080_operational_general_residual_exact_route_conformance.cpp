@@ -98,7 +98,6 @@ const CaseRow kCases[] = {
     {"SBSQL-D85CE20AD873", "zone_setting_assign", "grammar_production", "ZONE SETTING ASSIGN replicas;", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "cluster_profile_route", "zone_setting_assign", "cluster_profile_descriptor", false, true},
     {"SBSQL-FDB2AC4910D6", "ignite_zone_clause", "grammar_production", "IGNITE ZONE CLAUSE;", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "cluster_profile_route", "ignite_zone_clause", "cluster_profile_descriptor", false, true},
     {"SBSQL-044636D5F226", "pipeline_clause", "grammar_production", "PIPELINE CLAUSE staged;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "pipeline_clause", "acceleration_descriptor", false, false},
-    {"SBSQL-05DB282498F4", "acceleration_stmt", "grammar_production", "ACCELERATION STMT inspect;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "acceleration_stmt", "acceleration_descriptor", false, false},
     {"SBSQL-1DF44A9DC689", "buffer_action", "grammar_production", "BUFFER ACTION sweep;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "buffer_action", "storage_management_descriptor", false, false},
     {"SBSQL-1FF7927EEEC7", "kernel_name", "grammar_production", "KERNEL NAME default;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "kernel_name", "acceleration_descriptor", false, false},
     {"SBSQL-48A533677977", "sweep_control_stmt", "grammar_production", "SWEEP CONTROL STMT;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "sweep_control_stmt", "storage_management_descriptor", false, false},
@@ -488,7 +487,7 @@ void RequireEngineDispatch(const api::EngineRequestContext& context, const CaseR
 }  // namespace
 
 int main() {
-  static_assert(sizeof(kCases) / sizeof(kCases[0]) == 50);
+  static_assert(sizeof(kCases) / sizeof(kCases[0]) == 49);
   for (const auto& row : kCases) {
     RequireRegistryEvidence(row);
     RequireExactLowering(row, RunPipeline(row));

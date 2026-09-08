@@ -3885,7 +3885,8 @@ ObservabilityRouteInfo AnalyzeObservabilityRoute(const CstDocument& cst) {
     info.row_surface_ids = {"SBSQL-41F75C7C86A7", "SBSQL-8E570F4EEEF3"};
   } else if (IsShowAccelerationStatement(words)) {
     info.route_kind = "show_acceleration";
-    info.row_surface_ids = {"SBSQL-DF68DFFA5C1E", "SBSQL-8E570F4EEEF3"};
+    info.row_surface_ids = {"SBSQL-05DB282498F4", "SBSQL-DF68DFFA5C1E",
+                            "SBSQL-8E570F4EEEF3"};
   } else {
     info.route_kind = "observability_inspect";
   }
@@ -5827,7 +5828,6 @@ Sbsfc080OperationalGeneralResidualRouteInfo AnalyzeSbsfc080OperationalGeneralRes
   if (StartsWithWords(words, {"ZONE", "SETTING", "ASSIGN"})) return MakeSbsfc080ClusterProfileRoute("SBSQL-D85CE20AD873", "zone_setting_assign");
   if (StartsWithWords(words, {"IGNITE", "ZONE"})) return MakeSbsfc080ClusterProfileRoute("SBSQL-FDB2AC4910D6", "ignite_zone_clause");
   if (StartsWithWords(words, {"PIPELINE", "CLAUSE"})) return MakeSbsfc080AccelerationRoute("SBSQL-044636D5F226", "pipeline_clause");
-  if (StartsWithWords(words, {"ACCELERATION", "STMT"})) return MakeSbsfc080AccelerationRoute("SBSQL-05DB282498F4", "acceleration_stmt");
   if (StartsWithWords(words, {"BUFFER", "ACTION"})) return MakeSbsfc080StorageRoute("SBSQL-1DF44A9DC689", "buffer_action");
   if (StartsWithWords(words, {"KERNEL", "NAME"})) return MakeSbsfc080AccelerationRoute("SBSQL-1FF7927EEEC7", "kernel_name");
   if (StartsWithWords(words, {"SWEEP", "CONTROL"})) return MakeSbsfc080StorageRoute("SBSQL-48A533677977", "sweep_control_stmt");

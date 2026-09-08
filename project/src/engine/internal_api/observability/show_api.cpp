@@ -20,6 +20,7 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "observability/acceleration_registry.hpp"
 #include "observability/performance_optimization_surface.hpp"
 #include "security/security_principal_lifecycle.hpp"
 
@@ -1761,30 +1762,115 @@ EngineShowDecisionServiceResult EngineShowDecisionService(
 }
 
 EngineShowAccelerationResult EngineShowAcceleration(const EngineShowAccelerationRequest& request) {
+  constexpr std::string_view kOperation = "observability.show_acceleration";
+  if (!request.context.security_context_present) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic("SECURITY.ACCESS_DENIED",
+                                "observability.acceleration.access_denied",
+                                "authenticated_security_context_required"));
+  }
+  if (request.context.cluster_authority_available ||
+      request.context.cluster_transaction_active ||
+      request.context.route_fence_present) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic(
+            "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+            "observability.acceleration.cluster_route_refused",
+            "local_acceleration_snapshot_requires_noncluster_route"));
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                "observability.acceleration.cancelled",
+                                "cancelled_before_snapshot_read"));
+  }
+  const auto snapshot = LoadEngineAccelerationRegistrySnapshot();
+  if (!snapshot || snapshot->rows.empty() || snapshot->generation == 0 ||
+      snapshot->evidence_sha256.empty()) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                                "observability.acceleration.registry_evidence_missing",
+                                "engine_acceleration_registry_evidence_missing"));
+  }
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                "observability.acceleration.cancelled",
+                                "cancelled_before_redaction"));
+  }
+
   auto result = MakeApiBehaviorSuccess<EngineShowAccelerationResult>(
-      request.context, "observability.show_acceleration");
-  AddApiBehaviorEvidence(&result, "observability", "observability.show_acceleration");
-  AddApiBehaviorEvidence(&result, "acceleration_rows", "1");
-  AddApiBehaviorRow(&result,
-                    {{"provider_count", "0"},
-                     {"runtime_mode", "interpreted_sblr"},
-                     {"node_uuid", request.context.node_uuid.canonical}});
+      request.context, std::string(kOperation));
+  result.result_shape.result_kind = "observability_show_acceleration_result";
+  AddApiBehaviorEvidence(&result, "observability", std::string(kOperation));
+  AddApiBehaviorEvidence(&result, "acceleration_rows",
+                         std::to_string(snapshot->rows.size()));
+  AddApiBehaviorEvidence(&result, "acceleration_registry_generation",
+                         std::to_string(snapshot->generation));
+  AddApiBehaviorEvidence(&result, "acceleration_registry_snapshot",
+                         snapshot->evidence_sha256);
+  for (const auto& provider : snapshot->rows) {
+    AddApiBehaviorRow(
+        &result,
+        {{"provider_id", provider.provider_id},
+         {"provider_class", provider.provider_class},
+         {"state", provider.state},
+         {"requirement", provider.requirement},
+         {"provider", provider.redacted_provider},
+         {"diagnostic_code", provider.diagnostic_code},
+         {"provider_generation", std::to_string(provider.generation)},
+         {"snapshot_generation", std::to_string(snapshot->generation)},
+         {"snapshot_sha256", snapshot->evidence_sha256},
+         {"node_uuid", request.context.node_uuid.canonical}});
+  }
+  // AddApiBehaviorRow supplies a generic fallback result kind.  Restore the
+  // operation-owned contract after all rows have been materialized.
+  result.result_shape.result_kind = "observability_show_acceleration_result";
   AddSbsfc080Evidence(&result, request);
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    return MakeApiBehaviorDiagnostic<EngineShowAccelerationResult>(
+        request.context, std::string(kOperation),
+        MakeEngineApiDiagnostic("PROCESS.CANCELLED",
+                                "observability.acceleration.cancelled",
+                                "cancelled_before_publication"));
+  }
   return result;
 }
 
 EngineShowAccelerationExtendedResult EngineShowAccelerationExtended(
     const EngineShowAccelerationExtendedRequest& request) {
+  EngineShowAccelerationRequest base_request;
+  static_cast<EngineApiRequest&>(base_request) =
+      static_cast<const EngineApiRequest&>(request);
+  const auto base = EngineShowAcceleration(base_request);
+  if (!base.ok) {
+    auto refused = MakeApiBehaviorDiagnostic<EngineShowAccelerationExtendedResult>(
+        request.context, "observability.show_acceleration_extended",
+        base.diagnostics.empty()
+            ? MakeEngineApiDiagnostic("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                                      "observability.acceleration.registry_evidence_missing",
+                                      "engine_acceleration_registry_evidence_missing")
+            : base.diagnostics.front());
+    return refused;
+  }
   auto result = MakeApiBehaviorSuccess<EngineShowAccelerationExtendedResult>(
       request.context, "observability.show_acceleration_extended");
-  AddApiBehaviorEvidence(&result, "observability", "observability.show_acceleration_extended");
-  AddApiBehaviorEvidence(&result, "acceleration_extended_rows", "1");
-  AddApiBehaviorRow(&result,
-                    {{"provider_count", "0"},
-                     {"runtime_mode", "interpreted_sblr"},
-                     {"llvm_module_count", "0"},
-                     {"gpu_queue_count", "0"},
-                     {"node_uuid", request.context.node_uuid.canonical}});
+  result.result_shape = base.result_shape;
+  result.result_shape.result_kind =
+      "observability_show_acceleration_extended_result";
+  result.evidence = base.evidence;
+  AddApiBehaviorEvidence(&result, "observability",
+                         "observability.show_acceleration_extended");
+  AddApiBehaviorEvidence(&result, "acceleration_extended_rows",
+                         std::to_string(result.result_shape.rows.size()));
   AddSbsfc080Evidence(&result, request);
   return result;
 }

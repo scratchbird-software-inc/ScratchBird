@@ -10,9 +10,16 @@
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "sblr_catalog_epoch_check_runtime.hpp"
+#include "sblr_database_attach_runtime.hpp"
+#include "sblr_name_resolve_runtime.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "sblr_optimizer_stats_drop_runtime.hpp"
+#include "sblr_optimizer_stats_read_runtime.hpp"
+#include "sblr_parse_text_runtime.hpp"
 
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +27,8 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #ifndef SCRATCHBIRD_PROJECT_SOURCE_DIR
 #define SCRATCHBIRD_PROJECT_SOURCE_DIR "."
@@ -120,6 +129,193 @@ bool HasDispatchDiagnostic(const sblr::SblrDispatchResult& result, std::string_v
   return false;
 }
 
+template <std::size_t Size>
+std::array<std::uint8_t, Size> SeededBytes(std::uint8_t seed) {
+  std::array<std::uint8_t, Size> value{};
+  for (std::size_t index = 0; index != Size; ++index) {
+    value[index] = static_cast<std::uint8_t>(seed + index);
+  }
+  return value;
+}
+
+void AddOperand(sblr::SblrOperationEnvelope* envelope,
+                std::string type,
+                std::string name,
+                sblr::SblrValueKind value_kind,
+                std::vector<std::uint8_t> value_body) {
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = std::move(type);
+  operand.name = std::move(name);
+  operand.value_kind = value_kind;
+  operand.value_body = std::move(value_body);
+  envelope->operands.push_back(std::move(operand));
+}
+
+void AddExactCatalogOperand(sblr::SblrOperationEnvelope* envelope) {
+  envelope->diagnostic_shape = "diagnostic_vector";
+  if (envelope->operation_id == "engine.op.name_resolve") {
+    sblr::SblrNameResolveDescriptorV1 descriptor;
+    descriptor.resolution_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.catalog_snapshot_uuid = SeededBytes<16>(41);
+    descriptor.catalog_generation = 7;
+    descriptor.security_context_uuid = SeededBytes<16>(61);
+    descriptor.namespace_uuid = SeededBytes<16>(81);
+    descriptor.namespace_generation = 3;
+    descriptor.canonical_name_utf8 = "customers";
+    descriptor.resolution_mode = 1;
+    descriptor.object_class = 2;
+    descriptor.case_folding_profile = 1;
+    descriptor.executor_availability_generation = 5;
+    descriptor.parser_package_uuid = SeededBytes<16>(101);
+    descriptor.language_profile_uuid = SeededBytes<16>(121);
+    descriptor.security_epoch = 11;
+    descriptor.resource_epoch = 13;
+    envelope->result_shape = "name_resolve_result";
+    AddOperand(envelope, "name_resolve_descriptor.v1", "name",
+               sblr::SblrValueKind::name_resolve_descriptor,
+               sblr::EncodeSblrNameResolveDescriptorV1(descriptor));
+    return;
+  }
+  if (envelope->operation_id == "engine.op.optimizer_stats_read") {
+    sblr::SblrOptimizerStatsReadDescriptorV1 descriptor;
+    descriptor.statistics_snapshot_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.statement_uuid = SeededBytes<16>(41);
+    descriptor.statement_snapshot_uuid = SeededBytes<16>(61);
+    descriptor.catalog_epoch_uuid = SeededBytes<16>(81);
+    descriptor.catalog_generation = 7;
+    descriptor.security_context_uuid = SeededBytes<16>(101);
+    descriptor.security_epoch = 11;
+    descriptor.resource_admission_uuid = SeededBytes<16>(121);
+    descriptor.resource_epoch = 13;
+    descriptor.owning_transaction_uuid = SeededBytes<16>(141);
+    descriptor.owning_local_transaction_id = 17;
+    descriptor.inventory_generation = 19;
+    descriptor.parser_package_uuid = SeededBytes<16>(161);
+    descriptor.executor_availability_generation = 23;
+    descriptor.optimizer_statistics_epoch = 29;
+    envelope->result_shape = "optimizer_stats_result";
+    AddOperand(envelope, "optimizer_stats_read_descriptor.v1", "statistics",
+               sblr::SblrValueKind::optimizer_stats_read_descriptor,
+               sblr::EncodeSblrOptimizerStatsReadDescriptorV1(descriptor));
+    return;
+  }
+  if (envelope->operation_id == "engine.op.optimizer_stats_drop") {
+    sblr::SblrOptimizerStatsDropDescriptorV1 descriptor;
+    descriptor.effect_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.statement_uuid = SeededBytes<16>(41);
+    descriptor.statement_snapshot_uuid = SeededBytes<16>(61);
+    descriptor.catalog_epoch_uuid = SeededBytes<16>(81);
+    descriptor.catalog_generation = 7;
+    descriptor.security_context_uuid = SeededBytes<16>(101);
+    descriptor.security_epoch = 11;
+    descriptor.resource_admission_uuid = SeededBytes<16>(121);
+    descriptor.resource_epoch = 13;
+    descriptor.owning_transaction_uuid = SeededBytes<16>(141);
+    descriptor.owning_local_transaction_id = 17;
+    descriptor.inventory_generation = 19;
+    descriptor.expected_statistics_epoch = 23;
+    descriptor.expected_journal_generation = 29;
+    descriptor.authorization_authority_uuid = SeededBytes<16>(161);
+    descriptor.authorization_generation = 31;
+    descriptor.authorization_policy_epoch = 37;
+    descriptor.parser_package_uuid = SeededBytes<16>(181);
+    descriptor.executor_availability_generation = 41;
+    descriptor.proposed_effect_generation = 30;
+    descriptor.next_statistics_epoch = 24;
+    envelope->result_shape = "optimizer_stats_result";
+    AddOperand(envelope, "optimizer_stats_drop_descriptor.v1", "statistics",
+               sblr::SblrValueKind::optimizer_stats_drop_descriptor,
+               sblr::EncodeSblrOptimizerStatsDropDescriptorV1(descriptor));
+    return;
+  }
+  if (envelope->operation_id == "engine.op.parse_text") {
+    const std::vector<std::uint8_t> nested_sblr{
+        0x53, 0x42, 0x4c, 0x52, 1, 0, 1, 0, 0x19, 0x27, 0x31};
+    sblr::SblrParseTextDescriptorV1 descriptor;
+    descriptor.parse_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.language_profile_uuid = SeededBytes<16>(41);
+    descriptor.language_profile_generation = 3;
+    descriptor.parser_package_uuid = SeededBytes<16>(61);
+    descriptor.parser_package_version_major = 1;
+    descriptor.parser_package_version_minor = 2;
+    descriptor.parser_package_version_patch = 3;
+    descriptor.catalog_snapshot_uuid = SeededBytes<16>(81);
+    descriptor.catalog_generation = 7;
+    descriptor.security_context_uuid = SeededBytes<16>(101);
+    descriptor.security_epoch = 11;
+    descriptor.resource_epoch = 13;
+    descriptor.input_byte_count = 9;
+    descriptor.canonical_input_sha256 =
+        sblr::SblrParseTextInputSha256V1("SELECT 1;");
+    descriptor.requested_maximum_bytes = 4096;
+    descriptor.requested_maximum_depth = 64;
+    descriptor.executor_availability_generation = 17;
+    descriptor.canonical_sblr_bytes = nested_sblr;
+    envelope->result_shape = "parse_text_result";
+    AddOperand(envelope, "parse_text_descriptor", "text",
+               sblr::SblrValueKind::parse_text_descriptor,
+               sblr::EncodeSblrParseTextDescriptorV1(descriptor));
+    return;
+  }
+  if (envelope->operation_id == "engine.op.catalog_epoch_check") {
+    sblr::SblrCatalogEpochCheckDescriptorV1 descriptor;
+    descriptor.check_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.requested_catalog_epoch_uuid = SeededBytes<16>(41);
+    descriptor.requested_catalog_generation = 7;
+    descriptor.database_uuid = SeededBytes<16>(61);
+    descriptor.schema_tree_uuid = SeededBytes<16>(81);
+    descriptor.schema_tree_generation = 3;
+    descriptor.security_context_uuid = SeededBytes<16>(101);
+    descriptor.policy_snapshot_uuid = SeededBytes<16>(121);
+    descriptor.policy_generation = 5;
+    descriptor.catalog_snapshot_uuid = SeededBytes<16>(141);
+    descriptor.security_epoch = 11;
+    descriptor.resource_epoch = 13;
+    descriptor.executor_availability_generation = 17;
+    descriptor.visibility_scope_sha256 =
+        sblr::SblrCatalogEpochCheckVisibilityScopeSha256V1(
+            false, descriptor.database_uuid, descriptor.schema_tree_uuid,
+            descriptor.schema_tree_generation);
+    envelope->result_shape = "catalog_epoch_result";
+    AddOperand(envelope, "catalog_epoch_check_descriptor", "catalog_epoch",
+               sblr::SblrValueKind::catalog_epoch_check_descriptor,
+               sblr::EncodeSblrCatalogEpochCheckDescriptorV1(descriptor));
+    return;
+  }
+  if (envelope->operation_id == "engine.op.database_attach") {
+    sblr::SblrDatabaseAttachDescriptorV1 descriptor;
+    descriptor.attach_uuid = SeededBytes<16>(1);
+    descriptor.statement_receipt_uuid = SeededBytes<16>(21);
+    descriptor.storage_uuid = SeededBytes<16>(41);
+    descriptor.alias_uuid = SeededBytes<16>(61);
+    descriptor.database_uuid = SeededBytes<16>(81);
+    descriptor.catalog_snapshot_uuid = SeededBytes<16>(101);
+    descriptor.catalog_generation = 7;
+    descriptor.security_context_uuid = SeededBytes<16>(121);
+    descriptor.policy_snapshot_uuid = SeededBytes<16>(141);
+    descriptor.policy_generation = 3;
+    descriptor.transaction_uuid = SeededBytes<16>(161);
+    descriptor.transaction_generation = 5;
+    descriptor.mode = 1;
+    descriptor.alias_scope = 1;
+    descriptor.executor_availability_generation = 11;
+    descriptor.storage_alias_binding_sha256 =
+        sblr::SblrDatabaseAttachBindingSha256V1(
+            descriptor.storage_uuid, descriptor.alias_uuid, descriptor.mode,
+            descriptor.alias_scope);
+    envelope->result_shape = "database_attach_result";
+    AddOperand(envelope, "database_attach_descriptor", "attachment",
+               sblr::SblrValueKind::database_attach_descriptor,
+               sblr::EncodeSblrDatabaseAttachDescriptorV1(descriptor));
+  }
+}
+
 std::string EvidenceMessage(const OpcodeRow& row,
                             std::string_view phase,
                             std::string_view message) {
@@ -138,8 +334,10 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority;
-  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
-      envelope);
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
+  AddExactCatalogOperand(&envelope);
+  return envelope;
 }
 
 std::string_view ExpectedExecutorId(const OpcodeRow& row) {

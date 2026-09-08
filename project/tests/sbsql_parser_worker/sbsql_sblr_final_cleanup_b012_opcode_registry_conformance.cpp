@@ -20,6 +20,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #ifndef SCRATCHBIRD_PROJECT_SOURCE_DIR
 #define SCRATCHBIRD_PROJECT_SOURCE_DIR "."
@@ -140,8 +141,30 @@ sblr::SblrOperationEnvelope EnvelopeFor(const OpcodeRow& row) {
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = row.requires_transaction_context;
   envelope.requires_cluster_authority = row.requires_cluster_authority;
-  return scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
-      envelope);
+  envelope = scratchbird::test::sbsql::CanonicalizeEngineSblrEnvelopeForTest(
+      std::move(envelope));
+  if (row.operation_id == "engine.op.diagnostic_refusal" ||
+      row.operation_id == "engine.op.diagnostic_reset" ||
+      row.operation_id == "engine.op.descriptor_transform") {
+    const bool refusal = row.operation_id == "engine.op.diagnostic_refusal";
+    const bool reset = row.operation_id == "engine.op.diagnostic_reset";
+    envelope.result_shape = refusal
+                                ? "diagnostic_refusal_result"
+                                : (reset ? "diagnostic_reset_result"
+                                         : "descriptor_transform_result");
+    envelope.diagnostic_shape = "diagnostic_vector";
+    sblr::SblrOperand operand;
+    operand.ordinal = 1;
+    operand.type = refusal
+                       ? "diagnostic.refusal"
+                       : (reset ? "diagnostic.reset" : "descriptor.transform");
+    operand.name = refusal ? "refusal" : (reset ? "reset" : "transform");
+    operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+    operand.value_body.assign(16, 0);
+    operand.value_body.front() = 1;
+    envelope.operands.push_back(std::move(operand));
+  }
+  return envelope;
 }
 
 std::string_view ExpectedExecutorId(const OpcodeRow& row) {

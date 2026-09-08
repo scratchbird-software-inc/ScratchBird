@@ -66,6 +66,11 @@ from match_recognize_generated_evidence import (
     per_row_manifest_override as match_recognize_per_row_manifest_override,
     validate_authoritative_runtime_inputs as validate_match_recognize_inputs,
 )
+from acceleration_generated_evidence import (
+    is_acceleration_surface,
+    per_row_manifest_override as acceleration_per_row_manifest_override,
+    validate_authoritative_runtime_inputs as validate_acceleration_inputs,
+)
 from plan_import_rows_generated_evidence import (
     is_plan_import_rows_surface,
     per_row_manifest_override,
@@ -2419,7 +2424,6 @@ SBSFC080_OPERATIONAL_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE = {
         "SBSQL-D85CE20AD873": ("zone_setting_assign", "grammar_production", "ZONE SETTING ASSIGN replicas;", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "cluster_profile_route=zone_setting_assign"),
         "SBSQL-FDB2AC4910D6": ("ignite_zone_clause", "grammar_production", "IGNITE ZONE CLAUSE;", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "cluster_profile_route=ignite_zone_clause"),
         "SBSQL-044636D5F226": ("pipeline_clause", "grammar_production", "PIPELINE CLAUSE staged;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route=pipeline_clause"),
-        "SBSQL-05DB282498F4": ("acceleration_stmt", "grammar_production", "ACCELERATION STMT inspect;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route=acceleration_stmt"),
         "SBSQL-1DF44A9DC689": ("buffer_action", "grammar_production", "BUFFER ACTION sweep;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation=buffer_action"),
         "SBSQL-1FF7927EEEC7": ("kernel_name", "grammar_production", "KERNEL NAME default;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route=kernel_name"),
         "SBSQL-48A533677977": ("sweep_control_stmt", "grammar_production", "SWEEP CONTROL STMT;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation=sweep_control_stmt"),
@@ -4082,20 +4086,6 @@ OBSERVABILITY_EXACT_ROUTE_ROW_EVIDENCE = {
         "operation_id": "observability.show_decision_service",
         "sblr_operation": "SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE",
         "sql_fixture": "SHOW DECISION SERVICE",
-    },
-    "SBSQL-DF68DFFA5C1E": {
-        "canonical_name": "show_acceleration",
-        "surface_kind": "grammar_production",
-        "operation_id": "observability.show_acceleration",
-        "sblr_operation": "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
-        "sql_fixture": "SHOW ACCELERATION",
-    },
-    "SBSQL-8E570F4EEEF3": {
-        "canonical_name": "accel_show_target",
-        "surface_kind": "grammar_production",
-        "operation_id": "observability.show_acceleration",
-        "sblr_operation": "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
-        "sql_fixture": "SHOW ACCELERATION",
     },
     "SBSQL-41F75C7C86A7": {
         "canonical_name": "show_acceleration_extended",
@@ -25726,6 +25716,7 @@ def main() -> int:
     validate_unavailable_command_inputs(root)
     validate_procedural_lifecycle_inputs(root)
     validate_match_recognize_inputs(root)
+    validate_acceleration_inputs(root)
 
     surfaces = read_csv(root / REGISTRY_CSV)
     ledger_by_id = index_by_surface(read_csv(artifact_root / STRICT_LEDGER_NAME))
@@ -25855,7 +25846,16 @@ def main() -> int:
 
     for surface in sorted(surfaces, key=lambda r: r["surface_id"]):
         surface_id = surface["surface_id"]
-        if is_match_recognize_surface(surface_id):
+        if is_acceleration_surface(surface_id):
+            classification = acceleration_per_row_manifest_override(
+                root, surface, ledger_by_id.get(surface_id)
+            )
+            if classification is None:
+                fail(
+                    f"{surface_id} acceleration manifest override "
+                    "unexpectedly missing"
+                )
+        elif is_match_recognize_surface(surface_id):
             classification = match_recognize_per_row_manifest_override(
                 root, surface, ledger_by_id.get(surface_id)
             )

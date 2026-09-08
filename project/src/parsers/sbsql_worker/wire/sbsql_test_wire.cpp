@@ -29736,6 +29736,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       lowered.operation_id == "observability.show_transactions" ||
       lowered.operation_id == "observability.show_management" ||
       lowered.operation_id == "observability.show_agents_extended" ||
+      (lowered.operation_id == "observability.show_acceleration" &&
+       lowered.sblr_opcode == "SBLR_OBSERVABILITY_SHOW_ACCELERATION") ||
+      (lowered.operation_id == "observability.show_acceleration_extended" &&
+       lowered.sblr_opcode ==
+           "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED") ||
       (lowered.operation_id == "cluster.inspect_provider" &&
        lowered.sblr_opcode == "SBLR_CLUSTER_INSPECT_PROVIDER");
   const auto exact_parameter_projection_route =

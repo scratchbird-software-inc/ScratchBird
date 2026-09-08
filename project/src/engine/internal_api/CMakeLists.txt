@@ -483,6 +483,7 @@ add_library(sb_engine_internal_api
   nosql/vector_api.cpp
   notification/notification_api.cpp
   observability/cleanup_diagnostics_api.cpp
+  observability/acceleration_registry.cpp
   observability/explain_api.cpp
   observability/agent_evidence_retention_api.cpp
   observability/agent_observability_api.cpp

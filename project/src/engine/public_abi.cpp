@@ -21733,6 +21733,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool show_transactions_root = false;
   bool show_management_root = false;
   bool show_agents_extended_root = false;
+  bool show_acceleration_root = false;
+  bool show_acceleration_extended_root = false;
   bool catalog_introspect_root = false;
   bool project_root = false;
   bool aggregate_root = false;
@@ -22444,6 +22446,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
         member.operation_id == "observability.show_agents_extended" &&
         member.opcode == "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED" &&
         member.opcode_code == 3363;
+    show_acceleration_root =
+        member.operation_id == "observability.show_acceleration" &&
+        member.opcode == "SBLR_OBSERVABILITY_SHOW_ACCELERATION" &&
+        member.opcode_code == 3365;
+    show_acceleration_extended_root =
+        member.operation_id ==
+            "observability.show_acceleration_extended" &&
+        member.opcode ==
+            "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED" &&
+        member.opcode_code == 3366;
     catalog_introspect_root = member.operation_id == "engine.op.catalog_introspect" && member.opcode == "SBLR_CATALOG_INTROSPECT" && member.opcode_code == 4864;
     project_root = member.operation_id == "engine.op.project" && member.opcode == "SBLR_PROJECT" && member.opcode_code == 1280;
     aggregate_root = member.operation_id == "engine.op.aggregate" && member.opcode == "SBLR_AGGREGATE" && member.opcode_code == 1281;
@@ -29240,7 +29252,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       !public_ddl_create_table_root &&
       !ddl_drop_table_root &&
       !ddl_create_table_as_query_with_data_root && !ddl_create_table_as_query_with_no_data_root && !ddl_refresh_materialized_view_root && !ddl_drop_materialized_view_root && !ddl_drop_package_root && !dml_counter_add_root && !dml_timeseries_schema_write_root && !source_map_root && !error_vector_root &&
-      !ddl_alter_sequence_root && !ddl_drop_type_root && !ddl_rename_object_root && !ddl_create_synonym_root && !ddl_create_foreign_table_root && !ddl_create_fdw_root && !ddl_drop_fdw_root && !ddl_drop_foreign_table_root && !ddl_drop_sequence_root && !ddl_drop_synonym_root && !ddl_drop_timeseries_value_cache_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !catalog_introspect_root &&
+      !ddl_alter_sequence_root && !ddl_drop_type_root && !ddl_rename_object_root && !ddl_create_synonym_root && !ddl_create_foreign_table_root && !ddl_create_fdw_root && !ddl_drop_fdw_root && !ddl_drop_foreign_table_root && !ddl_drop_sequence_root && !ddl_drop_synonym_root && !ddl_drop_timeseries_value_cache_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !show_acceleration_root && !show_acceleration_extended_root && !catalog_introspect_root &&
       !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root &&
       !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !transaction_characteristics_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !ddl_create_aggregate_root && !ddl_alter_aggregate_root && !ddl_drop_aggregate_root && !ddl_drop_dictionary_root && !ddl_purge_system_history_root && !ddl_set_index_optimizer_eligibility_root && !ddl_set_table_type_enforcement_root) {
     const auto& shape = dispatched.api_result.result_shape;
@@ -30623,7 +30635,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       !public_native_bulk_ingest_root &&
       !public_ddl_create_table_root && !ddl_drop_table_root && !source_map_root && !error_vector_root &&
       !ddl_create_publication_root && !ddl_alter_publication_root && !ddl_drop_publication_root && !ddl_create_subscription_root && !ddl_alter_subscription_root && !ddl_drop_subscription_root && !ddl_create_operator_root && !ddl_drop_operator_root && !ddl_drop_timeseries_value_cache_root &&
-      !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !transaction_characteristics_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !table_truncate_root && !table_analyze_root && !bulk_import_stream_root && !bulk_export_stream_root && !statement_batch_root && !atomic_cas_root && !atomic_rmw_root && !advisory_lock_root && !advisory_lock_release_root && !function_call_root && !operator_call_root && !cast_root && !compare_root && !domain_operation_root && !udr_invoke_root && !procedure_invoke_root && !function_invoke_root && !aggregate_invoke_root && !sequence_nextval_root && !sequence_currval_root && !query_numeric_root && !advanced_datatype_family_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !catalog_introspect_root && !project_root && !aggregate_root && !group_root && !security_create_group_mapping_root && !security_drop_group_mapping_root && !sort_root && !limit_root && !kv_structured_read_root && !kv_structured_mutate_root && !kv_structured_scan_root && !kv_structured_stream_read_root && !kv_structured_stream_append_root && !kv_structured_timeseries_root && !system_config_set_root && !ddl_create_domain_root && !ddl_alter_domain_root && !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root && !ddl_create_trigger_root && !ddl_create_package_root && !ddl_create_or_replace_srs_root && !ddl_drop_srs_root && !ddl_create_schema_root && !ddl_alter_rewrite_rule_root && !ddl_drop_rewrite_rule_root && !ddl_validate_constraint_root) {
+      !txn_begin_root && !txn_commit_root && !txn_rollback_root && !txn_savepoint_root && !txn_release_savepoint_root && !txn_rollback_to_savepoint_root && !transaction_characteristics_root && !psql_autonomous_frame_root && !reservation_release_root && !temporary_cleanup_root && !cursor_open_root && !cursor_fetch_root && !cursor_close_root && !read_by_key_root && !read_range_root && !read_stream_root && !result_set_pass_root && !access_cursor_open_root && !access_cursor_fetch_root && !access_cursor_close_root && !insert_root && !update_root && !delete_root && !merge_root && !table_truncate_root && !table_analyze_root && !bulk_import_stream_root && !bulk_export_stream_root && !statement_batch_root && !atomic_cas_root && !atomic_rmw_root && !advisory_lock_root && !advisory_lock_release_root && !function_call_root && !operator_call_root && !cast_root && !compare_root && !domain_operation_root && !udr_invoke_root && !procedure_invoke_root && !function_invoke_root && !aggregate_invoke_root && !sequence_nextval_root && !sequence_currval_root && !query_numeric_root && !advanced_datatype_family_root && !show_version_root && !show_database_root && !show_transactions_root && !show_management_root && !show_agents_extended_root && !show_acceleration_root && !show_acceleration_extended_root && !catalog_introspect_root && !project_root && !aggregate_root && !group_root && !security_create_group_mapping_root && !security_drop_group_mapping_root && !sort_root && !limit_root && !kv_structured_read_root && !kv_structured_mutate_root && !kv_structured_scan_root && !kv_structured_stream_read_root && !kv_structured_stream_append_root && !kv_structured_timeseries_root && !system_config_set_root && !ddl_create_domain_root && !ddl_alter_domain_root && !ddl_create_view_root && !ddl_alter_view_root && !ddl_drop_view_root && !ddl_create_trigger_root && !ddl_create_package_root && !ddl_create_or_replace_srs_root && !ddl_drop_srs_root && !ddl_create_schema_root && !ddl_alter_rewrite_rule_root && !ddl_drop_rewrite_rule_root && !ddl_validate_constraint_root) {
     result->query_execute_result_handle = query_handle_validation.handle;
     result->query_execute_result_handle_validated = true;
     result->admitted_query_row_stream_renderer = true;

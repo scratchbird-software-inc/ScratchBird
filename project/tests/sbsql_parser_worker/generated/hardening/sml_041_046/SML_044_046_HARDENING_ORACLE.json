@@ -232,7 +232,7 @@
       "sml_id": "SML-046"
     }
   ],
-  "manifest_sha256": "ee76c053f6734fbcbb04a8ff0fd3a522e9004677e3508b446f5d08b7c7bbf5f4",
+  "manifest_sha256": "87fa4ba7656adc225500266d42425c2ffc60602389c10339d0635366f7b5aa38",
   "network_dependency": false,
   "schema_version": "sbsql.sml_044_046.hardening_oracle.v1",
   "sml_ids": [
@@ -256,9 +256,9 @@
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
       "row_count": 2619,
-      "row_sha256": "a7daca6b9d0cb290ecbeebee1d22e006486fa5fa6507ddacf3b19aa64067b61f",
-      "sha256": "ccf6bf4e9a28eb60cd5f8e3b085378d1747917ed801d42336bcd9741776c2e65",
-      "size_bytes": 4298620,
+      "row_sha256": "edca74d7f592a0b7df2c01c85ae0d5c6425ab50171a49ad1d8b35d83564d95ec",
+      "sha256": "79439a47db155064854b02c5f07728171e75169d2013661d4b21d796fbce74f1",
+      "size_bytes": 4299440,
       "surface_id_set_sha256": "c419bcbf13957f051617ac608a6cc7ab06d880cdca68da36c5de9f0019e17452"
     }
   ]

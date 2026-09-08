@@ -10851,6 +10851,16 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "observability.show_agents_extended" &&
       request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_AGENTS_EXTENDED" &&
       request.envelope.opcode_code == 0x0D23;
+  const bool exact_show_acceleration =
+      request.envelope.operation_id == "observability.show_acceleration" &&
+      request.envelope.opcode == "SBLR_OBSERVABILITY_SHOW_ACCELERATION" &&
+      request.envelope.opcode_code == 0x0D25;
+  const bool exact_show_acceleration_extended =
+      request.envelope.operation_id ==
+          "observability.show_acceleration_extended" &&
+      request.envelope.opcode ==
+          "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED" &&
+      request.envelope.opcode_code == 0x0D26;
   const bool exact_local_metrics_read =
       request.envelope.operation_id == "engine.op.read_metrics" &&
       request.envelope.opcode == "SBLR_READ_METRICS" &&
@@ -10973,7 +10983,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       !exact_optimizer_stats_drop &&
       !exact_txn_savepoint &&
       !exact_txn_release_savepoint && !exact_txn_rollback_to_savepoint && !exact_psql_autonomous_frame && !exact_reservation_release && !exact_temporary_cleanup && !exact_cursor_open && !exact_cursor_fetch && !exact_cursor_close && !exact_read_by_key && !exact_read_range && !exact_read_stream && !exact_result_set_pass && !exact_access_cursor_open && !exact_access_cursor_fetch && !exact_access_cursor_close && !exact_insert && !exact_update && !exact_delete && !exact_merge && !exact_table_truncate && !exact_table_analyze && !exact_bulk_import_stream && !exact_bulk_export_stream && !exact_statement_batch && !exact_atomic_cas && !exact_atomic_rmw && !exact_advisory_lock && !exact_advisory_lock_release && !exact_function_call && !exact_operator_call && !exact_cast && !exact_compare && !exact_domain_operation && !exact_udr && !exact_procedure && !exact_function_invoke && !exact_aggregate_invoke && !exact_sequence_nextval && !exact_sequence_currval && !exact_sequence_setval && !exact_query_numeric && !exact_evaluate_projection && !exact_advanced_datatype_family && !exact_ddl_create_domain && !exact_ddl_create_schema && !exact_ddl_create_table && !exact_ddl_create_index && !exact_ddl_drop_index && !exact_ddl_alter_domain && !exact_ddl_create_view && !exact_ddl_alter_view && !exact_ddl_drop_view && !exact_ddl_create_publication && !exact_ddl_alter_publication && !exact_ddl_drop_publication && !exact_ddl_create_procedure && !exact_ddl_alter_procedure && !exact_ddl_drop_procedure && !exact_ddl_create_function && !exact_ddl_alter_function && !exact_ddl_drop_function && !exact_ddl_create_package && !exact_ddl_create_temporary_table && !exact_ddl_drop_temporary_table && !exact_ddl_rename_object_vector && !exact_ddl_rename_object && !exact_ddl_create_synonym && !exact_ddl_create_or_replace_srs && !exact_project && !exact_aggregate && !exact_group && !exact_sort && !exact_limit && !exact_window && !exact_management_envelope &&
-      !exact_security_drop_privilege_template && !exact_show_management && !exact_show_agents_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
+      !exact_security_drop_privilege_template && !exact_show_management && !exact_show_agents_extended && !exact_show_acceleration && !exact_show_acceleration_extended && !exact_local_metrics_read && !exact_catalog_introspect && !exact_event_notification && !exact_local_backup_archive && !exact_admin_register_external_relation_resolver && !exact_admin_unregister_external_relation_resolver && !exact_ddl_create_dictionary && !exact_ddl_drop_package && !exact_context_unset && !exact_context_get && !exact_ddl_create_subscription && !exact_ddl_alter_subscription && !exact_ddl_drop_subscription && !exact_ddl_create_operator && !exact_ddl_drop_operator && !ddl_type_identity_claim) {
     result.diagnostic_id = "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH";
     result.detail = "package root preflight admits query.execute only";
     return result;
@@ -10986,6 +10996,33 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     result.detail = envelope_validation.diagnostics.empty()
         ? "canonical query envelope validation failed"
         : envelope_validation.diagnostics.front().message;
+    return result;
+  }
+  if (exact_show_acceleration || exact_show_acceleration_extended) {
+    if (!request.context.security_context_present) {
+      result.diagnostic_id = "SECURITY.ACCESS_DENIED";
+      result.detail =
+          "SHOW ACCELERATION requires authenticated engine security authority";
+      return result;
+    }
+    if (request.context.cluster_authority_available ||
+        request.context.cluster_transaction_active ||
+        request.context.route_fence_present) {
+      result.diagnostic_id =
+          "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN";
+      result.detail =
+          "SHOW ACCELERATION cannot fall through a cluster route";
+      return result;
+    }
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostic_id = opcode_validation.diagnostic_id;
+      result.detail = opcode_validation.detail;
+      return result;
+    }
+    result.ok = true;
+    result.materialized_envelope = std::move(request.envelope);
     return result;
   }
   const bool exact_ddl_static_executor_evidence_refusal =

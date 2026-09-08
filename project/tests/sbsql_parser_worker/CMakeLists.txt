@@ -4815,7 +4815,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_observability_exact_route_conformance
   )
   set_tests_properties(sbsql_observability_exact_route_conformance PROPERTIES
-    LABELS "sbsql_observability_exact_route_conformance;SBSFC-024;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker"
+    LABELS "sbsql_observability_exact_route_conformance;SBSFC-024;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_sblr_alignment;IA-04;IA-10;SBSQL-05DB282498F4;SBSQL-DF68DFFA5C1E;SBLR_OBSERVABILITY_SHOW_ACCELERATION;CSC-TEST-000006;CSC-TEST-000007;CSC-TEST-000008;CSC-TEST-002066;CSC-TEST-002067;CSC-TEST-002068;CSC-TEST-002762;CSC-TEST-002763;CSC-TEST-002764;CSC-TEST-005278;CSC-TEST-005279;CSC-TEST-005280;malformed_operand;missing_executor_evidence;security_auth_gate;resource_cancellation;component_regression"
   )
 endif()
 
@@ -6444,6 +6444,21 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     )
     set_tests_properties(sbsql_match_recognize_full_route_gate PROPERTIES
       LABELS "sbsql_match_recognize_full_route_gate;sbsql_sblr_alignment;IA-EXT-OPT;SBSQL-14EDC2636B45;SBLR_MATCH_RECOGNIZE;SBLR_QUERY_EXECUTE;CSC-TEST-005814;CSC-TEST-005815;CSC-TEST-005816;CSC-TEST-005817;CSC-TEST-005818;CSC-TEST-005819;CSC-TEST-005820;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;malformed_operand;security_auth_gate;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
+      TIMEOUT 300
+    )
+    add_test(
+      NAME sbsql_acceleration_full_route_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_acceleration_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --openssl ${SBSQL_OPENSSL_EXECUTABLE}
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_acceleration_full_route"
+    )
+    set_tests_properties(sbsql_acceleration_full_route_gate PROPERTIES
+      LABELS "sbsql_acceleration_full_route_gate;sbsql_sblr_alignment;IA-04;IA-10;SBSQL-05DB282498F4;SBSQL-DF68DFFA5C1E;SBSQL-8E570F4EEEF3;SBLR_OBSERVABILITY_SHOW_ACCELERATION;CSC-TEST-000005;CSC-TEST-002065;CSC-TEST-002761;CSC-TEST-005277;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;security_auth_gate;nonmutating_observability;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
       TIMEOUT 300
     )
     if(SB_ENABLE_TEST_CRASH_INJECTION AND UNIX AND NOT WIN32)

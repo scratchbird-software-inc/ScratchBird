@@ -11,9 +11,11 @@
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
+#include "engine/internal_api/observability/show_api.hpp"
 #include "sblr_admission.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
+#include "server/sblr_local_gateway.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_opcode_registry.hpp"
 
@@ -42,7 +44,7 @@ struct ObservabilityRowEvidence {
   std::string_view resolved_object_uuid;
 };
 
-constexpr std::array<ObservabilityRowEvidence, 32> kObservabilityRows{{
+constexpr std::array<ObservabilityRowEvidence, 33> kObservabilityRows{{
     {"SBSQL-B7EF40AE00EB",
      "show_identity_session",
      "grammar_production",
@@ -186,6 +188,14 @@ constexpr std::array<ObservabilityRowEvidence, 32> kObservabilityRows{{
      "SHOW DECISION SERVICE",
      "observability.show_decision_service",
      "SBLR_OBSERVABILITY_SHOW_DECISION_SERVICE",
+     ""},
+    {"SBSQL-05DB282498F4",
+     "acceleration_stmt",
+     "grammar_production",
+     "SBSQL-SURFACE-952AF9FF699A",
+     "SHOW ACCELERATION",
+     "observability.show_acceleration",
+     "SBLR_OBSERVABILITY_SHOW_ACCELERATION",
      ""},
     {"SBSQL-DF68DFFA5C1E",
      "show_acceleration",
@@ -366,6 +376,7 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 bool RequiresRouteSurfacePayload(std::string_view surface_id) {
   return surface_id == "SBSQL-6482A2299513" ||
          surface_id == "SBSQL-D01384EE782E" ||
+         surface_id == "SBSQL-05DB282498F4" ||
          surface_id == "SBSQL-8E570F4EEEF3";
 }
 
@@ -386,6 +397,14 @@ bool ApiResultHasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind == kind) return true;
   }
   return false;
+}
+
+std::string ApiResultEvidenceValue(const api::EngineApiResult& result,
+                                   std::string_view kind) {
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == kind) return evidence.evidence_id;
+  }
+  return {};
 }
 
 SessionContext ParserSession() {
@@ -441,23 +460,36 @@ void RequireRegistryEvidence(const ObservabilityRowEvidence& row) {
           EvidenceMessage(row, "registry", "canonical name mismatch"));
   Require(registry_row->surface_kind == row.surface_kind,
           EvidenceMessage(row, "registry", "surface kind mismatch"));
-  Require(registry_row->family == "observability",
+  const bool acceleration_parent =
+      row.surface_id == "SBSQL-05DB282498F4";
+  Require(registry_row->family ==
+              (acceleration_parent ? "general" : "observability"),
           EvidenceMessage(row, "registry", "family mismatch"));
   Require(registry_row->source_status == "native_now",
           EvidenceMessage(row, "registry", "source status mismatch"));
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           EvidenceMessage(row, "registry", "cluster scope mismatch"));
-  Require(registry_row->sblr_operation_family == "sblr.observability.inspect.v3",
+  Require(registry_row->sblr_operation_family ==
+              (acceleration_parent ? "sblr.general.operation.v3"
+                                   : "sblr.observability.inspect.v3"),
           EvidenceMessage(row, "registry", "SBLR operation family mismatch"));
-  Require(registry_row->parser_handler_key == "parser.statement_family.observability",
+  Require(registry_row->parser_handler_key ==
+              (acceleration_parent ? "parser.grammar_ast"
+                                   : "parser.statement_family.observability"),
           EvidenceMessage(row, "parser_bind_lower", "parser handler key mismatch"));
   Require(registry_row->lowering_handler_key ==
-              "lowering.sblr_family.sblr_observability_inspect_v3",
+              (acceleration_parent
+                   ? "lowering.sblr_family.sblr_general_operation_v3"
+                   : "lowering.sblr_family.sblr_observability_inspect_v3"),
           EvidenceMessage(row, "parser_bind_lower", "lowering handler key mismatch"));
   Require(registry_row->server_admission_key ==
-              "server.admission.sblr_observability_inspect_v3",
+              (acceleration_parent
+                   ? "server.admission.sblr_general_operation_v3"
+                   : "server.admission.sblr_observability_inspect_v3"),
           EvidenceMessage(row, "server_admission", "server admission key mismatch"));
-  Require(registry_row->engine_rule_key == "engine.rule.sblr_observability_inspect_v3",
+  Require(registry_row->engine_rule_key ==
+              (acceleration_parent ? "engine.rule.sblr_general_operation_v3"
+                                   : "engine.rule.sblr_observability_inspect_v3"),
           EvidenceMessage(row, "engine_dispatch", "engine rule key mismatch"));
   Require(registry_row->validation_fixture_id == row.validation_fixture_id,
           EvidenceMessage(row, "registry", "validation fixture id mismatch"));
@@ -652,6 +684,63 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
               accepted.stream.operations[1].opcode_code == opcode_entry->code,
           EvidenceMessage(row, "server_admission",
                           "canonical SBOS operation identity mismatch"));
+
+  if (row.operation_id == "observability.show_acceleration") {
+    auto malformed_package = package;
+    sblr::SblrOperand unexpected_operand;
+    unexpected_operand.ordinal = 1;
+    unexpected_operand.type = "unexpected_descriptor";
+    unexpected_operand.name = "unexpected";
+    unexpected_operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+    unexpected_operand.value_body.assign(package_bytes.begin(),
+                                         package_bytes.end());
+    malformed_package.operations[1].operands.push_back(
+        std::move(unexpected_operand));
+    const auto malformed_bytes =
+        sblr::EncodeSblrOpcodeStream(malformed_package);
+    Require(!malformed_bytes.empty(),
+            "SHOW ACCELERATION malformed-operand fixture did not encode");
+    scratchbird::server::LocalSblrGatewayRequest gateway_request;
+    gateway_request.canonical_sbos = malformed_bytes;
+    gateway_request.root_opcode_code = opcode_entry->code;
+    gateway_request.root_opcode = std::string(row.opcode);
+    gateway_request.root_operation_id = std::string(row.operation_id);
+    gateway_request.route_snapshot_uuid =
+        "019f0000-0000-7000-8000-000000000713";
+    gateway_request.route_epoch = 7;
+    gateway_request.route_generation = 9;
+    gateway_request.security_snapshot_uuid =
+        "019f0000-0000-7000-8000-000000000714";
+    gateway_request.security_epoch = 11;
+    gateway_request.security_observation_generation = 13;
+    gateway_request.route_snapshot_engine_owned = true;
+    gateway_request.security_snapshot_engine_owned = true;
+    const auto malformed =
+        scratchbird::server::AdmitLocalNoClusterSblrGateway(gateway_request);
+    Require(!malformed.ok && malformed.diagnostic_id == "SBLR.OPERAND.INVALID",
+            "SHOW ACCELERATION malformed operand did not fail closed");
+
+    auto missing_evidence = admission;
+    missing_evidence.executor_evidence_accepted = false;
+    const auto evidence_refusal = sblr::AdmitSblrOpcodeStream(
+        std::string_view(reinterpret_cast<const char*>(canonical.data()),
+                         canonical.size()),
+        missing_evidence);
+    Require(!evidence_refusal.ok &&
+                evidence_refusal.diagnostic_id ==
+                    "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+            "SHOW ACCELERATION missing executor evidence did not fail closed");
+
+    auto cancelled = admission;
+    cancelled.cancelled = true;
+    const auto cancellation_refusal = sblr::AdmitSblrOpcodeStream(
+        std::string_view(reinterpret_cast<const char*>(canonical.data()),
+                         canonical.size()),
+        cancelled);
+    Require(!cancellation_refusal.ok &&
+                cancellation_refusal.diagnostic_id == "PROCESS.CANCELLED",
+            "SHOW ACCELERATION cancellation did not remain atomic");
+  }
 }
 
 api::EngineRequestContext EngineContext(const ObservabilityRowEvidence& row) {
@@ -843,17 +932,35 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
     Require(ApiResultHasEvidence(result.api_result, "acceleration_rows"),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowAcceleration did not return acceleration row evidence"));
-    Require(ApiResultHasField(result.api_result, "runtime_mode", "interpreted_sblr"),
+    Require(ApiResultHasField(result.api_result, "provider_id", "execution.interpreter"),
             EvidenceMessage(row, "engine_dispatch",
-                            "EngineShowAcceleration did not return runtime evidence"));
+                            "EngineShowAcceleration did not return interpreter provider evidence"));
+    Require(ApiResultHasField(result.api_result, "provider_class", "compiler") &&
+                ApiResultHasField(result.api_result, "provider_class", "gpu"),
+            EvidenceMessage(row, "engine_dispatch",
+                            "EngineShowAcceleration did not return compiled capability classes"));
+    Require(result.api_result.result_shape.result_kind ==
+                "observability_show_acceleration_result",
+            EvidenceMessage(row, "engine_dispatch",
+                            "EngineShowAcceleration returned the wrong result contract: " +
+                                result.api_result.result_shape.result_kind));
+    const auto snapshot_sha = ApiResultEvidenceValue(
+        result.api_result, "acceleration_registry_snapshot");
+    Require(snapshot_sha.starts_with("sha256:") && snapshot_sha.size() == 71,
+            EvidenceMessage(row, "engine_dispatch",
+                            "EngineShowAcceleration did not publish snapshot evidence"));
   }
   if (row.operation_id == "observability.show_acceleration_extended") {
     Require(ApiResultHasEvidence(result.api_result, "acceleration_extended_rows"),
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowAccelerationExtended did not return acceleration row evidence"));
-    Require(ApiResultHasField(result.api_result, "gpu_queue_count", "0"),
+    Require(ApiResultHasField(result.api_result, "provider_id", "execution.interpreter"),
             EvidenceMessage(row, "engine_dispatch",
-                            "EngineShowAccelerationExtended did not return GPU queue evidence"));
+                            "EngineShowAccelerationExtended did not return provider rows"));
+    Require(result.api_result.result_shape.result_kind ==
+                "observability_show_acceleration_extended_result",
+            EvidenceMessage(row, "engine_dispatch",
+                            "EngineShowAccelerationExtended returned the wrong result contract"));
   }
   if (row.operation_id == "observability.show_metrics") {
     Require(!result.api_result.result_shape.rows.empty(),
@@ -866,6 +973,50 @@ void RequireEngineDispatch(const ObservabilityRowEvidence& row) {
             EvidenceMessage(row, "engine_dispatch",
                             "EngineShowMetrics did not return local sys.metrics evidence"));
   }
+}
+
+void RequireAccelerationAuthorityFences() {
+  const auto row_it = std::find_if(
+      kObservabilityRows.begin(), kObservabilityRows.end(),
+      [](const auto& row) {
+        return row.surface_id == "SBSQL-DF68DFFA5C1E";
+      });
+  Require(row_it != kObservabilityRows.end(),
+          "SHOW ACCELERATION authority fixture is missing");
+
+  api::EngineShowAccelerationRequest request;
+  request.context = EngineContext(*row_it);
+  const auto first = api::EngineShowAcceleration(request);
+  const auto replay = api::EngineShowAcceleration(request);
+  Require(first.ok && replay.ok,
+          "SHOW ACCELERATION immutable snapshot calls did not succeed");
+  Require(ApiResultEvidenceValue(first, "acceleration_registry_snapshot") ==
+              ApiResultEvidenceValue(replay, "acceleration_registry_snapshot") &&
+              first.result_shape.rows.size() == replay.result_shape.rows.size(),
+          "SHOW ACCELERATION immutable snapshot replay drifted");
+
+  auto unauthenticated = request;
+  unauthenticated.context.security_context_present = false;
+  const auto security_refusal = api::EngineShowAcceleration(unauthenticated);
+  Require(!security_refusal.ok && !security_refusal.diagnostics.empty() &&
+              security_refusal.diagnostics.front().code ==
+                  "SECURITY.ACCESS_DENIED",
+          "SHOW ACCELERATION did not enforce authenticated security context");
+
+  auto clustered = request;
+  clustered.context.cluster_transaction_active = true;
+  const auto cluster_refusal = api::EngineShowAcceleration(clustered);
+  Require(!cluster_refusal.ok && !cluster_refusal.diagnostics.empty() &&
+              cluster_refusal.diagnostics.front().code ==
+                  "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN",
+          "SHOW ACCELERATION did not refuse local cluster fallthrough");
+
+  auto cancelled = request;
+  cancelled.context.query_cancellation_requested = [] { return true; };
+  const auto cancellation = api::EngineShowAcceleration(cancelled);
+  Require(!cancellation.ok && !cancellation.diagnostics.empty() &&
+              cancellation.diagnostics.front().code == "PROCESS.CANCELLED",
+          "SHOW ACCELERATION did not observe cancellation before snapshot read");
 }
 
 void RequireClusterObservabilityRefusal() {
@@ -920,6 +1071,7 @@ int main() {
       RequireEngineDispatch(row);
     }
   }
+  RequireAccelerationAuthorityFences();
   RequireClusterObservabilityRefusal();
   std::cout << "sbsql_observability_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
