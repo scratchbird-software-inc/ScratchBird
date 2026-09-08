@@ -683,16 +683,26 @@
     const std::size_t privilege_index = table_index + 1;
     bool allowed = false;
     if (PrivilegePrincipalAllowed(request, 0, has_user_arg)) {
-      const auto api_context = EngineRequestContextFromSblr(request.context.sblr_context);
+      scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+      const auto& api_context =
+          EngineRequestContextForFunction(request, &fallback_context);
       const auto table = ResolvePrivilegeTable(
           request.context.sblr_context,
           api_context,
-          ValueAsText(request.arguments[table_index].value));
+          ValueAsText(request.arguments[table_index].value),
+          request.context.engine_request_context == nullptr);
       if (table) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "table");
-        allowed = PrivilegeObjectAllowsCurrentPrincipal(
-            request.context.sblr_context, api_context, *table, privilege);
+        const auto visibility = PrivilegeObjectAllowsCurrentPrincipal(
+            api_context, *table, privilege);
+        if (!visibility.completed) {
+          return RefuseFunctionWithDiagnostic(
+              request,
+              scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+              visibility.diagnostic.code, visibility.diagnostic.detail);
+        }
+        allowed = visibility.allowed;
       }
     }
     return MakeFunctionSuccess(request, {MakeBooleanValue(allowed)});
@@ -714,16 +724,26 @@
     const std::size_t privilege_index = column_index + 1;
     bool allowed = false;
     if (PrivilegePrincipalAllowed(request, 0, has_user_arg)) {
-      const auto api_context = EngineRequestContextFromSblr(request.context.sblr_context);
+      scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+      const auto& api_context =
+          EngineRequestContextForFunction(request, &fallback_context);
       const auto table = ResolvePrivilegeTable(
           request.context.sblr_context,
           api_context,
-          ValueAsText(request.arguments[table_index].value));
+          ValueAsText(request.arguments[table_index].value),
+          request.context.engine_request_context == nullptr);
       if (table && PrivilegeTableHasColumn(*table, ValueAsText(request.arguments[column_index].value))) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "column");
-        allowed = PrivilegeObjectAllowsCurrentPrincipal(
-            request.context.sblr_context, api_context, *table, privilege);
+        const auto visibility = PrivilegeObjectAllowsCurrentPrincipal(
+            api_context, *table, privilege);
+        if (!visibility.completed) {
+          return RefuseFunctionWithDiagnostic(
+              request,
+              scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+              visibility.diagnostic.code, visibility.diagnostic.detail);
+        }
+        allowed = visibility.allowed;
       }
     }
     return MakeFunctionSuccess(request, {MakeBooleanValue(allowed)});
@@ -744,15 +764,24 @@
     const std::size_t privilege_index = function_index + 1;
     bool allowed = false;
     if (PrivilegePrincipalAllowed(request, 0, has_user_arg)) {
-      const auto api_context = EngineRequestContextFromSblr(request.context.sblr_context);
+      scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+      const auto& api_context =
+          EngineRequestContextForFunction(request, &fallback_context);
       const auto function = ResolvePrivilegeFunction(
           request.context.sblr_context,
           ValueAsText(request.arguments[function_index].value));
       if (function) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "function");
-        allowed = PrivilegeObjectAllowsCurrentPrincipal(
-            request.context.sblr_context, api_context, *function, privilege);
+        const auto visibility = PrivilegeObjectAllowsCurrentPrincipal(
+            api_context, *function, privilege);
+        if (!visibility.completed) {
+          return RefuseFunctionWithDiagnostic(
+              request,
+              scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+              visibility.diagnostic.code, visibility.diagnostic.detail);
+        }
+        allowed = visibility.allowed;
       }
     }
     return MakeFunctionSuccess(request, {MakeBooleanValue(allowed)});
@@ -773,15 +802,25 @@
     const std::size_t privilege_index = schema_index + 1;
     bool allowed = false;
     if (PrivilegePrincipalAllowed(request, 0, has_user_arg)) {
-      const auto api_context = EngineRequestContextFromSblr(request.context.sblr_context);
+      scratchbird::engine::internal_api::EngineRequestContext fallback_context;
+      const auto& api_context =
+          EngineRequestContextForFunction(request, &fallback_context);
       const auto schema = ResolvePrivilegeSchema(
           request.context.sblr_context,
+          api_context,
           ValueAsText(request.arguments[schema_index].value));
       if (schema) {
         const auto privilege = NormalizePrivilegeText(
             ValueAsText(request.arguments[privilege_index].value), "schema");
-        allowed = PrivilegeObjectAllowsCurrentPrincipal(
-            request.context.sblr_context, api_context, *schema, privilege);
+        const auto visibility = PrivilegeObjectAllowsCurrentPrincipal(
+            api_context, *schema, privilege);
+        if (!visibility.completed) {
+          return RefuseFunctionWithDiagnostic(
+              request,
+              scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+              visibility.diagnostic.code, visibility.diagnostic.detail);
+        }
+        allowed = visibility.allowed;
       }
     }
     return MakeFunctionSuccess(request, {MakeBooleanValue(allowed)});

@@ -290,6 +290,7 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-trigger", "ddl-drop-trigger-observe"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-drop-policy", "security-alter-policy", "security-drop-user", "security-authenticate", "security-deauthenticate", "session-role-switch", "session-setting-set", "session-setting-reset", "session-setting-get", "session-default-qualifier-set", "session-discard", "session-snapshot-handle", "context-set", "context-unset", "context-get", "stmt-prepare", "stmt-execute", "stmt-execute-direct", "stmt-free", "stmt-cancel", "parameter-bind", "parameter-bind-multi-nullable", "result-page", "query-execute", "query-explain", "name-resolve", "optimizer-stats-read", "optimizer-stats-drop", "parse-text", "catalog-epoch-check", "database-attach", "database-detach", "database-checkpoint", "database-vacuum", "database-alter", "lifecycle-create-database", "lifecycle-open-database", "lifecycle-attach-database", "lifecycle-detach-database", "lifecycle-enter-maintenance", "lifecycle-exit-maintenance", "lifecycle-enter-restricted-open", "lifecycle-exit-restricted-open", "lifecycle-inspect-database", "lifecycle-verify-database", "lifecycle-repair-database", "lifecycle-shutdown-database", "lifecycle-shutdown-force", "lifecycle-shutdown-acknowledge", "lifecycle-drop-database", "repl-consumer-subscribe", "repl-consumer-resume", "repl-consumer-pause", "repl-consumer-cancel", "repl-cdc-receive", "repl-cdc-ack", "repl-2pc-prewrite", "repl-2pc-commit", "repl-2pc-cleanup", "repl-2pc-resolve-lock", "repl-2pc-pessimistic-lock", "repl-2pc-pessimistic-rollback", "repl-2pc-heartbeat", "repl-2pc-check-status", "graph-traverse", "graph-optional-match"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-alter-role"))
+    parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "security-visibility-parent"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-create"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-merge"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "graph-set"))
@@ -690,6 +691,19 @@ def main() -> int:
                 raise ProofError(
                     "ACTIVATE POLICY did not complete the exact committed "
                     "canonical security-policy mutation route"
+                )
+        elif args.operation == "security-visibility-parent":
+            expected_success = (
+                "CSC-TEST-005826 SECURITY_VISIBILITY_PARENT accepted "
+                "canonical_sblr=true internal_evaluator_hidden=true "
+                "table=true column=true function=true schema=true "
+                "optional_user_signatures=true "
+                "invalid_right=false transaction_rolled_back=true\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "security visibility predicates did not complete the "
+                    "exact public query-projection parent route"
                 )
         elif args.operation == "procedure-invoke":
             expected_success = (
@@ -1522,6 +1536,12 @@ def main() -> int:
                 "security_alter_policy_result_sha256=sha256:",
                 "executor_availability_generation=",
             )
+        elif args.operation == "security-visibility-parent":
+            expected = (
+                "preflight_observe op=query.evaluate_projection",
+                "opcode=SBLR_QUERY_EVALUATE_PROJECTION",
+                "code=1038",
+            )
         elif args.operation == "ddl-create-procedure":
             expected = (
                 "executor_id=engine.op.ddl_create_procedure",
@@ -1579,6 +1599,14 @@ def main() -> int:
         for marker in required_markers:
             if marker not in audit:
                 raise ProofError(f"source-map success evidence lacks {marker}")
+        if args.operation == "security-visibility-parent" and (
+            "operation_id=security.evaluate_visibility" in audit or
+            "opcode=SBLR_SECURITY_EVALUATE_VISIBILITY" in audit
+        ):
+            raise ProofError(
+                "internal security visibility evaluator escaped as a public "
+                "SBLR operation"
+            )
         second = command.copy()
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
         if args.operation == "ddl-create-schema":

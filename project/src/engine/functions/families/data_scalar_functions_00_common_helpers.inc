@@ -12,9 +12,12 @@
 
 #include "common/function_result_helpers.hpp"
 #include "api_types.hpp"
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
+#include "security/visibility_api.hpp"
 #include "sblr/sblr_domain_runtime.hpp"
 #include "sblr/sblr_sequence_runtime.hpp"
 #include "uuid.hpp"
@@ -936,6 +939,17 @@ scratchbird::engine::internal_api::EngineRequestContext EngineRequestContextFrom
   return out;
 }
 
+const scratchbird::engine::internal_api::EngineRequestContext&
+EngineRequestContextForFunction(
+    const FunctionCallRequest& request,
+    scratchbird::engine::internal_api::EngineRequestContext* fallback) {
+  if (request.context.engine_request_context != nullptr) {
+    return *request.context.engine_request_context;
+  }
+  *fallback = EngineRequestContextFromSblr(request.context.sblr_context);
+  return *fallback;
+}
+
 scratchbird::engine::sblr::SblrValue MakeBooleanValue(bool input) {
   auto value = MakeInt64Value("boolean", input ? 1 : 0);
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::boolean;
@@ -1025,18 +1039,159 @@ PrivilegeTextRule NormalizePrivilegeText(std::string privilege_text,
 
 PrivilegeObjectDescriptor PrivilegeObjectFromCrudTable(
     const scratchbird::engine::internal_api::CrudTableRecord& table,
-    const scratchbird::engine::sblr::SblrExecutionContext& context) {
+    std::string owner_uuid) {
   return PrivilegeObjectDescriptor{table.table_uuid,
                                    table.default_name,
                                    "table",
-                                   context.user_uuid,
+                                   std::move(owner_uuid),
                                    table.columns};
+}
+
+std::optional<scratchbird::engine::internal_api::EngineCatalogObjectRecord>
+ResolvePrivilegeCatalogObject(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    std::string_view identifier,
+    std::string_view object_kind) {
+  if (context.database_path.empty()) return std::nullopt;
+  const auto loaded =
+      scratchbird::engine::internal_api::LoadCatalogObjectLifecycleState(
+          context);
+  if (!loaded.ok) return std::nullopt;
+  const std::string wanted = NormalizeCatalogToken(std::string(identifier));
+  if (wanted.empty()) return std::nullopt;
+
+  std::string object_uuid;
+  for (const auto& object : loaded.state.objects) {
+    if (object.deleted || object.lifecycle_state != "active" ||
+        LowerAscii(object.object_kind) != LowerAscii(std::string(object_kind))) {
+      continue;
+    }
+    if (LowerAscii(object.object_uuid) == wanted) {
+      object_uuid = object.object_uuid;
+      break;
+    }
+  }
+  if (object_uuid.empty()) {
+    for (const auto& name : loaded.state.names) {
+      if (name.deleted ||
+          LowerAscii(name.object_kind) != LowerAscii(std::string(object_kind))) {
+        continue;
+      }
+      if (NormalizeCatalogToken(name.raw_name_text) == wanted ||
+          NormalizeCatalogToken(name.display_name) == wanted ||
+          NormalizeCatalogToken(name.normalized_lookup_key) == wanted ||
+          NormalizeCatalogToken(name.exact_lookup_key) == wanted) {
+        object_uuid = name.object_uuid;
+        break;
+      }
+    }
+  }
+  if (object_uuid.empty()) return std::nullopt;
+  const auto object = std::find_if(
+      loaded.state.objects.begin(), loaded.state.objects.end(),
+      [&](const auto& candidate) {
+        return !candidate.deleted && candidate.lifecycle_state == "active" &&
+               candidate.object_uuid == object_uuid &&
+               LowerAscii(candidate.object_kind) ==
+                   LowerAscii(std::string(object_kind));
+      });
+  return object == loaded.state.objects.end()
+             ? std::nullopt
+             : std::optional<scratchbird::engine::internal_api::
+                                 EngineCatalogObjectRecord>(*object);
+}
+
+std::optional<scratchbird::engine::internal_api::EngineBoundObjectIdentity>
+ResolvePrivilegePresentedObject(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    std::string_view identifier,
+    std::string_view object_kind) {
+  using scratchbird::engine::internal_api::EngineIdentifierAtom;
+  using scratchbird::engine::internal_api::EngineResolveNameRequest;
+
+  const std::string presented = TrimAscii(std::string(identifier));
+  if (presented.empty() || presented.size() > 1024 ||
+      presented.find('\0') != std::string::npos) {
+    return std::nullopt;
+  }
+
+  std::vector<EngineIdentifierAtom> atoms;
+  std::string current;
+  bool quoted = false;
+  bool current_was_quoted = false;
+  for (std::size_t index = 0; index < presented.size(); ++index) {
+    const char ch = presented[index];
+    if (ch == '"') {
+      if (quoted && index + 1 < presented.size() &&
+          presented[index + 1] == '"') {
+        current.push_back('"');
+        ++index;
+        continue;
+      }
+      quoted = !quoted;
+      current_was_quoted = true;
+      continue;
+    }
+    if (ch == '.' && !quoted) {
+      current = TrimAscii(std::move(current));
+      if (current.empty() || current.size() > 256 || atoms.size() >= 2) {
+        return std::nullopt;
+      }
+      EngineIdentifierAtom atom;
+      atom.raw_text = std::move(current);
+      atom.was_quoted = current_was_quoted;
+      atom.quote_style = current_was_quoted ? "double_quote" : "none";
+      atom.identifier_profile_uuid = context.identifier_profile_uuid.empty()
+                                         ? "sbsql_v3"
+                                         : context.identifier_profile_uuid;
+      atom.requires_exact_match = current_was_quoted;
+      atoms.push_back(std::move(atom));
+      current.clear();
+      current_was_quoted = false;
+      continue;
+    }
+    current.push_back(ch);
+  }
+  current = TrimAscii(std::move(current));
+  if (quoted || current.empty() || current.size() > 256 || atoms.size() >= 3) {
+    return std::nullopt;
+  }
+  EngineIdentifierAtom final_atom;
+  final_atom.raw_text = std::move(current);
+  final_atom.was_quoted = current_was_quoted;
+  final_atom.quote_style = current_was_quoted ? "double_quote" : "none";
+  final_atom.identifier_profile_uuid = context.identifier_profile_uuid.empty()
+                                           ? "sbsql_v3"
+                                           : context.identifier_profile_uuid;
+  final_atom.requires_exact_match = current_was_quoted;
+  atoms.push_back(std::move(final_atom));
+
+  EngineResolveNameRequest request;
+  request.context = context;
+  request.sql_object_reference.expected_object_type = std::string(object_kind);
+  request.sql_object_reference.path_type =
+      atoms.size() > 1 ? "qualified" : "unqualified";
+  request.sql_object_reference.no_search_path = atoms.size() > 1;
+  request.sql_object_reference.object_name = std::move(atoms.back());
+  atoms.pop_back();
+  request.sql_object_reference.path_components = std::move(atoms);
+  const auto resolved =
+      scratchbird::engine::internal_api::EngineResolveName(request);
+  if (!resolved.ok ||
+      resolved.bound_object_identity.object_uuid.canonical.empty() ||
+      (!resolved.bound_object_identity.resolved_object_type.empty() &&
+       LowerAscii(resolved.bound_object_identity.resolved_object_type) !=
+           LowerAscii(std::string(object_kind)))) {
+    return std::nullopt;
+  }
+  return resolved.bound_object_identity;
 }
 
 std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
     const scratchbird::engine::internal_api::EngineRequestContext& api_context,
-    std::string_view table_identifier) {
+    std::string_view table_identifier,
+    bool allow_legacy_owner_fallback) {
   const std::string wanted_text = UnquoteCatalogToken(std::string(table_identifier));
   const std::string wanted = LowerAscii(wanted_text);
   if (wanted.empty()) return std::nullopt;
@@ -1049,13 +1204,39 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
           scratchbird::engine::internal_api::BuildCrudCompatibilityStateFromMga(loaded.state);
       if (const auto table = scratchbird::engine::internal_api::FindVisibleCrudTable(
               state, wanted_text, api_context.local_transaction_id)) {
-        return PrivilegeObjectFromCrudTable(*table, context);
+        const auto object = ResolvePrivilegeCatalogObject(
+            api_context, table->table_uuid, "table");
+        return PrivilegeObjectFromCrudTable(
+            *table, object ? object->owner_principal_uuid
+                           : (allow_legacy_owner_fallback ? context.user_uuid
+                                                          : std::string{}));
+      }
+      if (const auto resolved = ResolvePrivilegePresentedObject(
+              api_context, wanted_text, "table")) {
+        if (const auto table =
+                scratchbird::engine::internal_api::FindVisibleCrudTable(
+                    state, resolved->object_uuid.canonical,
+                    api_context.local_transaction_id)) {
+          const auto object = ResolvePrivilegeCatalogObject(
+              api_context, table->table_uuid, "table");
+          return PrivilegeObjectFromCrudTable(
+              *table, object ? object->owner_principal_uuid
+                             : (allow_legacy_owner_fallback
+                                    ? context.user_uuid
+                                    : std::string{}));
+        }
       }
       for (const auto& candidate : state.tables) {
         if (NormalizeCatalogToken(candidate.default_name) != wanted) continue;
         if (const auto table = scratchbird::engine::internal_api::FindVisibleCrudTable(
                 state, candidate.table_uuid, api_context.local_transaction_id)) {
-          return PrivilegeObjectFromCrudTable(*table, context);
+          const auto object = ResolvePrivilegeCatalogObject(
+              api_context, table->table_uuid, "table");
+          return PrivilegeObjectFromCrudTable(
+              *table, object ? object->owner_principal_uuid
+                             : (allow_legacy_owner_fallback
+                                    ? context.user_uuid
+                                    : std::string{}));
         }
       }
     }
@@ -1066,7 +1247,22 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
 
 std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeSchema(
     const scratchbird::engine::sblr::SblrExecutionContext& context,
+    const scratchbird::engine::internal_api::EngineRequestContext& api_context,
     std::string_view schema_identifier) {
+  if (const auto object = ResolvePrivilegeCatalogObject(
+          api_context, schema_identifier, "schema")) {
+    return PrivilegeObjectDescriptor{object->object_uuid,
+                                     std::string(schema_identifier), "schema",
+                                     object->owner_principal_uuid, {}};
+  }
+  if (const auto resolved = ResolvePrivilegePresentedObject(
+          api_context, schema_identifier, "schema")) {
+    const auto object = ResolvePrivilegeCatalogObject(
+        api_context, resolved->object_uuid.canonical, "schema");
+    return PrivilegeObjectDescriptor{
+        resolved->object_uuid.canonical, std::string(schema_identifier),
+        "schema", object ? object->owner_principal_uuid : std::string{}, {}};
+  }
   const std::string wanted = UnquoteCatalogToken(std::string(schema_identifier));
   std::optional<CatalogContextObject> object = CatalogObjectForUuid(context, wanted);
   if (!object) object = CatalogObjectForName(context, wanted, "schema");
@@ -1121,26 +1317,47 @@ bool PrivilegeTableHasColumn(const PrivilegeObjectDescriptor& table,
   return false;
 }
 
-bool PrivilegeObjectAllowsCurrentPrincipal(
-    const scratchbird::engine::sblr::SblrExecutionContext& context,
+struct PrivilegeVisibilityDecision {
+  bool completed = false;
+  bool allowed = false;
+  scratchbird::engine::internal_api::EngineApiDiagnostic diagnostic;
+};
+
+PrivilegeVisibilityDecision PrivilegeObjectAllowsCurrentPrincipal(
     const scratchbird::engine::internal_api::EngineRequestContext& api_context,
     const PrivilegeObjectDescriptor& object,
     const PrivilegeTextRule& privilege) {
-  if (!privilege.supported) return false;
-  if (!context.user_uuid.empty() && LowerAscii(object.owner_uuid) == LowerAscii(context.user_uuid)) {
-    return true;
+  scratchbird::engine::internal_api::EngineEvaluateVisibilityRequest request;
+  request.context = api_context;
+  request.operation_id = "security.evaluate_visibility";
+  request.target_object.uuid.canonical = object.uuid;
+  request.target_object.object_kind = object.object_class;
+  request.required_right = privilege.all_privileges
+                               ? "VISIBLE"
+                               : privilege.security_right;
+  request.target_owner_uuid.canonical = object.owner_uuid;
+  request.allow_target_owner = true;
+  request.allow_materialized_grant = !privilege.all_privileges;
+  request.requested_right_valid = privilege.supported;
+  request.administrative_rights = {"SEC_GRANT_ADMIN", "POLICY_ADMIN"};
+  const auto evaluated =
+      scratchbird::engine::internal_api::EngineEvaluateVisibility(request);
+  if (evaluated.ok) {
+    return PrivilegeVisibilityDecision{true, evaluated.visible, {}};
   }
-  if (scratchbird::engine::internal_api::SecurityContextHasAnyAdmin(
-          api_context, {"SEC_GRANT_ADMIN", "POLICY_ADMIN"})) {
-    return true;
+  if (!evaluated.diagnostics.empty() &&
+      evaluated.diagnostics.front().code == "SECURITY.AUTHORIZATION.DENIED") {
+    return PrivilegeVisibilityDecision{true, false,
+                                       evaluated.diagnostics.front()};
   }
-  if (!privilege.all_privileges &&
-      scratchbird::engine::internal_api::IsKnownSecurityRight(privilege.security_right) &&
-      scratchbird::engine::internal_api::SecurityContextHasRight(
-          api_context, privilege.security_right, object.uuid)) {
-    return true;
-  }
-  return false;
+  return PrivilegeVisibilityDecision{
+      false, false,
+      evaluated.diagnostics.empty()
+          ? scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+                "SECURITY.AUTHORIZATION.DENIED",
+                "security.visibility.missing_diagnostic",
+                "visibility evaluation failed without a diagnostic")
+          : evaluated.diagnostics.front()};
 }
 
 bool PrivilegePrincipalAllowed(const FunctionCallRequest& request,

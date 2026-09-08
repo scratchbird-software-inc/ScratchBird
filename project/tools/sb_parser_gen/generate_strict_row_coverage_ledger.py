@@ -9965,6 +9965,15 @@ SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "sbsql_sbsfc_045_privilege_predicate_runtime_conformance.cpp"
 )
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_visibility_parent_process_e2e"
+)
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+)
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_CLIENT_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp"
+)
 SBSFC045_PRIVILEGE_PREDICATE_ROW_EVIDENCE = {
     "SBSQL-12D9D5393953": {"function_id": "sb.scalar.has_table_privilege", "sblr_binding": "sblr.expr.scalar_has_table_privilege.v3", "engine_entrypoint": "has_table_privilege", "proof": "SBSFC045-has-table-privilege-current-owner"},
     "SBSQL-809276DC4FE0": {"function_id": "sb.scalar.has_table_privilege", "sblr_binding": "sblr.expr.scalar_has_table_privilege.v3", "engine_entrypoint": "has_table_privilege", "proof": "SBSFC045-has-table-privilege-optional-user"},
@@ -12250,13 +12259,13 @@ def sbsfc045_privilege_predicate_classification(
         "parser_evidence": f"{SBSFC045_PRIVILEGE_PREDICATE_FIXTURE_CSV};fixture_id={expected_proof};surface_id={surface['surface_id']};row_labeled_privilege_predicate_fixture_evidence",
         "binder_evidence": f"{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE};surface_label_and_canonical_privilege_predicate_function_asserted;function_id={function_id}",
         "lowering_evidence": f"{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE};SBLR_QUERY_EVALUATE_PROJECTION;sblr_binding={sblr_binding};no_source_sql_text",
-        "server_admission_evidence": f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_CTEST};server_admission_admitted;operation_id=query.evaluate_projection;engine_dispatch_required",
-        "engine_runtime_evidence": f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_CTEST};internal_engine_privilege_predicate_function={engine_entrypoint};{expected_proof};SBLR_internal_engine_route;current_security_context_route;non_mutating_scalar_behavior",
+        "server_admission_evidence": f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST};authenticated_SBWP_TLS_listener_parser_SBPS_admission;operation_id=query.evaluate_projection;internal_security_evaluator_identity_absent",
+        "engine_runtime_evidence": f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST};ctest:{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_CTEST};engine_privilege_predicate_function={engine_entrypoint};{expected_proof};public_query_evaluate_projection_parent;internal_visibility_api;current_security_context_and_catalog_authority;non_mutating_scalar_behavior",
         "function_or_api_operation_id": f"{function_id};sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint}",
         "diagnostic_evidence": f"canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;{expected_proof};SQL_NULL_argument_returns_SQL_NULL_boolean;unknown_user_or_object_returns_false;SB_DIAG_FUNCTION_INVALID_INPUT_for_invalid_arity",
-        "fixture_evidence": f"{SBSFC045_PRIVILEGE_PREDICATE_FIXTURE_CSV};ctest:{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_CTEST};ctest:{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_CTEST};source={SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_SOURCE};projection_source={SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE}",
+        "fixture_evidence": f"{SBSFC045_PRIVILEGE_PREDICATE_FIXTURE_CSV};ctest:{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_CTEST};ctest:{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST};source={SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_SOURCE};projection_source={SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE};public_e2e_source={SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_SOURCE};public_client_source={SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_CLIENT_SOURCE}",
         "evidence_complete": "yes",
-        "notes": "SBSFC-045 bounded privilege predicate scalar closure. Evidence covers has_table_privilege, has_table_privilege([user,]table_name,privilege), has_column_privilege, has_column_privilege([user,]table_name,column_name,privilege), has_function_privilege, has_function_privilege([user,]function_name,privilege), has_schema_privilege, and has_schema_privilege([user,]schema_name,privilege). Runtime behavior is non-mutating, SBLR-internal, resolves the optional user only against the current engine principal, reads engine-owned MGA relation/column metadata for table and column checks, uses canonical builtin/schema context for function and schema checks, propagates SQL NULL arguments to SQL NULL boolean, returns false for unknown users/objects/columns/functions/schemas or unsupported privilege text, and does not perform parser SQL execution, reference execution, WAL/recovery shortcut, SQLite shortcut, mutation, or cluster-private behavior.",
+        "notes": "SBSFC-045 bounded privilege predicate scalar closure. Evidence covers has_table_privilege, has_table_privilege([user,]table_name,privilege), has_column_privilege, has_column_privilege([user,]table_name,column_name,privilege), has_function_privilege, has_function_privilege([user,]function_name,privilege), has_schema_privilege, and has_schema_privilege([user,]schema_name,privilege). The authenticated public process executes every current-principal and optional-user signature through SBWP/TLS, the parser, canonical query.evaluate_projection SBLR, SBPS, server admission, function dispatch, and the internal visibility API. Runtime behavior is non-mutating, resolves the optional user only against the current engine principal, uses engine-owned relation, column, builtin, schema, and security authority, returns false for unknown objects or unsupported privilege text, and never exposes the internal evaluator as a public SBLR operation. No privilege mutation or cluster-positive behavior is claimed.",
     }
 
 def sbsfc046_session_admin_classification(

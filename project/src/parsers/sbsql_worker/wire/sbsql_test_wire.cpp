@@ -20743,6 +20743,182 @@ struct ExactAnonymousParameterProjectionRoute {
   std::string output_name;
 };
 
+struct ExactSecurityPrivilegeProjectionArgument {
+  std::string value;
+};
+
+struct ExactSecurityPrivilegeProjectionRoute {
+  std::string output_name;
+  std::string function_id;
+  std::vector<ExactSecurityPrivilegeProjectionArgument> arguments;
+};
+
+std::optional<ExactSecurityPrivilegeProjectionRoute>
+DecodeExactSecurityPrivilegeProjectionRoute(const SblrEnvelope& lowered) {
+  if (lowered.operation_id != "query.evaluate_projection" ||
+      lowered.sblr_opcode != "SBLR_QUERY_EVALUATE_PROJECTION" ||
+      lowered.operation_family != "sblr.query.relational.v3" ||
+      !lowered.resolved_object_uuids.empty()) {
+    return std::nullopt;
+  }
+
+  const auto envelope_kind =
+      ReadLoweredJsonStringField(lowered.payload, "query_envelope_kind");
+  const auto query_operation =
+      ReadLoweredJsonStringField(lowered.payload, "query_operation_id");
+  const auto projection_count =
+      ReadLoweredJsonStringField(lowered.payload, "projection_count");
+  const auto output_name =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_name");
+  const auto expression_kind = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_kind");
+  const auto expression_opcode = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_expr_opcode");
+  const auto result_type =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_type");
+  const auto result_value =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_value");
+  const auto result_is_null =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_is_null");
+  const auto function_id =
+      ReadLoweredJsonStringField(lowered.payload, "projection_0_function_id");
+  const auto argument_count = ReadLoweredJsonStringField(
+      lowered.payload, "projection_0_function_arg_count");
+  const auto source_relation_required = ReadLoweredJsonBooleanField(
+      lowered.payload, "source_relation_required");
+  const auto row_storage_touched = ReadLoweredJsonBooleanField(
+      lowered.payload, "row_storage_touched");
+  const auto mga_finality_claimed = ReadLoweredJsonBooleanField(
+      lowered.payload, "mga_finality_claimed");
+  const auto parser_authorizes = ReadLoweredJsonBooleanField(
+      lowered.payload, "parser_authorizes");
+  const auto name_text_included = ReadLoweredJsonBooleanField(
+      lowered.payload, "name_text_included");
+  const auto sql_text_included = ReadLoweredJsonBooleanField(
+      lowered.payload, "sql_text_included");
+
+  const auto required_argument_count = [&]() -> std::optional<std::size_t> {
+    if (!function_id.present) return std::nullopt;
+    if (function_id.value == "sb.scalar.has_table_privilege" ||
+        function_id.value == "sb.scalar.has_function_privilege" ||
+        function_id.value == "sb.scalar.has_schema_privilege") {
+      if (argument_count.value == "2") return 2;
+      if (argument_count.value == "3") return 3;
+      return std::nullopt;
+    }
+    if (function_id.value == "sb.scalar.has_column_privilege") {
+      if (argument_count.value == "3") return 3;
+      if (argument_count.value == "4") return 4;
+    }
+    return std::nullopt;
+  }();
+  if (!envelope_kind.valid || !query_operation.valid ||
+      !projection_count.valid || !output_name.valid ||
+      !expression_kind.valid || !expression_opcode.valid ||
+      !result_type.valid || !result_value.valid || !result_is_null.valid ||
+      !function_id.valid || !argument_count.valid ||
+      !source_relation_required.valid || !row_storage_touched.valid ||
+      !mga_finality_claimed.valid || !parser_authorizes.valid ||
+      !name_text_included.valid || !sql_text_included.valid ||
+      !envelope_kind.present || envelope_kind.value != "scalar_projection" ||
+      !query_operation.present ||
+      query_operation.value != "query.evaluate_projection" ||
+      !projection_count.present || projection_count.value != "1" ||
+      !output_name.present || output_name.value.empty() ||
+      !expression_kind.present || expression_kind.value != "function" ||
+      !expression_opcode.present ||
+      expression_opcode.value != "SBLR_FUNCTION_CALL" ||
+      !result_type.present || result_type.value != "boolean" ||
+      !result_value.present || !result_value.value.empty() ||
+      !result_is_null.present || result_is_null.value != "false" ||
+      !function_id.present || !argument_count.present ||
+      !required_argument_count.has_value() ||
+      !source_relation_required.present || source_relation_required.value ||
+      !row_storage_touched.present || row_storage_touched.value ||
+      !mga_finality_claimed.present || mga_finality_claimed.value ||
+      !parser_authorizes.present || parser_authorizes.value ||
+      !name_text_included.present || name_text_included.value ||
+      !sql_text_included.present || sql_text_included.value) {
+    return std::nullopt;
+  }
+
+  ExactSecurityPrivilegeProjectionRoute route;
+  route.output_name = output_name.value;
+  route.function_id = function_id.value;
+  route.arguments.reserve(*required_argument_count);
+  for (std::size_t index = 0; index < *required_argument_count; ++index) {
+    const std::string prefix =
+        "projection_0_arg_" + std::to_string(index) + "_";
+    const auto name =
+        ReadLoweredJsonStringField(lowered.payload, prefix + "name");
+    const auto kind =
+        ReadLoweredJsonStringField(lowered.payload, prefix + "expr_kind");
+    const auto type =
+        ReadLoweredJsonStringField(lowered.payload, prefix + "type");
+    const auto value =
+        ReadLoweredJsonStringField(lowered.payload, prefix + "value");
+    const auto is_null =
+        ReadLoweredJsonStringField(lowered.payload, prefix + "is_null");
+    const auto literal_family = ReadLoweredJsonStringField(
+        lowered.payload, prefix + "literal_family");
+    if (!name.valid || name.present || !kind.valid || !kind.present ||
+        kind.value != "literal" || !type.valid || !type.present ||
+        type.value != "text" || !value.valid || !value.present ||
+        value.value.empty() || value.value.size() > 4096 ||
+        value.value.find('\0') != std::string::npos || !is_null.valid ||
+        !is_null.present || is_null.value != "false" ||
+        !literal_family.valid || !literal_family.present ||
+        literal_family.value != "string") {
+      return std::nullopt;
+    }
+    route.arguments.push_back({value.value});
+  }
+  const auto unexpected_argument = ReadLoweredJsonStringField(
+      lowered.payload,
+      "projection_0_arg_" + std::to_string(*required_argument_count) +
+          "_expr_kind");
+  if (!unexpected_argument.valid || unexpected_argument.present) {
+    return std::nullopt;
+  }
+  return route;
+}
+
+std::optional<std::string>
+BuildCanonicalSecurityPrivilegeProjectionRouteTextEnvelope(
+    const ExactSecurityPrivilegeProjectionRoute& projection) {
+  if (projection.output_name.empty() || projection.arguments.empty()) {
+    return std::nullopt;
+  }
+  std::string route =
+      "operation_id=query.evaluate_projection\n"
+      "opcode=SBLR_QUERY_EVALUATE_PROJECTION\n";
+  AppendRouteTextOperand(&route, "projection_count", "1");
+  AppendRouteTextOperand(&route, "projection_0_name",
+                         projection.output_name);
+  AppendRouteTextOperand(&route, "projection_0_expr_kind", "function");
+  AppendRouteTextOperand(&route, "projection_0_expr_opcode",
+                         "SBLR_FUNCTION_CALL");
+  AppendRouteTextOperand(&route, "projection_0_type", "boolean");
+  AppendRouteTextOperand(&route, "projection_0_value", "");
+  AppendRouteTextOperand(&route, "projection_0_is_null", "false");
+  AppendRouteTextOperand(&route, "projection_0_function_id",
+                         projection.function_id);
+  AppendRouteTextOperand(&route, "projection_0_function_arg_count",
+                         std::to_string(projection.arguments.size()));
+  for (std::size_t index = 0; index < projection.arguments.size(); ++index) {
+    const std::string prefix =
+        "projection_0_arg_" + std::to_string(index) + "_";
+    AppendRouteTextOperand(&route, prefix + "name",
+                           "arg" + std::to_string(index));
+    AppendRouteTextOperand(&route, prefix + "expr_kind", "literal");
+    AppendRouteTextOperand(&route, prefix + "type", "text");
+    AppendRouteTextOperand(&route, prefix + "value",
+                           projection.arguments[index].value);
+    AppendRouteTextOperand(&route, prefix + "is_null", "false");
+  }
+  return route;
+}
+
 std::optional<ExactAnonymousParameterProjectionRoute>
 DecodeExactAnonymousParameterProjectionRoute(const SblrEnvelope& lowered) {
   if (lowered.operation_id != "query.evaluate_projection" ||
@@ -29945,6 +30121,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
        lowered.sblr_opcode == "SBLR_CLUSTER_INSPECT_PROVIDER");
   const auto exact_parameter_projection_route =
       DecodeExactAnonymousParameterProjectionRoute(lowered);
+  const auto exact_security_privilege_projection_route =
+      DecodeExactSecurityPrivilegeProjectionRoute(lowered);
   const auto structural_parameter_count = std::ranges::count_if(
       cst.tokens, [](const Token& token) {
         return token.kind == TokenKind::kParameter;
@@ -29959,6 +30137,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
        canonical_show_version_direct_route ||
        canonical_zero_operand_direct_route ||
        canonical_security_policy_show_route ||
+       exact_security_privilege_projection_route.has_value() ||
        canonical_parameter_projection_route)) {
     const bool embedded_native_route =
         config_.embedded_engine_direct && embedded_client_ != nullptr;
@@ -30154,6 +30333,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     } else if (canonical_parameter_projection_route) {
       const auto route = BuildCanonicalParameterProjectionRouteTextEnvelope(
           lowered, *parameter_prebind_state);
+      if (route) {
+        native_submission = BuildCanonicalRouteTextSubmission(
+            *route, *native_statement_context, session_);
+      }
+    } else if (exact_security_privilege_projection_route.has_value()) {
+      const auto route =
+          BuildCanonicalSecurityPrivilegeProjectionRouteTextEnvelope(
+              *exact_security_privilege_projection_route);
       if (route) {
         native_submission = BuildCanonicalRouteTextSubmission(
             *route, *native_statement_context, session_);

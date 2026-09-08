@@ -16,8 +16,20 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_VISIBILITY_API
-struct EngineEvaluateVisibilityRequest : EngineApiRequest {};
-struct EngineEvaluateVisibilityResult : EngineApiResult {};
+struct EngineEvaluateVisibilityRequest : EngineApiRequest {
+  // Typed, engine-internal authority inputs. Public SBLR operands never
+  // populate these fields; admitted parent operations derive them from the
+  // resolved object and the closed privilege grammar.
+  std::string required_right;
+  EngineUuid target_owner_uuid;
+  bool allow_target_owner = false;
+  bool allow_materialized_grant = true;
+  bool requested_right_valid = true;
+  std::vector<std::string> administrative_rights;
+};
+struct EngineEvaluateVisibilityResult : EngineApiResult {
+  bool visible = false;
+};
 EngineEvaluateVisibilityResult EngineEvaluateVisibility(const EngineEvaluateVisibilityRequest& request);
 
 // SEARCH_KEY: CLUSTER_PROJECTION_REDACTION

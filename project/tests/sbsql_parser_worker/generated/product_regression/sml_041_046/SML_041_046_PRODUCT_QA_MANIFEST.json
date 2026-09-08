@@ -66,7 +66,7 @@
     "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
     "schema_version": "sbsql.sml_044_046.hardening_oracle.v1"
   },
-  "manifest_sha256": "3afeb377d49946229c172e2886155c5b232c4315e471e97a093a4c2ab76cf26b",
+  "manifest_sha256": "9ea2b1a703ded376f7d064cd5fbc7f0ee2a0988c1320a37cfe901a471fc067d1",
   "network_dependency": false,
   "product_qa_script_corpus": [
     {
@@ -418,7 +418,7 @@
         },
         {
           "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
-          "sha256": "7b1da87568789255d302ced81bde17b9c23a3793e36a7fd79eb39df982bb02c8"
+          "sha256": "f7d9cd3f142c0907853e41337a23feda831c21403390f17c127caff50b341a1b"
         }
       ],
       "evidence_paths": [
@@ -426,7 +426,7 @@
         "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv"
       ],
       "network_dependency": false,
-      "row_sha256": "4955fd22c6e1b2eda92574995de64b75c417561db013b2bde616ba24c123772b",
+      "row_sha256": "a2f498c6de244593d830f2fb346a0384c3d1ccc858a711f0bcd3cda72cd51ff4",
       "script_hash": "ba9d3854ea2c790ac35ba4ff11b8deeb0746d8dfab001c0b585b3d8d620e10f0",
       "sml_id": "SML-042",
       "suite_class": "release",
@@ -4605,17 +4605,17 @@
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv",
       "row_count": 2619,
-      "row_sha256": "037cae6cac8b11b97b83ac5e4679a614a601df37ad38f19f7e9320e61248523b",
-      "sha256": "7b1da87568789255d302ced81bde17b9c23a3793e36a7fd79eb39df982bb02c8",
-      "size_bytes": 5051548,
+      "row_sha256": "6beab918c4ebc6e3b5ec77223cf8ee4be111ef3db62e76c358bce507c120af10",
+      "sha256": "f7d9cd3f142c0907853e41337a23feda831c21403390f17c127caff50b341a1b",
+      "size_bytes": 5054108,
       "surface_id_set_sha256": "c419bcbf13957f051617ac608a6cc7ab06d880cdca68da36c5de9f0019e17452"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/PER_ROW_EVIDENCE_MANIFEST.csv",
       "row_count": 2619,
-      "row_sha256": "8cf94646a8ad701a31256119f65bc51226352108b456951c4d2a561a90108128",
-      "sha256": "c6a88cf4c40e31a7a89e220eceb39b5930972934afbb11eda191dcfcfb0e65d1",
-      "size_bytes": 6433195,
+      "row_sha256": "974a02de76ad780a1fe5659f7ec990bcd98cd4d376c9e870b48f788b558c56b6",
+      "sha256": "8934ad1fa99c31c3057cd625eb99828e1efbede424611cbc9df46ef3c705915b",
+      "size_bytes": 6436003,
       "surface_id_set_sha256": "c419bcbf13957f051617ac608a6cc7ab06d880cdca68da36c5de9f0019e17452"
     },
     {

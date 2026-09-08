@@ -66,6 +66,106 @@ int main(int argc, char** argv) {
       std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
     return 3;
   }
+  if (operation == "security-visibility-parent") {
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& failed) {
+      std::cerr << "CSC-TEST-005826 SECURITY_VISIBILITY_PARENT " << phase
+                << " accepted=" << failed.accepted
+                << " operation=" << failed.server_operation_id
+                << " row_count=" << failed.server_row_count
+                << " result=" << failed.server_result_payload << '\n';
+      for (const auto& diagnostic : failed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+    };
+    const auto require_projection = [&](std::string_view sql,
+                                        std::string_view field,
+                                        bool expected) {
+      auto projected = session.RunPipeline(sql, true);
+      const std::string expected_row =
+          "row[0]=" + std::string(field) + "=" +
+          (expected ? "1" : "0");
+      const std::string expected_metadata =
+          "row_meta[0]=" + std::string(field) + ":boolean:not_null";
+      const bool exact =
+          projected.accepted && !projected.outcome_unknown &&
+          !projected.messages.has_errors() &&
+          projected.server_operation_id == "query.evaluate_projection" &&
+          projected.server_cursor_uuid.empty() &&
+          projected.server_row_count == 1 &&
+          projected.server_result_payload.find(
+              "operation_id=query.evaluate_projection") !=
+              std::string::npos &&
+          projected.server_result_payload.find(expected_row) !=
+              std::string::npos &&
+          projected.server_result_payload.find(expected_metadata) !=
+              std::string::npos &&
+          projected.sblr_payload.find("security.evaluate_visibility") ==
+              std::string::npos &&
+          projected.sblr_payload.find(sql) == std::string::npos;
+      if (!exact) dump_failure(field, projected);
+      return exact;
+    };
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+    const bool table_allowed = require_projection(
+        "SELECT has_table_privilege('app.customers', 'SELECT') "
+        "AS table_allowed;",
+        "table_allowed", true);
+    const bool table_optional_user_allowed = require_projection(
+        "SELECT has_table_privilege('current_user', 'app.customers', "
+        "'SELECT') AS table_optional_user_allowed;",
+        "table_optional_user_allowed", true);
+    const bool column_allowed = require_projection(
+        "SELECT has_column_privilege('app.customers', 'id', 'SELECT') "
+        "AS column_allowed;",
+        "column_allowed", true);
+    const bool column_optional_user_allowed = require_projection(
+        "SELECT has_column_privilege('current_user', 'app.customers', 'id', "
+        "'SELECT') AS column_optional_user_allowed;",
+        "column_optional_user_allowed", true);
+    const bool function_allowed = require_projection(
+        "SELECT has_function_privilege('has_table_privilege', 'EXECUTE') "
+        "AS function_allowed;",
+        "function_allowed", true);
+    const bool function_optional_user_allowed = require_projection(
+        "SELECT has_function_privilege('current_user', "
+        "'has_table_privilege', 'EXECUTE') "
+        "AS function_optional_user_allowed;",
+        "function_optional_user_allowed", true);
+    const bool schema_allowed = require_projection(
+        "SELECT has_schema_privilege('app', 'USAGE') AS schema_allowed;",
+        "schema_allowed", true);
+    const bool schema_optional_user_allowed = require_projection(
+        "SELECT has_schema_privilege('current_user', 'app', 'USAGE') "
+        "AS schema_optional_user_allowed;",
+        "schema_optional_user_allowed", true);
+    const bool invalid_denied = require_projection(
+        "SELECT has_table_privilege('app.customers', 'NOT_A_RIGHT') "
+        "AS invalid_denied;",
+        "invalid_denied", false);
+    auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+    if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+      dump_failure("rollback_failed", rolled_back);
+      return 4;
+    }
+    if (!table_allowed || !table_optional_user_allowed || !column_allowed ||
+        !column_optional_user_allowed || !function_allowed ||
+        !function_optional_user_allowed || !schema_allowed ||
+        !schema_optional_user_allowed || !invalid_denied) {
+      return 4;
+    }
+    std::cout << "CSC-TEST-005826 SECURITY_VISIBILITY_PARENT accepted "
+                 "canonical_sblr=true internal_evaluator_hidden=true "
+                 "table=true column=true function=true schema=true "
+                 "optional_user_signatures=true "
+                 "invalid_right=false transaction_rolled_back=true\n";
+    return 0;
+  }
   if (operation == "security-alter-policy" ||
       operation == "security-alter-policy-observe" ||
       operation == "security-alter-policy-rollback" ||

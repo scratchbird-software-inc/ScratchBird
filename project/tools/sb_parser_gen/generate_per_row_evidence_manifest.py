@@ -10521,9 +10521,19 @@ SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE = (
     "project/tests/sbsql_parser_worker/generated/full_surface/"
     "sbsql_sbsfc_045_privilege_predicate_runtime_conformance.cpp"
 )
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST = (
+    "sbsql_sblr_alignment_ia09_security_visibility_parent_process_e2e"
+)
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+)
+SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_CLIENT_SOURCE = (
+    "project/tests/sbsql_sblr_alignment/ia01_source_map_process_client.cpp"
+)
 SBSFC045_PRIVILEGE_PREDICATE_CTEST_LABEL = (
     "sbsql_surface_to_sblr_full_implementation_closure;"
-    "sbsql_parser_worker;SBSFC-045-privilege-predicate;"
+    "sbsql_parser_worker;SBSFC-045-privilege-predicate;IA-09;"
+    "SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1;CSC-TEST-005826;"
     "sbsql_e2e_passed"
 )
 SBSFC045_PRIVILEGE_PREDICATE_ROW_EVIDENCE = {
@@ -18719,13 +18729,15 @@ def classify(
         return {
             "final_state": "e2e_passed",
             "ctest_label": SBSFC045_PRIVILEGE_PREDICATE_CTEST_LABEL,
-            "fixture_path": f"{SBSFC045_PRIVILEGE_PREDICATE_FIXTURE_CSV};{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_SOURCE};{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE}",
+            "fixture_path": f"{SBSFC045_PRIVILEGE_PREDICATE_FIXTURE_CSV};{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_SOURCE};{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_SOURCE};{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_SOURCE};{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_CLIENT_SOURCE}",
             "implementation_refs": (
                 f"function_id={function_id};surface_id={surface_id};"
                 f"sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint};"
                 "parser_generated_projection_payload=true;server_public_abi_admission=true;"
                 "engine_native_function_dispatch=true;current_security_context_route=true;"
                 "engine_catalog_privilege_metadata_route=true;"
+                "authenticated_public_process_e2e=true;"
+                "internal_visibility_api=true;internal_evaluator_sblr_addressable=false;"
                 "mutation_attempted=false;mutation_committed=false"
             ),
             "diagnostic_proof": (
@@ -18736,15 +18748,15 @@ def classify(
             ),
             "result_proof": (
                 f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_RUNTIME_CTEST};"
-                f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_PROJECTION_CTEST};"
+                f"ctest:{SBSFC045_PRIVILEGE_PREDICATE_PUBLIC_E2E_CTEST};"
                 f"surface_id={surface_id};engine_entrypoint={engine_entrypoint};{proof}"
             ),
-            "evidence_collected_utc": "static_existing_ctest_evidence",
+            "evidence_collected_utc": "verified_public_process_e2e_2026_09_08",
             "promoter_slice": "SBSFC-045-privilege-predicate-batch",
             "notes": (
                 "Bounded SBSFC-045 privilege predicate row-evidence override; exactly the table, column, function, and schema privilege predicate target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, optional-user resolution against the current principal, engine-owned MGA relation/column metadata for table and column checks, canonical builtin/schema context for function and schema checks, SQL NULL propagation, false for unknown users or objects, no SQL text execution, no reference execution, no WAL or SQLite finality shortcut, and no mutation. "
-                "No cluster-positive behavior, privilege GRANT/REVOKE mutation, security catalog DDL, external provider lookup, or final no-grey closure is claimed."
+                "Evidence proves every current-principal and optional-user signature through authenticated SBWP/TLS, parser bind/lower, canonical query.evaluate_projection SBLR, SBPS/server admission, engine scalar dispatch, and the internal visibility API. It proves engine-owned relation, column, builtin, schema, and security authority, exact allow/deny results, internal evaluator non-addressability, independent process repetition, no source SQL in SBLR, and no mutation. "
+                "No cluster-positive behavior, privilege GRANT/REVOKE mutation, security catalog DDL, external provider lookup, policy-evaluation parent, or final no-grey closure is claimed."
             ),
         }
 

@@ -9592,6 +9592,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   const auto& package = StandardFunctionSeedPackage();
   functions::FunctionCallRequest function_request;
   function_request.context.function_id = request.function_id;
+  function_request.context.engine_request_context = &request.context;
   function_request.context.security_allowed = request.context.security_context_present;
   function_request.context.policy_allowed = request.context.security_context_present;
   function_request.context.dependency_available = true;

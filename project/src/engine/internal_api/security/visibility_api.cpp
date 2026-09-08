@@ -104,20 +104,56 @@ EngineEvaluateClusterProjectionRedactionResult ClusterProjectionRedactionFailure
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_VISIBILITY_API_BEHAVIOR
 EngineEvaluateVisibilityResult EngineEvaluateVisibility(const EngineEvaluateVisibilityRequest& request) {
-  auto result = MakeApiBehaviorSuccess<EngineEvaluateVisibilityResult>(request.context, "security.evaluate_visibility");
-  const std::string right = SecurityOptionValue(request, "visibility_right:").empty()
-      ? "VISIBLE"
-      : SecurityOptionValue(request, "visibility_right:");
-  const bool visible = request.target_object.uuid.canonical.empty() ||
-                       SecurityContextHasRight(request.context, right, request.target_object.uuid.canonical);
+  auto result = MakeApiBehaviorSuccess<EngineEvaluateVisibilityResult>(
+      request.context, "security.evaluate_visibility");
+  const std::string option_right =
+      SecurityOptionValue(request, "visibility_right:");
+  const std::string right = !request.required_right.empty()
+                                ? request.required_right
+                                : (option_right.empty() ? "VISIBLE"
+                                                        : option_right);
+  if (request.context.query_cancellation_requested &&
+      request.context.query_cancellation_requested()) {
+    result.ok = false;
+    result.visible = false;
+    result.diagnostics.push_back(
+        MakeSecurityDiagnostic("PROCESS.CANCELLED",
+                               "visibility_evaluation_cancelled"));
+    AddApiBehaviorEvidence(&result, "visibility_decision", "cancelled");
+    return result;
+  }
+
+  const bool valid_right =
+      request.requested_right_valid && IsKnownSecurityRight(right);
+  const bool owner = request.allow_target_owner &&
+                     !request.target_owner_uuid.canonical.empty() &&
+                     !request.context.principal_uuid.canonical.empty() &&
+                     request.target_owner_uuid.canonical ==
+                         request.context.principal_uuid.canonical;
+  const bool administrator = valid_right &&
+      SecurityContextHasAnyAdmin(request.context,
+                                request.administrative_rights);
+  const bool granted = valid_right && request.allow_materialized_grant &&
+      SecurityContextHasRight(request.context, right,
+                             request.target_object.uuid.canonical);
+  const bool visible = request.target_object.uuid.canonical.empty()
+                           ? request.requested_right_valid
+                           : valid_right && (owner || administrator || granted);
+  result.visible = visible;
   AddApiBehaviorEvidence(&result, "visibility_decision", visible ? "allow" : "deny");
   AddApiBehaviorRow(&result, {{"decision", visible ? "allow" : "deny"},
                               {"right", right},
                               {"target_uuid", request.target_object.uuid.canonical},
-                              {"target_kind", request.target_object.object_kind}});
+                              {"target_kind", request.target_object.object_kind},
+                              {"authority", owner ? "target_owner" :
+                                             (administrator ? "administrator" :
+                                              (granted ? "materialized_grant" :
+                                                         "none"))}});
   if (!visible) {
     result.ok = false;
-    result.diagnostics.push_back(MakeSecurityDiagnostic("SECURITY.AUTHORIZATION.DENIED", right));
+    result.diagnostics.push_back(MakeSecurityDiagnostic(
+        "SECURITY.AUTHORIZATION.DENIED",
+        valid_right ? right : "unknown_or_missing_right:" + right));
   }
   return result;
 }

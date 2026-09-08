@@ -159,6 +159,23 @@ set_tests_properties(sbsql_sblr_alignment_ia09_security_profile_refusal PROPERTI
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-09;security;exact_refusal;no_side_effect;contract"
   TIMEOUT 30)
 
+add_executable(sbsql_sblr_alignment_ia09_security_visibility_parent_route
+  ia09_security_visibility_parent_route_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia09_security_visibility_parent_route PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_ia09_security_visibility_parent_route PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_ia09_security_visibility_parent_route PRIVATE
+  sb_engine_functions sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_ia09_security_visibility_parent_route
+  COMMAND sbsql_sblr_alignment_ia09_security_visibility_parent_route)
+set_tests_properties(
+  sbsql_sblr_alignment_ia09_security_visibility_parent_route PROPERTIES
+  LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;sbsql_sblr_alignment_fault;IA-09;SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1;CSC-TEST-005825;CSC-TEST-005828;materialized_authorization;cancellation_atomicity;contract"
+  TIMEOUT 30)
+
 add_executable(sbsql_sblr_alignment_ia01_literal_runtime
   ia01_literal_runtime_test.cpp)
 target_compile_features(sbsql_sblr_alignment_ia01_literal_runtime PRIVATE cxx_std_20)
@@ -721,6 +738,27 @@ endfunction()
 cmake_language(
   DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
   CALL sbsql_sblr_alignment_register_ia01_source_map_process_e2e)
+
+function(sbsql_sblr_alignment_register_ia09_security_visibility_parent_process_e2e)
+  if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)
+    add_test(
+      NAME sbsql_sblr_alignment_ia09_security_visibility_parent_process_e2e
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia01_source_map_process_e2e.py"
+              --server $<TARGET_FILE:sb_server>
+              --client $<TARGET_FILE:sbsql_sblr_alignment_ia01_source_map_process_client>
+              --operation security-visibility-parent
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_sblr_alignment_ia09_security_visibility_parent_e2e")
+    set_tests_properties(
+      sbsql_sblr_alignment_ia09_security_visibility_parent_process_e2e
+      PROPERTIES
+        LABELS "sbsql_surface_to_sblr_full_implementation_closure;sbsql_parser_worker;sbsql_sblr_alignment;sbsql_sblr_alignment_e2e;sbsql_e2e_passed;IA-09;SECURITY_POLICY_EVALUATION_PARENT_ROUTES_V1;SBSQL-12D9D5393953;SBSQL-809276DC4FE0;SBSQL-2B2F87582D90;SBSQL-BC5D89E8C4B8;SBSQL-590198041265;SBSQL-A88A53AD9C2D;SBSQL-F49AEC91691D;SBSQL-DB663563FC1F;CSC-TEST-005826;e2e;materialized_authorization;independent_authenticated_session"
+        TIMEOUT 240)
+  endif()
+endfunction()
+cmake_language(
+  DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+  CALL sbsql_sblr_alignment_register_ia09_security_visibility_parent_process_e2e)
 
 function(sbsql_sblr_alignment_register_ia01_source_artifact_container_process_e2e)
   if(TARGET sb_server AND TARGET sbsql_sblr_alignment_ia01_source_map_process_client)

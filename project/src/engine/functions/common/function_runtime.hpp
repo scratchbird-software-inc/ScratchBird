@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::engine::internal_api {
+struct EngineRequestContext;
+}
+
 namespace scratchbird::engine::functions {
 
 enum class FunctionImplementationState {
@@ -114,6 +118,13 @@ struct FunctionArgument {
 
 struct FunctionCallContext {
   scratchbird::engine::sblr::SblrExecutionContext sblr_context;
+  // Borrowed only for the synchronous duration of DispatchFunctionCall.  The
+  // full engine request context retains the authenticated authorization
+  // cohort and cancellation source which cannot be reconstructed from the
+  // public SBLR execution projection.  Function implementations must never
+  // retain this pointer.
+  const scratchbird::engine::internal_api::EngineRequestContext*
+      engine_request_context = nullptr;
   std::string function_id;
   std::string function_uuid;
   std::string package_name;

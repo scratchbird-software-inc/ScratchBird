@@ -315,6 +315,86 @@ bool CanonicalEvaluateProjectionTextOperands(
       *parser_bound == "false" && name_text && *name_text == "false";
 }
 
+bool CanonicalSecurityPrivilegeProjectionTextOperands(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
+  const auto operands = DecodeCanonicalTypedTextOperands(operation);
+  if (!operands) return false;
+
+  const auto projection_count =
+      CanonicalTextOperandValue(*operands, "projection_count");
+  const auto projection_name =
+      CanonicalTextOperandValue(*operands, "projection_0_name");
+  const auto expression_kind =
+      CanonicalTextOperandValue(*operands, "projection_0_expr_kind");
+  const auto expression_opcode =
+      CanonicalTextOperandValue(*operands, "projection_0_expr_opcode");
+  const auto type =
+      CanonicalTextOperandValue(*operands, "projection_0_type");
+  const auto value =
+      CanonicalTextOperandValue(*operands, "projection_0_value");
+  const auto is_null =
+      CanonicalTextOperandValue(*operands, "projection_0_is_null");
+  const auto function_id =
+      CanonicalTextOperandValue(*operands, "projection_0_function_id");
+  const auto argument_count = CanonicalTextOperandValue(
+      *operands, "projection_0_function_arg_count");
+  if (!projection_count || *projection_count != "1" || !projection_name ||
+      projection_name->empty() || !expression_kind ||
+      *expression_kind != "function" || !expression_opcode ||
+      *expression_opcode != "SBLR_FUNCTION_CALL" || !type ||
+      *type != "boolean" || !value || !value->empty() || !is_null ||
+      *is_null != "false" || !function_id || !argument_count) {
+    return false;
+  }
+
+  std::size_t expected_argument_count = 0;
+  if (*function_id == "sb.scalar.has_table_privilege" ||
+      *function_id == "sb.scalar.has_function_privilege" ||
+      *function_id == "sb.scalar.has_schema_privilege") {
+    if (*argument_count == "2") {
+      expected_argument_count = 2;
+    } else if (*argument_count == "3") {
+      expected_argument_count = 3;
+    } else {
+      return false;
+    }
+  } else if (*function_id == "sb.scalar.has_column_privilege") {
+    if (*argument_count == "3") {
+      expected_argument_count = 3;
+    } else if (*argument_count == "4") {
+      expected_argument_count = 4;
+    } else {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  if (operands->size() != 9 + expected_argument_count * 5) return false;
+
+  for (std::size_t index = 0; index < expected_argument_count; ++index) {
+    const std::string prefix =
+        "projection_0_arg_" + std::to_string(index) + "_";
+    const auto name = CanonicalTextOperandValue(*operands, prefix + "name");
+    const auto kind =
+        CanonicalTextOperandValue(*operands, prefix + "expr_kind");
+    const auto argument_type =
+        CanonicalTextOperandValue(*operands, prefix + "type");
+    const auto argument_value =
+        CanonicalTextOperandValue(*operands, prefix + "value");
+    const auto argument_is_null =
+        CanonicalTextOperandValue(*operands, prefix + "is_null");
+    if (!name || *name != "arg" + std::to_string(index) || !kind ||
+        *kind != "literal" || !argument_type || *argument_type != "text" ||
+        !argument_value || argument_value->empty() ||
+        argument_value->size() > 4096 ||
+        argument_value->find('\0') != std::string_view::npos ||
+        !argument_is_null || *argument_is_null != "false") {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool CanonicalTransactionCharacteristicsTextOperands(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
   const auto operands = DecodeCanonicalTypedTextOperands(operation);
@@ -1593,7 +1673,9 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
       stream.ok && stream.stream.operations.size() == 3 &&
       exact_evaluate_projection && !request.cluster_context_active &&
       !request.cluster_transaction_active && !request.route_fence_present &&
-      CanonicalEvaluateProjectionTextOperands(stream.stream.operations[1]);
+      (CanonicalEvaluateProjectionTextOperands(stream.stream.operations[1]) ||
+       CanonicalSecurityPrivilegeProjectionTextOperands(
+           stream.stream.operations[1]));
   if (exact_evaluate_projection && !exact_local_evaluate_projection) {
     return Refuse(
         request,
