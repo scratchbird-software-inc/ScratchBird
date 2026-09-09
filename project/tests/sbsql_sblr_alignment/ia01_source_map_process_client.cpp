@@ -2324,7 +2324,12 @@ END;)SBSQL";
     return 0;
   }
   if (operation == "security-create-privilege-template" ||
-      operation == "security-create-privilege-template-observe") {
+      operation == "security-create-privilege-template-observe" ||
+      operation == "security-create-privilege-template-rollback" ||
+      operation == "security-create-privilege-template-observe-absent" ||
+      operation == "security-create-privilege-template-hold" ||
+      operation == "security-create-privilege-template-hold-orphan" ||
+      operation == "security-create-privilege-template-observe-orphan-absent") {
     namespace carrier = scratchbird::engine::sblr;
     const auto dump_failure = [](std::string_view phase,
                                  const auto& failed) {
@@ -2353,16 +2358,21 @@ END;)SBSQL";
             return field.name == "detail" && field.value == detail;
           });
     };
-    constexpr std::string_view kSql =
-        "CREATE PRIVILEGE TEMPLATE future_readers_process_e2e "
-        "ON FUTURE TABLES GRANT SELECT TO alice WITH GRANT OPTION;";
+    const bool orphan = operation ==
+                            "security-create-privilege-template-hold-orphan" ||
+                        operation ==
+                            "security-create-privilege-template-observe-orphan-absent";
+    const std::string sql =
+        std::string("CREATE PRIVILEGE TEMPLATE ") +
+        (orphan ? "future_readers_orphan_e2e" : "future_readers_process_e2e") +
+        " ON FUTURE TABLES GRANT SELECT TO alice WITH GRANT OPTION;";
 
     auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
     if (!begun.accepted || begun.messages.has_errors()) {
       dump_failure("begin_failed", begun);
       return 4;
     }
-    auto created = session.RunPipeline(kSql, true);
+    auto created = session.RunPipeline(sql, true);
     if (operation == "security-create-privilege-template-observe") {
       const bool exact_visible_refusal =
           !created.accepted && !created.outcome_unknown &&
@@ -2426,6 +2436,36 @@ END;)SBSQL";
       dump_failure("terminal_contract_failed", created);
       std::cerr << "result_detail=" << detail << '\n';
       return 4;
+    }
+    if (operation == "security-create-privilege-template-hold" ||
+        operation == "security-create-privilege-template-hold-orphan") {
+      // The parent waits for validated PTRS before killing this client or the
+      // server. No rollback, detach, or destructor may run before that cut.
+      std::cout << "CSC-TEST-005830 PRIVILEGE_TEMPLATE pending=true "
+                   "canonical_sblr=true publication_barrier=passed\n"
+                << std::flush;
+      std::string unexpected_input;
+      std::getline(std::cin, unexpected_input);
+      std::cerr << "privilege_template_hold_released_without_fault\n";
+      return 4;
+    }
+    if (operation == "security-create-privilege-template-rollback" ||
+        operation == "security-create-privilege-template-observe-absent" ||
+        operation == "security-create-privilege-template-observe-orphan-absent") {
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!rolled_back.accepted || rolled_back.messages.has_errors()) {
+        dump_failure("rollback_failed", rolled_back);
+        return 4;
+      }
+      // A fresh authenticated session can bind and execute the exact name
+      // only if the prior uncommitted/aborted definition is invisible. Roll
+      // back this probe so it cannot make a later observer pass by collision.
+      std::cout << "CSC-TEST-005830 PRIVILEGE_TEMPLATE "
+                << (operation == "security-create-privilege-template-rollback"
+                        ? "rollback=true"
+                        : "observer_absent=true independent_session=true")
+                << " canonical_sblr=true probe_rolled_back=true\n";
+      return 0;
     }
     auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
     if (!committed.accepted || committed.messages.has_errors()) {
