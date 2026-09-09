@@ -140,6 +140,9 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "WITH")) {
+      return ParseHeapCteIdentity();
+    }
     const auto contains_word = [&](const std::string_view wanted) {
       return std::ranges::any_of(tokens_, [&](const auto* token) {
         return !token->quoted && IsWord(*token, wanted);
@@ -7648,6 +7651,57 @@ class NativeRelationalParser final {
     document_.messages.diagnostics.push_back(MakeDiagnostic(
         "QOW-DIAG-QRY-001-AST-MALFORMED", "ERROR", std::string(message),
         "sbp_sbsql.native_relational_parser", std::move(fields)));
+  }
+
+  NativeRelationalAstDocument ParseHeapCteIdentity() {
+    const auto refuse = [&]() {
+      RefuseExact("SBSQL.IMPL.NOT_AVAILABLE",
+                  "native CTE transport requires one nonrecursive SELECT * "
+                  "heap producer and SELECT * from that CTE");
+      return FinishRefusal();
+    };
+    if (cst_.messages.has_errors() || tokens_.size() > kMaximumNativeRelationalTokens ||
+        tokens_.size() < 13 || tokens_[1]->kind != TokenKind::kIdentifier ||
+        !IsWord(*tokens_[2], "AS") || tokens_[3]->text != "(" ||
+        !IsWord(*tokens_[4], "SELECT") || tokens_[5]->text != "*" ||
+        !IsWord(*tokens_[6], "FROM")) {
+      return refuse();
+    }
+    const NativeIdentifierAstNode name{
+        tokens_[1]->text, tokens_[1]->quoted, TokenSourceRange(*tokens_[1])};
+    // A qualified catalog name cannot recurse into the local CTE scope.
+    // Unqualified self-reference is refused before requesting a catalog UUID.
+    std::size_t close = 7;
+    if (tokens_[close]->kind != TokenKind::kIdentifier) return refuse();
+    ++close;
+    while (close + 1 < tokens_.size() && tokens_[close]->text == "." &&
+           tokens_[close + 1]->kind == TokenKind::kIdentifier) {
+      close += 2;
+    }
+    if ((close == 8 && SameIdentifier(name, *tokens_[7])) ||
+        close + 4 >= tokens_.size() || tokens_[close]->text != ")" ||
+        !IsWord(*tokens_[close + 1], "SELECT") ||
+        tokens_[close + 2]->text != "*" ||
+        !IsWord(*tokens_[close + 3], "FROM") ||
+        tokens_[close + 4]->kind != TokenKind::kIdentifier ||
+        !SameIdentifier(name, *tokens_[close + 4]) ||
+        !(tokens_.size() == close + 5 ||
+          (tokens_.size() == close + 6 && tokens_.back()->text == ";"))) {
+      return refuse();
+    }
+    NativeRelationalParser producer(cst_);
+    producer.tokens_.assign(tokens_.begin() + 4, tokens_.begin() + close);
+    document_ = producer.Parse();
+    if (!document_.accepted() || document_.relations.size() != 1) return refuse();
+    NativeRelationAstNode cte;
+    cte.relation_id = document_.root_relation_id + 1;
+    cte.relation_kind = NativeRelationAstKind::kCte;
+    cte.input_relation_ids = {document_.root_relation_id};
+    cte.range = Span(*tokens_.front(), *tokens_[close + 4]);
+    document_.root_relation_id = cte.relation_id;
+    document_.relations.push_back(std::move(cte));
+    if (!IsNativeHeapCteIdentity(document_)) return refuse();
+    return std::move(document_);
   }
 
   NativeRelationalAstDocument FinishRefusal() {

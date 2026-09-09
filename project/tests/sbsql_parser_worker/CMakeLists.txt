@@ -6,6 +6,49 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(TARGET sb_qow_sblr_query_route_contract OR TARGET sb_engine_sblr)
+  add_executable(qow_runtime_services_test_v1 qow_runtime_services.cpp)
+  target_compile_features(qow_runtime_services_test_v1 PRIVATE cxx_std_20)
+  add_executable(qow_runtime_observation_test_v1 qow_runtime_observation.cpp)
+  target_compile_features(qow_runtime_observation_test_v1 PRIVATE cxx_std_20)
+  add_executable(qow_relational_preparation_test_v1 qow_relational_preparation.cpp)
+  target_compile_features(qow_relational_preparation_test_v1 PRIVATE cxx_std_20)
+  add_executable(qow_window_preparation_test_v1 qow_window_preparation.cpp)
+  target_compile_features(qow_window_preparation_test_v1 PRIVATE cxx_std_20)
+  if(SB_BUILD_QOW_CLOSURE_TESTS)
+    target_compile_definitions(qow_runtime_services_test_v1 PRIVATE
+      SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY=1)
+    target_link_libraries(qow_runtime_services_test_v1 PRIVATE
+      sb_qow_sblr_query_route_contract)
+    target_link_libraries(qow_runtime_observation_test_v1 PRIVATE
+      sb_qow_sblr_query_route_contract)
+    target_link_libraries(qow_relational_preparation_test_v1 PRIVATE
+      sb_qow_sblr_query_route_contract)
+    target_link_libraries(qow_window_preparation_test_v1 PRIVATE
+      sb_qow_sblr_query_route_contract)
+  else()
+    target_link_libraries(qow_runtime_services_test_v1 PRIVATE sb_engine_sblr)
+    target_link_libraries(qow_runtime_observation_test_v1 PRIVATE sb_engine_sblr)
+    target_link_libraries(qow_relational_preparation_test_v1 PRIVATE sb_engine_sblr)
+    target_link_libraries(qow_window_preparation_test_v1 PRIVATE sb_engine_sblr)
+  endif()
+  add_test(NAME qow_runtime_services_matrix_v1 COMMAND qow_runtime_services_test_v1)
+  set_tests_properties(qow_runtime_services_matrix_v1 PROPERTIES
+    LABELS "qow_closure;runtime_services;cancellation;model_planning;component_regression;development_candidate")
+  add_test(NAME qow_window_preparation_matrix_v1
+    COMMAND qow_window_preparation_test_v1)
+  add_test(NAME qow_runtime_observation_matrix_v1
+    COMMAND qow_runtime_observation_test_v1)
+  set_tests_properties(qow_runtime_observation_matrix_v1 PROPERTIES
+    LABELS "qow_closure;runtime_observation;producer_memory;component_regression;development_candidate")
+  set_tests_properties(qow_window_preparation_matrix_v1 PROPERTIES
+    LABELS "qow_closure;window_preparation;descriptor_binding;window_binding;component_regression;development_candidate")
+  add_test(NAME qow_relational_preparation_matrix_v1
+    COMMAND qow_relational_preparation_test_v1)
+  set_tests_properties(qow_relational_preparation_matrix_v1 PROPERTIES
+    LABELS "qow_closure;relational_preparation;descriptor_binding;set_profiles;subquery_profiles;component_regression;development_candidate")
+endif()
+
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   # QOW-CMAKE-SBSQL-PARSER-WORKER-ENROLLMENT-V1
   if(NOT TARGET sbl_sbsql_parser_pipeline)
@@ -168,6 +211,11 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   )
   add_test(NAME qow_live_values_spine_v1
     COMMAND qow_live_values_spine_test_v1)
+  add_test(NAME qow_aggregate_preparation_matrix_v1
+    COMMAND qow_live_values_spine_test_v1 --aggregate-preparation-only)
+  set_tests_properties(qow_aggregate_preparation_matrix_v1 PROPERTIES
+    LABELS "qow_closure;aggregate_preparation;descriptor_binding;grouping_having;aggregate_modifiers;contract_query_execute;mga_transaction_regression;development_candidate"
+  )
   set_tests_properties(qow_live_values_spine_v1 PROPERTIES
     LABELS "qow_closure;QOW-201;QOW-202;QOW-204;QOW-205;QOW-206;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;RCP-022-GENERAL-SELECT-BOUNDARY;RCP-026-GROUP-BY-HAVING;RCP-027-GROUPING-EXPANSION;RCP-028-AGGREGATE-MODIFIERS;RCP-029-ACCEPTED-JOIN-LIVE;RCP-030-ROW-DEPENDENT-JOIN;RCP-031-ROW-DEPENDENT-FILTER;RCP-032-ROW-DEPENDENT-PROJECT;RCP-033-ROW-DEPENDENT-SORT;RCP-034-PROJECT-SORT-COMPOSITION;RCP-035-FILTER-PROJECT-COMPOSITION;RCP-036-FILTER-PROJECT-SORT-COMPOSITION;RCP-037-FILTER-PROJECT-SORT-LIMIT-COMPOSITION;RCP-038-FILTER-PROJECT-DISTINCT-SORT-LIMIT-COMPOSITION;RCP-039-FILTER-PROJECT-DISTINCT-SORT-OFFSET-FETCH-COMPOSITION;RCP-040-EMPTY-FILTERED-EXPRESSION-PROJECTION;RCP-041-INNER-JOIN-FILTER-PROJECT-COMPOSITION;RCP-042-INNER-JOIN-FILTER-PROJECT-SORT-COMPOSITION;RCP-043-INNER-JOIN-FILTER-PROJECT-SORT-LIMIT-COMPOSITION;RCP-044-INNER-JOIN-FILTER-PROJECT-DISTINCT-SORT-LIMIT;RCP-045-INNER-JOIN-FILTER-PROJECT-DISTINCT-SORT-OFFSET-FETCH;RCP-046-SET-OPERATION-PROFILES;RCP-048-PIVOT-UNPIVOT;RCP-049-UNARY-COMPOSITION;RCP-049-BRANCHING-COMPOSITION;RCP-049-SET-COMPOSITION;RCP-049-NESTED-SET-COMPOSITION;development_candidate"
   )
@@ -1096,6 +1144,18 @@ if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
   set_tests_properties(
     qow_join_tail_literal_filter_parameter_limit_v1 PROPERTIES
     LABELS "qow_closure;QOW-101;RCP-080;join_tail;literal_filter;parameter_limit;canonical_mga_statement_context;mga_transaction_regression;development_candidate"
+  )
+  add_test(NAME qow_current_heap_join_composition_v1
+    COMMAND qow_live_server_statement_context_regression
+      --heap-join-proof-only)
+  set_tests_properties(qow_current_heap_join_composition_v1 PROPERTIES
+    LABELS "qow_closure;current_heap;join_composition;streaming_hash;production_query_execute;canonical_mga_statement_context;mga_transaction_regression;development_candidate"
+  )
+  add_test(NAME qow_current_heap_single_source_composition_v1
+    COMMAND qow_live_server_statement_context_regression
+      --heap-single-source-proof-only)
+  set_tests_properties(qow_current_heap_single_source_composition_v1 PROPERTIES
+    LABELS "qow_closure;current_heap;single_source_composition;production_query_execute;canonical_mga_statement_context;mga_transaction_regression;development_candidate"
   )
   add_test(NAME qow_table_function_generate_series_e2e_v1
     COMMAND qow_live_server_statement_context_regression

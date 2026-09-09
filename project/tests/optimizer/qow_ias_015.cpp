@@ -81,15 +81,14 @@ int main() {
       true};
   logical.root_logical_node_id = 1;
   logical.result_descriptor_ids = {101};
-  logical.nodes = {{1,
-                    CanonicalLogicalRelationalNodeKind::kValues,
-                    {},
-                    {101},
-                    {201},
-                    {301},
-                    {},
-                    "values.literal_table.v1",
-                    false}};
+  CanonicalLogicalRelationalNode values;
+  values.logical_node_id = 1;
+  values.node_kind = CanonicalLogicalRelationalNodeKind::kValues;
+  values.output_descriptor_ids = {101};
+  values.bound_expression_ids = {201};
+  values.origin_relational_node_ids = {301};
+  values.semantic_variant_id = "values.literal_table.v1";
+  logical.nodes = {values};
 
   CanonicalPhysicalAlternativeCatalog alternatives;
   alternatives.bound_sblr_tree_uuid = logical.bound_sblr_tree_uuid;

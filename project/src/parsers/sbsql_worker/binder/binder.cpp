@@ -575,6 +575,47 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           "only an accepted typed relational AST can be bound");
     return RefusedBoundAst(std::move(bound));
   }
+  if (std::ranges::any_of(ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kCte;
+      })) {
+    if (!IsNativeHeapCteIdentity(ast)) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "CTE identity producer/consumer shape is not exact");
+      return RefusedBoundAst(std::move(bound));
+    }
+    auto producer = ast;
+    producer.root_relation_id = producer.relations.front().relation_id;
+    producer.relations.pop_back();
+    bound = BindNativeRelationalAst(producer, context);
+    if (!bound.bound) return bound;
+    BoundRelationAstRecord cte;
+    cte.relation_id = ast.root_relation_id;
+    cte.relation_kind = NativeRelationAstKind::kCte;
+    cte.input_relation_ids = {bound.root_relation_id};
+    cte.semantic_variant_id = "cte.bound.v1";
+    BoundScopeAstRecord cte_scope;
+    cte_scope.scope_id = bound.root_scope_id + 1;
+    cte_scope.parent_scope_id = bound.root_scope_id;
+    cte_scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    cte_scope.visible_relation_ids = {cte.relation_id};
+    const auto producer_outputs = bound.outputs;
+    std::uint32_t next_output_id = 0;
+    for (const auto& output : producer_outputs) {
+      next_output_id = std::max(next_output_id, output.output_id);
+    }
+    for (auto output : producer_outputs) {
+      output.output_id = ++next_output_id;
+      output.relation_id = cte.relation_id;
+      cte.output_expression_ids.push_back(output.expression_id);
+      cte_scope.visible_projection_ids.push_back(output.output_id);
+      bound.outputs.push_back(std::move(output));
+    }
+    bound.root_relation_id = cte.relation_id;
+    bound.root_scope_id = cte_scope.scope_id;
+    bound.scopes.push_back(std::move(cte_scope));
+    bound.relations.push_back(std::move(cte));
+    return bound;
+  }
   const auto key_value_source_ast = std::ranges::find_if(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kKeyValue;

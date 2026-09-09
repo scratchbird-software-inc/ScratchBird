@@ -1302,6 +1302,16 @@ BuildEngineProjectedNativeBindingContext(
       statement_context.descriptor_profiles.empty()) {
     return fail("incomplete_statement_context");
   }
+  if (std::ranges::any_of(ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kCte;
+      })) {
+    if (!IsNativeHeapCteIdentity(ast)) return fail("cte_identity_shape_invalid");
+    auto producer = ast;
+    producer.root_relation_id = producer.relations.front().relation_id;
+    producer.relations.pop_back();
+    return BuildEngineProjectedNativeBindingContext(
+        producer, statement_context, resolved_object_reference_seeds, messages);
+  }
   NativeRelationalBindingContext context;
   context.bound_ast_uuid = statement_context.bound_ast_uuid;
   context.catalog_epoch_uuid = statement_context.catalog_epoch_uuid;
@@ -6609,6 +6619,7 @@ BuildEngineProjectedNativeBindingContext(
     std::optional<std::string> authoritative_datatype_snapshot_uuid;
     std::uint64_t authoritative_datatype_catalog_generation = 0;
     std::uint64_t authoritative_datatype_registry_generation = 0;
+    std::unordered_map<std::string, std::string> relation_by_descriptor_uuid;
     for (std::size_t source_ordinal = 0; source_ordinal < source_count;
          ++source_ordinal) {
       const auto& source = ast.catalog_relation_sources[source_ordinal];
@@ -6642,9 +6653,12 @@ BuildEngineProjectedNativeBindingContext(
           : source.source_kind == NativeRelationSourceAstKind::kColumnar
               ? std::string_view{"logical_relation"}
               : std::string_view{};
+      // Model sources may be backed by ordinary catalog relations or by an
+      // exact model-class object. A different model class is never an alias.
       const bool exact_object_class =
-          expected_object_class.empty() ? relation_object_class
-                                        : relation_object_class;
+          relation_object_class ||
+          (!expected_object_class.empty() &&
+           resolved.object_class == expected_object_class);
       const auto presented_name =
           EncodeQualifiedPresentedName(source.qualified_name);
       if (relation.relation_source_ids !=
@@ -6683,6 +6697,13 @@ BuildEngineProjectedNativeBindingContext(
             ":catalog_epoch=" + std::to_string(resolved.catalog_epoch) +
             ":security_epoch=" + std::to_string(resolved.security_epoch) +
             ":columns=" + std::to_string(projection.columns.size()));
+      }
+      // Aliased self-joins may repeat a relation's descriptor, but distinct
+      // relations cannot claim the same catalog descriptor identity.
+      const auto [descriptor_owner, inserted] = relation_by_descriptor_uuid.emplace(
+          projection.descriptor_uuid, projection.relation_uuid);
+      if (!inserted && descriptor_owner->second != projection.relation_uuid) {
+        return fail("catalog_cross_join_descriptor_identity_conflict");
       }
 
       NativeCatalogRelationBindingInput catalog_relation;
@@ -23543,12 +23564,17 @@ ResolvedObjectReferenceSeed Rcp080ProofSeed(
 bool Rcp080WireBuildBindLowerVerify(
     const CstDocument& cst, const AstDocument& ast,
     const ParserStatementContext& statement,
-    const std::vector<ResolvedObjectReferenceSeed>& seeds) {
+    const std::vector<ResolvedObjectReferenceSeed>& seeds,
+    std::string* proof_detail = nullptr) {
   if (!ast.native_relational.accepted()) return false;
   MessageVectorSet messages;
   const auto context = BuildEngineProjectedNativeBindingContext(
       ast.native_relational, statement, seeds, &messages);
-  if (!context.has_value() || messages.has_errors()) return false;
+  if (!context.has_value() || messages.has_errors()) {
+    if (proof_detail != nullptr)
+      *proof_detail = "projection: " + ipc::MessageVectorToJson(messages);
+    return false;
+  }
   ParserConfig config;
   config.parser_uuid = Rcp073ProofUuid(9800);
   config.bundle_contract_id = "sbp_sbsql@rcp080-wire-proof-v1";
@@ -23565,10 +23591,16 @@ bool Rcp080WireBuildBindLowerVerify(
   const auto bound = BindAst(ast, cst, config, session, {}, &*context);
   if (!bound.bound || !bound.native_relational.bound ||
       bound.messages.has_errors()) {
+    if (proof_detail != nullptr)
+      *proof_detail = "binding: " + ipc::MessageVectorToJson(bound.messages);
     return false;
   }
   const auto lowered = LowerToSblr(bound, cst, session);
   const auto verified = VerifySblrEnvelope(lowered);
+  if (proof_detail != nullptr) {
+    *proof_detail = "lowering: " + ipc::MessageVectorToJson(lowered.messages) +
+                    "; verification: " + ipc::MessageVectorToJson(verified.messages);
+  }
   return !lowered.payload.empty() && !lowered.messages.has_errors() &&
          verified.admitted && !verified.messages.has_errors();
 }
@@ -23608,11 +23640,31 @@ std::uint64_t Rcp080MultimodelWireProofMaskImpl() {
       seeds[profile].push_back(
           Rcp080ProofSeed(refs[ordinal], static_cast<std::uint32_t>(ordinal)));
     }
-    if (Rcp080WireBuildBindLowerVerify(
-            csts[profile], asts[profile], Rcp079ProofStatementContext(),
-            seeds[profile])) {
-      mask |= 1ull << profile;
+    std::string proof_detail;
+    bool accepted = Rcp080WireBuildBindLowerVerify(
+        csts[profile], asts[profile], Rcp079ProofStatementContext(),
+        seeds[profile], &proof_detail);
+    if (!accepted) {
+      std::cerr << "RCP080 profile " << profile << ": " << proof_detail << '\n';
     }
+    for (const auto storage_class : {"relation", "table"}) {
+      auto relation_backed = seeds[profile];
+      for (auto& seed : relation_backed) {
+        if (seed.resolved.relation_descriptor.present) {
+          seed.resolved.object_class = storage_class;
+        }
+      }
+      proof_detail.clear();
+      const bool relation_accepted = Rcp080WireBuildBindLowerVerify(
+          csts[profile], asts[profile], Rcp079ProofStatementContext(),
+          relation_backed, &proof_detail);
+      accepted &= relation_accepted;
+      if (!relation_accepted) {
+        std::cerr << "RCP080 profile " << profile << " backed by "
+                  << storage_class << ": " << proof_detail << '\n';
+      }
+    }
+    if (accepted) mask |= 1ull << profile;
   }
   const auto refused = [&](AstDocument ast,
                            std::vector<ResolvedObjectReferenceSeed> cohort,
@@ -23710,7 +23762,9 @@ std::uint64_t Rcp080MultimodelWireProofMaskImpl() {
     mask |= 1ull << 12;
   }
   auto wrong_class = seeds[2];
-  wrong_class[1].resolved.object_class = "relation";
+  // An ordinary relation is a valid document backing store; a graph-class
+  // object substituted for the document source is not.
+  wrong_class[1].resolved.object_class = "graph";
   if (refused(asts[2], std::move(wrong_class),
               Rcp079ProofStatementContext())) mask |= 1ull << 13;
   auto wrong_name = seeds[2];
@@ -24231,9 +24285,12 @@ std::uint64_t Rcp079SpatialColumnarFrontdoorProofMaskImpl() {
         index == 0   ? &spatial_source_name_refusals
         : index == 5 ? &columnar_filter_source_name_refusals
                      : nullptr;
-    if (Rcp079BuildAndBind(kSql[index], false, nullptr,
+    std::string proof_detail;
+    if (Rcp079BuildAndBind(kSql[index], false, &proof_detail,
                            source_name_refusals)) {
       mask |= 1ull << index;
+    } else {
+      std::cerr << "RCP079 profile " << index << ": " << proof_detail << '\n';
     }
   }
   if ((spatial_source_name_refusals & (1u << 0)) != 0 &&

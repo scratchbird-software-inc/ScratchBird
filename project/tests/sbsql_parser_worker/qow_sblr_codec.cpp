@@ -609,6 +609,7 @@ void TestOpcodeRegistryMatrix() {
   std::size_t assigned_rows = 0;
   std::size_t unassigned_rows = 0;
   std::size_t duplicate_rows = 0;
+  std::size_t alias_rows = 0;
   for (const auto& entry : registry) {
     if (entry.code == 0) {
       ++unassigned_rows;
@@ -627,22 +628,35 @@ void TestOpcodeRegistryMatrix() {
         1;
     const auto validation = operation::ValidateSblrOpcodeIdentity(
         entry.code, entry.operation_id, entry.opcode);
-    if (duplicate) {
+    const bool conflicting_mnemonic = std::any_of(
+        registry.begin(), registry.end(), [&](const auto& candidate) {
+          return candidate.code == entry.code && candidate.opcode != entry.opcode;
+        });
+    if (conflicting_mnemonic) {
       ++duplicate_rows;
       Require(operation::LookupSblrOpcodeCode(entry.code) == nullptr &&
                   !validation.ok &&
                   validation.diagnostic_id ==
                       "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
-              "duplicate public opcode identity did not fail closed");
+              "conflicting public opcode mnemonic did not fail closed");
     } else {
-      Require(operation::LookupSblrOpcodeCode(entry.code) == &entry &&
-                  validation.ok,
+      if (duplicate) ++alias_rows;
+      const auto* canonical = operation::LookupSblrOpcodeCode(entry.code);
+      Require(canonical != nullptr && canonical->opcode == entry.opcode &&
+                  validation.ok && validation.entry == &entry,
               std::string("canonical numeric/key/mnemonic registry row is not exact: ") +
                   entry.opcode + " code=" + std::to_string(entry.code));
+      Require(!operation::ValidateSblrOpcodeIdentity(
+                   entry.code, std::string(entry.operation_id) + ".unknown",
+                   entry.opcode).ok &&
+                  !operation::ValidateSblrOpcodeIdentity(
+                       entry.code, entry.operation_id, "SBLR_UNKNOWN_OPCODE").ok,
+              "opcode alias accepted an unknown operation or wrong mnemonic");
     }
   }
-  Require(assigned_rows != 0 && unassigned_rows != 0 && duplicate_rows != 0,
-          "assigned/unassigned/duplicate public registry partition changed");
+  Require(assigned_rows != 0 && unassigned_rows != 0 && alias_rows != 0 &&
+              duplicate_rows + alias_rows != 0,
+          "assigned/unassigned/alias public registry partition changed");
 }
 
 void TestAdmissionAndImmutableToken(const Bytes& sbop) {
@@ -697,6 +711,11 @@ void TestAdmissionAndImmutableToken(const Bytes& sbop) {
   bad = {};
   bad.encoded_sblr_envelope = "operation_id=query.execute\nopcode=SBLR_QUERY_EXECUTE\n";
   expect_refusal(std::move(bad), "legacy newline operation payload");
+  bad = Request(sbop);
+  bad.encoded_sblr_envelope =
+      "{\"query_envelope_kind\":\"table_materialized_cte\","
+      "\"query_operation\":\"materialized_cte\",\"query_execute\":\"true\"}";
+  expect_refusal(std::move(bad), "retired CTE carrier alongside canonical ingress");
   bad = {};
   bad.encoded_sblr_envelope.assign(32, '\0');
   bad.encoded_sblr_envelope.replace(0, 4, "SBLR");

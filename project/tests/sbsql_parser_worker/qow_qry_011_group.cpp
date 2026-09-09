@@ -145,9 +145,17 @@ std::string CoreDescriptorUuid(const std::string_view stable_name,
   const auto found = std::ranges::find_if(
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
-  return found == manifest.manifest.descriptor_rows.end()
-             ? std::string(fallback)
-             : uuid::UuidToString(found->descriptor_uuid.value);
+  if (found == manifest.manifest.descriptor_rows.end() ||
+      !found->descriptor_uuid.valid()) {
+    return std::string(fallback);
+  }
+  const auto descriptor_uuid = uuid::UuidToString(found->descriptor_uuid.value);
+  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+      "019d0000-0000-7000-8000-00000000d701",
+      manifest.manifest.catalog_epoch, 1, descriptor_uuid,
+      found->descriptor_epoch);
+  // The encoded type_uuid is the datatype identity, not its descriptor identity.
+  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
 }
 
 void BindEqualityAuthority(exec::CanonicalAggregateRuntimeRequest* request) {
@@ -790,13 +798,17 @@ bool ValidateGroupedAggregateSetState() {
   bool passed = true;
   auto request = GroupedAggregateSetRequest();
   auto result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
-  passed &= Require(result.diagnostic.ok && result.aggregate_count == 2 &&
+  const bool complete = result.diagnostic.ok && result.aggregate_count == 2 &&
                         result.group_identity_proven &&
                         result.shared_state_authority_used &&
                         result.groups.size() == 8 &&
                         result.output_batch.columns.size() == 4 &&
-                        result.output_batch.rows.size() == 8,
-                    "multiple grouped registry aggregates did not execute");
+                        result.output_batch.rows.size() == 8;
+  if (!Require(complete, "multiple grouped registry aggregates did not execute: " +
+                            result.diagnostic.diagnostic_code + ": " +
+                            result.diagnostic.detail)) {
+    return false;  // Do not index a refused or incomplete result batch.
+  }
   passed &= Require(
       result.output_batch.rows[0].values[2].encoded_value == "4" &&
           result.output_batch.rows[0].values[3].encoded_value == "1" &&
@@ -1041,11 +1053,11 @@ bool ValidateTypedGroupingState() {
 
 #ifndef QOW_QRY_011_GROUP_FIXTURE_ONLY
 int main() {
-  return ValidateGroupingExpansion() && ValidateTypedGroupingState() &&
-                 ValidateGroupedRegistryState() &&
-                 ValidateGroupedAggregateSetState() &&
-                 ValidateOrdinaryGroupByIdentity()
-             ? EXIT_SUCCESS
-             : EXIT_FAILURE;
+  bool passed = ValidateGroupingExpansion();
+  passed &= ValidateTypedGroupingState();
+  passed &= ValidateGroupedRegistryState();
+  passed &= ValidateGroupedAggregateSetState();
+  passed &= ValidateOrdinaryGroupByIdentity();
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 #endif

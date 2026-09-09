@@ -33307,6 +33307,93 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  if (std::ranges::any_of(native.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kCte;
+      })) {
+    const auto refuse_cte = [&]() {
+      AddNativeRelationalLoweringError(
+          &envelope, "QOW-DIAG-BOUNDAST-RELATION",
+          "CTE lowering requires an exact heap identity scope and output mapping");
+      return envelope;
+    };
+    if (native.relations.size() != 2 || native.scopes.size() != 2) {
+      return refuse_cte();
+    }
+    const auto& source = native.relations.front();
+    const auto& cte = native.relations.back();
+    const auto& scope = native.scopes.back();
+    if (source.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        cte.relation_kind != NativeRelationAstKind::kCte ||
+        cte.relation_id <= source.relation_id ||
+        native.root_relation_id != cte.relation_id ||
+        cte.input_relation_ids != std::vector<std::uint32_t>{source.relation_id} ||
+        cte.semantic_variant_id != "cte.bound.v1" ||
+        cte.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        cte.aggregate_projection_form != NativeAggregateProjectionForm::kNone ||
+        !cte.values_row_ids.empty() || !cte.grouping_key_expression_ids.empty() ||
+        !cte.aggregate_expression_ids.empty() || !cte.predicate_expression_ids.empty() ||
+        !cte.limit_expression_ids.empty() || !cte.table_function_argument_expression_ids.empty() ||
+        !cte.window_invocation_ids.empty() || !cte.ordering_terms.empty() ||
+        !cte.bound_expression_ids.empty() || cte.bound_object_uuid.has_value() || cte.lateral ||
+        scope.scope_id != native.root_scope_id ||
+        scope.scope_id <= native.scopes.front().scope_id ||
+        scope.parent_scope_id != native.scopes.front().scope_id ||
+        scope.catalog_epoch_uuid != native.scopes.front().catalog_epoch_uuid ||
+        scope.visible_relation_ids != std::vector<std::uint32_t>{cte.relation_id}) {
+      return refuse_cte();
+    }
+    auto producer = bound;
+    producer.native_relational.relations.pop_back();
+    producer.native_relational.root_relation_id = source.relation_id;
+    producer.native_relational.scopes.pop_back();
+    producer.native_relational.root_scope_id = native.scopes.front().scope_id;
+    std::erase_if(producer.native_relational.outputs, [&](const auto& output) {
+      return output.relation_id == cte.relation_id;
+    });
+    const auto& source_outputs = producer.native_relational.outputs;
+    if (source_outputs.empty() || native.outputs.size() != source_outputs.size() * 2 ||
+        cte.output_expression_ids.size() != source_outputs.size() ||
+        scope.visible_projection_ids.size() != source_outputs.size()) return refuse_cte();
+    std::vector<const BoundOutputAstRecord*> cte_outputs;
+    std::vector<std::uint32_t> descriptor_ids;
+    for (const auto& output : native.outputs) {
+      if (output.relation_id == cte.relation_id) cte_outputs.push_back(&output);
+    }
+    if (cte_outputs.size() != source_outputs.size()) return refuse_cte();
+    for (std::size_t i = 0; i < source_outputs.size(); ++i) {
+      const auto& input = source_outputs[i];
+      const auto& output = *cte_outputs[i];
+      if (input.relation_id != source.relation_id ||
+          output.output_id != source_outputs.back().output_id + i + 1 ||
+          output.expression_id != input.expression_id ||
+          output.descriptor_id != input.descriptor_id || output.visible != input.visible ||
+          output.ordinal != input.ordinal || output.output_name_utf8 != input.output_name_utf8 ||
+          cte.output_expression_ids[i] != input.expression_id ||
+          scope.visible_projection_ids[i] != output.output_id) return refuse_cte();
+      descriptor_ids.push_back(input.descriptor_id);
+    }
+    // Reuse the admitted producer lowering and its complete receipt validation.
+    // Only the typed CTE node is added to that DAG. CTE transport inherits
+    // producer output records; the consumer scope/output mapping above is
+    // binding evidence, not a second set of executable output records.
+    envelope = LowerBoundNativeRelationalToCanonicalSblr(producer, session);
+    if (envelope.messages.has_errors() || envelope.payload.empty()) return envelope;
+    for (auto& operand : envelope.operands) {
+      if (operand.type == "uint32" && operand.name == "relational_root_node_id") {
+        operand.value = std::to_string(cte.relation_id);
+      }
+    }
+    envelope.operands.push_back(
+        {"relational_node_v1", std::to_string(cte.relation_id),
+         "11|0|" + std::to_string(source.relation_id) + "|" +
+             JoinCanonicalHandleList(descriptor_ids) + "|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", std::to_string(cte.relation_id),
+         EncodeCanonicalHex(cte.semantic_variant_id) + "|-|-|-|-"});
+    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+    return envelope;
+  }
+
   // Descriptor authority is descriptor-local, not query-shape-local.  Every
   // lowering profile, including the specialized early-return profiles below,
   // must therefore pass through this one closed emitter.  A descriptor is
@@ -48744,6 +48831,29 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     std::ranges::sort(node_outputs, [](const auto* left, const auto* right) {
       return left->ordinal < right->ordinal;
     });
+    // A canonical nonrecursive CTE forwards its producer's records. Keep
+    // parser verification aligned with engine planning's cte_output_records
+    // refusal, rather than requiring the very records the engine forbids.
+    if (node.kind == 11) {
+      if (!node_outputs.empty()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "CTE must inherit producer output records",
+                                     "cte_output_records", node.id);
+      }
+      if (node.semantic_variant_id != "cte.bound.v1" ||
+          node.input_ids.size() != 1 || !nodes.contains(node.input_ids.front()) ||
+          node.output_descriptor_ids != nodes.at(node.input_ids.front())->output_descriptor_ids ||
+          node.output_descriptor_ids.empty() || !node.values_row_ids.empty() ||
+          !node.bound_expression_ids.empty() || !node.required_object_uuids.empty() ||
+          !node.required_property_uuids.empty() || !node.delivered_property_uuids.empty()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "CTE producer identity is not exact",
+                                     "cte_input_identity", node.id);
+      }
+      referenced_descriptors.insert(node.output_descriptor_ids.begin(),
+                                    node.output_descriptor_ids.end());
+      continue;
+    }
     if (node_outputs.size() != node.output_descriptor_ids.size()) {
       return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "relational output records do not cover node descriptors",

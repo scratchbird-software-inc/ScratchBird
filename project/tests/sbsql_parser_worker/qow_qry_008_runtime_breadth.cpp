@@ -7,7 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "sbl_numeric.hpp"
+#include "uuid.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -117,6 +121,26 @@ api::EngineDescriptor Descriptor(const std::uint32_t ordinal,
       "type_uuid=019f0000-0000-7300-8000-0000000022" +
       (ordinal < 10 ? std::string("0") : std::string{}) +
       std::to_string(ordinal) + ";" + std::move(profile);
+  if (descriptor.canonical_type_name == "int128") {
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    const auto row = std::ranges::find_if(manifest.manifest.descriptor_rows,
+        [](const auto& candidate) { return candidate.type_id == dt::CanonicalTypeId::int128; });
+    if (!manifest.ok() || row == manifest.manifest.descriptor_rows.end()) {
+      std::cerr << "missing canonical int128 catalog fixture\n";
+      std::abort();
+    }
+    descriptor.descriptor_uuid.canonical = scratchbird::core::uuid::UuidToString(
+        row->descriptor_uuid.value);
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+        "019d0000-0000-7000-8000-00000000d701", manifest.manifest.catalog_epoch, 1,
+        descriptor.descriptor_uuid.canonical, row->descriptor_epoch);
+    if (!identity.ok) {
+      std::cerr << "missing canonical int128 codec fixture\n";
+      std::abort();
+    }
+    descriptor.encoded_descriptor.replace(
+        10, 36, identity.row.type_uuid);
+  }
   return descriptor;
 }
 
@@ -364,6 +388,81 @@ bool ValidateBreadthComposition() {
   return passed;
 }
 
+bool ValidateCanonicalInt128Ordering(const api::EngineDescriptor& descriptor,
+                                    exec::CanonicalDescriptorOrderTerm term) {
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  std::vector<api::EngineTypedValue> values(5, Value(descriptor, {}));
+  for (auto& value : values) value.binary_value.assign(16, 0);
+  values[0].binary_value.back() = 0x80;  // minimum
+  values[1].binary_value.assign(16, 0xff);  // -1
+  values[3].binary_value.front() = 1;
+  values[4].binary_value.assign(16, 0xff);
+  values[4].binary_value.back() = 0x7f;  // maximum
+  const std::vector<std::string> expected = {
+      "-170141183460469231731687303715884105728", "-1", "0", "1",
+      "170141183460469231731687303715884105727"};
+  bool passed = true;
+  std::vector<std::string> keys;
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto decoded = numeric::DecodeInt128LittleEndian(values[i].binary_value);
+    passed &= Require(decoded.status == numeric::NumericStatusCode::ok &&
+                          decoded.value.encoded == expected[i],
+                      "INT128 backend lost exact signed little-endian value");
+    const auto plan = exec::PlanCanonicalDescriptorEqualityKey(values[i], term);
+    const auto key = exec::MakeCanonicalDescriptorEqualityKey(values[i], term);
+    passed &= Require(plan.diagnostic.ok && key.diagnostic.ok &&
+                          key.equality_key.size() <= plan.retained_key_bytes &&
+                          std::ranges::find(keys, key.equality_key) == keys.end(),
+                      "INT128 equality key collided or exceeded its plan");
+    keys.push_back(key.equality_key);
+    for (std::size_t j = 0; j < values.size(); ++j) {
+      const int expected_order = i < j ? -1 : (i > j ? 1 : 0);
+      for (const auto descending : {false, true}) {
+        term.direction = descending
+                             ? exec::CanonicalDescriptorOrderDirection::descending
+                             : exec::CanonicalDescriptorOrderDirection::ascending;
+        const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+            values[i], values[j], term);
+        passed &= Require(compared.diagnostic.ok &&
+                              compared.comparison ==
+                                  (descending ? -expected_order : expected_order),
+                          "INT128 signed order or descending direction regressed");
+      }
+    }
+  }
+  term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
+  const auto null_value = Null(descriptor);
+  const auto null_order = exec::CompareCanonicalDescriptorOrderValues(
+      values[0], null_value, term);
+  passed &= Require(null_order.diagnostic.ok && null_order.comparison == -1,
+                    "INT128 NULL-last ordering regressed");
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
+    auto invalid = values[4];
+    if (mutation == 0) invalid.binary_value.pop_back();
+    if (mutation == 1) invalid.binary_value.push_back(0);
+    if (mutation == 2) invalid.encoded_value = expected.back();
+    if (mutation == 3) invalid.descriptor.descriptor_uuid.canonical =
+        "019d0000-0000-7000-8000-00000000d715";
+    if (mutation == 4) invalid.descriptor.encoded_descriptor.replace(
+        10, 36, invalid.descriptor.descriptor_uuid.canonical);
+    const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+        invalid, values[0], term);
+    const auto with_null = exec::CompareCanonicalDescriptorOrderValues(
+        null_value, invalid, term);
+    const auto key = exec::MakeCanonicalDescriptorEqualityKey(invalid, term);
+    passed &= Require(!compared.diagnostic.ok && !with_null.diagnostic.ok &&
+                          !key.diagnostic.ok && key.equality_key.empty(),
+                      "INT128 malformed payload or substituted identity was accepted");
+    if (mutation < 2) {
+      const auto decoded = numeric::DecodeInt128LittleEndian(invalid.binary_value);
+      passed &= Require(decoded.status == numeric::NumericStatusCode::invalid_left &&
+                            decoded.diagnostic_code == "NUMERIC.ENCODING.NONCANONICAL",
+                        "INT128 backend admitted a non-16-byte payload");
+    }
+  }
+  return passed;
+}
+
 bool ValidateFiniteScalarMatrix() {
   struct ScalarCase {
     std::string type;
@@ -411,6 +510,13 @@ bool ValidateFiniteScalarMatrix() {
     row.values.push_back(cases[index].sql_null
                              ? Null(descriptor)
                              : Value(descriptor, cases[index].encoded_value));
+    if (cases[index].type == "int128") {
+      // Maximum signed INT128, in the canonical 16-byte little-endian codec.
+      auto& value = row.values.back();
+      value.encoded_value.clear();
+      value.binary_value.assign(16, 0xff);
+      value.binary_value.back() = 0x7f;
+    }
   }
   const auto batch =
       exec::MakeDescriptorBatch(std::move(columns), {{std::move(row)}});
@@ -423,6 +529,22 @@ bool ValidateFiniteScalarMatrix() {
 
   bool passed = true;
   for (std::size_t index = 0; index < batch.columns.size(); ++index) {
+    if (cases[index].type == "int128") {
+      auto text_payload = batch;
+      text_payload.rows[0].values[index].binary_value.clear();
+      text_payload.rows[0].values[index].encoded_value = cases[index].encoded_value;
+      const auto text_validation = exec::ValidateDescriptorBatch(text_payload);
+      auto short_payload = batch;
+      short_payload.rows[0].values[index].binary_value.pop_back();
+      const auto short_validation = exec::ValidateDescriptorBatch(short_payload);
+      passed &= Require(
+          !text_validation.ok && !short_validation.ok &&
+              text_validation.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+              short_validation.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+              text_validation.column_index == index &&
+              short_validation.column_index == index,
+          "canonical INT128 admitted text or a non-16-byte payload");
+    }
     exec::CanonicalDescriptorOrderTerm term;
     term.column = index;
     term.expression_descriptor_id = batch.columns[index].descriptor_id;
@@ -438,9 +560,18 @@ bool ValidateFiniteScalarMatrix() {
         term, batch.columns[index]);
     const auto compared = exec::CompareCanonicalDescriptorOrderValues(
         batch.rows[0].values[index], batch.rows[0].values[index], term);
+    if (!term_validation.ok || !compared.diagnostic.ok || compared.comparison != 0) {
+      std::cerr << cases[index].type << ": term="
+                << term_validation.diagnostic_code << ": " << term_validation.detail
+                << "; comparison=" << compared.diagnostic.diagnostic_code
+                << ": " << compared.diagnostic.detail << '\n';
+    }
     passed &= Require(term_validation.ok && compared.diagnostic.ok &&
                           compared.comparison == 0,
                       "finite scalar comparator matrix lost a datatype");
+    if (cases[index].type == "int128") {
+      passed &= ValidateCanonicalInt128Ordering(batch.columns[index].descriptor, term);
+    }
   }
   const auto float8 = Descriptor(
       80, "float8", "nullability=non_null;width=64");

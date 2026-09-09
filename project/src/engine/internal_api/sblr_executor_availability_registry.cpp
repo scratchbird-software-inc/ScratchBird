@@ -256,6 +256,18 @@ std::string ComputeStorePath(const EngineRequestContext& context,
       identity.executor_id == kSblrSecurityPolicyShowExecutorId
           ? ".security_policy_show"
           : security_alter_policy_suffix;
+  // The ordinary literal row owns the legacy unsuffixed store. Keep all
+  // admitted rows omitted from the named legacy map isolated by exact identity.
+  if (security_policy_show_suffix[0] == '\0' &&
+      identity.executor_id != kSblrLiteralExecutorId) {
+    const auto row_identity_sha256 =
+        ComputeSblrExecutorAvailabilityRowIdentitySha256(identity);
+    if (!row_identity_sha256.empty()) {
+      return context.database_path +
+             ".sb.sblr_executor_availability_registry.v1.row_" +
+             row_identity_sha256.substr(std::string_view("sha256:").size());
+    }
+  }
   return context.database_path + ".sb.sblr_executor_availability_registry.v1" +
          security_policy_show_suffix;
 }

@@ -16065,149 +16065,444 @@ bool ValidateComposedScalarRefusalIsAtomic() {
 }  // namespace
 
 // QOW-TEST-INTEGRATION-306-211-LIVE-VALUES-V1
-int main() {
-  const bool passed = ValidateLiveValuesSpine() &&
-                      ValidateRuntimeBreadthValuesSpine() &&
-                      ValidateLiveValuesPreResultRevocationIsAtomic() &&
-                      ValidateGeneralSelectExecutionBoundary() &&
-                      ValidateLiveStatementContextRefusalIsAtomic() &&
-                      ValidateComposedScalarValuesSpine() &&
-                      ValidateUnionAllValuesSpine() &&
-                      ValidateUnionAllRefusalIsAtomic() &&
-                      ValidateSetOperationProfilesSpine() &&
-                      ValidateSetOperationNestingSpine() &&
-                      ValidateInnerJoinValuesSpine() &&
-                      ValidateInnerJoinThreeValuedPredicate() &&
-                      ValidateInnerJoinRefusalIsAtomic() &&
-                      ValidateAcceptedJoinKindsSpine() &&
-                      ValidateRowDependentJoinPredicateSpine() &&
-                      ValidateInnerJoinFilterProjectCompositionSpine() &&
-                      ValidateInnerJoinFilterProjectSortCompositionSpine() &&
-                      ValidateInnerJoinFilterProjectSortLimitCompositionSpine() &&
-                      ValidateInnerJoinFilterProjectDistinctSortLimitSpine() &&
-                      ValidateInnerJoinFilterProjectDistinctSortOffsetFetchSpine() &&
-                      ValidateFilterValuesSpine() &&
-                      ValidateFilterThreeValuedPredicate() &&
-                      ValidateRowDependentFilterPredicateSpine() &&
-                      ValidateFilterRefusalIsAtomic() &&
-                      ValidateProjectValuesSpine() &&
-                      ValidateProjectRefusalIsAtomic() &&
-                      ValidateRowDependentProjectExpressionSpine() &&
-                      ValidateProjectedExpressionSortCompositionSpine() &&
-                      ValidateFilteredExpressionProjectCompositionSpine() &&
-                      ValidateFilteredProjectedSortCompositionSpine() &&
-                      ValidateFilteredProjectedSortLimitCompositionSpine() &&
-                      ValidateFilteredProjectedDistinctSortLimitCompositionSpine() &&
-                      ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() &&
-                      ValidateNodeDrivenUnaryCompositionSpine() &&
-                      ValidateNodeDrivenJoinCompositionSpine() &&
-                      ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
-                      ValidateNodeDrivenUnionAllCompositionSpine() &&
-                      ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
-                      ValidateNodeDrivenNullCollationSetCompositionSpine() &&
-                      ValidateNodeDrivenExpressionSortLimitCompositionSpine() &&
-                      ValidateNodeDrivenTableSubqueryCteCompositionSpine() &&
-                      ValidateNodeDrivenScalarRowSubqueryCompositionSpine() &&
-                      ValidateNodeDrivenPredicateSubqueryCompositionSpine() &&
-                      ValidateNodeDrivenCorrelatedLateralCompositionSpine() &&
-                      ValidateNodeDrivenRecursiveCteCompositionSpine() &&
-                      ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
-                      ValidateNodeDrivenByNameSetCompositionSpine() &&
-                      ValidateNodeDrivenCountStarCompositionSpine() &&
-                      ValidateNodeDrivenCountExpressionCompositionSpine() &&
-                      ValidateNodeDrivenSumExpressionCompositionSpine() &&
-                      ValidateNodeDrivenAvgExpressionCompositionSpine() &&
-                      ValidateNodeDrivenStatisticalAggregateCompositionSpine() &&
-                      ValidateNodeDrivenPairStatisticalCompositionSpine() &&
-                      ValidateNodeDrivenGroupedCountSumCompositionSpine() &&
-                      ValidateNodeDrivenGroupingExpansionCompositionSpine() &&
-                      ValidateNodeDrivenGroupedHavingCompositionSpine() &&
-                      ValidateNodeDrivenStringAggCompositionSpine() &&
-                      ValidateNodeDrivenComplexAggregateCompositionSpine() &&
-                      ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
-                      ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
-                      ValidateNodeDrivenNestedExactSetCompositionSpine() &&
-                      ValidateEmptyFilteredExpressionProjectionSpine() &&
-                      ValidateLimitValuesSpine() &&
-                      ValidateLimitRefusalIsAtomic() &&
-                      ValidatePivotUnpivotValuesSpine() &&
-                      ValidateGroupedCountSumValuesSpine() &&
-                      ValidateGroupedCountSumRefusalIsAtomic() &&
-                      ValidateRollupCountSumValuesSpine() &&
-                      ValidateRollupCountSumRefusalIsAtomic() &&
-                      ValidateRollupCountSumGroupingValuesSpine() &&
-                      ValidateRollupCountSumGroupingRefusalIsAtomic() &&
-                      ValidateCubeCountSumValuesSpine() &&
-                      ValidateCubeCountSumRefusalIsAtomic() &&
-                      ValidateCubeCountSumGroupingValuesSpine() &&
-                      ValidateCubeCountSumGroupingRefusalIsAtomic() &&
-                      ValidateGroupingSetsCountSumValuesSpine() &&
-                      ValidateGroupingSetsCountSumGroupingValuesSpine() &&
-                      ValidateGroupingSetsCountSumRefusalIsAtomic() &&
-                      ValidateGlobalCountStarValuesSpine() &&
-                      ValidateGlobalCountStarRefusalIsAtomic() &&
-                      ValidateGlobalCountExpressionValuesSpine() &&
-                      ValidateGlobalCountExpressionRefusalIsAtomic() &&
-                      ValidateGlobalSumExpressionValuesSpine() &&
-                      ValidateGlobalSumExpressionRefusalIsAtomic() &&
-                      ValidateGlobalUnaryAggregateModifierValuesSpine() &&
-                      ValidateGlobalUnaryAggregateModifierRefusalIsAtomic() &&
-                      ValidateGlobalAvgExpressionValuesSpine() &&
-                      ValidateGlobalAvgExpressionRefusalIsAtomic() &&
-                      ValidateGlobalExtremumExpressionValuesSpine(false) &&
-                      ValidateGlobalExtremumExpressionRefusalIsAtomic(false) &&
-                      ValidateGlobalExtremumExpressionValuesSpine(true) &&
-                      ValidateGlobalExtremumExpressionRefusalIsAtomic(true) &&
-                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
-                          BooleanAggregateKind::kBoolAnd) &&
-                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
-                          BooleanAggregateKind::kBoolAnd) &&
-                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
-                          BooleanAggregateKind::kBoolOr) &&
-                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
-                          BooleanAggregateKind::kBoolOr) &&
-                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
-                          BooleanAggregateKind::kEvery) &&
-                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
-                          BooleanAggregateKind::kEvery) &&
-                      ValidateGlobalStatisticalAggregateExpressionValuesSpine() &&
-                      ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() &&
-                      ValidateGlobalPairStatisticalAggregateModifierValuesSpine() &&
-                      ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic() &&
-                      ValidateGlobalPairStatisticalAggregateExpressionValuesSpine() &&
-                      ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() &&
-                      ValidateGlobalOrderedSetAggregateValuesSpine() &&
-                      ValidateGlobalOrderedSetAggregateRefusalIsAtomic() &&
-                      ValidateGlobalOrderedSetAggregateModifierValuesSpine() &&
-                      ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic() &&
-                      ValidateGlobalApproximateAggregateValuesSpine() &&
-                      ValidateGlobalApproximateAggregateRefusalIsAtomic() &&
-                      ValidateGlobalApproximateAggregateModifierValuesSpine() &&
-                      ValidateGlobalApproximateAggregateModifierRefusalIsAtomic() &&
-                      ValidateGlobalStringAggExpressionValuesSpine() &&
-                      ValidateGlobalStringAggExpressionRefusalIsAtomic() &&
-                      ValidateOrderedStringAggExpressionValuesSpine() &&
-                      ValidateOrderedStringAggExpressionRefusalIsAtomic() &&
-                      ValidateStringAggModifierValuesSpine() &&
-                      ValidateStringAggModifierRefusalIsAtomic() &&
-                      ValidateOrderedListaggExpressionValuesSpine() &&
-                      ValidateOrderedListaggExpressionRefusalIsAtomic() &&
-                      ValidateOrderedListaggModifierValuesSpine() &&
-                      ValidateOrderedListaggModifierRefusalIsAtomic() &&
-                      ValidateOrderedSingleCollectionValuesSpine() &&
-                      ValidateOrderedSingleCollectionRefusalIsAtomic() &&
-                      ValidateOrderedSingleCollectionModifierValuesSpine() &&
-                      ValidateOrderedSingleCollectionModifierRefusalIsAtomic() &&
-                      ValidateOrderedJsonObjectAggValuesSpine() &&
-                      ValidateOrderedJsonObjectAggRefusalIsAtomic() &&
-                      ValidateOrderedJsonObjectAggModifierValuesSpine() &&
-                      ValidateOrderedJsonObjectAggModifierRefusalIsAtomic() &&
-                      ValidateSortValuesSpine() &&
-                      ValidateSortRefusalIsAtomic() &&
-                      ValidateRowDependentSortExpressionSpine() &&
-                      ValidateDistinctSortLimitValuesSpine() &&
-                      ValidateDistinctSortLimitRefusalIsAtomic() &&
-                      ValidatePayloadRefusalIsAtomic() &&
-                      ValidateComposedScalarRefusalIsAtomic();
-  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+int main(int argc, char** argv) {
+  const bool aggregate_only = argc == 2 &&
+      std::string_view(argv[1]) == "--aggregate-preparation-only";
+  if (argc != 1 && !aggregate_only) {
+    std::cerr << "unsupported live-values regression argument\n";
+    return EXIT_FAILURE;
+  }
+  struct Case {
+    std::string_view name;
+    bool aggregate_preparation;
+    bool (*run)();
+  };
+  const Case cases[] = {
+      {"ValidateLiveValuesSpine()", false, [] {
+        return ValidateLiveValuesSpine();
+      }},
+      {"ValidateRuntimeBreadthValuesSpine()", false, [] {
+        return ValidateRuntimeBreadthValuesSpine();
+      }},
+      {"ValidateLiveValuesPreResultRevocationIsAtomic()", false, [] {
+        return ValidateLiveValuesPreResultRevocationIsAtomic();
+      }},
+      {"ValidateGeneralSelectExecutionBoundary()", false, [] {
+        return ValidateGeneralSelectExecutionBoundary();
+      }},
+      {"ValidateLiveStatementContextRefusalIsAtomic()", false, [] {
+        return ValidateLiveStatementContextRefusalIsAtomic();
+      }},
+      {"ValidateComposedScalarValuesSpine()", false, [] {
+        return ValidateComposedScalarValuesSpine();
+      }},
+      {"ValidateUnionAllValuesSpine()", false, [] {
+        return ValidateUnionAllValuesSpine();
+      }},
+      {"ValidateUnionAllRefusalIsAtomic()", false, [] {
+        return ValidateUnionAllRefusalIsAtomic();
+      }},
+      {"ValidateSetOperationProfilesSpine()", false, [] {
+        return ValidateSetOperationProfilesSpine();
+      }},
+      {"ValidateSetOperationNestingSpine()", false, [] {
+        return ValidateSetOperationNestingSpine();
+      }},
+      {"ValidateInnerJoinValuesSpine()", false, [] {
+        return ValidateInnerJoinValuesSpine();
+      }},
+      {"ValidateInnerJoinThreeValuedPredicate()", false, [] {
+        return ValidateInnerJoinThreeValuedPredicate();
+      }},
+      {"ValidateInnerJoinRefusalIsAtomic()", false, [] {
+        return ValidateInnerJoinRefusalIsAtomic();
+      }},
+      {"ValidateAcceptedJoinKindsSpine()", false, [] {
+        return ValidateAcceptedJoinKindsSpine();
+      }},
+      {"ValidateRowDependentJoinPredicateSpine()", false, [] {
+        return ValidateRowDependentJoinPredicateSpine();
+      }},
+      {"ValidateInnerJoinFilterProjectCompositionSpine()", false, [] {
+        return ValidateInnerJoinFilterProjectCompositionSpine();
+      }},
+      {"ValidateInnerJoinFilterProjectSortCompositionSpine()", false, [] {
+        return ValidateInnerJoinFilterProjectSortCompositionSpine();
+      }},
+      {"ValidateInnerJoinFilterProjectSortLimitCompositionSpine()", false, [] {
+        return ValidateInnerJoinFilterProjectSortLimitCompositionSpine();
+      }},
+      {"ValidateInnerJoinFilterProjectDistinctSortLimitSpine()", false, [] {
+        return ValidateInnerJoinFilterProjectDistinctSortLimitSpine();
+      }},
+      {"ValidateInnerJoinFilterProjectDistinctSortOffsetFetchSpine()", false, [] {
+        return ValidateInnerJoinFilterProjectDistinctSortOffsetFetchSpine();
+      }},
+      {"ValidateFilterValuesSpine()", false, [] {
+        return ValidateFilterValuesSpine();
+      }},
+      {"ValidateFilterThreeValuedPredicate()", false, [] {
+        return ValidateFilterThreeValuedPredicate();
+      }},
+      {"ValidateRowDependentFilterPredicateSpine()", false, [] {
+        return ValidateRowDependentFilterPredicateSpine();
+      }},
+      {"ValidateFilterRefusalIsAtomic()", false, [] {
+        return ValidateFilterRefusalIsAtomic();
+      }},
+      {"ValidateProjectValuesSpine()", false, [] {
+        return ValidateProjectValuesSpine();
+      }},
+      {"ValidateProjectRefusalIsAtomic()", false, [] {
+        return ValidateProjectRefusalIsAtomic();
+      }},
+      {"ValidateRowDependentProjectExpressionSpine()", false, [] {
+        return ValidateRowDependentProjectExpressionSpine();
+      }},
+      {"ValidateProjectedExpressionSortCompositionSpine()", false, [] {
+        return ValidateProjectedExpressionSortCompositionSpine();
+      }},
+      {"ValidateFilteredExpressionProjectCompositionSpine()", false, [] {
+        return ValidateFilteredExpressionProjectCompositionSpine();
+      }},
+      {"ValidateFilteredProjectedSortCompositionSpine()", false, [] {
+        return ValidateFilteredProjectedSortCompositionSpine();
+      }},
+      {"ValidateFilteredProjectedSortLimitCompositionSpine()", false, [] {
+        return ValidateFilteredProjectedSortLimitCompositionSpine();
+      }},
+      {"ValidateFilteredProjectedDistinctSortLimitCompositionSpine()", false, [] {
+        return ValidateFilteredProjectedDistinctSortLimitCompositionSpine();
+      }},
+      {"ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine()", false, [] {
+        return ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine();
+      }},
+      {"ValidateNodeDrivenUnaryCompositionSpine()", false, [] {
+        return ValidateNodeDrivenUnaryCompositionSpine();
+      }},
+      {"ValidateNodeDrivenJoinCompositionSpine()", false, [] {
+        return ValidateNodeDrivenJoinCompositionSpine();
+      }},
+      {"ValidateNodeDrivenAcceptedJoinKindsCompositionSpine()", false, [] {
+        return ValidateNodeDrivenAcceptedJoinKindsCompositionSpine();
+      }},
+      {"ValidateNodeDrivenUnionAllCompositionSpine()", false, [] {
+        return ValidateNodeDrivenUnionAllCompositionSpine();
+      }},
+      {"ValidateNodeDrivenExactSetProfilesCompositionSpine()", false, [] {
+        return ValidateNodeDrivenExactSetProfilesCompositionSpine();
+      }},
+      {"ValidateNodeDrivenNullCollationSetCompositionSpine()", false, [] {
+        return ValidateNodeDrivenNullCollationSetCompositionSpine();
+      }},
+      {"ValidateNodeDrivenExpressionSortLimitCompositionSpine()", false, [] {
+        return ValidateNodeDrivenExpressionSortLimitCompositionSpine();
+      }},
+      {"ValidateNodeDrivenTableSubqueryCteCompositionSpine()", false, [] {
+        return ValidateNodeDrivenTableSubqueryCteCompositionSpine();
+      }},
+      {"ValidateNodeDrivenScalarRowSubqueryCompositionSpine()", false, [] {
+        return ValidateNodeDrivenScalarRowSubqueryCompositionSpine();
+      }},
+      {"ValidateNodeDrivenPredicateSubqueryCompositionSpine()", false, [] {
+        return ValidateNodeDrivenPredicateSubqueryCompositionSpine();
+      }},
+      {"ValidateNodeDrivenCorrelatedLateralCompositionSpine()", false, [] {
+        return ValidateNodeDrivenCorrelatedLateralCompositionSpine();
+      }},
+      {"ValidateNodeDrivenRecursiveCteCompositionSpine()", false, [] {
+        return ValidateNodeDrivenRecursiveCteCompositionSpine();
+      }},
+      {"ValidateNodeDrivenTypeReconciledSetCompositionSpine()", false, [] {
+        return ValidateNodeDrivenTypeReconciledSetCompositionSpine();
+      }},
+      {"ValidateNodeDrivenByNameSetCompositionSpine()", false, [] {
+        return ValidateNodeDrivenByNameSetCompositionSpine();
+      }},
+      {"ValidateNodeDrivenCountStarCompositionSpine()", true, [] {
+        return ValidateNodeDrivenCountStarCompositionSpine();
+      }},
+      {"ValidateNodeDrivenCountExpressionCompositionSpine()", true, [] {
+        return ValidateNodeDrivenCountExpressionCompositionSpine();
+      }},
+      {"ValidateNodeDrivenSumExpressionCompositionSpine()", true, [] {
+        return ValidateNodeDrivenSumExpressionCompositionSpine();
+      }},
+      {"ValidateNodeDrivenAvgExpressionCompositionSpine()", true, [] {
+        return ValidateNodeDrivenAvgExpressionCompositionSpine();
+      }},
+      {"ValidateNodeDrivenStatisticalAggregateCompositionSpine()", true, [] {
+        return ValidateNodeDrivenStatisticalAggregateCompositionSpine();
+      }},
+      {"ValidateNodeDrivenPairStatisticalCompositionSpine()", false, [] {
+        return ValidateNodeDrivenPairStatisticalCompositionSpine();
+      }},
+      {"ValidateNodeDrivenGroupedCountSumCompositionSpine()", true, [] {
+        return ValidateNodeDrivenGroupedCountSumCompositionSpine();
+      }},
+      {"ValidateNodeDrivenGroupingExpansionCompositionSpine()", true, [] {
+        return ValidateNodeDrivenGroupingExpansionCompositionSpine();
+      }},
+      {"ValidateNodeDrivenGroupedHavingCompositionSpine()", true, [] {
+        return ValidateNodeDrivenGroupedHavingCompositionSpine();
+      }},
+      {"ValidateNodeDrivenStringAggCompositionSpine()", true, [] {
+        return ValidateNodeDrivenStringAggCompositionSpine();
+      }},
+      {"ValidateNodeDrivenComplexAggregateCompositionSpine()", true, [] {
+        return ValidateNodeDrivenComplexAggregateCompositionSpine();
+      }},
+      {"ValidateNodeDrivenExtremumExpressionCompositionSpine()", true, [] {
+        return ValidateNodeDrivenExtremumExpressionCompositionSpine();
+      }},
+      {"ValidateNodeDrivenBooleanAggregateCompositionSpine()", true, [] {
+        return ValidateNodeDrivenBooleanAggregateCompositionSpine();
+      }},
+      {"ValidateNodeDrivenNestedExactSetCompositionSpine()", false, [] {
+        return ValidateNodeDrivenNestedExactSetCompositionSpine();
+      }},
+      {"ValidateEmptyFilteredExpressionProjectionSpine()", false, [] {
+        return ValidateEmptyFilteredExpressionProjectionSpine();
+      }},
+      {"ValidateLimitValuesSpine()", false, [] {
+        return ValidateLimitValuesSpine();
+      }},
+      {"ValidateLimitRefusalIsAtomic()", false, [] {
+        return ValidateLimitRefusalIsAtomic();
+      }},
+      {"ValidatePivotUnpivotValuesSpine()", false, [] {
+        return ValidatePivotUnpivotValuesSpine();
+      }},
+      {"ValidateGroupedCountSumValuesSpine()", true, [] {
+        return ValidateGroupedCountSumValuesSpine();
+      }},
+      {"ValidateGroupedCountSumRefusalIsAtomic()", true, [] {
+        return ValidateGroupedCountSumRefusalIsAtomic();
+      }},
+      {"ValidateRollupCountSumValuesSpine()", true, [] {
+        return ValidateRollupCountSumValuesSpine();
+      }},
+      {"ValidateRollupCountSumRefusalIsAtomic()", true, [] {
+        return ValidateRollupCountSumRefusalIsAtomic();
+      }},
+      {"ValidateRollupCountSumGroupingValuesSpine()", true, [] {
+        return ValidateRollupCountSumGroupingValuesSpine();
+      }},
+      {"ValidateRollupCountSumGroupingRefusalIsAtomic()", true, [] {
+        return ValidateRollupCountSumGroupingRefusalIsAtomic();
+      }},
+      {"ValidateCubeCountSumValuesSpine()", true, [] {
+        return ValidateCubeCountSumValuesSpine();
+      }},
+      {"ValidateCubeCountSumRefusalIsAtomic()", true, [] {
+        return ValidateCubeCountSumRefusalIsAtomic();
+      }},
+      {"ValidateCubeCountSumGroupingValuesSpine()", true, [] {
+        return ValidateCubeCountSumGroupingValuesSpine();
+      }},
+      {"ValidateCubeCountSumGroupingRefusalIsAtomic()", true, [] {
+        return ValidateCubeCountSumGroupingRefusalIsAtomic();
+      }},
+      {"ValidateGroupingSetsCountSumValuesSpine()", true, [] {
+        return ValidateGroupingSetsCountSumValuesSpine();
+      }},
+      {"ValidateGroupingSetsCountSumGroupingValuesSpine()", true, [] {
+        return ValidateGroupingSetsCountSumGroupingValuesSpine();
+      }},
+      {"ValidateGroupingSetsCountSumRefusalIsAtomic()", true, [] {
+        return ValidateGroupingSetsCountSumRefusalIsAtomic();
+      }},
+      {"ValidateGlobalCountStarValuesSpine()", true, [] {
+        return ValidateGlobalCountStarValuesSpine();
+      }},
+      {"ValidateGlobalCountStarRefusalIsAtomic()", true, [] {
+        return ValidateGlobalCountStarRefusalIsAtomic();
+      }},
+      {"ValidateGlobalCountExpressionValuesSpine()", true, [] {
+        return ValidateGlobalCountExpressionValuesSpine();
+      }},
+      {"ValidateGlobalCountExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalCountExpressionRefusalIsAtomic();
+      }},
+      {"ValidateGlobalSumExpressionValuesSpine()", true, [] {
+        return ValidateGlobalSumExpressionValuesSpine();
+      }},
+      {"ValidateGlobalSumExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalSumExpressionRefusalIsAtomic();
+      }},
+      {"ValidateGlobalUnaryAggregateModifierValuesSpine()", true, [] {
+        return ValidateGlobalUnaryAggregateModifierValuesSpine();
+      }},
+      {"ValidateGlobalUnaryAggregateModifierRefusalIsAtomic()", true, [] {
+        return ValidateGlobalUnaryAggregateModifierRefusalIsAtomic();
+      }},
+      {"ValidateGlobalAvgExpressionValuesSpine()", true, [] {
+        return ValidateGlobalAvgExpressionValuesSpine();
+      }},
+      {"ValidateGlobalAvgExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalAvgExpressionRefusalIsAtomic();
+      }},
+      {"ValidateGlobalExtremumExpressionValuesSpine(false)", true, [] {
+        return ValidateGlobalExtremumExpressionValuesSpine(false);
+      }},
+      {"ValidateGlobalExtremumExpressionRefusalIsAtomic(false)", true, [] {
+        return ValidateGlobalExtremumExpressionRefusalIsAtomic(false);
+      }},
+      {"ValidateGlobalExtremumExpressionValuesSpine(true)", true, [] {
+        return ValidateGlobalExtremumExpressionValuesSpine(true);
+      }},
+      {"ValidateGlobalExtremumExpressionRefusalIsAtomic(true)", true, [] {
+        return ValidateGlobalExtremumExpressionRefusalIsAtomic(true);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kBoolAnd)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kBoolAnd);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kBoolAnd)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kBoolAnd);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kBoolOr)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kBoolOr);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kBoolOr)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kBoolOr);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kEvery)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionValuesSpine( BooleanAggregateKind::kEvery);
+      }},
+      {"ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kEvery)", true, [] {
+        return ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic( BooleanAggregateKind::kEvery);
+      }},
+      {"ValidateGlobalStatisticalAggregateExpressionValuesSpine()", true, [] {
+        return ValidateGlobalStatisticalAggregateExpressionValuesSpine();
+      }},
+      {"ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic();
+      }},
+      {"ValidateGlobalPairStatisticalAggregateModifierValuesSpine()", true, [] {
+        return ValidateGlobalPairStatisticalAggregateModifierValuesSpine();
+      }},
+      {"ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic()", true, [] {
+        return ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic();
+      }},
+      {"ValidateGlobalPairStatisticalAggregateExpressionValuesSpine()", true, [] {
+        return ValidateGlobalPairStatisticalAggregateExpressionValuesSpine();
+      }},
+      {"ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic();
+      }},
+      {"ValidateGlobalOrderedSetAggregateValuesSpine()", true, [] {
+        return ValidateGlobalOrderedSetAggregateValuesSpine();
+      }},
+      {"ValidateGlobalOrderedSetAggregateRefusalIsAtomic()", true, [] {
+        return ValidateGlobalOrderedSetAggregateRefusalIsAtomic();
+      }},
+      {"ValidateGlobalOrderedSetAggregateModifierValuesSpine()", true, [] {
+        return ValidateGlobalOrderedSetAggregateModifierValuesSpine();
+      }},
+      {"ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic()", true, [] {
+        return ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic();
+      }},
+      {"ValidateGlobalApproximateAggregateValuesSpine()", true, [] {
+        return ValidateGlobalApproximateAggregateValuesSpine();
+      }},
+      {"ValidateGlobalApproximateAggregateRefusalIsAtomic()", true, [] {
+        return ValidateGlobalApproximateAggregateRefusalIsAtomic();
+      }},
+      {"ValidateGlobalApproximateAggregateModifierValuesSpine()", true, [] {
+        return ValidateGlobalApproximateAggregateModifierValuesSpine();
+      }},
+      {"ValidateGlobalApproximateAggregateModifierRefusalIsAtomic()", true, [] {
+        return ValidateGlobalApproximateAggregateModifierRefusalIsAtomic();
+      }},
+      {"ValidateGlobalStringAggExpressionValuesSpine()", true, [] {
+        return ValidateGlobalStringAggExpressionValuesSpine();
+      }},
+      {"ValidateGlobalStringAggExpressionRefusalIsAtomic()", true, [] {
+        return ValidateGlobalStringAggExpressionRefusalIsAtomic();
+      }},
+      {"ValidateOrderedStringAggExpressionValuesSpine()", true, [] {
+        return ValidateOrderedStringAggExpressionValuesSpine();
+      }},
+      {"ValidateOrderedStringAggExpressionRefusalIsAtomic()", true, [] {
+        return ValidateOrderedStringAggExpressionRefusalIsAtomic();
+      }},
+      {"ValidateStringAggModifierValuesSpine()", true, [] {
+        return ValidateStringAggModifierValuesSpine();
+      }},
+      {"ValidateStringAggModifierRefusalIsAtomic()", true, [] {
+        return ValidateStringAggModifierRefusalIsAtomic();
+      }},
+      {"ValidateOrderedListaggExpressionValuesSpine()", true, [] {
+        return ValidateOrderedListaggExpressionValuesSpine();
+      }},
+      {"ValidateOrderedListaggExpressionRefusalIsAtomic()", true, [] {
+        return ValidateOrderedListaggExpressionRefusalIsAtomic();
+      }},
+      {"ValidateOrderedListaggModifierValuesSpine()", true, [] {
+        return ValidateOrderedListaggModifierValuesSpine();
+      }},
+      {"ValidateOrderedListaggModifierRefusalIsAtomic()", true, [] {
+        return ValidateOrderedListaggModifierRefusalIsAtomic();
+      }},
+      {"ValidateOrderedSingleCollectionValuesSpine()", true, [] {
+        return ValidateOrderedSingleCollectionValuesSpine();
+      }},
+      {"ValidateOrderedSingleCollectionRefusalIsAtomic()", true, [] {
+        return ValidateOrderedSingleCollectionRefusalIsAtomic();
+      }},
+      {"ValidateOrderedSingleCollectionModifierValuesSpine()", true, [] {
+        return ValidateOrderedSingleCollectionModifierValuesSpine();
+      }},
+      {"ValidateOrderedSingleCollectionModifierRefusalIsAtomic()", true, [] {
+        return ValidateOrderedSingleCollectionModifierRefusalIsAtomic();
+      }},
+      {"ValidateOrderedJsonObjectAggValuesSpine()", true, [] {
+        return ValidateOrderedJsonObjectAggValuesSpine();
+      }},
+      {"ValidateOrderedJsonObjectAggRefusalIsAtomic()", true, [] {
+        return ValidateOrderedJsonObjectAggRefusalIsAtomic();
+      }},
+      {"ValidateOrderedJsonObjectAggModifierValuesSpine()", true, [] {
+        return ValidateOrderedJsonObjectAggModifierValuesSpine();
+      }},
+      {"ValidateOrderedJsonObjectAggModifierRefusalIsAtomic()", true, [] {
+        return ValidateOrderedJsonObjectAggModifierRefusalIsAtomic();
+      }},
+      {"ValidateSortValuesSpine()", false, [] {
+        return ValidateSortValuesSpine();
+      }},
+      {"ValidateSortRefusalIsAtomic()", false, [] {
+        return ValidateSortRefusalIsAtomic();
+      }},
+      {"ValidateRowDependentSortExpressionSpine()", false, [] {
+        return ValidateRowDependentSortExpressionSpine();
+      }},
+      {"ValidateDistinctSortLimitValuesSpine()", false, [] {
+        return ValidateDistinctSortLimitValuesSpine();
+      }},
+      {"ValidateDistinctSortLimitRefusalIsAtomic()", false, [] {
+        return ValidateDistinctSortLimitRefusalIsAtomic();
+      }},
+      {"ValidatePayloadRefusalIsAtomic()", false, [] {
+        return ValidatePayloadRefusalIsAtomic();
+      }},
+      {"ValidateComposedScalarRefusalIsAtomic()", false, [] {
+        return ValidateComposedScalarRefusalIsAtomic();
+      }},
+  };
+  bool passed = true;
+  std::size_t executed = 0;
+  std::size_t failures = 0;
+  for (const auto& test : cases) {
+    if (aggregate_only && !test.aggregate_preparation) continue;
+    ++executed;
+    if (!test.run()) {
+      passed = false;
+      ++failures;
+      std::cerr << "live-values case failed: " << test.name << '\n';
+    }
+  }
+  std::cout << "live_values_cases=" << executed << " failures=" << failures
+            << " aggregate_preparation_only=" << aggregate_only << '\n';
+  return passed && executed != 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

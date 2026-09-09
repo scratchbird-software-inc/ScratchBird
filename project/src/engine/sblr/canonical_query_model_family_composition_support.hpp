@@ -117,4 +117,12 @@ bool PollLiveCancellationProbe(
     const std::function<bool()>& cancellation_requested,
     LiveCancellationProbeState* state) noexcept;
 
+// Shared RCP-079 value and statement-vector projections. They normalize
+// already-issued execution data and do not construct transaction authority.
+std::string Rcp079CanonicalReal64(double value);
+
+plan::CanonicalMgaStatementContext Rcp079LogicalMga(
+    const exec::PhysicalMgaStatementContext& mga,
+    bool current);
+
 }  // namespace scratchbird::engine::sblr

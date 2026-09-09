@@ -1816,7 +1816,9 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
                                  const bool table_function_proof_only = false,
                                  const bool match_recognize_proof_only = false,
                                  const bool spatial_columnar_proof_only = false,
-                                 const bool filtered_count_proof_only = false) {
+                                 const bool filtered_count_proof_only = false,
+                                 const bool heap_join_proof_only = false,
+                                 const bool heap_single_source_proof_only = false) {
   constexpr std::string_view kSourceFreeNativeSelect =
       "SELECT key_a,COUNT(*),SUM(amount) FROM (VALUES (1,5), (1,7)) "
       "AS input(key_a,amount) GROUP BY key_a;";
@@ -1944,6 +1946,25 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       executor_admin.security_context_present = true;
       executor_admin.trace_tags.push_back(
           "right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
+      api::SblrExecutorAvailabilityRowIdentity privilege_template_executor;
+      privilege_template_executor.executor_id =
+          api::kSblrSecurityCreatePrivilegeTemplateExecutorId;
+      privilege_template_executor.opcode_code =
+          api::kSblrSecurityCreatePrivilegeTemplateOpcodeCode;
+      privilege_template_executor.opcode_version =
+          api::kSblrSecurityCreatePrivilegeTemplateOpcodeVersion;
+      privilege_template_executor.operand_descriptor_id =
+          api::kSblrSecurityCreatePrivilegeTemplateOperandDescriptorId;
+      privilege_template_executor.result_descriptor_id =
+          api::kSblrSecurityCreatePrivilegeTemplateResultDescriptorId;
+      privilege_template_executor.result_descriptor_version =
+          api::kSblrSecurityCreatePrivilegeTemplateResultDescriptorVersion;
+      const auto installed_privilege_template =
+          api::LoadSblrExecutorAvailabilitySnapshot(
+              executor_admin, privilege_template_executor);
+      Require(installed_privilege_template.ok &&
+                  installed_privilege_template.snapshot.installed,
+              "privilege-template executor baseline is unavailable");
       api::SblrExecutorAvailabilityRowIdentity literal_executor;
       literal_executor.executor_id = api::kSblrLiteralExecutorId;
       literal_executor.opcode_code = api::kSblrLiteralOpcodeCode;
@@ -1957,7 +1978,10 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
       const auto installed_literal =
           api::LoadSblrExecutorAvailabilitySnapshot(executor_admin,
                                                      literal_executor);
-      Require(installed_literal.ok && installed_literal.snapshot.installed,
+      Require(installed_literal.ok && installed_literal.snapshot.installed &&
+                  installed_literal.snapshot.row_identity_sha256 !=
+                      installed_privilege_template.snapshot
+                          .row_identity_sha256,
               "ordinary V1 literal executor baseline is unavailable");
       api::SblrExecutorAvailabilitySetRequest revoke_literal;
       revoke_literal.database_uuid = fixture.database_uuid;
@@ -2080,7 +2104,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
 
     if (!join_tail_proof_only && !table_function_proof_only &&
         !match_recognize_proof_only && !spatial_columnar_proof_only &&
-        !filtered_count_proof_only) {
+        !filtered_count_proof_only && !heap_join_proof_only &&
+        !heap_single_source_proof_only) {
       auto source_free = parser.RunPipeline(kSourceFreeNativeSelect, true);
       if (!source_free.accepted) PrintMessages(source_free.messages);
       Require(source_free.accepted &&
@@ -2131,7 +2156,8 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         };
 
     if (!join_tail_proof_only && !match_recognize_proof_only &&
-        !spatial_columnar_proof_only && !filtered_count_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only &&
+        !heap_join_proof_only && !heap_single_source_proof_only) {
       auto generate_series = run_direct_parameterized(
           "SELECT * FROM generate_series(?, ?, ?);",
           {text_parameter("1"), text_parameter("5"), text_parameter("2")});
@@ -2202,10 +2228,38 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
           parser.RunPipeline("SELECT * FROM generate_series(1, 5, 2);", true);
       Require(!generate_series_literal.accepted,
               "generate_series admitted parser-authored literal arguments");
+
+      // The bounded materializer must stop before overflowing either int64
+      // endpoint, including a step whose magnitude cannot be negated in int64.
+      const auto upper_endpoint = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("9223372036854775806"),
+           text_parameter("9223372036854775807"), text_parameter("2")});
+      Require(upper_endpoint.accepted && upper_endpoint.server_row_count == 1 &&
+                  upper_endpoint.server_result_payload.find(
+                      "generate_series=9223372036854775806") != std::string::npos,
+              "generate_series overflowed the upper int64 endpoint");
+      const auto lower_endpoint = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("-9223372036854775807"),
+           text_parameter("-9223372036854775808"), text_parameter("-2")});
+      Require(lower_endpoint.accepted && lower_endpoint.server_row_count == 1 &&
+                  lower_endpoint.server_result_payload.find(
+                      "generate_series=-9223372036854775807") != std::string::npos,
+              "generate_series overflowed the lower int64 endpoint");
+      const auto minimum_step = run_direct_parameterized(
+          "SELECT * FROM generate_series(?, ?, ?);",
+          {text_parameter("0"), text_parameter("-9223372036854775808"),
+           text_parameter("-9223372036854775808")});
+      Require(minimum_step.accepted && minimum_step.server_row_count == 2 &&
+                  minimum_step.server_result_payload.find(
+                      "generate_series=-9223372036854775808") != std::string::npos,
+              "generate_series lost the inclusive int64-minimum step endpoint");
     }
 
     if (!join_tail_proof_only && !table_function_proof_only &&
-        !spatial_columnar_proof_only && !filtered_count_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only &&
+        !heap_join_proof_only && !heap_single_source_proof_only) {
       constexpr std::string_view kMatchRecognizeQuery =
           "SELECT * FROM generate_series(?, ?, ?) MATCH_RECOGNIZE ("
           "PARTITION BY generate_series ORDER BY generate_series ASC "
@@ -2243,10 +2297,16 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
            text_parameter("1")});
       Require(!refused_one_row.accepted,
               "bounded MATCH_RECOGNIZE admitted an unsupported output mode");
+      const auto refused_zero_step = run_direct_parameterized(
+          kMatchRecognizeQuery,
+          {text_parameter("1"), text_parameter("3"), text_parameter("0")});
+      Require(!refused_zero_step.accepted,
+              "MATCH_RECOGNIZE admitted a generate_series source with zero step");
     }
 
     if (!table_function_proof_only && !match_recognize_proof_only &&
-        !spatial_columnar_proof_only && !filtered_count_proof_only) {
+        !spatial_columnar_proof_only && !filtered_count_proof_only &&
+        !heap_join_proof_only && !heap_single_source_proof_only) {
 
     auto joined_literal_parameter_tail = run_direct_parameterized(
         "SELECT l.integer_value FROM "
@@ -2322,9 +2382,10 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
             "profile");
     }
 
-    if (!join_tail_proof_only && !table_function_proof_only &&
+    if (heap_join_proof_only ||
+        (!join_tail_proof_only && !table_function_proof_only &&
         !match_recognize_proof_only && !spatial_columnar_proof_only &&
-        !filtered_count_proof_only) {
+        !filtered_count_proof_only && !heap_single_source_proof_only)) {
     auto three_way_join_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation AS l CROSS JOIN "
         "qow_packet7.qow_packet7_join_relation AS r CROSS JOIN "
@@ -2485,7 +2546,74 @@ void VerifyFullParserServerRoute(const Fixture& fixture,
         "LEFT ANTI JOIN", 1,
         "object-backed LEFT ANTI JOIN did not publish only its unmatched left "
         "row with a left-only result shape");
+    }
 
+    if (!join_tail_proof_only && !table_function_proof_only &&
+        !match_recognize_proof_only && !spatial_columnar_proof_only &&
+        !filtered_count_proof_only && !heap_join_proof_only) {
+    if (heap_single_source_proof_only) {
+      auto scan = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation;", true);
+      if (!scan.accepted) PrintMessages(scan.messages);
+      Require(scan.accepted && scan.server_operation_id == "query.execute" &&
+                  scan.server_cursor_uuid.empty() && scan.server_row_count == 3,
+              "single-source heap scan did not publish its three visible rows");
+      const auto result_rows = [](std::string_view payload) {
+        std::vector<std::string> rows;
+        while (!payload.empty()) {
+          const auto end = payload.find('\n');
+          const auto line = payload.substr(0, end);
+          if (line.starts_with("row[")) rows.emplace_back(line);
+          if (end == std::string_view::npos) break;
+          payload.remove_prefix(end + 1);
+        }
+        return rows;
+      };
+      // Row packets also carry per-statement/autocommit evidence. Compare
+      // every row, not those deliberately different execution identities.
+      const auto scan_rows = result_rows(scan.server_result_payload);
+      Require(scan_rows.size() == 3, "heap scan row packet was incomplete");
+      auto cte = parser.RunPipeline(
+          "WITH visible_rows AS (SELECT * FROM "
+          "qow_packet7.qow_packet7_relation) SELECT * FROM visible_rows;", true);
+      if (!cte.accepted) PrintMessages(cte.messages);
+      Require(cte.accepted && cte.server_operation_id == "query.execute" &&
+                  cte.server_cursor_uuid.empty() && cte.server_row_count == 3 &&
+                  result_rows(cte.server_result_payload) == scan_rows,
+              "canonical parser CTE did not preserve the heap scan rows");
+      auto quoted_cte = parser.RunPipeline(
+          "WITH \"Visible Rows\" AS (SELECT * FROM "
+          "qow_packet7.qow_packet7_relation) SELECT * FROM \"Visible Rows\";", true);
+      if (!quoted_cte.accepted) PrintMessages(quoted_cte.messages);
+      Require(quoted_cte.accepted && quoted_cte.server_operation_id == "query.execute" &&
+                  quoted_cte.server_row_count == 3 && quoted_cte.server_cursor_uuid.empty() &&
+                  result_rows(quoted_cte.server_result_payload) == scan_rows,
+              "quoted CTE binding did not preserve the canonical heap rows");
+      for (const std::string sql : {
+               "WITH v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM other;",
+               "WITH RECURSIVE v AS (SELECT * FROM qow_packet7.qow_packet7_relation) SELECT * FROM v;",
+               "WITH v AS (SELECT * FROM v) SELECT * FROM v;"}) {
+        const auto refused = parser.RunPipeline(sql, true);
+        Require(!refused.accepted && refused.server_cursor_uuid.empty() &&
+                    refused.server_row_count == 0 && refused.server_result_payload.empty() &&
+                    std::ranges::any_of(refused.messages.diagnostics, [](const auto& diagnostic) {
+                      return diagnostic.code == "SBSQL.IMPL.NOT_AVAILABLE";
+                    }), "unsupported CTE did not refuse before server execution");
+      }
+      auto ranking = parser.RunPipeline(
+          "SELECT ROW_NUMBER() OVER (ORDER BY integer_value) AS row_no "
+          "FROM qow_packet7.qow_packet7_relation;", true);
+      if (!ranking.accepted) PrintMessages(ranking.messages);
+      const auto first_rank = ranking.server_result_payload.find("row_no=1");
+      const auto last_rank = ranking.server_result_payload.find("row_no=3");
+      Require(ranking.accepted &&
+                  ranking.server_operation_id == "query.execute" &&
+                  ranking.server_cursor_uuid.empty() &&
+                  ranking.server_row_count == 3 &&
+                  first_rank != std::string::npos &&
+                  last_rank != std::string::npos && first_rank < last_rank,
+              "single-source heap window did not preserve ordered row numbers");
+    }
     auto object_backed_count = parser.RunPipeline(
         "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);
     if (!object_backed_count.accepted) {
@@ -4529,20 +4657,38 @@ int main(int argc, char** argv) {
   const bool filtered_count_proof_only =
       argc == 2 &&
       std::string_view(argv[1]) == "--filtered-count-proof-only";
+  const bool heap_join_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--heap-join-proof-only";
+  const bool heap_single_source_proof_only =
+      argc == 2 &&
+      std::string_view(argv[1]) == "--heap-single-source-proof-only";
   Require(argc == 1 || join_tail_proof_only || table_function_proof_only ||
               match_recognize_proof_only || spatial_columnar_proof_only ||
-              filtered_count_proof_only,
+              filtered_count_proof_only || heap_join_proof_only ||
+              heap_single_source_proof_only,
           "unsupported qow live statement-context regression argument");
   if (join_tail_proof_only || table_function_proof_only ||
       match_recognize_proof_only || spatial_columnar_proof_only ||
-      filtered_count_proof_only) {
+      filtered_count_proof_only || heap_join_proof_only ||
+      heap_single_source_proof_only) {
     auto full_route_fixture = CreateFixture(true);
     CreateObjectBackedRelation(&full_route_fixture);
     VerifyFullParserServerRoute(full_route_fixture, join_tail_proof_only,
                                 table_function_proof_only,
                                 match_recognize_proof_only,
                                 spatial_columnar_proof_only,
-                                filtered_count_proof_only);
+                                filtered_count_proof_only,
+                                heap_join_proof_only,
+                                heap_single_source_proof_only);
+    if (heap_single_source_proof_only) {
+      std::cout << "qow_current_heap_single_source_composition=passed\n";
+      return EXIT_SUCCESS;
+    }
+    if (heap_join_proof_only) {
+      std::cout << "qow_current_heap_join_composition=passed\n";
+      return EXIT_SUCCESS;
+    }
     std::cout
         << (join_tail_proof_only
                 ? "qow_join_tail_literal_filter_parameter_limit=passed\n"

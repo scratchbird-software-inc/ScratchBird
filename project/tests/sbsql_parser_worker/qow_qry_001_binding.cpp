@@ -234,7 +234,8 @@ sbsql::NativeRelationalBindingContext QualifyWindowBindingContext() {
 
 bool HasExactMgaStatementContext(
     const sbsql::BoundNativeRelationalDocument& bound,
-    const sbsql::NativeRelationalBindingContext& context) {
+    const sbsql::NativeRelationalBindingContext& context,
+    const std::size_t scope_count = 1) {
   return bound.statement_uuid == context.statement_uuid &&
          bound.owning_transaction_uuid == context.owning_transaction_uuid &&
          bound.statement_snapshot_uuid == context.statement_snapshot_uuid &&
@@ -243,8 +244,10 @@ bool HasExactMgaStatementContext(
          bound.local_transaction_id == context.local_transaction_id &&
          bound.snapshot_visible_through_local_transaction_id ==
              context.snapshot_visible_through_local_transaction_id &&
-         bound.scopes.size() == 1 &&
-         bound.scopes.front().catalog_epoch_uuid == context.catalog_epoch_uuid;
+         bound.scopes.size() == scope_count &&
+         std::ranges::all_of(bound.scopes, [&](const auto& scope) {
+           return scope.catalog_epoch_uuid == context.catalog_epoch_uuid;
+         });
 }
 
 bool HasScrubbedMgaStatementContext(
@@ -469,6 +472,104 @@ bool ValidateCatalogRelationBinding() {
                         HasDiagnostic(lowered.messages,
                                       "SBLR.PLAN_TREE.INVALID_HANDLE"),
                     "source-only catalog BoundAST did not fail closed in lowering");
+  return passed;
+}
+
+bool ValidateHeapCteTransport() {
+  bool passed = true;
+  auto context = CatalogBindingContext();
+  for (const auto& column : context.catalog_relations.front().columns) {
+    const auto id = column.ordinal + 1;
+    context.expressions.push_back({id, id, std::nullopt, column.column_uuid});
+    context.outputs.push_back(
+        {id, id, column.canonical_name_key, id, true, column.ordinal, 1});
+  }
+  const auto session = SessionForTest();
+  for (const std::string sql : {
+           "WITH visible_rows AS (SELECT * FROM tenant.sales.orders) SELECT * FROM visible_rows;",
+           "with Visible_Rows as (select * from tenant.sales.orders) select * from VISIBLE_ROWS",
+           "WITH \"Visible Rows\" AS (SELECT * FROM tenant.sales.orders) SELECT * FROM \"Visible Rows\";"}) {
+    const auto cst = sbsql::BuildCst(sql);
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(sbsql::IsNativeHeapCteIdentity(ast.native_relational),
+                      "CTE was not recognized as a typed identity scope");
+    const auto bound = sbsql::BindAst(ast, cst, ParserConfigForTest(), session, {}, &context);
+    passed &= Require(bound.bound && bound.native_relational.bound &&
+                          HasExactMgaStatementContext(bound.native_relational, context, 2),
+                      "CTE binding failed or changed engine MGA authority");
+    if (!bound.bound) continue;
+    const auto lowered = sbsql::LowerToSblr(bound, cst, session);
+    passed &= Require(!lowered.messages.has_errors() && !lowered.payload.empty() &&
+                          lowered.operation_id == "query.execute" &&
+                          lowered.payload.find("visible_rows") == std::string::npos &&
+                          lowered.payload.find("tenant.sales.orders") == std::string::npos,
+                      "CTE did not lower to UUID-only canonical query.execute");
+    passed &= Require(std::ranges::any_of(lowered.operands, [](const auto& operand) {
+                        return operand.type == "relational_node_v1" &&
+                               operand.name == "2" && operand.value == "11|0|1|1,2|-";
+                      }), "canonical CTE node/descriptor identity is missing");
+    passed &= Require(std::ranges::count_if(lowered.operands, [](const auto& operand) {
+                        return operand.type == "relational_output_v1";
+                      }) == 2 &&
+                      std::ranges::none_of(lowered.operands, [](const auto& operand) {
+                        return operand.type == "relational_output_v1" &&
+                               !operand.value.starts_with("1|");
+                      }), "CTE transport must inherit only the producer output records");
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    passed &= Require(verified.admitted, "canonical CTE envelope failed verification");
+    auto duplicated_outputs = lowered;
+    duplicated_outputs.operands.push_back(
+        {"relational_output_v1", "3", "2|1|1|1|0|6f726465725f6964"});
+    duplicated_outputs.operands.push_back(
+        {"relational_output_v1", "4", "2|2|2|1|1|6f726465725f6e6f7465"});
+    passed &= Require(!sbsql::VerifySblrEnvelope(duplicated_outputs).admitted,
+                      "parser verifier accepted forbidden CTE-owned output records");
+    auto crossed_descriptors = lowered;
+    for (auto& operand : crossed_descriptors.operands) {
+      if (operand.type == "relational_node_v1" && operand.name == "2") {
+        operand.value = "11|0|1|2,1|-";
+      }
+    }
+    passed &= Require(!sbsql::VerifySblrEnvelope(crossed_descriptors).admitted,
+                      "parser verifier accepted crossed CTE producer descriptors");
+    for (int mutation = 0; mutation != 5; ++mutation) {
+      auto bad = bound;
+      auto& native = bad.native_relational;
+      if (mutation == 0) native.outputs.back().descriptor_id = 1;
+      if (mutation == 1) native.relations.back().input_relation_ids = {2};
+      if (mutation == 2) native.scopes.back().parent_scope_id = 2;
+      if (mutation == 3) native.relations.back().bound_object_uuid = context.catalog_relations.front().object_uuid;
+      if (mutation == 4) native.relations.back().bound_expression_ids = {1};
+      const auto refused = sbsql::LowerToSblr(bad, cst, session);
+      passed &= Require(refused.messages.has_errors() && refused.payload.empty(),
+                        "malformed CTE authority/output shape was lowered");
+    }
+    auto bad_ast = ast.native_relational;
+    bad_ast.relations.back().input_relation_ids = {2};
+    const auto refused = sbsql::BindNativeRelationalAst(bad_ast, context);
+    passed &= Require(!refused.bound && refused.relations.empty() &&
+                          HasScrubbedMgaStatementContext(refused),
+                      "cyclic CTE binding did not refuse atomically");
+    auto stale_context = context;
+    stale_context.statement_snapshot_uuid = context.statement_metadata_snapshot_uuid;
+    passed &= Require(!sbsql::BindNativeRelationalAst(ast.native_relational, stale_context).bound,
+                      "CTE accepted crossed engine statement authority");
+  }
+  for (const std::string sql : {
+           "WITH v AS (SELECT * FROM tenant.sales.orders) SELECT * FROM other;",
+           "WITH v AS (SELECT * FROM v) SELECT * FROM v;",
+           "WITH RECURSIVE v AS (SELECT * FROM tenant.sales.orders) SELECT * FROM v;",
+           "WITH v AS (SELECT * FROM tenant.sales.orders), w AS (SELECT * FROM v) SELECT * FROM w;",
+           "WITH v AS (SELECT * FROM tenant.sales.orders) SELECT * FROM v WHERE order_id = 1;",
+           "WITH v AS (SELECT * FROM tenant.sales.orders WHERE order_id = 1) SELECT * FROM v;",
+           "WITH v AS (VALUES (1)) SELECT * FROM v;",
+           "WITH \"Visible Rows\" AS (SELECT * FROM tenant.sales.orders) SELECT * FROM \"visible rows\";",
+           "WITH v AS (SELECT * FROM tenant.sales.orders) SELECT * FROM v; SELECT * FROM v;"}) {
+    const auto ast = sbsql::BuildAst(sbsql::BuildCst(sql));
+    passed &= Require(ast.native_relational.recognized() && !ast.native_relational.accepted() &&
+                          HasDiagnostic(ast.messages, "SBSQL.IMPL.NOT_AVAILABLE"),
+                      "unsupported CTE escaped the native parser refusal boundary");
+  }
   return passed;
 }
 
@@ -1403,6 +1504,7 @@ int main() {
   bool passed = true;
   passed &= ValidateTypedBinding();
   passed &= ValidateCatalogRelationBinding();
+  passed &= ValidateHeapCteTransport();
   passed &= ValidateQuotedCatalogRelationBinding();
   passed &= ValidateCatalogRelationRefusals();
   passed &= ValidateCatalogNameIsProvenanceOnly();

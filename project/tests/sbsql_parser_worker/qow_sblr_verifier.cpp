@@ -734,9 +734,16 @@ bool ValidateGraphRefusals() {
   property_dependency.operands.push_back(
       {"relational_property_v1",
        "019f0000-0000-7400-8000-000000000412",
-       "1|1|-|-|019f0000-0000-7400-8000-000000000413|-"});
+       "4|1|-|-|019f0000-0000-7400-8000-000000000413|"
+       "019f0000-0000-7400-8000-000000000414"});
   const auto property_dependency_result =
       sbsql::VerifySblrEnvelope(property_dependency);
+
+  auto property_shape = property_dependency;
+  FindOperand(&property_shape, "relational_property_v1",
+              "019f0000-0000-7400-8000-000000000412")->value =
+      "1|1|-|-|019f0000-0000-7400-8000-000000000413|-";
+  const auto property_shape_result = sbsql::VerifySblrEnvelope(property_shape);
 
   auto grouping_owner = ScanEnvelope();
   grouping_owner.operands.push_back(
@@ -821,6 +828,11 @@ bool ValidateGraphRefusals() {
                         "QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
                         "unknown_property_dependency"),
       "dangling logical-property dependency was accepted");
+  passed &= Require(
+      !property_shape_result.admitted &&
+          HasDiagnostic(property_shape_result,
+                        "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1", "property_shape"),
+      "malformed ordering property did not fail before dependency validation");
   passed &= Require(!grouping_owner_result.admitted &&
                         HasDiagnostic(grouping_owner_result,
                                       "SBLR.PLAN_TREE.INVALID_HANDLE",

@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 #include "hash_digest.hpp"
+#include "sbl_numeric.hpp"
 
 #include <algorithm>
 #include <array>
@@ -391,6 +392,20 @@ bool BindDescriptorRuntimeNumericRequest(
   request->type_id = type_id;
   request->left.type_id = type_id;
   request->left.encoded_value = value.encoded_value;
+  if (type_id == dt::CanonicalTypeId::int128) {
+    namespace numeric = scratchbird::libraries::sbl_numeric;
+    if (!IsCanonicalInt128DescriptorV1(value.descriptor) ||
+        !value.encoded_value.empty()) {
+      *refusal_detail = "INT128 order operand has noncanonical identity or text payload";
+      return false;
+    }
+    const auto decoded = numeric::DecodeInt128LittleEndian(value.binary_value);
+    if (decoded.status != numeric::NumericStatusCode::ok) {
+      *refusal_detail = decoded.diagnostic_code;
+      return false;
+    }
+    request->left.encoded_value = decoded.value.encoded;
+  }
   request->context.precision = 38;
   request->context.scale = 0;
   if (type_id == dt::CanonicalTypeId::decimal ||
@@ -560,10 +575,22 @@ bool CompareOrderValues(
   }
   const bool carries_binary_payload =
       !left.binary_value.empty() || !right.binary_value.empty();
-  if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary) {
+  if (carries_binary_payload && type_id != dt::CanonicalTypeId::binary &&
+      type_id != dt::CanonicalTypeId::int128) {
     *refusal_detail =
         "order operand carries binary payload for a non-binary type";
     return false;
+  }
+  if (type_id == dt::CanonicalTypeId::int128) {
+    const auto canonical_int128 = [](const auto& value) {
+      return IsCanonicalInt128DescriptorV1(value.descriptor) &&
+             (value.is_null ||
+              (value.encoded_value.empty() && value.binary_value.size() == 16));
+    };
+    if (!canonical_int128(left) || !canonical_int128(right)) {
+      *refusal_detail = "INT128 order operand has noncanonical identity or payload";
+      return false;
+    }
   }
   const auto null_ordering =
       term.null_placement == CanonicalDescriptorNullPlacement::first
@@ -1043,7 +1070,8 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
   const auto type_id = dt::CanonicalTypeIdFromStableName(
       value.descriptor.canonical_type_name);
   const std::size_t payload_bytes =
-      type_id == dt::CanonicalTypeId::binary && !value.binary_value.empty()
+      (type_id == dt::CanonicalTypeId::binary ||
+       type_id == dt::CanonicalTypeId::int128) && !value.binary_value.empty()
           ? value.binary_value.size()
           : value.encoded_value.size();
   std::size_t doubled_payload = 0;

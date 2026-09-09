@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace scratchbird::libraries::sbl_numeric {
 
@@ -87,5 +88,7 @@ const char* NumericOperationName(NumericOperation operation);
 // runtime capability manifest must report the same value.
 const char* Real128BackendName();
 NumericResult ApplyNumericOperation(const NumericRequest& request);
+// Canonical signed two's-complement storage payload; no host encoding accepted.
+NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload);
 
 }  // namespace scratchbird::libraries::sbl_numeric

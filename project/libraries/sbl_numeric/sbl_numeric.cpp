@@ -763,6 +763,22 @@ const char* Real128BackendName() {
 #endif
 }
 
+NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != 16) {
+    return Failure(NumericStatusCode::invalid_left,
+                   "NUMERIC.ENCODING.NONCANONICAL");
+  }
+  cpp_int value = 0;
+  for (auto byte = payload.rbegin(); byte != payload.rend(); ++byte) {
+    value <<= 8;
+    value += *byte;
+  }
+  if ((payload.back() & 0x80U) != 0) value -= cpp_int(1) << 128;
+  NumericResult result;
+  result.value = {NumericType::int128, CppIntToString(value), false};
+  return result;
+}
+
 NumericResult ApplyNumericOperation(const NumericRequest& request) {
   NumericResult result;
   result.value = {request.type, {}, false};

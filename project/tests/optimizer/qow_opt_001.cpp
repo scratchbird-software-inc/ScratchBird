@@ -125,6 +125,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.nodes[1].shareable = true;
   graph.nodes[0].required_object_uuids = {Uuid(101)};
   graph.nodes[15].required_object_uuids = {Uuid(102)};
+  graph.nodes[15].argument_expression_ids = {1016};
   return graph;
 }
 
@@ -161,8 +162,16 @@ bool ValidateCompleteLogicalKinds() {
 bool ValidateGraphAndAuthorityRefusal() {
   bool passed = true;
   auto graph = Graph();
-  graph.nodes[2].input_logical_node_ids[1] = 999;
+  graph.nodes[15].argument_expression_ids.clear();
   auto result = plan::ValidateCanonicalLogicalRelationalGraph(graph);
+  passed &= Require(!result.accepted &&
+                        HasIssue(result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "table_function_argument_expression_ids"),
+                    "table function without argument IDs was accepted");
+
+  graph = Graph();
+  graph.nodes[2].input_logical_node_ids[1] = 999;
+  result = plan::ValidateCanonicalLogicalRelationalGraph(graph);
   passed &= Require(!result.accepted &&
                         HasIssue(result, "SBLR.PLAN_TREE.INVALID_HANDLE",
                                  "input_logical_node_ids"),

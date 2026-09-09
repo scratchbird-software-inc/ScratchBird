@@ -1440,6 +1440,33 @@ std::string StatementFamilyName(StatementFamily family) {
   return "unknown";
 }
 
+bool IsNativeHeapCteIdentity(const NativeRelationalAstDocument& ast) {
+  if (!ast.accepted() || ast.relations.size() != 2 ||
+      ast.catalog_relation_sources.size() != 1 ||
+      ast.catalog_relation_sources.front().source_kind !=
+          NativeRelationSourceAstKind::kCatalogRelation ||
+      ast.expressions.size() != 1 ||
+      ast.expressions.front().expression_kind != NativeExpressionAstKind::kWildcard) {
+    return false;
+  }
+  const auto& producer = ast.relations.front();
+  const auto& cte = ast.relations.back();
+  return producer.relation_kind == NativeRelationAstKind::kCatalogSource &&
+         producer.relation_id != 0 && cte.relation_id > producer.relation_id &&
+         cte.relation_id == ast.root_relation_id &&
+         cte.relation_kind == NativeRelationAstKind::kCte &&
+         cte.input_relation_ids == std::vector<std::uint32_t>{producer.relation_id} &&
+         cte.aggregate_grouping_form == NativeAggregateGroupingForm::kNone &&
+         cte.aggregate_projection_form == NativeAggregateProjectionForm::kNone &&
+         cte.join_kind == NativeJoinAstKind::kNone &&
+         cte.relation_source_ids.empty() && cte.values_row_ids.empty() &&
+         cte.output_expression_ids.empty() && cte.grouping_key_expression_ids.empty() &&
+         cte.aggregate_expression_ids.empty() && cte.predicate_expression_ids.empty() &&
+         cte.limit_expression_ids.empty() && cte.table_function_name.empty() &&
+         cte.table_function_argument_expression_ids.empty() &&
+         cte.window_invocation_ids.empty() && cte.ordering_terms.empty();
+}
+
 std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
   switch (kind) {
     case NativeRelationAstKind::kValues: return "values";
@@ -1452,6 +1479,7 @@ std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
     case NativeRelationAstKind::kJoin: return "join";
     case NativeRelationAstKind::kWindow: return "window";
     case NativeRelationAstKind::kQualify: return "qualify";
+    case NativeRelationAstKind::kCte: return "cte";
   }
   return "unknown";
 }

@@ -86,6 +86,7 @@ enum class NativeRelationAstKind {
   kQualify,
   kMatchRecognize,
   kTableFunctionInvoke,
+  kCte,
 };
 
 enum class NativeJoinAstKind {
@@ -522,6 +523,9 @@ NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst);
 AstDocument BuildAst(const CstDocument& cst);
 std::string StatementFamilyName(StatementFamily family);
 std::string NativeRelationAstKindName(NativeRelationAstKind kind);
+// The initial native CTE transport admits one wildcard heap producer and one
+// identity consumer. This is a typed scope boundary, not an executable name.
+bool IsNativeHeapCteIdentity(const NativeRelationalAstDocument& ast);
 std::string NativeRelationSourceAstKindName(NativeRelationSourceAstKind kind);
 std::string NativeAggregateGroupingFormName(NativeAggregateGroupingForm form);
 std::string NativeAggregateProjectionFormName(

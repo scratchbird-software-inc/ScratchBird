@@ -3560,6 +3560,9 @@ scratchbird::engine::internal_api::EngineTypedValue EvaluateDescriptorDomainMeth
     const scratchbird::engine::internal_api::EngineTypedValue& value,
     const std::string& security_token,
     DescriptorRuntimeDiagnostic* diagnostic = nullptr);
+bool IsCanonicalInt128DescriptorV1(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
+
 struct CanonicalInt128SumStateV1 {
   std::array<std::uint8_t, 16> signed_little_endian{};
   bool nonnull_value_seen = false;

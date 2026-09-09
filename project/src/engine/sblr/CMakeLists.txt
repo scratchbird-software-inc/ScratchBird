@@ -301,6 +301,17 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
     canonical_query_aggregate_composition.cpp
+    canonical_query_global_aggregate_preparation.cpp
+    canonical_query_grouped_aggregate_preparation.cpp
+    canonical_query_window_preparation.cpp
+    canonical_query_literal_values_composition.cpp
+    canonical_query_runtime_services.cpp
+    canonical_query_runtime_observation_support.cpp
+    canonical_query_filter_predicate_receipt.cpp
+    canonical_query_persisted_descriptor_authority.cpp
+    canonical_query_unary_preparation.cpp
+    canonical_query_join_set_preparation.cpp
+    canonical_query_subquery_preparation.cpp
     canonical_query_aggregate_registration.cpp
     canonical_query_correlated_registration.cpp
     canonical_query_descriptor_support.cpp
@@ -351,6 +362,18 @@ endif()
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
   canonical_query_aggregate_composition.cpp
+  canonical_query_global_aggregate_preparation.cpp
+  canonical_query_grouped_aggregate_preparation.cpp
+  canonical_query_window_preparation.cpp
+  canonical_query_literal_values_composition.cpp
+  canonical_query_model_family_planning.cpp
+  canonical_query_runtime_services.cpp
+  canonical_query_runtime_observation_support.cpp
+  canonical_query_filter_predicate_receipt.cpp
+  canonical_query_persisted_descriptor_authority.cpp
+  canonical_query_unary_preparation.cpp
+  canonical_query_join_set_preparation.cpp
+  canonical_query_subquery_preparation.cpp
   canonical_query_aggregate_registration.cpp
   canonical_query_correlated_registration.cpp
   canonical_query_descriptor_support.cpp
@@ -385,6 +408,11 @@ add_library(sb_engine_sblr
   canonical_query_key_value_composition.cpp
   canonical_query_graph_composition.cpp
   canonical_query_document_composition.cpp
+  canonical_query_spatial_columnar_composition.cpp
+  canonical_query_multileg_composition.cpp
+  canonical_query_table_function_composition.cpp
+  canonical_query_current_heap_join_composition.cpp
+  canonical_query_current_heap_composition.cpp
   dispatch/sblr_family_dispatch_landing_zone.cpp
   operators/sblr_operator_family_landing_zone.cpp
   special_forms/sblr_special_form_family_landing_zone.cpp

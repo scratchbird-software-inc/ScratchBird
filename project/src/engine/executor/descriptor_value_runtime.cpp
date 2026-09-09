@@ -241,18 +241,6 @@ std::optional<std::string_view> DescriptorField(
   return value;
 }
 
-bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
-  constexpr std::string_view kDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d714";
-  constexpr std::string_view kTypeUuid =
-      "019d0000-0000-7000-8000-00000000d715";
-  const auto type_uuid =
-      DescriptorField(descriptor.encoded_descriptor, "type_uuid");
-  return CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
-         descriptor.descriptor_uuid.canonical == kDescriptorUuid &&
-         type_uuid.has_value() && *type_uuid == kTypeUuid;
-}
-
 bool DescriptorU32(const EngineDescriptor& descriptor,
                    const std::string_view key,
                    std::uint32_t* value) {
@@ -700,6 +688,18 @@ bool CanonicalDerivedDescriptorShapesMatch(
 }
 
 }  // namespace
+
+bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
+  constexpr std::string_view kDescriptorUuid =
+      "019d0000-0000-7000-8000-00000000d714";
+  constexpr std::string_view kTypeUuid =
+      "019d0000-0000-7000-8000-00000000d715";
+  const auto type_uuid =
+      DescriptorField(descriptor.encoded_descriptor, "type_uuid");
+  return CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
+         descriptor.descriptor_uuid.canonical == kDescriptorUuid &&
+         type_uuid.has_value() && *type_uuid == kTypeUuid;
+}
 
 bool IsCanonicalBoundedSignedIntegerDescriptor(
     const EngineDescriptor& descriptor) {

@@ -43,6 +43,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_link_libraries(sb_qow_relational_dag_contract PUBLIC
     sb_engine_executor
   )
+  # plan_api's prepared-plan/cache adapters validate optimizer continuation
+  # receipts. Link their existing owner without importing its compile profile.
+  if(SB_BUILD_TESTS)
+    target_link_libraries(sb_qow_relational_dag_contract PRIVATE
+      "$<LINK_ONLY:sb_engine_optimizer>")
+  else()
+    target_link_libraries(sb_qow_relational_dag_contract PRIVATE
+      "$<LINK_ONLY:sb_qow_canonical_candidate_legality>")
+  endif()
   # QOW-CMAKE-OPT-004-V1
   add_executable(qow_opt_004_test_v1
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/optimizer/qow_opt_004.cpp

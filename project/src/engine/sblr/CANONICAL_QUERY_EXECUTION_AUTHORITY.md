@@ -34,6 +34,18 @@ separate reviewed change after the affected route has an isolated test gate.
 | Module | Owns | Must not own |
 | --- | --- | --- |
 | `canonical_query_execute.cpp` | Canonical query route selection, admitted planning/execution coordination, and public execution entry points | Parser lowering, durable transaction finality, storage mutation publication |
+| `canonical_query_literal_values_composition.cpp` | Standalone literal VALUES validation, bounded materialization, optimizer planning, callback/receipt assembly and execution through the existing guarded adapter | Public route selection, direct selected-DAG dispatch, storage access, snapshot construction, transaction finality |
+| `canonical_query_model_family_planning.cpp` | Model capability/cost receipts and delegation to the engine optimizer; capability snapshots are not MGA visibility snapshots | Physical execution, storage access, snapshot construction, transaction finality, public route selection |
+| `canonical_query_runtime_services.cpp` | Engine-delegated scalar comparison and bounded cancellation callback polling | Planning, physical-DAG execution, storage access, snapshot construction, transaction finality, public route selection |
+| `canonical_query_runtime_observation_support.cpp` | Exact producer-memory receipt eligibility, synchronous callback wrapping, and runtime observation publication over supplied typed batches | Optimizer grants, selected-DAG dispatch, storage access, snapshot construction, transaction finality, public route selection |
+| `canonical_query_filter_predicate_receipt.cpp` | Private FILTER/HAVING receipt issuance, exact typed plan/input validation, supplied MGA authority revalidation, and borrowed filter execution | Selected-DAG dispatch, plan selection, storage access, snapshot construction, transaction finality, public route selection |
+| `canonical_query_persisted_descriptor_authority.cpp` | Persisted TEXT descriptor validation against supplied statement datatype receipts and engine resource catalogs, plus row-service binding | Descriptor construction, selected-DAG dispatch, storage mutation, snapshot construction, transaction finality, public route selection |
+| `canonical_query_unary_preparation.cpp` | Supplied-input row/expression binding, sort/project/filter/distinct/limit preparation, engine resource binding, bounded expression materialization, and existing typed adapters | Plan selection, physical DAG dispatch, relation-store access, snapshot construction, transaction finality, parser lowering, public route selection |
+| `canonical_query_join_set_preparation.cpp` | Join/set descriptor alignment, exact boolean alias carriers, set profile/equality/work bounds, and bounded planning-state materialization over supplied typed inputs | Plan selection, physical DAG dispatch, relation-store access, snapshot construction, transaction finality, parser lowering, public route selection |
+| `canonical_query_subquery_preparation.cpp` | Predicate-subquery, LATERAL/APPLY, and recursive profile matching and hard recursive cardinality bounds over supplied typed profiles | Plan selection, physical DAG dispatch, relation-store access, snapshot construction, transaction finality, parser lowering, public route selection |
+| `canonical_query_window_preparation.cpp` | Typed window profile, descriptor/operand identity and ordering validation, bounded literal preparation, passthrough/result binding, and existing descriptor-field/type-rank adapters | Plan selection, physical executor dispatch, storage access, snapshot construction, transaction finality, parser lowering, public route selection |
+| `canonical_query_global_aggregate_preparation.cpp` | Typed global aggregate profile matching, exact operand/result descriptor preparation, and bounded DISTINCT/FILTER/modifier workspace accounting | Plan selection, executor dispatch, storage reads, snapshot construction, transaction finality, parser lowering, public route selection |
+| `canonical_query_grouped_aggregate_preparation.cpp` | Typed grouped COUNT/SUM profile matching, grouping expansion/metadata validation, and HAVING binding preparation | Plan selection, executor dispatch, storage reads, snapshot construction, transaction finality, parser lowering, public route selection |
 | `canonical_query_aggregate_composition.cpp` | Admitted object-free grouped COUNT/SUM/HAVING and global aggregate coordination across canonical aggregate profiles | Snapshot construction, transaction finality, storage reads, parser lowering, public route selection |
 | `canonical_query_aggregate_registration.cpp` | Exact aggregate datatype, value/key binding, FILTER truth, equality-authority, and grouped/global aggregate callback registration over bounded typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
 | `canonical_query_correlated_registration.cpp` | Bounded comparison-authority binding and correlated-subquery/LATERAL/APPLY registrations over two already-materialized typed inputs | Plan selection, snapshot construction, transaction finality, optimizer grant authority, storage reads, parser lowering |
@@ -67,6 +79,11 @@ separate reviewed change after the affected route has an isolated test gate.
 | `canonical_query_key_value_composition.cpp` | Admitted production key-value source execution and its bounded relational composition over engine-issued statement authority, including recursive, set, aggregate, window, sort, limit, and mixed-join tails | Transaction begin/commit/rollback/recovery, parser lowering, unrelated model-family routes, public route selection |
 | `canonical_query_graph_composition.cpp` | Admitted production graph match/expand source execution and its bounded relational composition over engine-issued statement authority, including recursive, set, aggregate, window, sort, limit, and mixed-join tails | Transaction begin/commit/rollback/recovery, parser lowering, unrelated model-family routes, public route selection |
 | `canonical_query_document_composition.cpp` | Admitted production document expression-unnest and persisted document-path source execution with bounded relational composition over engine-issued statement authority | Transaction begin/commit/rollback/recovery, parser lowering, unrelated model-family routes, public route selection |
+| `canonical_query_spatial_columnar_composition.cpp` | Admitted production spatial and columnar source execution, exact two-columnar-source join composition, and contextual-TEXT columnar-filter admission over engine-issued statement authority | Transaction begin/commit/rollback/recovery, parser lowering, unrelated model-family routes, public route selection |
+| `canonical_query_multileg_composition.cpp` | Captured model-source legs, exact result-descriptor rebinding, ASOF and cross-family joins, and bounded multi-leg DAG composition over engine-issued statement authority | Transaction begin/commit/rollback/recovery, parser lowering, public route selection, snapshot construction |
+| `canonical_query_table_function_composition.cpp` | Bounded int64 generate-series materialization, function-registry identity checks, and admitted generate-series/MATCH_RECOGNIZE planning and execution composition | Snapshot construction, transaction finality, storage access, parser lowering, public route selection |
+| `canonical_query_current_heap_join_composition.cpp` | Admitted current-heap join trees, streaming hash reads, exact descriptor/lineage validation, and bounded FILTER/PROJECT/CTE/LIMIT tails under engine-issued MGA authority | Snapshot construction, transaction finality, storage mutation, parser lowering, public route selection |
+| `canonical_query_current_heap_composition.cpp` | Admitted single-source current-heap streaming, compact-row binding and memory accounting, and bounded filter/project/sort/window/aggregate/CTE/limit composition under engine-issued MGA authority | Snapshot construction, transaction finality, storage mutation, parser lowering, public route selection |
 | `canonical_relational_dag_planner.cpp` | Composition of planning-context validation, alternative enumeration, search, and immutable physical-DAG publication | Data access, execution, transaction visibility, transaction finality |
 
 ## Staged decomposition
@@ -79,10 +96,10 @@ separate reviewed change after the affected route has an isolated test gate.
 | 3 | Separate object-free profile preparation and physical executor registrations | QRY-003/QRY-005 and object-free query matrix | complete |
 | 4 | Separate object-free composition coordinators | Set, join, aggregate, window, sort, distinct, limit, pivot and unpivot routes | complete |
 | 5 | Extract time-series, vector, search, key-value, graph, and document model-family routes one family per change | The matching RCP production-route test for each family | complete |
-| 6 | Extract spatial/columnar and captured multileg model composition | RCP-079/RCP-080 and cross-family join tests | pending |
-| 7 | Extract generate-series and match-recognize table-function routes | Table-function and match-recognize production routes | pending |
-| 8 | Extract current-heap streaming and composition execution | Engine-backed streaming and current-heap query tests | pending |
-| 9 | Reduce the remaining file to route selection and public coordination | Full canonical-query label inventory | pending |
+| 6 | Extract spatial/columnar and captured multileg model composition | RCP-079/RCP-080 and cross-family join tests | complete |
+| 7 | Extract generate-series and match-recognize table-function routes | Table-function and match-recognize production routes | complete |
+| 8 | Extract current-heap streaming and composition execution | Engine-backed streaming and current-heap query tests | complete |
+| 9 | Reduce the remaining file to route selection and public coordination | Full canonical-query label inventory | in progress |
 
 ## Gate required after every stage
 
@@ -96,8 +113,9 @@ separate reviewed change after the affected route has an isolated test gate.
    for route evidence.
 5. The MGA policy gate passes. No query module gains transaction mutation or
    finality authority.
-6. Temporary builds and generated artifacts are removed after evidence is
-   collected.
+6. Temporary builds and generated artifacts are removed after successful stage
+   verification and evidence collection. Retain a failed-run build and its logs
+   for incremental diagnosis until the failures are resolved.
 
 ### Contract gate status
 
@@ -1017,6 +1035,132 @@ The source-authority gate now tracks thirty-four modules and applies the
 model-family finality/parser/WAL boundary to all six Stage 5 family modules.
 Build, focused test, source-authority, MGA-policy, instrumentation, and diff
 evidence is retained in `/tmp/scratchbird-canonical-query-stage5f-*.log`.
+
+The first Stage 6 slice moves the complete production spatial/columnar source
+route, exact two-columnar-source join route, and contextual-TEXT direct-route
+admission behind one focused internal composition contract. The module owns
+persisted descriptor and provider revalidation, bounded spatial/columnar
+materialization, exact typed exchange, and contextual literal lease use. It
+projects an already-issued MGA statement vector for planning and execution;
+it cannot create, refresh, commit, roll back, or recover transaction authority.
+The coordinator retains public route selection and its public contextual proof
+entry point. The coordinator is reduced to 20,699 lines and 978,368 bytes; the
+spatial/columnar composition module is 6,864 lines and 333,991 bytes.
+
+The live RCP-079 route exposed an existing executor-availability store-path
+collision: an admitted privilege-template executor without a legacy named
+suffix occupied the ordinary-literal store. Unnamed admitted identities now
+receive an exact row-identity-hash suffix, while all legacy named paths and the
+literal path remain unchanged. The live statement-context regression explicitly
+proves that the privilege-template and literal rows remain independently
+installed before exercising contextual-TEXT literal independence.
+
+At the end of Stage 6a, captured cross-family multi-leg composition and its
+RCP-079/RCP-080 evidence remained outstanding. The source authority gate then
+tracked thirty-five modules and applied the model-family
+finality/parser/WAL boundary to the spatial/columnar module as well.
+
+The second Stage 6 slice moves captured model-source legs, exact result
+descriptor preflight and rebinding, ASOF registrations, bounded multi-leg DAG
+composition, and captured cross-family join execution into one production-only
+module. The coordinator retains public route selection and selected-DAG MGA
+revalidation. Existing narrow composition gateways provide cancellation,
+planning, row binding, scalar comparison, and selected execution; the new
+module does not acquire transaction finality or snapshot-construction
+authority. The coordinator is reduced to 15,702 lines and 728,506 bytes; the
+multi-leg module is 5,115 lines and 254,142 bytes. Its original descriptor-field
+reader remains local, preserving the distinction between absent fields and
+present empty values. The source-authority gate now tracks thirty-six modules.
+
+The fresh 1,410-action production build collected one missing direct-header
+dependency in the new module. Restoring the aggregate-registration declaration
+header resolved it; the incremental ten-action rebuild linked the production
+SBLR archive and all five requested executables. All six focused tests passed:
+multi-model closure, multi-model production route, cross-family join,
+spatial/columnar production route, live spatial/columnar join, and live
+literal-filter/parameter-limit join tail. A token-level comparison of all
+sixteen moved function bodies matches the original after the explicit gateway
+renames; the persisted-descriptor callback retains its production behavior.
+
+The separate 362-action contract-only build also passed and linked
+`sb_qow_sblr_query_route_contract`. Switching the cached
+production tree to closure mode also required disabling broad `BUILD_TESTING`
+enrollment, whose server-alignment tests refer to a server executable absent
+from the reduced profile. This is a configuration repair, not a source change.
+Both build profiles keep all four instrumentation families disabled. The
+source-authority gate and MGA policy gate pass, and the diff check is clean.
+Stage 6 is complete; Stage 7 remains pending.
+Build, complete failure inventory, repair, test, mechanical-comparison,
+archive-membership, source-authority, MGA-policy, instrumentation, and diff
+evidence is retained in `/tmp/scratchbird-canonical-query-stage6b-*.log`.
+
+## Stage 9 coordinator boundary
+
+The remaining public coordinator is 465 lines / 21,614 bytes. It retains route
+precedence, public entry points, and the selected-execution MGA revalidation
+boundary. The last standalone literal VALUES leaf is a separate composition
+module using the existing guarded adapter; model capability/cost planning and
+scalar comparison/cancellation services have separate owners. Capability cost
+snapshots must not be confused with MGA visibility snapshots.
+
+The dedicated source-contract gate now tracks 51 modules. Its checks protect
+ownership and source shape, not runtime correctness. The runtime-services
+component matrix covers cancellation state/exception handling in both profiles
+and model cost receipts in production; existing route tests remain the real
+execution evidence. Stage 9 closure requires the full configured inventory:
+test names beginning with `qow_` or `canonical_query_`, plus every test carrying
+the `qow_closure` label, in contract and production configurations. No test is
+silently excluded to obtain a green result.
+
+The final full inventory passes: 177/177 contract tests and 45/45 production
+tests (222 profile-specific runs across 186 unique tests). Both builds pass.
+The seven initially failing contract tests are repaired in a separate semantic
+follow-up: verifier property-shape/dependency fixtures, exact opcode aliases,
+canonical INT128 payloads and numeric-backend sorting/equality keys, grouped
+datatype identity and safe failure reporting, table-function argument IDs, and
+model-family binding. Model-source admission preserves both ordinary relation
+backing and exact model-class objects, rejects incompatible model classes and
+cross-relation descriptor identity reuse, and tests both admitted representations.
+The final production rerun also passes the live table-backed model routes that
+exposed an over-strict intermediate class check. Stage 9 is complete; coordinator
+route ordering, extracted bodies, and the selected-execution MGA guard remain
+unchanged. Passing retired-carrier CTE refusal checks must not be reported as
+positive canonical CTE transport proof. That separate Stage 8 gap remained open
+at Stage 9 closure and is addressed by the bounded semantic repair below.
+
+## Bounded canonical CTE transport
+
+The native parser now admits `WITH name AS (SELECT * FROM schema.table)
+SELECT * FROM name`, including matching quoted names and an optional final
+semicolon. It binds one nonrecursive heap producer and one identity consumer,
+then lowers an explicit `cte.bound.v1` node through canonical `query.execute`.
+The consumer's bound scope and output identity mapping are validated locally;
+the transport node inherits the producer's output records and descriptors.
+Parser-side verification enforces that same inherited-output contract, refusing
+CTE-owned output records and mismatched producer descriptor identities.
+CTE names and executable SQL text are not submitted to the engine.
+
+The existing producer receipt checks, engine-issued MGA statement context,
+server admission, and selected-execution guard remain authoritative and
+unchanged. No engine execution module changes are needed. The live single-source
+heap test proves that ordinary and quoted CTE bindings return the same three
+rows as a plain scan. It compares rows, not per-execution transaction metadata.
+Separate codec tests still reject the retired CTE carrier, including alongside
+otherwise valid canonical ingress.
+
+This is not general CTE support: recursive/self-referencing or multiple CTEs,
+nested bindings, materialization hints, column alias lists, producer/consumer
+aliases, VALUES/model producers, producer operators beyond the wildcard scan,
+and non-identity consumers remain outside this parser transport profile and fail explicitly.
+The contract tests cover output/scope mutations, crossed MGA authority,
+unsupported syntax, and producer-only transport output ownership.
+
+Both final builds pass, followed by 177/177 contract tests and 45/45 production
+tests on the corrected source. The source/MGA gates, all 44 negative source
+boundary probes, and the mechanical audit pass. Final local execution evidence
+is `/tmp/scratchbird-canonical-cte-contract-test-verifier.log` and
+`/tmp/scratchbird-canonical-cte-production-test-verifier.log`; these retained
+logs are not a substitute for CI evidence.
 
 ## Review rule
 

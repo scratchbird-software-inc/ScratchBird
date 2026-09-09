@@ -17,6 +17,7 @@
 #include "engine/executor/executor_foundation.hpp"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
@@ -124,6 +125,14 @@ PreparedLimitRoot PrepareLimitRootForComposition(
     const plan::CanonicalLogicalRelationalNode& input_node,
     const MaterializedValues& input);
 
+bool PrepareCanonicalSortOrderTermForComposition(
+    const api::EngineRequestContext& context,
+    const plan::CanonicalLogicalPropertyOrderingTerm& logical_term,
+    const exec::ExecutorColumnDescriptor& column,
+    std::size_t column_ordinal,
+    exec::CanonicalDescriptorOrderTerm* term,
+    std::string* detail);
+
 PreparedSortRoot PrepareSortRootForComposition(
     const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
@@ -154,6 +163,15 @@ MakeLiveProjectRegistrationProfileForComposition(
 api::EngineApiResult SuccessfulApiResult(
     const CanonicalObjectFreeValuesExecutionRequest& request,
     const api::CanonicalOptimizerSelectedExecutionResult& execution);
+
+// Typed preparation adapters retain the coordinator's existing descriptor
+// authority and exact signed-integer identity checks without exposing storage.
+void BindCanonicalPersistedRowDescriptorAuthorityForComposition(
+    const api::EngineRequestContext& context,
+    CanonicalRelationalExpressionRuntimeServices* services);
+
+unsigned ExactBoundedSignedIntegerTypeRankForComposition(
+    std::string_view type_uuid);
 
 // Enters the coordinator-owned selected-DAG execution boundary. The gateway
 // revalidates the supplied engine-selected MGA statement context but cannot

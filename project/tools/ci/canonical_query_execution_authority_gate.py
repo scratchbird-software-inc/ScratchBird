@@ -17,9 +17,63 @@ AUTHORITY = SBLR_ROOT / "CANONICAL_QUERY_EXECUTION_AUTHORITY.md"
 
 MODULES = {
     "canonical_query_execute.cpp": (
-        27_446,
-        1_308_143,
+        465,
+        21_614,
         "SB_ENGINE_CANONICAL_QUERY_EXECUTE_COORDINATOR_AUTHORITY",
+        2,
+    ),
+    "canonical_query_literal_values_composition.cpp": (
+        368, 17_635,
+        "SB_ENGINE_CANONICAL_QUERY_LITERAL_VALUES_COMPOSITION_AUTHORITY", 2,
+    ),
+    "canonical_query_model_family_planning.cpp": (
+        122, 5_025,
+        "SB_ENGINE_CANONICAL_QUERY_MODEL_FAMILY_PLANNING_AUTHORITY", 1,
+    ),
+    "canonical_query_runtime_services.cpp": (
+        109, 3_516,
+        "SB_ENGINE_CANONICAL_QUERY_RUNTIME_SERVICES_AUTHORITY", 2,
+    ),
+    "canonical_query_runtime_observation_support.cpp": (
+        375, 18_079,
+        "SB_ENGINE_CANONICAL_QUERY_RUNTIME_OBSERVATION_SUPPORT_AUTHORITY", 2,
+    ),
+    "canonical_query_filter_predicate_receipt.cpp": (
+        333, 14_562,
+        "SB_ENGINE_CANONICAL_QUERY_FILTER_PREDICATE_RECEIPT_AUTHORITY", 2,
+    ),
+    "canonical_query_persisted_descriptor_authority.cpp": (
+        331, 14_733,
+        "SB_ENGINE_CANONICAL_QUERY_PERSISTED_DESCRIPTOR_AUTHORITY_AUTHORITY", 2,
+    ),
+    "canonical_query_unary_preparation.cpp": (
+        1_127, 45_993,
+        "SB_ENGINE_CANONICAL_QUERY_UNARY_PREPARATION_AUTHORITY", 2,
+    ),
+    "canonical_query_join_set_preparation.cpp": (
+        1_163, 49_130,
+        "SB_ENGINE_CANONICAL_QUERY_JOIN_SET_PREPARATION_AUTHORITY", 2,
+    ),
+    "canonical_query_subquery_preparation.cpp": (
+        303, 12_477,
+        "SB_ENGINE_CANONICAL_QUERY_SUBQUERY_PREPARATION_AUTHORITY", 2,
+    ),
+    "canonical_query_window_preparation.cpp": (
+        1_255,
+        59_764,
+        "SB_ENGINE_CANONICAL_QUERY_WINDOW_PREPARATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_global_aggregate_preparation.cpp": (
+        1_937,
+        83_671,
+        "SB_ENGINE_CANONICAL_QUERY_GLOBAL_AGGREGATE_PREPARATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_grouped_aggregate_preparation.cpp": (
+        1_599,
+        75_454,
+        "SB_ENGINE_CANONICAL_QUERY_GROUPED_AGGREGATE_PREPARATION_AUTHORITY",
         2,
     ),
     "canonical_query_aggregate_composition.cpp": (
@@ -220,6 +274,36 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_DOCUMENT_COMPOSITION_AUTHORITY",
         1,
     ),
+    "canonical_query_spatial_columnar_composition.cpp": (
+        6_864,
+        333_991,
+        "SB_ENGINE_CANONICAL_QUERY_SPATIAL_COLUMNAR_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_multileg_composition.cpp": (
+        5_115,
+        254_142,
+        "SB_ENGINE_CANONICAL_QUERY_MULTILEG_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_table_function_composition.cpp": (
+        725,
+        33_629,
+        "SB_ENGINE_CANONICAL_QUERY_TABLE_FUNCTION_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_current_heap_composition.cpp": (
+        3_189,
+        156_530,
+        "SB_ENGINE_CANONICAL_QUERY_CURRENT_HEAP_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_current_heap_join_composition.cpp": (
+        2_982,
+        141_041,
+        "SB_ENGINE_CANONICAL_QUERY_CURRENT_HEAP_JOIN_COMPOSITION_AUTHORITY",
+        1,
+    ),
 }
 
 PURE_ENDPOINT_FORBIDDEN = (
@@ -269,6 +353,89 @@ MODEL_FAMILY_ROUTE_FORBIDDEN = (
 def main() -> int:
     failures: list[str] = []
     cmake_text = CMAKE.read_text(encoding="utf-8")
+    production_sources = cmake_text.partition("add_library(sb_engine_sblr\n")[2]
+    production_sources = production_sources.partition("\n)")[0]
+    contract_sources = cmake_text.partition("add_library(sb_qow_sblr_query_route_contract STATIC\n")[2]
+    contract_sources = contract_sources.partition("\n  )")[0]
+    for receipt_support in (
+        "canonical_query_runtime_observation_support.cpp",
+        "canonical_query_filter_predicate_receipt.cpp",
+        "canonical_query_persisted_descriptor_authority.cpp",
+    ):
+        if (f"  {receipt_support}\n" not in production_sources or
+                f"    {receipt_support}\n" not in contract_sources):
+            failures.append(f"{receipt_support}: requires production and contract ownership")
+        path = SBLR_ROOT / receipt_support
+        if path.is_file():
+            support_text = path.read_text(encoding="utf-8")
+            for token in SHARED_SUPPORT_FORBIDDEN + (
+                "EngineBegin", "EngineCommit", "EngineRollback",
+                "AcquireTransactionInventoryGuard",
+                "PlanAndPublishLivePhysicalDag(",
+                "ExecuteSelectedCanonicalObjectFreeDag(",
+                "ExecuteCanonicalOptimizerSelectedDag(",
+                "AppendMgaRowVersion", "UpdateMgaRowVersion", "DeleteMgaRowVersion",
+            ):
+                if token in support_text:
+                    failures.append(f"{receipt_support}: forbidden receipt support authority {token!r}")
+    for service in (
+        "canonical_query_literal_values_composition.cpp",
+        "canonical_query_model_family_planning.cpp",
+        "canonical_query_runtime_services.cpp",
+    ):
+        if f"  {service}\n" not in production_sources:
+            failures.append(f"{service}: requires production ownership")
+        contract_owned = f"    {service}\n" in contract_sources
+        if contract_owned != (service != "canonical_query_model_family_planning.cpp"):
+            failures.append(f"{service}: incorrect contract ownership")
+        path = SBLR_ROOT / service
+        if path.is_file():
+            service_text = path.read_text(encoding="utf-8")
+            forbidden = SHARED_SUPPORT_FORBIDDEN + (
+                "EngineBegin", "EngineCommit", "EngineRollback",
+                "AcquireTransactionInventoryGuard",
+                "ExecuteCanonicalOptimizerSelectedDag(",
+                "AppendMgaRowVersion", "UpdateMgaRowVersion", "DeleteMgaRowVersion",
+            )
+            if service != "canonical_query_literal_values_composition.cpp":
+                forbidden += (
+                    "ExecuteSelectedCanonicalObjectFreeDag(",
+                    "PlanAndPublishLivePhysicalDag(",
+                )
+            if service == "canonical_query_runtime_services.cpp":
+                forbidden += ("PlanOptimizerOwnedModelFamilySourceV1(",)
+            for token in forbidden:
+                if token in service_text:
+                    failures.append(f"{service}: forbidden service authority {token!r}")
+    for preparation in (
+        "canonical_query_unary_preparation.cpp",
+        "canonical_query_join_set_preparation.cpp",
+        "canonical_query_subquery_preparation.cpp",
+        "canonical_query_global_aggregate_preparation.cpp",
+        "canonical_query_grouped_aggregate_preparation.cpp",
+        "canonical_query_window_preparation.cpp",
+    ):
+        if (f"  {preparation}\n" not in production_sources or
+                f"    {preparation}\n" not in contract_sources):
+            failures.append(f"{preparation}: requires production and contract ownership")
+        path = SBLR_ROOT / preparation
+        if path.is_file():
+            preparation_text = path.read_text(encoding="utf-8")
+            for token in SHARED_SUPPORT_FORBIDDEN + (
+                "EngineBegin", "EngineCommit", "EngineRollback",
+                "PlanAndPublishLivePhysicalDag(",
+                "ExecuteSelectedCanonicalObjectFreeDag(",
+                "ExecuteCanonicalOptimizerSelectedDag(",
+                "AppendMgaRowVersion", "UpdateMgaRowVersion", "DeleteMgaRowVersion",
+            ):
+                if token in preparation_text:
+                    failures.append(f"{preparation}: forbidden preparation authority {token!r}")
+    if "  canonical_query_table_function_composition.cpp\n" not in production_sources:
+        failures.append("table-function composition requires production SBLR ownership")
+    if "  canonical_query_current_heap_join_composition.cpp\n" not in production_sources:
+        failures.append("current-heap join composition requires production SBLR ownership")
+    if "  canonical_query_current_heap_composition.cpp\n" not in production_sources:
+        failures.append("current-heap composition requires production SBLR ownership")
     if not AUTHORITY.is_file():
         failures.append("missing canonical query execution authority ledger")
 
@@ -313,12 +480,8 @@ def main() -> int:
     endpoint_path = SBLR_ROOT / "canonical_query_time_series_endpoint.cpp"
     if coordinator_path.is_file():
         coordinator = coordinator_path.read_text(encoding="utf-8")
-        if (
-            '#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)\n'
-            '#include "engine/functions/registry/function_seed_registry.hpp"'
-            not in coordinator
-        ):
-            failures.append("production function registry guard drifted")
+        if "function_seed_registry.hpp" in coordinator or "namespace fn =" in coordinator:
+            failures.append("production function registry leaked into coordinator")
         if (
             "#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)\n"
             "std::uint32_t CanonicalContextualTextRcp079RuntimeProofMaskForTest()"
@@ -337,6 +500,104 @@ def main() -> int:
                     "canonical_query_execute.cpp: public entrypoint ownership changed"
                 )
         for extracted_definition in (
+            "void PublishOrdinaryRuntimeObservations(",
+            "bool HasOrdinaryRuntimeObservationWrapperTarget(",
+            "struct FilterPredicateReceiptIssueResult {",
+            "class CanonicalDescriptorFilterPredicateReceiptIssuer {",
+            "bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(",
+            "BindCanonicalPersistedRowDescriptorAuthorityV1(",
+            "LiveSetRegistrationProfiles MakeLiveSetRegistrationProfiles(",
+            "bool BoundSetOperationEqualityComparisons(",
+            "MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(",
+            "LiveProjectRegistrationProfile MakeLiveProjectRegistrationProfile(",
+            "LivePredicateSubqueryProfile MatchLivePredicateSubqueryProfile(",
+            "LiveLateralSubqueryProfile MatchLiveLateralSubqueryProfile(",
+            "LiveRecursiveCteProfile MatchLiveRecursiveCteProfile(",
+            "bool PrepareCanonicalSortOrderTerm(",
+            "PreparedSortRoot PrepareSortRoot(",
+            "PreparedDistinctRoot PrepareQueryDistinctRoot(",
+            "PreparedLimitRoot PrepareLimitRoot(",
+            "PreparedProjectRoot PrepareDescriptorDirectProjectRoot(",
+            "bool PrepareInputRowBinding(",
+            "PreparedSortRoot PrepareExpressionSortRoot(",
+            "PreparedProjectRoot PrepareExpressionProjectRoot(",
+            "PreparedFilterRoot PrepareFilterRoot(",
+            "bool ExactCanonicalBooleanJoinAliasDescriptorV1(",
+            "std::string ExactCanonicalBooleanJoinAliasRuntimeCarrierV1(",
+            "bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(",
+            "PreparedJoinRoot PrepareJoinRoot(",
+            "LiveSetOperationProfile MatchLiveSetOperationProfile(",
+            "PreparedSetOperationRoot PrepareSetOperationRoot(",
+            "bool EvaluateNonNegativeRowBound(",
+            "bool BindPreparedRecursiveCteCardinalityImpl(",
+            "MatchLiveLateralSubqueryProfile(",
+            "bool DirectValueWindowUsesExactTypeV1(",
+            "bool ExactCanonicalBooleanWindowSourceV1(",
+            "bool CanonicalDescriptorFieldEqualsV1(",
+            "unsigned ExactBoundedSignedIntegerTypeRankV1(",
+            "bool ExactCanonicalScalarWindowOperandV1(",
+            "bool ExactCanonicalBoundedSignedWindowSourceV1(",
+            "bool ExactCanonicalBoundedSignedWindowOrderV1(",
+            "GlobalRankingWindowProfile GlobalAggregateWindowProfileV1(",
+            "PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(",
+            "PreparedGlobalRowNumberWindowBinding PrepareGlobalRowNumberWindowBinding(",
+            "bool CanonicalDescriptorFieldEqualsForComposition(",
+            "unsigned ExactBoundedSignedIntegerTypeRankForComposition(",
+            "LiveGroupedCountSumProfile MatchLiveGroupedCountSumProfile(",
+            "bool IsLiveGroupedHavingProfile(",
+            "LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(",
+            "LivePairStatisticalExpressionProfile MatchLivePairStatisticalExpressionProfile(",
+            "LiveStringAggregateExpressionProfile MatchLiveStringAggregateExpressionProfile(",
+            "MatchLiveOrderedSingleCollectionExpressionProfile(\n",
+            "MatchLiveJsonObjectAggregateExpressionProfile(\n",
+            "LiveListaggExpressionProfile MatchLiveListaggExpressionProfile(",
+            "LiveOrderedSetExpressionProfile MatchLiveOrderedSetExpressionProfile(",
+            "LiveApproximateExpressionProfile MatchLiveApproximateExpressionProfile(",
+            "PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(",
+            "PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(",
+            "PreparedGroupedHavingRoot PrepareGroupedHavingRoot(",
+            "bool InitializePlanningAggregateDistinctState(",
+            "bool InitializePlanningAggregateModifierState(",
+            "bool AdmitPlanningAggregateDistinctTuple(",
+            "bool MeasureAggregateDistinctPeakMemoryForComposition(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapSingleSourceQuery(",
+            "struct CurrentHeapStreamingScanBinding {",
+            "struct CurrentHeapStreamingCompactRow {",
+            "bool CurrentHeapMemoryAdd(",
+            "bool CurrentHeapMemoryMultiply(",
+            "bool CurrentHeapAccountString(",
+            "bool CurrentHeapAccountDescriptor(",
+            "bool CurrentHeapStreamingBindingMemory(",
+            "bool CurrentHeapStreamingCompactRowMemory(",
+            "bool PrepareCurrentHeapStreamingScanBinding(",
+            "bool MaterializeCurrentHeapStreamingRow(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(",
+            "bool MaterializeCanonicalGenerateSeriesBatch(",
+            "constexpr std::string_view kGenerateSeriesFunctionId =",
+            "constexpr std::string_view kGenerateSeriesFunctionUuid =",
+            "constexpr std::size_t kGenerateSeriesMaximumRowCount =",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalGenerateSeriesTableFunctionQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(",
+            "std::optional<std::string> Rcp079DescriptorField(",
+            "WithMultilegResultDescriptorRebindingV1(",
+            "void CaptureRcp079ModelLegV1(",
+            "MakeRcp079CapturedModelLegRegistration(",
+            "exec::CanonicalPhysicalExecutorRegistration MakeRcp079AsofRegistration(",
+            "std::string Rcp079CanonicalReal64(",
+            "plan::CanonicalMgaStatementContext Rcp079LogicalMga(",
+            "api::TypedRelationalDag Rcp079OperatorLocalModelSourceDag(",
+            "std::string Rcp079ModelFamilyForSource(",
+            "Rcp079PreflightMultilegResultDescriptorsV1(",
+            "bool CaptureRcp079ModelSourceLeg(",
+            "std::string Rcp080LogicalOperatorV1(",
+            "std::string Rcp080ImplementationV1(",
+            "std::string Rcp080OperationV1(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalBoundedModelFamilyCompositionQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalCapturedModelFamilyJoinQuery(",
             "TimeSeriesEndpointDaysFromCivil(",
             "bool ParseTimeSeriesEndpointUnsigned(",
             "bool ParseTimeSeriesEndpointNsV1(",
@@ -423,10 +684,26 @@ def main() -> int:
             "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(",
             "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(",
             "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalColumnarFamilyJoinQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalSpatialColumnarFamilyQuery(",
+            "struct ContextualTextDirectRouteTargetV2 {",
+            "bool Rcp079ExactContextualTextDirectRouteCandidateV2(",
+            "struct Rcp079ColumnarJoinSourceV1 {",
+            "bool CompareCanonicalQueryScalarsV1(",
+            "bool CompareCanonicalRelationalScalarsV1(",
+            "bool PollLiveCancellationProbeImpl(",
+            "bool PollLiveCancellationProbe(",
+            "opt::ModelFamilyCapabilitySnapshotV1 MakeModelFamilyCapabilitySnapshotV1(",
+            "opt::ModelFamilyCoordinatorResultV1 PlanCanonicalModelFamilySourceV1(",
+            "opt::ModelFamilyCapabilitySnapshotV1\nMakeModelFamilyCapabilitySnapshotForCompositionV1(",
+            "opt::ModelFamilyCoordinatorResultV1\nPlanCanonicalModelFamilySourceForCompositionV1(",
+            "CanonicalObjectFreeValuesExecutionResult\nExecuteCanonicalObjectFreeLiteralValuesQuery(",
         ):
             if extracted_definition in coordinator:
                 failures.append(
-                    "canonical_query_execute.cpp: extracted endpoint parser returned"
+                    "canonical_query_execute.cpp: extracted definition returned"
                 )
 
     if endpoint_path.is_file():
@@ -446,6 +723,7 @@ def main() -> int:
         "canonical_query_object_free_profile.cpp",
         "canonical_query_object_free_composition_support.cpp",
         "canonical_query_predicate_support.cpp",
+        "canonical_query_table_function_composition.cpp",
     ):
         support_path = SBLR_ROOT / support_name
         if not support_path.is_file():
@@ -469,6 +747,7 @@ def main() -> int:
         "canonical_query_join_pipeline_composition.cpp",
         "canonical_query_node_composition.cpp",
         "canonical_query_physical_registration.cpp",
+        "canonical_query_table_function_composition.cpp",
         "canonical_query_pivot_composition.cpp",
         "canonical_query_projection_registration.cpp",
         "canonical_query_recursive_registration.cpp",
@@ -495,6 +774,10 @@ def main() -> int:
         "canonical_query_key_value_composition.cpp",
         "canonical_query_graph_composition.cpp",
         "canonical_query_document_composition.cpp",
+        "canonical_query_spatial_columnar_composition.cpp",
+        "canonical_query_multileg_composition.cpp",
+        "canonical_query_current_heap_join_composition.cpp",
+        "canonical_query_current_heap_composition.cpp",
     ):
         model_route_path = SBLR_ROOT / model_route_name
         if not model_route_path.is_file():
@@ -505,6 +788,21 @@ def main() -> int:
                 failures.append(
                     f"{model_route_name}: forbidden authority token {token!r}"
                 )
+        if model_route_name in (
+            "canonical_query_current_heap_join_composition.cpp",
+            "canonical_query_current_heap_composition.cpp",
+        ):
+            for token in (
+                "EngineBegin",
+                "EngineResolveStatementSnapshot",
+                "AppendMgaRowVersion",
+                "UpdateMgaRowVersion",
+                "DeleteMgaRowVersion",
+            ):
+                if token in model_route:
+                    failures.append(
+                        f"{model_route_name}: forbidden mutation/snapshot token {token!r}"
+                    )
 
     if coordinator_path.is_file():
         coordinator = coordinator_path.read_text(encoding="utf-8")
