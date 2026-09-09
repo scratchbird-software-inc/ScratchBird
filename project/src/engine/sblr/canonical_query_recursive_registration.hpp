@@ -22,6 +22,8 @@ namespace scratchbird::engine::sblr {
 
 namespace exec = scratchbird::engine::executor;
 
+struct LivePhysicalNodeProfile;
+
 struct LiveRecursiveCteProfile {
   bool matched{false};
   bool search_cycle{false};
@@ -79,6 +81,13 @@ bool BoundPreparedRecursiveCtePeakPayload(
 bool BindPreparedRecursiveCtePeakMemory(
     PreparedRecursiveCteRoot* prepared,
     std::uint64_t memory_budget_bytes);
+
+bool BindPreparedRecursiveCteCardinality(
+    PreparedRecursiveCteRoot* prepared,
+    const std::vector<LivePhysicalNodeProfile>& profiles,
+    std::uint32_t anchor_logical_node_id,
+    std::uint64_t recursive_upper_bound,
+    std::size_t execution_row_ceiling);
 
 PreparedRecursiveCteTerm PrepareLiveRecursiveCteTerm(
     const LiveRecursiveCteProfile& profile,

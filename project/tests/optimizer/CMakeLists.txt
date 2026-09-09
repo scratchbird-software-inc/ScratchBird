@@ -470,6 +470,45 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     set(SB_BUILD_QOW_CLOSURE_TESTS "${_sb_qow_closure_tests_saved}")
     unset(_sb_qow_closure_tests_saved)
   endif()
+  add_executable(qow_ces05_document_production_route_test_v1
+    qow_ces05_document_execution.cpp)
+  target_compile_features(qow_ces05_document_production_route_test_v1 PRIVATE
+    cxx_std_20)
+  target_compile_definitions(qow_ces05_document_production_route_test_v1 PRIVATE
+    SB_CES05_PRODUCTION_QUERY_ROUTE=1)
+  target_link_libraries(qow_ces05_document_production_route_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_uuid
+    sb_storage_database
+  )
+  add_test(NAME qow_ces05_document_production_route_v1
+    COMMAND qow_ces05_document_production_route_test_v1)
+  set_tests_properties(qow_ces05_document_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-073;CES05;document;production_query_execute;typed_exchange;mga_transaction_regression;development_candidate"
+  )
+  add_test(NAME qow_ces05_document_collection_exchange_v1
+    COMMAND ${CMAKE_COMMAND} -E env SB_CES05_API_ONLY=1
+            $<TARGET_FILE:qow_ces05_document_production_route_test_v1>)
+  set_tests_properties(qow_ces05_document_collection_exchange_v1 PROPERTIES
+    LABELS "qow_closure;RCP-073;CES05;document;collection_isolation;nullable_missing;typed_exchange;mga_transaction_regression;development_candidate"
+  )
+  add_executable(qow_ces05_graph_production_route_test_v1
+    qow_ces05_graph_execution.cpp)
+  target_compile_features(qow_ces05_graph_production_route_test_v1 PRIVATE
+    cxx_std_20)
+  target_compile_definitions(qow_ces05_graph_production_route_test_v1 PRIVATE
+    SB_CES05_GRAPH_PRODUCTION_QUERY_ROUTE=1)
+  target_link_libraries(qow_ces05_graph_production_route_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_uuid
+    sb_storage_database
+  )
+  add_test(NAME qow_ces05_graph_production_route_v1
+    COMMAND qow_ces05_graph_production_route_test_v1)
+  set_tests_properties(qow_ces05_graph_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-074;CES05;graph;production_query_execute;typed_exchange;mga_transaction_regression;development_candidate"
+  )
   add_executable(qow_ces05_key_value_execution_test_v1
     qow_ces05_key_value_execution.cpp)
   target_compile_features(qow_ces05_key_value_execution_test_v1 PRIVATE
@@ -485,6 +524,24 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     COMMAND qow_ces05_key_value_execution_test_v1)
   set_tests_properties(qow_ces05_key_value_execution_v1 PROPERTIES
     LABELS "qow_closure;RCP-075;CES05;key_value;model_family;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
+  )
+  add_executable(qow_ces05_key_value_production_route_test_v1
+    qow_ces05_key_value_execution.cpp)
+  target_compile_features(qow_ces05_key_value_production_route_test_v1 PRIVATE
+    cxx_std_23)
+  target_compile_definitions(qow_ces05_key_value_production_route_test_v1 PRIVATE
+    SB_CES05_KEY_VALUE_PRODUCTION_QUERY_ROUTE=1)
+  target_link_libraries(qow_ces05_key_value_production_route_test_v1 PRIVATE
+    sb_engine_sblr
+    sb_core_hash
+    sb_core_uuid
+    sb_storage_database
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_ces05_key_value_production_route_v1
+    COMMAND qow_ces05_key_value_production_route_test_v1)
+  set_tests_properties(qow_ces05_key_value_production_route_v1 PROPERTIES
+    LABELS "qow_closure;RCP-075;CES05;key_value;production_query_execute;typed_exchange;statement_timestamp;mga_transaction_regression;development_candidate"
   )
   # QOW-CMAKE-RCP-076-TIME-SERIES-DIRECT-EXECUTION-V1
   add_executable(qow_ces05_time_series_execution_test_v1

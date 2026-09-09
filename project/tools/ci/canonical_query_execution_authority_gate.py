@@ -17,9 +17,15 @@ AUTHORITY = SBLR_ROOT / "CANONICAL_QUERY_EXECUTION_AUTHORITY.md"
 
 MODULES = {
     "canonical_query_execute.cpp": (
-        59_207,
-        2_868_800,
+        27_446,
+        1_308_143,
         "SB_ENGINE_CANONICAL_QUERY_EXECUTE_COORDINATOR_AUTHORITY",
+        2,
+    ),
+    "canonical_query_aggregate_composition.cpp": (
+        1_693,
+        81_143,
+        "SB_ENGINE_CANONICAL_QUERY_AGGREGATE_COMPOSITION_AUTHORITY",
         2,
     ),
     "canonical_query_aggregate_registration.cpp": (
@@ -40,10 +46,40 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_FILTER_REGISTRATION_AUTHORITY",
         2,
     ),
+    "canonical_query_filter_project_composition.cpp": (
+        2_448,
+        111_926,
+        "SB_ENGINE_CANONICAL_QUERY_FILTER_PROJECT_COMPOSITION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_order_limit_composition.cpp": (
+        969,
+        43_206,
+        "SB_ENGINE_CANONICAL_QUERY_ORDER_LIMIT_COMPOSITION_AUTHORITY",
+        2,
+    ),
     "canonical_query_join_registration.cpp": (
         857,
         42_577,
         "SB_ENGINE_CANONICAL_QUERY_JOIN_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_join_composition.cpp": (
+        523,
+        22_815,
+        "SB_ENGINE_CANONICAL_QUERY_JOIN_COMPOSITION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_join_pipeline_composition.cpp": (
+        831,
+        38_130,
+        "SB_ENGINE_CANONICAL_QUERY_JOIN_PIPELINE_COMPOSITION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_node_composition.cpp": (
+        6_438,
+        313_200,
+        "SB_ENGINE_CANONICAL_QUERY_NODE_COMPOSITION_AUTHORITY",
         2,
     ),
     "canonical_query_object_free_profile.cpp": (
@@ -52,10 +88,22 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_OBJECT_FREE_PROFILE_AUTHORITY",
         2,
     ),
+    "canonical_query_object_free_composition_support.cpp": (
+        343,
+        14_902,
+        "SB_ENGINE_CANONICAL_QUERY_OBJECT_FREE_COMPOSITION_SUPPORT_AUTHORITY",
+        2,
+    ),
     "canonical_query_physical_registration.cpp": (
         972,
         42_303,
         "SB_ENGINE_CANONICAL_QUERY_PHYSICAL_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_pivot_composition.cpp": (
+        1_574,
+        72_281,
+        "SB_ENGINE_CANONICAL_QUERY_PIVOT_COMPOSITION_AUTHORITY",
         2,
     ),
     "canonical_query_predicate_support.cpp": (
@@ -86,6 +134,12 @@ MODULES = {
         279,
         12_709,
         "SB_ENGINE_CANONICAL_QUERY_SET_REGISTRATION_AUTHORITY",
+        2,
+    ),
+    "canonical_query_set_composition.cpp": (
+        820,
+        36_819,
+        "SB_ENGINE_CANONICAL_QUERY_SET_COMPOSITION_AUTHORITY",
         2,
     ),
     "canonical_query_sort_registration.cpp": (
@@ -130,6 +184,42 @@ MODULES = {
         "SB_ENGINE_CANONICAL_QUERY_TIME_SERIES_ENDPOINT_AUTHORITY",
         1,
     ),
+    "canonical_query_time_series_composition.cpp": (
+        4_783,
+        242_149,
+        "SB_ENGINE_CANONICAL_QUERY_TIME_SERIES_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_vector_composition.cpp": (
+        1_104,
+        56_866,
+        "SB_ENGINE_CANONICAL_QUERY_VECTOR_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_search_composition.cpp": (
+        2_528,
+        127_548,
+        "SB_ENGINE_CANONICAL_QUERY_SEARCH_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_key_value_composition.cpp": (
+        2_396,
+        119_306,
+        "SB_ENGINE_CANONICAL_QUERY_KEY_VALUE_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_graph_composition.cpp": (
+        2_756,
+        139_015,
+        "SB_ENGINE_CANONICAL_QUERY_GRAPH_COMPOSITION_AUTHORITY",
+        1,
+    ),
+    "canonical_query_document_composition.cpp": (
+        3_738,
+        188_993,
+        "SB_ENGINE_CANONICAL_QUERY_DOCUMENT_COMPOSITION_AUTHORITY",
+        1,
+    ),
 }
 
 PURE_ENDPOINT_FORBIDDEN = (
@@ -162,6 +252,17 @@ PHYSICAL_REGISTRATION_FORBIDDEN = (
     "ExecuteCanonicalCurrentHeapQuery",
     "mga_relation_store",
     "parser/",
+)
+
+MODEL_FAMILY_ROUTE_FORBIDDEN = (
+    "PersistLocalTransactionInventory",
+    "FinalizePhysicalMgaCowTransaction",
+    "EngineCommit",
+    "EngineRollback",
+    "ExecuteCanonicalObjectFreeValuesQuery",
+    "ExecuteCanonicalCurrentHeapQuery",
+    "parser/",
+    "wal/",
 )
 
 
@@ -266,6 +367,62 @@ def main() -> int:
             "bool CanonicalQueryDescriptorTuplePayloadExactlyEqual(",
             "bool CanonicalQueryDescriptorBatchesExactlyEqual(",
             "std::optional<std::string> ExactEncodedDescriptorField(",
+            "api::EngineApiResult Failure(",
+            "struct MaterializedValues {",
+            "MaterializedValues MaterializeValues(",
+            "api::EngineApiResult SuccessfulApiResult(",
+            "struct PreparedSetOperationRoot {",
+            "struct LiveSetOperationProfile {",
+            "struct PreparedLiveSetNode {",
+            "struct PreparedJoinRoot {",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeSetOperationQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeNestedSetOperationQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeJoinQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeFilterQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeProjectQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeFilterProjectQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeProjectSortQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeFilterProjectSortQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeLimitQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeSortQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeDistinctSortLimitQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreePivotQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeUnpivotQuery(",
+            "bool CanonicalPivotCausalStructureExactlyMatches(",
+            "bool CanonicalPivotExecutionReceiptMatches(",
+            "bool CanonicalUnpivotOutputExactlyMatches(",
+            "bool CanonicalUnpivotExecutionReceiptMatches(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeGroupedCountSumQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeGlobalAggregateQuery(",
+            "CanonicalObjectFreeValuesExecutionResult\n"
+            "ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalSearchFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalGraphFamilyQuery(",
+            "CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalDocumentFamilyQuery(",
         ):
             if extracted_definition in coordinator:
                 failures.append(
@@ -287,6 +444,7 @@ def main() -> int:
         "canonical_query_json_support.cpp",
         "canonical_query_runtime_memory_support.cpp",
         "canonical_query_object_free_profile.cpp",
+        "canonical_query_object_free_composition_support.cpp",
         "canonical_query_predicate_support.cpp",
     ):
         support_path = SBLR_ROOT / support_name
@@ -301,14 +459,22 @@ def main() -> int:
 
     for registration_name in (
         "canonical_query_correlated_registration.cpp",
+        "canonical_query_aggregate_composition.cpp",
         "canonical_query_aggregate_registration.cpp",
         "canonical_query_filter_registration.cpp",
+        "canonical_query_filter_project_composition.cpp",
+        "canonical_query_order_limit_composition.cpp",
         "canonical_query_join_registration.cpp",
+        "canonical_query_join_composition.cpp",
+        "canonical_query_join_pipeline_composition.cpp",
+        "canonical_query_node_composition.cpp",
         "canonical_query_physical_registration.cpp",
+        "canonical_query_pivot_composition.cpp",
         "canonical_query_projection_registration.cpp",
         "canonical_query_recursive_registration.cpp",
         "canonical_query_relational_registration.cpp",
         "canonical_query_set_registration.cpp",
+        "canonical_query_set_composition.cpp",
         "canonical_query_sort_registration.cpp",
         "canonical_query_window_registration.cpp",
     ):
@@ -320,6 +486,24 @@ def main() -> int:
             if token in registration:
                 failures.append(
                     f"{registration_name}: forbidden authority token {token!r}"
+                )
+
+    for model_route_name in (
+        "canonical_query_time_series_composition.cpp",
+        "canonical_query_vector_composition.cpp",
+        "canonical_query_search_composition.cpp",
+        "canonical_query_key_value_composition.cpp",
+        "canonical_query_graph_composition.cpp",
+        "canonical_query_document_composition.cpp",
+    ):
+        model_route_path = SBLR_ROOT / model_route_name
+        if not model_route_path.is_file():
+            continue
+        model_route = model_route_path.read_text(encoding="utf-8")
+        for token in MODEL_FAMILY_ROUTE_FORBIDDEN:
+            if token in model_route:
+                failures.append(
+                    f"{model_route_name}: forbidden authority token {token!r}"
                 )
 
     if coordinator_path.is_file():
