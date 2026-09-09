@@ -17848,6 +17848,107 @@ DdlCreateSchemaWireCommand ParseDdlCreateSchemaWireCommand(
   return result;
 }
 
+struct SecurityCreatePrivilegeTemplateWireCommand {
+  bool recognized{false};
+  bool valid{false};
+  scratchbird::engine::sblr::PrivilegeTemplateObjectKindV1 object_kind{
+      scratchbird::engine::sblr::PrivilegeTemplateObjectKindV1::kTables};
+  std::string template_name;
+  bool template_name_quoted{false};
+  std::string grantee_name;
+  bool grantee_name_quoted{false};
+  std::string privilege;
+  bool with_grant_option{false};
+  std::string invalid_reason;
+};
+
+SecurityCreatePrivilegeTemplateWireCommand
+ParseSecurityCreatePrivilegeTemplateWireCommand(const CstDocument& cst) {
+  namespace carrier = scratchbird::engine::sblr;
+  SecurityCreatePrivilegeTemplateWireCommand result;
+  std::vector<const Token*> tokens;
+  tokens.reserve(cst.tokens.size());
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.size() < 3 || ToUpperAscii(tokens[0]->text) != "CREATE" ||
+      ToUpperAscii(tokens[1]->text) != "PRIVILEGE" ||
+      ToUpperAscii(tokens[2]->text) != "TEMPLATE") {
+    return result;
+  }
+  result.recognized = true;
+  const auto invalid = [&](std::string reason) {
+    result.valid = false;
+    result.invalid_reason = std::move(reason);
+    return result;
+  };
+  const auto terminator_count =
+      std::ranges::count_if(tokens, [](const Token* token) {
+        return token->kind == TokenKind::kStatementTerminator;
+      });
+  if (terminator_count > 1 ||
+      (terminator_count == 1 &&
+       tokens.back()->kind != TokenKind::kStatementTerminator)) {
+    return invalid(
+        "security_create_privilege_template_statement_terminator_invalid");
+  }
+  if (terminator_count == 1) tokens.pop_back();
+  if (tokens.size() != 11 && tokens.size() != 14) {
+    return invalid("security_create_privilege_template_shape_invalid");
+  }
+  const auto exact_word = [&](std::size_t index, std::string_view word) {
+    return index < tokens.size() && !tokens[index]->quoted &&
+           ToUpperAscii(tokens[index]->text) == word;
+  };
+  const auto exact_name = [&](std::size_t index, std::size_t maximum_bytes) {
+    return index < tokens.size() &&
+           IsIdentifierLikeForRouteExecution(*tokens[index]) &&
+           !tokens[index]->text.empty() &&
+           tokens[index]->text.size() <= maximum_bytes &&
+           tokens[index]->text.find('.') == std::string::npos;
+  };
+  if (!exact_name(3, 256) || !exact_word(4, "ON") ||
+      !exact_word(5, "FUTURE") || !exact_word(7, "GRANT") ||
+      !exact_name(8, 128) || tokens[8]->quoted ||
+      !exact_word(9, "TO") || !exact_name(10, 256)) {
+    return invalid("security_create_privilege_template_clause_invalid");
+  }
+  const auto object_kind = ToUpperAscii(tokens[6]->text);
+  if (object_kind == "TABLES") {
+    result.object_kind = carrier::PrivilegeTemplateObjectKindV1::kTables;
+  } else if (object_kind == "SEQUENCES") {
+    result.object_kind = carrier::PrivilegeTemplateObjectKindV1::kSequences;
+  } else if (object_kind == "ROUTINES") {
+    result.object_kind = carrier::PrivilegeTemplateObjectKindV1::kRoutines;
+  } else if (object_kind == "TYPES") {
+    result.object_kind = carrier::PrivilegeTemplateObjectKindV1::kTypes;
+  } else if (object_kind == "SCHEMAS") {
+    result.object_kind = carrier::PrivilegeTemplateObjectKindV1::kSchemas;
+  } else {
+    return invalid(
+        "security_create_privilege_template_object_kind_invalid");
+  }
+  if (tokens[6]->quoted) {
+    return invalid(
+        "security_create_privilege_template_object_kind_invalid");
+  }
+  if (tokens.size() == 14 &&
+      (!exact_word(11, "WITH") || !exact_word(12, "GRANT") ||
+       !exact_word(13, "OPTION"))) {
+    return invalid(
+        "security_create_privilege_template_grant_option_invalid");
+  }
+  result.template_name = tokens[3]->text;
+  result.template_name_quoted = tokens[3]->quoted;
+  result.grantee_name = tokens[10]->text;
+  result.grantee_name_quoted = tokens[10]->quoted;
+  result.privilege = tokens[8]->text;
+  result.with_grant_option = tokens.size() == 14;
+  result.valid = true;
+  return result;
+}
+
 struct SecurityAlterPolicyWireCommand {
   bool recognized{false};
   bool valid{false};
@@ -27708,6 +27809,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       return RunSecurityAlterPolicyForWire(sql, autocommit_emulation);
     }
     if (canonical_compile_output == nullptr &&
+        starts_with_command("CREATE PRIVILEGE TEMPLATE")) {
+      return RunSecurityCreatePrivilegeTemplateForWire(
+          sql, autocommit_emulation);
+    }
+    if (canonical_compile_output == nullptr &&
         starts_with_command("CREATE SCHEMA")) {
       return RunDdlCreateSchemaForWire(
           sql, autocommit_emulation, canonical_execution_observation,
@@ -35375,32 +35481,275 @@ PipelineResult SbsqlTestWireSession::RunDdlCreateRewriteRuleForWire() { Pipeline
 PipelineResult SbsqlTestWireSession::RunDdlAlterRewriteRuleForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlAlterRewriteRuleRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.rule_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterRewriteRule(session_,c::EncodeSblrDdlAlterRewriteRuleRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterRewriteRuleDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterRewriteRuleDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterRewriteRuleDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_rewrite_rule";g_ddl_alter_rewrite_rule_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_rewrite_rule_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlAlterRewriteRuleResultV1 rr;if(!c::DecodeSblrDdlAlterRewriteRuleResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
 PipelineResult SbsqlTestWireSession::RunDdlDropRewriteRuleForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlDropRewriteRuleRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.rule_occurrence=1;auto coordinated=server_client_->CoordinateDdlDropRewriteRule(session_,c::EncodeSblrDdlDropRewriteRuleRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlDropRewriteRuleDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlDropRewriteRuleDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlDropRewriteRuleDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_drop_rewrite_rule";g_ddl_drop_rewrite_rule_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);g_ddl_drop_rewrite_rule_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlDropRewriteRuleResultV1 rr;if(!c::DecodeSblrDdlDropRewriteRuleResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
 PipelineResult SbsqlTestWireSession::RunDdlValidateConstraintForWire() { PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;c::SblrDdlValidateConstraintRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;q.receipt=*receipt;q.occurrence=1;q.constraint_occurrence=1;auto coordinated=server_client_->CoordinateDdlValidateConstraint(session_,c::EncodeSblrDdlValidateConstraintRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlValidateConstraintDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlValidateConstraintDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlValidateConstraintDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_validate_constraint";g_ddl_validate_constraint_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&operand);g_ddl_validate_constraint_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);if(result.accepted){c::SblrDdlValidateConstraintResultV1 rr;if(!c::DecodeSblrDdlValidateConstraintResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&rr,&detail))result.accepted=false;}return result; }
-PipelineResult SbsqlTestWireSession::RunSecurityCreatePrivilegeTemplateForWire() {
+PipelineResult SbsqlTestWireSession::RunSecurityCreatePrivilegeTemplateForWire(
+    std::string_view sql, bool autocommit_emulation) {
   PipelineResult result;
-  if (!server_client_ || !session_.authenticated) return result;
-  ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};
-  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
-  if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
+  result.statement_family = "security";
+  result.operation_family = "sblr.security.operation.v3";
+  result.statement_hash = Fnv1a64(sql);
+  result.parser_executes_sql = false;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    if (!result.messages.has_errors()) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          std::move(code), "ERROR",
+          "The canonical CREATE PRIVILEGE TEMPLATE operation was refused.",
+          "sbp_sbsql.wire.security_create_privilege_template",
+          {{"detail", std::move(detail)}}));
+    }
+    return result;
+  };
+  const auto nonzero = [](const auto& value) {
+    return std::ranges::any_of(
+        value, [](const std::uint8_t byte) { return byte != 0; });
+  };
+  if (!server_client_ || !session_.authenticated) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "authenticated_privilege_template_route_required");
+  }
+
+  const auto cst = BuildCst(sql);
+  const auto command = ParseSecurityCreatePrivilegeTemplateWireCommand(cst);
+  const auto ast = BuildAst(cst);
+  result.messages = ast.messages;
+  if (cst.messages.has_errors() || result.messages.has_errors() ||
+      !command.recognized || !command.valid) {
+    if (!result.messages.has_errors()) {
+      return refuse("SBLR.OPERAND.INVALID",
+                    command.invalid_reason.empty()
+                        ? "security_create_privilege_template_syntax_invalid"
+                        : command.invalid_reason);
+    }
+    return result;
+  }
+
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired =
+      server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    if (!result.messages.has_errors()) {
+      return refuse(
+          "MGA.TRANSACTION_INVALID",
+          "security_create_privilege_template_statement_context_unavailable");
+    }
+    return result;
+  }
   namespace c = scratchbird::engine::sblr;
-  auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
-  if (!receipt) return result;
+  const auto receipt =
+      CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
+  const auto transaction_uuid =
+      CanonicalUuidBytes(acquired.context.transaction.transaction_uuid);
+  const auto statement_snapshot =
+      CanonicalUuidBytes(acquired.context.statement_snapshot_uuid);
+  const auto catalog_epoch =
+      CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
+  const auto security_context =
+      CanonicalUuidBytes(acquired.context.security_context_uuid);
+  if (!receipt || !transaction_uuid || !statement_snapshot ||
+      !catalog_epoch || !security_context ||
+      acquired.context.transaction.local_transaction_id == 0 ||
+      acquired.context.preliminary_statement_catalog_generation == 0 ||
+      acquired.context.preliminary_security_epoch == 0 ||
+      acquired.context.preliminary_resource_epoch == 0) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        "security_create_privilege_template_statement_receipt_incomplete");
+  }
+
   c::SblrSecurityCreatePrivilegeTemplateRequestV1 q;
-  q.receipt = *receipt; q.occurrence = 1; q.template_occurrence = 1;
-  auto coordinated = server_client_->CoordinateSecurityCreatePrivilegeTemplate(session_, c::EncodeSblrSecurityCreatePrivilegeTemplateRequestV1(q));
-  result.messages = coordinated.messages; if (!coordinated.accepted) return result;
-  c::SblrSecurityCreatePrivilegeTemplateDescriptorV1 d; std::string detail;
-  if (!c::DecodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(coordinated.canonical_payload.data(), coordinated.canonical_payload.size(), &d, &detail, false)) return result;
-  auto operand = c::EncodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(d, true); if (operand.empty()) return result;
-  BoundStatement bound; SblrEnvelope lowered; lowered.operation_id = "engine.op.security_create_privilege_template";
+  q.receipt = *receipt;
+  q.occurrence = 1;
+  q.template_occurrence = 1;
+  q.command_identity = 1;
+  q.object_kind = command.object_kind;
+  q.with_grant_option = command.with_grant_option;
+  q.enabled = true;
+  q.template_name_utf8 = command.template_name;
+  q.template_name_quoted = command.template_name_quoted;
+  q.grantee_name_utf8 = command.grantee_name;
+  q.grantee_name_quoted = command.grantee_name_quoted;
+  q.privilege_utf8 = command.privilege;
+  const auto bind_request =
+      c::EncodeSblrSecurityCreatePrivilegeTemplateRequestV1(q);
+  c::SblrSecurityCreatePrivilegeTemplateRequestV1 canonical_request;
+  std::string detail;
+  if (bind_request.empty() ||
+      !c::DecodeSblrSecurityCreatePrivilegeTemplateRequestV1(
+          bind_request.data(), bind_request.size(), &canonical_request,
+          &detail)) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "security_create_privilege_template_bind_request_invalid"
+                      : detail);
+  }
+  auto coordinated =
+      server_client_->CoordinateSecurityCreatePrivilegeTemplate(
+          session_, bind_request);
+  result.messages = std::move(coordinated.messages);
+  if (!coordinated.accepted) {
+    result.outcome_unknown = coordinated.outcome_unknown;
+    if (!result.messages.has_errors()) {
+      return refuse(
+          coordinated.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                      : "SBLR.OPERAND.INVALID",
+          coordinated.outcome_unknown
+              ? "security_create_privilege_template_coordinate_outcome_unknown"
+              : "security_create_privilege_template_coordinate_refused_without_diagnostic");
+    }
+    return result;
+  }
+  c::SblrSecurityCreatePrivilegeTemplateDescriptorV1 d;
+  if (!c::DecodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(
+          coordinated.canonical_payload.data(),
+          coordinated.canonical_payload.size(), &d, &detail, false) ||
+      d.receipt != canonical_request.receipt ||
+      d.occurrence != canonical_request.occurrence ||
+      d.template_occurrence != canonical_request.template_occurrence ||
+      d.object_kind != canonical_request.object_kind ||
+      d.with_grant_option != canonical_request.with_grant_option ||
+      d.enabled != canonical_request.enabled ||
+      d.owning_transaction_uuid != *transaction_uuid ||
+      d.owning_local_transaction_id !=
+          acquired.context.transaction.local_transaction_id ||
+      d.statement_snapshot_uuid != *statement_snapshot ||
+      d.catalog_epoch_uuid != *catalog_epoch ||
+      d.catalog_generation !=
+          acquired.context.preliminary_statement_catalog_generation ||
+      d.security_context_uuid != *security_context ||
+      d.security_epoch != acquired.context.preliminary_security_epoch ||
+      d.resource_generation != acquired.context.preliminary_resource_epoch ||
+      d.syntax_demand_sha256 != canonical_request.evidence ||
+      d.template_generation == 0 || d.recovery_generation == 0 ||
+      d.availability == 0 || !nonzero(d.template_uuid) ||
+      !nonzero(d.owner_principal_uuid) || !nonzero(d.grantee_uuid) ||
+      !nonzero(d.policy_snapshot_uuid) || !nonzero(d.resource_grant_uuid) ||
+      !nonzero(d.recovery_uuid) || !nonzero(d.definition_sha256) ||
+      !nonzero(d.idempotency_sha256) || !nonzero(d.evidence)) {
+    result.outcome_unknown = true;
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "security_create_privilege_template_descriptor_authority_mismatch"
+            : detail);
+  }
+
+  auto operand = coordinated.canonical_payload;
+  if (operand.size() !=
+          c::kSblrSecurityCreatePrivilegeTemplateDescriptorV1Bytes ||
+      !std::equal(operand.begin(), operand.begin() + 4, "PTDD")) {
+    result.outcome_unknown = true;
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        "security_create_privilege_template_descriptor_transport_invalid");
+  }
+  std::copy_n("PTDO", 4, operand.begin());
+  if (!std::equal(operand.begin() + 4, operand.end(),
+                  coordinated.canonical_payload.begin() + 4)) {
+    return refuse(
+        "SBLR.OPERAND.INVALID",
+        "security_create_privilege_template_projection_changed_authority");
+  }
+  c::SblrSecurityCreatePrivilegeTemplateDescriptorV1 operand_descriptor;
+  if (!c::DecodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(
+          operand.data(), operand.size(), &operand_descriptor, &detail,
+          true) ||
+      operand_descriptor.receipt != d.receipt ||
+      operand_descriptor.template_uuid != d.template_uuid ||
+      operand_descriptor.grantee_uuid != d.grantee_uuid ||
+      operand_descriptor.recovery_uuid != d.recovery_uuid ||
+      operand_descriptor.evidence != d.evidence ||
+      operand_descriptor.availability != d.availability) {
+    return refuse("SBLR.OPERAND.INVALID",
+                  detail.empty()
+                      ? "security_create_privilege_template_operand_invalid"
+                      : detail);
+  }
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id =
+      "engine.op.security_create_privilege_template";
   g_security_create_privilege_template_operand = &operand;
   auto submission = BuildCanonicalNativeSubmission(bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
   g_security_create_privilege_template_operand = nullptr;
-  if (!submission) return result;
+  if (!submission) {
+    return refuse(
+        "SBLR.OPERAND.INVALID",
+        "security_create_privilege_template_canonical_submission_invalid");
+  }
   auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
-  result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (result.accepted) { c::SblrSecurityCreatePrivilegeTemplateResultV1 rr; if (!c::DecodeSblrSecurityCreatePrivilegeTemplateResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
+  result.messages = std::move(executed.messages);
+  if (!executed.accepted || result.messages.has_errors()) {
+    result.outcome_unknown =
+        executed.finality_state == ipc::ParserTransactionFinality::kUnknown;
+    if (!result.messages.has_errors()) {
+      return refuse(
+          result.outcome_unknown ? "MGA.AUTHORITY_MISMATCH"
+                                 : "SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED",
+          result.outcome_unknown
+              ? "security_create_privilege_template_execution_outcome_unknown"
+              : "security_create_privilege_template_execution_refused_without_diagnostic");
+    }
+    return result;
+  }
+
+  c::SblrSecurityCreatePrivilegeTemplateResultV1 terminal;
+  if (executed.operation_id !=
+          "engine.op.security_create_privilege_template" ||
+      !executed.cursor_uuid.empty() || executed.row_count != 0 ||
+      (executed.affected_rows_present && executed.affected_rows != 0) ||
+      !c::DecodeSblrSecurityCreatePrivilegeTemplateResultV1(
+          reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+          executed.row_packet.size(), &terminal, &detail) ||
+      terminal.receipt != d.receipt ||
+      terminal.template_uuid != d.template_uuid ||
+      terminal.template_generation == 0 ||
+      terminal.owner_principal_uuid != d.owner_principal_uuid ||
+      terminal.grantee_uuid != d.grantee_uuid ||
+      terminal.owning_transaction_uuid != d.owning_transaction_uuid ||
+      terminal.owning_local_transaction_id != d.owning_local_transaction_id ||
+      terminal.statement_snapshot_uuid != d.statement_snapshot_uuid ||
+      terminal.catalog_generation != d.catalog_generation ||
+      terminal.security_generation == 0 ||
+      terminal.security_generation != terminal.cache_invalidation_epoch ||
+      terminal.resource_generation != d.resource_generation ||
+      terminal.definition_sha256 != d.definition_sha256 ||
+      terminal.descriptor_evidence_sha256 != d.evidence ||
+      !terminal.template_created || terminal.availability != d.availability ||
+      !nonzero(terminal.mutation_uuid) ||
+      !nonzero(terminal.publication_barrier) ||
+      terminal.mutation_uuid == terminal.template_uuid ||
+      terminal.publication_barrier == terminal.template_uuid ||
+      terminal.publication_barrier == terminal.mutation_uuid) {
+    result.outcome_unknown = true;
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "security_create_privilege_template_result_authority_mismatch"
+            : detail);
+  }
+
+  result.accepted = true;
+  result.server_operation_id = executed.operation_id;
+  result.server_row_count = 0;
+  result.server_affected_rows = 0;
+  result.server_affected_rows_present = executed.affected_rows_present;
+  result.server_request_payload_bytes = bind_request.size();
+  result.server_result_payload = executed.row_packet;
+  result.sblr_payload.assign(
+      reinterpret_cast<const char*>(
+          submission->canonical_container_bytes.data()),
+      submission->canonical_container_bytes.size());
+  ApplyExecutedTransactionState(executed, &session_);
+  if (autocommit_emulation &&
+      !FinalizeSuccessfulAutocommitForWire(&result)) {
+    result.accepted = false;
+  }
   return result;
-}PipelineResult SbsqlTestWireSession::RunSecurityAlterPrivilegeTemplateForWire() {
+}
+
+PipelineResult SbsqlTestWireSession::RunSecurityAlterPrivilegeTemplateForWire() {
   PipelineResult result;
   if (!server_client_ || !session_.authenticated) return result;
   ParserTransactionSelector selector{session_.local_transaction_id, session_.transaction_uuid};

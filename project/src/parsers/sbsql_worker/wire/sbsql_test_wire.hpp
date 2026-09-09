@@ -452,7 +452,11 @@ class SbsqlTestWireSession {
   PipelineResult RunDdlAlterRewriteRuleForWire();
   PipelineResult RunDdlDropRewriteRuleForWire();
   PipelineResult RunDdlValidateConstraintForWire();
-  PipelineResult RunSecurityCreatePrivilegeTemplateForWire();
+  PipelineResult RunSecurityCreatePrivilegeTemplateForWire(
+      std::string_view sql =
+          "CREATE PRIVILEGE TEMPLATE future_readers_process_e2e "
+          "ON FUTURE TABLES GRANT SELECT TO alice WITH GRANT OPTION;",
+      bool autocommit_emulation = false);
   PipelineResult RunSecurityCreateUserForWire();
   PipelineResult RunSecurityCreateRoleForWire();
   PipelineResult RunSecurityDropRoleForWire();

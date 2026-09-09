@@ -333,6 +333,10 @@ def main() -> int:
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-drop-fdw"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-alter-procedure", "ddl-drop-procedure", "ddl-create-function", "ddl-alter-function", "ddl-drop-function", "ddl-create-package", "ddl-create-temporary-table", "ddl-drop-temporary-table", "ddl-rename-object-vector", "ddl-rename-object", "ddl-create-synonym", "ddl-create-foreign-table", "ddl-create-fdw", "ddl-create-or-replace-srs", "ddl-drop-srs", "ddl-create-rewrite-rule", "ddl-alter-rewrite-rule", "ddl-drop-rewrite-rule", "ddl-validate-constraint", "security-create-privilege-template", "security-create-user", "security-alter-user", "security-create-role", "security-create-policy", "security-drop-role", "security-alter-privilege-template", "security-drop-privilege-template", "database-create-template-clone", "ddl-create-aggregate", "ddl-alter-aggregate", "ddl-drop-aggregate", "ddl-purge-system-history", "ddl-set-index-optimizer-eligibility", "ddl-set-table-type-enforcement", "database-serialize-logical-snapshot"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "database-deserialize-logical-snapshot"))
+    parser._actions[-1].choices = tuple((
+        *parser._actions[-1].choices,
+        "security-create-privilege-template-observe",
+    ))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "ddl-create-macro", "ddl-create-dictionary", "ddl-drop-dictionary", "ddl-alter-dictionary", "ddl-create-continuous-view", "ddl-alter-continuous-view", "ddl-drop-continuous-view", "dml-async-insert-submit", "dml-async-insert-status", "dml-async-insert-cancel", "dml-counter-add", "ddl-drop-macro", "admin-register-external-relation-resolver", "admin-unregister-external-relation-resolver"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "alter-gpu-profile-disable"))
     parser._actions[-1].choices = tuple((*parser._actions[-1].choices, "filespace-create"))
@@ -606,7 +610,20 @@ def main() -> int:
         )
         if first.returncode != 0:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
-        if args.operation == "source-artifact-container":
+        if args.operation == "security-create-privilege-template":
+            expected_success = (
+                "CSC-TEST-002697 SECURITY_CREATE_PRIVILEGE_TEMPLATE "
+                "accepted canonical_sbsql=true canonical_sblr=true "
+                "durable_catalog=true commit=true "
+                "publication_barrier=passed\n"
+            )
+            if first.stdout != expected_success or first.stderr:
+                raise ProofError(
+                    "CREATE PRIVILEGE TEMPLATE did not complete the exact "
+                    "SBsql, SBLR, durable catalog, and commit route: "
+                    f"stdout={first.stdout!r} stderr={first.stderr!r}"
+                )
+        elif args.operation == "source-artifact-container":
             expected_success = (
                 "CSC-TEST-005770 CSC-TEST-005776 CSC-TEST-005778 "
                 "CSC-TEST-005786 "
@@ -1246,7 +1263,12 @@ def main() -> int:
         elif args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
             expected = ()
         elif args.operation == "security-create-privilege-template":
-            expected = ()
+            expected = (
+                "preflight_observe "
+                "op=engine.op.security_create_privilege_template "
+                "opcode=SBLR_SECURITY_CREATE_PRIVILEGE_TEMPLATE "
+                "code=1621",
+            )
         elif args.operation == "security-create-user":
             expected = ()
         elif args.operation == "security-alter-user":
@@ -1656,7 +1678,9 @@ def main() -> int:
             )
         second = command.copy()
         second[-1] = f"sbsql-sblr-{args.operation}-e2e-independent"
-        if args.operation == "ddl-create-schema":
+        if args.operation == "security-create-privilege-template":
+            second[5] = "security-create-privilege-template-observe"
+        elif args.operation == "ddl-create-schema":
             second[5] = "ddl-create-schema-observe"
         elif args.operation == "ddl-create-trigger":
             second[5] = "ddl-create-trigger-observe"
@@ -1677,7 +1701,19 @@ def main() -> int:
                 f"returncode={verified.returncode} "
                 f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
             )
-        if args.operation == "ddl-create-schema":
+        if args.operation == "security-create-privilege-template":
+            expected_observer = (
+                "CSC-TEST-002697 SECURITY_CREATE_PRIVILEGE_TEMPLATE "
+                "observer_visible=true independent_session=true "
+                "exact_name_collision=true no_catalog_mutation=true\n"
+            )
+            if verified.stdout != expected_observer or verified.stderr:
+                raise ProofError(
+                    "independent authenticated privilege-template observer "
+                    "did not prove the committed exact name: "
+                    f"stdout={verified.stdout!r} stderr={verified.stderr!r}"
+                )
+        elif args.operation == "ddl-create-schema":
             expected_observer = (
                 "CSC-TEST-005780 DDL_CREATE_SCHEMA observer_visible=true "
                 "independent_session=true exact_schema_identity=true\n"

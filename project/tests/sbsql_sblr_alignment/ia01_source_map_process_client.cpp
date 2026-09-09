@@ -26,6 +26,7 @@
 #include "engine/sblr/sblr_opcode_stream.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "engine/sblr/sblr_sec_alter_policy_runtime.hpp"
+#include "engine/sblr/sblr_security_create_privilege_template_runtime.hpp"
 #include "engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "engine/sblr/sblr_to_sbsql.hpp"
 #include "ast/ast.hpp"
@@ -2320,6 +2321,121 @@ END;)SBSQL";
                  "accepted canonical_sblr=true typed_null_body=true "
                  "argument_count=1 canonical_int64=true execute_and_call=true "
                  "output_count=0 commit=true publication_barrier=passed\n";
+    return 0;
+  }
+  if (operation == "security-create-privilege-template" ||
+      operation == "security-create-privilege-template-observe") {
+    namespace carrier = scratchbird::engine::sblr;
+    const auto dump_failure = [](std::string_view phase,
+                                 const auto& failed) {
+      std::cerr << "CSC-TEST-002697 SECURITY_CREATE_PRIVILEGE_TEMPLATE "
+                << phase << " accepted=" << failed.accepted
+                << " outcome_unknown=" << failed.outcome_unknown
+                << " operation=" << failed.server_operation_id << '\n';
+      for (const auto& diagnostic : failed.messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& field : diagnostic.fields) {
+          std::cerr << diagnostic.code << ':' << field.name << '='
+                    << field.value << '\n';
+        }
+      }
+    };
+    const auto nonzero = [](const auto& value) {
+      return std::ranges::any_of(
+          value, [](const std::uint8_t byte) { return byte != 0; });
+    };
+    const auto exact_detail = [](const auto& failed,
+                                 std::string_view detail) {
+      if (failed.messages.diagnostics.size() != 1) return false;
+      return std::ranges::any_of(
+          failed.messages.diagnostics.front().fields,
+          [&](const auto& field) {
+            return field.name == "detail" && field.value == detail;
+          });
+    };
+    constexpr std::string_view kSql =
+        "CREATE PRIVILEGE TEMPLATE future_readers_process_e2e "
+        "ON FUTURE TABLES GRANT SELECT TO alice WITH GRANT OPTION;";
+
+    auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+    if (!begun.accepted || begun.messages.has_errors()) {
+      dump_failure("begin_failed", begun);
+      return 4;
+    }
+    auto created = session.RunPipeline(kSql, true);
+    if (operation == "security-create-privilege-template-observe") {
+      const bool exact_visible_refusal =
+          !created.accepted && !created.outcome_unknown &&
+          created.sblr_payload.empty() &&
+          created.server_operation_id.empty() &&
+          created.server_result_payload.empty() &&
+          created.messages.diagnostics.size() == 1 &&
+          created.messages.diagnostics.front().code ==
+              "SECURITY.PRIVILEGE_TEMPLATE_INVALID_SCOPE" &&
+          exact_detail(
+              created,
+              "sblr.security_create_privilege_template.name_already_exists");
+      auto rolled_back = session.RunPipeline("ROLLBACK TRANSACTION", true);
+      if (!exact_visible_refusal || !rolled_back.accepted ||
+          rolled_back.messages.has_errors()) {
+        dump_failure("independent_observer_failed", created);
+        return 4;
+      }
+      std::cout <<
+          "CSC-TEST-002697 SECURITY_CREATE_PRIVILEGE_TEMPLATE "
+          "observer_visible=true independent_session=true "
+          "exact_name_collision=true no_catalog_mutation=true\n";
+      return 0;
+    }
+
+    carrier::SblrSecurityCreatePrivilegeTemplateResultV1 terminal;
+    std::string detail;
+    const bool exact_terminal =
+        created.accepted && !created.outcome_unknown &&
+        !created.messages.has_errors() &&
+        created.server_operation_id ==
+            "engine.op.security_create_privilege_template" &&
+        !created.sblr_payload.empty() &&
+        created.server_request_payload_bytes ==
+            carrier::kSblrSecurityCreatePrivilegeTemplateRequestV1Bytes &&
+        carrier::DecodeSblrSecurityCreatePrivilegeTemplateResultV1(
+            reinterpret_cast<const std::uint8_t*>(
+                created.server_result_payload.data()),
+            created.server_result_payload.size(), &terminal, &detail) &&
+        nonzero(terminal.receipt) && nonzero(terminal.template_uuid) &&
+        terminal.template_generation != 0 &&
+        nonzero(terminal.owner_principal_uuid) &&
+        nonzero(terminal.grantee_uuid) &&
+        nonzero(terminal.owning_transaction_uuid) &&
+        terminal.owning_local_transaction_id != 0 &&
+        nonzero(terminal.statement_snapshot_uuid) &&
+        terminal.catalog_generation != 0 &&
+        terminal.security_generation != 0 &&
+        terminal.resource_generation != 0 &&
+        nonzero(terminal.definition_sha256) &&
+        nonzero(terminal.descriptor_evidence_sha256) &&
+        nonzero(terminal.mutation_uuid) &&
+        terminal.cache_invalidation_epoch == terminal.security_generation &&
+        terminal.template_created && !terminal.exact_idempotent_replay &&
+        terminal.availability != 0 &&
+        nonzero(terminal.publication_barrier) &&
+        terminal.template_uuid != terminal.mutation_uuid &&
+        terminal.template_uuid != terminal.publication_barrier &&
+        terminal.mutation_uuid != terminal.publication_barrier;
+    if (!exact_terminal) {
+      dump_failure("terminal_contract_failed", created);
+      std::cerr << "result_detail=" << detail << '\n';
+      return 4;
+    }
+    auto committed = session.RunPipeline("COMMIT TRANSACTION", true);
+    if (!committed.accepted || committed.messages.has_errors()) {
+      dump_failure("commit_failed", committed);
+      return 4;
+    }
+    std::cout <<
+        "CSC-TEST-002697 SECURITY_CREATE_PRIVILEGE_TEMPLATE accepted "
+        "canonical_sbsql=true canonical_sblr=true durable_catalog=true "
+        "commit=true publication_barrier=passed\n";
     return 0;
   }
   if (operation == "ddl-create-schema" ||

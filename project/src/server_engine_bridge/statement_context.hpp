@@ -538,6 +538,70 @@ struct StatementSecurityAlterPolicyAuthorityV1 {
   bool terminal_result_published = false;
 };
 
+// Syntax-only private bind for the first bounded CREATE PRIVILEGE TEMPLATE
+// profile. The parser supplies presented names and the closed object-kind /
+// privilege selectors; every identity, generation, policy, authorization,
+// recovery, and result field remains receipt-private and engine-produced.
+struct StatementSecurityCreatePrivilegeTemplateBindRequestV1 {
+  std::string authenticated_receipt_uuid;
+  std::uint64_t occurrence = 0;
+  std::uint32_t template_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint8_t object_kind = 0;
+  bool with_grant_option = false;
+  bool enabled = true;
+  std::string template_name_utf8;
+  bool template_name_quoted = false;
+  std::string grantee_name_utf8;
+  bool grantee_name_quoted = false;
+  std::string privilege_utf8;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+};
+
+struct StatementSecurityCreatePrivilegeTemplateAuthorityV1 {
+  std::uint64_t occurrence = 0;
+  std::uint32_t template_occurrence = 0;
+  std::uint16_t command_identity = 1;
+  std::uint8_t object_kind = 0;
+  bool with_grant_option = false;
+  bool enabled = true;
+  std::string canonical_template_name_utf8;
+  std::string canonical_grantee_name_utf8;
+  std::string canonical_privilege;
+  std::string grantee_uuid;
+  std::vector<std::uint8_t> exact_bind_request_bytes;
+  std::array<std::uint8_t, 32> request_evidence_sha256{};
+  std::string template_uuid;
+  std::uint64_t template_generation = 0;
+  std::string owner_principal_uuid;
+  std::string schema_uuid;
+  std::string database_uuid;
+  std::string owning_transaction_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string statement_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t catalog_generation = 0;
+  std::string security_context_uuid;
+  std::uint64_t security_epoch = 0;
+  std::string policy_snapshot_uuid;
+  std::uint64_t policy_generation = 0;
+  std::string resource_grant_uuid;
+  std::uint64_t resource_generation = 0;
+  std::string recovery_uuid;
+  std::uint64_t recovery_generation = 0;
+  std::string mutation_uuid;
+  std::string publication_barrier_uuid;
+  std::array<std::uint8_t, 32> definition_sha256{};
+  std::array<std::uint8_t, 32> idempotency_sha256{};
+  std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
+  std::vector<std::uint8_t> canonical_descriptor_bytes;
+  scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
+      authorization_observation;
+  std::vector<std::uint8_t> canonical_terminal_result_bytes;
+  bool terminal_result_published = false;
+};
+
 // Syntax-only private bind for the bounded CREATE TRIGGER v1 profile. The
 // parser supplies trigger/target name atoms and closed definition selectors;
 // every catalog identity, generation, compiled-body identity, authorization,
@@ -1474,6 +1538,8 @@ struct StatementContextReceiptView {
   std::uint64_t ddl_create_schema_executor_availability_generation = 0;
   std::uint64_t security_alter_policy_executor_availability_generation = 0;
   std::uint64_t security_policy_show_executor_availability_generation = 0;
+  std::uint64_t
+      security_create_privilege_template_executor_availability_generation = 0;
   std::uint64_t ddl_create_table_executor_availability_generation = 0;
   std::uint64_t ddl_create_index_executor_availability_generation = 0;
   std::uint64_t ddl_drop_index_executor_availability_generation = 0;
@@ -1862,6 +1928,17 @@ sb_engine_status_t CopyStatementSecurityAlterPolicyAuthorityV1(
     StatementContextReceiptHandle receipt, std::uint64_t occurrence,
     std::uint32_t policy_occurrence,
     StatementSecurityAlterPolicyAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+
+sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
+    StatementContextReceiptHandle receipt,
+    const StatementSecurityCreatePrivilegeTemplateBindRequestV1* request,
+    StatementSecurityCreatePrivilegeTemplateAuthorityV1* out_authority,
+    sb_engine_result_t* out_result);
+sb_engine_status_t CopyStatementSecurityCreatePrivilegeTemplateAuthorityV1(
+    StatementContextReceiptHandle receipt, std::uint64_t occurrence,
+    std::uint32_t template_occurrence,
+    StatementSecurityCreatePrivilegeTemplateAuthorityV1* out_authority,
     sb_engine_result_t* out_result);
 
 // Resolves and freezes one bounded CREATE TRIGGER syntax demand under the

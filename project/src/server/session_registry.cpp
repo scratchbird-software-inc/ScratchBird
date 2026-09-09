@@ -13020,7 +13020,139 @@ SessionOperationResult HandleCoordinateDdlCreateRewriteRule(ServerSessionRegistr
 SessionOperationResult HandleCoordinateDdlAlterRewriteRule(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=227;result.response_schema_id=sbps::kSchemaCoordinateDdlAlterRewriteRuleResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_alter_rewrite_rule_refused","DDL alter rewrite rule coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlAlterRewriteRuleRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlAlterRewriteRuleRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_alter_rewrite_rule_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_alter_rewrite_rule_binder");auto q=engine_api::CompileSblrDdlAlterRewriteRuleDescriptor(c,ru,v.occurrence,v.rule_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlAlterRewriteRuleDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.ALTER_REWRITE_RULE_FAILED","RWAD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDdlDropRewriteRule(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=229;result.response_schema_id=sbps::kSchemaCoordinateDdlDropRewriteRuleResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_drop_rewrite_rule_refused","DDL alter rewrite rule coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlDropRewriteRuleRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlDropRewriteRuleRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_drop_rewrite_rule_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_drop_rewrite_rule_binder");auto q=engine_api::CompileSblrDdlDropRewriteRuleDescriptor(c,ru,v.occurrence,v.rule_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlDropRewriteRuleDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.DROP_REWRITE_RULE_FAILED","RWDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDdlValidateConstraint(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=231;result.response_schema_id=sbps::kSchemaCoordinateDdlValidateConstraintResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.ddl_validate_constraint_refused","DDL constraint validation coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDdlValidateConstraintRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDdlValidateConstraintRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND_INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","ddl_validate_constraint_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_ddl_validate_constraint_binder");auto q=engine_api::CompileSblrDdlValidateConstraintDescriptor(c,ru,v.occurrence,v.constraint_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDdlValidateConstraintDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DDL.VALIDATE_CONSTRAINT_FAILED","CVLD_encode_failed");result.accepted=true;return result;}
-SessionOperationResult HandleCoordinateSecurityCreatePrivilegeTemplate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=233;result.response_schema_id=sbps::kSchemaCoordinateSecurityCreatePrivilegeTemplateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_create_privilege_template_refused","Privilege template coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityCreatePrivilegeTemplateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityCreatePrivilegeTemplateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","privilege_template_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_create_privilege_template_binder");auto q=engine_api::CompileSblrSecurityCreatePrivilegeTemplateDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED","PTDD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateSecurityCreatePrivilegeTemplate(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  (void)engine_state;
+  SessionOperationResult result;
+  result.response_message_type = 233;
+  result.response_schema_id =
+      sbps::kSchemaCoordinateSecurityCreatePrivilegeTemplateResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code),
+        "parser_server_ipc.security_create_privilege_template_refused",
+        "CREATE PRIVILEGE TEMPLATE coordination was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  scratchbird::engine::sblr::SblrSecurityCreatePrivilegeTemplateRequestV1
+      decoded;
+  std::string detail;
+  if (registry == nullptr ||
+      !scratchbird::engine::sblr::
+          DecodeSblrSecurityCreatePrivilegeTemplateRequestV1(
+              request.payload.data(), request.payload.size(), &decoded,
+              &detail)) {
+    return refuse("SBLR.OPERAND.INVALID", detail);
+  }
+  if (registry->sessions_by_uuid.find(
+          UuidBytesToText(request.header.session_uuid)) ==
+      registry->sessions_by_uuid.end()) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+
+  const auto receipt_uuid = UuidBytesToText(decoded.receipt);
+  StatementManagementReceipt receipt;
+  if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
+                                      receipt_uuid, &receipt)) {
+    return refuse("SECURITY.ACCESS_DENIED",
+                  "privilege_template_receipt_hidden");
+  }
+  if (receipt.released || !receipt.handle) {
+    return refuse("MGA.TRANSACTION_INVALID",
+                  "privilege_template_receipt_ended");
+  }
+  if (receipt.view
+          .security_create_privilege_template_executor_availability_generation ==
+      0) {
+    return refuse("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
+                  "privilege_template_executor_unavailable");
+  }
+
+  engine_bridge::StatementSecurityCreatePrivilegeTemplateBindRequestV1 bind;
+  bind.authenticated_receipt_uuid = receipt_uuid;
+  bind.occurrence = decoded.occurrence;
+  bind.template_occurrence = decoded.template_occurrence;
+  bind.command_identity = decoded.command_identity;
+  bind.object_kind = static_cast<std::uint8_t>(decoded.object_kind);
+  bind.with_grant_option = decoded.with_grant_option;
+  bind.enabled = decoded.enabled;
+  bind.template_name_utf8 = decoded.template_name_utf8;
+  bind.template_name_quoted = decoded.template_name_quoted;
+  bind.grantee_name_utf8 = decoded.grantee_name_utf8;
+  bind.grantee_name_quoted = decoded.grantee_name_quoted;
+  bind.privilege_utf8 = decoded.privilege_utf8;
+  bind.request_evidence_sha256 = decoded.evidence;
+  bind.exact_bind_request_bytes = request.payload;
+
+  engine_bridge::StatementSecurityCreatePrivilegeTemplateAuthorityV1
+      authority;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status =
+      engine_bridge::BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
+          receipt.handle, &bind, &authority, &engine_result);
+  std::string engine_code;
+  std::string engine_detail;
+  ReadFirstEngineDiagnostic(engine_result, &engine_code, &engine_detail);
+  if (status != SB_ENGINE_STATUS_OK) {
+    return refuse(engine_code.empty() ? StatementManagementStatusCode(status)
+                                      : std::move(engine_code),
+                  engine_detail.empty()
+                      ? std::string("engine_status=") +
+                            sb_engine_status_name(status)
+                      : std::move(engine_detail));
+  }
+
+  scratchbird::engine::sblr::SblrSecurityCreatePrivilegeTemplateDescriptorV1
+      descriptor;
+  if (authority.canonical_descriptor_bytes.empty() ||
+      !scratchbird::engine::sblr::
+          DecodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(
+              authority.canonical_descriptor_bytes.data(),
+              authority.canonical_descriptor_bytes.size(), &descriptor,
+              &detail, false) ||
+      descriptor.receipt != decoded.receipt ||
+      descriptor.occurrence != decoded.occurrence ||
+      descriptor.template_occurrence != decoded.template_occurrence ||
+      descriptor.template_uuid != TextToUuid(authority.template_uuid) ||
+      descriptor.owner_principal_uuid !=
+          TextToUuid(authority.owner_principal_uuid) ||
+      descriptor.grantee_uuid != TextToUuid(authority.grantee_uuid) ||
+      descriptor.owning_transaction_uuid !=
+          TextToUuid(receipt.view.owning_transaction_uuid) ||
+      descriptor.owning_local_transaction_id !=
+          receipt.view.owning_local_transaction_id ||
+      descriptor.statement_snapshot_uuid !=
+          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+      descriptor.catalog_generation != receipt.view.catalog_generation_id ||
+      descriptor.security_epoch != receipt.view.security_epoch ||
+      descriptor.resource_generation != receipt.view.resource_epoch ||
+      descriptor.availability !=
+          receipt.view
+              .security_create_privilege_template_executor_availability_generation ||
+      descriptor.syntax_demand_sha256 != decoded.evidence ||
+      descriptor.definition_sha256 != authority.definition_sha256 ||
+      descriptor.idempotency_sha256 != authority.idempotency_sha256 ||
+      descriptor.evidence != authority.descriptor_evidence_sha256 ||
+      scratchbird::engine::sblr::
+              EncodeSblrSecurityCreatePrivilegeTemplateDescriptorV1(
+                  descriptor, false) !=
+          authority.canonical_descriptor_bytes) {
+    return refuse(
+        "MGA.AUTHORITY_MISMATCH",
+        detail.empty()
+            ? "privilege_template_descriptor_authority_mismatch"
+            : std::move(detail));
+  }
+  result.payload = authority.canonical_descriptor_bytes;
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateSecurityCreateUser(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=331;result.response_schema_id=sbps::kSchemaCoordinateSecurityCreateUserResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_create_user_refused","User creation coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityCreateUserRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityCreateUserRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","user_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_create_user_binder");auto q=engine_api::CompileSblrSecurityCreateUserDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityCreateUserDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.USER_APPLICATION_FAILED","SCUD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityAlterPrivilegeTemplate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=235;result.response_schema_id=sbps::kSchemaCoordinateSecurityAlterPrivilegeTemplateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_alter_privilege_template_refused","Privilege template coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityAlterPrivilegeTemplateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityAlterPrivilegeTemplateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","privilege_template_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_alter_privilege_template_binder");auto q=engine_api::CompileSblrSecurityAlterPrivilegeTemplateDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityAlterPrivilegeTemplateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED","PTDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityDropPrivilegeTemplate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=237;result.response_schema_id=sbps::kSchemaCoordinateSecurityDropPrivilegeTemplateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_drop_privilege_template_refused","Privilege template coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityDropPrivilegeTemplateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityDropPrivilegeTemplateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","privilege_template_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid.canonical=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_drop_privilege_template_binder");auto q=engine_api::CompileSblrSecurityDropPrivilegeTemplateDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityDropPrivilegeTemplateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED","PTDD_encode_failed");result.accepted=true;return result;}
