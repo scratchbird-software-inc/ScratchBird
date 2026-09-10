@@ -7,7 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "dml/delete_binding_authority.hpp"
+#include "dml/datatype_operator_registry_projection.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
+#include "mga_relation_store/mga_text_target_selection.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
 #include "mga_relation_store/mga_large_value_store.hpp"
@@ -1678,6 +1681,11 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     return result;
   }
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.marker_authority_corrupt || savepoints.update_statement_authority_corrupt) {
+    result.diagnostic = MakeEngineApiDiagnostic("MGA.SAVEPOINT.AUTHORITY_CORRUPT",
+        "mga.savepoint.authority_corrupt", "savepoint_marker_stream_invalid");
+    return result;
+  }
   std::unordered_map<std::string, std::string> row_value_key_cache;
   std::set<std::string> all_table_uuids;
   for (const auto& table : result.state.relation_metadata.tables) {
@@ -1904,6 +1912,12 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     }
   }
   const auto savepoints = ParseSavepoints(context);
+
+  if (savepoints.marker_authority_corrupt || savepoints.update_statement_authority_corrupt) {
+    result.diagnostic = MakeEngineApiDiagnostic("MGA.SAVEPOINT.AUTHORITY_CORRUPT",
+        "mga.savepoint.authority_corrupt", "savepoint_marker_stream_invalid");
+    return result;
+  }
 
   bool row_segments_used = false;
   bool index_segments_used = false;
@@ -2588,6 +2602,19 @@ SelectVisibleMgaContextualTextTargetV2(
     const EngineRequestContext& context,
     const sblr::ContextualTextLiteralDemandV2& structural_claim,
     const EngineContextualTextPolicyRowSetV2& exact_policy_rows) {
+  return SelectVisibleMgaTextColumnV2(
+      context,
+      {structural_claim.relation_uuid, structural_claim.relation_descriptor_uuid,
+       structural_claim.relation_descriptor_generation, structural_claim.column_uuid,
+       structural_claim.column_ordinal},
+      exact_policy_rows);
+}
+
+static MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextColumnImplV2(
+    const EngineRequestContext& context,
+    const MgaTextColumnKeyV2& key,
+    const EngineContextualTextPolicyRowSetV2& exact_policy_rows,
+    bool require_comparable) {
   constexpr const char* kOperation =
       "mga.contextual_text_target.select_visible_v2";
   MgaContextualTextTargetSelectionResultV2 result;
@@ -2597,15 +2624,15 @@ SelectVisibleMgaContextualTextTargetV2(
     return result;
   };
   const std::string relation_uuid =
-      ContextualUuidTextV2(structural_claim.relation_uuid);
+      ContextualUuidTextV2(key.relation_uuid);
   const std::string descriptor_uuid =
-      ContextualUuidTextV2(structural_claim.relation_descriptor_uuid);
+      ContextualUuidTextV2(key.relation_descriptor_uuid);
   const std::string column_uuid =
-      ContextualUuidTextV2(structural_claim.column_uuid);
+      ContextualUuidTextV2(key.column_uuid);
   if (!CanonicalNonNilMigrationUuid(relation_uuid) ||
       !CanonicalNonNilMigrationUuid(descriptor_uuid) ||
       !CanonicalNonNilMigrationUuid(column_uuid) ||
-      structural_claim.relation_descriptor_generation == 0) {
+      key.relation_descriptor_generation == 0) {
     return refuse("contextual target structural identity is invalid");
   }
   EngineApiDiagnostic policy_diagnostic;
@@ -2617,7 +2644,7 @@ SelectVisibleMgaContextualTextTargetV2(
 
   auto loaded = LoadVisibleMgaContextualTextSidecarSnapshotV2(
       context, relation_uuid, descriptor_uuid,
-      structural_claim.relation_descriptor_generation);
+      key.relation_descriptor_generation);
   if (!loaded.ok) {
     result.diagnostic = std::move(loaded.diagnostic);
     return result;
@@ -2633,11 +2660,14 @@ SelectVisibleMgaContextualTextTargetV2(
   const auto target = std::ranges::find_if(
       projection.projected_columns,
       [&](const MgaContextualTextProjectedColumnV2& candidate) {
-        return candidate.column_ordinal == structural_claim.column_ordinal &&
-               candidate.column_uuid == structural_claim.column_uuid;
+        return candidate.column_ordinal == key.column_ordinal &&
+               candidate.column_uuid == key.column_uuid;
       });
   if (target == projection.projected_columns.end() ||
-      !target->comparable_persisted_text) {
+      ContextualUuidTextV2(target->projected_datatype_descriptor_uuid) !=
+          "019d0000-0000-7000-8000-00000000d718" ||
+      target->projected_datatype_descriptor_generation != 1 ||
+      (require_comparable && !target->comparable_persisted_text)) {
     return refuse(
         "claimed target is not one exact comparable persisted d718 column");
   }
@@ -2675,6 +2705,18 @@ SelectVisibleMgaContextualTextTargetV2(
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   return result;
+}
+
+MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextColumnV2(
+    const EngineRequestContext& context, const MgaTextColumnKeyV2& key,
+    const EngineContextualTextPolicyRowSetV2& policies) {
+  return SelectVisibleMgaTextColumnImplV2(context, key, policies, true);
+}
+
+MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextAssignmentColumnV2(
+    const EngineRequestContext& context, const MgaTextColumnKeyV2& key,
+    const EngineContextualTextPolicyRowSetV2& policies) {
+  return SelectVisibleMgaTextColumnImplV2(context, key, policies, false);
 }
 
 EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
@@ -2722,7 +2764,8 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
     const EngineRequestContext& context,
     const std::span<const std::string> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor*
-        resolved_statement_snapshot) {
+        resolved_statement_snapshot,
+    const EngineDmlDeleteBindingAuthorityV1* delete_binding) {
   PreparedMgaHeapReadAuthorityCohortResult result;
   const auto refuse = [&](EngineApiDiagnostic diagnostic) {
     result = {};
@@ -2747,6 +2790,15 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
         "exact_statement_authority_cohort_required"));
   }
   std::set<std::string> unique_relations;
+  if (delete_binding) {
+    const auto verified = RevalidateDmlDeleteBindingAuthorityV1(context, *delete_binding);
+    if (verified.error) return refuse(verified);
+    if (relation_uuids.size() != 1 || relation_uuids.front() !=
+        datatype_operator_projection::UuidText(delete_binding->bundle()->descriptor.target_relation_uuid)) {
+      return refuse(MakeInvalidRequestDiagnostic("mga.heap_relation_read.prepare",
+                                                "DELETE_target_authority_mismatch"));
+    }
+  }
   for (const auto& relation_uuid : relation_uuids) {
     if (relation_uuid.empty() || !unique_relations.insert(relation_uuid).second) {
       if (!relation_uuid.empty()) continue;
@@ -2861,7 +2913,7 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
                                                                 table);
     if (temporary_authority.error) return refuse(temporary_authority);
     const auto authorization = EvaluateMaterializedAuthorization(
-        context, context.authorization_context, "SELECT", relation_uuid);
+        context, context.authorization_context, delete_binding ? "DELETE" : "SELECT", relation_uuid);
     if (!authorization.authorized || authorization.denied ||
         authorization.policy_recheck_required ||
         !authorization.diagnostics.empty()) {

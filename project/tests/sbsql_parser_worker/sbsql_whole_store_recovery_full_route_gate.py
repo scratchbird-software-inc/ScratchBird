@@ -322,7 +322,12 @@ def run_boundary_case(
     *,
     mutation_committed: bool,
 ) -> None:
-    root = work / point
+    # Keep the listener's generated management socket below AF_UNIX limits
+    # even with an isolated TMPDIR. Preserve the boundary name as evidence,
+    # not as a long component of every control/socket path.
+    root = work / f"b{REGISTERED_BOUNDARIES.index(point):02d}"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "case.txt").write_text(point + "\n", encoding="utf-8")
     database = root / "whole_store.sbdb"
     clone_database(template, database)
     marker = root / "crash.marker"

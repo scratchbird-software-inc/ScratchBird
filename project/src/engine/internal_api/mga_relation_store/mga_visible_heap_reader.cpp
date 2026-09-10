@@ -773,11 +773,6 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
                     MgaHeapReadFailureCategoryV1::kCorruptStorage);
     }
   }
-  if (RowsContainLargeValueLocators(admitted_versions)) {
-    return invalid("large_value_outside_bounded_inline_heap_profile",
-                   &control, MgaHeapReadFailureCategoryV1::kCorruptStorage);
-  }
-
   std::unordered_map<std::string, std::size_t> newest_visible_by_row;
   {
     const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
@@ -915,6 +910,23 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
       return invalid("heap_read_maximum_output_rows_exceeded", &control);
     }
     visible_rows.push_back(row);
+  }
+  if (RowsContainLargeValueLocators(visible_rows)) {
+    const auto current = HeapReadRowVectorMemoryBytes(row_versions);
+    const auto admitted = HeapReadRowVectorMemoryBytes(admitted_versions);
+    const auto map = HeapReadVisibilityMapMemoryBytes(newest_visible_by_row);
+    const auto visible = HeapReadRowVectorMemoryBytes(visible_rows);
+    std::uint64_t retained = authority_memory;
+    if (!current || !admitted || !map || !visible ||
+        !CheckedHeapReadMemoryAdd(*savepoint_memory, &retained) ||
+        !CheckedHeapReadMemoryAdd(*current, &retained) ||
+        !CheckedHeapReadMemoryAdd(*admitted, &retained) ||
+        !CheckedHeapReadMemoryAdd(*map, &retained) ||
+        !CheckedHeapReadMemoryAdd(*visible, &retained))
+      return invalid("heap_read_overflow_memory_receipt_overflow", &control);
+    const auto expanded = ExpandVisibleMgaLargeValuesBounded(
+        context, &visible_rows, &control, retained, creator_visible);
+    if (expanded.error) return refuse(expanded, &control, control.failure_category);
   }
   {
     const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
@@ -3060,9 +3072,10 @@ MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationWithObservation(
       context, request, runtime_observation, prepared_authority);
 }
 
-MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
+static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
     const EngineRequestContext& context,
-    const MgaVisibleHeapRelationStreamRequest& request) {
+    const MgaVisibleHeapRelationStreamRequest& request,
+    const PreparedMgaHeapReadAuthority* prepared_authority) {
   MgaVisibleHeapRelationStreamResult result;
   result.memory_grant_bytes = request.maximum_memory_bytes;
   const auto refuse = [&](std::string detail,
@@ -3111,7 +3124,7 @@ MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
   count_request.maximum_memory_bytes = request.maximum_memory_bytes;
   count_request.borrowed_cancellation_requested = &cancellation_requested;
   auto counted = CountVisibleMgaHeapRelationObserved(
-      context, count_request, nullptr, nullptr, &selection);
+      context, count_request, nullptr, prepared_authority, &selection);
   result.visible_row_count = counted.visible_row_count;
   result.current_relation_base_generation =
       counted.current_relation_base_generation;
@@ -3286,4 +3299,29 @@ MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
 }
 
 
+MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelation(
+    const EngineRequestContext& context, const MgaVisibleHeapRelationStreamRequest& request) {
+  return StreamVisibleMgaHeapRelationImpl(context, request, nullptr);
+}
+
+MgaVisibleHeapRelationStreamResult StreamMgaHeapForDmlDeleteV1(
+    const EngineRequestContext& context, const MgaVisibleHeapRelationStreamRequest& request,
+    const EngineDmlDeleteBindingAuthorityV1& binding) {
+  const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
+  const auto& target = request.borrowed_relation_uuid ? *request.borrowed_relation_uuid : request.relation_uuid;
+  const std::array<std::string, 1> relations{target};
+  auto prepared = PrepareMgaHeapReadAuthoritiesForStoreModule(context, relations, nullptr, &binding);
+  if (!prepared.ok || !prepared.cohort) {
+    MgaVisibleHeapRelationStreamResult failure;
+    failure.diagnostic = std::move(prepared.diagnostic);
+    return failure;
+  }
+  const auto found = prepared.cohort->relations.find(target);
+  if (found == prepared.cohort->relations.end() || !found->second) {
+    MgaVisibleHeapRelationStreamResult failure;
+    failure.diagnostic = MakeInvalidRequestDiagnostic("mga.delete_stream", "exact_DELETE_target_required");
+    return failure;
+  }
+  return StreamVisibleMgaHeapRelationImpl(context, request, found->second.get());
+}
 }  // namespace scratchbird::engine::internal_api

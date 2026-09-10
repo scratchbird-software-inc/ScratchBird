@@ -1522,6 +1522,52 @@ ipc::ServerVariableBindingResult EmbeddedEngineClient::BindStmtExecuteDirect(
 }
 
 ipc::ServerVariableBindingResult
+EmbeddedEngineClient::CoordinateDmlDeleteRowsBind(
+    const SessionContext& session,
+    const std::vector<std::uint8_t>& canonical_request) {
+  ipc::ServerVariableBindingResult result;
+#if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
+  if (!session.authenticated || canonical_request.size() < 48 ||
+      canonical_request.size() > 65536) {
+    AddDiagnostic(&result.messages, "SBLR.OPERAND_INVALID",
+                  "the embedded DML DELETE binding request is malformed");
+    return result;
+  }
+  auto frame = BaseFrame(
+      static_cast<std::uint16_t>(
+          scratchbird::server::sbps::MessageType::
+              kCoordinateDmlDeleteRowsBindRequest),
+      session);
+  frame.header.payload_schema_id = scratchbird::server::sbps::
+      kSchemaCoordinateDmlDeleteRowsBindRequestV1;
+  frame.payload = canonical_request;
+  const auto operation = scratchbird::server::
+      HandleCoordinateDmlDeleteRowsBind(&impl_->registry,
+                                        impl_->engine_state, frame);
+  if (!operation.accepted) {
+    AddServerDiagnostics(operation.diagnostics, &result.messages);
+    return result;
+  }
+  if (operation.response_schema_id != scratchbird::server::sbps::
+          kSchemaCoordinateDmlDeleteRowsBindResultV1 ||
+      operation.payload.size() != 24) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.DML_DELETE_BIND_RESULT_SCHEMA_MISMATCH",
+        "the embedded DML DELETE binding result is invalid");
+    return result;
+  }
+  result.accepted = true;
+  result.canonical_payload = operation.payload;
+#else
+  (void)session;
+  (void)canonical_request;
+  AddDiagnostic(&result.messages, "SBSQL.EMBEDDED.UNAVAILABLE",
+                "embedded engine support is not linked into this SBsql parser build");
+#endif
+  return result;
+}
+ipc::ServerVariableBindingResult
 EmbeddedEngineClient::CoordinateStmtExecuteDirect(
     const SessionContext& session,
     const std::vector<std::uint8_t>& canonical_request) {

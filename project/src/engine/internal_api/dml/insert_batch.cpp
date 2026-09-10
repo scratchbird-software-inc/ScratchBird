@@ -1644,6 +1644,22 @@ EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* conte
   return OkDiagnostic();
 }
 
+bool MaterializeOmittedInsertColumns(
+    const InsertRowEncoderPlan& plan,
+    std::vector<std::pair<std::string, std::string>>* values) {
+  if (values == nullptr) return false;
+  bool changed = false;
+  for (const auto& column : plan.columns) {
+    if (std::none_of(values->begin(), values->end(), [&](const auto& value) {
+          return value.first == column.column_name;
+        })) {
+      values->emplace_back(column.column_name, column.default_bound ? "<DEFAULT>" : "<NULL>");
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template) {
@@ -1681,6 +1697,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
                             typed.is_null ? "<NULL>" : typed.encoded_value});
     }
   }
+  MaterializeOmittedInsertColumns(row_encoder_plan, &row.values);
   row.row_uuid = UuidStringOrGenerated(input_row.requested_row_uuid, "row");
   row.encoded_bytes = static_cast<std::uint64_t>(EncodedValueBytes(row.values));
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||

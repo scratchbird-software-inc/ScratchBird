@@ -5699,6 +5699,11 @@ if(TARGET sb_server_core AND TARGET sb_engine_sblr)
     sbsql_dml_mga_row_result_conformance.cpp
   )
   target_compile_features(sbsql_dml_mga_row_result_conformance PRIVATE cxx_std_23)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(sbsql_dml_mga_row_result_conformance PRIVATE dml_delete_io_fault_fixture.cpp)
+    target_compile_definitions(sbsql_dml_mga_row_result_conformance PRIVATE SB_DELETE_EXECUTION_WRAP_IO=1)
+    target_link_options(sbsql_dml_mga_row_result_conformance PRIVATE "LINKER:--wrap=fsync" "LINKER:--wrap=rename")
+  endif()
   target_link_libraries(
     sbsql_dml_mga_row_result_conformance
     PRIVATE
@@ -5787,6 +5792,34 @@ if(TARGET sb_engine_internal_api)
 endif()
 
 if(TARGET sb_engine_internal_api)
+  # Exercise persisted-row descriptor validation against the production SBLR
+  # runtime even when the separate QOW development-candidate suite is disabled.
+  add_executable(sbsql_dml_persisted_descriptor_identity_conformance
+    qow_qry_017_having_row_binding.cpp)
+  target_compile_features(sbsql_dml_persisted_descriptor_identity_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_dml_persisted_descriptor_identity_conformance PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_dml_persisted_descriptor_identity_conformance
+    COMMAND sbsql_dml_persisted_descriptor_identity_conformance)
+  set_tests_properties(sbsql_dml_persisted_descriptor_identity_conformance PROPERTIES
+    LABELS "datatype_authority;dml_savepoint_coverage;persisted_descriptor;production_runtime")
+
+  add_executable(sbsql_dml_delete_datatype_authority_conformance
+    sbsql_dml_delete_datatype_authority_conformance.cpp)
+  target_compile_features(sbsql_dml_delete_datatype_authority_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_dml_delete_datatype_authority_conformance PRIVATE sb_engine_internal_api)
+  add_test(NAME sbsql_dml_delete_datatype_authority_conformance
+    COMMAND sbsql_dml_delete_datatype_authority_conformance)
+  set_tests_properties(sbsql_dml_delete_datatype_authority_conformance PROPERTIES
+    LABELS "dml_savepoint_coverage;datatype_authority;delete;refusal_atomicity")
+  add_executable(sbsql_dml_delete_bundle_codec_conformance
+    sbsql_dml_delete_bundle_codec_conformance.cpp)
+  target_compile_features(sbsql_dml_delete_bundle_codec_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_dml_delete_bundle_codec_conformance PRIVATE sb_engine_internal_api)
+  add_test(NAME sbsql_dml_delete_bundle_codec_conformance
+    COMMAND sbsql_dml_delete_bundle_codec_conformance)
+  set_tests_properties(sbsql_dml_delete_bundle_codec_conformance PROPERTIES
+    LABELS "dml_savepoint_coverage;delete;DDAB;codec;binary_uuid;corruption;refusal_atomicity"
+    TIMEOUT 90)
   add_executable(
     sbsql_dml_update_datatype_operator_authority_provider_conformance
     sbsql_dml_update_datatype_operator_authority_provider_conformance.cpp
@@ -5830,6 +5863,28 @@ if(TARGET sb_engine_internal_api)
     sbsql_dml_update_durable_operation_authority_provider_conformance PROPERTIES
     LABELS "sbsql_dml_update_durable_operation_authority_provider_conformance;SBSFC-021;SBSFC-021R-Z;sblr_operation_matrix_gate;sbsql_parser_worker;mga_transaction_regression"
   )
+endif()
+
+if(TARGET sb_engine_internal_api)
+  add_executable(sbsql_dml_delete_recovery_authority_conformance
+    sbsql_dml_delete_recovery_authority_conformance.cpp)
+  target_compile_features(sbsql_dml_delete_recovery_authority_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_dml_delete_recovery_authority_conformance PRIVATE sb_engine_internal_api)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(sbsql_dml_delete_recovery_authority_conformance PRIVATE SB_DELETE_TEST_WRAP_IO=1)
+    target_link_options(sbsql_dml_delete_recovery_authority_conformance PRIVATE "LINKER:--wrap=fsync" "LINKER:--wrap=rename")
+  endif()
+  add_test(NAME sbsql_dml_delete_recovery_authority_conformance
+    COMMAND sbsql_dml_delete_recovery_authority_conformance)
+  set_tests_properties(sbsql_dml_delete_recovery_authority_conformance PROPERTIES
+    LABELS "sbsql_parser_worker;typed_delete;mga_transaction_regression;recovery;savepoint"
+    TIMEOUT 120)
+  if(UNIX AND NOT WIN32)
+    set_property(TEST sbsql_dml_delete_recovery_authority_conformance APPEND PROPERTY LABELS "process_crash")
+  endif()
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_property(TEST sbsql_dml_delete_recovery_authority_conformance APPEND PROPERTY LABELS "fault_injection;allocation_fault")
+  endif()
 endif()
 
 if(TARGET sb_server_core AND TARGET sb_engine_sblr)
@@ -6521,7 +6576,49 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "sbsql_acceleration_full_route_gate;sbsql_sblr_alignment;IA-04;IA-10;SBSQL-05DB282498F4;SBSQL-DF68DFFA5C1E;SBSQL-8E570F4EEEF3;SBLR_OBSERVABILITY_SHOW_ACCELERATION;CSC-TEST-000005;CSC-TEST-002065;CSC-TEST-002761;CSC-TEST-005277;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;security_auth_gate;nonmutating_observability;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
       TIMEOUT 300
     )
+    add_test(
+      NAME sbsql_savepoint_rollback_full_route_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_savepoint_rollback_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_savepoint_rollback_full_route"
+    )
+    set_tests_properties(sbsql_savepoint_rollback_full_route_gate PROPERTIES
+      LABELS "savepoint;real_server_route;restart_recovery;mga_transaction_regression"
+      RUN_SERIAL TRUE TIMEOUT 600)
+    add_test(
+      NAME sbsql_savepoint_refusal_full_route_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_savepoint_refusal_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_savepoint_refusal_full_route"
+    )
+    set_tests_properties(sbsql_savepoint_refusal_full_route_gate PROPERTIES
+      LABELS "savepoint;refusal_atomicity;real_server_route;restart_recovery;mga_transaction_regression"
+      RUN_SERIAL TRUE TIMEOUT 600)
     if(SB_ENABLE_TEST_CRASH_INJECTION AND UNIX AND NOT WIN32)
+      add_test(
+        NAME sbsql_savepoint_recovery_full_route_gate
+        COMMAND "${SBSQL_PYTHON3}"
+                "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_savepoint_recovery_full_route_gate.py"
+                --server $<TARGET_FILE:sb_server>
+                --listener $<TARGET_FILE:sb_listener>
+                --parser-worker $<TARGET_FILE:sbp_sbsql>
+                --sb-isql $<TARGET_FILE:sb_isql>
+                --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+                --work-dir "${CMAKE_BINARY_DIR}/sbsql_savepoint_recovery_full_route"
+      )
+      set_tests_properties(sbsql_savepoint_recovery_full_route_gate PROPERTIES
+        LABELS "savepoint;fault_injection;real_process_kill;real_server_route;restart_recovery;mga_transaction_regression"
+        RUN_SERIAL TRUE TIMEOUT 1800)
       add_test(
         NAME sbsql_whole_store_recovery_full_route_gate
         COMMAND "${SBSQL_PYTHON3}"

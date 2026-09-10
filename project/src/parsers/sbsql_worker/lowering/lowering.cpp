@@ -9039,7 +9039,11 @@ bool ConsumeDmlUpdateAssignments(
 
     std::size_t expression_cursor = *index;
     std::string source_leaf;
-    if (ConsumeDmlCaseThresholdAssignment(tokens, &expression_cursor, &assignment)) {
+    if (*index < tokens.size() && tokens[*index]->kind == TokenKind::kNullLiteral) {
+      assignment.literal_type = "null";
+      assignment.literal_value.clear();
+      ++(*index);
+    } else if (ConsumeDmlCaseThresholdAssignment(tokens, &expression_cursor, &assignment)) {
       *index = expression_cursor;
     } else if (ConsumeTokenQualifiedLeaf(tokens, &expression_cursor, &source_leaf) &&
         expression_cursor < tokens.size() &&

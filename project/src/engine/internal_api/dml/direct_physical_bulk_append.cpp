@@ -16,6 +16,7 @@
 
 #include "api_diagnostics.hpp"
 #include "bulk_constraint_proof.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
 #include "dml/dml_ingestion_pipeline.hpp"
@@ -1554,15 +1555,20 @@ void AddVisibleRowKeysForProof(
     }
     return;
   }
-  std::set<std::string> visible_row_keys;
+  // Recheck membership through the exact visible MGA row version. A stored
+  // typed key (SBKOHEX) is not byte-equal to its logical field spelling; using
+  // that comparison discards real persisted conflicts after UPDATE/rollback.
+  // Row identity alone is insufficient because predecessor keys can remain
+  // physically present after their version becomes invisible.
+  std::set<std::pair<std::string, std::string>> visible_row_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, index.table_uuid, context)) {
+    visible_row_versions.emplace(row.row_uuid, row.version_uuid);
     for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
       keys->push_back(DirectProofKey(key,
                                      row.row_uuid,
                                      row.version_uuid,
                                      ordinal++));
-      visible_row_keys.insert(row.row_uuid + "\n" + key);
     }
   }
   for (const auto& entry : state.index_entries) {
@@ -1572,7 +1578,7 @@ void AddVisibleRowKeysForProof(
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
-        visible_row_keys.count(entry.row_uuid + "\n" + entry.key_value) == 0) {
+        !visible_row_versions.contains({entry.row_uuid, entry.version_uuid})) {
       continue;
     }
     keys->push_back(DirectProofKey(entry.key_value,
@@ -1614,9 +1620,10 @@ void AddVisibleRowKeysForSortedBuild(
     }
     return;
   }
-  std::set<std::string> visible_row_keys;
+  std::set<std::pair<std::string, std::string>> visible_row_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, index.table_uuid, context)) {
+    visible_row_versions.emplace(row.row_uuid, row.version_uuid);
     for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
       scratchbird::core::index::SortedBulkIndexRowInput input;
       input.encoded_key = key;
@@ -1628,7 +1635,6 @@ void AddVisibleRowKeysForSortedBuild(
                        input.encoded_key.find("<NULL>") !=
                            std::string::npos;
       keys->push_back(std::move(input));
-      visible_row_keys.insert(row.row_uuid + "\n" + key);
     }
   }
   for (const auto& entry : state.index_entries) {
@@ -1638,8 +1644,7 @@ void AddVisibleRowKeysForSortedBuild(
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
-        visible_row_keys.count(entry.row_uuid + "\n" + entry.key_value) ==
-            0) {
+        !visible_row_versions.contains({entry.row_uuid, entry.version_uuid})) {
       continue;
     }
     scratchbird::core::index::SortedBulkIndexRowInput input;
@@ -1715,7 +1720,7 @@ void AddVisibleParentKeysForProof(
     }
     return;
   }
-  std::set<std::string> visible_parent_keys;
+  std::set<std::pair<std::string, std::string>> visible_parent_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, parent_table_uuid, context)) {
     const std::string key = CrudFieldValue(row.values, parent_column);
@@ -1723,7 +1728,7 @@ void AddVisibleParentKeysForProof(
                                    row.row_uuid,
                                    row.version_uuid,
                                    ordinal++));
-    visible_parent_keys.insert(row.row_uuid + "\n" + key);
+    visible_parent_versions.emplace(row.row_uuid, row.version_uuid);
   }
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != parent_index.index_uuid ||
@@ -1732,8 +1737,7 @@ void AddVisibleParentKeysForProof(
                             entry.creator_tx,
                             entry.event_sequence,
                             context.local_transaction_id) ||
-        visible_parent_keys.count(entry.row_uuid + "\n" + entry.key_value) ==
-            0) {
+        !visible_parent_versions.contains({entry.row_uuid, entry.version_uuid})) {
       continue;
     }
     keys->push_back(DirectProofKey(entry.key_value,
@@ -5536,6 +5540,11 @@ DirectPhysicalBulkAppendResult PublishDirectStrictBulkAfterPhysicalSuccess(
 
 DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     const DirectPhysicalBulkAppendRequest& request) {
+  const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
+      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::insert);
+  if (savepoint_admission.error) {
+    return DirectBulkFailure(request, savepoint_admission, "savepoint_mutation_provider_not_admitted");
+  }
   const auto write_result_policy = ResolveWriteResultPolicyOptions(
       request.option_envelopes,
       "dml.direct_physical_bulk_append");
@@ -6761,7 +6770,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	          direct_constraint_shape.deferred_unique;
 	      direct_constraint_options.validate_foreign_key_constraints =
 	          direct_constraint_shape.deferred_foreign_key;
-	      bool values_mutated_by_validation = false;
+	      bool values_mutated_by_validation =
+          MaterializeOmittedInsertColumns(batch_context.row_encoder_plan, &values);
 	      const bool default_requested =
 	          std::any_of(values.begin(), values.end(), [](const auto& field) {
 	            return field.second == "<DEFAULT>";
@@ -7316,7 +7326,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         direct_constraint_shape.deferred_unique;
     direct_constraint_options.validate_foreign_key_constraints =
         direct_constraint_shape.deferred_foreign_key;
-    bool values_mutated_by_validation = false;
+    bool values_mutated_by_validation =
+        MaterializeOmittedInsertColumns(batch_context.row_encoder_plan, &values);
 
     const bool default_requested =
         std::any_of(values.begin(), values.end(), [](const auto& field) {

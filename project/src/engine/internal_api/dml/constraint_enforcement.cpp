@@ -1606,6 +1606,51 @@ bool UpdateTouchesParentKeyColumns(const CrudTableRecord& table,
   return false;
 }
 
+EngineApiDiagnostic ValidateSavepointConstraintProviders(
+    const EngineRequestContext& context, const MgaRelationReadView& state,
+    const CrudTableRecord& table, std::string_view mutation_kind) {
+  const auto refuse = [](const std::string& effect, const std::string& column) {
+    return MakeEngineApiDiagnostic("SBLR.OPERATION_UNSUPPORTED",
+        "mga.savepoint.mutation_provider_unavailable", effect + ":" + column, true);
+  };
+  const auto columns = ConstraintColumns(table);
+  for (const auto& [column, fields] : columns) {
+    if (TimingRequiresDeferredStore(fields))
+      return refuse("deferred_constraint_reservation", column);
+  }
+  if (mutation_kind == "insert") return OkDiagnostic();
+  for (const auto& child : state.tables) {
+    if (!MgaCreatorVisible(state, child.creator_tx, child.event_sequence,
+                           context.local_transaction_id)) continue;
+    for (const auto& [child_column, fields] : ConstraintColumns(child)) {
+      for (const auto& [column, parent_fields] : columns) {
+        if (!BoolField(parent_fields, {"primary_key", "pk", "unique", "unique_key"}) ||
+            !IsKeyColumnReferencedByChildren(fields, table, column)) continue;
+        const auto action = LowerAscii(FieldOrEmpty(fields,
+            {mutation_kind == "delete" ? "on_delete" : "on_update", "referential_action"}));
+        if (!action.empty() && action != "restrict" && action != "no_action")
+          return refuse("cascade_body", child_column);
+      }
+    }
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic ValidateSavepointInsertDefaultProviders(const CrudTableRecord& table) {
+  for (const auto& [column, fields] : ConstraintColumns(table)) {
+    const auto value = FieldOrEmpty(fields,
+        {"default_expression", "default_constraint", "default_value", "default"});
+    const auto lower = LowerAscii(value);
+    if (StartsWith(value, "sequence_next:") || StartsWith(lower, "sblr:") ||
+        StartsWith(lower, "sblr_expression:") || StartsWith(lower, "generated:")) {
+      return MakeEngineApiDiagnostic("SBLR.OPERATION_UNSUPPORTED",
+          "mga.savepoint.mutation_provider_unavailable",
+          "default_effect_provider_unavailable:" + column, true);
+    }
+  }
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic ValidateImmediateDeleteConstraints(
     const EngineRequestContext& context,
     const MgaRelationReadView& state,
@@ -1624,6 +1669,26 @@ EngineApiDiagnostic ValidateImmediateDeleteConstraints(
                                                                       value,
                                                                       "delete")) {
       return *diagnostic;
+    }
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic ValidateDmlDeleteNoInboundConstraintProfileV1(
+    const EngineRequestContext& context, const MgaRelationReadView& state,
+    const CrudTableRecord& target) {
+  std::set<std::string> seen;
+  for (const auto& candidate : state.tables) {
+    if (!seen.insert(candidate.table_uuid).second) continue;
+    const auto child = FindVisibleMgaTable(state, candidate.table_uuid, context.local_transaction_id);
+    if (!child) continue;
+    for (const auto& [name, fields] : ConstraintColumns(*child)) {
+      if (!DescriptorDeclaresForeignKey(fields)) continue;
+      const auto reference = ParseForeignKeyReference(fields);
+      if (!reference || reference->parent_table_uuid == target.table_uuid ||
+          (!target.default_name.empty() && reference->parent_table_uuid == target.default_name))
+        return MakeEngineApiDiagnostic("SBLR.OPERATION_UNSUPPORTED",
+            "sblr.dml_delete_rows.inbound_constraint_provider_required", name, true);
     }
   }
   return OkDiagnostic();

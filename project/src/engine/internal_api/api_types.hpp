@@ -23,6 +23,7 @@ struct LocalTransactionInventorySnapshot;
 namespace scratchbird::engine::internal_api {
 
 struct SblrExecutorAvailabilityStatementCohort;
+class EngineDmlUpdateResourceReceiptV1;
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_BASE_TYPES
 // Engine-owned API types. This API is not SQL authority and is not a parser API.
@@ -466,6 +467,9 @@ struct EngineRequestContext {
   // optimizer/QOW snapshot and callers must leave it empty before receipt
   // acquisition.
   EngineUuid resource_admission_uuid;
+  // Engine-issued, revocable process-local capability. Never serialized into
+  // a receipt view, SBLR operand, parser packet or public ABI structure.
+  std::weak_ptr<EngineDmlUpdateResourceReceiptV1> dml_update_resource_receipt;
   // Exact active-transaction policy authority pinned by the engine-issued
   // statement receipt.  These fields are not parser-selectable policy input.
   EngineUuid transaction_policy_snapshot_uuid;

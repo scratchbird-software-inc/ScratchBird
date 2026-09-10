@@ -320,14 +320,24 @@ struct HierarchicalMemoryBudgetReleaseResult {
 const char* HierarchicalMemoryBudgetScopeKindName(
     HierarchicalMemoryBudgetScopeKind kind);
 
+enum class HierarchicalMemoryBudgetReleaseCode {
+  released, not_found, invalid_state, synchronization_failed
+};
+
 class HierarchicalMemoryBudgetLedger {
  public:
   explicit HierarchicalMemoryBudgetLedger(std::string ledger_id);
 
+  // Allocation exceptions propagate without changing scopes, reservation
+  // ownership, counters (including peaks), or issuance sequence. Owner cleanup
+  // is a single atomic ledger transition, not a sequence of partial releases.
   AgentRuntimeStatus RegisterScope(HierarchicalMemoryBudgetScope scope);
   HierarchicalMemoryBudgetReserveResult Reserve(
       HierarchicalMemoryBudgetReserveRequest request);
   HierarchicalMemoryBudgetReleaseResult Release(const std::string& token_id);
+  // Scalar resource-only completion; no snapshots, diagnostics or allocation.
+  // A missing token is not proof of a prior release. The owner tracks retries.
+  HierarchicalMemoryBudgetReleaseCode ReleaseNoAlloc(const std::string& token_id) noexcept;
   HierarchicalMemoryBudgetReleaseResult ReleaseOwnerReservations(
       const std::string& owner_scope);
   std::vector<HierarchicalMemoryBudgetScopeSnapshot> Snapshot() const;

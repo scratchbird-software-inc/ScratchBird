@@ -769,10 +769,14 @@ bool SamePersistedRowDescriptor(
       bound_type_name->second.empty() ||
       !SameCanonicalType(bound_type_name->second,
                          actual.canonical_type_name)) {
+    if (authority_refusal_detail != nullptr) {
+      *authority_refusal_detail = "persisted datatype identity has no matching canonical type";
+    }
     return false;
   }
 
   bool canonical_seen = false;
+  bool source_type_seen = false;
   bool datatype_descriptor_uuid_seen = false;
   bool type_uuid_seen = false;
   bool nullability_seen = false;
@@ -826,6 +830,22 @@ bool SamePersistedRowDescriptor(
     }
     const auto key = field.substr(0, separator);
     const auto value = field.substr(separator + 1);
+    // Report only the schema field, never persisted values or row contents.
+    // Keep unknown field names out of diagnostics as well.
+    if (authority_refusal_detail != nullptr) {
+      static constexpr std::string_view known_fields[] = {
+          "canonical", "type", "source_type", "datatype_descriptor_uuid", "type_uuid",
+          "nullability", "nullable", "collation_uuid", "charset_uuid",
+          "timezone_profile_id", "width", "character_length", "precision",
+          "scale", "descriptor_generation", "datatype_descriptor_generation",
+          "type_generation", "codec_uuid", "column_uuid", "codec_id",
+          "codec_version", "codec_generation", "null_encoding"};
+      *authority_refusal_detail = "persisted descriptor field rejected: ";
+      *authority_refusal_detail +=
+          std::find(std::begin(known_fields), std::end(known_fields), key) !=
+                  std::end(known_fields)
+              ? std::string(key) : "unknown";
+    }
 
     if (key == "canonical" || key == "type") {
       if (canonical_seen || value.empty() ||
@@ -833,6 +853,13 @@ bool SamePersistedRowDescriptor(
         return false;
       }
       canonical_seen = true;
+    } else if (key == "source_type") {
+      // DDL retains the parser's builtin spelling as provenance. It supplies
+      // no datatype authority: all UUID/generation/codec checks still apply,
+      // and even this annotation must resolve to the same canonical type.
+      if (source_type_seen || value.empty() ||
+          !SameCanonicalType(value, actual.canonical_type_name)) return false;
+      source_type_seen = true;
     } else if (key == "datatype_descriptor_uuid") {
       if (datatype_descriptor_uuid_seen || value.empty()) {
         return false;
@@ -965,16 +992,23 @@ bool SamePersistedRowDescriptor(
     if (start == actual.encoded_descriptor.size()) return false;
   }
 
+  if (authority_refusal_detail != nullptr) {
+    *authority_refusal_detail = "persisted descriptor authority fields are incomplete";
+  }
   if (persisted_authority &&
       (!descriptor_generation_seen || !type_generation_seen ||
        !codec_id_seen || !codec_version_seen || !codec_generation_seen ||
        !null_encoding_seen)) return false;
-  return (canonical_seen || type_uuid_seen) &&
+  const bool matches = (canonical_seen || type_uuid_seen) &&
          collation_seen == bound.collation_uuid.has_value() &&
          timezone_seen == bound.timezone_profile_id.has_value() &&
          width_seen == bound.width.has_value() &&
          precision_seen == bound.precision.has_value() &&
          scale_seen == bound.scale.has_value();
+  if (matches && authority_refusal_detail != nullptr) {
+    authority_refusal_detail->clear();
+  }
+  return matches;
 }
 
 }  // namespace

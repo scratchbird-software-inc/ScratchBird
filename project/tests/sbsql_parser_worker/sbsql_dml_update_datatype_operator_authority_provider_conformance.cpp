@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_datatype_operator_authority_provider.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -28,6 +29,10 @@ constexpr std::string_view kBigintDescriptorUuid =
     "019d0000-0000-7000-8000-00000000d711";
 constexpr std::string_view kBigintTypeUuid =
     "019d0000-0000-7000-8000-00000000d712";
+constexpr std::string_view kTextDescriptorUuid =
+    "019d0000-0000-7000-8000-00000000d718";
+constexpr std::string_view kTextTypeUuid =
+    "019d0000-0000-7000-8000-00000000d719";
 
 [[noreturn]] void Fail(const std::string& message) {
   std::cerr << message << '\n';
@@ -118,7 +123,11 @@ struct Fixture {
   std::vector<std::uint8_t> duev;
 };
 
-Fixture MakeFixture(bool equality) {
+Fixture MakeFixture(bool equality, bool text_assignment = false,
+                    std::vector<std::uint8_t> text_value = {'h', 'i'},
+                    wire::TypedUpdateValueState text_state =
+                        wire::TypedUpdateValueState::value,
+                    bool text_predicate = false) {
   Fixture fixture;
   auto& descriptor = fixture.descriptor;
   descriptor.descriptor_uuid = Uuid(10);
@@ -239,6 +248,24 @@ Fixture MakeFixture(bool equality) {
     fixture.predicate.records.push_back(std::move(predicate));
   }
 
+  if (text_assignment) {
+    auto& text = fixture.assignments.records.front();
+    text.value_descriptor_uuid = ParseUuid(kTextDescriptorUuid);
+    text.value_type_uuid = ParseUuid(kTextTypeUuid);
+    text.codec_id = "datatype.text.utf8.v1";
+    text.canonical_value = std::move(text_value);
+    text.value_state = text_state;
+    if (text_predicate) {
+      Require(equality, "TEXT predicate fixture requires equality");
+      for (std::size_t index = 0; index < 2; ++index) {
+        auto& node = fixture.predicate.records[index];
+        node.output_descriptor_uuid = text.value_descriptor_uuid;
+        node.output_type_uuid = text.value_type_uuid;
+        node.output_codec_id = text.codec_id;
+        if (index == 1) node.canonical_value = text.canonical_value;
+      }
+    }
+  }
   wire::TypedUpdateCarrierError error;
   Require(wire::EncodeTypedUpdateAssignmentVector(
               fixture.assignments, &fixture.duav, &error),
@@ -395,7 +422,7 @@ void TestPrebindingAndCanonicalTrue() {
       api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
           recovery_context, fixture.descriptor, fixture.assignments,
           fixture.predicate, tampered, captured.operators);
-  Require(tamper_refused.error && tamper_refused.code == "MGA.TRANSACTION.STALE",
+  Require(tamper_refused.error && tamper_refused.code == "DML.UPDATE_FAILED",
           "tampered recovered DUDV authority was accepted");
 }
 
@@ -434,11 +461,181 @@ void TestEqualityBindingAndOperatorAuthority() {
           "stale datatype registry generation was accepted");
 }
 
+void TestTextV2CaptureAndRecovery() {
+  const auto fixed = Capture(MakeFixture(false));
+  Require(fixed.ok && fixed.datatypes.format_version == 1,
+          "fixed-width authority stopped selecting v1");
+  for (const bool equality : {false, true}) {
+    const auto fixture = MakeFixture(equality, true, {'a', 0, 0xc3, 0xa9});
+    const auto captured = Capture(fixture);
+    Require(captured.ok && captured.datatypes.format_version == 2 &&
+                captured.datatypes.records.size() == (equality ? 3 : 2) &&
+                captured.operators.records.size() == (equality ? 1 : 0) &&
+                captured.datatype_snapshot_handle.valid(),
+            "TEXT v2 capture failed: " + captured.diagnostic.message_key + ":" +
+                captured.diagnostic.detail);
+    const auto& text = captured.datatypes.records.back();
+    Require(text.datatype_identity_code == wire::TypedUpdateDatatypeIdentityCode::text_v2 &&
+                text.descriptor_uuid == ParseUuid(kTextDescriptorUuid) &&
+                text.type_uuid == ParseUuid(kTextTypeUuid) &&
+                text.canonical_value_minimum_bytes == 0 &&
+                text.canonical_value_maximum_bytes == 16777216 &&
+                text.canonical_value_exact_bytes == 0,
+            "TEXT provider did not project the exact variable-width registry row");
+    Require(!api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(false, true), captured).error,
+            "TEXT v2 live immutable authority did not revalidate");
+    const auto recaptured = Capture(fixture);
+    Require(recaptured.ok && recaptured.exact_datatype_authority_dudv ==
+                captured.exact_datatype_authority_dudv,
+            "repeated TEXT capture changed canonical authority bytes");
+
+    wire::TypedUpdateCarrierError error;
+    wire::TypedUpdateDatatypeAuthorityVector durable_datatypes;
+    wire::TypedUpdateBuiltinOperatorAuthorityVector durable_operators;
+    Require(wire::DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
+                captured.exact_datatype_authority_dudv, &durable_datatypes, &error) &&
+                wire::DecodeAndValidateTypedUpdateBuiltinOperatorAuthorityVector(
+                captured.exact_builtin_operator_authority_duov, &durable_operators, &error),
+            "saved TEXT provider authority cannot be freshly decoded");
+    Require(!api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(true), fixture.descriptor, fixture.assignments,
+                fixture.predicate, durable_datatypes, durable_operators).error,
+            "freshly decoded TEXT v2 authority failed recovery revalidation");
+    auto stale = Context(true);
+    stale.datatype_registry_generation = 2;
+    const auto stale_result = api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+        stale, fixture.descriptor, fixture.assignments, fixture.predicate,
+        durable_datatypes, durable_operators);
+    Require(stale_result.error && stale_result.code == "MGA.TRANSACTION.STALE",
+            "TEXT recovery reused a stale registry generation");
+    auto cross_receipt = Context(false, true);
+    cross_receipt.statement_receipt_uuid.canonical = UuidText(Uuid(90));
+    Require(api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+                cross_receipt, captured).error,
+            "TEXT authority was reused by another receipt");
+    auto changed = captured;
+    changed.datatypes.records.back().codec_generation += 1;
+    Require(api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(false, true), changed).code == "DML.UPDATE_FAILED",
+            "changed live datatype projection hid behind retained bytes");
+    changed = captured;
+    changed.datatypes.format_version = 1;
+    Require(api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(false, true), changed).code == "DML.UPDATE_FAILED",
+            "live TEXT authority was silently downgraded to v1");
+    changed = captured;
+    changed.exact_datatype_authority_dudv.back() ^= 1;
+    Require(api::RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(false, true), changed).code == "DML.UPDATE_FAILED",
+            "live raw carrier diverged from its decoded projection");
+    for (const auto version : {1U, 3U}) {
+      auto altered = durable_datatypes;
+      altered.format_version = version;
+      Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                  Context(true), fixture.descriptor, fixture.assignments,
+                  fixture.predicate, altered, durable_operators).code == "DML.UPDATE_FAILED",
+              "recovery accepted format substitution under unchanged saved bytes");
+    }
+    auto altered = durable_datatypes;
+    altered.records.back().canonical_value_exact_bytes = 8;
+    Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(true), fixture.descriptor, fixture.assignments,
+                fixture.predicate, altered, durable_operators).code == "DML.UPDATE_FAILED",
+            "recovery accepted changed decoded TEXT width");
+    altered = durable_datatypes;
+    altered.records.back().exact_bytes.back() ^= 1;
+    Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(true), fixture.descriptor, fixture.assignments,
+                fixture.predicate, altered, durable_operators).code == "DML.UPDATE_FAILED",
+            "recovery ignored altered per-record retained bytes");
+    auto assignments = fixture.assignments;
+    assignments.records[0].canonical_value = {'x'};
+    Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(true), fixture.descriptor, assignments,
+                fixture.predicate, durable_datatypes, durable_operators).code == "DML.UPDATE_FAILED",
+            "recovery ignored altered assignment projection");
+    auto descriptor = fixture.descriptor;
+    descriptor.target_relation_generation += 1;
+    Require(api::RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
+                Context(true), descriptor, fixture.assignments,
+                fixture.predicate, durable_datatypes, durable_operators).code == "DML.UPDATE_FAILED",
+            "recovery ignored altered descriptor projection");
+  }
+  const auto empty = Capture(MakeFixture(false, true, {}));
+  const auto null = Capture(MakeFixture(false, true, {}, wire::TypedUpdateValueState::null_value));
+  Require(empty.ok && null.ok && empty.datatypes.format_version == 2 &&
+              null.datatypes.format_version == 2,
+          "TEXT empty VALUE or NULL did not capture v2 authority");
+  const auto maximum = Capture(MakeFixture(false, true,
+      std::vector<std::uint8_t>(wire::kTypedUpdateMaximumCanonicalValueBytesPerValue, 'x')));
+  Require(maximum.ok, "TEXT operation byte boundary did not capture");
+  for (const auto bytes : std::vector<std::vector<std::uint8_t>>{
+           {0x80}, {0xc0, 0x80}, {0xed, 0xa0, 0x80}, {0xf4, 0x90, 0x80, 0x80}, {0xe2, 0x82}}) {
+    const auto bad = Capture(MakeFixture(false, true, bytes));
+    Require(!bad.ok && !bad.datatype_snapshot_handle.valid() &&
+                !bad.operator_snapshot_handle.valid(),
+            "invalid UTF-8 carrier received authority handles");
+  }
+  Require(!Capture(MakeFixture(true, true, {'x'}, wire::TypedUpdateValueState::value, true)).ok,
+          "TEXT predicate received unadmitted equality authority");
+  const auto refresh_assignments = [](Fixture* fixture) {
+    wire::TypedUpdateCarrierError error;
+    Require(wire::EncodeTypedUpdateAssignmentVector(
+                fixture->assignments, &fixture->duav, &error) &&
+                wire::DecodeAndValidateTypedUpdateAssignmentVector(
+                fixture->duav, &fixture->assignments, &error),
+            "altered assignment fixture could not be canonically rebound");
+    fixture->descriptor.assignment_vector_sha256 = VectorHash(fixture->duav);
+    fixture->descriptor.assignment_count = fixture->assignments.records.size();
+    Require(wire::EncodeTypedUpdateDescriptor(fixture->descriptor, &fixture->dudc, &error) &&
+                wire::DecodeAndValidateTypedUpdateDescriptor(
+                fixture->dudc, &fixture->descriptor, &error),
+            "altered fixture DUDC could not be canonically rebound");
+  };
+  for (unsigned field = 0; field < 6; ++field) {
+    auto altered = MakeFixture(false, true);
+    auto& assignment = altered.assignments.records[0];
+    switch (field) {
+      case 0: assignment.value_descriptor_uuid = Uuid(91); break;
+      case 1: assignment.value_descriptor_generation += 1; break;
+      case 2: assignment.value_type_uuid = ParseUuid(kTextDescriptorUuid); break;
+      case 3: assignment.codec_id = "datatype.text.utf16.v1"; break;
+      case 4: assignment.codec_version += 1; break;
+      case 5: assignment.codec_generation += 1; break;
+    }
+    refresh_assignments(&altered);
+    const auto refused = Capture(altered);
+    Require(!refused.ok && !refused.datatype_snapshot_handle.valid() &&
+                !refused.operator_snapshot_handle.valid(),
+            "hash-valid altered TEXT identity received authority through fallback");
+  }
+  auto repeated = MakeFixture(false, true);
+  auto second = repeated.assignments.records[0];
+  second.assignment_ordinal = 2;
+  second.assignment_occurrence_uuid = Uuid(91);
+  second.target_column_uuid = Uuid(92);
+  second.target_column_occurrence_uuid = Uuid(93);
+  second.canonical_value = {'b'};
+  repeated.assignments.records.push_back(second);
+  refresh_assignments(&repeated);
+  const auto deduplicated = Capture(repeated);
+  Require(deduplicated.ok && deduplicated.datatypes.format_version == 2 &&
+              deduplicated.datatypes.records.size() == 2,
+          "two TEXT assignments must share one exact datatype authority row");
+  const auto registry = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      std::string(kDatatypeSnapshotUuid), 1, 1, std::string(kTextDescriptorUuid), 1);
+  Require(registry.ok && registry.row.datatype_identity_code == 0 &&
+              registry.row.byte_order_code == 0 && registry.row.representation_code == 0,
+          "v2 provider mutated the general registry's closed v1 carrier codes");
+}
+
 }  // namespace
 
 int main() {
   TestPrebindingAndCanonicalTrue();
   TestEqualityBindingAndOperatorAuthority();
+  TestTextV2CaptureAndRecovery();
   std::cout
       << "sbsql_dml_update_datatype_operator_authority_provider_conformance: PASS\n";
   return EXIT_SUCCESS;

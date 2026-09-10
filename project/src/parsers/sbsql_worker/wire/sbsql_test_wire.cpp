@@ -20282,6 +20282,159 @@ LoweredJsonStringField ReadLoweredJsonStringField(
   return field;
 }
 
+std::optional<CanonicalBytes> BuildDmlDeleteRowsBindDemand(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context) {
+  const auto receipt =
+      CanonicalUuidBytes(statement_context.preliminary_receipt_uuid);
+  if (!receipt || lowered.operation_family != "sblr.dml.operation.v3" ||
+      lowered.operation_id != "dml.delete_rows" ||
+      lowered.sblr_opcode != "SBLR_DML_DELETE_ROWS" ||
+      lowered.resolved_object_uuids.size() != 1) {
+    return std::nullopt;
+  }
+  const auto relation =
+      CanonicalUuidBytes(lowered.resolved_object_uuids.front());
+  const auto target_uuid =
+      ReadLoweredJsonStringField(lowered.payload, "target_object_uuid");
+  const auto predicate_kind =
+      ReadLoweredJsonStringField(lowered.payload, "predicate_kind");
+  const auto predicate_column =
+      ReadLoweredJsonStringField(lowered.payload, "predicate_column");
+  const auto predicate_value =
+      ReadLoweredJsonStringField(lowered.payload, "predicate_value");
+  const auto predicate_type =
+      ReadLoweredJsonStringField(lowered.payload, "predicate_value_type");
+  if (!relation || !target_uuid.valid || !target_uuid.present ||
+      target_uuid.value != lowered.resolved_object_uuids.front() ||
+      !predicate_kind.valid || !predicate_column.valid ||
+      !predicate_value.valid || !predicate_type.valid) {
+    return std::nullopt;
+  }
+
+  const bool predicate_present = predicate_kind.present ||
+                                 predicate_column.present ||
+                                 predicate_value.present ||
+                                 predicate_type.present;
+  if (predicate_present &&
+      (!predicate_kind.present || predicate_kind.value != "column_equals" ||
+       !predicate_column.present || predicate_column.value.empty() ||
+       !predicate_value.present || !predicate_type.present ||
+       predicate_type.value.empty())) {
+    return std::nullopt;
+  }
+  const auto envelope_kind =
+      ReadLoweredJsonStringField(lowered.payload, "dml_envelope_kind");
+  const auto operation_id =
+      ReadLoweredJsonStringField(lowered.payload, "dml_operation_id");
+  const auto surface_variant =
+      ReadLoweredJsonStringField(lowered.payload, "dml_surface_variant");
+  const auto target_kind =
+      ReadLoweredJsonStringField(lowered.payload, "target_object_kind");
+  const auto target_resolution =
+      ReadLoweredJsonStringField(lowered.payload, "target_uuid_resolution");
+  const auto result_policy =
+      ReadLoweredJsonStringField(lowered.payload, "result_payload_policy");
+  const std::array<const LoweredJsonStringField*, 11> fields{
+      &envelope_kind, &operation_id, &surface_variant, &target_kind,
+      &target_uuid, &target_resolution, &result_policy, &predicate_kind,
+      &predicate_column, &predicate_value, &predicate_type};
+  if (std::ranges::any_of(fields, [](const auto* field) {
+        return field == nullptr || !field->valid;
+      }) ||
+      !envelope_kind.present || envelope_kind.value != "row_mutation" ||
+      !operation_id.present || operation_id.value != "dml.delete_rows" ||
+      !surface_variant.present || surface_variant.value != "delete" ||
+      !target_kind.present || target_kind.value != "table" ||
+      !target_uuid.present || !CanonicalUuidBytes(target_uuid.value) ||
+      target_uuid.value != lowered.resolved_object_uuids.front() ||
+      !target_resolution.present ||
+      target_resolution.value != "server_name_registry_required" ||
+      !result_policy.present || result_policy.value != "summary_only" ||
+      lowered.payload.find("\"mga_transaction_context_required\":true") ==
+          std::string::npos) {
+    return std::nullopt;
+  }
+
+  for (const auto key : {"assignment_column", "assignment_value", "assignment_plan",
+                         "order_by", "limit", "offset", "batch_on_column",
+                         "batch_limit", "series_name", "subquery_projection"}) {
+    const auto field = ReadLoweredJsonStringField(lowered.payload, key);
+    if (!field.valid || field.present) return std::nullopt;
+  }
+  if (predicate_present &&
+      (lowered.payload.find("\"predicate_binding_model\":\"engine_row_descriptor_field\"") == std::string::npos ||
+       lowered.payload.find("\"predicate_descriptor_bound\":true") == std::string::npos)) {
+    return std::nullopt;
+  }
+  const auto append_u16_string = [](CanonicalBytes* out,
+                                    std::string_view value) {
+    if (out == nullptr || value.size() > 4096 || value.size() > UINT16_MAX) {
+      return false;
+    }
+    CanonicalAppendU16(out, static_cast<std::uint16_t>(value.size()));
+    out->insert(out->end(), value.begin(), value.end());
+    return true;
+  };
+  const auto append_u32_string = [](CanonicalBytes* out,
+                                    std::string_view value) {
+    if (out == nullptr || value.size() > 65536 || value.size() > UINT32_MAX) {
+      return false;
+    }
+    CanonicalAppendU32(out, static_cast<std::uint32_t>(value.size()));
+    out->insert(out->end(), value.begin(), value.end());
+    return true;
+  };
+  CanonicalBytes demand{'D', 'D', 'B', 'Q'};
+  CanonicalAppendU16(&demand, 1);
+  CanonicalAppendU16(&demand, predicate_present ? 1 : 0);
+  demand.insert(demand.end(), receipt->begin(), receipt->end());
+  CanonicalAppendU64(&demand, 1);  // root structural occurrence
+  demand.insert(demand.end(), relation->begin(), relation->end());
+  if (predicate_present &&
+      (!append_u16_string(&demand, predicate_kind.value) ||
+       !append_u16_string(&demand, predicate_column.value) ||
+       !append_u16_string(&demand, predicate_type.value) ||
+       !append_u32_string(&demand, predicate_value.value))) {
+    return std::nullopt;
+  }
+  if (demand.size() > 65536) return std::nullopt;
+  return demand;
+}
+
+std::optional<ParserCanonicalSblrSubmission>
+BuildCanonicalDmlDeleteSubmission(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session,
+    const CanonicalBytes& descriptor_ref) {
+  if (!BuildDmlDeleteRowsBindDemand(lowered, statement_context)) return std::nullopt;
+
+  auto envelope = BuildCanonicalRegistryEnvelope(
+      "dml.delete_rows", statement_context, session);
+  if (!envelope || envelope->opcode != "SBLR_DML_DELETE_ROWS" ||
+      envelope->opcode_code != 784) {
+    return std::nullopt;
+  }
+  if (descriptor_ref.size() != 24 ||
+      std::all_of(descriptor_ref.begin(), descriptor_ref.begin() + 16,
+                  [](std::uint8_t byte) { return byte == 0; }) ||
+      std::all_of(descriptor_ref.begin() + 16, descriptor_ref.end(),
+                  [](std::uint8_t byte) { return byte == 0; })) {
+    return std::nullopt;
+  }
+  scratchbird::engine::sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "dml.delete_rows";
+  operand.name = "request";
+  operand.value_kind =
+      scratchbird::engine::sblr::SblrValueKind::descriptor_ref;
+  operand.value_body = descriptor_ref;
+  envelope->operands.push_back(std::move(operand));
+  return BuildCanonicalRegistryOperationSubmission(
+      *envelope, statement_context, session);
+}
+
 std::optional<CanonicalBytes> BuildDmlUpdateRowsBindDemand(
     const SblrEnvelope& lowered,
     const ParserStatementContext& statement_context) {
@@ -22373,7 +22526,11 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
     const auto& column = columns[column_index];
     const std::string prefix = "column_" + std::to_string(column_index) + "_";
     std::string descriptor = "type=" + column.canonical_type;
-    if (!column.raw_type.empty() && column.raw_type != column.canonical_type) {
+    // A case-only builtin spelling is not a distinct source/domain type.
+    // In particular, do not attach non-authoritative source metadata to the
+    // engine's exact canonical TEXT descriptor merely because SQL used TEXT.
+    if (!column.raw_type.empty() &&
+        ToUpperAscii(column.raw_type) != ToUpperAscii(column.canonical_type)) {
       AppendDescriptorFlag(&descriptor, "source_type", column.raw_type);
     }
     AppendDescriptorFlag(&descriptor, "nullable", column.nullable ? "true" : "false");
@@ -28684,6 +28841,44 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       ast.statement_surface_name == "release_savepoint_stmt";
   const bool canonical_txn_rollback_to_savepoint =
       ast.statement_surface_name == "rollback_to_savepoint_stmt";
+  std::optional<std::string> savepoint_label_key;
+  if (canonical_txn_savepoint || canonical_txn_release_savepoint ||
+      canonical_txn_rollback_to_savepoint) {
+    bool expect_label = false;
+    for (const auto& token : cst.tokens) {
+      if (IsTriviaToken(token) || token.kind == TokenKind::kEnd) continue;
+      const auto keyword = CanonicalUnquotedIdentifier(
+          token.canonical_text.empty() ? token.text : token.canonical_text);
+      if (!token.quoted &&
+          (keyword == "savepoint" ||
+           (canonical_txn_release_savepoint && keyword == "release") ||
+           (canonical_txn_rollback_to_savepoint && keyword == "to"))) {
+        expect_label = true;
+        continue;
+      }
+      if (expect_label && (token.kind == TokenKind::kIdentifier || token.quoted)) {
+        savepoint_label_key = token.quoted ? token.text
+                                         : CanonicalUnquotedIdentifier(token.text);
+        break;
+      }
+    }
+  }
+  if (submit && (canonical_txn_release_savepoint || canonical_txn_rollback_to_savepoint) &&
+      !replaying_savepoint_release_ && !replaying_savepoint_rollback_ &&
+      !testing_savepoint_handle_override_) {
+    const auto named = savepoint_label_key
+        ? named_savepoint_handles_.find(*savepoint_label_key)
+        : named_savepoint_handles_.end();
+    if (named == named_savepoint_handles_.end()) {
+      result.accepted = false;
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "MGA.SAVEPOINT.HANDLE_REQUIRED", "ERROR",
+          "No engine-issued handle is bound to the requested savepoint label.",
+          "sbp_sbsql.wire"));
+      return result;
+    }
+    admitted_savepoint_handle_ = named->second;
+  }
   if (submit && (ast.native_relational.recognized() || canonical_txn_begin ||
                  canonical_txn_set_characteristics ||
                  canonical_txn_commit || canonical_txn_rollback ||
@@ -30260,6 +30455,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       lowered.operation_family == "sblr.dml.operation.v3" &&
       lowered.operation_id == "dml.update_rows" &&
       lowered.sblr_opcode == "SBLR_DML_UPDATE_ROWS";
+  const bool canonical_dml_delete_route =
+      lowered.operation_family == "sblr.dml.operation.v3" &&
+      lowered.operation_id == "dml.delete_rows" &&
+      lowered.sblr_opcode == "SBLR_DML_DELETE_ROWS";
   const bool canonical_dml_plan_import_rows_route =
       lowered.operation_family == "sblr.dml.operation.v3" &&
       lowered.operation_id == "dml.plan_import_rows" &&
@@ -30306,6 +30505,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   if (submit && result.accepted && !native_statement_context.has_value() &&
       (canonical_create_table_route.has_value() ||
        canonical_dml_update_route ||
+       canonical_dml_delete_route ||
        (canonical_dml_plan_import_rows_route && !canonical_copy_stream_route) ||
        canonical_show_version_direct_route ||
        canonical_zero_operand_direct_route ||
@@ -30410,6 +30610,36 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     } else if (canonical_create_table_route.has_value()) {
       native_submission = BuildCanonicalRouteTextSubmission(
           *canonical_create_table_route, *native_statement_context, session_);
+    } else if (canonical_dml_delete_route) {
+      const auto bind_demand = BuildDmlDeleteRowsBindDemand(
+          lowered, *native_statement_context);
+      if (!bind_demand.has_value()) {
+        result.accepted = false;
+        result.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "The DML DELETE demand could not be encoded for authenticated engine binding.",
+            "sbp_sbsql.wire"));
+      } else {
+        auto coordinated = embedded_native_route
+            ? embedded_client_->CoordinateDmlDeleteRowsBind(session_,
+                                                            *bind_demand)
+            : server_client_->CoordinateDmlDeleteRowsBind(session_,
+                                                          *bind_demand);
+        if (!coordinated.accepted) {
+          result.accepted = false;
+          result.messages = std::move(coordinated.messages);
+          if (!result.messages.has_errors()) {
+            result.messages.diagnostics.push_back(MakeDiagnostic(
+                "SBLR.OPERAND_INVALID", "ERROR",
+                "The authenticated engine refused DML DELETE descriptor binding.",
+                "sbp_sbsql.wire"));
+          }
+        } else {
+          native_submission = BuildCanonicalDmlDeleteSubmission(
+              lowered, *native_statement_context, session_,
+              coordinated.canonical_payload);
+        }
+      }
     } else if (canonical_dml_update_route) {
       const auto bind_demand = BuildDmlUpdateRowsBindDemand(
           lowered, *native_statement_context);
@@ -30901,6 +31131,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           admitted_transaction_handle_.clear();
           admitted_savepoint_descriptor_.clear();
           admitted_savepoint_handle_.clear();
+          named_savepoint_handles_.clear();
           parent_savepoint_handle_.clear();
           descendant_savepoint_handle_.clear();
           savepoint_refresh_authorities_.clear();
@@ -30921,6 +31152,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           admitted_transaction_handle_.clear();
           admitted_savepoint_descriptor_.clear();
           admitted_savepoint_handle_.clear();
+          named_savepoint_handles_.clear();
           parent_savepoint_handle_.clear();
           descendant_savepoint_handle_.clear();
           savepoint_refresh_authorities_.clear();
@@ -30944,6 +31176,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           admitted_savepoint_handle_.assign(
               canonical_result_bytes,
               canonical_result_bytes + executed.row_packet.size());
+          if (savepoint_label_key) {
+            named_savepoint_handles_[*savepoint_label_key] = admitted_savepoint_handle_;
+          }
           savepoint_refresh_authorities_.erase(
               SavepointIdentityKey(savepoint.savepoint_uuid));
         } else if (lowered.operation_id ==
@@ -30993,6 +31228,19 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               scratchbird::engine::sblr::EncodeSblrSavepointReleaseOperandV1(
                   operand);
           savepoint_refresh_authorities_.erase(refresh_key);
+          for (auto named = named_savepoint_handles_.begin();
+               named != named_savepoint_handles_.end();) {
+            scratchbird::engine::sblr::SblrSavepointHandleV1 cached;
+            if (scratchbird::engine::sblr::DecodeSblrSavepointHandleV1(
+                    named->second.data(), named->second.size(), &cached, &detail) &&
+                cached.transaction_uuid == released.transaction_uuid &&
+                cached.local_transaction_id == released.local_transaction_id &&
+                cached.savepoint_uuid == released.released_savepoint_uuid) {
+              named = named_savepoint_handles_.erase(named);
+            } else {
+              ++named;
+            }
+          }
           admitted_savepoint_handle_.clear();
         } else if (lowered.operation_id ==
                    "engine.op.txn_rollback_to_savepoint") {
@@ -31015,6 +31263,23 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               std::vector<std::uint8_t>(
                   rolled.refreshed_savepoint_evidence_sha256.begin(),
                   rolled.refreshed_savepoint_evidence_sha256.end())};
+          // Cache invalidation follows the accepted engine result. Do not
+          // infer rollback authority from SQL labels or cached handle order.
+          for (auto named = named_savepoint_handles_.begin();
+               named != named_savepoint_handles_.end();) {
+            sp::SblrSavepointHandleV1 cached;
+            if (sp::DecodeSblrSavepointHandleV1(
+                    named->second.data(), named->second.size(), &cached, &detail) &&
+                cached.transaction_uuid == rolled.transaction_uuid &&
+                cached.local_transaction_id == rolled.local_transaction_id &&
+                cached.transaction_ordinal > rolled.transaction_ordinal) {
+              savepoint_refresh_authorities_.erase(
+                  SavepointIdentityKey(cached.savepoint_uuid));
+              named = named_savepoint_handles_.erase(named);
+            } else {
+              ++named;
+            }
+          }
         }
         ApplyExecutedTransactionState(executed, &session_);
         if (ExecutionInvalidatesNameResolution(executed.operation_id)) {
@@ -31160,7 +31425,9 @@ PipelineResult SbsqlTestWireSession::RunReleaseParentSavepointForWire() {
     return result;
   }
   admitted_savepoint_handle_ = parent_savepoint_handle_;
+  testing_savepoint_handle_override_ = true;
   auto result = RunPipeline("RELEASE SAVEPOINT alignment_point", true);
+  testing_savepoint_handle_override_ = false;
   parent_savepoint_handle_.clear();
   return result;
 }
@@ -31169,7 +31436,9 @@ PipelineResult SbsqlTestWireSession::RunRollbackParentSavepointForWire() {
   if(parent_savepoint_handle_.empty()){PipelineResult r;r.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.HANDLE_REQUIRED","ERROR","No authenticated parent savepoint handle is available for rollback.","sbp_sbsql.wire"));return r;}
   descendant_savepoint_handle_=admitted_savepoint_handle_;
   admitted_savepoint_handle_=parent_savepoint_handle_;
+  testing_savepoint_handle_override_ = true;
   auto result=RunPipeline("ROLLBACK TO SAVEPOINT alignment_point",true);
+  testing_savepoint_handle_override_ = false;
   parent_savepoint_handle_.clear(); return result;
 }
 
@@ -31184,7 +31453,9 @@ PipelineResult SbsqlTestWireSession::RunRolledBackDescendantForWire() {
   if(descendant_savepoint_handle_.empty()){PipelineResult r;r.messages.diagnostics.push_back(MakeDiagnostic("MGA.SAVEPOINT.HANDLE_REQUIRED","ERROR","No rolled-back descendant handle is available.","sbp_sbsql.wire"));return r;}
   auto refreshed_target=admitted_savepoint_handle_;
   admitted_savepoint_handle_=descendant_savepoint_handle_;
+  testing_savepoint_handle_override_ = true;
   auto result=RunPipeline("ROLLBACK TO SAVEPOINT descendant_point",true);
+  testing_savepoint_handle_override_ = false;
   admitted_savepoint_handle_=std::move(refreshed_target);
   descendant_savepoint_handle_.clear(); return result;
 }

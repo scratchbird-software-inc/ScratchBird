@@ -3832,6 +3832,17 @@ set_tests_properties(
   sbsql_sblr_alignment_ia05_catalog_introspect_availability PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;SBLR_CATALOG_INTROSPECT;CSC-TEST-003611;missing_executor_evidence;integration"
   TIMEOUT 60)
+add_executable(sbsql_dml_update_resource_receipt
+  dml_update_resource_receipt_test.cpp)
+target_compile_features(sbsql_dml_update_resource_receipt PRIVATE cxx_std_20)
+target_include_directories(sbsql_dml_update_resource_receipt PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_dml_update_resource_receipt PRIVATE sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_dml_update_resource_receipt COMMAND sbsql_dml_update_resource_receipt)
+set_tests_properties(sbsql_dml_update_resource_receipt PROPERTIES
+  LABELS "sbsql_sblr_alignment;resource_governance;receipt_authority;mga_transaction_regression"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_ia05_catalog_introspect_cancellation_fault
   ia05_catalog_introspect_cancellation_fault_test.cpp)
 target_compile_features(
@@ -5856,6 +5867,16 @@ add_test(NAME sbsql_sblr_alignment_narrow_query_typed_result_publication
 set_tests_properties(
   sbsql_sblr_alignment_narrow_query_typed_result_publication PROPERTIES
   LABELS "sbsql_sblr_alignment;SBLR_QUERY_EXECUTE;SBQNPB01;narrow_query_profiles;typed_result;occurrence_identity;duplicate_names;direct_batch;producer_cursor;atomic_publication;no_fallback;exact_refusal"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_typed_delete_carrier_codec
+  typed_delete_carrier_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_delete_carrier_codec PRIVATE cxx_std_20)
+target_link_libraries(sbsql_sblr_alignment_typed_delete_carrier_codec
+  PRIVATE sb_wire_typed_update_carrier_codec)
+add_test(NAME sbsql_sblr_alignment_typed_delete_carrier_codec
+  COMMAND sbsql_sblr_alignment_typed_delete_carrier_codec)
+set_tests_properties(sbsql_sblr_alignment_typed_delete_carrier_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;typed_delete;DDDC;DDRS;DDJR;binary_uuid;malformed;recovery;contract"
   TIMEOUT 30)
 add_executable(sbsql_sblr_alignment_typed_update_carrier_codec
   typed_update_carrier_codec_test.cpp)

@@ -139,4 +139,18 @@ bool UpdateTouchesParentKeyColumns(const CrudTableRecord& table,
 
 EngineApiDiagnostic ValidateDeferredTransactionConstraints(const EngineRequestContext& context);
 
+// Read-only preflight using the same decoded descriptor fields as defaults.
+EngineApiDiagnostic ValidateSavepointInsertDefaultProviders(const CrudTableRecord& table);
+EngineApiDiagnostic ValidateSavepointConstraintProviders(
+    const EngineRequestContext& context, const MgaRelationReadView& state,
+    const CrudTableRecord& table, std::string_view mutation_kind);
+
+// Initial ordinary-DELETE descriptor profile: prove absence of inbound
+// referential work using ALL visible metadata, including malformed references
+// that a parent/child scope expansion cannot safely classify. This is a
+// read-only provider check; a future FK provider must freeze its own graph.
+EngineApiDiagnostic ValidateDmlDeleteNoInboundConstraintProfileV1(
+    const EngineRequestContext& context, const MgaRelationReadView& all_metadata,
+    const CrudTableRecord& target);
+
 }  // namespace scratchbird::engine::internal_api

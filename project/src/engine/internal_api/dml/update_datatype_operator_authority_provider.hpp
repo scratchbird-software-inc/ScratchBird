@@ -23,6 +23,9 @@ namespace scratchbird::engine::internal_api {
 // registry rows into DUDV/DUDR and DUOV/DUOE.  The provider accepts only
 // already decoded canonical UPDATE carriers; it never infers authority from a
 // spelling, value width, host enum, or parser payload.
+// DUDV is v1 for fixed-width assignments and v2 for the exact admitted TEXT
+// assignment identity. This datatype snapshot handle does not admit mutation:
+// target descriptors, resources, policies and MGA providers have separate gates.
 
 struct EngineDmlUpdateDatatypeOperatorAuthorityCaptureRequestV1;
 struct EngineDmlUpdateDatatypeOperatorAuthorityCaptureResultV1;
@@ -127,7 +130,8 @@ EngineApiDiagnostic RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
     const EngineDmlUpdateDatatypeOperatorAuthorityCaptureResultV1& captured);
 
 // Restart/recovery path.  The caller supplies only canonical decoded carriers
-// retaining their byte-identical extents; this provider re-resolves every row
+// retaining their byte-identical extents; this provider validates those decoded
+// projections (including the format version), then re-resolves every row
 // against the current live registries.  It does not reconstruct a snapshot
 // handle from durable bytes.
 EngineApiDiagnostic RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(

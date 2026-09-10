@@ -325,6 +325,12 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template,
                                            const InsertRowEncoderPlan& row_encoder_plan);
+// Complete the engine-bound storage shape without executing any default.
+// DEFAULT placeholders still pass through the normal constraint provider;
+// omitted columns with no default are SQL NULL and remain subject to NOT NULL.
+bool MaterializeOmittedInsertColumns(
+    const InsertRowEncoderPlan& plan,
+    std::vector<std::pair<std::string, std::string>>* values);
 EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestContext& request_context,
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,

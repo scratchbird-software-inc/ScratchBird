@@ -17,6 +17,7 @@
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 
 #include "dml/transactional_index_provider.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -682,6 +683,11 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
     return result;
   }
   result.target_was_temporary = true;
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::temporary_lifetime);
+  if (savepoint.error) {
+    result.diagnostic = savepoint;
+    return result;
+  }
   if (context.session_uuid.canonical.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "ddl.drop_object",

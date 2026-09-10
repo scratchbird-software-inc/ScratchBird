@@ -260,6 +260,7 @@ set_source_files_properties(query/expression_api.cpp PROPERTIES
 if(NOT TARGET sb_wire_typed_update_carrier_codec)
   add_library(sb_wire_typed_update_carrier_codec STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_update_carrier_codec.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_delete_carrier_codec.cpp
   )
   target_compile_features(sb_wire_typed_update_carrier_codec PUBLIC cxx_std_20)
   target_include_directories(sb_wire_typed_update_carrier_codec PUBLIC
@@ -403,6 +404,7 @@ add_library(sb_engine_internal_api
   diagnostics/diagnostic_rendering.cpp
   diagnostics/diagnostic_template_cache.cpp
   dml/constraint_enforcement.cpp
+  dml/mutation_savepoint_capability.cpp
   dml/delete_api.cpp
   dml/delete_batch.cpp
   dml/direct_bulk_append_cache.cpp
@@ -438,6 +440,22 @@ add_library(sb_engine_internal_api
   dml/transactional_relation_store.cpp
   dml/update_batch.cpp
   dml/update_datatype_operator_authority_provider.cpp
+  dml/update_text_target_authority_provider.cpp
+  dml/update_text_value_preparation.cpp
+  dml/update_resource_authority_provider.cpp
+  dml/delete_recovery_authority.cpp
+  dml/delete_datatype_operator_authority_provider.cpp
+  dml/delete_security_authority_provider.cpp
+  dml/delete_predicate_binding.cpp
+  dml/delete_effect_authority_provider.cpp
+  dml/delete_durable_authority_codec.cpp
+  dml/delete_durable_authority_owner.cpp
+  dml/delete_binding_authority.cpp
+  dml/delete_durable_owner_registry.cpp
+  dml/delete_descriptor_binding.cpp
+  dml/delete_candidate_mutation.cpp
+  dml/delete_descriptor_execution.cpp
+  mga_relation_store/mga_delete_durable_store.cpp
   dml/update_delete_optimized.cpp
   dml/update_durable_operation_authority_provider.cpp
   dml/update_immutable_authority_provider.cpp
@@ -461,6 +479,7 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_event_sequence_allocator.cpp
   mga_relation_store/mga_index_append_facade.cpp
   mga_relation_store/mga_large_value_store.cpp
+  mga_relation_store/mga_large_value_bounded_reader.cpp
   mga_relation_store/mga_relation_descriptor.cpp
   mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
@@ -471,6 +490,7 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_row_version_reader.cpp
   mga_relation_store/mga_row_version_writer.cpp
   mga_relation_store/mga_savepoint_store.cpp
+  mga_relation_store/mga_savepoint_marker_codec.cpp
   mga_relation_store/mga_secondary_index_coordination.cpp
   mga_relation_store/mga_update_durable_frame_store.cpp
   mga_relation_store/mga_update_durable_store.cpp

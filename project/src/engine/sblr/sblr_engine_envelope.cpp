@@ -1603,6 +1603,13 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.value_body.size() == 24 &&
         IsNonzeroUuidBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
+    const bool dml_delete_rows_descriptor =
+        envelope.operation_id == "dml.delete_rows" &&
+        envelope.opcode == "SBLR_DML_DELETE_ROWS" && envelope.opcode_code == 784 &&
+        envelope.operands.size() == 1 && operand.ordinal == 1 &&
+        operand.type == "dml.delete_rows" && operand.name == "request" &&
+        operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 24 &&
+        IsNonzeroUuidBytes(operand.value_body.data()) && Load64(operand.value_body.data() + 16) != 0;
     const bool dml_update_rows_descriptor =
         envelope.operation_id == "dml.update_rows" &&
         envelope.opcode == "SBLR_DML_UPDATE_ROWS" &&
@@ -1663,7 +1670,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.value_kind == SblrValueKind::expression_node_table &&
         DecodeSblrContextualComposedExpressionNodeTableV2(
             operand.value_body.data(), operand.value_body.size()).ok;
-    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || dml_update_rows_descriptor || plan_import_rows_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor || drop_subscription_descriptor || create_operator_descriptor || drop_operator_descriptor || contextual_composed_sbxn ||
+    const bool canonical_value_body = source_map_descriptor || error_vector_descriptor || dml_update_rows_descriptor || dml_delete_rows_descriptor || plan_import_rows_descriptor || alter_publication_descriptor || create_subscription_descriptor || alter_subscription_descriptor || drop_subscription_descriptor || create_operator_descriptor || drop_operator_descriptor || contextual_composed_sbxn ||
         ValidateValueBody(operand.value_kind, operand.value_body.data(),
                           operand.value_body.size(), 1, &value_count,
                           &limit_exceeded);
@@ -1694,7 +1701,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
     }
     if (operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 24 && !source_map_descriptor &&
-        !error_vector_descriptor && !dml_update_rows_descriptor &&
+        !error_vector_descriptor && !dml_update_rows_descriptor && !dml_delete_rows_descriptor &&
         !plan_import_rows_descriptor) {
       fail("SBLR.OPERAND_INVALID",
            "24-byte descriptor references require an exact registered metadata opcode");

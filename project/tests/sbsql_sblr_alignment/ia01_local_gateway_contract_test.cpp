@@ -136,6 +136,40 @@ std::vector<std::uint8_t> CanonicalPlanImportRowsPackage(bool malformed) {
   if (malformed && !encoded.empty()) encoded.back() ^= 1;
   return encoded;
 }
+std::vector<std::uint8_t> CanonicalDeleteRowsPackage(unsigned defect = 0) {
+  auto root = sblr::MakeSblrEnvelope(
+      "dml.delete_rows", "SBLR_DML_DELETE_ROWS", "gateway.delete_rows.root");
+  root.opcode_code = 784;
+  root.result_shape = "dml_result";
+  root.diagnostic_shape = "diagnostic_vector";
+  root.parser_package_uuid = kParserUuid;
+  root.registry_snapshot_uuid = kRegistryUuid;
+  root.requires_security_context = true;
+  root.requires_transaction_context = true;
+  root.parser_resolved_names_to_uuids = true;
+  sblr::SblrOperand operand;
+  operand.ordinal = 1;
+  operand.type = "dml.delete_rows";
+  operand.name = "request";
+  operand.value_kind = sblr::SblrValueKind::descriptor_ref;
+  operand.value_body.assign(kPackageBytes.begin(), kPackageBytes.end());
+  operand.value_body.resize(24);
+  operand.value_body[16] = 1;
+  if (defect == 1) operand.value_body.pop_back();
+  if (defect == 2) operand.value_body.push_back(0);
+  if (defect == 3) std::fill_n(operand.value_body.begin(), 16, 0);
+  if (defect == 4) operand.value_body[16] = 0;
+  if (defect == 5) operand.type = "dml.update_rows";
+  if (defect == 6) operand.name = "update";
+  if (defect == 7) operand.value_flags = 1;
+  root.operands.push_back(operand);
+  if (defect == 8) root.operands.push_back(operand);
+  sblr::SblrOpcodeStream stream;
+  stream.package_descriptor_uuid = kPackageUuid;
+  stream.registry_snapshot_uuid = kRegistryUuid;
+  stream.operations = {Frame(true), std::move(root), Frame(false)};
+  return sblr::EncodeSblrOpcodeStream(stream);
+}
 }  // namespace
 
 int main() {
@@ -284,6 +318,37 @@ int main() {
       malformed_plan_import_rows_refusal.diagnostic_id !=
           "SBLR.OPERAND_INVALID") {
     std::cerr << "malformed import plan did not precede cluster refusal\n";
+    ++failures;
+  }
+  auto delete_rows = request;
+  delete_rows.root_opcode_code = 784;
+  delete_rows.root_opcode = "SBLR_DML_DELETE_ROWS";
+  delete_rows.root_operation_id = "dml.delete_rows";
+  for (unsigned defect = 0; defect != 9; ++defect) {
+    delete_rows.canonical_sbos = CanonicalDeleteRowsPackage(defect);
+    const auto result = server::AdmitLocalNoClusterSblrGateway(delete_rows);
+    if (result.ok != (defect == 0)) {
+      std::cerr << "DELETE descriptor admission mismatch: " << defect << '\n';
+      ++failures;
+    }
+  }
+  delete_rows.canonical_sbos = CanonicalDeleteRowsPackage();
+  for (unsigned activation = 0; activation != 3; ++activation) {
+    auto clustered = delete_rows;
+    clustered.cluster_context_active = activation == 0;
+    clustered.cluster_transaction_active = activation == 1;
+    clustered.route_fence_present = activation == 2;
+    const auto result = server::AdmitLocalNoClusterSblrGateway(clustered);
+    if (result.ok || result.diagnostic_id !=
+                         "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
+      std::cerr << "DELETE cluster activation did not fail closed\n";
+      ++failures;
+    }
+  }
+  auto cross_kind = delete_rows;
+  cross_kind.root_operation_id = "dml.update_rows";
+  if (server::AdmitLocalNoClusterSblrGateway(cross_kind).ok) {
+    std::cerr << "DELETE accepted UPDATE root identity\n";
     ++failures;
   }
   return failures == 0 ? 0 : 1;

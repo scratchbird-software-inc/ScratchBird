@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_datatype_operator_authority_provider.hpp"
+#include "dml/datatype_operator_registry_projection.hpp"
 
 #include "api_diagnostics.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -156,160 +157,11 @@ EngineApiDiagnostic ValidateRequest(
   return Ok();
 }
 
-struct DatatypeReference {
-  update_wire::TypedUpdateUuid descriptor_uuid{};
-  std::uint64_t descriptor_generation = 0;
-  update_wire::TypedUpdateUuid type_uuid{};
-  std::uint64_t type_generation = 0;
-  std::string codec_id;
-  std::uint16_t codec_version = 0;
-  std::uint64_t codec_generation = 0;
-
-  bool operator==(const DatatypeReference&) const = default;
-};
-
-void AddReference(const DatatypeReference& reference,
-                  std::vector<DatatypeReference>* references) {
-  if (std::find(references->begin(), references->end(), reference) ==
-      references->end()) {
-    references->push_back(reference);
-  }
-}
-
-bool DatatypeRowLess(
-    const update_wire::TypedUpdateDatatypeAuthorityRecord& left,
-    const update_wire::TypedUpdateDatatypeAuthorityRecord& right) {
-  if (left.descriptor_uuid != right.descriptor_uuid) {
-    return left.descriptor_uuid < right.descriptor_uuid;
-  }
-  if (left.descriptor_generation != right.descriptor_generation) {
-    return left.descriptor_generation < right.descriptor_generation;
-  }
-  return left.type_uuid < right.type_uuid;
-}
-
-bool BuildDatatypeRecord(
-    const EngineRequestContext& context,
-    const DatatypeReference& reference,
-    update_wire::TypedUpdateDatatypeAuthorityRecord* record) {
-  if (record == nullptr) return false;
-  const auto lookup = datatype_catalog::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid.canonical,
-      context.datatype_catalog_generation,
-      context.datatype_registry_generation,
-      UuidText(reference.descriptor_uuid), reference.descriptor_generation);
-  if (!lookup.ok || lookup.row.type_uuid != UuidText(reference.type_uuid) ||
-      lookup.row.type_generation != reference.type_generation ||
-      lookup.row.codec_id != reference.codec_id ||
-      lookup.row.codec_version != reference.codec_version ||
-      lookup.row.codec_generation != reference.codec_generation ||
-      lookup.row.datatype_identity_code == 0 ||
-      lookup.row.null_encoding_code == 0 ||
-      lookup.row.byte_order_code == 0 ||
-      lookup.row.representation_code == 0 ||
-      lookup.row.canonical_name.empty() ||
-      lookup.row.canonical_value_minimum_bytes == 0 ||
-      lookup.row.canonical_value_minimum_bytes !=
-          lookup.row.canonical_value_maximum_bytes ||
-      lookup.row.canonical_value_minimum_bytes !=
-          lookup.row.canonical_value_exact_bytes ||
-      lookup.row.canonical_value_exact_bytes !=
-          lookup.row.canonical_value_bytes ||
-      !TypedUuid(lookup.row.descriptor_uuid, &record->descriptor_uuid) ||
-      !TypedUuid(lookup.row.type_uuid, &record->type_uuid) ||
-      !TypedUuid(lookup.row.catalog_snapshot_uuid,
-                 &record->datatype_snapshot_uuid)) {
-    return false;
-  }
-  record->datatype_identity_code =
-      static_cast<update_wire::TypedUpdateDatatypeIdentityCode>(
-          lookup.row.datatype_identity_code);
-  record->null_encoding_code =
-      static_cast<update_wire::TypedUpdateNullEncodingCode>(
-          lookup.row.null_encoding_code);
-  record->byte_order_code =
-      static_cast<update_wire::TypedUpdateByteOrderCode>(
-          lookup.row.byte_order_code);
-  record->is_signed = lookup.row.signed_code;
-  record->descriptor_generation = lookup.row.descriptor_generation;
-  record->type_generation = lookup.row.type_generation;
-  record->codec_version = lookup.row.codec_version;
-  record->canonical_name = lookup.row.canonical_name;
-  record->codec_id = lookup.row.codec_id;
-  record->representation_code =
-      static_cast<update_wire::TypedUpdateRepresentationCode>(
-          lookup.row.representation_code);
-  record->codec_generation = lookup.row.codec_generation;
-  record->canonical_value_minimum_bytes =
-      lookup.row.canonical_value_minimum_bytes;
-  record->canonical_value_maximum_bytes =
-      lookup.row.canonical_value_maximum_bytes;
-  record->canonical_value_exact_bytes =
-      lookup.row.canonical_value_exact_bytes;
-  record->datatype_catalog_generation = lookup.row.catalog_generation;
-  record->datatype_registry_generation = lookup.row.registry_generation;
-  return true;
-}
-
-bool BuildOperatorRecord(
-    const update_wire::TypedUpdateDescriptorCarrier& descriptor,
-    const update_wire::TypedUpdatePredicateVector& predicate,
-    update_wire::TypedUpdateBuiltinOperatorAuthorityRecord* record) {
-  if (record == nullptr || predicate.records.size() != 3) return false;
-  const auto& left = predicate.records[0];
-  const auto& right = predicate.records[1];
-  const auto& comparison = predicate.records[2];
-  const auto lookup =
-      datatype_catalog::LookupBuiltinOperatorTypeCodecIdentityV1(
-          UuidText(descriptor.builtin_operator_snapshot_uuid),
-          descriptor.builtin_operator_registry_generation,
-          UuidText(comparison.operator_uuid), comparison.operator_generation,
-          UuidText(left.output_descriptor_uuid),
-          left.output_descriptor_generation, UuidText(left.output_type_uuid),
-          left.output_type_generation, UuidText(right.output_descriptor_uuid),
-          right.output_descriptor_generation,
-          UuidText(right.output_type_uuid), right.output_type_generation);
-  if (!lookup.ok ||
-      !TypedUuid(lookup.row.operator_uuid, &record->operator_uuid) ||
-      !TypedUuid(lookup.row.operator_snapshot_uuid,
-                 &record->operator_snapshot_uuid) ||
-      !TypedUuid(lookup.row.left_descriptor_uuid,
-                 &record->left_descriptor_uuid) ||
-      !TypedUuid(lookup.row.left_type_uuid, &record->left_type_uuid) ||
-      !TypedUuid(lookup.row.right_descriptor_uuid,
-                 &record->right_descriptor_uuid) ||
-      !TypedUuid(lookup.row.right_type_uuid, &record->right_type_uuid) ||
-      !TypedUuid(lookup.row.result_descriptor_uuid,
-                 &record->result_descriptor_uuid) ||
-      !TypedUuid(lookup.row.result_type_uuid, &record->result_type_uuid)) {
-    return false;
-  }
-  record->operator_ordinal = 1;
-  record->semantic_code = lookup.row.semantic_code;
-  record->operand_arity = lookup.row.operand_arity;
-  record->null_behavior_code = lookup.row.null_behavior_code;
-  record->accepted_state = lookup.row.accepted_state;
-  record->operator_generation = lookup.row.operator_generation;
-  record->operator_registry_generation =
-      lookup.row.operator_registry_generation;
-  record->left_descriptor_generation =
-      lookup.row.left_descriptor_generation;
-  record->left_type_generation = lookup.row.left_type_generation;
-  record->right_descriptor_generation =
-      lookup.row.right_descriptor_generation;
-  record->right_type_generation = lookup.row.right_type_generation;
-  record->result_descriptor_generation =
-      lookup.row.result_descriptor_generation;
-  record->result_type_generation = lookup.row.result_type_generation;
-  record->result_codec_version = lookup.row.result_codec_version;
-  record->operator_family_code = lookup.row.operator_family_code;
-  record->result_codec_generation = lookup.row.result_codec_generation;
-  record->result_codec_id = lookup.row.result_codec_id;
-  record->operand_identity_rule = lookup.row.operand_identity_rule;
-  record->result_null_encoding_code =
-      lookup.row.result_null_encoding_code;
-  return true;
-}
+using datatype_operator_projection::DatatypeReference;
+using datatype_operator_projection::AddReference;
+using datatype_operator_projection::DatatypeRowLess;
+using datatype_operator_projection::BuildDatatypeRecord;
+using datatype_operator_projection::BuildOperatorRecord;
 
 }  // namespace
 
@@ -484,7 +336,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
                   node.output_codec_version, node.output_codec_generation},
                  &references);
   }
-  if (references.empty() || references.size() > 5) {
+  if (references.empty() || references.size() > 6) {
     result.diagnostic = Diagnostic(
         "DATATYPE.DESCRIPTOR_INVALID",
         "sblr.dml_update_rows.datatype_reference_count_invalid");
@@ -506,6 +358,10 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
           "DATATYPE.DESCRIPTOR_INVALID",
           "sblr.dml_update_rows.datatype_registry_row_unavailable");
       return result;
+    }
+    if (row.datatype_identity_code ==
+        update_wire::TypedUpdateDatatypeIdentityCode::text_v2) {
+      datatypes.format_version = 2;
     }
     datatypes.records.push_back(std::move(row));
   }
@@ -605,6 +461,27 @@ EngineApiDiagnostic RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
   }
   const auto& datatype = *captured.datatype_snapshot_handle.authority_;
   const auto& operation = *captured.operator_snapshot_handle.authority_;
+  update_wire::TypedUpdateCarrierError error;
+  update_wire::TypedUpdateDescriptorCarrier descriptor;
+  update_wire::TypedUpdateAssignmentVector assignments;
+  update_wire::TypedUpdatePredicateVector predicate;
+  if (captured.datatypes.exact_bytes != captured.exact_datatype_authority_dudv ||
+      captured.operators.exact_bytes != captured.exact_builtin_operator_authority_duov) {
+    return Diagnostic("DML.UPDATE_FAILED",
+                      "sblr.dml_update_rows.datatype_operator_projection_invalid");
+  }
+  if (!update_wire::DecodeAndValidateTypedUpdateDescriptor(
+          datatype.exact_descriptor_dudc, &descriptor, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdateAssignmentVector(
+          datatype.exact_assignment_vector_duav, &assignments, &error) ||
+      !update_wire::DecodeAndValidateTypedUpdatePredicateVector(
+          datatype.exact_predicate_vector_duev, &predicate, &error) ||
+      !update_wire::ValidateTypedUpdateDatatypeOperatorAuthority(
+          descriptor, assignments, predicate, captured.datatypes,
+          captured.operators, &error)) {
+    return CarrierDiagnostic(
+        error, "sblr.dml_update_rows.datatype_operator_projection_invalid");
+  }
   if (context.database_uuid.canonical != datatype.database_uuid ||
       context.database_uuid.canonical != operation.database_uuid ||
       context.statement_receipt_uuid.canonical !=
@@ -671,6 +548,15 @@ EngineApiDiagnostic RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
     return Diagnostic(
         "DML.UPDATE_FAILED",
         "sblr.dml_update_rows.recovered_datatype_operator_bytes_missing");
+  }
+  // Validate supplied projections against their retained bytes before looking
+  // up live authority. Matching saved bytes must not hide altered host fields,
+  // format substitution, invalid evidence or a malformed durable value.
+  update_wire::TypedUpdateCarrierError error;
+  if (!update_wire::ValidateTypedUpdateDatatypeOperatorAuthority(
+          descriptor, assignments, predicate, datatypes, operators, &error)) {
+    return CarrierDiagnostic(
+        error, "sblr.dml_update_rows.recovered_datatype_operator_invalid");
   }
   EngineDmlUpdateDatatypeOperatorAuthorityCaptureRequestV1 request;
   request.context = context;

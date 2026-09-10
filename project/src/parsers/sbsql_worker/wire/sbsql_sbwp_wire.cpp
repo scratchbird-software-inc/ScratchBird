@@ -3678,9 +3678,43 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   // still admitting intentionally sparse observability rows whose named fields
   // vary from row to row.
   std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
+  std::string previous_row_index;
+  std::vector<std::pair<std::string, std::size_t>> previous_fields;
   std::istringstream in{std::string(payload)};
   std::string line;
   while (std::getline(in, line)) {
+    if (line.starts_with("row_meta[")) {
+      const auto eq = line.find("]=");
+      const auto malformed_metadata = [&]() {
+        rowset.malformed = true;
+        rowset.malformed_detail = "The engine result NULL metadata does not match its exact row fields.";
+        return rowset;
+      };
+      if (eq == std::string::npos || previous_fields.empty() || rowset.rows.empty() ||
+          line.substr(9, eq - 9) != previous_row_index) return malformed_metadata();
+      std::string_view metadata = std::string_view(line).substr(eq + 2);
+      std::size_t ordinal = 0;
+      while (true) {
+        const auto end = metadata.find(';');
+        const auto field = metadata.substr(0, end);
+        const auto state_separator = field.rfind(':');
+        const auto type_separator = state_separator == field.npos || state_separator == 0
+            ? field.npos : field.rfind(':', state_separator - 1);
+        if (ordinal >= previous_fields.size() || type_separator == field.npos ||
+            field.substr(0, type_separator) != previous_fields[ordinal].first)
+          return malformed_metadata();
+        const auto state = field.substr(state_separator + 1);
+        if (state == "null") {
+          rowset.rows.back()[previous_fields[ordinal].second] = std::nullopt;
+        } else if (state != "not_null") return malformed_metadata();
+        ++ordinal;
+        if (end == metadata.npos) break;
+        metadata.remove_prefix(end + 1);
+      }
+      if (ordinal != previous_fields.size()) return malformed_metadata();
+      previous_fields.clear();
+      continue;
+    }
     if (!line.starts_with("row[")) continue;
     const auto eq = line.find("]=");
     if (eq == std::string::npos) {
@@ -3690,6 +3724,8 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
       return rowset;
     }
     const std::string_view body = std::string_view(line).substr(eq + 2);
+    previous_row_index = line.substr(4, eq - 4);
+    previous_fields.clear();
     const auto fields = ParseFieldList(body);
     if (fields.empty()) {
       if (!body.empty()) {
@@ -3720,6 +3756,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         found = column_index.find(key);
       }
       row[found->second] = value;
+      previous_fields.emplace_back(name, found->second);
     }
     rowset.rows.push_back(std::move(row));
   }

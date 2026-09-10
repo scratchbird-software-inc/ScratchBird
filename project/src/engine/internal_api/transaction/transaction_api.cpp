@@ -13,6 +13,8 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/delete_durable_owner_registry.hpp"
+#include "dml/update_resource_authority_provider.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction/local_commit_publication.hpp"
@@ -1553,6 +1555,11 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
   }
   const std::string canonical_statement_uuid =
       UuidToString(statement_uuid.value.value);
+  if (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
+      !PrepareDmlDeleteTransactionFinalityV1(request.context)) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(request.context, operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "DML_statement_reconciliation_required"));
+  }
   auto published = PublishStatementStableSnapshotVector(
       loaded.inventory,
       MakeLocalTransactionId(request.context.local_transaction_id),
@@ -1802,6 +1809,11 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   if (!exact_identity.entry.has_value()) {
     return trace_and_return(RefuseCommitBeforeInventoryMutation(
         request.context, operation_id, exact_identity.refusal_reason));
+  }
+  if (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
+      !PrepareDmlDeleteTransactionFinalityV1(request.context)) {
+    return trace_and_return(RefuseCommitBeforeInventoryMutation(
+        request.context, operation_id, "DML_statement_reconciliation_required"));
   }
   if (auto policy_error = EnforceRuntimePolicyForExistingTransaction<EngineCommitTransactionResult>(
           request, operation_id, loaded.inventory, false)) {
@@ -2119,6 +2131,12 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
   const bool read_only_finalize =
       current_entry->state == TransactionState::read_only_active;
+  if (request.statement_succeeded &&
+      (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
+       !PrepareDmlDeleteTransactionFinalityV1(request.context))) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(request.context, operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "DML_statement_reconciliation_required"));
+  }
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
   CommitDurabilityBatchDecision durability_batch;

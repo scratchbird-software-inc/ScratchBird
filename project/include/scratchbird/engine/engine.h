@@ -258,6 +258,9 @@ sb_engine_open(const sb_engine_open_params_v1_t* params,
                sb_engine_handle_t* out_engine,
                sb_engine_result_t* out_result);
 
+/* Close after quiescing sessions. If durable DML resource reconciliation is
+ * pending, returns CONFLICT without destroying the handle; new DML resource
+ * admission is stopped. Finish execution/recovery and retry close. */
 SCRATCHBIRD_ENGINE_API sb_engine_status_t SCRATCHBIRD_ENGINE_CALL
 sb_engine_close(sb_engine_handle_t engine, sb_engine_result_t* out_result);
 

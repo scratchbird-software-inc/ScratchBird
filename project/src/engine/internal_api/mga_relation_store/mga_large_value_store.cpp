@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_large_value_store.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 
 #include "api_diagnostics.hpp"
@@ -498,6 +499,10 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     const std::string& cleanup_reason,
     std::set<std::string>* already_reclaimed_overflow_uuids,
     std::uint64_t* reclaimed_count) {
+  EngineRequestContext owner = context;
+  owner.local_transaction_id = local_transaction_id;
+  const auto savepoint = AdmitMgaSavepointProducer(owner, MgaMutationProducer::large_value_reclaim);
+  if (savepoint.error) return savepoint;
   if (already_reclaimed_overflow_uuids == nullptr || reclaimed_count == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.large_value", "reclaim_state_required");
   }

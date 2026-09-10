@@ -8565,6 +8565,11 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     if (sb_engine_result_completion(engine_result, &completion) ==
         SB_ENGINE_STATUS_OK) {
       dispatch_result.affected_rows = completion.affected_rows;
+      // Presence is semantic, not "count != 0". In the authenticated receipt
+      // route an empty UPDATE still has a result carrier, but that carrier's
+      // row count must never replace the engine's zero affected-row count.
+      dispatch_result.affected_rows_present = IsDmlMutationCompletionOperation(
+          StringViewToString(completion.operation_id));
     }
     // Cursor execution normally defers payload publication to FETCH.  EXECUTE
     // DIRECT and catalog introspection are exceptions: their exact terminal

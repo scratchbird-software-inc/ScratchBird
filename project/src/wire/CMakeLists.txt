@@ -23,7 +23,8 @@ endif()
 
 if(NOT TARGET sb_wire_typed_update_carrier_codec)
   add_library(sb_wire_typed_update_carrier_codec STATIC
-    typed_update_carrier_codec.cpp)
+    typed_update_carrier_codec.cpp
+    typed_delete_carrier_codec.cpp)
   target_compile_features(sb_wire_typed_update_carrier_codec PUBLIC cxx_std_20)
   target_include_directories(sb_wire_typed_update_carrier_codec PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR})

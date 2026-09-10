@@ -526,6 +526,19 @@ bool ValidateFullDescriptorIdentity() {
   passed &= mutate("precision=19", "precision=18",
                    "encoded precision drift was admitted");
   passed &= mutate("scale=3", "scale=2", "encoded scale drift was admitted");
+  for (const auto source : {"BIGINT", "int64"}) {
+    changed = row;
+    changed[0].descriptor.encoded_descriptor += std::string(";source_type=") + source;
+    passed &= Evaluate(dag, 7, binding, changed, api::EngineSqlTruthValue::true_value);
+  }
+  for (const auto suffix : {";source_type=INTEGER", ";source_type=",
+                             ";source_type=unknown", ";source_type=BIGINT;source_type=int64",
+                             ";source_type=BIGINT;unrecognized=1"}) {
+    changed = row;
+    changed[0].descriptor.encoded_descriptor += suffix;
+    passed &= Refuses(dag, 7, binding, changed,
+                       "invalid DDL source-type annotation was admitted");
+  }
   return passed;
 }
 

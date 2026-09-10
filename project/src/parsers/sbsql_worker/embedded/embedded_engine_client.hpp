@@ -175,6 +175,9 @@ class EmbeddedEngineClient {
   ipc::ServerBulkImportSealResult SealBulkImportStream(
       const SessionContext& session,
       const scratchbird::wire::sbps_bulk_import::Seal& seal);
+  ipc::ServerVariableBindingResult CoordinateDmlDeleteRowsBind(
+      const SessionContext& session,
+      const std::vector<std::uint8_t>& canonical_request);
   ipc::ServerVariableBindingResult CoordinateDmlUpdateRowsBind(
       const SessionContext& session,
       const std::vector<std::uint8_t>& canonical_request);

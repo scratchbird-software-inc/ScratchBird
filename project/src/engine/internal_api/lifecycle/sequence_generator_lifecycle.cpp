@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lifecycle/sequence_generator_lifecycle.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -335,6 +336,8 @@ std::uint64_t NextEventSalt(const EngineRequestContext& context) {
 }
 
 bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagnostic* diagnostic) {
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::sequence_default);
+  if (savepoint.error) { *diagnostic = savepoint; return false; }
   if (context.database_path.empty()) {
     *diagnostic = SequenceDiagnostic(kSequenceDiagnosticDatabasePathRequired, "database_path");
     return false;
@@ -1375,6 +1378,9 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
 EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
     const EngineSequenceRecoverGeneratorStateRequest& request) {
   constexpr const char* kOperation = "sequence.generator.recover";
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);
+  if (savepoint.error)
+    return DiagnosticResult<EngineSequenceRecoverGeneratorStateResult>(request.context, kOperation, savepoint);
   if (request.context.database_path.empty()) {
     return DiagnosticResult<EngineSequenceRecoverGeneratorStateResult>(
         request.context,
@@ -1424,6 +1430,9 @@ EngineSequenceRecoverGeneratorStateResult EngineSequenceRecoverGeneratorState(
 EngineSequenceEvaluateMgaRetentionResult EngineSequenceEvaluateMgaRetention(
     const EngineSequenceEvaluateMgaRetentionRequest& request) {
   constexpr const char* kOperation = "sequence.generator.evaluate_mga_retention";
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::sequence_default);
+  if (savepoint.error)
+    return DiagnosticResult<EngineSequenceEvaluateMgaRetentionResult>(request.context, kOperation, savepoint);
   if (request.context.database_path.empty()) {
     return DiagnosticResult<EngineSequenceEvaluateMgaRetentionResult>(
         request.context,

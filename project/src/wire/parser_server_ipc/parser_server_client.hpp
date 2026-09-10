@@ -647,6 +647,9 @@ class SbpsClient {
   ServerVariableBindingResult CoordinateAccessCursorClose(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateInsert(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateUpdate(const ParserSessionContext&,const std::vector<std::uint8_t>&) const;
+  ServerVariableBindingResult CoordinateDmlDeleteRowsBind(
+      const ParserSessionContext&,
+      const std::vector<std::uint8_t>&) const;
   ServerVariableBindingResult CoordinateDmlUpdateRowsBind(
       const ParserSessionContext&,
       const std::vector<std::uint8_t>&) const;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/security_principal_lifecycle.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_registry.hpp"
@@ -364,6 +365,8 @@ EngineApiDiagnostic ValidateSecurityAuthority(const EngineApiRequest& request,
 }
 
 EngineApiDiagnostic ValidateMutatingContext(const EngineRequestContext& context) {
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::security_mutation);
+  if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabasePathRequired, "database_path");
   }
@@ -957,6 +960,8 @@ EngineSecurityAuditRecord MakeAudit(const EngineRequestContext& context,
 
 EngineApiDiagnostic AppendEvents(const EngineRequestContext& context,
                                  const std::vector<std::string>& events) {
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::security_mutation);
+  if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return PrincipalDiagnostic(kSecurityPrincipalDiagnosticDatabasePathRequired, "database_path");
   }
@@ -1676,7 +1681,13 @@ TResult MutatingSetupFailure(const EngineApiRequest& request,
 }
 
 std::mutex g_security_policy_snapshot_authority_mutex;
-std::unordered_map<std::string, EngineSecurityPolicySnapshotAuthorityV1>
+struct BoundSecurityPolicySnapshot {
+  EngineSecurityPolicySnapshotAuthorityV1 snapshot;
+  // Live receipt fences are separate from the durable catalog generations.
+  std::uint64_t runtime_security_epoch;
+  std::uint64_t runtime_policy_epoch;
+};
+std::unordered_map<std::string, BoundSecurityPolicySnapshot>
     g_security_policy_snapshot_authorities;
 std::uint64_t g_security_policy_snapshot_ordinal = 0;
 
@@ -1751,15 +1762,17 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
       loaded.state.policy_generation == 0 ||
       loaded.state.security_context_generation == 0 ||
       loaded.state.security_context_generation !=
-          context.authorization_context.security_context_generation ||
-      loaded.state.security_generation !=
-          context.authorization_context.security_epoch ||
-      loaded.state.policy_generation !=
-          context.authorization_context.policy_epoch) {
+          context.authorization_context.security_context_generation) {
     return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
                                "durable_materialized_generation_mismatch");
   }
 
+  // The authenticated context's security/policy epochs describe the runtime
+  // configuration fence, not the catalog event generations below. The
+  // page-backed AUTH_CONTEXT_SUCCESSOR generation binds every authorization
+  // mutation to this materialized context; LoadState validates that chain.
+  // Comparing either event generation to a configuration epoch falsely
+  // rejects current contexts whenever grants or policies have been changed.
   std::vector<EngineSecurityPolicyCatalogRowIdentityV1> admitted;
   for (const auto& policy : context.authorization_context.policies) {
     if (policy.target_uuid.canonical != target_relation_uuid) continue;
@@ -1919,8 +1932,10 @@ IssueEngineSecurityPolicySnapshotAuthorityV1(
         "policy_snapshot_identity_issue_failed");
     return result;
   }
-  g_security_policy_snapshot_authorities.emplace(snapshot.snapshot_uuid,
-                                                 snapshot);
+  g_security_policy_snapshot_authorities.emplace(
+      snapshot.snapshot_uuid,
+      BoundSecurityPolicySnapshot{snapshot, context.security_epoch,
+                                  context.authorization_context.policy_epoch});
   result.ok = true;
   result.diagnostic = OkDiagnostic();
   result.snapshot = std::move(snapshot);
@@ -1945,7 +1960,10 @@ EngineApiDiagnostic RevalidateEngineSecurityPolicySnapshotAuthorityV1(
   const auto found =
       g_security_policy_snapshot_authorities.find(admitted.snapshot_uuid);
   if (found == g_security_policy_snapshot_authorities.end() ||
-      found->second != admitted) {
+      found->second.snapshot != admitted ||
+      found->second.runtime_security_epoch != context.security_epoch ||
+      found->second.runtime_policy_epoch !=
+          context.authorization_context.policy_epoch) {
     return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyStale,
                                "policy_snapshot_unknown_or_forged");
   }
@@ -2076,11 +2094,17 @@ RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
   const auto found =
       g_security_policy_snapshot_authorities.find(snapshot_uuid);
   if (found != g_security_policy_snapshot_authorities.end()) {
-    if (found->second != current) {
+    if (found->second.snapshot != current ||
+        found->second.runtime_security_epoch != context.security_epoch ||
+        found->second.runtime_policy_epoch !=
+            context.authorization_context.policy_epoch) {
       return refuse("durable_security_snapshot_identity_conflict");
     }
   } else {
-    g_security_policy_snapshot_authorities.emplace(snapshot_uuid, current);
+    g_security_policy_snapshot_authorities.emplace(
+        snapshot_uuid,
+        BoundSecurityPolicySnapshot{current, context.security_epoch,
+                                    context.authorization_context.policy_epoch});
   }
   result.ok = true;
   result.diagnostic = OkDiagnostic();

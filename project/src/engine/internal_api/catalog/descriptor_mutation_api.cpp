@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/descriptor_mutation_api.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -50,6 +51,10 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
     const EngineCatalogDescriptorMutationRequest& request) {
   const std::string operation_id =
       request.operation_id.empty() ? "catalog.mutation.descriptor" : request.operation_id;
+  const auto savepoint = AdmitMgaSavepointProducer(request.context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error)
+    return MakeApiBehaviorDiagnostic<EngineCatalogDescriptorMutationResult>(
+        request.context, operation_id, savepoint);
   if (request.context.read_only_mode) {
     return MakeApiBehaviorDiagnostic<EngineCatalogDescriptorMutationResult>(
         request.context,

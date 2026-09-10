@@ -79,6 +79,10 @@ constexpr std::string_view kDatatypeAuthorityVectorDomain =
     "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityVector.V1";
 constexpr std::string_view kDatatypeAuthorityRecordDomain =
     "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityRecord.V1";
+constexpr std::string_view kDatatypeAuthorityVectorDomainV2 =
+    "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityVector.V2";
+constexpr std::string_view kDatatypeAuthorityRecordDomainV2 =
+    "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityRecord.V2";
 constexpr std::string_view kBuiltinOperatorAuthorityVectorDomain =
     "ScratchBird.SblrDmlUpdateRowsBuiltinOperatorAuthorityVector.V1";
 constexpr std::string_view kBuiltinOperatorAuthorityRecordDomain =
@@ -148,19 +152,16 @@ bool ValidCodecId(std::string_view value) {
   });
 }
 
-bool ValidUtf8EvidenceField(std::string_view value, bool forbid_equals) {
-  if (value.empty()) {
-    return false;
-  }
-  const auto* bytes = reinterpret_cast<const unsigned char*>(value.data());
+bool ValidUtf8ScalarSequence(std::span<const byte> value, u64* scalar_count = nullptr) {
+  if (scalar_count != nullptr) *scalar_count = 0;
+  u64 count = 0;
+  const auto* bytes = value.data();
   std::size_t offset = 0;
   while (offset < value.size()) {
     const unsigned char first = bytes[offset];
     if (first <= 0x7f) {
-      if (first == 0 || (forbid_equals && first == '=')) {
-        return false;
-      }
       ++offset;
+      ++count;
       continue;
     }
     std::size_t length = 0;
@@ -173,7 +174,7 @@ bool ValidUtf8EvidenceField(std::string_view value, bool forbid_equals) {
     } else {
       return false;
     }
-    if (offset + length > value.size()) {
+    if (length > value.size() - offset) {
       return false;
     }
     for (std::size_t index = 1; index < length; ++index) {
@@ -188,8 +189,19 @@ bool ValidUtf8EvidenceField(std::string_view value, bool forbid_equals) {
       return false;
     }
     offset += length;
+    ++count;
   }
+  if (scalar_count != nullptr) *scalar_count = count;
   return true;
+}
+
+bool ValidUtf8EvidenceField(std::string_view value, bool forbid_equals) {
+  if (value.empty() || value.find('\0') != std::string_view::npos ||
+      (forbid_equals && value.find('=') != std::string_view::npos)) {
+    return false;
+  }
+  return ValidUtf8ScalarSequence(std::span<const byte>(
+      reinterpret_cast<const byte*>(value.data()), value.size()));
 }
 
 void StoreUuid(std::vector<byte>* bytes,
@@ -275,7 +287,8 @@ bool ValidateHeader(std::span<const byte> encoded,
                     std::optional<u32> exact_total_bytes,
                     TypedUpdateCarrierKind carrier,
                     TypedUpdateCarrierError* error,
-                    const char* diagnostic = kOperandInvalid) {
+                    const char* diagnostic = kOperandInvalid,
+                    u16 expected_version = kTypedUpdateCarrierVersion) {
   if (encoded.size() < 4) {
     return Fail(error, TypedUpdateCarrierErrorCode::extent_invalid,
                 diagnostic, carrier, "header", 0,
@@ -291,13 +304,14 @@ bool ValidateHeader(std::span<const byte> encoded,
                 diagnostic, carrier, "header", 0,
                 "carrier is shorter than the fixed header");
   }
-  if (LoadLittle16(encoded.data() + 4) != kTypedUpdateCarrierVersion) {
+  if (LoadLittle16(encoded.data() + 4) != expected_version) {
     return Fail(error, TypedUpdateCarrierErrorCode::version_invalid,
                 diagnostic, carrier, "version", 0,
-                "carrier version is not exact v1");
+                "carrier version is not the exact admitted version");
   }
   const u32 total_bytes = LoadLittle32(encoded.data() + 8);
-  if (LoadLittle16(encoded.data() + 6) != header_bytes ||
+  if (encoded.size() < header_bytes ||
+      LoadLittle16(encoded.data() + 6) != header_bytes ||
       total_bytes != encoded.size() ||
       (exact_total_bytes.has_value() &&
        total_bytes != exact_total_bytes.value())) {
@@ -426,6 +440,10 @@ bool ValidateDescriptorFields(const TypedUpdateDescriptorCarrier& value,
 }
 
 }  // namespace
+
+bool ValidateTypedUpdateTextUtf8V2(std::span<const byte> value, u64* scalar_count) {
+  return scalar_count != nullptr && ValidUtf8ScalarSequence(value, scalar_count);
+}
 
 bool EncodeTypedUpdateDescriptor(const TypedUpdateDescriptorCarrier& value,
                                  std::vector<byte>* encoded,
@@ -3681,7 +3699,16 @@ constexpr std::array<DatatypeAuthoritySpec, 5> kDatatypeAuthoritySpecs{{
 }};
 
 const DatatypeAuthoritySpec* DatatypeSpec(
-    TypedUpdateDatatypeIdentityCode code) {
+    TypedUpdateDatatypeIdentityCode code, u16 format_version) {
+  static constexpr DatatypeAuthoritySpec text{
+      TypedUpdateDatatypeIdentityCode::text_v2, "text",
+      {0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x18},
+      {0x01, 0x9d, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0xd7, 0x19},
+      "datatype.text.utf8.v1", 0,
+      TypedUpdateNullEncodingCode::containing_slot_value_or_null_state,
+      TypedUpdateByteOrderCode::byte_sequence, false,
+      TypedUpdateRepresentationCode::utf8_scalar_sequence};
+  if (format_version == 2 && code == text.code) return &text;
   const auto iterator = std::find_if(
       kDatatypeAuthoritySpecs.begin(), kDatatypeAuthoritySpecs.end(),
       [code](const DatatypeAuthoritySpec& row) { return row.code == code; });
@@ -3743,14 +3770,14 @@ bool ValidateDatatypeAuthorityRecord(
     const TypedUpdateDatatypeAuthorityRecord& record,
     u32 expected_ordinal,
     TypedUpdateCarrierError* error,
-    u32 record_index) {
+    u32 record_index, u16 format_version) {
   constexpr auto carrier = TypedUpdateCarrierKind::datatype_authority_vector;
   if (record.datatype_ordinal != expected_ordinal) {
     return Fail(error, TypedUpdateCarrierErrorCode::ordinal_invalid,
                 kUpdateFailed, carrier, "datatype_ordinal", record_index,
                 "DUDR ordinals must be dense from one");
   }
-  const auto* spec = DatatypeSpec(record.datatype_identity_code);
+  const auto* spec = DatatypeSpec(record.datatype_identity_code, format_version);
   if (spec == nullptr) {
     return Fail(error,
                 TypedUpdateCarrierErrorCode::datatype_authority_invalid,
@@ -3770,7 +3797,9 @@ bool ValidateDatatypeAuthorityRecord(
       record.codec_id != spec->codec_id || record.codec_version != 1 ||
       record.codec_generation != 1 ||
       record.canonical_value_minimum_bytes != spec->width ||
-      record.canonical_value_maximum_bytes != spec->width ||
+      record.canonical_value_maximum_bytes !=
+          (record.datatype_identity_code == TypedUpdateDatatypeIdentityCode::text_v2
+               ? 16777216U : spec->width) ||
       record.canonical_value_exact_bytes != spec->width ||
       record.null_encoding_code != spec->null_encoding ||
       record.byte_order_code != spec->byte_order ||
@@ -3823,10 +3852,10 @@ bool EncodeDatatypeAuthorityRecord(
     u32 expected_ordinal,
     std::vector<byte>* encoded,
     TypedUpdateCarrierError* error,
-    u32 record_index) {
+    u32 record_index, u16 format_version) {
   constexpr auto carrier = TypedUpdateCarrierKind::datatype_authority_vector;
   if (!ValidateDatatypeAuthorityRecord(record, expected_ordinal, error,
-                                       record_index)) {
+                                       record_index, format_version)) {
     return false;
   }
   std::vector<byte> result(kTypedUpdateDatatypeAuthorityRecordBytes, 0);
@@ -3858,7 +3887,8 @@ bool EncodeDatatypeAuthorityRecord(
   StoreFixedAscii(&result, 120, record.canonical_name);
   StoreFixedAscii(&result, 152, record.codec_id);
   TypedUpdateHash evidence{};
-  if (!ComputeEvidence(kDatatypeAuthorityRecordDomain,
+  if (!ComputeEvidence(format_version == 2 ? kDatatypeAuthorityRecordDomainV2
+                                          : kDatatypeAuthorityRecordDomain,
                        std::span<const byte>(result.data(), 216),
                        &evidence, error, carrier,
                        "record_evidence_sha256", record_index,
@@ -3875,7 +3905,7 @@ bool DecodeDatatypeAuthorityRecord(
     u32 expected_ordinal,
     TypedUpdateDatatypeAuthorityRecord* decoded,
     TypedUpdateCarrierError* error,
-    u32 record_index) {
+    u32 record_index, u16 format_version) {
   constexpr auto carrier = TypedUpdateCarrierKind::datatype_authority_vector;
   if (encoded.size() != kTypedUpdateDatatypeAuthorityRecordBytes) {
     return Fail(error, TypedUpdateCarrierErrorCode::extent_invalid,
@@ -3923,11 +3953,13 @@ bool DecodeDatatypeAuthorityRecord(
   }
   value.record_evidence_sha256 = LoadHash(encoded, 216);
   if (!ValidateDatatypeAuthorityRecord(value, expected_ordinal, error,
-                                       record_index)) {
+                                       record_index, format_version)) {
     return false;
   }
   TypedUpdateHash evidence{};
-  if (!ComputeEvidence(kDatatypeAuthorityRecordDomain, encoded.first(216),
+  if (!ComputeEvidence(format_version == 2 ? kDatatypeAuthorityRecordDomainV2
+                                          : kDatatypeAuthorityRecordDomain,
+                       encoded.first(216),
                        &evidence, error, carrier,
                        "record_evidence_sha256", record_index,
                        kUpdateFailed)) {
@@ -4141,11 +4173,26 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
                 kUpdateFailed, carrier, "encoded", 0,
                 "output pointer is null");
   }
+  if (value.format_version != 1 && value.format_version != 2) {
+    return Fail(error, TypedUpdateCarrierErrorCode::version_invalid,
+                kUpdateFailed, carrier, "version", 0,
+                "DUDV admits only exact v1 or v2");
+  }
   if (value.records.empty() ||
-      value.records.size() > kDatatypeAuthoritySpecs.size()) {
+      value.records.size() > (value.format_version == 2 ? 6U : 5U)) {
     return Fail(error, TypedUpdateCarrierErrorCode::count_invalid,
                 kUpdateFailed, carrier, "record_count", 0,
-                "DUDV requires one through five exact datatype rows");
+                "DUDV row count exceeds its versioned closed registry");
+  }
+  if (value.format_version == 2 &&
+      std::count_if(value.records.begin(), value.records.end(),
+                    [](const auto& row) {
+                      return row.datatype_identity_code ==
+                             TypedUpdateDatatypeIdentityCode::text_v2;
+                    }) != 1) {
+    return Fail(error, TypedUpdateCarrierErrorCode::datatype_authority_invalid,
+                kUpdateFailed, carrier, "TEXT_row", 0,
+                "DUDV v2 requires exactly one TEXT authority row");
   }
   if (value.identity.vector_uuid != kTypedUpdateDatatypeSnapshotUuid ||
       value.identity.vector_generation != 1 ||
@@ -4166,7 +4213,7 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
   for (u32 index = 0; index < value.records.size(); ++index) {
     std::vector<byte> record;
     if (!EncodeDatatypeAuthorityRecord(value.records[index], index + 1,
-                                       &record, error, index)) {
+                                       &record, error, index, value.format_version)) {
       return false;
     }
     records.insert(records.end(), record.begin(), record.end());
@@ -4178,6 +4225,7 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
       kTypedUpdateVectorHeaderBytes + records.size());
   std::vector<byte> result(total_bytes, 0);
   StoreHeader(&result, "DUDV", kTypedUpdateVectorHeaderBytes, total_bytes);
+  StoreLittle16(result.data() + 4, value.format_version);
   StoreUuid(&result, 16, value.identity.vector_uuid);
   StoreLittle64(result.data() + 32, value.identity.vector_generation);
   StoreUuid(&result, 40, value.identity.owner_descriptor_uuid);
@@ -4188,7 +4236,9 @@ bool EncodeTypedUpdateDatatypeAuthorityVector(
   StoreLittle32(result.data() + 68,
                 static_cast<u32>(records.size()));
   TypedUpdateHash evidence{};
-  if (!ComputeEvidence(kDatatypeAuthorityVectorDomain, records, &evidence,
+  if (!ComputeEvidence(value.format_version == 2 ? kDatatypeAuthorityVectorDomainV2
+                                                : kDatatypeAuthorityVectorDomain,
+                       records, &evidence,
                        error, carrier, "vector_sha256", 0,
                        kUpdateFailed)) {
     return false;
@@ -4211,13 +4261,16 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
                 kUpdateFailed, carrier, "decoded", 0,
                 "output pointer is null");
   }
+  // The normal header validator still owns magic, truncation and exact extents.
+  const u16 version = encoded.size() >= 6 ? LoadLittle16(encoded.data() + 4) : 1;
+  const u16 expected_version = version == 2 ? 2 : 1;
   if (!ValidateHeader(encoded, "DUDV", kTypedUpdateVectorHeaderBytes,
-                      std::nullopt, carrier, error, kUpdateFailed)) {
+                      std::nullopt, carrier, error, kUpdateFailed, expected_version)) {
     return false;
   }
   const u32 count = LoadLittle32(encoded.data() + 64);
   const u32 record_bytes = LoadLittle32(encoded.data() + 68);
-  if (count == 0 || count > kDatatypeAuthoritySpecs.size() ||
+  if (count == 0 || count > (version == 2 ? 6U : 5U) ||
       record_bytes != count * kTypedUpdateDatatypeAuthorityRecordBytes ||
       record_bytes != encoded.size() - kTypedUpdateVectorHeaderBytes) {
     return Fail(error, TypedUpdateCarrierErrorCode::count_invalid,
@@ -4225,6 +4278,7 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
                 "DUDV count and fixed DUDR extent disagree");
   }
   TypedUpdateDatatypeAuthorityVector value;
+  value.format_version = version;
   value.identity.vector_uuid = LoadUuid(encoded, 16);
   value.identity.vector_generation = LoadLittle64(encoded.data() + 32);
   value.identity.owner_descriptor_uuid = LoadUuid(encoded, 40);
@@ -4251,7 +4305,7 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
     if (!DecodeDatatypeAuthorityRecord(
             records.subspan(index * kTypedUpdateDatatypeAuthorityRecordBytes,
                             kTypedUpdateDatatypeAuthorityRecordBytes),
-            index + 1, &record, error, index)) {
+            index + 1, &record, error, index, version)) {
       return false;
     }
     value.records.push_back(std::move(record));
@@ -4259,8 +4313,20 @@ bool DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
   if (!ValidateDatatypeAuthorityOrdering(value.records, error)) {
     return false;
   }
+  if (version == 2 &&
+      std::count_if(value.records.begin(), value.records.end(),
+                    [](const auto& row) {
+                      return row.datatype_identity_code ==
+                             TypedUpdateDatatypeIdentityCode::text_v2;
+                    }) != 1) {
+    return Fail(error, TypedUpdateCarrierErrorCode::datatype_authority_invalid,
+                kUpdateFailed, carrier, "TEXT_row", 0,
+                "DUDV v2 requires exactly one TEXT authority row");
+  }
   TypedUpdateHash evidence{};
-  if (!ComputeEvidence(kDatatypeAuthorityVectorDomain, records, &evidence,
+  if (!ComputeEvidence(version == 2 ? kDatatypeAuthorityVectorDomainV2
+                                   : kDatatypeAuthorityVectorDomain,
+                       records, &evidence,
                        error, carrier, "vector_sha256", 0,
                        kUpdateFailed)) {
     return false;
@@ -5498,7 +5564,22 @@ bool ValidateCanonicalValueExtent(
     TypedUpdateCarrierKind carrier,
     u32 record_index,
     TypedUpdateCarrierError* error) {
-  if (state == TypedUpdateValueState::value &&
+  const bool text = datatype.datatype_identity_code ==
+                    TypedUpdateDatatypeIdentityCode::text_v2;
+  if (text && carrier == TypedUpdateCarrierKind::predicate_vector) {
+    return DatatypeOperatorBindingFailure(
+        error, carrier, "datatype_identity", record_index,
+        "DUDV v2 TEXT authority admits assignments, not TEXT predicates");
+  }
+  if (text && state == TypedUpdateValueState::value &&
+      (canonical_value.size() > datatype.canonical_value_maximum_bytes ||
+       canonical_value.size() > kTypedUpdateMaximumCanonicalValueBytesPerValue ||
+       !ValidUtf8ScalarSequence(canonical_value))) {
+    return DatatypeOperatorBindingFailure(
+        error, carrier, "canonical_value", record_index,
+        "TEXT VALUE must be bounded shortest-form UTF-8 scalar bytes");
+  }
+  if (!text && state == TypedUpdateValueState::value &&
       canonical_value.size() != datatype.canonical_value_exact_bytes) {
     return DatatypeOperatorBindingFailure(
         error, carrier, "canonical_value", record_index,

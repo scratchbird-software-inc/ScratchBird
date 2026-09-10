@@ -565,6 +565,28 @@ bool CanonicalInsertRowsTextOperands(
   return true;
 }
 
+bool CanonicalDeleteRowsDescriptorOperand(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
+  if (operation.operands.size() != 1) return false;
+  const auto& operand = operation.operands.front();
+  if (operand.ordinal != 1 || operand.type != "dml.delete_rows" ||
+      operand.name != "request" || !operand.value.empty() ||
+      operand.value_flags != 0 ||
+      operand.value_kind !=
+          scratchbird::engine::sblr::SblrValueKind::descriptor_ref ||
+      operand.value_body.size() != 24 ||
+      std::none_of(operand.value_body.begin(), operand.value_body.begin() + 16,
+                   [](std::uint8_t byte) { return byte != 0; })) {
+    return false;
+  }
+  std::uint64_t generation = 0;
+  for (unsigned byte = 0; byte != 8; ++byte) {
+    generation |= static_cast<std::uint64_t>(operand.value_body[16 + byte])
+                  << (byte * 8U);
+  }
+  return generation != 0;
+}
+
 bool CanonicalUpdateRowsDescriptorOperand(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation) {
   if (operation.operands.size() != 1) return false;
@@ -1600,6 +1622,23 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
             ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
             : "SBLR.OPERAND.INVALID");
   }
+  const bool exact_public_delete_rows =
+      request.root_opcode_code == 784 &&
+      request.root_opcode == "SBLR_DML_DELETE_ROWS" &&
+      request.root_operation_id == "dml.delete_rows";
+  const bool exact_local_public_delete_rows =
+      stream.ok && stream.stream.operations.size() == 3 &&
+      exact_public_delete_rows && !request.cluster_context_active &&
+      !request.cluster_transaction_active && !request.route_fence_present &&
+      CanonicalDeleteRowsDescriptorOperand(stream.stream.operations[1]);
+  if (exact_public_delete_rows && !exact_local_public_delete_rows) {
+    return Refuse(
+        request,
+        request.cluster_context_active || request.cluster_transaction_active ||
+                request.route_fence_present
+            ? "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN"
+            : "SBLR.OPERAND.INVALID");
+  }
   const bool exact_public_update_rows =
       request.root_opcode_code == 783 &&
       request.root_opcode == "SBLR_DML_UPDATE_ROWS" &&
@@ -2208,7 +2247,7 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
        !exact_local_database_attach &&
        !exact_local_txn_savepoint &&
        !exact_local_txn_release_savepoint && !exact_local_txn_rollback_to_savepoint &&
-       !exact_local_psql_autonomous_frame && !exact_local_reservation_release && !exact_local_temporary_cleanup && !exact_local_cursor_open && !exact_local_cursor_fetch && !exact_local_cursor_close && !exact_local_read_by_key && !exact_local_read_range && !exact_local_read_stream && !exact_local_result_set_pass && !exact_local_access_cursor_open && !exact_local_access_cursor_fetch && !exact_local_access_cursor_close && !exact_local_insert && !exact_local_public_insert_rows && !exact_local_public_update_rows && !exact_local_public_native_bulk_ingest && !exact_local_plan_import_rows && !exact_local_update && !exact_local_delete && !exact_local_merge && !exact_local_table_truncate && !exact_local_table_analyze && !exact_local_bulk_import_stream && !exact_local_bulk_export_stream && !exact_local_statement_batch && !exact_local_atomic_cas && !exact_local_atomic_rmw && !exact_local_advisory_lock && !exact_local_advisory_lock_release && !exact_local_function_call && !exact_local_operator_call && !exact_local_cast && !exact_local_compare && !exact_local_domain_operation && !exact_local_udr && !exact_local_procedure && !exact_local_function_invoke && !exact_local_aggregate_invoke && !exact_local_sequence_nextval && !exact_local_sequence_currval && !exact_local_sequence_setval && !exact_local_query_numeric && !exact_local_evaluate_projection && !exact_local_advanced_datatype_family && !exact_local_project && !exact_local_aggregate && !exact_local_group && !exact_local_sort && !exact_local_limit && !exact_local_return_result_set && !exact_local_kv_structured_read && !exact_local_kv_structured_mutate && !exact_local_kv_structured_scan && !exact_local_kv_structured_stream_read && !exact_local_kv_structured_stream_append && !exact_local_kv_structured_timeseries && !exact_local_dml_conditional_mutate && !exact_local_ddl_alter_timeseries_value_cache && !exact_local_system_config_set && !exact_local_ddl_create_domain && !exact_local_ddl_alter_domain && !exact_local_ddl_create_view && !exact_local_ddl_alter_view && !exact_local_ddl_drop_view && !exact_local_ddl_create_schema && !exact_local_ddl_create_table && !exact_local_public_ddl_create_table && !exact_local_ddl_create_index && !exact_local_ddl_drop_index && !exact_local_ddl_create_procedure && !exact_local_ddl_alter_procedure && !exact_local_ddl_drop_procedure && !exact_local_ddl_create_function && !exact_local_ddl_alter_function && !exact_local_ddl_drop_function && !exact_local_ddl_drop_temporary_table && !exact_local_ddl_rename_object_vector && !exact_local_ddl_create_or_replace_srs && !exact_local_ddl_drop_srs) ||
+       !exact_local_psql_autonomous_frame && !exact_local_reservation_release && !exact_local_temporary_cleanup && !exact_local_cursor_open && !exact_local_cursor_fetch && !exact_local_cursor_close && !exact_local_read_by_key && !exact_local_read_range && !exact_local_read_stream && !exact_local_result_set_pass && !exact_local_access_cursor_open && !exact_local_access_cursor_fetch && !exact_local_access_cursor_close && !exact_local_insert && !exact_local_public_insert_rows && !exact_local_public_update_rows && !exact_local_public_delete_rows && !exact_local_public_native_bulk_ingest && !exact_local_plan_import_rows && !exact_local_update && !exact_local_delete && !exact_local_merge && !exact_local_table_truncate && !exact_local_table_analyze && !exact_local_bulk_import_stream && !exact_local_bulk_export_stream && !exact_local_statement_batch && !exact_local_atomic_cas && !exact_local_atomic_rmw && !exact_local_advisory_lock && !exact_local_advisory_lock_release && !exact_local_function_call && !exact_local_operator_call && !exact_local_cast && !exact_local_compare && !exact_local_domain_operation && !exact_local_udr && !exact_local_procedure && !exact_local_function_invoke && !exact_local_aggregate_invoke && !exact_local_sequence_nextval && !exact_local_sequence_currval && !exact_local_sequence_setval && !exact_local_query_numeric && !exact_local_evaluate_projection && !exact_local_advanced_datatype_family && !exact_local_project && !exact_local_aggregate && !exact_local_group && !exact_local_sort && !exact_local_limit && !exact_local_return_result_set && !exact_local_kv_structured_read && !exact_local_kv_structured_mutate && !exact_local_kv_structured_scan && !exact_local_kv_structured_stream_read && !exact_local_kv_structured_stream_append && !exact_local_kv_structured_timeseries && !exact_local_dml_conditional_mutate && !exact_local_ddl_alter_timeseries_value_cache && !exact_local_system_config_set && !exact_local_ddl_create_domain && !exact_local_ddl_alter_domain && !exact_local_ddl_create_view && !exact_local_ddl_alter_view && !exact_local_ddl_drop_view && !exact_local_ddl_create_schema && !exact_local_ddl_create_table && !exact_local_public_ddl_create_table && !exact_local_ddl_create_index && !exact_local_ddl_drop_index && !exact_local_ddl_create_procedure && !exact_local_ddl_alter_procedure && !exact_local_ddl_drop_procedure && !exact_local_ddl_create_function && !exact_local_ddl_alter_function && !exact_local_ddl_drop_function && !exact_local_ddl_drop_temporary_table && !exact_local_ddl_rename_object_vector && !exact_local_ddl_create_or_replace_srs && !exact_local_ddl_drop_srs) ||
       stream.stream.operations[1].opcode_code != request.root_opcode_code ||
       stream.stream.operations[1].opcode != request.root_opcode ||
       stream.stream.operations[1].operation_id != request.root_operation_id ||

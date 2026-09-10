@@ -561,6 +561,8 @@ constexpr std::uint32_t kSchemaSourceArtifactRetainResultV1 = 7752;
 constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryRequestV1 = 7753;
 constexpr std::uint32_t kSchemaDdlCreateSchemaRecoveryResultV1 = 7754;
 constexpr std::uint32_t kSchemaSecurityAlterPolicyBindRequestV1 = 7755;
+constexpr std::uint32_t kSchemaCoordinateDmlDeleteRowsBindRequestV1 = 7757;
+constexpr std::uint32_t kSchemaCoordinateDmlDeleteRowsBindResultV1 = 7758;
 constexpr std::uint32_t kSchemaSecurityAlterPolicyBindResultV1 = 7756;
 // Private raw-carrier narrow-query binding coordination.  These schemas are
 // deliberately not TLV envelopes: 7707 is exactly one canonical SBQNDR01 and
@@ -1102,6 +1104,8 @@ enum class MessageType : std::uint16_t {
   kDdlCreateSchemaRecoveryRequest = 740,
   kDdlCreateSchemaRecoveryResult = 741,
   kSecurityAlterPolicyBindRequest = 742,
+  kCoordinateDmlDeleteRowsBindRequest = 744,
+  kCoordinateDmlDeleteRowsBindResult = 745,
   kSecurityAlterPolicyBindResult = 743,
   kCoordinateSortRequest = 154,
   kCoordinateSortResult = 155,

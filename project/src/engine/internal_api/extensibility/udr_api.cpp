@@ -10,6 +10,7 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "extensibility/extensibility_support.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "metric_registry.hpp"
 #include "sb_udr_runtime.hpp"
 #include "security/security_model.hpp"
@@ -362,6 +363,17 @@ TResult ValidateUdrAuthority(const EngineApiRequest& request,
                              bool require_inspect,
                              bool require_invoke = false,
                              bool allow_shutdown_cleanup = false) {
+  if (require_manage || require_invoke) {
+    // A loaded native package can publish effects outside the MGA write set.
+    // Until its complete effect provider is admitted, neither a caller's
+    // "pure" option nor an inspection/read operation can authorize invocation
+    // beneath an active savepoint. This also precedes dlopen/unload callbacks.
+    const auto savepoint = AdmitMgaSavepointProducer(
+        request.context, MgaMutationProducer::external_effect);
+    if (savepoint.error) {
+      return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id, savepoint);
+    }
+  }
   if (!request.context.security_context_present) {
     return EngineExtensionSecurityRequired<TResult>(request, operation_id);
   }

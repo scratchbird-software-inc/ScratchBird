@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/serializable_mutation_guard.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 
 #include "api_diagnostics.hpp"
 #include "disk_device.hpp"
@@ -714,6 +715,17 @@ SerializableDmlAdmissionResult RecordReadOrWrite(
     bool read_access,
     bool parser_or_reference_authority,
     bool check_first) {
+  if (IsSerializableContext(context)) {
+    const auto savepoint = AdmitMgaSavepointProducer(
+        context, MgaMutationProducer::serializable_conflict_tracking);
+    if (savepoint.error) {
+      SerializableDmlAdmissionResult refused;
+      refused.ok = false;
+      refused.active = true;
+      refused.diagnostic = savepoint;
+      return refused;
+    }
+  }
   storage_db::LocalTransactionStoreResult loaded;
   mga::TransactionInventoryEntry txn;
   u64 next_sequence = 0;

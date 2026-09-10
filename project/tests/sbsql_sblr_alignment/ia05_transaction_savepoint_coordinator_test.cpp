@@ -86,6 +86,8 @@ int main() {
 
   std::error_code ec;
   std::filesystem::remove(base.string()+".sb.sblr_savepoint_coordinator.v1",ec);
+  std::filesystem::remove(base.string()+".sb.sblr_savepoint_coordinator.v2",ec);
+  std::filesystem::remove(base.string()+".sb.mga_savepoints",ec);
   std::filesystem::remove(base.string()+".sb.sblr_executor_availability_registry.v1.txn_savepoint",ec);
   return 0;
 }

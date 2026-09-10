@@ -15,6 +15,7 @@
 #include "canonical_query_execute.hpp"
 #include "hash_digest.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "uuid.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -10642,6 +10643,9 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "dml.update_rows" &&
       request.envelope.opcode == "SBLR_DML_UPDATE_ROWS" &&
       request.envelope.opcode_code == 783;
+  const bool exact_public_delete_rows =
+      request.envelope.operation_id == "dml.delete_rows" &&
+      request.envelope.opcode == "SBLR_DML_DELETE_ROWS" && request.envelope.opcode_code == 784;
   const bool exact_public_native_bulk_ingest =
       request.envelope.operation_id == "dml.execute_native_bulk_ingest" &&
       request.envelope.opcode == "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST" &&
@@ -10984,7 +10988,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     result.materialized_envelope = std::move(request.envelope);
     return result;
   }
-  if (request.envelope.operation_id != "query.execute" && !exact_public_insert_rows && !exact_public_update_rows && !exact_public_native_bulk_ingest && !exact_public_ddl_create_table && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
+  if (request.envelope.operation_id != "query.execute" && !exact_public_insert_rows && !exact_public_update_rows && !exact_public_delete_rows && !exact_public_native_bulk_ingest && !exact_public_ddl_create_table && !exact_ddl_alter_continuous_view && !exact_ddl_drop_continuous_view && !exact_dml_async_insert_submit && !exact_dml_async_insert_status && !exact_dml_async_insert_cancel && !exact_dml_counter_add && !exact_dml_timeseries_schema_write && !exact_ddl_timeseries_series_cardinality_policy && !exact_ddl_create_timeseries_value_cache && !exact_ddl_alter_rewrite_rule && !exact_ddl_drop_rewrite_rule && !exact_ddl_validate_constraint && !exact_security_create_privilege_template && !exact_security_create_user && !exact_security_alter_privilege_template && !exact_security_drop_privilege_template && !exact_source_map && !exact_show_version &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_create_aggregate && !exact_txn_begin && !exact_txn_commit && !exact_show_database && !exact_show_transactions &&
       !exact_error_vector && !exact_database_create_template_clone && !exact_ddl_alter_aggregate && !exact_ddl_drop_aggregate && !exact_ddl_drop_dictionary && !exact_ddl_purge_system_history && !exact_ddl_set_index_optimizer_eligibility && !exact_ddl_set_table_type_enforcement && !exact_database_serialize_logical_snapshot && !exact_database_deserialize_logical_snapshot && !exact_security_alter_user && !exact_security_create_role && !exact_security_drop_role && !exact_security_alter_role && !exact_security_create_group_mapping && !exact_security_drop_group_mapping && !exact_security_create_policy && !exact_security_drop_policy && !exact_txn_begin && !exact_txn_commit &&
       !exact_txn_rollback && !exact_stmt_prepare && !exact_stmt_execute &&
@@ -11128,7 +11132,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       return result;
     }
   }
-  if (exact_public_insert_rows || exact_public_update_rows ||
+  if (exact_public_insert_rows || exact_public_update_rows || exact_public_delete_rows ||
       exact_public_native_bulk_ingest ||
       exact_public_ddl_create_table) {
     result.ok = true;
@@ -11432,6 +11436,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
         "engine.sblr.dispatch.routed_operation_parent_mismatch",
         routed_operation.detail);
+    return result;
+  }
+  const auto savepoint_admission = api::AdmitMgaSavepointOperation(
+      request.context, request.envelope.operation_id);
+  if (savepoint_admission.error) {
+    result.api_result = FailureResult(request.context, request.envelope.operation_id,
+        savepoint_admission.code, savepoint_admission.message_key, savepoint_admission.detail);
+    result.diagnostics.push_back(DispatchDiagnostic(savepoint_admission.code,
+                                                   savepoint_admission.detail));
     return result;
   }
   const auto has_exact_static_executor_evidence_identity =

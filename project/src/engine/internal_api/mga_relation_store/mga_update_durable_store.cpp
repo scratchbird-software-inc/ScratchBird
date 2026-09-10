@@ -2080,7 +2080,8 @@ DmlUpdateStatementLoadSavepointAuthority(
 
   const auto& latest = chain.back();
   const auto parsed_savepoints = ParseSavepoints(context);
-  if (parsed_savepoints.update_statement_authority_corrupt) {
+  if (parsed_savepoints.update_statement_authority_corrupt ||
+      parsed_savepoints.marker_authority_corrupt) {
     return DmlUpdateStatementSavepointFailure(
         "DML.UPDATE_FAILED",
         "sblr.dml_update_rows.statement_savepoint_corrupt",

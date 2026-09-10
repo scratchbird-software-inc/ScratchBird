@@ -7,18 +7,27 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "api_types.hpp"
+#include "catalog/descriptor_mutation_api.hpp"
 #include "database_lifecycle.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
+#include "dml/insert_physical_integration.hpp"
 #include "dml/mga_relation_read_view.hpp"
 #include "dml/transactional_index_provider.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
+#include "dml/constraint_enforcement.hpp"
+#include "dml/serializable_mutation_guard.hpp"
 #include "dml/update_api.hpp"
+#include "extensibility/udr_api.hpp"
 #include "index_family_registry.hpp"
 #include "local_transaction_store.hpp"
+#include "lifecycle/sequence_generator_lifecycle.hpp"
+#include "mga_relation_store/mga_large_value_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "transaction/local_commit_publication.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -27,7 +36,12 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <exception>
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,7 +61,7 @@ constexpr std::string_view kSearchKey =
 
 [[noreturn]] void Fail(std::string_view family, std::string_view message) {
   std::cerr << "family=" << family << ':' << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(family) + ":" + std::string(message));
 }
 
 void Require(bool condition,
@@ -230,6 +244,10 @@ struct Fixture {
   platform::u64 salt = 0;
 
   ~Fixture() {
+    if (std::uncaught_exceptions() != 0) {
+      std::cerr << "failed_family_artifacts=" << dir << '\n';
+      return;
+    }
     std::error_code ignored;
     if (!dir.empty()) std::filesystem::remove_all(dir, ignored);
   }
@@ -360,7 +378,8 @@ Fixture MakeFixture(const FamilyCase& test_case, platform::u64 salt) {
 api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
                                  std::string operation_id,
                                  std::string opcode,
-                                 api::EngineApiRequest request) {
+                                 api::EngineApiRequest request,
+                                 bool require_dispatch = true) {
   auto envelope =
       sblr::MakeSblrEnvelope(operation_id, opcode, std::string(kSearchKey));
   const auto* registered = sblr::LookupSblrOperation(operation_id);
@@ -380,9 +399,9 @@ api::EngineApiResult DispatchDml(const api::EngineRequestContext& context,
   dispatch.envelope = std::move(envelope);
   dispatch.api_request = std::move(request);
   auto result = sblr::DispatchSblrOperation(std::move(dispatch));
-  Require(result.accepted && result.envelope_validated &&
-              result.dispatched_to_api,
-          "sblr", "canonical DML dispatch failed before the engine API");
+  if (require_dispatch)
+    Require(result.accepted && result.envelope_validated && result.dispatched_to_api,
+            "sblr", "canonical DML dispatch failed before the engine API");
   return std::move(result.api_result);
 }
 
@@ -487,6 +506,61 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
               HasMutation(seed_publication, fixture, "insert"),
           family, "insert was absent from the publication manifest");
   Commit(seed, family);
+
+  // Actual engine DML dispatch and native marker storage, not the generic
+  // fixture SavepointStack. Exercise all admitted profiles with distinct row
+  // and index cutoffs, repeated rewind, key reuse and fresh-context reopen.
+  auto savepoint_writer = Begin(fixture, "matrix-savepoint-writer");
+  const auto verify_savepoint_rows = [&](const api::EngineRequestContext& context,
+                                         std::size_t count, std::string_view key) {
+    const auto snapshot = LoadState(context, family);
+    const auto rows = api::VisibleMgaRowsForContext(snapshot, fixture.table_uuid, context);
+    Require(rows.size() == count, family, "savepoint visible row count differs");
+    if (count == 1) {
+      const auto found = std::find_if(rows[0].values.begin(), rows[0].values.end(),
+          [](const auto& field) { return field.first == "key_value"; });
+      Require(found != rows[0].values.end() && found->second == key,
+              family, "savepoint restored wrong row value");
+    }
+    const auto& live_index = FindIndex(snapshot, fixture, family);
+    const auto validated = api::MgaTransactionalIndexProvider(context, nullptr)
+        .ValidateAgainstRelation(snapshot, live_index);
+    Require(validated.ok, family, "savepoint index/row validation failed");
+    const auto lookup = api::MgaTransactionalIndexProvider(context, nullptr)
+        .ResolveVisibleEntry(snapshot, live_index,
+            PredicateFor(test_case, std::string(key)), 10);
+    Require(lookup.ok && lookup.rows.size() == count,
+            family, "savepoint index probe returned a ghost or lost a row");
+  };
+  RequireDiagnosticOk(api::CreateMgaSavepointMarker(savepoint_writer, "matrix_outer"),
+                      family, "savepoint creation failed");
+  for (int repeat = 0; repeat != 2; ++repeat) {
+    RequireOk(Update(fixture, savepoint_writer, row_uuid, test_case.new_key),
+              family, "savepoint key update failed");
+    verify_savepoint_rows(savepoint_writer, 1, test_case.new_key);
+    RequireDiagnosticOk(api::CreateMgaSavepointMarker(savepoint_writer, "matrix_inner"),
+                        family, "nested savepoint creation failed");
+    RequireOk(Delete(fixture, savepoint_writer, row_uuid), family, "savepoint delete failed");
+    verify_savepoint_rows(savepoint_writer, 0, test_case.new_key);
+    RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(savepoint_writer, "matrix_inner"),
+                        family, "nested delete rewind failed");
+    verify_savepoint_rows(savepoint_writer, 1, test_case.new_key);
+    RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(savepoint_writer, "matrix_outer"),
+                        family, "outer update rewind failed");
+    verify_savepoint_rows(savepoint_writer, 1, test_case.old_key);
+    const auto extra_row = NewUuidText(platform::UuidKind::object, salt + 210 + repeat);
+    RequireOk(Insert(fixture, savepoint_writer, extra_row, test_case.new_key, "later"),
+              family, "savepoint key reuse after rewind failed");
+    RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(savepoint_writer, "matrix_outer"),
+                        family, "insert rewind failed");
+    verify_savepoint_rows(savepoint_writer, 1, test_case.old_key);
+  }
+  RequireDiagnosticOk(api::ReleaseMgaSavepointMarker(savepoint_writer, "matrix_outer"),
+                      family, "savepoint release failed");
+  Commit(savepoint_writer, family);
+  auto savepoint_reopen = Begin(fixture, "matrix-savepoint-reopen");
+  verify_savepoint_rows(savepoint_reopen, 1, test_case.old_key);
+  Commit(savepoint_reopen, family);
 
   if (test_case.unique) {
     auto duplicate = Begin(fixture, "matrix-duplicate");
@@ -641,6 +715,275 @@ void ValidateAdmittedFamily(const FamilyCase& test_case,
   Commit(final_reader, family);
 }
 
+void ValidateMutationAdmissionRefusals() {
+  using P = api::MgaMutationProducer;
+  const auto capabilities = api::MgaMutationSavepointCapabilities();
+  Require(capabilities.size() == static_cast<std::size_t>(P::count),
+          "admission", "producer registry is incomplete");
+  for (std::size_t n = 0; n != capabilities.size(); ++n) {
+    const auto& entry = api::LookupMgaMutationSavepointCapability(static_cast<P>(n));
+    Require(entry.producer == static_cast<P>(n) && !entry.name.empty() &&
+                !entry.authority.empty(), "admission", "duplicate or empty producer record");
+  }
+  Require(api::LookupMgaMutationSavepointCapability(static_cast<P>(255)).producer == P::unknown,
+          "admission", "out-of-range producer did not fail closed");
+  const auto family = idx::FindBuiltinIndexFamilyById("btree");
+  Require(family.ok(), "admission", "B-tree fixture family missing");
+  const auto test_case = BuildCase(*family.descriptor);
+  auto fixture = MakeFixture(test_case, 90000);
+  auto seed = Begin(fixture, "admission-seed");
+  const auto row_uuid = NewUuidText(platform::UuidKind::object, 90200);
+  RequireOk(Insert(fixture, seed, row_uuid, test_case.old_key, "seed"),
+            "admission", "admission baseline insert failed");
+  api::EngineSequenceCreateGeneratorRequest create_sequence;
+  create_sequence.context = seed;
+  create_sequence.definition.generator_uuid = NewUuidText(platform::UuidKind::object, 90201);
+  create_sequence.definition.database_uuid = seed.database_uuid.canonical;
+  RequireOk(api::EngineSequenceCreateGenerator(create_sequence), "admission", "sequence fixture create failed");
+  Commit(seed, "admission");
+  // Test-only byte oracle, not transaction authority. Include every companion
+  // so a refused early/direct lane cannot conceal a metadata or index write.
+  const auto durable_bytes = [&] {
+    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> result;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(fixture.dir)) {
+      if (!entry.is_regular_file()) continue;
+      std::ifstream input(entry.path(), std::ios::binary);
+      std::uint64_t length = 0, hash = 1469598103934665603ull;
+      std::array<char, 16384> bytes{};
+      while (input) {
+        input.read(bytes.data(), bytes.size());
+        length += input.gcount();
+        for (std::streamsize n = 0; n < input.gcount(); ++n) {
+          hash ^= static_cast<unsigned char>(bytes[n]); hash *= 1099511628211ull;
+        }
+      }
+      Require(input.eof(), "admission", "durable byte oracle failed");
+      result.emplace(entry.path().string(), std::make_pair(length, hash));
+    }
+    return result;
+  };
+  {
+    auto serializable = Begin(fixture, "admission-serializable", "serializable");
+    RequireDiagnosticOk(api::CreateMgaSavepointMarker(serializable, "serializable_outer"),
+                        "admission", "serializable boundary create failed");
+    const auto before = durable_bytes();
+    const auto read = api::dml::RecordSerializableSelectRead(serializable, "dml.select_rows",
+                                                           fixture.table_uuid, {});
+    Require(!read.ok && read.active && read.diagnostic.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "query-invoked serializable producer bypassed boundary");
+    const auto write = Insert(fixture, serializable,
+        NewUuidText(platform::UuidKind::object, 90400), test_case.new_key, "refused-serializable");
+    Require(!write.ok && !write.diagnostics.empty() &&
+                write.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED" && durable_bytes() == before,
+            "admission", "serializable mutation was not refused before durable writes");
+    RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(serializable, "serializable_outer"),
+                        "admission", "serializable refusal damaged boundary");
+    RequireDiagnosticOk(api::ReleaseMgaSavepointMarker(serializable, "serializable_outer"),
+                        "admission", "serializable boundary release failed");
+    Require(api::dml::RecordSerializableSelectRead(serializable, "dml.select_rows",
+                                                  fixture.table_uuid, {}).ok,
+            "admission", "savepoint restriction leaked beyond released boundary");
+    Rollback(serializable, "admission");
+  }
+  for (const auto& reference : {"foreign_key=" + fixture.table_uuid + ":key_value",
+                                std::string("foreign_key=unresolved_reference"),
+                                std::string("referenced_table_uuid=") + fixture.table_uuid}) {
+    auto owner = Begin(fixture, "delete-inbound-profile");
+    api::CrudTableRecord child;
+    child.table_uuid = NewUuidText(platform::UuidKind::object, 90404);
+    child.default_name = "delete_profile_child";
+    child.columns = {{"key_value", "canonical=text;" + reference}};
+    RequireDiagnosticOk(api::AppendMgaTableMetadata(owner, child), "admission", "inbound fixture metadata failed");
+    auto state = LoadState(owner, "admission");
+    const auto target = api::FindVisibleMgaTable(state, fixture.table_uuid, owner.local_transaction_id);
+    Require(target.has_value(), "admission", "inbound target missing");
+    const auto refused = api::ValidateDmlDeleteNoInboundConstraintProfileV1(owner, state, *target);
+    Require(refused.error && refused.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "DELETE empty-constraint profile ignored a live or unresolvable inbound reference");
+    // A historical declaration must not override the exact latest visible
+    // metadata version. Keep the original record in the physical history.
+    child.columns = {{"key_value", "canonical=text"}};
+    RequireDiagnosticOk(api::AppendMgaTableMetadata(owner, child), "admission", "child replacement metadata failed");
+    state = LoadState(owner, "admission");
+    RequireDiagnosticOk(api::ValidateDmlDeleteNoInboundConstraintProfileV1(owner, state, *target),
+                        "admission", "retired child metadata still supplied inbound authority");
+    Rollback(owner, "admission");
+  }
+  for (const auto& effect : {"sequence_next:019f2100-0000-7000-8000-000000000201",
+                             "sblr:unregistered", "sblr_expression:unregistered",
+                             "generated:unregistered"}) {
+    auto metadata = Begin(fixture, "admission-default-metadata");
+    const auto loaded = LoadState(metadata, "admission");
+    auto table = api::FindVisibleMgaTable(loaded, fixture.table_uuid, metadata.local_transaction_id);
+    Require(table.has_value(), "admission", "admission table missing");
+    table->creator_tx = metadata.local_transaction_id;
+    table->event_sequence = 0;
+    table->columns[0].second = std::string("canonical=text;default=") + effect;
+    RequireDiagnosticOk(api::AppendMgaTableMetadata(metadata, *table), "admission",
+                        "default metadata persistence failed");
+    Commit(metadata, "admission");
+    auto writer = Begin(fixture, "admission-refused-writer");
+    RequireDiagnosticOk(api::CreateMgaSavepointMarker(writer, "admission_outer"),
+                        "admission", "refusal boundary creation failed");
+    const auto before = durable_bytes();
+    for (const auto& capability : capabilities) {
+      const auto observed = api::AdmitMgaSavepointProducer(writer, capability.producer);
+      const bool denied = capability.disposition == api::MgaSavepointDisposition::unsupported ||
+                          capability.disposition == api::MgaSavepointDisposition::prohibited;
+      Require(observed.error == denied && (!denied || observed.code == "SBLR.OPERATION_UNSUPPORTED"),
+              "admission", "lower producer boundary disagrees with capability registry");
+    }
+    api::EngineSequenceAllocateValueRequest sequence;
+    sequence.context = writer;
+    sequence.generator_uuid = create_sequence.definition.generator_uuid;
+    const auto sequence_refused = api::EngineSequenceAllocateValue(sequence);
+    Require(!sequence_refused.ok && !sequence_refused.diagnostics.empty() &&
+                sequence_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "direct sequence producer bypassed savepoint admission");
+    const std::vector<api::EngineRowValue> direct_rows{
+        Row(NewUuidText(platform::UuidKind::object, 90402), test_case.new_key, "direct-refused")};
+    api::dml::DirectPhysicalBulkAppendRequest direct;
+    direct.context = writer;
+    direct.target_table.uuid.canonical = fixture.table_uuid;
+    direct.borrowed_input_rows = direct_rows;
+    direct.direct_lane_enabled = true;
+    const auto direct_refused = api::dml::ExecuteDirectPhysicalBulkAppend(direct);
+    Require(!direct_refused.ok && !direct_refused.diagnostics.empty() &&
+                direct_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "direct bulk entry bypassed complete-statement provider admission");
+    api::EngineInvokeUdrPackageRequest udr;
+    udr.context = writer;
+    const auto udr_refused = api::EngineInvokeUdrPackage(udr);
+    Require(!udr_refused.ok && !udr_refused.diagnostics.empty() &&
+                udr_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "unproven native UDR invocation bypassed savepoint admission");
+    api::EngineCatalogDescriptorMutationRequest catalog;
+    catalog.context = writer;
+    catalog.operation_id = "catalog.mutation.descriptor";
+    catalog.target_object.uuid.canonical = fixture.table_uuid;
+    const auto catalog_refused = api::EngineCatalogDescriptorMutation(catalog);
+    Require(!catalog_refused.ok && !catalog_refused.diagnostics.empty() &&
+                catalog_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "direct catalog producer bypassed savepoint admission");
+    const auto table_refused = api::AppendMgaTableMetadata(writer, *table);
+    Require(table_refused.error && table_refused.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "table metadata append bypassed savepoint admission");
+    api::MgaRelationStorageDescriptor sealed_descriptor;
+    const auto sealed_refused = api::AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
+        writer, *table, {}, &sealed_descriptor);
+    Require(sealed_refused.error && sealed_refused.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "sealed table metadata append bypassed savepoint admission");
+    const auto index_refused = api::AppendMgaIndexMetadata(
+        writer, IndexRecord(fixture, test_case, writer));
+    Require(index_refused.error && index_refused.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "index metadata append bypassed savepoint admission");
+    const auto constraint_refused = api::AppendMgaConstraintMutationBatch(writer, {});
+    Require(constraint_refused.error && constraint_refused.code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "constraint catalog batch bypassed savepoint admission");
+    {
+      api::MgaIndexEntryAppendBatch admitted_batch;
+      admitted_batch.index = IndexRecord(fixture, test_case, writer);
+      admitted_batch.table_uuid = fixture.table_uuid;
+      const auto version = NewUuidText(platform::UuidKind::row, 90403);
+      admitted_batch.rows.push_back({row_uuid, version, {{"key_value", test_case.new_key}}});
+      auto unregistered = admitted_batch;
+      unregistered.index.family = "unregistered_savepoint_test_family";
+      unregistered.index.profile = "unregistered_savepoint_test_profile";
+      api::MgaRelationHotAppendContext append(writer);
+      const auto refused = append.AppendIndexEntryBatches({admitted_batch, unregistered});
+      Require(refused.error && refused.code == "SBLR.OPERATION_UNSUPPORTED" &&
+                  append.counters().index_materialization_jobs_queued == 0 &&
+                  !append.FlushIndexEntries().error && durable_bytes() == before,
+              "admission", "index batch queued a prefix before refusing an unknown producer");
+      api::MgaExactIndexEntryAppendBatch exact;
+      exact.index = admitted_batch.index; exact.table_uuid = fixture.table_uuid;
+      exact.entries.push_back({"test-key", "test-payload", row_uuid, version});
+      auto unknown_exact = exact;
+      unknown_exact.index = unregistered.index;
+      api::MgaRelationHotAppendContext exact_append(writer);
+      const auto exact_refused = exact_append.AppendExactIndexEntryBatches({exact, unknown_exact});
+      Require(exact_refused.error && exact_refused.code == "SBLR.OPERATION_UNSUPPORTED" &&
+                  exact_append.counters().index_range_reservations == 0 &&
+                  exact_append.counters().index_materialization_jobs_queued == 0 &&
+                  !exact_append.FlushIndexEntries().error && durable_bytes() == before,
+              "admission", "exact index batch wrote a prefix before refusing an unknown producer");
+    }
+    api::EngineSecurityCreateRoleRequest security;
+    security.context = writer;
+    // Component issuer supplies the operation privilege so this test reaches
+    // the mutation boundary, rather than passing on an earlier access denial.
+    auto& authorization = security.context.authorization_context;
+    authorization.present = true;
+    authorization.principal_uuid = writer.principal_uuid;
+    authorization.security_epoch = writer.security_epoch;
+    authorization.policy_epoch = 1;
+    authorization.catalog_generation_id = writer.catalog_generation_id;
+    authorization.effective_subjects.push_back({writer.principal_uuid, "principal"});
+    api::EngineMaterializedAuthorizationGrant admin;
+    admin.subject_uuid = writer.principal_uuid;
+    admin.subject_kind = "principal";
+    admin.right = "SEC_IDENTITY_ADMIN";
+    admin.security_epoch = writer.security_epoch;
+    authorization.grants.push_back(std::move(admin));
+    security.role_uuid = NewUuidText(platform::UuidKind::object, 90401);
+    security.role_name = "savepoint_refused_role";
+    const auto security_refused = api::EngineSecurityCreateRole(security);
+    Require(!security_refused.ok && !security_refused.diagnostics.empty() &&
+                security_refused.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "direct security producer bypassed savepoint admission");
+    std::set<std::string> reclaimed;
+    std::uint64_t reclaimed_count = 0;
+    api::CrudRowVersionRecord reclaim_row;
+    reclaim_row.table_uuid = fixture.table_uuid; reclaim_row.row_uuid = row_uuid;
+    const auto reclaim_refused = api::AppendMgaLargeValueReclaimMarkersForRowVersion(
+        writer, writer.local_transaction_id, reclaim_row, "savepoint-test", &reclaimed, &reclaimed_count);
+    Require(reclaim_refused.error && reclaim_refused.code == "SBLR.OPERATION_UNSUPPORTED" &&
+                reclaimed.empty() && reclaimed_count == 0 && durable_bytes() == before,
+            "admission", "direct reclamation or another rejected producer changed state");
+    const auto rejected = Insert(fixture, writer,
+        NewUuidText(platform::UuidKind::object, 90300), test_case.new_key, "refused");
+    Require(!rejected.ok && !rejected.diagnostics.empty() &&
+                rejected.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED",
+            "admission", "unproven default provider was not refused by engine DML");
+    Require(durable_bytes() == before, "admission", "refused mutation changed durable bytes");
+    auto cancelled = writer;
+    cancelled.query_cancellation_requested = [] { return true; };
+    const auto cancellation = api::AdmitMgaDmlSavepointMutation(cancelled, fixture.table_uuid,
+        api::MgaDmlMutationKind::update);
+    Require(cancellation.error && cancellation.code == "PROCESS.CANCELLED" &&
+                durable_bytes() == before, "admission", "cancelled admission changed state");
+    const auto unknown = api::AdmitMgaDmlSavepointMutation(writer, fixture.table_uuid,
+        static_cast<api::MgaDmlMutationKind>(255));
+    Require(unknown.error && durable_bytes() == before, "admission", "unknown mutation was admitted");
+    for (const auto operation : {"engine.op.sequence_nextval", "dml.execute_import_rows",
+         "dml.execute_native_bulk_ingest", "engine.op.kv_structured_mutate",
+         "engine.op.ddl_create_table", "future.unregistered_mutation"}) {
+      const auto blocked = api::AdmitMgaSavepointOperation(writer, operation);
+      Require(blocked.error && blocked.code == "SBLR.OPERATION_UNSUPPORTED",
+              "admission", "unregistered canonical effect bypassed the active boundary");
+    }
+    const auto ddl_blocked = DispatchDml(writer, "ddl.create_table", "SBLR_DDL_CREATE_TABLE", {}, false);
+    Require(!ddl_blocked.ok && !ddl_blocked.diagnostics.empty() &&
+                ddl_blocked.diagnostics.front().code == "SBLR.OPERATION_UNSUPPORTED" &&
+                durable_bytes() == before,
+            "admission", "dispatcher did not refuse unproven catalog effects before mutation");
+    RequireOk(Update(fixture, writer, row_uuid, test_case.new_key), "admission",
+              "refusal invalidated the outer transaction");
+    RequireDiagnosticOk(api::RollbackToMgaSavepointMarker(writer, "admission_outer"),
+                        "admission", "refusal invalidated the outer boundary");
+    const auto final_state = LoadState(writer, "admission");
+    const auto final_rows = api::VisibleMgaRowsForContext(final_state, fixture.table_uuid, writer);
+    Require(final_rows.size() == 1 && final_rows[0].row_uuid == row_uuid,
+            "admission", "refusal/rewind changed original rows");
+    Require(api::MgaTransactionalIndexProvider(writer, nullptr)
+        .ValidateAgainstRelation(final_state, FindIndex(final_state, fixture, "admission")).ok,
+        "admission", "subsequent update/rewind damaged index membership");
+    RequireDiagnosticOk(api::ReleaseMgaSavepointMarker(writer, "admission_outer"),
+                        "admission", "outer boundary release failed");
+    Commit(writer, "admission");
+  }
+}
+
 void ValidateNonAdmittedFamily(const FamilyCase& test_case,
                                platform::u64 salt) {
   const std::string& family = test_case.descriptor->id;
@@ -697,8 +1040,16 @@ int main() {
   std::size_t admitted_btree_profiles = 0;
   std::size_t admitted_non_btree_profiles = 0;
   std::size_t refused = 0;
+  std::size_t failures = 0;
+  try {
+    ValidateMutationAdmissionRefusals();
+  } catch (const std::exception& error) {
+    ++failures;
+    std::cerr << "mutation_admission=failed " << error.what() << '\n';
+  }
   platform::u64 salt = 10000;
   for (const auto& descriptor : idx::BuiltinIndexFamilyDescriptors()) {
+    try {
     const auto test_case = BuildCase(descriptor);
     Require(test_case.capability != nullptr, descriptor.id,
             "capability record missing from registry");
@@ -706,6 +1057,13 @@ int main() {
     probe.family = test_case.crud_family;
     probe.profile = descriptor.default_semantic_profile;
     probe.unique = test_case.unique;
+    Require(api::IsAdmittedMgaSavepointIndexProfile(probe) ==
+                api::IsAdmittedMgaTransactionalIndexFamily(probe), descriptor.id,
+            "savepoint registry omitted or added a released default profile");
+    auto unknown_profile = probe;
+    unknown_profile.profile = "future_unregistered_profile";
+    Require(!api::IsAdmittedMgaSavepointIndexProfile(unknown_profile), descriptor.id,
+            "unknown profile inherited family savepoint capability");
     if (api::IsAdmittedMgaTransactionalIndexFamily(probe)) {
       Require(test_case.capability->runtime_available, descriptor.id,
               "provider admitted a registry-unavailable family");
@@ -726,7 +1084,15 @@ int main() {
                 << " physical_family=" << descriptor.native_physical_family
                 << " admission=refused lifecycle=fail_closed\n";
     }
+    } catch (const std::exception& error) {
+      ++failures;
+      std::cerr << "profile=" << descriptor.id << " lifecycle=failed " << error.what() << '\n';
+    }
     salt += 1000;
+  }
+  if (failures != 0) {
+    std::cerr << "transactional_index_lifecycle_matrix failures=" << failures << '\n';
+    return EXIT_FAILURE;
   }
   Require(admitted != 0, "matrix", "no native family was admitted");
   Require(admitted_btree_profiles != 0, "matrix",

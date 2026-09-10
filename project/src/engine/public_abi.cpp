@@ -397,6 +397,7 @@
 #include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "dml/update_api.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -411,6 +412,9 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include "dml/update_resource_authority_provider.hpp"
+#include "dml/delete_durable_owner_registry.hpp"
+#include "dml/delete_api.hpp"
 #include <mutex>
 #include <new>
 #include <optional>
@@ -522,6 +526,8 @@ struct sb_engine_handle_s {
   std::string database_uuid;
   std::uint64_t database_page_size_bytes = 0;
   std::atomic<std::uint64_t> next_session_id{1};
+  std::shared_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceGovernorV1>
+      dml_update_resource_governor;
 };
 
 struct EnginePreparedStatementRecordV1 {
@@ -639,6 +645,11 @@ struct StatementContextReceiptOpaque {
   StatementContextReceiptView view;
   scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
   scratchbird::engine::internal_api::EngineRequestContext engine_context;
+  std::shared_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>
+      dml_update_resource_receipt;
+  ~StatementContextReceiptOpaque() {
+    if (dml_update_resource_receipt) dml_update_resource_receipt->Revoke();
+  }
   // Receipt-private COPY bindings.  The key is the exact pair admitted from
   // the central command closure; neither this map nor its values is present in
   // StatementContextReceiptView.
@@ -4465,6 +4476,7 @@ void release_statement_context_receipts_for_session(
         std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
         receipt->released = true;
         receipt->magic = 0;
+        if (receipt->dml_update_resource_receipt) receipt->dml_update_resource_receipt->Revoke();
         published_snapshots.push_back(
             receipt->snapshot_vector.snapshot_uuid);
       }
@@ -4473,6 +4485,10 @@ void release_statement_context_receipts_for_session(
     }
   }
   for (const auto& receipt : released) {
+    scratchbird::engine::internal_api::RetireDmlUpdateResourceReceiptDescriptorsV1(receipt->engine_context);
+    scratchbird::engine::internal_api::RetryRetiredDmlUpdateResourceOwnersV1(receipt->engine_context);
+    scratchbird::engine::internal_api::RetireDmlDeleteResourceReceiptDescriptorsV1(receipt->engine_context);
+    scratchbird::engine::internal_api::RetryRetiredDmlDeleteResourceOwnersV1(receipt->engine_context);
     auto import_context = receipt->engine_context;
     import_context.trace_tags.push_back(
         "private_dml_plan_import_rows_binder");
@@ -6035,7 +6051,18 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1006, "ENGINE.OPEN.MODE_INVALID",
                        "engine.open.mode_invalid");
   }
-  auto* handle = new sb_engine_handle_s();
+  auto handle = std::make_unique<sb_engine_handle_s>();
+  // Explicit built-in engine-instance policy, not a parser/carrier-selected
+  // grant. Canonical bytes are reserved across receipts, with a 256 MiB pool.
+  constexpr scratchbird::engine::internal_api::EngineDmlUpdateResourcePolicyV1
+      update_policy{1024, 4096, 1048576, 64, 1048576, 16ull * 1024 * 1024,
+                    256ull * 1024 * 1024, 64};
+  handle->dml_update_resource_governor = std::make_shared<
+      scratchbird::engine::internal_api::EngineDmlUpdateResourceGovernorV1>();
+  if (handle->dml_update_resource_governor->Configure(update_policy).error) {
+    return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
+                       "RESOURCE.BUDGET_EXCEEDED", "engine.open.update_resource_policy_invalid");
+  }
   if (params->database_path_utf8 != nullptr && params->database_path_size != 0) {
     handle->database_path.assign(params->database_path_utf8,
                                  params->database_path_utf8 + params->database_path_size);
@@ -6043,7 +6070,7 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     handle->database_uuid = snapshot.database_uuid;
     handle->database_page_size_bytes = snapshot.page_size_bytes;
   }
-  *out_engine = handle;
+  *out_engine = handle.release();
   return SB_ENGINE_STATUS_OK;
 }
 
@@ -6053,10 +6080,18 @@ sb_engine_status_t sb_engine_close(sb_engine_handle_t engine, sb_engine_result_t
     return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE, out_result, 1007, "ENGINE.ABI.INVALID_HANDLE",
                        "engine.abi.invalid_handle");
   }
+  if (!scratchbird::engine::internal_api::DrainDmlUpdateResourceOwnersForRuntimeV1(
+          engine->dml_update_resource_governor)) {
+    return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 1009,
+                       "ENGINE.DML.RESOURCE_DRAIN_PENDING",
+                       "engine.dml.resource_drain_pending",
+                       "Finish active execution or durable recovery, then retry engine close.");
+  }
   {
     std::lock_guard<std::mutex> guard(engine->mutex);
     engine->closed = true;
     engine->magic = 0;
+    if (engine->dml_update_resource_governor) engine->dml_update_resource_governor->StopAdmission();
   }
   delete engine;
   return SB_ENGINE_STATUS_OK;
@@ -7107,6 +7142,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
       !engine_context.statement_metadata_snapshot_uuid.canonical.empty() ||
       !engine_context.catalog_epoch_uuid.canonical.empty() ||
       !engine_context.resource_admission_uuid.canonical.empty() ||
+      engine_context.dml_update_resource_receipt.owner_before(
+          std::weak_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>{}) ||
+      std::weak_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>{}.owner_before(
+          engine_context.dml_update_resource_receipt) ||
       !engine_context.optimizer_capability_snapshot_uuid.canonical.empty() ||
       !engine_context.optimizer_resource_snapshot_uuid.canonical.empty() ||
       !engine_context.optimizer_route_snapshot_uuid.canonical.empty() ||
@@ -8916,6 +8955,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
   receipt->view = view;
   receipt->snapshot_vector = snapshot;
   receipt->engine_context = std::move(engine_context);
+  receipt->dml_update_resource_receipt = std::make_shared<
+      scratchbird::engine::internal_api::EngineDmlUpdateResourceReceiptV1>(
+          receipt->engine_context, session->engine->dml_update_resource_governor);
+  receipt->engine_context.dml_update_resource_receipt = receipt->dml_update_resource_receipt;
   receipt->contextual_text_target_resolver =
       scratchbird::engine::internal_api::
           CreateEngineContextualTextTargetAuthorityResolverForReceiptV2(
@@ -9005,6 +9048,7 @@ sb_engine_status_t ReleaseStatementContextReceipt(
     }
     live->second->released = true;
     live->second->magic = 0;
+    if (live->second->dml_update_resource_receipt) live->second->dml_update_resource_receipt->Revoke();
     if (live->second->contextual_text_literal_authority.valid()) {
       (void)scratchbird::engine::internal_api::
           RevokeContextualTextLiteralAuthorityV2(
@@ -9054,6 +9098,10 @@ sb_engine_status_t ReleaseStatementContextReceipt(
   }
   {
     auto import_context = released->engine_context;
+    scratchbird::engine::internal_api::RetireDmlUpdateResourceReceiptDescriptorsV1(released->engine_context);
+    scratchbird::engine::internal_api::RetryRetiredDmlUpdateResourceOwnersV1(released->engine_context);
+    scratchbird::engine::internal_api::RetireDmlDeleteResourceReceiptDescriptorsV1(released->engine_context);
+    scratchbird::engine::internal_api::RetryRetiredDmlDeleteResourceOwnersV1(released->engine_context);
     import_context.trace_tags.push_back(
         "private_dml_plan_import_rows_binder");
     (void)scratchbird::engine::internal_api::
@@ -22332,6 +22380,18 @@ sb_engine_status_t DispatchStatementContextReceipt(
                        "sblr.opcode_stream.executor_evidence_invalid");
   }
 
+  // Receipt-private executors can bypass the general dispatcher. Apply the
+  // same operation-effect gate after exact receipt/package/evidence binding,
+  // before either private or general execution can mutate durable state.
+  const auto savepoint_operation_admission =
+      scratchbird::engine::internal_api::AdmitMgaSavepointOperation(context,
+          opcode_stream ? stream.stream.operations[1].operation_id : operation.envelope.operation_id);
+  if (savepoint_operation_admission.error) {
+    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4060,
+        savepoint_operation_admission.code, savepoint_operation_admission.message_key,
+        savepoint_operation_admission.detail);
+  }
+
   // SBOP v1 freezes operation identity and typed operands but does not encode
   // duplicate authority booleans. The engine opcode registry owns this
   // requirement; project it only after the exact operation identity and
@@ -22795,10 +22855,12 @@ sb_engine_status_t DispatchStatementContextReceipt(
   bool insert_root = false;
   bool public_insert_rows_root = false;
   bool public_update_rows_root = false;
+  bool public_delete_rows_root = false;
   bool plan_import_rows_root = false;
   const scratchbird::engine::internal_api::EnginePlanImportRowsResult*
       validated_plan_import_rows_result = nullptr;
   std::vector<std::uint8_t> public_update_rows_result_bytes;
+  std::vector<std::uint8_t> public_delete_rows_result_bytes;
   bool public_native_bulk_ingest_root = false;
   scratchbird::engine::internal_api::EngineApiRequest
       public_native_bulk_packet_request;
@@ -23381,6 +23443,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
         member.operation_id == "dml.update_rows" &&
         member.opcode == "SBLR_DML_UPDATE_ROWS" &&
         member.opcode_code == 783;
+    public_delete_rows_root =
+        member.operation_id == "dml.delete_rows" &&
+        member.opcode == "SBLR_DML_DELETE_ROWS" &&
+        member.opcode_code == 784;
     plan_import_rows_root =
         member.operation_id == "dml.plan_import_rows" &&
         member.opcode == "SBLR_DML_PLAN_IMPORT_ROWS" &&
@@ -30071,7 +30137,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
             {"bulk_import_stream_result_replay",
              "immutable_recorded_birs"});
       }
-    } else if (!public_update_rows_root && !stmt_prepare_root &&
+    } else if (!public_update_rows_root && !public_delete_rows_root && !stmt_prepare_root &&
                !stmt_execute_root &&
                !stmt_execute_direct_root &&
                !stmt_free_root && !stmt_cancel_root &&
@@ -30473,6 +30539,34 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
            "sha256:" + scratchbird::core::hash::HexLower(
                            decoded_result.evidence)});
     }
+    if (public_delete_rows_root && !dispatched.accepted) {
+      using namespace scratchbird::engine::internal_api;
+      dispatched.accepted = dispatched.envelope_validated = dispatched.dispatched_to_api = true;
+      dispatched.api_result.operation_id = "dml.delete_rows";
+      const auto* operand = member.operands.size() == 1 ? &member.operands.front() : nullptr;
+      if (!operand || operand->ordinal != 1 || operand->type != "dml.delete_rows" ||
+          operand->name != "request" || operand->value_kind != scratchbird::engine::sblr::SblrValueKind::descriptor_ref ||
+          operand->value_body.size() != 24) {
+        dispatched.api_result.diagnostics.push_back(
+            {"SBLR.OPERAND_INVALID", "sblr.dml_delete_rows.descriptor_reference_invalid", {}, true});
+      } else {
+        EngineDmlDeleteRowsDescriptorRefV1 reference;
+        std::copy_n(operand->value_body.begin(), 16, reference.descriptor_uuid.begin());
+        for (unsigned n = 0; n < 8; ++n)
+          reference.descriptor_generation |= std::uint64_t(operand->value_body[16 + n]) << (8 * n);
+        auto consumer = context;
+        consumer.trace_tags.emplace_back("private_dml_delete_rows_consumer");
+        auto execution = ExecuteDmlDeleteRowsDescriptorV1(consumer, reference, 1);
+        if (!execution.ok) {
+          dispatched.api_result.diagnostics.push_back(std::move(execution.diagnostic));
+        } else {
+          public_delete_rows_result_bytes = std::move(execution.canonical_result_bytes);
+          dispatched.api_result = std::move(static_cast<EngineApiResult&>(execution.delete_result));
+          if (execution.immutable_replay)
+            dispatched.api_result.evidence.push_back({"dml_delete_rows_descriptor_replay", "immutable_prior_outcome"});
+        }
+      }
+    }
     if (public_update_rows_root && !dispatched.accepted) {
       using scratchbird::engine::internal_api::EngineApiResult;
       using scratchbird::engine::internal_api::EngineDmlUpdateRowsDescriptorRefV1;
@@ -30753,6 +30847,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       (!stmt_execute_direct_root || stmt_execute_direct_has_rowset) &&
       !public_insert_rows_root &&
       !public_update_rows_root &&
+      !public_delete_rows_root &&
       !plan_import_rows_root &&
       !public_native_bulk_ingest_root &&
       !public_ddl_create_table_root &&
@@ -32762,6 +32857,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
   if(database_deserialize_logical_snapshot_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_database_deserialize_logical_snapshot");auto consumed=scratchbird::engine::internal_api::ConsumeSblrDatabaseDeserializeLogicalSnapshotDescriptor(c,database_deserialize_logical_snapshot_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4147,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrDatabaseDeserializeLogicalSnapshotResultV1 rr;rr.body[0]=1;rr.availability=database_deserialize_logical_snapshot_availability_generation;rr.publication_barrier[0]=1;database_deserialize_logical_snapshot_result_bytes=scratchbird::engine::sblr::EncodeSblrDatabaseDeserializeLogicalSnapshotResultV1(rr);if(database_deserialize_logical_snapshot_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4147,"DATABASE.DESERIALIZE_LOGICAL_SNAPSHOT_FAILED","sblr.database_deserialize_logical_snapshot.result_encoding_failed");result->result_kind="management_operation_result";}
   if (opcode_stream && !public_insert_rows_root &&
       !public_update_rows_root &&
+      !public_delete_rows_root &&
       !plan_import_rows_root &&
       !public_native_bulk_ingest_root &&
       !public_ddl_create_table_root && !ddl_drop_table_root && !source_map_root && !error_vector_root &&
@@ -32832,6 +32928,16 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
     result->payload.assign(
         reinterpret_cast<const char*>(public_update_rows_result_bytes.data()),
         public_update_rows_result_bytes.size());
+  }
+  if (public_delete_rows_root && dispatched.api_result.ok) {
+    if (public_delete_rows_result_bytes.size() != 256) {
+      delete result;
+      return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4051,
+          "DML.DELETE_FAILED", "sblr.dml_delete_rows.result_encoding_failed");
+    }
+    result->result_kind = "dml_delete_rows_result.v1";
+    result->payload.assign(reinterpret_cast<const char*>(public_delete_rows_result_bytes.data()),
+                           public_delete_rows_result_bytes.size());
   }
   if (ddl_alter_rewrite_rule_root) {
     result->result_kind = "ddl_result";

@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "core/platform/savepoint_crash_injection.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "dml/delete_batch.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/dml_row_locator_stream.hpp"
@@ -22,6 +24,9 @@
 #include "dml/update_durable_operation_authority_provider.hpp"
 #include "dml/update_immutable_authority_provider.hpp"
 #include "dml/update_policy_catalog_authority_provider.hpp"
+#include "dml/update_resource_authority_provider.hpp"
+#include "dml/delete_durable_owner_registry.hpp"
+#include "dml/update_text_value_preparation.hpp"
 #include "dml/update_statement_mga_authority_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "dml/transactional_index_provider.hpp"
@@ -2984,6 +2989,44 @@ struct DmlUpdateBoundColumnV1 {
   std::uint64_t codec_generation = 0;
 };
 
+struct DmlUpdateResourceOwnerV1 {
+  EngineRequestContext context;
+  std::shared_ptr<EngineDmlUpdateResourceReceiptV1> receipt;
+  EngineDmlUpdateResourceHandleV1 grant;
+  EngineDmlUpdateResourcePublicationV1 publication;
+  MgaDmlUpdateDurableOperationIdentityV1 identity;
+  std::uint64_t structural_occurrence_id = 0;
+  ~DmlUpdateResourceOwnerV1() {
+    // Only an unpublished grant can be abandoned. Pending/bound grants are
+    // retained independently of the descriptor registry until durable recovery.
+    if (receipt && grant.valid())
+      (void)receipt->ReleaseNoAlloc(context, grant,
+          EngineDmlUpdateResourceReleaseV1::abandoned_before_publication);
+  }
+};
+
+std::mutex g_dml_update_resource_owner_mutex;
+std::unordered_map<std::string, std::shared_ptr<DmlUpdateResourceOwnerV1>>
+    g_dml_update_resource_owners;
+
+bool DmlUpdateReleaseResourceOwnerV1(
+    const std::shared_ptr<DmlUpdateResourceOwnerV1>& owner,
+    EngineDmlUpdateResourceReleaseV1 reason) noexcept {
+  if (!owner) return false;
+  const auto released = owner->receipt->ReleaseNoAlloc(owner->context, owner->grant, reason);
+  if (released != EngineDmlUpdateResourceReleaseCodeV1::released &&
+      released != EngineDmlUpdateResourceReleaseCodeV1::already_released) return false;
+  try {
+    std::lock_guard lock(g_dml_update_resource_owner_mutex);
+    const auto found = g_dml_update_resource_owners.find(owner->identity.descriptor_uuid);
+    if (found != g_dml_update_resource_owners.end() && found->second == owner)
+      g_dml_update_resource_owners.erase(found);
+    return true;
+  } catch (...) {
+    return false;  // Resource release is idempotent; registry cleanup can retry.
+  }
+}
+
 struct DmlUpdateRowsDescriptorRecordV1 {
   EngineDmlUpdateRowsDescriptorRefV1 descriptor_ref;
   std::string operation_uuid;
@@ -3018,6 +3061,9 @@ struct DmlUpdateRowsDescriptorRecordV1 {
   std::string statement_savepoint_uuid;
   std::uint64_t statement_savepoint_generation = 0;
   std::vector<DmlUpdateBoundColumnV1> assignment_columns;
+  // DUAV/prepared_request own the canonical bytes under the receipt's grant.
+  // Retain metadata authority, not a duplicate tracked preparation allocation.
+  std::vector<EngineDmlUpdateTextTargetHandleV2> text_targets;
   std::optional<DmlUpdateBoundColumnV1> predicate_column;
   EngineUpdateRowsRequest prepared_request;
   DmlUpdateDescriptorLifecycleV1 lifecycle =
@@ -3049,6 +3095,7 @@ struct DmlUpdateRowsDescriptorRecordV1 {
   // durable-registry handle and statement-barrier identity are never issued
   // or inferred by the UPDATE consumer.
   MgaDmlUpdateDurableOperationIdentityV1 durable_operation_identity;
+  std::shared_ptr<DmlUpdateResourceOwnerV1> resource_owner;
   MgaDmlUpdateStatementSavepointAuthorityV1 statement_mga_authority;
   std::uint64_t journal_sequence = 0;
   update_wire::TypedUpdateJournalState latest_journal_state =
@@ -3638,22 +3685,72 @@ bool DmlUpdateAbandonDurableReservationV1(
     const EngineRequestContext& context,
     const DmlUpdateRowsDescriptorRecordV1& record) {
   if (record.durable_operation_identity.validated_durable_handle_uuid.empty()) {
-    return true;
+    return !record.resource_owner || DmlUpdateReleaseResourceOwnerV1(
+        record.resource_owner, EngineDmlUpdateResourceReleaseV1::abandoned_before_publication);
   }
   EngineDmlUpdateDurableAuthorityAbandonRequestV1 request;
   request.context = context;
   request.identity = record.durable_operation_identity;
-  return AbandonDmlUpdateDurableOperationAuthorityReservationV1(request).ok();
+  if (!AbandonDmlUpdateDurableOperationAuthorityReservationV1(request).ok()) return false;
+  // MGA proved that this exact reservation has no bound snapshot/journal.
+  if (record.resource_owner) {
+    if (record.resource_owner->publication.valid()) {
+      const auto completed = record.resource_owner->publication.CompleteNoAlloc(
+          EngineDmlUpdateResourcePublicationOutcomeV1::not_published);
+      if (completed != EngineDmlUpdateResourcePublicationCodeV1::completed &&
+          completed != EngineDmlUpdateResourcePublicationCodeV1::already_completed) return false;
+    }
+    return DmlUpdateReleaseResourceOwnerV1(record.resource_owner,
+        EngineDmlUpdateResourceReleaseV1::abandoned_before_publication);
+  }
+  return true;
+}
+
+struct DmlUpdateUnpublishedReservationGuardV1 {
+  const EngineRequestContext& context;
+  const DmlUpdateRowsDescriptorRecordV1& record;
+  ~DmlUpdateUnpublishedReservationGuardV1() {
+    if (record.journal_sequence == 0) {
+      try { (void)DmlUpdateAbandonDurableReservationV1(context, record); }
+      catch (...) {}  // Pending writes retain their separate resource owner.
+    }
+  }
+};
+
+bool DmlUpdateCaptureResourceOwner(
+    const EngineRequestContext& context,
+    DmlUpdateRowsDescriptorRecordV1* record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record == nullptr || diagnostic == nullptr) return false;
+  if (record->resource_owner) return true;
+  auto owner = std::make_shared<DmlUpdateResourceOwnerV1>();
+  owner->context = context;
+  owner->receipt = context.dml_update_resource_receipt.lock();
+  if (!owner->receipt) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic("SECURITY.ACCESS_DENIED",
+        "sblr.dml_update_rows.resource_receipt_required");
+    return false;
+  }
+  auto captured = owner->receipt->Capture(context);
+  owner->grant = std::move(captured.handle);
+  if (!captured.ok) {
+    *diagnostic = std::move(captured.diagnostic);
+    return false;
+  }
+  record->resource_owner = owner;
+  record->canonical_carriers.resource_budget = *owner->grant.carrier();
+  return true;
 }
 
 bool DmlUpdateBuildExecutionAuthorityCarriers(
     const EngineRequestContext& context,
     DmlUpdateRowsDescriptorRecordV1* record,
     EngineApiDiagnostic* diagnostic) {
-  if (record == nullptr || diagnostic == nullptr) return false;
+  if (!DmlUpdateCaptureResourceOwner(context, record, diagnostic)) return false;
   auto& target_order = record->canonical_carriers.target_order;
   auto& resource = record->canonical_carriers.resource_budget;
   auto& recovery = record->canonical_carriers.recovery_token;
+  const auto& owner = record->resource_owner;
   if (!DmlUpdateIssueTypedIdentity(&target_order.target_order_uuid) ||
       !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
                           &target_order.authenticated_statement_receipt_uuid) ||
@@ -3661,13 +3758,6 @@ bool DmlUpdateBuildExecutionAuthorityCarriers(
                           &target_order.target_relation_occurrence_uuid) ||
       !DmlUpdateTypedUuid(context.statement_snapshot_uuid.canonical,
                           &target_order.statement_snapshot_uuid) ||
-      !DmlUpdateIssueTypedIdentity(&resource.resource_budget_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
-                          &resource.authenticated_statement_receipt_uuid) ||
-      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
-                          &resource.owning_transaction_uuid) ||
-      !DmlUpdateIssueTypedIdentity(&resource.cancellation_token_uuid) ||
-      !DmlUpdateIssueTypedIdentity(&resource.grant_receipt_uuid) ||
       !DmlUpdateIssueTypedIdentity(&recovery.recovery_token_uuid) ||
       !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
                           &recovery.authenticated_statement_receipt_uuid) ||
@@ -3687,22 +3777,7 @@ bool DmlUpdateBuildExecutionAuthorityCarriers(
   target_order.target_order_generation = 1;
   target_order.target_relation_occurrence_generation =
       record->relation_occurrence_generation;
-  target_order.maximum_candidate_rows =
-      update_wire::kTypedUpdateMaximumCandidateRows;
-  resource.resource_budget_generation = 1;
-  resource.cancellation_generation = 1;
-  resource.grant_receipt_generation = 1;
-  resource.maximum_assignments =
-      update_wire::kTypedUpdateMaximumAssignments;
-  resource.maximum_predicate_nodes =
-      update_wire::kTypedUpdateMaximumPredicateNodes;
-  resource.maximum_candidate_rows =
-      update_wire::kTypedUpdateMaximumCandidateRows;
-  resource.maximum_trigger_depth =
-      update_wire::kTypedUpdateMaximumTriggerDepth;
-  resource.maximum_effects = update_wire::kTypedUpdateMaximumEffects;
-  resource.maximum_total_canonical_value_bytes =
-      update_wire::kTypedUpdateMaximumCanonicalValueBytes;
+  target_order.maximum_candidate_rows = resource.maximum_candidate_rows;
   recovery.recovery_generation = 1;
   recovery.descriptor_generation =
       record->descriptor_ref.descriptor_generation;
@@ -4286,12 +4361,78 @@ bool DmlUpdateApplyReleasedStatementMgaAuthorityNoAllocV1(
   return true;
 }
 
+bool DmlUpdateValidateTextEffects(
+    const EngineRequestContext& context, const DmlUpdateRowsDescriptorRecordV1& record,
+    EngineApiDiagnostic* diagnostic) {
+  if (record.text_targets.empty()) return true;
+  const auto refuse = [&](const char* detail) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic("SBLR.OPERATION_UNSUPPORTED",
+        "sblr.dml_update_rows.text_effect_provider_unavailable", detail);
+    return false;
+  };
+  TransactionalRelationStore store(context);
+  auto loaded = store.LoadConstraintScope(record.relation_uuid);
+  if (!loaded.ok) { *diagnostic = loaded.diagnostic; return false; }
+  const auto state = store.BuildReadView(&loaded);
+  const auto table = FindVisibleMgaTable(state, record.relation_uuid, context.local_transaction_id);
+  if (!table) return refuse("target_relation_not_visible");
+  EngineUpdateRowsRequest text_request = record.prepared_request;
+  text_request.context = context;
+  text_request.assignments.clear();
+  std::vector<std::string> text_columns;
+  for (std::size_t i = 0; i < record.assignment_columns.size(); ++i) {
+    if (record.assignment_columns[i].codec_id == "datatype.text.utf8.v1") {
+      text_columns.push_back(record.assignment_columns[i].canonical_name_key);
+      text_request.assignments.push_back(record.prepared_request.assignments[i]);
+    }
+  }
+  const auto indexes = VisibleMgaIndexesForTable(state, record.relation_uuid, context.local_transaction_id);
+  const auto gates = ResolveUpdateFeatureGates(text_request);
+  const auto plan = BuildUpdateIndexMaintenancePlan(text_request, state, *table, indexes,
+      gates, ResolveUpdateSecondaryIndexDeltaLedgerPolicy(text_request, gates));
+  if (plan.rejected || std::ranges::any_of(plan.entries, [](const auto& entry) {
+        return entry.key_or_predicate_affected || entry.action == UpdateIndexMaintenanceAction::reject_batch_path;
+      })) return refuse("TEXT_index_or_predicate_change_requires_exact_operator_authority");
+  if (UpdateTouchesDomainColumns(*table, text_columns) ||
+      UpdateTouchesImmediateConstraintColumns(*table, text_columns) ||
+      UpdateTouchesParentKeyColumns(*table, text_columns))
+    return refuse("TEXT_constraint_or_generated_effect_requires_provider");
+  EngineExecutableObjectLifecycleState executable;
+  const auto triggers = dml_trigger_runtime::LoadExecutableState(context, &executable);
+  if (!triggers.ok) { *diagnostic = triggers.diagnostic; return false; }
+  for (const auto& object : executable.objects) {
+    if (object.object_kind != "trigger" || object.lifecycle_state != "active" || object.deleted || object.invalidated) continue;
+    const auto target = dml_trigger_runtime::PayloadFieldValue(object.payload, "trigger_target_table_uuid:");
+    // An unresolved target is not evidence of an empty trigger effect set.
+    if (target.empty() || target == record.relation_uuid)
+      return refuse("TEXT_trigger_effect_requires_provider");
+  }
+  return true;
+}
+
 bool DmlUpdateRevalidateCanonicalAuthority(
     const EngineRequestContext& context,
     const DmlUpdateRowsDescriptorRecordV1& record,
     EngineApiDiagnostic* diagnostic) {
   if (diagnostic == nullptr) return false;
+  if (!record.resource_owner || !record.resource_owner->grant.valid()) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic("SECURITY.ACCESS_DENIED",
+        "sblr.dml_update_rows.resource_owner_missing");
+    return false;
+  }
+  *diagnostic = record.resource_owner->receipt->Revalidate(context, record.resource_owner->grant);
+  if (diagnostic->error) return false;
+  std::vector<std::uint8_t> resource_bytes;
   update_wire::TypedUpdateCarrierError carrier_error;
+  const auto& resource = record.canonical_carriers.resource_budget;
+  const auto& retained = *record.resource_owner->grant.carrier();
+  if (!update_wire::EncodeTypedUpdateResourceBudget(resource, &resource_bytes, &carrier_error) ||
+      resource_bytes != resource.exact_bytes || resource_bytes != retained.exact_bytes ||
+      resource.evidence_sha256 != retained.evidence_sha256) {
+    *diagnostic = DmlUpdateDescriptorDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+        "sblr.dml_update_rows.resource_carrier_stale");
+    return false;
+  }
   if (!update_wire::ValidateTypedUpdateCarrierSet(
           record.canonical_carriers, &carrier_error) ||
       !update_wire::ValidateTypedUpdateDatatypeOperatorAuthority(
@@ -4362,6 +4503,11 @@ bool DmlUpdateRevalidateCanonicalAuthority(
     *diagnostic = datatype_revalidation;
     return false;
   }
+  for (const auto& target : record.text_targets) {
+    const auto valid = RevalidateDmlUpdateTextTargetV2(context, target);
+    if (valid.error) { *diagnostic = valid; return false; }
+  }
+  if (!DmlUpdateValidateTextEffects(context, record, diagnostic)) return false;
 
   EngineDmlUpdateImmutableAuthorityRevalidateRequestV1 immutable_request;
   immutable_request.current =
@@ -5057,6 +5203,21 @@ bool DmlUpdateCommitPreparedJournalRecordV1(
     request.publication.authority_snapshot =
         DmlUpdateDurableAuthoritySnapshotV1(*record);
     request.publication.bound_journal = *extent;
+    if (!record->resource_owner) return false;
+    auto& owner = record->resource_owner;
+    owner->identity = record->durable_operation_identity;
+    owner->structural_occurrence_id = record->structural_occurrence_id;
+    // Retain the owner before preparation/write. A descriptor-registry reset,
+    // ambiguous I/O or exception after a write must not discard this ticket.
+    {
+      std::lock_guard lock(g_dml_update_resource_owner_mutex);
+      const auto [found, inserted] = g_dml_update_resource_owners.emplace(
+          owner->identity.descriptor_uuid, owner);
+      if (!inserted && found->second != owner) return false;
+    }
+    auto publication = owner->receipt->PrepareDescriptorPublication(context, owner->grant);
+    if (!publication.ok) return false;
+    owner->publication = std::move(publication.publication);
     mutation = PublishDmlUpdateDurableOperationBoundV1(request);
   } else {
     const auto prior_state =
@@ -5078,6 +5239,21 @@ bool DmlUpdateCommitPreparedJournalRecordV1(
   record->latest_journal_state = prepared.next_state;
   record->latest_journal_evidence_sha256 =
       prepared.next_evidence_sha256;
+  if (prepared.expected_prior_sequence == 0) {
+    const auto completed = record->resource_owner->publication.CompleteNoAlloc(
+        EngineDmlUpdateResourcePublicationOutcomeV1::published);
+    if (completed != EngineDmlUpdateResourcePublicationCodeV1::completed &&
+        completed != EngineDmlUpdateResourcePublicationCodeV1::already_completed) {
+      record->durable_recovery_required = true;
+      return false;  // Keep the durable descriptor and its pending owner.
+    }
+  } else if (prepared.next_state == update_wire::TypedUpdateJournalState::published ||
+             prepared.next_state == update_wire::TypedUpdateJournalState::aborted) {
+    // Never turn a resource cleanup failure into a failed durable transition.
+    (void)DmlUpdateReleaseResourceOwnerV1(record->resource_owner,
+        prepared.next_state == update_wire::TypedUpdateJournalState::published
+            ? EngineDmlUpdateResourceReleaseV1::published : EngineDmlUpdateResourceReleaseV1::aborted);
+  }
   return true;
 }
 
@@ -5139,6 +5315,11 @@ bool DmlUpdateCommitDurableSuccessorNoBuildV1(
   record->journal_sequence += 1U;
   record->latest_journal_state = prepared.next_state;
   record->latest_journal_evidence_sha256 = prepared.next_evidence_sha256;
+  if (prepared.next_state == update_wire::TypedUpdateJournalState::published ||
+      prepared.next_state == update_wire::TypedUpdateJournalState::aborted)
+    (void)DmlUpdateReleaseResourceOwnerV1(record->resource_owner,
+        prepared.next_state == update_wire::TypedUpdateJournalState::published
+            ? EngineDmlUpdateResourceReleaseV1::published : EngineDmlUpdateResourceReleaseV1::aborted);
   return true;
 }
 
@@ -5150,6 +5331,26 @@ void DmlUpdateCopyCommittedJournalPositionV1(
   replacement->latest_journal_state = committed.latest_journal_state;
   replacement->latest_journal_evidence_sha256 =
       committed.latest_journal_evidence_sha256;
+}
+
+bool DmlUpdateAbortUnexecutedDescriptorV1(DmlUpdateRowsDescriptorRecordV1& record) {
+  if (record.lifecycle != DmlUpdateDescriptorLifecycleV1::kLive ||
+      record.durable_recovery_required || record.journal_sequence != 1 ||
+      record.latest_journal_state != update_wire::TypedUpdateJournalState::bound) return false;
+  auto context = record.prepared_request.context;
+  context.trace_tags.erase(std::remove(context.trace_tags.begin(), context.trace_tags.end(),
+      "private_dml_update_rows_binder"), context.trace_tags.end());
+  context.trace_tags.push_back("private_dml_update_rows_recovery");
+  auto aborted = record;
+  aborted.lifecycle = DmlUpdateDescriptorLifecycleV1::kFailed;
+  DmlUpdatePreparedJournalAppendV1 append;
+  if (!DmlUpdatePrepareJournalRecordV1(context, aborted, &append) ||
+      !DmlUpdateCommitPreparedJournalRecordV1(context, &record, append)) {
+    record.durable_recovery_required = true;
+    return false;
+  }
+  record.lifecycle = DmlUpdateDescriptorLifecycleV1::kFailed;
+  return true;
 }
 
 bool DmlUpdatePublishJournalRecordV1(
@@ -5222,9 +5423,154 @@ void SetDmlUpdateRowsTestFaultPointV1(
 void ResetDmlUpdateRowsDescriptorRegistryForTestV1() {
   std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
   g_dml_update_descriptors.clear();
+  // The resource-owner registry intentionally survives. This simulates a
+  // descriptor cache loss, not process death or durable terminal evidence.
   g_dml_update_test_fault_point.store(
       EngineDmlUpdateRowsTestFaultPointV1::none,
       std::memory_order_release);
+}
+
+EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
+    const EngineRequestContext& context,
+    const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
+    std::uint64_t structural_occurrence_id);
+
+void RetireDmlUpdateResourceReceiptDescriptorsV1(const EngineRequestContext& context) noexcept {
+  // Receipt revocation can be reentrant from a probe while a descriptor is
+  // locked. Never block on that lock; that path will observe the revocation.
+  try {
+    std::unique_lock guard(g_dml_update_descriptor_mutex, std::try_to_lock);
+    if (!guard.owns_lock()) return;
+    const auto receipt = context.dml_update_resource_receipt.lock();
+    if (!receipt || !receipt->IsRevoked()) return;
+    // Scan only outstanding grants, not the unbounded historical descriptor
+    // cache, on ordinary receipt teardown (including read-only statements).
+    std::vector<std::shared_ptr<DmlUpdateResourceOwnerV1>> owners;
+    {
+      std::lock_guard owners_guard(g_dml_update_resource_owner_mutex);
+      for (const auto& [id, owner] : g_dml_update_resource_owners) {
+        if (owner->receipt != receipt || owner->context.database_path != context.database_path) continue;
+        owners.push_back(owner);
+      }
+    }
+    std::vector<std::shared_ptr<DmlUpdateResourceOwnerV1>> recovery;
+    for (const auto& owner : owners) {
+      try {
+        const auto descriptor = g_dml_update_descriptors.find(owner->identity.descriptor_uuid);
+        if (descriptor == g_dml_update_descriptors.end()) {
+          recovery.push_back(owner);
+          continue;
+        }
+        auto& record = descriptor->second;
+        if (record.resource_owner != owner) continue;
+        if (record.journal_sequence == 0 && record.durable_recovery_required &&
+            DmlUpdateAbandonDurableReservationV1(record.prepared_request.context, record)) {
+          record.lifecycle = DmlUpdateDescriptorLifecycleV1::kFailed;
+          record.durable_recovery_required = false;
+          continue;
+        }
+        if (record.lifecycle == DmlUpdateDescriptorLifecycleV1::kLive)
+          (void)DmlUpdateAbortUnexecutedDescriptorV1(record);
+        else if (record.latest_journal_state == update_wire::TypedUpdateJournalState::published ||
+                 record.latest_journal_state == update_wire::TypedUpdateJournalState::aborted)
+          (void)DmlUpdateReleaseResourceOwnerV1(owner,
+              record.latest_journal_state == update_wire::TypedUpdateJournalState::published
+                  ? EngineDmlUpdateResourceReleaseV1::published : EngineDmlUpdateResourceReleaseV1::aborted);
+        // Never run recovery against another thread's executing statement.
+        if (record.durable_recovery_required) recovery.push_back(owner);
+      } catch (...) {
+        // A failed owner must not prevent cleanup of other retired grants.
+      }
+    }
+    guard.unlock();
+    for (const auto& owner : recovery) {
+      try {
+        EngineDmlUpdateRowsDescriptorRefV1 ref;
+        ref.descriptor_uuid = owner->identity.descriptor_uuid;
+        ref.descriptor_generation = owner->identity.descriptor_generation;
+        (void)DmlUpdateConsumeRecoveredDurableV1(owner->context, ref, owner->structural_occurrence_id);
+      } catch (...) {}  // Keep this owner for a later engine cleanup attempt.
+    }
+  } catch (...) {}  // Failed durable cleanup retains ownership for recovery.
+}
+
+void RetryRetiredDmlUpdateResourceOwnersV1(const EngineRequestContext& context) noexcept {
+  try {
+    const auto scope = context.dml_update_resource_receipt.lock();
+    if (!scope) return;
+    std::vector<std::shared_ptr<DmlUpdateResourceOwnerV1>> receipts;
+    {
+      std::lock_guard guard(g_dml_update_resource_owner_mutex);
+      for (const auto& [id, owner] : g_dml_update_resource_owners) {
+        if (owner->context.database_path != context.database_path ||
+            owner->context.database_uuid.canonical != context.database_uuid.canonical ||
+            !owner->receipt->SharesRuntimeWith(*scope) || !owner->receipt->IsRevoked()) continue;
+        if (std::none_of(receipts.begin(), receipts.end(), [&](const auto& prior) {
+              return prior->receipt == owner->receipt;
+            })) receipts.push_back(owner);
+      }
+    }
+    // No owner-registry mutex is held across descriptor locking or durable I/O.
+    // A failed allocation/try-lock does not lose retirement: the revocation
+    // flag remains in the receipt retained by each outstanding owner.
+    for (const auto& owner : receipts) RetireDmlUpdateResourceReceiptDescriptorsV1(owner->context);
+  } catch (...) {}  // Admission will still enforce the retained capacity debit.
+}
+
+bool PrepareDmlUpdateTransactionFinalityV1(const EngineRequestContext& context) noexcept {
+  try {
+    std::vector<std::shared_ptr<DmlUpdateResourceOwnerV1>> retired;
+    const auto matches = [&](const auto& owner) {
+      return owner->context.database_path == context.database_path &&
+             owner->context.local_transaction_id == context.local_transaction_id;
+    };
+    {
+      std::lock_guard guard(g_dml_update_resource_owner_mutex);
+      for (const auto& [id, owner] : g_dml_update_resource_owners) {
+        if (!matches(owner)) continue;
+        if (owner->context.database_uuid.canonical != context.database_uuid.canonical ||
+            owner->context.transaction_uuid.canonical != context.transaction_uuid.canonical ||
+            owner->context.session_uuid.canonical != context.session_uuid.canonical ||
+            owner->context.principal_uuid.canonical != context.principal_uuid.canonical) return false;
+        if (owner->receipt->IsRevoked()) retired.push_back(owner);
+      }
+    }
+    // The existing nonblocking retirement path alone may establish terminal
+    // durability. Do not revoke an executing receipt to manufacture finality.
+    for (const auto& owner : retired) RetireDmlUpdateResourceReceiptDescriptorsV1(owner->context);
+    std::lock_guard guard(g_dml_update_resource_owner_mutex);
+    return std::none_of(g_dml_update_resource_owners.begin(), g_dml_update_resource_owners.end(),
+        [&](const auto& item) { return matches(item.second); });
+  } catch (...) { return false; }
+}
+
+bool DrainDmlUpdateResourceOwnersForRuntimeV1(
+    const std::shared_ptr<EngineDmlUpdateResourceGovernorV1>& governor) noexcept {
+  if (!governor) return true;
+  governor->StopAdmission();
+  try {
+    std::vector<std::shared_ptr<DmlUpdateResourceOwnerV1>> owners;
+    {
+      std::lock_guard guard(g_dml_update_resource_owner_mutex);
+      for (const auto& [id, owner] : g_dml_update_resource_owners) {
+        if (!owner->receipt->BelongsToRuntime(governor.get())) continue;
+        owner->receipt->Revoke();
+        owners.push_back(owner);
+      }
+    }
+    // Neither the owner mutex nor an engine/public-receipt mutex is held
+    // across descriptor locking and durable reconciliation.
+    for (const auto& owner : owners)
+      RetireDmlUpdateResourceReceiptDescriptorsV1(owner->context);
+    const bool delete_drained = DrainDmlDeleteResourceOwnersForRuntimeV1(governor);
+    const auto observed = governor->Observe();
+    if (!delete_drained || observed.active_grants != 0 || observed.reserved_canonical_bytes != 0) return false;
+    std::lock_guard guard(g_dml_update_resource_owner_mutex);
+    return std::none_of(g_dml_update_resource_owners.begin(), g_dml_update_resource_owners.end(),
+        [&](const auto& entry) { return entry.second->receipt->BelongsToRuntime(governor.get()); });
+  } catch (...) {
+    return false;  // No inferred abandonment, lost debit or fabricated finality.
+  }
 }
 
 EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
@@ -5242,6 +5588,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
       !context.authorization_context.present ||
       context.authorization_context.authority_uuid.canonical.empty() ||
       context.authorization_context.security_context_generation == 0 ||
+      context.dml_update_resource_receipt.expired() ||
       !DmlUpdateHasTraceTag(context, "private_dml_update_rows_binder")) {
     return refuse("SECURITY.ACCESS_DENIED",
                   "sblr.dml_update_rows.binding_authority_required");
@@ -5263,6 +5610,13 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
   if (DmlUpdateCancellationRequested(context)) {
     return refuse("PROCESS.CANCELLED",
                   "sblr.dml_update_rows.binding_cancelled");
+  }
+  RetryRetiredDmlUpdateResourceOwnersV1(context);
+  const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
+      context, demand.target_relation_uuid_hint, MgaDmlMutationKind::update, true);
+  if (savepoint_admission.error) {
+    result.diagnostic = savepoint_admission;
+    return result;
   }
   const auto loaded = TransactionalRelationStore(context).LoadRelationDescriptor(
       demand.target_relation_uuid_hint);
@@ -5287,6 +5641,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
   }
 
   DmlUpdateRowsDescriptorRecordV1 record;
+  DmlUpdateUnpublishedReservationGuardV1 reservation_guard{context, record};
   record.statement_receipt_uuid = context.statement_receipt_uuid.canonical;
   record.structural_occurrence_id = demand.structural_occurrence_id;
   record.database_uuid = context.database_uuid.canonical;
@@ -5316,12 +5671,16 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
   record.prepared_request.option_envelopes.push_back(
       "result_payload_policy:summary_only");
 
+  // Reserve receipt-owned canonical-value capacity before allocating literal
+  // payloads. A grant is not a durable descriptor or a mutation permission.
+  if (!DmlUpdateCaptureResourceOwner(context, &record, &result.diagnostic)) return result;
+  std::uint64_t canonical_value_bytes = 0;
+
   std::unordered_set<std::string> assigned_column_uuids;
   std::uint32_t expected_ordinal = 1;
   for (const auto& assignment : demand.assignments) {
     if (assignment.ordinal != expected_ordinal++ ||
-        assignment.target_column_spelling.empty() ||
-        assignment.literal_spelling.empty()) {
+        assignment.target_column_spelling.empty()) {
       return refuse("SBLR.OPERAND_INVALID",
                     "sblr.dml_update_rows.assignment_invalid");
     }
@@ -5336,19 +5695,52 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
     EngineTypedValue value;
     DmlUpdateBoundColumnV1 identity;
     EngineApiDiagnostic diagnostic;
-    if (!DmlUpdateBindLiteral(context, *column,
-                              assignment.literal_spelling, &value,
-                              &identity, &diagnostic)) {
+    if (!DmlUpdateResolveColumnIdentity(context, *column, &identity, &diagnostic)) {
       result.diagnostic = std::move(diagnostic);
       return result;
     }
+    if (assignment.literal_spelling.size() > update_wire::kTypedUpdateMaximumCanonicalValueBytesPerValue ||
+        assignment.literal_spelling.size() > record.canonical_carriers.resource_budget.maximum_total_canonical_value_bytes -
+            std::min(canonical_value_bytes, record.canonical_carriers.resource_budget.maximum_total_canonical_value_bytes)) {
+      return refuse("RESOURCE.BUDGET_EXCEEDED", "sblr.dml_update_rows.literal_budget_exceeded");
+    }
+    if (identity.codec_id == "datatype.text.utf8.v1") {
+      MgaTextColumnKeyV2 key;
+      if (!DmlUpdateTypedUuid(record.relation_uuid, &key.relation_uuid) ||
+          !DmlUpdateTypedUuid(record.relation_descriptor_uuid, &key.relation_descriptor_uuid) ||
+          !DmlUpdateTypedUuid(identity.column_uuid, &key.column_uuid))
+        return refuse("DATATYPE.DESCRIPTOR_INVALID", "sblr.dml_update_rows.text_target_identity_invalid");
+      key.relation_descriptor_generation = record.relation_descriptor_generation;
+      key.column_ordinal = identity.ordinal;
+      const auto target = CaptureDmlUpdateTextTargetV2(context, key, identity.column_generation);
+      if (!target.ok) { result.diagnostic = target.diagnostic; return result; }
+      // Syntax supplies only the NULL/VALUE state. Datatype and codec authority
+      // still come exclusively from the exact live column descriptor above.
+      const auto state = assignment.literal_type_spelling == "null"
+          ? EngineValueState::sql_null : EngineValueState::value;
+      const auto prepared = PrepareDmlUpdateTextValueV2(context, target.handle,
+          state, std::span<const std::uint8_t>(
+              reinterpret_cast<const std::uint8_t*>(assignment.literal_spelling.data()), assignment.literal_spelling.size()));
+      if (!prepared.ok) { result.diagnostic = prepared.diagnostic; return result; }
+      value.descriptor = column->value_descriptor;
+      value.binary_value.assign(prepared.value.bytes().begin(), prepared.value.bytes().end());
+      value.encoded_value.assign(assignment.literal_spelling);
+      value.setState(state);
+      record.text_targets.push_back(target.handle);
+    } else if (!DmlUpdateBindLiteral(context, *column, assignment.literal_spelling,
+                                    &value, &identity, &diagnostic)) {
+      result.diagnostic = std::move(diagnostic); return result;
+    }
+    canonical_value_bytes += value.binary_value.size();
     record.prepared_request.assignments.push_back(
         {column->canonical_name_key, std::move(value)});
     record.assignment_columns.push_back(std::move(identity));
   }
 
   if (demand.predicate_kind.empty()) {
-    record.prepared_request.update_predicate.predicate_kind = "engine_bound_true";
+    // The authenticated TRUE carrier maps to the executor's existing
+    // all-visible-rows envelope. Unknown predicate spellings match no rows.
+    record.prepared_request.update_predicate = {};
   } else {
     if (demand.predicate_kind != "column_equals" ||
         demand.predicate_column_spelling.empty() ||
@@ -5379,6 +5771,8 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
         std::move(value));
     record.predicate_column = std::move(identity);
   }
+
+  if (!DmlUpdateValidateTextEffects(context, record, &result.diagnostic)) return result;
 
   if (!DmlUpdateIssueIdentity(&record.descriptor_ref.descriptor_uuid) ||
       !DmlUpdateIssueIdentity(&record.operation_uuid) ||
@@ -5540,14 +5934,16 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
     try {
       published = DmlUpdatePublishJournalRecordV1(context, stored->second);
     } catch (...) {
-      (void)DmlUpdateAbandonDurableReservationV1(context, stored->second);
-      g_dml_update_descriptors.erase(stored);
+      stored->second.durable_recovery_required = true;
+      if (DmlUpdateAbandonDurableReservationV1(context, stored->second))
+        g_dml_update_descriptors.erase(stored);
       throw;
     }
     if (!published) {
+      stored->second.durable_recovery_required = true;
       const bool abandoned =
           DmlUpdateAbandonDurableReservationV1(context, stored->second);
-      g_dml_update_descriptors.erase(stored);
+      if (abandoned) g_dml_update_descriptors.erase(stored);
       return refuse(
           "DML.UPDATE_FAILED",
           abandoned ? "sblr.dml_update_rows.registry_publish_failed"
@@ -5583,6 +5979,7 @@ bool DmlUpdateBuildImmutableReplayV1(
   result->prior_result.operation_id = "dml.update_rows";
   result->prior_result.matched_count = journal.prior_result->matched_count;
   result->prior_result.updated_count = journal.prior_result->updated_count;
+  result->prior_result.dml_summary.rows_changed = journal.prior_result->updated_count;
   // Host evidence is deliberately not reconstructed.  The exact DURS inner
   // hashes remain the durable executor/effect evidence and are returned as
   // canonical bytes to the public result path.
@@ -5695,6 +6092,32 @@ EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
     return result;
   }
 
+  std::shared_ptr<DmlUpdateResourceOwnerV1> resource_owner;
+  {
+    std::lock_guard lock(g_dml_update_resource_owner_mutex);
+    const auto found = g_dml_update_resource_owners.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_resource_owners.end()) resource_owner = found->second;
+  }
+  if (resource_owner) {
+    if (resource_owner->context.database_path != context.database_path ||
+        resource_owner->identity != recovered.identity ||
+        resource_owner->grant.carrier()->exact_bytes != recovered.authority_snapshot.resource_budget_dubr) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic("DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovered_resource_owner_mismatch");
+      return result;
+    }
+    // Validated durable recovery proves the exact bound chain exists, even
+    // when its original publication acknowledgement failed in this process.
+    const auto bound = resource_owner->publication.CompleteNoAlloc(
+        EngineDmlUpdateResourcePublicationOutcomeV1::published);
+    if (bound != EngineDmlUpdateResourcePublicationCodeV1::completed &&
+        bound != EngineDmlUpdateResourcePublicationCodeV1::already_completed) {
+      result.diagnostic = DmlUpdateDescriptorDiagnostic("DML.UPDATE_FAILED",
+          "sblr.dml_update_rows.recovered_resource_publication_failed");
+      return result;
+    }
+  }
+
   if (decoded.decision ==
       update_wire::TypedUpdateRecoveryDecision::append_aborted_no_result) {
     if (decoded.recovery_observation.savepoint_state ==
@@ -5746,6 +6169,7 @@ EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
     result.diagnostic = DmlUpdateDescriptorDiagnostic(
         "MGA.TRANSACTION.STALE",
         "sblr.dml_update_rows.recovered_prepublication_abort");
+    (void)DmlUpdateReleaseResourceOwnerV1(resource_owner, EngineDmlUpdateResourceReleaseV1::aborted);
     return result;
   }
 
@@ -5778,11 +6202,13 @@ EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
           "DML.UPDATE_FAILED",
           "sblr.dml_update_rows.recovery_result_invalid");
     }
+    (void)DmlUpdateReleaseResourceOwnerV1(resource_owner, EngineDmlUpdateResourceReleaseV1::published);
     return result;
   }
 
   if (decoded.decision ==
       update_wire::TypedUpdateRecoveryDecision::replay_published_result) {
+    (void)DmlUpdateReleaseResourceOwnerV1(resource_owner, EngineDmlUpdateResourceReleaseV1::published);
     if (!DmlUpdateBuildImmutableReplayV1(decoded.journal.back(), &result)) {
       result.diagnostic = DmlUpdateDescriptorDiagnostic(
           "DML.UPDATE_FAILED",
@@ -5791,6 +6217,10 @@ EngineDmlUpdateRowsConsumeResultV1 DmlUpdateConsumeRecoveredDurableV1(
     return result;
   }
 
+  if (decoded.journal.back().lifecycle_state == update_wire::TypedUpdateJournalState::aborted)
+    (void)DmlUpdateReleaseResourceOwnerV1(resource_owner, EngineDmlUpdateResourceReleaseV1::aborted);
+  else if (decoded.journal.back().lifecycle_state == update_wire::TypedUpdateJournalState::published)
+    (void)DmlUpdateReleaseResourceOwnerV1(resource_owner, EngineDmlUpdateResourceReleaseV1::published);
   result.diagnostic = DmlUpdateDescriptorDiagnostic(
       decoded.decision ==
               update_wire::TypedUpdateRecoveryDecision::stale_replay
@@ -5808,6 +6238,13 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
     const EngineDmlUpdateRowsDescriptorRefV1& descriptor_ref,
     std::uint64_t structural_occurrence_id) {
   EngineDmlUpdateRowsConsumeResultV1 result;
+  if (!DmlUpdateHasTraceTag(context, "private_dml_update_rows_consumer") ||
+      DmlUpdateHasTraceTag(context, "private_dml_update_rows_binder") ||
+      DmlUpdateHasTraceTag(context, "private_dml_update_rows_recovery")) {
+    result.diagnostic = DmlUpdateDescriptorDiagnostic("SECURITY.ACCESS_DENIED",
+        "sblr.dml_update_rows.consumer_authority_required");
+    return result;
+  }
   std::unique_lock<std::mutex> guard(g_dml_update_descriptor_mutex);
   auto found = g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
   if (found == g_dml_update_descriptors.end()) {
@@ -5841,6 +6278,7 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
         context, descriptor_ref, structural_occurrence_id);
   }
   if (record.lifecycle == DmlUpdateDescriptorLifecycleV1::kCompleted) {
+    (void)DmlUpdateReleaseResourceOwnerV1(record.resource_owner, EngineDmlUpdateResourceReleaseV1::published);
     result.ok = true;
     result.immutable_replay = true;
     result.prior_result = record.completed_result;
@@ -5855,6 +6293,15 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
         "sblr.dml_update_rows.descriptor_not_live");
     return result;
   }
+  struct RetireUnconsumed {
+    DmlUpdateRowsDescriptorRecordV1& record;
+    ~RetireUnconsumed() {
+      if (record.lifecycle == DmlUpdateDescriptorLifecycleV1::kLive) {
+        try { (void)DmlUpdateAbortUnexecutedDescriptorV1(record); }
+        catch (...) { record.durable_recovery_required = true; }
+      }
+    }
+  } retire_unconsumed{record};
   EngineApiDiagnostic carrier_diagnostic;
   if (!DmlUpdateRevalidateCanonicalAuthority(
           context, record, &carrier_diagnostic)) {
@@ -5939,12 +6386,13 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
         "sblr.dml_update_rows.cancelled_after_revalidation");
     return result;
   }
-  record.lifecycle = DmlUpdateDescriptorLifecycleV1::kExecuting;
   result.ok = true;
   result.request = record.prepared_request;
   result.request.context = context;
   result.diagnostic = MakeEngineApiDiagnostic(
       "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  // Publish executing only after the complete caller request is allocated.
+  record.lifecycle = DmlUpdateDescriptorLifecycleV1::kExecuting;
   return result;
 }
 
@@ -6133,6 +6581,8 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
             : "sblr.dml_update_rows.mutation_intent_publish_failed",
         rolled_back.diagnostic.detail));
   }
+  scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
+      "update_after_intent", context.local_transaction_id);
   if (DmlUpdateTakeTestFault(
           EngineDmlUpdateRowsTestFaultPointV1::after_durable_intent)) {
     return failure_result(DmlUpdateDescriptorDiagnostic(
@@ -6289,6 +6739,8 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
             "DML.UPDATE_FAILED",
             "sblr.dml_update_rows.prepared_outcome_publish_failed"));
   }
+  scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
+      "update_after_prepared", context.local_transaction_id);
   if (DmlUpdateTakeTestFault(
           EngineDmlUpdateRowsTestFaultPointV1::after_prepared_outcome)) {
     return failure_result(DmlUpdateDescriptorDiagnostic(
@@ -6302,6 +6754,39 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
             "PROCESS.CANCELLED",
             "sblr.dml_update_rows.cancelled_before_publication"));
   }
+
+  // Revalidate the original receipt-owned cancellation/resource authority
+  // while rollback is still possible; a caller context cannot replace it.
+  std::shared_ptr<DmlUpdateResourceOwnerV1> executing_resource_owner;
+  {
+    std::lock_guard guard(g_dml_update_descriptor_mutex);
+    const auto found = g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end()) executing_resource_owner = found->second.resource_owner;
+  }
+  auto resource_diagnostic = executing_resource_owner
+      ? executing_resource_owner->receipt->Revalidate(context, executing_resource_owner->grant)
+      : DmlUpdateDescriptorDiagnostic("RESOURCE.BUDGET_EXCEEDED", "sblr.dml_update_rows.resource_owner_missing");
+  if (resource_diagnostic.error)
+    return rollback_failure(std::move(update_result), std::move(resource_diagnostic));
+
+  auto text_diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  {
+    std::lock_guard guard(g_dml_update_descriptor_mutex);
+    const auto found = g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
+    if (found != g_dml_update_descriptors.end()) {
+      for (const auto& target : found->second.text_targets) {
+        text_diagnostic = RevalidateDmlUpdateTextTargetV2(context, target);
+        if (text_diagnostic.error) break;
+      }
+      if (!text_diagnostic.error)
+        (void)DmlUpdateValidateTextEffects(context, found->second, &text_diagnostic);
+    } else {
+      text_diagnostic = DmlUpdateDescriptorDiagnostic("MGA.TRANSACTION.STALE",
+          "sblr.dml_update_rows.text_publication_owner_missing");
+    }
+  }
+  if (text_diagnostic.error)
+    return rollback_failure(std::move(update_result), std::move(text_diagnostic));
 
   // The terminal DUJR bytes are completed while rollback is still possible.
   // After the MGA publication barrier, the execution path may only compare-
@@ -6433,6 +6918,8 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
       // new diagnostic/result object may be allocated in this branch.
       publication_authority_invalid = true;
     } else {
+      scratchbird::core::platform::MaybeCrashAtMgaSavepointBoundary(
+          "update_after_barrier", context.local_transaction_id);
       std::lock_guard<std::mutex> guard(g_dml_update_descriptor_mutex);
       const auto found =
           g_dml_update_descriptors.find(descriptor_ref.descriptor_uuid);
@@ -6512,6 +6999,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
   }
+  const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
+      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::update);
+  if (savepoint_admission.error)
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context, "dml.update_rows", savepoint_admission);
   const auto cancellation_failure = [&](std::string message_key) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
@@ -6729,9 +7221,13 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                          loaded.evidence.begin(),
                          loaded.evidence.end());
   result.evidence.push_back({"update_predicate_kind",
-                             effective_request.update_predicate.predicate_kind});
-  result.evidence.push_back({"update_predicate_column",
-                             effective_request.update_predicate.canonical_predicate_envelope});
+                             effective_request.update_predicate.predicate_kind.empty()
+                                 ? "all_visible_rows"
+                                 : effective_request.update_predicate.predicate_kind});
+  if (!effective_request.update_predicate.canonical_predicate_envelope.empty()) {
+    result.evidence.push_back({"update_predicate_column",
+                               effective_request.update_predicate.canonical_predicate_envelope});
+  }
   result.evidence.push_back({"update_predicate_bound_count",
                              std::to_string(effective_request.update_predicate.bound_values.size())});
   if (batch_context.page_reservation.reservation_available) {
@@ -7405,6 +7901,11 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_uuid_required"));
   }
+  const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
+      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::delete_rows);
+  if (savepoint_admission.error)
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context, "dml.delete_rows", savepoint_admission);
   const std::string delete_surface_variant = DeleteSurfaceVariant(request);
   if (delete_surface_variant != "delete" &&
       delete_surface_variant != "batch_delete" &&

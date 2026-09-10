@@ -29,7 +29,7 @@ std::string SavepointName(const EngineApiRequest& request) {
 }
 
 EngineApiDiagnostic ValidateSavepointName(const std::string& operation_id, const std::string& savepoint_name) {
-  if (savepoint_name.empty()) {
+  if (savepoint_name.empty() || savepoint_name.find('\0') != std::string::npos) {
     return MakeInvalidRequestDiagnostic(operation_id, "savepoint_name_required");
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);

@@ -623,6 +623,10 @@ class SbsqlTestWireSession {
   std::vector<std::uint8_t> admitted_savepoint_descriptor_;
   std::vector<std::uint8_t> retired_savepoint_descriptor_;
   std::vector<std::uint8_t> admitted_savepoint_handle_;
+  // Name-resolution cache only. Values are engine-issued binary handles;
+  // engine validation remains authoritative for lifetime and rollback.
+  std::map<std::string, std::vector<std::uint8_t>> named_savepoint_handles_;
+  bool testing_savepoint_handle_override_{false};
   std::vector<std::uint8_t> admitted_cursor_handle_;
   std::vector<std::uint8_t> parent_savepoint_handle_;
   std::vector<std::uint8_t> descendant_savepoint_handle_;

@@ -7,12 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_immutable_authority_provider.hpp"
+#include "dml/delete_security_authority_provider.hpp"
 #include "dml/update_policy_catalog_authority_provider.hpp"
+#include "dml/update_resource_authority_provider.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "uuid.hpp"
+#include "../common/single_tu_allocation_fault.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +26,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -860,9 +864,525 @@ void TestRefusalCases(
                     "policy source outside durable admitted identities was accepted");
 }
 
+engine_api::EngineDmlUpdateResourceReleaseCodeV1 ReleaseWithAllocationDenied(
+    engine_api::EngineDmlUpdateResourceGovernorV1& governor,
+    const engine_api::EngineRequestContext& context,
+    const engine_api::EngineDmlUpdateResourceHandleV1& handle,
+    engine_api::EngineDmlUpdateResourceReleaseV1 reason) {
+  allocation_attempts = 0;
+  allocations_before_failure = 0;
+  const auto result = governor.ReleaseNoAlloc(context, handle, reason);
+  allocations_before_failure = -1;
+  Require(allocation_attempts == 0, "terminal resource release attempted allocation");
+  return result;
+}
+
+void TestResourceNoAllocationCompletion(const engine_api::EngineRequestContext& context) {
+  using Governor = engine_api::EngineDmlUpdateResourceGovernorV1;
+  using Reason = engine_api::EngineDmlUpdateResourceReleaseV1;
+  using Code = engine_api::EngineDmlUpdateResourceReleaseCodeV1;
+  Governor governor, other;
+  Require(!governor.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error, "scalar release policy failed");
+  auto retained_context = context;
+  unsigned probes = 0;
+  retained_context.query_cancellation_requested = [&] { ++probes; return false; };
+  const auto a = governor.Capture(retained_context);
+  const auto b = governor.Capture(retained_context);
+  Require(a.ok && b.ok, "scalar release fixture failed capture");
+  auto foreign = retained_context;
+  foreign.statement_receipt_uuid.canonical = CanonicalUuid(0xa005);
+  Require(ReleaseWithAllocationDenied(governor, foreign, a.handle, Reason::abandoned_before_publication) == Code::owner_mismatch &&
+              ReleaseWithAllocationDenied(other, retained_context, a.handle, Reason::abandoned_before_publication) == Code::owner_mismatch &&
+              ReleaseWithAllocationDenied(governor, retained_context, {}, Reason::abandoned_before_publication) == Code::owner_mismatch &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, static_cast<Reason>(255)) == Code::invalid_disposition &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::published) == Code::phase_mismatch,
+          "scalar release refusal checks failed");
+  Require(governor.Observe().reserved_canonical_bytes == 128, "refusal returned resource capacity");
+  Require(!governor.PublishDescriptor(retained_context, a.handle).error &&
+              !governor.Cancel(retained_context, a.handle).error, "scalar abort fixture failed");
+  const auto probes_before = probes;
+  Require(ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::abandoned_before_publication) == Code::phase_mismatch &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::aborted) == Code::released &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::aborted) == Code::already_released &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::published) == Code::conflicting_disposition,
+          "scalar aborted lifecycle failed");
+  Require(probes == probes_before && governor.Observe().reserved_canonical_bytes == 64,
+          "scalar release invoked callback or returned unrelated capacity");
+  Require(!governor.PublishDescriptor(retained_context, b.handle).error, "scalar publish fixture failed");
+  std::array<Code, 8> results{};
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i < results.size(); ++i)
+    threads.emplace_back([&, i] {
+      results[i] = ReleaseWithAllocationDenied(governor, retained_context, b.handle, Reason::published);
+    });
+  for (auto& t : threads) t.join();
+  Require(std::count(results.begin(), results.end(), Code::released) == 1 &&
+              std::count(results.begin(), results.end(), Code::already_released) == 7 &&
+              governor.Observe().active_grants == 0 && governor.Observe().released_grants == 2 &&
+              governor.Observe().reserved_canonical_bytes == 0,
+          "concurrent scalar releases were not exactly once");
+  const auto abandoned = governor.Capture(retained_context);
+  Require(abandoned.ok && ReleaseWithAllocationDenied(governor, retained_context, abandoned.handle,
+              Reason::abandoned_before_publication) == Code::released, "scalar abandonment failed");
+  Require(!governor.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error &&
+              ReleaseWithAllocationDenied(governor, retained_context, a.handle, Reason::aborted) == Code::already_released,
+          "policy replacement broke retained terminal disposition");
+  const auto shutdown_grant = governor.Capture(retained_context);
+  Require(shutdown_grant.ok, "shutdown resource fixture failed");
+  governor.StopAdmission();
+  Require(!governor.Capture(retained_context).ok &&
+              governor.Revalidate(retained_context, shutdown_grant.handle, *shutdown_grant.handle.carrier()).error &&
+              governor.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error,
+          "stopped runtime admitted resource use or reopened policy");
+  Require(ReleaseWithAllocationDenied(governor, retained_context, shutdown_grant.handle,
+              Reason::abandoned_before_publication) == Code::released,
+          "stopped runtime prevented resource-only cleanup");
+  std::cout << "resource terminal release/refusals/concurrent retry: zero allocation attempts\n";
+}
+
+engine_api::EngineDmlUpdateResourcePublicationCodeV1 CompleteWithAllocationDenied(
+    const engine_api::EngineDmlUpdateResourcePublicationV1& publication,
+    engine_api::EngineDmlUpdateResourcePublicationOutcomeV1 outcome) {
+  allocation_attempts = 0;
+  allocations_before_failure = 0;
+  const auto result = publication.CompleteNoAlloc(outcome);
+  allocations_before_failure = -1;
+  Require(allocation_attempts == 0, "resource publication attempted allocation");
+  return result;
+}
+
+void TestResourcePreparedPublication(engine_api::EngineRequestContext context) {
+  using Governor = engine_api::EngineDmlUpdateResourceGovernorV1;
+  using Outcome = engine_api::EngineDmlUpdateResourcePublicationOutcomeV1;
+  using Code = engine_api::EngineDmlUpdateResourcePublicationCodeV1;
+  using Release = engine_api::EngineDmlUpdateResourceReleaseV1;
+  using ReleaseCode = engine_api::EngineDmlUpdateResourceReleaseCodeV1;
+  Governor governor, foreign;
+  Require(!governor.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error, "publication policy failed");
+  unsigned probes = 0;
+  bool cancelled = false;
+  context.query_cancellation_requested = [&] { ++probes; return cancelled; };
+  auto grant = governor.Capture(context);
+  Require(grant.ok && !foreign.PrepareDescriptorPublication(context, grant.handle).ok &&
+              !governor.PrepareDescriptorPublication(context, {}).ok, "publication ownership refusal failed");
+  auto wrong_context = context;
+  wrong_context.resource_epoch++;
+  Require(!governor.PrepareDescriptorPublication(wrong_context, grant.handle).ok,
+          "publication accepted altered receipt context");
+
+  auto prepared = governor.PrepareDescriptorPublication(context, grant.handle);
+  Require(prepared.ok && prepared.publication.valid(), "publication preparation failed");
+  Require(!governor.PrepareDescriptorPublication(context, grant.handle).ok &&
+              governor.Revalidate(context, grant.handle, *grant.handle.carrier()).error,
+          "pending publication admitted another preparation or execution");
+  for (auto reason : {Release::abandoned_before_publication, Release::published, Release::aborted})
+    Require(ReleaseWithAllocationDenied(governor, context, grant.handle, reason) == ReleaseCode::phase_mismatch,
+            "uncertain publication returned capacity");
+  Require(CompleteWithAllocationDenied({}, Outcome::published) == Code::invalid_handle &&
+              CompleteWithAllocationDenied(prepared.publication, static_cast<Outcome>(255)) == Code::invalid_disposition,
+          "invalid publication completion accepted");
+  auto retained = prepared.publication;
+  prepared.publication = {};
+  Require(governor.Observe().reserved_canonical_bytes == 64 &&
+              ReleaseWithAllocationDenied(governor, context, grant.handle, Release::abandoned_before_publication) ==
+                  ReleaseCode::phase_mismatch, "ticket destruction resolved an uncertain publication");
+  const auto probes_before = probes;
+  Require(CompleteWithAllocationDenied(retained, Outcome::not_published) == Code::completed &&
+              CompleteWithAllocationDenied(retained, Outcome::not_published) == Code::already_completed &&
+              CompleteWithAllocationDenied(retained, Outcome::published) == Code::conflicting_disposition &&
+              probes == probes_before && governor.Observe().reserved_canonical_bytes == 64,
+          "negative publication decision probed, released, or changed its outcome");
+
+  // A resolved non-write may be prepared again. An old ticket must not change
+  // the new window, even with a conflicting completion request.
+  prepared = governor.PrepareDescriptorPublication(context, grant.handle);
+  Require(prepared.ok && CompleteWithAllocationDenied(retained, Outcome::published) == Code::conflicting_disposition &&
+              ReleaseWithAllocationDenied(governor, context, grant.handle, Release::abandoned_before_publication) ==
+                  ReleaseCode::phase_mismatch, "old ticket changed a replacement publication window");
+  cancelled = true;
+  Require(!governor.Cancel(context, grant.handle).error, "pending cancellation failed");
+  governor.StopAdmission();
+  const auto stopped_probes = probes;
+  std::array<Code, 8> results{};
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i < results.size(); ++i)
+    threads.emplace_back([&, i] { results[i] = CompleteWithAllocationDenied(prepared.publication, Outcome::published); });
+  for (auto& t : threads) t.join();
+  Require(std::count(results.begin(), results.end(), Code::completed) == 1 &&
+              std::count(results.begin(), results.end(), Code::already_completed) == 7 && probes == stopped_probes &&
+              governor.Observe().reserved_canonical_bytes == 64,
+          "post-write completion was not exactly once or consulted revoked live authority");
+  Require(ReleaseWithAllocationDenied(governor, context, grant.handle, Release::abandoned_before_publication) ==
+              ReleaseCode::phase_mismatch &&
+              ReleaseWithAllocationDenied(governor, context, grant.handle, Release::published) == ReleaseCode::released &&
+              CompleteWithAllocationDenied(prepared.publication, Outcome::published) == Code::already_completed,
+          "bound publication permitted abandonment or broke terminal retry");
+
+  // Persistent allocation denial through unwinding at every preparation
+  // allocation: no failed attempt may strand a pending-publication pin.
+  Governor fault_governor;
+  cancelled = false;
+  Require(!fault_governor.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error, "fault policy failed");
+  std::size_t failures = 0;
+  bool reached_success = false;
+  for (std::ptrdiff_t failure = 0; failure < 1024; ++failure) {
+    auto captured = fault_governor.Capture(context);
+    Require(captured.ok, "allocation sweep capture failed");
+    engine_api::EngineDmlUpdateResourcePublicationPreparationV1 attempt;
+    bool threw = false;
+    allocation_attempts = 0;
+    allocations_before_failure = failure;
+    try { attempt = fault_governor.PrepareDescriptorPublication(context, captured.handle); }
+    catch (const std::bad_alloc&) { threw = true; }
+    allocations_before_failure = -1;
+    Require(fault_governor.Observe().active_grants == 1 &&
+                fault_governor.Observe().reserved_canonical_bytes == 64,
+            "publication allocation failure changed resource accounting");
+    if (attempt.ok) {
+      Require(!threw && CompleteWithAllocationDenied(attempt.publication, Outcome::not_published) == Code::completed,
+              "allocation sweep success failed resolution");
+      reached_success = true;
+    } else {
+      Require(!attempt.publication.valid(), "failed preparation returned a publication ticket");
+      ++failures;
+    }
+    Require(ReleaseWithAllocationDenied(fault_governor, context, captured.handle, Release::abandoned_before_publication) ==
+                ReleaseCode::released, "failed preparation stranded a publication pin");
+    if (reached_success) break;
+  }
+  Require(reached_success && failures > 0 && fault_governor.Observe().active_grants == 0,
+          "publication preparation allocation sweep did not complete");
+
+  auto raced_grant = fault_governor.Capture(context);
+  Require(raced_grant.ok, "conflicting publication capture failed");
+  auto raced = fault_governor.PrepareDescriptorPublication(context, raced_grant.handle);
+  Require(raced.ok, "conflicting publication preparation failed");
+  threads.clear();
+  for (std::size_t i = 0; i < results.size(); ++i)
+    threads.emplace_back([&, i] {
+      results[i] = CompleteWithAllocationDenied(raced.publication,
+          i % 2 ? Outcome::published : Outcome::not_published);
+    });
+  for (auto& t : threads) t.join();
+  Require(std::count(results.begin(), results.end(), Code::completed) == 1 &&
+              std::count(results.begin(), results.end(), Code::already_completed) == 3 &&
+              std::count(results.begin(), results.end(), Code::conflicting_disposition) == 4,
+          "concurrent conflicting decisions did not preserve one outcome");
+  const auto winner = std::find(results.begin(), results.end(), Code::completed) - results.begin();
+  Require(ReleaseWithAllocationDenied(fault_governor, context, raced_grant.handle,
+              winner % 2 ? Release::aborted : Release::abandoned_before_publication) == ReleaseCode::released,
+          "conflicting publication race corrupted the winning phase");
+
+  {
+    Governor unresolved;
+    Require(!unresolved.Configure({4, 16, 32, 2, 64, 64, 128, 4}).error, "unresolved policy failed");
+    const auto captured = unresolved.Capture(context);
+    Require(captured.ok, "unresolved capture failed");
+    {
+      const auto lost = unresolved.PrepareDescriptorPublication(context, captured.handle);
+      Require(lost.ok, "unresolved preparation failed");
+    }
+    Require(unresolved.Observe().active_grants == 1 && unresolved.Observe().reserved_canonical_bytes == 64 &&
+                ReleaseWithAllocationDenied(unresolved, context, captured.handle,
+                    Release::abandoned_before_publication) == ReleaseCode::phase_mismatch,
+            "dropping all publication tickets silently resolved an uncertain write");
+    // This deliberately lost process-local ticket cannot be reconciled by this
+    // component. Instance destruction is not a durable transaction decision.
+  }
+  std::cout << "resource publication: " << failures << " preparation allocation failures; zero-allocation completion passed\n";
+}
+
+void TestResourceGovernorLifecycle(engine_api::EngineRequestContext context) {
+  using Governor = engine_api::EngineDmlUpdateResourceGovernorV1;
+  using Release = engine_api::EngineDmlUpdateResourceReleaseV1;
+  namespace wire = scratchbird::wire;
+  context.statement_uuid.canonical = CanonicalUuid(0xa001);
+  context.session_uuid.canonical = CanonicalUuid(0xa002);
+  context.resource_admission_uuid.canonical = CanonicalUuid(0xa003);
+  context.resource_epoch = 77;
+  TestResourceNoAllocationCompletion(context);
+  TestResourcePreparedPublication(context);
+  Governor governor;
+  Require(!governor.Capture(context).ok, "unconfigured resource governor admitted work");
+  engine_api::EngineDmlUpdateResourcePolicyV1 policy{4, 16, 32, 2, 64, 64, 128, 4};
+  Require(governor.Configure({}).error, "zero/unbounded resource policy accepted");
+  Require(!governor.Configure(policy).error, "resource policy installation failed");
+  auto bad_policy = policy;
+  bad_policy.maximum_total_canonical_value_bytes = wire::kTypedUpdateMaximumCanonicalValueBytes + 1;
+  Require(governor.Configure(bad_policy).error && governor.Observe().policy_generation == 1,
+          "invalid policy changed the live governor generation");
+  const auto first = governor.Capture(context);
+  const auto second = governor.Capture(context);
+  Require(first.ok && second.ok, "live resource grants failed capture");
+  const auto& carrier = *first.handle.carrier();
+  Require(carrier.exact_bytes.size() == 208 && carrier.resource_budget_generation == 1 &&
+              carrier.resource_budget_generation != context.resource_epoch &&
+              second.handle.carrier()->grant_receipt_generation > carrier.grant_receipt_generation &&
+              second.handle.carrier()->resource_budget_uuid != carrier.resource_budget_uuid &&
+              second.handle.carrier()->cancellation_token_uuid != carrier.cancellation_token_uuid &&
+              second.handle.carrier()->grant_receipt_uuid != carrier.grant_receipt_uuid,
+          "DUBR identities/generations did not come from live governor issuance");
+  const auto txn = uuid::ParseUuid(context.transaction_uuid.canonical);
+  Require(std::equal(txn.value.bytes.begin(), txn.value.bytes.end(), carrier.exact_bytes.begin() + 56),
+          "DUBR transaction UUID was not binary16");
+  Require(governor.Observe().active_grants == 2 && governor.Observe().reserved_canonical_bytes == 128 &&
+              !governor.Capture(context).ok && governor.Observe().active_grants == 2,
+          "aggregate quota did not debit/refuse without leaking a handle");
+  Require(governor.Configure(policy).error, "policy changed underneath active grants");
+  Require(!governor.Revalidate(context, first.handle, carrier).error, "live DUBR failed revalidation");
+  for (unsigned field = 0; field < 5; ++field) {
+    auto changed = carrier;
+    if (field == 0) changed.maximum_assignments += 1;
+    if (field == 1) changed.evidence_sha256[0] ^= 1;
+    if (field == 2) changed.grant_receipt_generation += 1;
+    if (field == 3) changed.exact_bytes[72] ^= 1;
+    if (field == 4) {
+      changed.maximum_candidate_rows -= 1;
+      std::vector<std::uint8_t> encoded;
+      wire::TypedUpdateCarrierError error;
+      Require(wire::EncodeTypedUpdateResourceBudget(changed, &encoded, &error) &&
+                  wire::DecodeAndValidateTypedUpdateResourceBudget(encoded, &changed, &error),
+              "tampered-but-self-consistent DUBR fixture failed");
+    }
+    Require(governor.Revalidate(context, first.handle, changed).error,
+            "modified DUBR substituted for retained resource authority");
+  }
+  auto changed = context;
+  changed.statement_receipt_uuid.canonical = CanonicalUuid(0xa004);
+  Require(governor.Revalidate(changed, first.handle, carrier).error &&
+              governor.Cancel(changed, first.handle).error &&
+              governor.Release(changed, first.handle, Release::abandoned_before_publication).error,
+          "cross-receipt resource operation accepted");
+  changed = context;
+  changed.statement_metadata_snapshot_active_excluded_local_transaction_ids.push_back(9000);
+  Require(governor.Revalidate(changed, first.handle, carrier).error,
+          "resource handle ignored metadata exclusion changes");
+  Governor other;
+  Require(other.Revalidate(context, first.handle, carrier).error &&
+              other.Release(context, first.handle, Release::abandoned_before_publication).error,
+          "resource handle crossed governor ownership");
+  Require(!governor.PublishDescriptor(context, first.handle).error,
+          "resource grant did not enter published-descriptor phase");
+  Require(governor.Release(context, first.handle, Release::abandoned_before_publication).error,
+          "published descriptor was released as abandoned");
+  Require(!governor.Cancel(context, first.handle).error &&
+              governor.Revalidate(context, first.handle, carrier).code == "PROCESS.CANCELLED" &&
+              governor.Observe().reserved_canonical_bytes == 128,
+          "cancellation released capacity before terminal cleanup");
+  auto bad_cancelled = carrier;
+  bad_cancelled.evidence_sha256[0] ^= 1;
+  Require(governor.Revalidate(context, first.handle, bad_cancelled).code == "RESOURCE.BUDGET_EXCEEDED",
+          "cancellation masked malformed resource authority");
+  Require(!governor.Release(context, first.handle, Release::aborted).error &&
+              !governor.Release(context, first.handle, Release::aborted).error &&
+              governor.Observe().released_grants == 1 && governor.Observe().reserved_canonical_bytes == 64,
+          "terminal abort did not release exactly once");
+  Require(governor.Release(context, first.handle, Release::published).error &&
+              governor.Revalidate(context, first.handle, carrier).error,
+          "released grant was reused or given a conflicting disposition");
+  Require(governor.Release(context, second.handle, Release::published).error,
+          "unpublished grant accepted a terminal published disposition");
+  Require(!governor.PublishDescriptor(context, second.handle).error &&
+              !governor.Release(context, second.handle, Release::published).error &&
+              governor.Observe().reserved_canonical_bytes == 0,
+          "terminal published release did not drain the governor");
+  Require(!governor.Configure(policy).error && governor.Observe().policy_generation == 2,
+          "drained policy replacement did not advance governor generation");
+  std::array<engine_api::EngineDmlUpdateResourceCaptureV1, 8> concurrent;
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i < concurrent.size(); ++i)
+    threads.emplace_back([&, i] { concurrent[i] = governor.Capture(context); });
+  for (auto& thread : threads) thread.join();
+  Require(std::count_if(concurrent.begin(), concurrent.end(), [](const auto& c) { return c.ok; }) == 2 &&
+              governor.Observe().reserved_canonical_bytes == 128,
+          "concurrent captures exceeded governor capacity");
+  for (const auto& captured : concurrent) if (captured.ok)
+    Require(!governor.Release(context, captured.handle, Release::abandoned_before_publication).error,
+            "concurrent abandoned grant did not release");
+  bool cancel = false;
+  auto probe_context = context;
+  probe_context.query_cancellation_requested = [&cancel] { return cancel; };
+  const auto probed = governor.Capture(probe_context);
+  Require(probed.ok, "engine cancellation-bound grant failed capture");
+  cancel = true;
+  auto replaced_probe = probe_context;
+  replaced_probe.query_cancellation_requested = [] { return false; };
+  Require(governor.Revalidate(replaced_probe, probed.handle, *probed.handle.carrier()).code == "PROCESS.CANCELLED",
+          "replacement probe cleared retained cancellation authority");
+  cancel = false;
+  Require(governor.Revalidate(probe_context, probed.handle, *probed.handle.carrier()).code == "PROCESS.CANCELLED",
+          "observed cancellation was not sticky");
+  Require(!governor.Release(probe_context, probed.handle, Release::abandoned_before_publication).error,
+          "cancelled unpublished grant did not release");
+  cancel = true;
+  Require(!governor.Capture(probe_context).ok && governor.Observe().active_grants == 0,
+          "already-cancelled request created a resource grant");
+  for (unsigned field = 0; field < 5; ++field) {
+    auto refused = context;
+    if (field == 0) refused.read_only_mode = true;
+    if (field == 1) refused.cluster_transaction_active = true;
+    if (field == 2) refused.route_fence_present = true;
+    if (field == 3) refused.resource_admission_uuid = {};
+    if (field == 4) refused.local_transaction_id += 999;
+    Require(!governor.Capture(refused).ok, "unsupported/stale resource context admitted");
+  }
+  const auto retiring = governor.Capture(context);
+  Require(retiring.ok, "final resource fixture failed capture");
+  FinalizeTransaction(context, db::PhysicalMgaCowFinalizeDecision::rollback, 1788200004000ull);
+  Require(governor.Revalidate(context, retiring.handle, *retiring.handle.carrier()).error &&
+              !governor.Capture(context).ok,
+          "resource governor admitted a finalized MGA transaction");
+  Require(ReleaseWithAllocationDenied(governor, context, retiring.handle, Release::abandoned_before_publication) ==
+              engine_api::EngineDmlUpdateResourceReleaseCodeV1::released &&
+              governor.Observe().active_grants == 0 && governor.Observe().reserved_canonical_bytes == 0,
+          "finalized transaction prevented resource-only cleanup");
+}
+
+void TestIndependentDeleteSecurityAuthority() {
+  TemporaryDirectory work;
+  const auto database = CreateDurableDatabase(work.path() / "delete-security.sbdb");
+  auto seed = BeginTransaction(database, 1788205000000ull);
+  for (const auto right : {"DELETE", "UPDATE"}) {
+    engine_api::EngineSecurityGrantPrivilegeRequest grant;
+    grant.context = SecurityContext(seed, 0x5010);
+    grant.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
+    grant.grant_uuid = CanonicalUuid(right == std::string_view("DELETE") ? 0x5020 : 0x5021);
+    grant.grantee_uuid = database.principal_uuid;
+    grant.target_object_uuid = std::string(kEmptyRelationUuid);
+    grant.target_object_kind = "table";
+    grant.privilege = right;
+    const auto granted = engine_api::EngineSecurityGrantPrivilege(grant);
+    Require(granted.ok && granted.privilege_granted, "DELETE fixture durable privilege grant failed");
+  }
+  {
+    engine_api::EngineSecurityGrantPrivilegeRequest update_only;
+    update_only.context = SecurityContext(seed, 0x5011);
+    update_only.context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
+    update_only.grant_uuid = CanonicalUuid(0x5022);
+    update_only.grantee_uuid = database.principal_uuid;
+    update_only.target_object_uuid = std::string(kOtherRelationUuid);
+    update_only.target_object_kind = "table";
+    update_only.privilege = "UPDATE";
+    Require(engine_api::EngineSecurityGrantPrivilege(update_only).ok,
+            "DELETE fixture UPDATE-only target grant failed");
+  }
+  FinalizeTransaction(seed, db::PhysicalMgaCowFinalizeDecision::commit, 1788205001000ull);
+  auto transaction = BeginTransaction(database, 1788205002000ull);
+  const auto state = LoadSecurityState(transaction);
+  auto context = ProviderContext(transaction, state, {}, 0x5030);
+  context.session_uuid.canonical = CanonicalUuid(0x5031);
+  context.trace_tags = {"private_dml_delete_rows_binder"};
+  context.authorization_context.effective_subjects.push_back({context.principal_uuid, "principal"});
+  for (const auto& source : state.grants) {
+    if (source.revoked || source.grantee_uuid != database.principal_uuid ||
+        source.target_object_uuid != kEmptyRelationUuid) continue;
+    engine_api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical = source.grant_uuid;
+    grant.subject_uuid.canonical = source.grantee_uuid;
+    grant.subject_kind = source.grantee_kind;
+    grant.target_uuid.canonical = source.target_object_uuid;
+    grant.right = source.privilege;
+    grant.security_epoch = context.security_epoch;
+    grant.deny = source.grant_effect == "deny";
+    context.authorization_context.grants.push_back(std::move(grant));
+  }
+  const auto capture = [&](const auto& owner) {
+    return engine_api::CaptureDmlDeleteSecurityAuthorityV1(owner, std::string(kEmptyRelationUuid));
+  };
+  auto captured = capture(context);
+  if (!captured.ok) std::cerr << captured.diagnostic.code << ':' << captured.diagnostic.detail << '\n';
+  Require(captured.ok && captured.handle.valid() && !captured.matched_grant_uuids.empty() &&
+              captured.snapshot.admitted_policy_rows.empty(), "independent DELETE privilege capture failed");
+  auto consumer = context;
+  consumer.trace_tags = {"private_dml_delete_rows_consumer"};
+  Require(!engine_api::RevalidateDmlDeleteSecurityAuthorityV1(consumer, captured).error,
+          "unchanged DELETE privilege did not revalidate");
+  auto recovery_context = context;
+  recovery_context.trace_tags = {"private_dml_delete_rows_recovery"};
+  Require(!engine_api::RevalidateRecoveredDmlDeleteSecurityProjectionV1(
+              recovery_context, captured.snapshot, captured.matched_grant_uuids).error,
+          "actual recovered DELETE security source did not revalidate");
+  Require(engine_api::RevalidateRecoveredDmlDeleteSecurityProjectionV1(
+              consumer, captured.snapshot, captured.matched_grant_uuids).error,
+          "consumer used recovery projection as a live security provider");
+  auto wrong_projection = captured.snapshot;
+  ++wrong_projection.policy_generation;
+  Require(engine_api::RevalidateRecoveredDmlDeleteSecurityProjectionV1(
+              recovery_context, wrong_projection, captured.matched_grant_uuids).error,
+          "recovered security accepted changed policy catalog generation");
+  Require(engine_api::RevalidateRecoveredDmlDeleteSecurityProjectionV1(
+              recovery_context, captured.snapshot, {}).error,
+          "recovered security accepted missing actual DELETE grants");
+  auto changed = context;
+  for (auto& grant : changed.authorization_context.grants)
+    grant.target_uuid.canonical = std::string(kOtherRelationUuid);
+  Require(!engine_api::CaptureDmlDeleteSecurityAuthorityV1(changed,
+              std::string(kOtherRelationUuid)).ok,
+          "materialized DELETE grant substituted for durable UPDATE-only privilege");
+  changed = context;
+  std::erase_if(changed.authorization_context.grants, [](const auto& grant) { return grant.right == "DELETE"; });
+  Require(!capture(changed).ok, "UPDATE privilege substituted for DELETE");
+  changed = context;
+  for (auto& grant : changed.authorization_context.grants)
+    if (grant.right == "DELETE") grant.deny = true;
+  Require(!capture(changed).ok, "materialized DELETE deny was ignored");
+  for (const auto tag : {"private_dml_update_rows_binder", "private_dml_update_rows_consumer",
+                         "private_dml_delete_rows_consumer", "private_dml_delete_rows_recovery"}) {
+    changed = context; changed.trace_tags = {tag};
+    Require(!capture(changed).ok, "foreign operation or phase acquired DELETE security authority");
+  }
+  for (unsigned mutation = 0; mutation != 8; ++mutation) {
+    changed = consumer;
+    switch (mutation) {
+      case 0: changed.database_path += ".other"; break;
+      case 1: changed.session_uuid.canonical = CanonicalUuid(0x5090); break;
+      case 2: changed.statement_receipt_uuid.canonical = CanonicalUuid(0x5090); break;
+      case 3: ++changed.local_transaction_id; break;
+      case 4: ++changed.authorization_context.security_context_generation; break;
+      case 5: ++changed.authorization_context.policy_epoch; break;
+      case 6: changed.authorization_context.grants.clear(); break;
+      case 7: changed.read_only_mode = true; break;
+    }
+    Require(engine_api::RevalidateDmlDeleteSecurityAuthorityV1(changed, captured).error,
+            "changed DELETE security owner or privilege reused handle");
+  }
+  auto forged = captured;
+  forged.handle = {};
+  Require(engine_api::RevalidateDmlDeleteSecurityAuthorityV1(consumer, forged).error,
+          "snapshot bytes manufactured DELETE security handle");
+  forged = captured; ++forged.snapshot.security_generation;
+  Require(engine_api::RevalidateDmlDeleteSecurityAuthorityV1(consumer, forged).error,
+          "modified DELETE snapshot projection was admitted");
+  changed = context;
+  engine_api::EngineMaterializedAuthorizationPolicy policy;
+  policy.target_uuid.canonical = std::string(kEmptyRelationUuid);
+  policy.right = "UPDATE";
+  changed.authorization_context.policies.push_back(policy);
+  Require(!capture(changed).ok, "UPDATE policy substituted for absent DELETE USING authority");
+  FinalizeTransaction(transaction, db::PhysicalMgaCowFinalizeDecision::rollback, 1788205003000ull);
+  auto policy_transaction = BeginTransaction(database, 1788205004000ull);
+  PutPolicy(policy_transaction, 0x5012, kPolicyUsingA, kEmptyRelationUuid,
+            NativePolicyAuthority(1, 1, kEffectiveUsing, kExpressionUsing));
+  FinalizeTransaction(policy_transaction, db::PhysicalMgaCowFinalizeDecision::commit, 1788205005000ull);
+  auto after_policy = BeginTransaction(database, 1788205006000ull);
+  const auto policy_state = LoadSecurityState(after_policy);
+  auto hidden_policy = ProviderContext(after_policy, policy_state, {}, 0x5032);
+  hidden_policy.session_uuid = context.session_uuid;
+  hidden_policy.trace_tags = {"private_dml_delete_rows_binder"};
+  hidden_policy.authorization_context.effective_subjects = context.authorization_context.effective_subjects;
+  hidden_policy.authorization_context.grants = context.authorization_context.grants;
+  for (auto& grant : hidden_policy.authorization_context.grants) grant.security_epoch = hidden_policy.security_epoch;
+  const auto hidden = capture(hidden_policy);
+  Require(!hidden.ok && hidden.diagnostic.code == "SBLR.OPERATION_UNSUPPORTED",
+          "omitting a durable UPDATE row policy manufactured empty DELETE USING authority");
+  FinalizeTransaction(after_policy, db::PhysicalMgaCowFinalizeDecision::rollback, 1788205007000ull);
+  std::cout << "independent_DELETE_security_authority=passed\n";
+}
+
 }  // namespace
 
 int main() {
+  TestIndependentDeleteSecurityAuthority();
   TemporaryDirectory temporary;
   const auto database_path = temporary.path() / "authority_provider.sdb";
   const auto database = CreateDurableDatabase(database_path);
@@ -941,7 +1461,57 @@ int main() {
                   state.security_context_generation,
           "policy catalog restart did not recover exact native source rows");
 
-  auto stale_context = restarted_context;
+  // Runtime configuration epochs and durable security-event generations are
+  // independent domains. Match the authenticated context's own epoch fence,
+  // while retaining the exact page-backed authorization successor generation.
+  auto independent_epochs = restarted_context;
+  independent_epochs.security_epoch = restarted_state.security_generation + 100;
+  independent_epochs.authorization_context.security_epoch =
+      independent_epochs.security_epoch;
+  independent_epochs.authorization_context.policy_epoch =
+      restarted_state.policy_generation + 200;
+  for (auto& policy : independent_epochs.authorization_context.policies) {
+    policy.policy_epoch = independent_epochs.authorization_context.policy_epoch;
+  }
+  const auto independent_snapshot =
+      engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
+          independent_epochs, std::string(kRelationUuid));
+  Require(independent_snapshot.ok &&
+              independent_snapshot.snapshot.security_generation ==
+                  restarted_state.security_generation &&
+              independent_snapshot.snapshot.policy_generation ==
+                  restarted_state.policy_generation &&
+              independent_snapshot.snapshot.admitted_policy_rows.size() == 3,
+          "runtime epochs were conflated with durable security event generations");
+  Require(!engine_api::RevalidateEngineSecurityPolicySnapshotAuthorityV1(
+              independent_epochs, independent_snapshot.snapshot).error,
+          "unchanged runtime and durable snapshot identities did not revalidate");
+  auto changed_epoch = independent_epochs;
+  ++changed_epoch.security_epoch;
+  ++changed_epoch.authorization_context.security_epoch;
+  Require(engine_api::RevalidateEngineSecurityPolicySnapshotAuthorityV1(
+              changed_epoch, independent_snapshot.snapshot).error,
+          "changed runtime security epoch reused an issued snapshot");
+  changed_epoch = independent_epochs;
+  ++changed_epoch.authorization_context.policy_epoch;
+  for (auto& policy : changed_epoch.authorization_context.policies) {
+    policy.policy_epoch = changed_epoch.authorization_context.policy_epoch;
+  }
+  Require(engine_api::RevalidateEngineSecurityPolicySnapshotAuthorityV1(
+              changed_epoch, independent_snapshot.snapshot).error,
+          "changed runtime policy epoch reused an issued snapshot");
+  auto inconsistent_epochs = independent_epochs;
+  ++inconsistent_epochs.authorization_context.security_epoch;
+  Require(!engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
+              inconsistent_epochs, std::string(kRelationUuid)).ok,
+          "mismatched runtime context epoch was admitted");
+  inconsistent_epochs = independent_epochs;
+  ++inconsistent_epochs.authorization_context.policies.front().policy_epoch;
+  Require(!engine_api::IssueEngineSecurityPolicySnapshotAuthorityV1(
+              inconsistent_epochs, std::string(kRelationUuid)).ok,
+          "mismatched materialized policy epoch was admitted");
+
+  auto stale_context = independent_epochs;
   --stale_context.authorization_context.security_context_generation;
   engine_api::EngineDmlUpdatePolicyCatalogCaptureRequestV1 stale_request;
   stale_request.context = stale_context;
@@ -963,9 +1533,7 @@ int main() {
                .ok,
           "stale security-context generation was admitted after restart");
 
-  FinalizeTransaction(provider_transaction,
-                      db::PhysicalMgaCowFinalizeDecision::rollback,
-                      1788200004000ull);
+  TestResourceGovernorLifecycle(context);
 
   engine_api::ResetDmlUpdateImmutableAuthorityProviderForTestV1();
   std::cout << "sbsql_dml_update_authority_provider_conformance: PASS\n";

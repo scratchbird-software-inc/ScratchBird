@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <map>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -46,6 +47,14 @@ bool RowsContainLargeValueLocators(
 EngineApiDiagnostic ExpandMgaLargeValueLocators(
     const EngineRequestContext& context,
     std::vector<CrudRowVersionRecord>* rows);
+struct BoundedScopedRowReadControl;
+// Only the caller's already MGA-visible rows may request immutable payloads.
+// Streams companion records without loading unrelated values. The caller's
+// snapshot visibility callback is used solely to reject visible reclaim marks.
+EngineApiDiagnostic ExpandVisibleMgaLargeValuesBounded(
+    const EngineRequestContext& context, std::vector<CrudRowVersionRecord>* rows,
+    BoundedScopedRowReadControl* control, std::uint64_t retained_memory_bytes,
+    const std::function<bool(std::uint64_t)>& creator_visible);
 EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
     const EngineRequestContext& context,
     std::uint64_t local_transaction_id,

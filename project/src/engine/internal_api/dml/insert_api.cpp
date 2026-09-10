@@ -10,6 +10,7 @@
 
 #include "crud_support/crud_store.hpp"
 #include "dml/constraint_enforcement.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/insert_batch.hpp"
 #include "dml/insert_physical_integration.hpp"
@@ -3372,6 +3373,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (request.HasAmbiguousInputRows()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "input_rows_or_borrowed_rows_exclusive"));
   }
+  const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
+      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::insert);
+  if (savepoint_admission.error)
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context, "dml.insert_rows", savepoint_admission);
   auto insert_phase_last = InsertApiSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> insert_phase_micros;
   insert_phase_micros.reserve(12);

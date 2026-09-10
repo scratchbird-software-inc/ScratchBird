@@ -330,6 +330,12 @@ inline constexpr const char* kSblrDmlUpdateRowsOperandDescriptorId =
 inline constexpr const char* kSblrDmlUpdateRowsResultDescriptorId =
     "mutation_result";
 inline constexpr std::uint16_t kSblrDmlUpdateRowsResultDescriptorVersion = 1;
+inline constexpr const char* kSblrDmlDeleteRowsExecutorId = "dml.delete_rows";
+inline constexpr std::uint16_t kSblrDmlDeleteRowsOpcodeCode = 784;
+inline constexpr const char* kSblrDmlDeleteRowsOpcodeVersion = "1.0";
+inline constexpr const char* kSblrDmlDeleteRowsOperandDescriptorId = "dml_delete_rows_descriptor";
+inline constexpr const char* kSblrDmlDeleteRowsResultDescriptorId = "mutation_result";
+inline constexpr std::uint16_t kSblrDmlDeleteRowsResultDescriptorVersion = 1;
 // SEARCH_KEY: SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1
 inline constexpr const char* kSblrDmlPlanImportRowsExecutorId =
     "dml.plan_import_rows";

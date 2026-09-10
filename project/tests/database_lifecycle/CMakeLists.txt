@@ -2118,6 +2118,13 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_executable(transactional_index_lifecycle_matrix_gate
     transactional_index_lifecycle_matrix_gate.cpp
   )
+
+  add_executable(mga_savepoint_marker_gate mga_savepoint_marker_gate.cpp)
+  target_compile_features(mga_savepoint_marker_gate PRIVATE cxx_std_23)
+  target_link_libraries(mga_savepoint_marker_gate PRIVATE sb_engine_internal_api)
+  add_test(NAME mga_savepoint_marker_gate COMMAND mga_savepoint_marker_gate)
+  set_tests_properties(mga_savepoint_marker_gate PROPERTIES
+    LABELS "savepoint;component_regression;mga_transaction_regression;database_lifecycle")
   target_compile_features(transactional_index_lifecycle_matrix_gate PRIVATE cxx_std_23)
   target_link_libraries(transactional_index_lifecycle_matrix_gate
     PRIVATE
@@ -5830,6 +5837,13 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   set_tests_properties(database_lifecycle_shutdown_notification_conformance PROPERTIES
     LABELS "database_lifecycle_shutdown_notification_conformance;database_lifecycle;database_lifecycle_server_route;database_lifecycle_shutdown_notification;database_lifecycle_process_association;database_lifecycle_storage;server_lifecycle_gate;routing_reconnect_finality_gate;mga_transaction_regression"
   )
+
+  add_executable(mga_large_value_bounded_reader_gate mga_large_value_bounded_reader_gate.cpp)
+  target_compile_features(mga_large_value_bounded_reader_gate PRIVATE cxx_std_23)
+  target_link_libraries(mga_large_value_bounded_reader_gate PRIVATE sb_engine_internal_api)
+  add_test(NAME mga_large_value_bounded_reader_gate COMMAND mga_large_value_bounded_reader_gate)
+  set_tests_properties(mga_large_value_bounded_reader_gate PROPERTIES
+    LABELS "database_lifecycle;mga_transaction_regression;dml_savepoint_coverage;large_value")
 
   add_executable(database_lifecycle_drop_conformance
     drop_conformance.cpp

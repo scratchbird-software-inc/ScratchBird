@@ -14,6 +14,7 @@
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "whole_store_crash_injection.hpp"
 
 #include <algorithm>
@@ -1712,6 +1713,15 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
   }
+  // Validate the complete submitted producer set before queuing even one
+  // materialization job. A later refused family must not leave work pending.
+  for (const auto& batch : batches) {
+    if (batch.rows.empty()) continue;
+    const auto admission = AdmitMgaSavepointProducer(impl_->context,
+        IsAdmittedMgaSavepointIndexProfile(batch.index) ? MgaMutationProducer::index_membership :
+                                                        MgaMutationProducer::unknown);
+    if (admission.error) return admission;
+  }
   const bool inline_materialization = batches.size() <= 1;
   for (const auto& batch : batches) {
     if (batch.rows.empty()) { continue; }
@@ -1753,6 +1763,13 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
     const std::vector<MgaExactIndexEntryAppendBatch>& batches) {
   if (impl_->context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.index_store", "database_path_required");
+  }
+  for (const auto& batch : batches) {
+    if (batch.entries.empty()) continue;
+    const auto admission = AdmitMgaSavepointProducer(impl_->context,
+        IsAdmittedMgaSavepointIndexProfile(batch.index) ? MgaMutationProducer::index_membership :
+                                                        MgaMutationProducer::unknown);
+    if (admission.error) return admission;
   }
   if (batches.size() == 1 && impl_->pending_prepared_index_jobs.empty() &&
       impl_->pending_index_materialization_jobs.empty() &&

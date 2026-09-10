@@ -64,12 +64,19 @@ struct PreparedMgaHeapReadAuthorityResult {
   PreparedMgaHeapReadAuthority authority;
 };
 
+class EngineDmlDeleteBindingAuthorityV1;
+// Private mutation consumer: only a revalidated engine-issued DELETE binding
+// can authorize this scan. It does not grant SELECT or expose a public rowset.
+MgaVisibleHeapRelationStreamResult StreamMgaHeapForDmlDeleteV1(
+    const EngineRequestContext&, const MgaVisibleHeapRelationStreamRequest&,
+    const EngineDmlDeleteBindingAuthorityV1&);
 PreparedMgaHeapReadAuthorityCohortResult
 PrepareMgaHeapReadAuthoritiesForStoreModule(
     const EngineRequestContext& context,
     std::span<const std::string> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor*
-        resolved_statement_snapshot = nullptr);
+        resolved_statement_snapshot = nullptr,
+    const EngineDmlDeleteBindingAuthorityV1* delete_binding = nullptr);
 PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthorityForStoreModule(
     const EngineRequestContext& context,
     const std::string& relation_uuid);

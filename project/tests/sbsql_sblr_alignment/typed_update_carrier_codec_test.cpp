@@ -203,6 +203,24 @@ TypedUpdateDatatypeAuthorityRecord Int32DatatypeAuthority(u32 ordinal) {
   return row;
 }
 
+TypedUpdateDatatypeAuthorityRecord TextDatatypeAuthority(u32 ordinal) {
+  auto row = BigintDatatypeAuthority(ordinal);
+  row.datatype_identity_code = TypedUpdateDatatypeIdentityCode::text_v2;
+  row.descriptor_uuid.back() = 0x18;
+  row.type_uuid.back() = 0x19;
+  row.canonical_name = "text";
+  row.codec_id = "datatype.text.utf8.v1";
+  row.null_encoding_code =
+      TypedUpdateNullEncodingCode::containing_slot_value_or_null_state;
+  row.byte_order_code = TypedUpdateByteOrderCode::byte_sequence;
+  row.representation_code = TypedUpdateRepresentationCode::utf8_scalar_sequence;
+  row.is_signed = false;
+  row.canonical_value_minimum_bytes = 0;
+  row.canonical_value_maximum_bytes = 16777216;
+  row.canonical_value_exact_bytes = 0;
+  return row;
+}
+
 TypedUpdateAssignmentRecord Assignment(unsigned ordinal,
                                        unsigned seed,
                                        std::vector<byte> value) {
@@ -492,7 +510,11 @@ struct DatatypeOperatorFixture {
   TypedUpdateBuiltinOperatorAuthorityVector operators;
 };
 
-DatatypeOperatorFixture MakeDatatypeOperatorFixture(bool equality) {
+DatatypeOperatorFixture MakeDatatypeOperatorFixture(
+    bool equality, bool text_assignment = false,
+    std::vector<byte> text_value = {},
+    TypedUpdateValueState text_state = TypedUpdateValueState::value,
+    bool text_predicate = false) {
   auto carriers = CarrierSet();
   auto& assignment = carriers.assignments.records.front();
   assignment.value_descriptor_uuid = kBigintDescriptorUuid;
@@ -509,6 +531,19 @@ DatatypeOperatorFixture MakeDatatypeOperatorFixture(bool equality) {
         carriers.descriptor, carriers.predicate.identity, assignment);
     carriers.predicate.records[1].canonical_value =
         {0x2a, 0, 0, 0, 0, 0, 0, 0};
+  }
+  if (text_assignment) {
+    const auto text = TextDatatypeAuthority(1);
+    assignment.value_descriptor_uuid = text.descriptor_uuid;
+    assignment.value_type_uuid = text.type_uuid;
+    assignment.codec_id = text.codec_id;
+    assignment.canonical_value = std::move(text_value);
+    assignment.value_state = text_state;
+    if (text_predicate) {
+      carriers.predicate = EqualsPredicate(
+          carriers.descriptor, carriers.predicate.identity, assignment);
+      carriers.predicate.records[1].canonical_value = assignment.canonical_value;
+    }
   }
 
   TypedUpdateCarrierError error;
@@ -556,6 +591,12 @@ DatatypeOperatorFixture MakeDatatypeOperatorFixture(bool equality) {
       decoded_descriptor.descriptor_generation;
   datatypes.records = {BooleanDatatypeAuthority(1),
                        BigintDatatypeAuthority(2)};
+  if (text_assignment) {
+    datatypes.format_version = 2;
+    if (!equality || text_predicate) datatypes.records.resize(1);
+    datatypes.records.push_back(TextDatatypeAuthority(
+        static_cast<u32>(datatypes.records.size() + 1)));
+  }
   Require(EncodeTypedUpdateDatatypeAuthorityVector(datatypes, &bytes,
                                                     &error),
           "datatype fixture DUDV encode: " + error.detail);
@@ -1902,6 +1943,217 @@ void TestSecurityRecoveryCarriers() {
           "recovery decision refuses a caller-projected DUMO without exact bytes");
 }
 
+void TestTextDatatypeAuthorityV2() {
+  std::uint64_t scalars = 999;
+  Require(ValidateTypedUpdateTextUtf8V2({}, &scalars) && scalars == 0,
+          "empty UTF-8 has zero scalars");
+  const std::vector<byte> mixed{0, 'a', 0xc3, 0xa9, 0xe2, 0x82, 0xac,
+                                0xf4, 0x8f, 0xbf, 0xbf};
+  Require(ValidateTypedUpdateTextUtf8V2(mixed, &scalars) && scalars == 5,
+          "UTF-8 counts scalars rather than bytes or graphemes");
+  for (const std::vector<byte>& malformed : std::vector<std::vector<byte>>{
+           {'a', 0xc0, 0x80}, {'a', 0xed, 0xa0, 0x80}, {0xf4, 0x90, 0x80, 0x80},
+           {0x80}, {0xc2}, {0xe2, 0x82}, {0xf0, 0x90, 0x80}, {0xc2, 'x'}}) {
+    scalars = 999;
+    Require(!ValidateTypedUpdateTextUtf8V2(malformed, &scalars) && scalars == 0,
+            "invalid UTF-8 must clear partial scalar counts");
+  }
+  Require(!ValidateTypedUpdateTextUtf8V2(mixed, nullptr), "missing scalar output refused");
+  TypedUpdateCarrierError error;
+  const auto valid = MakeDatatypeOperatorFixture(false, true, {'a', 0, 0xc3, 0xa9});
+  const auto validates = [&error](const DatatypeOperatorFixture& value) {
+    return ValidateTypedUpdateDatatypeOperatorAuthority(
+        value.descriptor, value.assignments, value.predicate,
+        value.datatypes, value.operators, &error);
+  };
+  Require(validates(valid), "TEXT UTF-8, embedded NUL and TRUE binding: " + error.detail);
+  Require(validates(MakeDatatypeOperatorFixture(true, true, {'b'})),
+          "TEXT assignment with BIGINT predicate binds three datatype rows");
+  Require(!validates(MakeDatatypeOperatorFixture(true, true, {'b'},
+                        TypedUpdateValueState::value, true)),
+          "TEXT predicate is refused even with hash-valid equality authority");
+  const auto empty = MakeDatatypeOperatorFixture(false, true);
+  const auto null = MakeDatatypeOperatorFixture(false, true, {},
+                                               TypedUpdateValueState::null_value);
+  Require(validates(empty) && validates(null) &&
+              empty.assignments.exact_bytes != null.assignments.exact_bytes,
+          "empty TEXT VALUE and SQL NULL are valid distinct carriers");
+  const std::vector<std::vector<byte>> good{{0x7f}, {0xc2, 0x80},
+      {0xdf, 0xbf}, {0xe0, 0xa0, 0x80}, {0xed, 0x9f, 0xbf},
+      {0xee, 0x80, 0x80}, {0xf0, 0x90, 0x80, 0x80}, {0xf4, 0x8f, 0xbf, 0xbf},
+      {'e', 0xcc, 0x81}};
+  for (const auto& bytes : good) {
+    const auto fixture = MakeDatatypeOperatorFixture(false, true, bytes);
+    Require(validates(fixture) && fixture.assignments.records[0].canonical_value == bytes,
+            "valid UTF-8 scalar boundary preserves exact bytes without normalization");
+  }
+  const std::vector<std::vector<byte>> bad_utf8{{0x80}, {0xc0, 0x80},
+      {0xc1, 0xbf}, {0xc2}, {0xe0, 0x9f, 0xbf}, {0xed, 0xa0, 0x80},
+      {0xe2, 0x82}, {0xe2, 0x28, 0xa1}, {0xf0, 0x8f, 0xbf, 0xbf},
+      {0xf4, 0x90, 0x80, 0x80}, {0xf5, 0x80, 0x80, 0x80}, {0xff}};
+  for (const auto& bytes : bad_utf8) {
+    Require(!validates(MakeDatatypeOperatorFixture(false, true, bytes)) &&
+                error.diagnostic_code == "DML.UPDATE_FAILED",
+            "hash-valid malformed durable UTF-8 is refused");
+  }
+  auto maximum = MakeDatatypeOperatorFixture(false, true,
+      std::vector<byte>(kTypedUpdateMaximumCanonicalValueBytesPerValue, 'x'));
+  Require(validates(maximum), "TEXT per-value 65536-byte boundary is admitted");
+  maximum.assignments.records[0].canonical_value.push_back('x');
+  std::vector<byte> encoded;
+  Require(!EncodeTypedUpdateAssignmentVector(maximum.assignments, &encoded, &error),
+          "TEXT 65537 bytes is refused by unchanged DUAV operation limit");
+  auto bad_null = null.assignments;
+  bad_null.records[0].canonical_value = {'x'};
+  Require(!EncodeTypedUpdateAssignmentVector(bad_null, &encoded, &error),
+          "NULL TEXT cannot carry hidden payload bytes");
+
+  const auto& bytes = valid.datatypes.exact_bytes;
+  const auto text_offset = kTypedUpdateVectorHeaderBytes + kTypedUpdateDatatypeAuthorityRecordBytes;
+  const auto record = std::span<const byte>(bytes).subspan(text_offset);
+  Require(LoadLittle16(bytes.data() + 4) == 2 && record.size() == 256 &&
+              std::equal(record.begin() + 8, record.begin() + 24,
+                         valid.datatypes.records[1].descriptor_uuid.begin()) &&
+              std::equal(record.begin() + 32, record.begin() + 48,
+                         valid.datatypes.records[1].type_uuid.begin()) &&
+              ReadHash(record, 216) == Evidence(
+                  "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityRecord.V2", record.first(216)) &&
+              ReadHash(bytes, 72) == Evidence(
+                  "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityVector.V2",
+                  std::span<const byte>(bytes).subspan(kTypedUpdateVectorHeaderBytes)),
+          "v2 exact binary UUID16 offsets and domain-separated record/vector hashes");
+  TypedUpdateDatatypeAuthorityVector decoded;
+  Require(DecodeAndValidateTypedUpdateDatatypeAuthorityVector(bytes, &decoded, &error) &&
+              decoded.format_version == 2 &&
+              EncodeTypedUpdateDatatypeAuthorityVector(decoded, &encoded, &error) &&
+              encoded == bytes, "v2 durable decode/reencode is byte identical");
+  auto all_types = valid.datatypes;
+  auto int128 = BigintDatatypeAuthority(1);
+  int128.datatype_identity_code = TypedUpdateDatatypeIdentityCode::int128_v1;
+  int128.descriptor_uuid.back() = 0x14;
+  int128.type_uuid.back() = 0x15;
+  int128.canonical_name = "int128";
+  int128.codec_id = "datatype.int128.le.v1";
+  int128.null_encoding_code = TypedUpdateNullEncodingCode::containing_slot_value_or_null_state;
+  int128.canonical_value_minimum_bytes = 16;
+  int128.canonical_value_maximum_bytes = 16;
+  int128.canonical_value_exact_bytes = 16;
+  auto decimal = BigintDatatypeAuthority(1);
+  decimal.datatype_identity_code = TypedUpdateDatatypeIdentityCode::decimal_v1;
+  decimal.descriptor_uuid = {0xa0, 0, 0, 0, 0x64, 0x65, 0x73, 0x69,
+                             0xad, 0x61, 0x6c, 0, 0, 0, 0, 0};
+  decimal.type_uuid.back() = 0x13;
+  decimal.canonical_name = "decimal";
+  decimal.codec_id = "datatype.decimal.base1e9.le.v1";
+  decimal.representation_code = TypedUpdateRepresentationCode::decimal_base1e9;
+  decimal.canonical_value_minimum_bytes = 24;
+  decimal.canonical_value_maximum_bytes = 24;
+  decimal.canonical_value_exact_bytes = 24;
+  all_types.records = {BooleanDatatypeAuthority(1), BigintDatatypeAuthority(2),
+                       int128, Int32DatatypeAuthority(4), TextDatatypeAuthority(5), decimal};
+  for (u32 index = 0; index < all_types.records.size(); ++index)
+    all_types.records[index].datatype_ordinal = index + 1;
+  Require(EncodeTypedUpdateDatatypeAuthorityVector(all_types, &encoded, &error) &&
+              DecodeAndValidateTypedUpdateDatatypeAuthorityVector(encoded, &decoded, &error) &&
+              decoded.records.size() == 6, "all six admitted v2 profiles roundtrip");
+  const auto six_rows = encoded;
+  all_types.records.push_back(TextDatatypeAuthority(7));
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(all_types, &encoded, &error) &&
+              error.code == TypedUpdateCarrierErrorCode::count_invalid,
+          "seven-row DUDV v2 exceeds the closed registry");
+  all_types.records.pop_back();
+  all_types.records.erase(all_types.records.begin() + 4);
+  all_types.records.back().datatype_ordinal = 5;
+  all_types.format_version = 1;
+  Require(EncodeTypedUpdateDatatypeAuthorityVector(all_types, &encoded, &error) &&
+              DecodeAndValidateTypedUpdateDatatypeAuthorityVector(encoded, &decoded, &error) &&
+              decoded.format_version == 1 && decoded.records.size() == 5,
+          "all five original v1 profiles remain admitted");
+  const auto five_rows = encoded;
+  Require(EncodeTypedUpdateDatatypeAuthorityVector(decoded, &encoded, &error) &&
+              encoded == five_rows, "all five v1 rows reencode byte identically");
+  auto duplicate = valid.datatypes;
+  duplicate.records.push_back(TextDatatypeAuthority(3));
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(duplicate, &encoded, &error),
+          "duplicate TEXT row is refused");
+  auto reversed = valid.datatypes;
+  std::reverse(reversed.records.begin(), reversed.records.end());
+  reversed.records[0].datatype_ordinal = 1;
+  reversed.records[1].datatype_ordinal = 2;
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(reversed, &encoded, &error) &&
+              error.code == TypedUpdateCarrierErrorCode::datatype_authority_duplicate,
+          "v2 noncanonical row order is refused");
+  for (u32 count : {0U, 1U, 7U, 0xffffffffU}) {
+    auto counted = six_rows;
+    StoreLittle32(counted.data() + 64, count);
+    Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(counted, &decoded, &error) &&
+                error.code == TypedUpdateCarrierErrorCode::count_invalid,
+            "v2 invalid count or count/extent mismatch is refused");
+  }
+  auto wrong = valid.datatypes;
+  wrong.format_version = 1;
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(wrong, &encoded, &error),
+          "v1 encoder continues refusing TEXT");
+  wrong = MakeDatatypeOperatorFixture(false).datatypes;
+  wrong.format_version = 2;
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(wrong, &encoded, &error),
+          "v2 without TEXT is noncanonical");
+  wrong = valid.datatypes;
+  wrong.format_version = 3;
+  Require(!EncodeTypedUpdateDatatypeAuthorityVector(wrong, &encoded, &error) &&
+              error.code == TypedUpdateCarrierErrorCode::version_invalid,
+          "unknown DUDV encoder version is refused");
+  for (byte version : {byte{0}, byte{1}, byte{3}, byte{255}}) {
+    auto altered = bytes;
+    altered[4] = version;
+    Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error),
+            "unknown version or v2-to-v1 header substitution is refused");
+  }
+  auto altered = MakeDatatypeOperatorFixture(false).datatypes.exact_bytes;
+  altered[4] = 2;
+  Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error) &&
+              error.code == TypedUpdateCarrierErrorCode::record_evidence_mismatch,
+          "v1-to-v2 header substitution cannot reuse v1 fixed-row hashes");
+  for (std::size_t offset : {4U, 5U, 6U, 7U, 8U, 24U, 32U, 48U, 56U,
+                             60U, 64U, 72U, 76U, 80U, 88U, 104U, 112U}) {
+    altered = bytes;
+    altered[text_offset + offset] ^= 1;
+    WriteHash(&altered, text_offset + 216, Evidence(
+        "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityRecord.V2",
+        std::span<const byte>(altered).subspan(text_offset, 216)));
+    RewriteVectorEvidence(&altered,
+        "ScratchBird.SblrDmlUpdateRowsDatatypeAuthorityVector.V2");
+    Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error),
+            "rehashing cannot authorize an altered TEXT registry field");
+  }
+  for (std::size_t offset : {61U, 84U, 248U}) {
+    altered = bytes;
+    altered[text_offset + offset] = 1;
+    Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error) &&
+                error.code == TypedUpdateCarrierErrorCode::reserved_invalid,
+            "v2 reserved bytes fail before evidence checks");
+  }
+  for (std::size_t extent = 0; extent < bytes.size(); ++extent) {
+    Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(
+                std::span<const byte>(bytes).first(extent), &decoded, &error),
+            "every truncated v2 extent refuses safely");
+  }
+  for (byte version : {byte{1}, byte{2}}) {
+    for (u32 extent = 16; extent < kTypedUpdateVectorHeaderBytes; ++extent) {
+      altered.assign(bytes.begin(), bytes.begin() + extent);
+      altered[4] = version;
+      StoreLittle32(altered.data() + 8, extent);
+      Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error) &&
+                  error.code == TypedUpdateCarrierErrorCode::extent_invalid,
+              "self-consistent short v1/v2 total length cannot bypass the fixed header bound");
+    }
+  }
+  altered = bytes;
+  altered.push_back(0);
+  Require(!DecodeAndValidateTypedUpdateDatatypeAuthorityVector(altered, &decoded, &error),
+          "v2 trailing bytes are refused");
+}
+
 void TestDatatypeOperatorAuthorityCarriers() {
   auto canonical_true = MakeDatatypeOperatorFixture(false);
   TypedUpdateCarrierError error;
@@ -2190,6 +2442,7 @@ int main() {
   TestJournalAndCutpoints();
   TestSecurityRecoveryCarriers();
   TestDatatypeOperatorAuthorityCarriers();
+  TestTextDatatypeAuthorityV2();
   TestCarrierSetContradictions();
   std::cout << "PASS typed update carrier codec exact layouts, hashes, "
                "injectivity, malformed precedence, journal, security "

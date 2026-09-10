@@ -9,7 +9,9 @@
 #include "resource_governance_admission.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::agents {
@@ -831,8 +833,9 @@ AgentRuntimeStatus HierarchicalMemoryBudgetLedger::RegisterScope(
                            scope.scope_id);
   }
   const std::string scope_id = scope.scope_id;
-  scopes_[scope_id] = ScopeState{std::move(scope), 0, 0, 0};
-  return LocalAgentOk();
+  auto status = LocalAgentOk();
+  scopes_.emplace(scope_id, ScopeState{std::move(scope), 0, 0, 0});
+  return status;
 }
 
 std::vector<std::string> HierarchicalMemoryBudgetLedger::ScopeChainLocked(
@@ -971,7 +974,14 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
   }
 
   HierarchicalMemoryBudgetReservationToken token;
-  token.created_sequence = ++next_sequence_;
+  if (next_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+    result.fail_closed = true;
+    result.diagnostic_code = "SB_RESOURCE_GOVERNANCE.HIERARCHICAL_SEQUENCE_EXHAUSTED";
+    result.status = LocalAgentError(result.diagnostic_code);
+    result.snapshots = SnapshotLocked();
+    return result;
+  }
+  token.created_sequence = next_sequence_ + 1;
   token.token_id = ledger_id_ + ":" + request.operation_id + ":" +
                    std::to_string(token.created_sequence);
   token.operation_id = std::move(request.operation_id);
@@ -980,16 +990,15 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
   token.bytes = request.bytes;
   token.debited_scope_chain = chain;
 
-  for (const auto& scope_id : chain) {
-    auto& state = scopes_[scope_id];
-    state.current_bytes += token.bytes;
-    state.peak_bytes = std::max(state.peak_bytes, state.current_bytes);
-    ++state.active_reservation_count;
-  }
-  active_[token.token_id] = ActiveHierarchicalReservation{token};
-
   result.reservation = token;
   result.snapshots = SnapshotLocked();
+  for (auto& snapshot : result.snapshots) {
+    if (std::find(chain.begin(), chain.end(), snapshot.scope_id) != chain.end()) {
+      snapshot.current_bytes += token.bytes;
+      snapshot.peak_bytes = std::max(snapshot.peak_bytes, snapshot.current_bytes);
+      ++snapshot.active_reservation_count;
+    }
+  }
   result.ok = true;
   result.reservation_created = true;
   result.status = LocalAgentOk();
@@ -1003,6 +1012,17 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
   for (const auto& scope_id : chain) {
     Add(&result.evidence, "hierarchical_memory.debited_scope=" + scope_id);
   }
+  // Complete every allocation (including the result and map node) before the
+  // no-throw accounting transition. An exception leaves all ledger state intact.
+  active_.emplace(token.token_id, ActiveHierarchicalReservation{token});
+  for (const auto& scope_id : chain) {
+    auto& state = scopes_.find(scope_id)->second;
+    state.current_bytes += token.bytes;
+    state.peak_bytes = std::max(state.peak_bytes, state.current_bytes);
+    ++state.active_reservation_count;
+  }
+  next_sequence_ = token.created_sequence;
+  static_assert(std::is_nothrow_move_constructible_v<HierarchicalMemoryBudgetReserveResult>);
   return result;
 }
 
@@ -1032,18 +1052,14 @@ HierarchicalMemoryBudgetReleaseResult HierarchicalMemoryBudgetLedger::Release(
   }
 
   result.reservation = it->second.token;
-  for (const auto& scope_id : it->second.token.debited_scope_chain) {
-    auto scope = scopes_.find(scope_id);
-    if (scope == scopes_.end()) {
-      continue;
-    }
-    scope->second.current_bytes -= it->second.token.bytes;
-    if (scope->second.active_reservation_count > 0) {
-      --scope->second.active_reservation_count;
+  result.snapshots = SnapshotLocked();
+  for (auto& snapshot : result.snapshots) {
+    const auto& chain = it->second.token.debited_scope_chain;
+    if (std::find(chain.begin(), chain.end(), snapshot.scope_id) != chain.end()) {
+      snapshot.current_bytes -= it->second.token.bytes;
+      if (snapshot.active_reservation_count > 0) --snapshot.active_reservation_count;
     }
   }
-  active_.erase(it);
-  result.snapshots = SnapshotLocked();
   result.ok = true;
   result.released = true;
   result.status = LocalAgentOk();
@@ -1053,7 +1069,41 @@ HierarchicalMemoryBudgetReleaseResult HierarchicalMemoryBudgetLedger::Release(
   Add(&result.evidence,
       "hierarchical_memory.diagnostic_code=" + result.diagnostic_code);
   Add(&result.evidence, "hierarchical_memory.released=true");
+  for (const auto& scope_id : it->second.token.debited_scope_chain) {
+    auto scope = scopes_.find(scope_id);
+    if (scope == scopes_.end()) continue;
+    scope->second.current_bytes -= it->second.token.bytes;
+    if (scope->second.active_reservation_count > 0) --scope->second.active_reservation_count;
+  }
+  active_.erase(it);
+  static_assert(std::is_nothrow_move_constructible_v<HierarchicalMemoryBudgetReleaseResult>);
   return result;
+}
+
+HierarchicalMemoryBudgetReleaseCode HierarchicalMemoryBudgetLedger::ReleaseNoAlloc(
+    const std::string& token_id) noexcept {
+  try {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = active_.find(token_id);
+    if (it == active_.end()) return HierarchicalMemoryBudgetReleaseCode::not_found;
+    // Validate the whole chain before returning any capacity.
+    for (const auto& scope_id : it->second.token.debited_scope_chain) {
+      const auto scope = scopes_.find(scope_id);
+      if (scope == scopes_.end() || scope->second.current_bytes < it->second.token.bytes ||
+          scope->second.active_reservation_count == 0)
+        return HierarchicalMemoryBudgetReleaseCode::invalid_state;
+    }
+    for (const auto& scope_id : it->second.token.debited_scope_chain) {
+      auto& scope = scopes_.find(scope_id)->second;
+      scope.current_bytes -= it->second.token.bytes;
+      --scope.active_reservation_count;
+    }
+    active_.erase(it);
+    return HierarchicalMemoryBudgetReleaseCode::released;
+  } catch (...) {
+    // Mutex acquisition is the only throwing operation; it precedes mutation.
+    return HierarchicalMemoryBudgetReleaseCode::synchronization_failed;
+  }
 }
 
 HierarchicalMemoryBudgetReleaseResult
@@ -1066,27 +1116,22 @@ HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
   Add(&combined.evidence,
       "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
-  std::vector<std::string> tokens;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& entry : active_) {
-      if (entry.second.token.owner_scope == owner_scope) {
-        tokens.push_back(entry.first);
+  // One locked, allocation-complete transition: an exception must not leave
+  // only some of an owner's reservations released.
+  std::lock_guard<std::mutex> lock(mutex_);
+  combined.snapshots = SnapshotLocked();
+  std::uint64_t released_count = 0;
+  for (const auto& entry : active_) {
+    const auto& token = entry.second.token;
+    if (token.owner_scope != owner_scope) continue;
+    ++released_count;
+    for (auto& snapshot : combined.snapshots) {
+      const auto& chain = token.debited_scope_chain;
+      if (std::find(chain.begin(), chain.end(), snapshot.scope_id) != chain.end()) {
+        snapshot.current_bytes -= token.bytes;
+        if (snapshot.active_reservation_count > 0) --snapshot.active_reservation_count;
       }
     }
-  }
-
-  std::uint64_t released_count = 0;
-  for (const auto& token : tokens) {
-    auto released = Release(token);
-    if (released.ok) {
-      ++released_count;
-    }
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    combined.snapshots = SnapshotLocked();
   }
   combined.ok = true;
   combined.released = released_count > 0;
@@ -1098,6 +1143,17 @@ HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
       "hierarchical_memory.diagnostic_code=" + combined.diagnostic_code);
   Add(&combined.evidence,
       "hierarchical_memory.released_count=" + std::to_string(released_count));
+  for (auto it = active_.begin(); it != active_.end();) {
+    const auto& token = it->second.token;
+    if (token.owner_scope != owner_scope) { ++it; continue; }
+    for (const auto& scope_id : token.debited_scope_chain) {
+      auto scope = scopes_.find(scope_id);
+      if (scope == scopes_.end()) continue;
+      scope->second.current_bytes -= token.bytes;
+      if (scope->second.active_reservation_count > 0) --scope->second.active_reservation_count;
+    }
+    it = active_.erase(it);
+  }
   return combined;
 }
 

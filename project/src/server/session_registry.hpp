@@ -1063,6 +1063,8 @@ SessionOperationResult HandleCoordinateAccessCursorFetch(ServerSessionRegistry*,
 SessionOperationResult HandleCoordinateAccessCursorClose(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateInsert(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
 SessionOperationResult HandleCoordinateUpdate(ServerSessionRegistry*,const HostedEngineState&,const sbps::Frame&);
+SessionOperationResult HandleCoordinateDmlDeleteRowsBind(
+    ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
     ServerSessionRegistry*, const HostedEngineState&, const sbps::Frame&);
 SessionOperationResult HandleCoordinateDmlPlanImportRowsBind(

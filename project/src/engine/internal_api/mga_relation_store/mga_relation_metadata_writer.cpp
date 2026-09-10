@@ -20,6 +20,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "dml/mutation_savepoint_capability.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "query/contextual_text_policy_registry_v2.hpp"
@@ -169,6 +170,8 @@ bool AppendLine(const std::string& path, const std::string& line) {
 
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                            const CrudTableRecord& table) {
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");
   }
@@ -209,6 +212,8 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
     MgaRelationStorageDescriptor* descriptor) {
   constexpr const char* kOperation =
       "mga.relation_metadata.table_create.sealed_descriptor_v2";
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
   if (descriptor == nullptr) {
     return MakeInvalidRequestDiagnostic(kOperation, "descriptor_output_required");
   }
@@ -353,6 +358,8 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
     const EngineRequestContext& context,
     const MgaConstraintMutationBatch& batch) {
   constexpr const char* kOperation = "mga.constraint_mutation_batch";
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic(kOperation, "database_path_required");
   }
@@ -1761,6 +1768,8 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
 
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index) {
+  const auto savepoint = AdmitMgaSavepointProducer(context, MgaMutationProducer::catalog_mutation);
+  if (savepoint.error) return savepoint;
   if (context.database_path.empty()) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "database_path_required");
   }

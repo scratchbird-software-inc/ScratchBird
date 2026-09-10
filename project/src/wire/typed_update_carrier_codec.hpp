@@ -62,6 +62,12 @@ inline constexpr u32 kTypedUpdateMaximumEffects = 1048576;
 inline constexpr u32 kTypedUpdateMaximumCanonicalValueBytesPerValue = 65536;
 inline constexpr u64 kTypedUpdateMaximumCanonicalValueBytes = 16777216;
 
+// Allocation-free lexical validation only; not target, resource or mutation
+// authority. Counts Unicode scalars (including NUL), without normalization.
+// On failure scalar_count is zero. The live binder supplies descriptor limits.
+bool ValidateTypedUpdateTextUtf8V2(std::span<const byte> value,
+                                 u64* scalar_count);
+
 inline constexpr TypedUpdateUuid kTypedUpdateBooleanUuid{{
     0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c,
     0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}};
@@ -203,6 +209,7 @@ enum class TypedUpdateDatatypeIdentityCode : u8 {
   bigint_v1 = 3,
   decimal_v1 = 4,
   int128_v1 = 5,
+  text_v2 = 6,  // DUDV v2 only; canonical datatype codec remains v1.
 };
 
 enum class TypedUpdateNullEncodingCode : u8 {
@@ -213,12 +220,14 @@ enum class TypedUpdateNullEncodingCode : u8 {
 enum class TypedUpdateByteOrderCode : u8 {
   single_byte = 1,
   little_endian = 2,
+  byte_sequence = 3,
 };
 
 enum class TypedUpdateRepresentationCode : u8 {
   canonical_boolean = 1,
   twos_complement = 2,
   decimal_base1e9 = 3,
+  utf8_scalar_sequence = 4,
 };
 
 struct TypedUpdateVectorIdentity {
@@ -598,6 +607,7 @@ struct TypedUpdateDatatypeAuthorityVector {
   std::vector<byte> exact_bytes;
   TypedUpdateVectorIdentity identity;
   std::vector<TypedUpdateDatatypeAuthorityRecord> records;
+  u16 format_version = 1;
 };
 
 struct TypedUpdateBuiltinOperatorAuthorityRecord {

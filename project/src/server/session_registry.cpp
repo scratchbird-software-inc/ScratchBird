@@ -365,6 +365,7 @@
 #include "transaction/transaction_api.hpp"
 #include "dml/import_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/delete_api.hpp"
 #include "query/narrow_query_binding_authority.hpp"
 #include "engine/sblr/contextual_text_literal_v2_codec.hpp"
 #include "wire/narrow_query_binding_demand_codec.hpp"
@@ -7849,6 +7850,145 @@ SessionOperationResult HandleCoordinateAccessCursorClose(ServerSessionRegistry*r
 SessionOperationResult HandleCoordinateInsert(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=95;result.response_schema_id=sbps::kSchemaCoordinateInsertResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string code,std::string detail){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(code),"parser_server_ipc.insert_refused","Insert coordination was refused.",{{"detail",std::move(detail)}}));return result;};scratchbird::engine::sblr::SblrInsertRequestV1 value;std::string detail;if(!registry||!scratchbird::engine::sblr::DecodeSblrInsertRequestV1(request.payload.data(),request.payload.size(),&value,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto receipt_uuid=UuidBytesToText(value.receipt);ServerStatementContextRecord*receipt=nullptr;{std::lock_guard<std::mutex>guard(*registry->statement_context_mutex);for(auto&[unused,row]:registry->statement_contexts_by_statement_uuid){(void)unused;if(!row.released&&row.view.receipt_uuid==receipt_uuid){receipt=&row;break;}}}if(!receipt||receipt->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","insert_receipt_hidden");auto context=EngineContextForSession(session->second,engine_state,request);context.statement_uuid.canonical=receipt_uuid;context.statement_metadata_snapshot_engine_owned=true;context.trace_tags.push_back("private_insert_compiler");auto coordinated=engine_api::CompileSblrInsertDescriptor(context,receipt_uuid,value.occurrence,value.insert_occurrence,receipt->view.insert_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrInsertDescriptorV1(coordinated.descriptor,false);if(result.payload.empty())return refuse("DML.INSERT_FAILED","INSD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateUpdate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=97;result.response_schema_id=sbps::kSchemaCoordinateUpdateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string code,std::string detail){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(code),"parser_server_ipc.update_refused","Update coordination was refused.",{{"detail",std::move(detail)}}));return result;};scratchbird::engine::sblr::SblrUpdateRequestV1 value;std::string detail;if(!registry||!scratchbird::engine::sblr::DecodeSblrUpdateRequestV1(request.payload.data(),request.payload.size(),&value,&detail))return refuse("SBLR.OPERAND_INVALID",detail);auto session=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(session==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto receipt_uuid=UuidBytesToText(value.receipt);ServerStatementContextRecord*receipt=nullptr;{std::lock_guard<std::mutex>guard(*registry->statement_context_mutex);for(auto&[unused,row]:registry->statement_contexts_by_statement_uuid){(void)unused;if(!row.released&&row.view.receipt_uuid==receipt_uuid){receipt=&row;break;}}}if(!receipt||receipt->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","update_receipt_hidden");auto context=EngineContextForSession(session->second,engine_state,request);context.statement_uuid.canonical=receipt_uuid;context.statement_metadata_snapshot_engine_owned=true;context.trace_tags.push_back("private_update_compiler");auto coordinated=engine_api::CompileSblrUpdateDescriptor(context,receipt_uuid,value.occurrence,value.update_occurrence,receipt->view.update_executor_availability_generation);if(!coordinated.ok)return refuse(coordinated.diagnostic.code,coordinated.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrUpdateDescriptorV1(coordinated.descriptor,false);if(result.payload.empty())return refuse("DML.UPDATE_FAILED","UPDD_encode_failed");result.accepted=true;return result;}
 
+SessionOperationResult HandleCoordinateDmlDeleteRowsBind(
+    ServerSessionRegistry* registry, const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kCoordinateDmlDeleteRowsBindResult);
+  result.response_schema_id = sbps::kSchemaCoordinateDmlDeleteRowsBindResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.frame_flags |= sbps::kFlagError;
+    result.response_message_type = 60;
+    result.response_schema_id = sbps::kSchemaMessageVectorSetV1;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code), "parser_server_ipc.dml_delete_rows_bind_refused",
+        "The authenticated DML DELETE descriptor binding was refused.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+  if (registry == nullptr ||
+      request.header.message_type != static_cast<std::uint16_t>(
+          sbps::MessageType::kCoordinateDmlDeleteRowsBindRequest) ||
+      request.header.payload_schema_id != sbps::kSchemaCoordinateDmlDeleteRowsBindRequestV1 ||
+      request.payload.size() < 48 ||
+      request.payload.size() > 65536 || request.payload[0] != 'D' ||
+      request.payload[1] != 'D' || request.payload[2] != 'B' ||
+      request.payload[3] != 'Q' || GetU16(request.payload, 4) != 1) {
+    return refuse("SBLR.OPERAND_INVALID", "DDBQ_header_invalid");
+  }
+  const auto flags = GetU16(request.payload, 6);
+  const auto receipt_bytes = GetUuid(request.payload, 8);
+  const auto occurrence = GetU64(request.payload, 24);
+  const auto relation_bytes = GetUuid(request.payload, 32);
+  if ((flags & ~std::uint16_t{1}) != 0 ||
+      IsZeroUuidBytes(receipt_bytes) || occurrence != 1 ||
+      IsZeroUuidBytes(relation_bytes)) {
+    return refuse("SBLR.OPERAND_INVALID", "DDBQ_authority_header_invalid");
+  }
+  const auto get_u32 = [&](std::size_t offset) {
+    return static_cast<std::uint32_t>(request.payload[offset]) |
+           (static_cast<std::uint32_t>(request.payload[offset + 1]) << 8U) |
+           (static_cast<std::uint32_t>(request.payload[offset + 2]) << 16U) |
+           (static_cast<std::uint32_t>(request.payload[offset + 3]) << 24U);
+  };
+  std::size_t offset = 48;
+  const auto read_u16_string = [&](std::string* value) {
+    if (!value || offset + 2 > request.payload.size()) return false;
+    const auto size = GetU16(request.payload, offset);
+    offset += 2;
+    if (!size || size > 4096 || size > request.payload.size() - offset) return false;
+    value->assign(reinterpret_cast<const char*>(request.payload.data() + offset), size);
+    offset += size;
+    return value->find('\0') == std::string::npos;
+  };
+  const auto read_u32_string = [&](std::string* value) {
+    if (value == nullptr || offset + 4 > request.payload.size()) return false;
+    const auto size = get_u32(offset);
+    offset += 4;
+    if (size > 65536 || offset + size > request.payload.size()) return false;
+    value->assign(reinterpret_cast<const char*>(request.payload.data() + offset),
+                  size);
+    offset += size;
+    // Length-delimited literal bytes may contain U+0000. Column/type names use
+    // the separate NUL-refusing reader; the engine validates the actual codec.
+    return true;
+  };
+
+  engine_api::EngineDmlDeleteRowsBindingDemandV1 demand;
+  demand.authenticated_statement_receipt_uuid =
+      UuidBytesToText(receipt_bytes);
+  demand.structural_occurrence_id = occurrence;
+  demand.target_relation_uuid_hint = UuidBytesToText(relation_bytes);
+  if ((flags & 1U) != 0) {
+    if (!read_u16_string(&demand.predicate_kind) ||
+        demand.predicate_kind != "column_equals" ||
+        !read_u16_string(&demand.predicate_column_spelling) ||
+        demand.predicate_column_spelling.empty() ||
+        !read_u16_string(&demand.predicate_literal_type_spelling) ||
+        demand.predicate_literal_type_spelling.empty() ||
+        !read_u32_string(&demand.predicate_literal_spelling)) {
+      return refuse("SBLR.OPERAND_INVALID", "DDBQ_predicate_invalid");
+    }
+  }
+  if (offset != request.payload.size()) {
+    return refuse("SBLR.OPERAND_INVALID", "DDBQ_trailing_bytes");
+  }
+
+  const auto session = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session == registry->sessions_by_uuid.end() ||
+      IsZeroUuidBytes(request.header.connection_uuid) ||
+      session->second.connection_uuid != request.header.connection_uuid) {
+    return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
+  }
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle
+      receipt_handle;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto receipt = std::find_if(
+        registry->statement_contexts_by_statement_uuid.begin(),
+        registry->statement_contexts_by_statement_uuid.end(),
+        [&](const auto& entry) {
+          return !entry.second.released &&
+                 entry.second.session_uuid == request.header.session_uuid &&
+                 entry.second.view.receipt_uuid ==
+                     demand.authenticated_statement_receipt_uuid;
+        });
+    if (receipt == registry->statement_contexts_by_statement_uuid.end()) {
+      return refuse("SECURITY.ACCESS_DENIED", "delete_receipt_hidden");
+    }
+    receipt_handle = receipt->second.receipt;
+  }
+  auto context = EngineContextForSession(session->second, engine_state, request);
+  const auto copied = scratchbird::server_engine_bridge::
+      CopyStatementContextEngineContextV1(receipt_handle, &context, nullptr);
+  if (copied != SB_ENGINE_STATUS_OK) {
+    return refuse("MGA.TRANSACTION.STALE", "delete_receipt_stale");
+  }
+  context.trace_tags.push_back("private_dml_delete_rows_binder");
+  result.payload.reserve(24);  // Allocate the exact outward carrier before publication.
+  const auto bound = engine_api::BindDmlDeleteRowsDescriptorV1(context, demand);
+  if (!bound.ok) {
+    return refuse(bound.diagnostic.code.empty()
+                      ? "SBLR.OPERAND_INVALID"
+                      : bound.diagnostic.code,
+                  bound.diagnostic.message_key.empty()
+                      ? bound.diagnostic.detail
+                      : bound.diagnostic.message_key);
+  }
+  const auto descriptor_uuid = bound.descriptor_ref.descriptor_uuid;
+  if (IsZeroUuidBytes(descriptor_uuid) ||
+      bound.descriptor_ref.descriptor_generation == 0) {
+    return refuse("SBLR.OPERAND_INVALID", "DDBQ_descriptor_result_invalid");
+  }
+  PutUuid(&result.payload, descriptor_uuid);
+  PutU64(&result.payload, bound.descriptor_ref.descriptor_generation);
+  result.accepted = true;
+  return result;
+}
 SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
     ServerSessionRegistry* registry, const HostedEngineState& engine_state,
     const sbps::Frame& request) {
@@ -7902,7 +8042,9 @@ SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
     value->assign(reinterpret_cast<const char*>(request.payload.data() + offset),
                   size);
     offset += size;
-    return value->find('\0') == std::string::npos;
+    // Length-delimited literal bytes may contain U+0000. Column/type names use
+    // the separate NUL-refusing reader; the engine validates the actual codec.
+    return true;
   };
 
   engine_api::EngineDmlUpdateRowsBindingDemandV1 demand;

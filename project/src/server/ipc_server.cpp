@@ -3580,6 +3580,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateIndexRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlDropIndexRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlAlterDomainRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlDeleteRowsBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlUpdateRowsBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlPlanImportRowsBindRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDdlCreateViewRequest) ||
@@ -4271,6 +4272,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if(frame.header.message_type==92&&frame.header.payload_schema_id==sbps::kSchemaCoordinateAccessCursorCloseRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateAccessCursorClose(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==94&&frame.header.payload_schema_id==sbps::kSchemaCoordinateInsertRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateInsert(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==96&&frame.header.payload_schema_id==sbps::kSchemaCoordinateUpdateRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateUpdate(session_registry,engine_state,frame)));return true;}
+  if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlDeleteRowsBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlDeleteRowsBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlDeleteRowsBind(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlUpdateRowsBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlUpdateRowsBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlUpdateRowsBind(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==static_cast<std::uint16_t>(sbps::MessageType::kCoordinateDmlPlanImportRowsBindRequest)&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDmlPlanImportRowsBindRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDmlPlanImportRowsBind(session_registry,engine_state,frame)));return true;}
   if(frame.header.message_type==98&&frame.header.payload_schema_id==sbps::kSchemaCoordinateDeleteRequestV1){WriteAll(client_fd,SessionOperationFrame(frame,HandleCoordinateDelete(session_registry,engine_state,frame)));return true;}

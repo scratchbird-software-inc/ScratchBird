@@ -76,8 +76,13 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path MakeTempPath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_prf_constraint_dml_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+  std::string pattern = (std::filesystem::temp_directory_path() /
+                         "sb_prf_constraint_dml_XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  const auto made = ::mkdtemp(writable.data());
+  Require(made != nullptr, "constraint fixture directory creation failed");
+  return std::filesystem::path(made) / "constraint.sbdb";
 }
 
 std::string CreateDatabase(const std::filesystem::path& path) {
@@ -471,15 +476,14 @@ void VerifyRollbackAndSavepointVisibility(const std::filesystem::path& path,
 
 int main() {
   const auto path = MakeTempPath();
+  std::cout << "constraint_artifacts=" << path.parent_path() << std::endl;
   const auto database_uuid = CreateDatabase(path);
   VerifyConstraintEnforcement(path, database_uuid);
   VerifyDeferredCommitViolation(path, database_uuid);
   VerifyRollbackAndSavepointVisibility(path, database_uuid);
-  std::filesystem::remove(path);
-  std::filesystem::remove(path.string() + ".sb.mga_relation_metadata");
-  std::filesystem::remove(path.string() + ".sb.mga_row_versions");
-  std::filesystem::remove(path.string() + ".sb.mga_index_entries");
-  std::filesystem::remove(path.string() + ".sb.mga_savepoints");
+  // The uniquely allocated fixture directory owns all database companions,
+  // including nested relation/index segments and filespace growth artifacts.
+  std::filesystem::remove_all(path.parent_path());
   std::cout << "constraint_dml_enforcement_conformance=passed\n";
   return EXIT_SUCCESS;
 }
