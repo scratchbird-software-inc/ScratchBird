@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/native_bulk_ingest_api.hpp"
+#include "dml/test_optimization_profile.hpp"
 
 #include "api_diagnostics.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
@@ -335,13 +336,16 @@ EngineExecuteNativeBulkIngestResult WrapTriggerAwareInsertResult(
                                    insert.skipped_count
                              : 0;
   result.inserted_rows = insert.inserted_count;
-  result.rejected_rows =
-      insert.ok ? 0 : static_cast<EngineApiU64>(input_row_count);
+  // This is an atomic INSERT, not import reject-and-continue processing.
+  // A failed statement has no per-row rejection result; do not invent one
+  // from the batch size. Match the direct native lane's fail-fast result.
+  result.rejected_rows = 0;
   result.row_uuids = std::move(insert.row_uuids);
   result.delegated_to_import_execution = false;
   result.dml_summary = std::move(insert.dml_summary);
   AddNativeBulkIngestEvidence(&result, true);
   result.evidence.push_back({"native_bulk_ingest_lane", "trigger_aware_insert"});
+  result.evidence.push_back({"native_bulk_ingest_input_rows", std::to_string(input_row_count)});
   result.evidence.push_back({"native_bulk_ingest_delegate", "dml.insert_rows"});
   result.evidence.push_back({"native_bulk_ingest_import_source_kind", "none"});
   result.evidence.push_back({"native_bulk_ingest_import_format_family", "none"});
@@ -415,6 +419,11 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
             true),
         true);
   }
+  const bool scan_scalar_fallback = dml::TestScanScalarProfile() &&
+      !request.canonical_rows.empty() && !request.before_row_publication &&
+      !request.before_mutation_publication && !request.before_statement_publication &&
+      !request.after_statement_publication && !request.after_statement_rollback &&
+      !request.import_policy.strict_bulk_load_requested;
   if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid.canonical)) {
@@ -618,7 +627,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         std::move(reason));
   };
 
-  if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
+  if (scan_scalar_fallback || dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid.canonical)) {
     const auto rows = std::span<const EngineRowValue>(
@@ -631,6 +640,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
       return rollback_failure(std::move(trigger_result),
                               "trigger_aware_insert_refused");
     }
+    if (scan_scalar_fallback) dml::RecordTestOptimizationBranch("native_bulk_staged_fallback");
     return publish_success(std::move(trigger_result));
   }
 

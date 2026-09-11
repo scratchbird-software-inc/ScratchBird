@@ -316,7 +316,10 @@ EngineApiDiagnostic ValidateInsertBatchMemoryBudget(const InsertBatchContext& co
 EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext& context,
                                                    const MgaRelationReadView& state,
                                                    const PreparedInsertRow& row);
+EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
+                                             const CrudIndexRecord& index);
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,
+                                                       const CrudTableRecord& table,
                                                        const std::vector<std::pair<std::string, std::string>>& values);
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,

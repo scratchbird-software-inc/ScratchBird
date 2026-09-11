@@ -339,6 +339,12 @@ option(SB_BUILD_SBLR_DATATYPE_DOMAIN_PROBE "Build the SBLR datatype/domain dispa
 option(SB_BUILD_SBLR_DATATYPE_FULL_SURFACE_PROBE "Build the full SBLR datatype/domain surface probe" OFF)
 option(SB_BUILD_AGENT_RUNTIME_PROBES "Build the operational agent runtime implementation probes" OFF)
 option(SB_BUILD_TESTS "Build ScratchBird private tests" OFF)
+option(SB_ENABLE_TEST_DML_ROUTE_SELECTION
+  "Test-only: allow engine-owned DML route and optimization selection for differential tests"
+  OFF)
+if(SB_ENABLE_TEST_DML_ROUTE_SELECTION AND NOT SB_BUILD_TESTS)
+  message(FATAL_ERROR "SB_ENABLE_TEST_DML_ROUTE_SELECTION requires SB_BUILD_TESTS")
+endif()
 option(SB_ENABLE_TEST_CRASH_INJECTION
   "Diagnostic-only: compile explicitly armed process-crash boundaries used by recovery tests"
   OFF)

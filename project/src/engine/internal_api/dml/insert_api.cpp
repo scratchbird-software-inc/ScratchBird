@@ -13,6 +13,8 @@
 #include "dml/mutation_savepoint_capability.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
 #include "dml/insert_batch.hpp"
+#include "dml/test_insert_route.hpp"
+#include "dml/test_optimization_profile.hpp"
 #include "dml/insert_physical_integration.hpp"
 #include "dml/dml_row_locator_stream.hpp"
 #include "dml/page_allocation_runtime_bridge.hpp"
@@ -210,41 +212,6 @@ struct BulkValidationEvidenceCompactor {
     }
   }
 };
-
-EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
-                                             const CrudIndexRecord& index) {
-  bool primary_key = std::find(index.key_envelopes.begin(),
-                              index.key_envelopes.end(),
-                              "primary_key") != index.key_envelopes.end();
-  bool unique_key = index.unique ||
-                    std::find(index.key_envelopes.begin(),
-                              index.key_envelopes.end(),
-                              "unique") != index.key_envelopes.end();
-  for (const auto& [column_name, descriptor] : table.columns) {
-    if (column_name != index.column_name) {
-      continue;
-    }
-    const std::string lowered = LowerAscii(descriptor);
-    primary_key = primary_key ||
-                  lowered.find("primary_key") != std::string::npos ||
-                  lowered.find("pk=true") != std::string::npos;
-    unique_key = unique_key ||
-                 lowered.find("unique_key") != std::string::npos ||
-                 lowered.find("unique=true") != std::string::npos;
-    break;
-  }
-  if (primary_key) {
-    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
-                                   "constraint.primary_key.violation",
-                                   "duplicate_key:" + index.index_uuid);
-  }
-  if (unique_key) {
-    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_UNIQUE_VIOLATION",
-                                   "constraint.unique.violation",
-                                   "duplicate_key:" + index.index_uuid);
-  }
-  return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate");
-}
 
 EngineApiU64 UniqueIndexCount(const std::vector<CrudIndexRecord>& indexes) {
   EngineApiU64 count = 0;
@@ -1619,6 +1586,7 @@ bool DirectPhysicalInsertRouteEligible(
     std::string_view conflict_action,
     std::span<const EngineRowValue> input_rows,
     EngineApiU64 effective_row_count) {
+  if (!dml::TestInsertDirectRouteAllowed()) return false;
   if (input_rows.empty() && effective_row_count == 0) {
     return false;
   }
@@ -1834,6 +1802,7 @@ bool ConflictFreeDirectAppendEligible(
     std::span<const StagedInsertRow> staged_rows,
     const EngineInsertRowsResult& result,
     bool executable_trigger_descriptors_present) {
+  if (!dml::TestInsertDirectRouteAllowed()) return false;
   if (conflict_action.empty() ||
       executable_trigger_descriptors_present ||
       staged_rows.empty() ||
@@ -2181,6 +2150,11 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
       request,
       std::move(direct_result),
       std::move(prefix_evidence));
+  if (attempt.result.ok) {
+    dml::RecordTestInsertRouteExecution(dml::TestInsertRoute::optimized,
+                                       attempt.result.inserted_count,
+                                       request.context.local_transaction_id);
+  }
   mark_phase("convert_direct_result");
   WriteInsertApiPhaseTrace("try_direct_physical_insert_route",
                            "dml.insert_rows",
@@ -3141,9 +3115,14 @@ std::optional<UniqueConflictProbeResult> FindPersistedUniqueIndexConflict(
     return std::nullopt;
   };
 
+  if (dml::TestScanScalarProfile()) {
+    dml::RecordTestOptimizationBranch("unique_row_scan");
+    return visible_row_scan_fallback();
+  }
   const auto found_index =
       physical_probe_cache.key_rows_by_index_uuid.find(index.index_uuid);
   if (found_index != physical_probe_cache.key_rows_by_index_uuid.end()) {
+    dml::RecordTestOptimizationBranch("unique_index_probe");
     ++physical_probe_cache.physical_probe_attempts;
     for (const auto& key : keys) {
       const auto found_key = found_index->second.find(key);
@@ -3364,6 +3343,16 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> ConflictUpdateDeltaEntries(
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_INSERT_API_STUBS
 
 EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) {
+  if (dml::SelectedTestOptimizationProfile() == dml::TestOptimizationProfile::invalid) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context, "dml.insert_rows",
+        MakeInvalidRequestDiagnostic("dml.insert_rows", "invalid_test_optimization_profile"));
+  }
+  if (dml::SelectedTestInsertRoute() == dml::TestInsertRoute::invalid) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context, "dml.insert_rows",
+        MakeInvalidRequestDiagnostic("dml.insert_rows", "invalid_test_insert_route"));
+  }
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "local_transaction_id_required"));
   }
@@ -4209,7 +4198,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       EngineApiDiagnostic unique_check =
           MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
       if (ordinary_insert_batch_unique_preflight) {
-        unique_check = ValidateInsertBatchUniquePreflight(&batch_context, values);
+        unique_check = ValidateInsertBatchUniquePreflight(&batch_context, *table, values);
         if (!unique_check.error) {
           for (const auto& index : visible_indexes) {
             if (!IsUniqueIndexForConflict(index)) {
@@ -4424,6 +4413,12 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       converted.evidence.push_back(
           {"on_conflict_no_match_rows",
            std::to_string(staged_insert_rows.size())});
+      if (converted.ok) {
+        dml::RecordTestOptimizationBranch("post_conflict_direct");
+        dml::RecordTestInsertRouteExecution(dml::TestInsertRoute::optimized,
+                                           converted.inserted_count,
+                                           request.context.local_transaction_id);
+      }
       ApplyInsertWriteResultPolicy(write_result_policy, &converted);
       mark_insert_phase("conflict_free_direct_append");
       write_insert_outer_trace(input_rows.size());
@@ -4609,8 +4604,21 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             IparFaultDiagnostic("dml.insert_rows", "row_append", "phase=row_append"),
             evidence);
       }
-      const auto appended =
-          hot_append.AppendRowVersions(&row_records, &written_event_sequences);
+      const auto appended = [&]() {
+        if (!dml::TestScanScalarProfile()) {
+          return hot_append.AppendRowVersions(&row_records, &written_event_sequences);
+        }
+        for (auto& row : row_records) {
+          std::uint64_t sequence = 0;
+          const auto diagnostic = relation_store.AppendRowVersion(row, &sequence);
+          if (diagnostic.error) return diagnostic;
+          row.event_sequence = sequence;
+          row.sequence = sequence;
+          written_event_sequences.push_back(sequence);
+          dml::RecordTestOptimizationBranch("row_scalar_append");
+        }
+        return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+      }();
       if (appended.error) {
         return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", appended);
       }
@@ -4910,6 +4918,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                             batch_context.adaptive_batch_plan.reason);
   }
   RecordInsertBatchMetric(batch_context, "sb_dml_insert_rows_inserted_total", static_cast<double>(result.inserted_count), "ok");
+  if (result.ok) {
+    dml::RecordTestInsertRouteExecution(dml::TestInsertRoute::staged,
+                                       result.inserted_count,
+                                       request.context.local_transaction_id);
+  }
   return result;
 }
 

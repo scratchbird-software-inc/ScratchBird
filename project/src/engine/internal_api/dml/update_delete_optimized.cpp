@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_delete_optimized.hpp"
+#include "dml/test_optimization_profile.hpp"
 #include "core/platform/savepoint_crash_injection.hpp"
 
 #include "crud_support/crud_store.hpp"
@@ -1622,6 +1623,12 @@ UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
     return stream;
   }
 
+  if (dml::TestScanScalarProfile()) {
+    AddUpdateCandidateFallbackEvidence("test_canonical_scan", &stream);
+    dml::RecordTestOptimizationBranch("update_table_scan");
+    return stream;
+  }
+
   switch (stream.plan.access_kind) {
     case DmlTargetAccessKind::row_uuid_singleton: {
       stream.evidence.push_back({"update_row_candidate_stream", "row_uuid_singleton"});
@@ -1691,6 +1698,7 @@ UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
                              indexed.evidence.begin(),
                              indexed.evidence.end());
       if (indexed.index_used) {
+        dml::RecordTestOptimizationBranch("update_index_candidates");
         stream.rows = indexed.rows;
         if (stream.rows.empty()) {
           stream.rows = ScanVisibleRowsMatchingPredicate(state,
@@ -1968,6 +1976,12 @@ DeleteTargetCandidateStream BuildDeleteTargetCandidateStream(
       return stream;
     }
     AddDeleteCandidateFallbackEvidence("target_access_plan_refused", &stream);
+    return stream;
+  }
+
+  if (dml::TestScanScalarProfile()) {
+    AddDeleteCandidateFallbackEvidence("test_canonical_scan", &stream);
+    dml::RecordTestOptimizationBranch("delete_table_scan");
     return stream;
   }
 

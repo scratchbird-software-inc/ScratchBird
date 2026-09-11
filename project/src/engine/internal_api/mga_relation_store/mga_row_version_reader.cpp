@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_row_version_reader.hpp"
+#include "dml/test_optimization_profile.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -300,7 +301,7 @@ bool LoadDecodedScopedRowsForTable(
   if (file_size == 0) {
     return false;
   }
-  {
+  if (!dml::TestScanScalarProfile()) {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
     const auto cached = ScopedDecodedRowCache().find(path);
     if (cached != ScopedDecodedRowCache().end()) {
@@ -313,12 +314,14 @@ bool LoadDecodedScopedRowsForTable(
                               identity.file_mtime_ticks);
       if (cached->second.file_size == file_size && text_identity_matches) {
         *rows = cached->second.rows;
+        dml::RecordTestOptimizationBranch("decoded_row_cache_hit");
         return true;
       }
       ScopedDecodedRowCache().erase(cached);
     }
   }
 
+  dml::RecordTestOptimizationBranch("decoded_rows_from_store");
   std::vector<CrudRowVersionRecord> decoded_rows;
   std::unordered_map<std::string, std::string> row_value_key_cache;
   row_value_key_cache.reserve(64);
@@ -355,7 +358,7 @@ bool LoadDecodedScopedRowsForTable(
       return false;
     }
   }
-  {
+  if (!dml::TestScanScalarProfile()) {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
     const auto identity = text_exists
                               ? ScopedRelationTextFileIdentity(path)

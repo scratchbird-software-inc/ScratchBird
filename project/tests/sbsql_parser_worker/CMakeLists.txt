@@ -6590,6 +6590,103 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_savepoint_rollback_full_route_gate PROPERTIES
       LABELS "savepoint;real_server_route;restart_recovery;mga_transaction_regression"
       RUN_SERIAL TRUE TIMEOUT 600)
+    if(SB_ENABLE_TEST_DML_ROUTE_SELECTION AND SB_BUILD_DATABASE_LIFECYCLE_TESTS)
+      foreach(history_seed IN ITEMS 901 902)
+        add_test(NAME dml_random_equivalence_${history_seed}_gate
+          COMMAND "${SBSQL_PYTHON3}"
+            "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/dml_snapshot_equivalence_gate.py"
+            --probe $<TARGET_FILE:dml_optimization_history_probe>
+            --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+            --work-dir "${CMAKE_BINARY_DIR}/random_equivalence_${history_seed}"
+            --case random --seed "${history_seed}")
+        set_tests_properties(dml_random_equivalence_${history_seed}_gate PROPERTIES
+          LABELS "dml_optimization_equivalence;engine_api_route;snapshot_overlap;restart_recovery;randomized_model"
+          RUN_SERIAL TRUE TIMEOUT 1800)
+      endforeach()
+      add_test(NAME dml_snapshot_equivalence_gate
+        COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/dml_snapshot_equivalence_gate.py"
+          --probe $<TARGET_FILE:dml_optimization_history_probe>
+          --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+          --work-dir "${CMAKE_BINARY_DIR}/snapshot_equivalence")
+      set_tests_properties(dml_snapshot_equivalence_gate PROPERTIES
+        LABELS "dml_optimization_equivalence;engine_api_route;snapshot_overlap;restart_recovery"
+        RUN_SERIAL TRUE TIMEOUT 1800)
+      add_test(NAME dml_bulk_equivalence_gate
+        COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/dml_snapshot_equivalence_gate.py"
+          --probe $<TARGET_FILE:dml_optimization_history_probe>
+          --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+          --work-dir "${CMAKE_BINARY_DIR}/bulk_equivalence" --case bulk)
+      set_tests_properties(dml_bulk_equivalence_gate PROPERTIES
+        LABELS "dml_optimization_equivalence;engine_api_route;snapshot_overlap;restart_recovery"
+        RUN_SERIAL TRUE TIMEOUT 1800)
+      foreach(crash_case IN ITEMS crash_before_commit crash_after_commit)
+        add_test(NAME dml_${crash_case}_equivalence_gate
+          COMMAND "${SBSQL_PYTHON3}"
+            "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/dml_snapshot_equivalence_gate.py"
+            --probe $<TARGET_FILE:dml_optimization_history_probe>
+            --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+            --work-dir "${CMAKE_BINARY_DIR}/${crash_case}_equivalence" --case "${crash_case}")
+        set_tests_properties(dml_${crash_case}_equivalence_gate PROPERTIES
+          LABELS "dml_optimization_equivalence;engine_api_route;crash_recovery;restart_recovery"
+          RUN_SERIAL TRUE TIMEOUT 1800)
+      endforeach()
+      add_test(NAME sbsql_insert_route_equivalence_harness
+        COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+          "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/test_insert_route_equivalence_harness.py")
+      set_tests_properties(sbsql_insert_route_equivalence_harness PROPERTIES
+        LABELS "dml_optimization_equivalence;harness_unit")
+      add_test(NAME sbsql_insert_route_equivalence_gate
+        COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_insert_route_equivalence_gate.py"
+          --server $<TARGET_FILE:sb_server>
+          --listener $<TARGET_FILE:sb_listener>
+          --parser-worker $<TARGET_FILE:sbp_sbsql>
+          --sb-isql $<TARGET_FILE:sb_isql>
+          --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+          --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+          --work-dir "${CMAKE_BINARY_DIR}/insert_route_equivalence")
+      set_tests_properties(sbsql_insert_route_equivalence_gate PROPERTIES
+        LABELS "dml_optimization_equivalence;real_server_route;mga_transaction_regression;restart_recovery"
+        RUN_SERIAL TRUE TIMEOUT 1800)
+      add_test(NAME sbsql_insert_cache_equivalence_gate
+        COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_insert_route_equivalence_gate.py"
+          --server $<TARGET_FILE:sb_server>
+          --listener $<TARGET_FILE:sb_listener>
+          --parser-worker $<TARGET_FILE:sbp_sbsql>
+          --sb-isql $<TARGET_FILE:sb_isql>
+          --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+          --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+          --work-dir "${CMAKE_BINARY_DIR}/insert_cache_equivalence"
+          --seed 901
+          --case commit --case nested_savepoints --case rollback_reuse
+          --case multirow_existing_key_refusal --case multirow_self_conflict_refusal
+          --optimization-profile cold --optimization-profile uncached
+          --optimization-profile evicted --optimization-profile relation_rows
+          --optimization-profile publication_evicted
+          --optimization-profile publish_cache)
+      set_tests_properties(sbsql_insert_cache_equivalence_gate PROPERTIES
+        LABELS "dml_optimization_equivalence;real_server_route;mga_transaction_regression;restart_recovery"
+        RUN_SERIAL TRUE TIMEOUT 1800)
+      add_test(NAME sbsql_scan_scalar_equivalence_gate
+        COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_insert_route_equivalence_gate.py"
+          --server $<TARGET_FILE:sb_server>
+          --listener $<TARGET_FILE:sb_listener>
+          --parser-worker $<TARGET_FILE:sbp_sbsql>
+          --sb-isql $<TARGET_FILE:sb_isql>
+          --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+          --inventory-probe $<TARGET_FILE:dml_inventory_snapshot_probe>
+          --work-dir "${CMAKE_BINARY_DIR}/scan_scalar_equivalence"
+          --seed 901 --case mixed_model --case commit --case nested_savepoints
+          --case multirow_existing_key_refusal --optimization-profile scan_scalar)
+      set_tests_properties(sbsql_scan_scalar_equivalence_gate PROPERTIES
+        LABELS "dml_optimization_equivalence;real_server_route;mga_transaction_regression;restart_recovery"
+        RUN_SERIAL TRUE TIMEOUT 1800)
+    endif()
     add_test(
       NAME sbsql_savepoint_refusal_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"

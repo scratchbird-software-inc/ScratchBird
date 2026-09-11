@@ -18,6 +18,9 @@ ScratchBird reports evidence in descending order of strength:
 The order is a reporting hierarchy, not a substitution rule. Passing a lower
 tier cannot satisfy a missing higher tier.
 
+For the DML differential corpus, reference profiles, replay and cleanup, see
+[DML optimization equivalence tests](DML_OPTIMIZATION_EQUIVALENCE.md).
+
 ## Source-token classifications
 
 A source-token check must declare exactly one purpose:

@@ -8,6 +8,63 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(SB_ENABLE_TEST_DML_ROUTE_SELECTION)
+  add_executable(dml_optimization_history_probe dml_optimization_history_probe.cpp)
+  target_compile_features(dml_optimization_history_probe PRIVATE cxx_std_23)
+  target_link_libraries(dml_optimization_history_probe PRIVATE sb_engine_internal_api sb_storage_database sb_core_uuid)
+  add_executable(dml_unique_key_equivalence_unit dml_unique_key_equivalence_gate.cpp)
+  target_compile_features(dml_unique_key_equivalence_unit PRIVATE cxx_std_23)
+  target_link_libraries(dml_unique_key_equivalence_unit PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)
+  add_test(NAME dml_unique_key_equivalence_unit COMMAND dml_unique_key_equivalence_unit)
+  set_tests_properties(dml_unique_key_equivalence_unit PROPERTIES
+    LABELS "database_lifecycle;dml_optimization_equivalence;unit")
+  add_executable(dml_inventory_snapshot_probe dml_inventory_snapshot_probe.cpp)
+  target_compile_features(dml_inventory_snapshot_probe PRIVATE cxx_std_20)
+  target_link_libraries(dml_inventory_snapshot_probe PRIVATE sb_storage_database)
+endif()
+
+# Control-plane checks only; these do not assert storage-route equivalence.
+foreach(mode IN ITEMS enabled disabled)
+  add_executable(dml_test_insert_route_${mode} dml_test_insert_route_gate.cpp)
+  target_compile_features(dml_test_insert_route_${mode} PRIVATE cxx_std_20)
+  target_include_directories(dml_test_insert_route_${mode} PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/engine/internal_api")
+  if(mode STREQUAL "enabled")
+    target_compile_definitions(dml_test_insert_route_${mode} PRIVATE
+      SCRATCHBIRD_ENABLE_TEST_DML_ROUTE_SELECTION=1)
+  endif()
+  foreach(profile IN ITEMS optimized staged invalid)
+    set(expected "${profile}")
+    if(mode STREQUAL "disabled")
+      set(expected "optimized")
+    endif()
+    add_test(NAME dml_test_insert_route_${mode}_${profile}
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "SCRATCHBIRD_TEST_INSERT_ROUTE=${profile}"
+        $<TARGET_FILE:dml_test_insert_route_${mode}> "${expected}")
+    set_tests_properties(dml_test_insert_route_${mode}_${profile} PROPERTIES
+      LABELS "database_lifecycle;dml_optimization_equivalence;route_control")
+  endforeach()
+  add_test(NAME dml_test_insert_route_${mode}_default
+    COMMAND "${CMAKE_COMMAND}" -E env --unset=SCRATCHBIRD_TEST_INSERT_ROUTE
+      $<TARGET_FILE:dml_test_insert_route_${mode}> optimized)
+  set_tests_properties(dml_test_insert_route_${mode}_default PROPERTIES
+    LABELS "database_lifecycle;dml_optimization_equivalence;route_control")
+  foreach(profile IN ITEMS normal cold uncached evicted publication_evicted relation_rows publish_cache scan_scalar invalid)
+    set(expected "${profile}")
+    if(mode STREQUAL "disabled")
+      set(expected "normal")
+    endif()
+    add_test(NAME dml_test_optimization_${mode}_${profile}
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "SCRATCHBIRD_TEST_INSERT_ROUTE=optimized"
+        "SCRATCHBIRD_TEST_DML_OPTIMIZATION=${profile}"
+        $<TARGET_FILE:dml_test_insert_route_${mode}> optimized "${expected}")
+    set_tests_properties(dml_test_optimization_${mode}_${profile} PROPERTIES
+      LABELS "database_lifecycle;dml_optimization_equivalence;route_control")
+  endforeach()
+endforeach()
+
 set(SB_PRIVATE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")
 
 set(SB_DATABASE_LIFECYCLE_POLICY_GATE

@@ -827,6 +827,10 @@ target_include_directories(sb_engine_internal_api PUBLIC
 )
 
 target_compile_features(sb_engine_internal_api PUBLIC cxx_std_20)
+if(SB_ENABLE_TEST_DML_ROUTE_SELECTION)
+  target_compile_definitions(sb_engine_internal_api PRIVATE
+    SCRATCHBIRD_ENABLE_TEST_DML_ROUTE_SELECTION=1)
+endif()
 
 find_package(OpenSSL REQUIRED)
 

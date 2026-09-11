@@ -9,6 +9,7 @@
 // SB-INSERT-PHYSICAL-INTEGRATION-ANCHOR
 #include "insert_physical_integration.hpp"
 #include "dml/direct_bulk_append_cache.hpp"
+#include "dml/test_optimization_profile.hpp"
 #include "dml/direct_bulk_generated_projection.hpp"
 #include "dml/direct_bulk_ordered_ingest.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
@@ -773,6 +774,7 @@ std::string DirectConstraintUuid(
 
 void PopulateDirectUniqueViolationDiagnostic(
     const CrudTableRecord& table,
+    const std::vector<CrudIndexRecord>& indexes,
     const scratchbird::core::bulk_load::BulkConstraintProofRequest& request,
     const scratchbird::core::bulk_load::BulkConstraintProofResult& result,
     EngineApiDiagnostic* diagnostic) {
@@ -802,28 +804,10 @@ void PopulateDirectUniqueViolationDiagnostic(
     return;
   }
 
-  for (const auto& [column_name, descriptor] : table.columns) {
-    const auto fields = DirectDescriptorFields(descriptor);
-    const bool primary_key = DirectBoolField(fields, {"primary_key", "pk"});
-    const bool unique_key =
-        primary_key || DirectBoolField(fields, {"unique", "unique_key"});
-    if (!unique_key) {
-      continue;
-    }
-    const std::string constraint_class =
-        primary_key ? "primary_key" : "unique_key";
-    if (DirectConstraintUuid(fields, table, column_name, constraint_class) !=
-        conflict_constraint_uuid) {
-      continue;
-    }
-    diagnostic->code = primary_key ? "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION"
-                                   : "CLI.CONSTRAINT_UNIQUE_VIOLATION";
-    diagnostic->message_key = primary_key
-                                  ? "constraint.primary_key.violation"
-                                  : "constraint.unique.violation";
-    diagnostic->detail = diagnostic->message_key + ":duplicate_key:" +
-                         proof->index_uuid;
-    return;
+  const auto index = std::find_if(indexes.begin(), indexes.end(),
+      [&](const auto& candidate) { return candidate.index_uuid == proof->index_uuid; });
+  if (index != indexes.end()) {
+    *diagnostic = UniqueConflictDiagnostic(table, *index);
   }
 }
 
@@ -1548,7 +1532,7 @@ void AddVisibleRowKeysForProof(
                               context.local_transaction_id)) {
         continue;
       }
-      keys->push_back(DirectProofKey(entry.key_value,
+      keys->push_back(DirectProofKey(CrudIndexEntryLogicalKey(index, entry),
                                      entry.row_uuid,
                                      entry.version_uuid,
                                      ordinal++));
@@ -1581,7 +1565,7 @@ void AddVisibleRowKeysForProof(
         !visible_row_versions.contains({entry.row_uuid, entry.version_uuid})) {
       continue;
     }
-    keys->push_back(DirectProofKey(entry.key_value,
+    keys->push_back(DirectProofKey(CrudIndexEntryLogicalKey(index, entry),
                                    entry.row_uuid,
                                    entry.version_uuid,
                                    ordinal++));
@@ -1856,10 +1840,15 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
       if (const auto* entries =
               DirectPrecomputedEntriesForIndex(precomputed_entries,
                                                support_index->index_uuid)) {
-        unique.incoming_keys_presorted = true;
+        // Physical key order is not the provider logical-key order. Project
+        // before uniqueness comparison and let the proof sort that domain.
+        unique.incoming_keys_presorted = false;
         for (const auto& entry : *entries) {
+          CrudIndexEntryRecord logical_entry;
+          logical_entry.key_value = entry.encoded_key;
+          logical_entry.payload_value = entry.payload_value;
           unique.incoming_keys.push_back(
-              DirectProofKey(entry.encoded_key,
+              DirectProofKey(CrudIndexEntryLogicalKey(*support_index, logical_entry),
                              entry.row_uuid,
                              entry.version_uuid,
                              entry.source_ordinal));
@@ -1976,10 +1965,13 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     if (const auto* entries =
             DirectPrecomputedEntriesForIndex(precomputed_entries,
                                              index.index_uuid)) {
-      unique.incoming_keys_presorted = true;
+      unique.incoming_keys_presorted = false;
       for (const auto& entry : *entries) {
+        CrudIndexEntryRecord logical_entry;
+        logical_entry.key_value = entry.encoded_key;
+        logical_entry.payload_value = entry.payload_value;
         unique.incoming_keys.push_back(
-            DirectProofKey(entry.encoded_key,
+            DirectProofKey(CrudIndexEntryLogicalKey(index, logical_entry),
                            entry.row_uuid,
                            entry.version_uuid,
                            entry.source_ordinal));
@@ -2030,6 +2022,7 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     selection.diagnostic = CoreBulkDiagnosticToEngine(proven.diagnostic,
                                                       selection.failure_reason);
     PopulateDirectUniqueViolationDiagnostic(table,
+                                            visible_indexes,
                                             proof_request,
                                             proven,
                                             &selection.diagnostic);
@@ -5540,6 +5533,15 @@ DirectPhysicalBulkAppendResult PublishDirectStrictBulkAfterPhysicalSuccess(
 
 DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     const DirectPhysicalBulkAppendRequest& request) {
+  const auto test_profile = SelectedTestOptimizationProfile();
+  if (test_profile == TestOptimizationProfile::invalid) {
+    return DirectBulkFailure(
+        request, MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                             "invalid_test_optimization_profile"),
+        "invalid_test_optimization_profile");
+  }
+  const bool use_append_caches = test_profile != TestOptimizationProfile::uncached &&
+                                test_profile != TestOptimizationProfile::relation_rows;
   const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
       request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::insert);
   if (savepoint_admission.error) {
@@ -5645,13 +5647,23 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                              index_only_eligibility.diagnostic,
                              "mga_relation_index_only_eligibility_failed");
   }
-  bool index_entries_authoritative = index_only_eligibility.eligible;
+  bool index_entries_authoritative = index_only_eligibility.eligible &&
+      test_profile != TestOptimizationProfile::relation_rows;
+  if (test_profile == TestOptimizationProfile::cold) {
+    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+    RecordTestOptimizationBranch("cache_cold");
+  }
   const bool bypass_single_window_native_bulk_cache =
+      test_profile != TestOptimizationProfile::publish_cache &&
       DirectBypassPostAppendCacheForSingleWindowNativeBulk(request);
+  if (DirectBypassPostAppendCacheForSingleWindowNativeBulk(request)) {
+    RecordTestOptimizationBranch(bypass_single_window_native_bulk_cache
+        ? "single_window_cache_skip" : "single_window_cache_forced_publish");
+  }
   const bool sorted_bulk_index_requested =
       DirectSortedBulkIndexBuildEnabled(request);
   bool append_index_cache_hit = false;
-  if (index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
+  if (use_append_caches && index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
     append_index_cache_hit = DirectAppendIndexEntryCacheAvailable(
         request.context,
         request.target_table.uuid.canonical,
@@ -5660,7 +5672,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   DirectBulkAppendContextCacheRecord bulk_context_cache;
   std::string append_index_cache_context_note;
-  bool bulk_context_cache_hit = DirectLookupBulkAppendContextCache(
+  bool bulk_context_cache_hit = use_append_caches && DirectLookupBulkAppendContextCache(
       request.context,
       request.target_table.uuid.canonical,
       index_only_eligibility.row_version_count,
@@ -5681,6 +5693,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         TransactionalRelationStoreRoute::insert_target,
         &loaded.evidence);
     loaded.evidence.push_back({"direct_physical_bulk_append_context_cache", "hit"});
+    RecordTestOptimizationBranch("context_cache_hit");
     if (!append_index_cache_context_note.empty()) {
       loaded.evidence.push_back({"direct_physical_append_index_cache",
                                  append_index_cache_context_note});
@@ -5692,6 +5705,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                          DirectSteadyClock::now());
   } else {
     const auto relation_load_start = DirectSteadyClock::now();
+    RecordTestOptimizationBranch(index_entries_authoritative
+        ? (append_index_cache_hit ? "load_metadata" : "load_indexes") : "load_relation_rows");
     loaded =
         index_entries_authoritative
             ? (append_index_cache_hit
@@ -5733,7 +5748,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "direct_physical_context_cache_state_missing"),
         "direct_physical_context_cache_state_missing");
   }
-  if (!bulk_context_cache_hit && index_entries_authoritative && !append_index_cache_hit) {
+  if (use_append_caches && !bulk_context_cache_hit && index_entries_authoritative && !append_index_cache_hit) {
     DirectStoreAppendIndexEntryCache(
         request.context,
         request.target_table.uuid.canonical,
@@ -5849,7 +5864,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                descriptor_ready,
                                "relation_descriptor_refused");
     }
-    if (index_entries_authoritative &&
+    if (use_append_caches && index_entries_authoritative &&
         !bypass_single_window_native_bulk_cache &&
         !relation_state_requires_live_rows) {
       DirectStoreBulkAppendContextCache(request.context,
@@ -7705,18 +7720,45 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   std::map<std::string, std::set<std::string>> append_index_key_cache;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
       append_index_entry_key_cache;
-	  if (index_entries_authoritative &&
-	      append_index_cache_hit &&
-	      index_only_eligibility.row_version_count != 0) {
-	    DirectBuildAppendIndexConflictCaches(request.context,
-	                                         request.target_table.uuid.canonical,
-	                                         index_only_eligibility.row_version_count,
-	                                         visible_indexes,
+
+  if (test_profile == TestOptimizationProfile::evicted && append_index_cache_hit) {
+    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+    RecordTestOptimizationBranch("cache_evicted_before_proof");
+  }
+  if (index_entries_authoritative &&
+      append_index_cache_hit &&
+      index_only_eligibility.row_version_count != 0) {
+    if (!DirectBuildAppendIndexConflictCaches(request.context,
+                                         request.target_table.uuid.canonical,
+                                         index_only_eligibility.row_version_count,
+                                         visible_indexes,
                                          logical_value_batch,
                                          &append_index_key_cache,
                                          sorted_bulk_index_requested
                                              ? &append_index_entry_key_cache
-                                             : nullptr);
+                                             : nullptr)) {
+      // Cache eviction is not a constraint failure. Reacquire the canonical
+      // table-scoped index view under the SAME MGA request snapshot. Do not
+      // accept a partial cache proof or restart the transaction.
+      auto reloaded = relation_store.LoadInsertTargetIndexes(request.target_table.uuid.canonical);
+      if (!reloaded.ok) {
+        return DirectBulkFailure(request, reloaded.diagnostic,
+                                 "append_index_cache_reload_failed");
+      }
+      auto refreshed = relation_store.BuildReadView(&reloaded);
+      if (state != &state_storage) state_storage = *state;
+      state_storage.index_entries = std::move(refreshed.index_entries);
+      state = &state_storage;
+      DirectStoreAppendIndexEntryCache(
+          request.context, request.target_table.uuid.canonical,
+          index_only_eligibility.row_version_count, *state, state->index_entries);
+      append_index_key_cache.clear();
+      append_index_entry_key_cache.clear();
+      append_index_cache_hit = false;
+      RecordTestOptimizationBranch("cache_loss_scoped_reload");
+    } else {
+      RecordTestOptimizationBranch("cache_unique_proof");
+    }
   }
 
   if (direct_retail_exact_append_candidate) {
@@ -8735,7 +8777,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       "index_write");
   mark_phase("index_stream_flush");
 
-  if (index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
+  if (use_append_caches && index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
+    RecordTestOptimizationBranch("cache_publish");
+    if (test_profile == TestOptimizationProfile::publication_evicted) {
+      detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+      RecordTestOptimizationBranch("cache_evicted_before_publication");
+    }
     if (retail_exact_append_batches.empty()) {
       DirectAppendIndexBatchesToCache(
           request.context,
@@ -8772,7 +8819,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
   }
   mark_phase("strict_bulk_publish");
-  if (index_entries_authoritative &&
+  if (use_append_caches && index_entries_authoritative &&
       !bypass_single_window_native_bulk_cache &&
       !DirectTableRequiresLiveRowVisibility(*table)) {
     const auto next_row_version_count =

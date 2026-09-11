@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "dml/delete_candidate_mutation.hpp"
+#include "dml/test_optimization_profile.hpp"
 #include "dml/datatype_operator_registry_projection.hpp"
 #include "dml/transactional_index_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
@@ -127,6 +128,9 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   if (!scanned.complete_mga_chain_validation || !scanned.exact_segment_extent_revalidated ||
       !scanned.complete_value_delivery || !scanned.memory_receipt_complete)
     return fail(Error("complete_bounded_MGA_stream_required", "DML.DELETE_FAILED"));
+  // Canonical DELETE already has one bounded MGA stream, not the legacy
+  // index-candidate shortcut. Record the actual route in every test profile.
+  dml::RecordTestOptimizationBranch("delete_canonical_scan");
   std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return a.row_uuid < b.row_uuid; });
   for (std::size_t n = 1; n < candidates.size(); ++n)
     if (candidates[n - 1].row_uuid == candidates[n].row_uuid)

@@ -1625,7 +1625,39 @@ EngineApiDiagnostic ValidateInsertBatchConstraints(const InsertBatchContext&,
   return OkDiagnostic();
 }
 
+// All INSERT routes classify the same constraint using the bound table/index,
+// not the implementation-specific location at which the duplicate was found.
+EngineApiDiagnostic UniqueConflictDiagnostic(const CrudTableRecord& table,
+                                             const CrudIndexRecord& index) {
+  bool primary_key = std::find(index.key_envelopes.begin(),
+                              index.key_envelopes.end(),
+                              "primary_key") != index.key_envelopes.end();
+  bool unique_key = index.unique ||
+                    std::find(index.key_envelopes.begin(),
+                              index.key_envelopes.end(),
+                              "unique") != index.key_envelopes.end();
+  for (const auto& [column_name, descriptor] : table.columns) {
+    if (column_name != index.column_name) continue;
+    const auto fields = DescriptorFields(descriptor);
+    primary_key = primary_key || DescriptorBool(fields, {"primary_key", "pk"});
+    unique_key = unique_key || DescriptorBool(fields, {"unique", "unique_key"});
+    break;
+  }
+  if (primary_key) {
+    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION",
+                                   "constraint.primary_key.violation",
+                                   "duplicate_key:" + index.index_uuid);
+  }
+  if (unique_key) {
+    return MakeEngineApiDiagnostic("CLI.CONSTRAINT_UNIQUE_VIOLATION",
+                                   "constraint.unique.violation",
+                                   "duplicate_key:" + index.index_uuid);
+  }
+  return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate");
+}
+
 EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* context,
+                                                       const CrudTableRecord& table,
                                                        const std::vector<std::pair<std::string, std::string>>& values) {
   if (context == nullptr) {
     return MakeInvalidRequestDiagnostic("dml.insert_rows", "insert_batch_context_required");
@@ -1637,7 +1669,7 @@ EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* conte
     for (const auto& key : CrudIndexKeysForValues(entry.index, values)) {
       const std::string request_key = entry.index.index_uuid + "|" + key;
       if (!context->unique_request_keys.insert(request_key).second) {
-        return MakeInvalidRequestDiagnostic("dml.insert_rows", "unique_index_duplicate");
+        return UniqueConflictDiagnostic(table, entry.index);
       }
     }
   }

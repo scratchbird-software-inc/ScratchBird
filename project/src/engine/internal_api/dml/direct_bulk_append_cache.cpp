@@ -33,12 +33,17 @@ bool DirectIndexIsUnique(const CrudIndexRecord& index) {
 }  // namespace
 
 struct DirectAppendIndexEntryCacheRecord {
+  struct LogicalKeyProjection {
+    std::size_t entries_processed = 0;
+    std::map<std::string, std::set<std::string>> physical_keys;
+  };
   std::uint64_t row_version_count = 0;
   std::uint64_t metadata_event_sequence = 0;
   std::uint64_t observer_local_transaction_id = 0;
   std::uint64_t savepoint_authority_generation = 0;
   std::vector<CrudIndexEntryRecord> entries;
   std::map<std::string, std::set<std::string>> keys_by_index;
+  std::map<std::string, LogicalKeyProjection> logical_keys_by_index;
   std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
       entry_by_index_key;
   bool entry_lookup_materialized = true;
@@ -64,6 +69,13 @@ DirectBulkAppendContextCache() {
 std::string DirectAppendIndexEntryCacheKey(const EngineRequestContext& context,
                                            const std::string& table_uuid) {
   return context.database_path + "\n" + table_uuid;
+}
+
+void DirectEvictAppendIndexEntryCache(const EngineRequestContext& context,
+                                     const std::string& table_uuid) {
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  DirectAppendIndexEntryCache().erase(
+      DirectAppendIndexEntryCacheKey(context, table_uuid));
 }
 
 std::string DirectBulkAppendContextCacheKey(const EngineRequestContext& context,
@@ -158,7 +170,7 @@ bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
          (!require_entry_lookup || found->second.entry_lookup_materialized);
 }
 
-void DirectBuildAppendIndexConflictCaches(
+bool DirectBuildAppendIndexConflictCaches(
     const EngineRequestContext& context,
     const std::string& table_uuid,
     std::uint64_t row_version_count,
@@ -168,7 +180,7 @@ void DirectBuildAppendIndexConflictCaches(
     std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>*
         entry_by_index_key) {
   if (keys_by_index == nullptr && entry_by_index_key == nullptr) {
-    return;
+    return false;
   }
   const std::uint64_t metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
@@ -179,53 +191,59 @@ void DirectBuildAppendIndexConflictCaches(
       found->second.row_version_count != row_version_count ||
       found->second.metadata_event_sequence != metadata_event_sequence ||
       !DirectAppendIndexCacheAuthorityMatches(found->second, context)) {
-    return;
+    return false;
   }
-  const auto& record = found->second;
+  auto& record = found->second;
   for (const auto& index : indexes) {
     if (!DirectIndexIsUnique(index)) {
       continue;
     }
-    const auto cached_keys = record.keys_by_index.find(index.index_uuid);
-    if (cached_keys == record.keys_by_index.end()) {
-      continue;
+    // Proofs compare provider logical keys. Physical scalar SBKOHEX entries
+    // and ordinary logical entries can coexist in the same canonical index.
+    // Incrementally project each validated cache record; a partial raw-key
+    // match is never evidence that all incoming logical keys were checked.
+    auto& projection = record.logical_keys_by_index[index.index_uuid];
+    for (; projection.entries_processed < record.entries.size();
+         ++projection.entries_processed) {
+      const auto& entry = record.entries[projection.entries_processed];
+      if (entry.index_uuid == index.index_uuid) {
+        projection.physical_keys[CrudIndexEntryLogicalKey(index, entry)]
+            .insert(entry.key_value);
+      }
     }
     const auto cached_entries = record.entry_by_index_key.find(index.index_uuid);
-    const std::size_t keys_before = keys_by_index == nullptr
-                                        ? 0
-                                        : (*keys_by_index)[index.index_uuid].size();
-    for (const auto& values : logical_value_batch) {
-      for (const auto& key : CrudIndexKeysForValues(index, values)) {
-        if (cached_keys->second.count(key) == 0) {
-          continue;
-        }
-        if (keys_by_index != nullptr) {
-          (*keys_by_index)[index.index_uuid].insert(key);
-        }
-        if (entry_by_index_key != nullptr &&
-            cached_entries != record.entry_by_index_key.end()) {
+    const auto append = [&](const auto& logical_key, const auto& physical_keys) {
+      if (keys_by_index != nullptr) {
+        (*keys_by_index)[index.index_uuid].insert(logical_key);
+      }
+      if (entry_by_index_key != nullptr &&
+          cached_entries != record.entry_by_index_key.end()) {
+        for (const auto& key : physical_keys) {
           const auto entry = cached_entries->second.find(key);
           if (entry != cached_entries->second.end()) {
             (*entry_by_index_key)[index.index_uuid][key] = entry->second;
           }
         }
       }
-    }
-    if (keys_by_index != nullptr &&
-        (*keys_by_index)[index.index_uuid].size() == keys_before &&
-        !cached_keys->second.empty()) {
-      for (const auto& key : cached_keys->second) {
-        (*keys_by_index)[index.index_uuid].insert(key);
-        if (entry_by_index_key != nullptr &&
-            cached_entries != record.entry_by_index_key.end()) {
-          const auto entry = cached_entries->second.find(key);
-          if (entry != cached_entries->second.end()) {
-            (*entry_by_index_key)[index.index_uuid][key] = entry->second;
+    };
+    if (logical_value_batch.empty()) {
+      // Typed input may deliberately omit the logical row batch. The proof
+      // filters these complete projected keys against its precomputed input.
+      for (const auto& [key, physical_keys] : projection.physical_keys) {
+        append(key, physical_keys);
+      }
+    } else {
+      for (const auto& values : logical_value_batch) {
+        for (const auto& key : CrudIndexKeysForValues(index, values)) {
+          const auto match = projection.physical_keys.find(key);
+          if (match != projection.physical_keys.end()) {
+            append(match->first, match->second);
           }
         }
       }
     }
   }
+  return true;
 }
 
 bool DirectLookupBulkAppendContextCache(
@@ -324,6 +342,7 @@ void DirectStoreAppendIndexEntryCache(
   record.savepoint_authority_generation =
       CurrentMgaSavepointAuthorityGeneration(context);
   record.entries = std::move(visible_entries);
+  record.logical_keys_by_index.clear();
   record.keys_by_index = DirectBuildIndexKeyCache(record.entries);
   record.entry_by_index_key = DirectBuildIndexEntryKeyCache(record.entries);
   record.entry_lookup_materialized = true;
@@ -387,6 +406,7 @@ void DirectClearAppendIndexEntryCacheRecord(
     DirectAppendIndexEntryCacheRecord* record) {
   if (record == nullptr) { return; }
   record->entries.clear();
+  record->logical_keys_by_index.clear();
   record->keys_by_index.clear();
   record->entry_by_index_key.clear();
   record->entry_lookup_materialized = true;
@@ -424,6 +444,12 @@ void DirectAppendIndexEntriesToCache(
       record.observer_local_transaction_id != context.local_transaction_id ||
       record.savepoint_authority_generation !=
           savepoint_authority_generation) {
+    if (previous_row_version_count != 0) {
+      // A delta is not a complete cache rebuild. Missing prior entries must
+      // force a scoped reload on the next request, not certify a partial set.
+      DirectAppendIndexEntryCache().erase(DirectAppendIndexEntryCacheKey(context, table_uuid));
+      return;
+    }
     DirectClearAppendIndexEntryCacheRecord(&record);
   }
   for (const auto& entry : appended_entries) {
@@ -457,6 +483,10 @@ void DirectAppendIndexBatchesToCache(
       record.observer_local_transaction_id != context.local_transaction_id ||
       record.savepoint_authority_generation !=
           savepoint_authority_generation) {
+    if (previous_row_version_count != 0) {
+      DirectAppendIndexEntryCache().erase(DirectAppendIndexEntryCacheKey(context, table_uuid));
+      return;
+    }
     DirectClearAppendIndexEntryCacheRecord(&record);
   }
   record.entry_lookup_materialized = materialize_entry_lookup;

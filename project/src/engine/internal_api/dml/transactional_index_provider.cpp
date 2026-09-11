@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/transactional_index_provider.hpp"
+#include "dml/test_optimization_profile.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -238,6 +239,11 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntry(
   const auto appended = append_context_->AppendExactIndexEntryBatches({batch});
   if (appended.error) {
     return Failure(context_, &request.index, entry_kind, appended);
+  }
+  if (dml::TestScanScalarProfile()) {
+    const auto flushed = append_context_->FlushIndexEntries();
+    if (flushed.error) return Failure(context_, &request.index, entry_kind, flushed);
+    dml::RecordTestOptimizationBranch("index_scalar_flush");
   }
 
   DmlTransactionalIndexProviderResult result;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/dml_target_access_plan.hpp"
+#include "dml/test_optimization_profile.hpp"
 
 #include "hot_point_lookup_cache.hpp"
 #include "logical_plan.hpp"
@@ -250,6 +251,10 @@ idx::HotPointLookupCacheEntry BuildDmlHotPointLookupCacheEntry(
 
 void AddHotPointLookupCacheEvidence(const DmlTargetAccessPlanRequest& request,
                                     DmlTargetAccessPlan* plan) {
+  if (dml::TestScanScalarProfile()) {
+    dml::RecordTestOptimizationBranch("hot_point_cache_disabled");
+    return;
+  }
   const auto probe_class = HotPointProbeClassForAccessKind(plan->access_kind);
   if (!probe_class.has_value()) {
     return;
@@ -280,6 +285,7 @@ void AddHotPointLookupCacheEvidence(const DmlTargetAccessPlanRequest& request,
   const auto key = BuildDmlHotPointLookupCacheKey(*probe_class, request);
   auto& cache = DmlHotPointLookupCache();
   const auto lookup = cache.Lookup(key);
+  dml::RecordTestOptimizationBranch(lookup.cache_hit ? "hot_point_cache_hit" : "hot_point_cache_miss");
   plan->evidence.push_back(std::string("hot_point_lookup_cache_lookup=") +
                            (lookup.cache_hit ? "hit" : "miss"));
   plan->evidence.push_back("hot_point_lookup_cache_diagnostic=" +

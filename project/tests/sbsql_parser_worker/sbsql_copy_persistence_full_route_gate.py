@@ -212,6 +212,7 @@ def start_route(
         stderr=(root / "server.err").open("wb"),
         env=route_env,
     )
+    listener = None
     try:
         wait_for_path(endpoint)
         listener_args = [
@@ -254,6 +255,7 @@ def start_route(
             traces=traces,
         )
     except Exception:
+        stop_process(listener)
         stop_process(server)
         raise
 

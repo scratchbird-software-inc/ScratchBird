@@ -217,6 +217,9 @@ void RequireDiagnostic(const api::EngineApiResult& result,
   }
   Require(diagnostic.code == expected_code, message);
   if (!expected_detail.empty()) {
+    if (diagnostic.detail.find(expected_detail) == std::string::npos) {
+      std::cerr << "expected_detail=" << expected_detail << " actual_detail=" << diagnostic.detail << '\n';
+    }
     Require(diagnostic.detail.find(expected_detail) != std::string::npos, message);
   }
 }
@@ -2176,8 +2179,8 @@ void TestLogicalStatementRollbackOnFaultAndCancellation() {
   }
 
   {
-    auto fixture = MakeFixture("logical_batch_publication_cancel", 2350);
-    auto context = Begin(fixture, "cdp040-logical-batch-publication-cancel");
+    auto fixture = MakeFixture("logical_batch_polled_cancel", 2350);
+    auto context = Begin(fixture, "cdp040-logical-batch-polled-cancel");
     int cancellation_probes = 0;
     context.query_cancellation_requested = [&cancellation_probes]() {
       return ++cancellation_probes >= 3;
@@ -2185,10 +2188,14 @@ void TestLogicalStatementRollbackOnFaultAndCancellation() {
     auto request = NativeRequest(fixture, context, Rows("cancel", 4));
     request.option_envelopes.push_back("result_payload_policy:summary_only");
     const auto cancelled = api::EngineExecuteNativeBulkIngest(request);
+    // Canonical storage also polls cancellation. The third poll is not a
+    // stable publication cut point; assert the cancellation and statement
+    // rollback contract, not a caller-specific diagnostic detail string.
     RequireDiagnostic(cancelled,
                       "PROCESS.CANCELLED",
-                      "cancellation was observed before logical batch publication",
-                      "CDP-040 native-bulk publication cancellation drifted");
+                      "",
+                      "CDP-040 native-bulk polled cancellation drifted");
+    Require(cancellation_probes >= 3, "CDP-040 cancellation was not polled");
     Require(HasEvidence(cancelled.evidence,
                         "native_bulk_logical_batch",
                         "rolled_back"),
