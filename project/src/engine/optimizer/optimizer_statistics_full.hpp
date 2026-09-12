@@ -241,8 +241,28 @@ struct AnalyzeSampleInput {
   std::uint64_t catalog_epoch = 0;
 };
 
+enum class OptimizerStatsPublicationStatus {
+  kPublished,
+  kInvalidSnapshot,
+  kStaleEpoch,
+  kResourceExhausted,
+};
+
+struct OptimizerStatsPublicationResult {
+  OptimizerStatsPublicationStatus status = OptimizerStatsPublicationStatus::kInvalidSnapshot;
+  std::size_t invalidated_snapshots = 0;
+  std::shared_ptr<const OptimizerStatsSnapshot> snapshot;
+};
+
 class OptimizerStatisticsStore {
  public:
+  // In-memory cost metadata publication, not durable catalog/MGA authority.
+  // Replaces relation-owned statistics, including removals, and atomically
+  // refreshes supplied shared filespace statistics without deleting other ones.
+  // Failure preserves every prior record and pinned-cache entry.
+  OptimizerStatsPublicationResult PublishRelationSnapshot(OptimizerStatsSnapshot snapshot);
+  std::shared_ptr<const OptimizerStatsSnapshot> PublishedRelationSnapshot(
+      const planner::CanonicalPlannerUuid& relation_uuid) const;
   void UpsertTable(TableCardinalityStats stats);
   void UpsertColumn(ColumnStats stats);
   void UpsertHistogram(HistogramStats stats);
@@ -264,6 +284,8 @@ class OptimizerStatisticsStore {
   std::optional<OptimizerStatisticsCatalog> ToLegacyCatalog() const;
 
  private:
+  mutable std::mutex mutex_;
+  std::map<planner::CanonicalPlannerUuid, std::shared_ptr<const OptimizerStatsSnapshot>> published_;
   std::vector<TableCardinalityStats> tables_;
   std::vector<ColumnStats> columns_;
   std::vector<HistogramStats> histograms_;
@@ -327,6 +349,14 @@ class OptimizerPinnedStatsDescriptorCache {
   void Clear();
 
  private:
+  friend class OptimizerStatisticsStore;
+  // Epoch floors prevent a delayed producer from re-inserting an old pin after
+  // publication invalidates it. UUID keys retain all sixteen bytes.
+  struct PublicationEpoch {
+    std::uint64_t catalog = 0;
+    std::uint64_t stats = 0;
+  };
+  std::map<planner::CanonicalPlannerUuid, PublicationEpoch> publication_epochs_;
   mutable std::mutex mutex_;
   std::map<std::string, std::shared_ptr<const OptimizerPinnedStatsDescriptorSnapshot>> snapshots_;
 };

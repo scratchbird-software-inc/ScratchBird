@@ -14,6 +14,7 @@
 #include <new>
 #include <stdexcept>
 #include <utility>
+#include <set>
 
 namespace scratchbird::engine::optimizer {
 namespace {
@@ -189,90 +190,280 @@ bool OptimizerIndexStatsAreUsable(const IndexStats& stats,
       !stats.rebuild_in_progress && !stats.family_claim_removed;
 }
 
+OptimizerStatsPublicationResult OptimizerStatisticsStore::PublishRelationSnapshot(
+    OptimizerStatsSnapshot snapshot) try {
+  using PublicationStatus = OptimizerStatsPublicationStatus;
+  if (snapshot.tables.size() != 1 || snapshot.catalog_epoch == 0 || snapshot.stats_epoch == 0)
+    return {};
+  const auto validation = ValidateOptimizerStatsSnapshot(snapshot);
+  if (std::ranges::any_of(validation, [](const auto& status) { return !status.ok; })) return {};
+  const auto relation = snapshot.tables.front().identity.object_uuid;
+  std::set<planner::CanonicalPlannerUuid> statistic_ids{snapshot.snapshot_id};
+  const auto valid_family = [&](const auto& records) {
+    for (const auto& record : records) {
+      auto object = relation;
+      if constexpr (requires { record.filespace_uuid; }) object = record.filespace_uuid;
+      if (record.identity.object_uuid != object ||
+          record.identity.catalog_epoch != snapshot.catalog_epoch ||
+          record.identity.stats_epoch != snapshot.stats_epoch ||
+          !statistic_ids.insert(record.identity.statistic_uuid).second) return false;
+    }
+    return true;
+  };
+  if (!valid_family(snapshot.tables) || !valid_family(snapshot.columns) ||
+      !valid_family(snapshot.histograms) || !valid_family(snapshot.mcv) ||
+      !valid_family(snapshot.extended_stats) || !valid_family(snapshot.indexes) ||
+      !valid_family(snapshot.expressions) || !valid_family(snapshot.page_filespaces)) return {};
+
+  std::set<planner::CanonicalPlannerUuid> columns, histograms, indexes;
+  std::set<std::pair<planner::CanonicalPlannerUuid, std::string>> mcv, filespaces;
+  std::set<std::string> expressions;
+  for (const auto& record : snapshot.columns)
+    if (!columns.insert(record.column_uuid).second) return {};
+  for (const auto& record : snapshot.histograms)
+    if (!columns.contains(record.column_uuid) || !histograms.insert(record.column_uuid).second) return {};
+  for (const auto& record : snapshot.mcv)
+    if (!columns.contains(record.column_uuid) ||
+        !mcv.emplace(record.column_uuid, record.value_encoded).second) return {};
+  for (const auto& record : snapshot.expressions)
+    if (!expressions.insert(record.expression_digest).second) return {};
+  for (const auto& record : snapshot.extended_stats) {
+    if (record.relation_uuid != relation ||
+        !std::ranges::all_of(record.column_uuids, [](const auto& id) {
+          return scratchbird::core::uuid::IsEngineIdentityUuid(id);
+        })) return {};
+  }
+  for (const auto& record : snapshot.indexes) {
+    const auto valid_id = [](const auto& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); };
+    if (record.relation_uuid != relation || !indexes.insert(record.index_uuid).second ||
+        !std::ranges::all_of(record.key_column_uuids, valid_id) ||
+        !std::ranges::all_of(record.covered_column_uuids, valid_id)) return {};
+  }
+  for (const auto& record : snapshot.page_filespaces)
+    if (!filespaces.emplace(record.filespace_uuid, record.page_family).second) return {};
+
+  std::lock_guard store_lock(mutex_);
+  const auto current_family = [&](const auto& records) {
+    for (const auto& record : records) {
+      if (record.identity.object_uuid == relation) {
+        if (record.identity.stats_epoch >= snapshot.stats_epoch ||
+            record.identity.catalog_epoch > snapshot.catalog_epoch) return false;
+      } else if (statistic_ids.contains(record.identity.statistic_uuid)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!current_family(tables_) || !current_family(columns_) || !current_family(histograms_) ||
+      !current_family(mcv_) || !current_family(extended_stats_) || !current_family(indexes_) ||
+      !current_family(expressions_))
+    return {PublicationStatus::kStaleEpoch};
+  // An index cannot silently change its owning relation. Filespace statistics
+  // are shared node metadata, not owned by whichever relation was analyzed.
+  for (const auto& record : indexes_)
+    if (record.identity.object_uuid != relation && indexes.contains(record.index_uuid)) return {};
+  for (const auto& record : page_filespaces_) {
+    if (filespaces.contains({record.filespace_uuid, record.page_family})) {
+      if (record.identity.stats_epoch >= snapshot.stats_epoch ||
+          record.identity.catalog_epoch > snapshot.catalog_epoch)
+        return {PublicationStatus::kStaleEpoch};
+    } else if (statistic_ids.contains(record.identity.statistic_uuid)) return {};
+  }
+  for (const auto& [object, owned] : published_)
+    if (owned->snapshot_id == snapshot.snapshot_id ||
+        (object != relation && statistic_ids.contains(owned->snapshot_id))) return {};
+
+  const auto replace = [&](const auto& existing, const auto& replacement) {
+    auto staged = existing;
+    std::erase_if(staged, [&](const auto& record) { return record.identity.object_uuid == relation; });
+    staged.insert(staged.end(), replacement.begin(), replacement.end());
+    return staged;
+  };
+  auto tables = replace(tables_, snapshot.tables);
+  auto column_records = replace(columns_, snapshot.columns);
+  auto histogram_records = replace(histograms_, snapshot.histograms);
+  auto mcv_records = replace(mcv_, snapshot.mcv);
+  auto extended_records = replace(extended_stats_, snapshot.extended_stats);
+  auto index_records = replace(indexes_, snapshot.indexes);
+  auto expression_records = replace(expressions_, snapshot.expressions);
+  auto filespace_records = page_filespaces_;
+  for (const auto& record : snapshot.page_filespaces) {
+    Upsert(&filespace_records, record, [&](const auto& prior) {
+      return prior.filespace_uuid == record.filespace_uuid && prior.page_family == record.page_family;
+    });
+  }
+  auto owned = std::make_shared<const OptimizerStatsSnapshot>(std::move(snapshot));
+  auto published = published_;
+  published.insert_or_assign(relation, owned);
+
+  // Hold both locks through the commit. Readers see the old complete state or
+  // the new complete state; no independently visible family prefix is exposed.
+  auto& cache = GlobalOptimizerPinnedStatsDescriptorCache();
+  std::lock_guard cache_lock(cache.mutex_);
+  auto epochs = cache.publication_epochs_;
+  const auto pin_epoch = [&](const auto& id) {
+    auto& floor = epochs[id];
+    floor.catalog = std::max(floor.catalog, owned->catalog_epoch);
+    floor.stats = std::max(floor.stats, owned->stats_epoch);
+  };
+  std::set<planner::CanonicalPlannerUuid> affected{relation};
+  for (const auto& record : indexes_)
+    if (record.identity.object_uuid == relation) affected.insert(record.index_uuid);
+  for (const auto& record : owned->indexes) affected.insert(record.index_uuid);
+  for (const auto& record : owned->page_filespaces) affected.insert(record.filespace_uuid);
+  for (const auto& id : affected) pin_epoch(id);
+  std::vector<decltype(cache.snapshots_)::iterator> erased;
+  for (auto it = cache.snapshots_.begin(); it != cache.snapshots_.end(); ++it) {
+    const auto matches = [&](const auto& ids) {
+      return std::ranges::any_of(ids, [&](const auto& id) { return affected.contains(id); });
+    };
+    if (matches(it->second->key.object_uuids) || matches(it->second->key.index_uuids)) erased.push_back(it);
+  }
+  OptimizerStatsPublicationResult result{PublicationStatus::kPublished, erased.size(), owned};
+  // From this point onward, only noexcept swaps/erases/destruction are allowed.
+  tables_.swap(tables);
+  columns_.swap(column_records);
+  histograms_.swap(histogram_records);
+  mcv_.swap(mcv_records);
+  extended_stats_.swap(extended_records);
+  indexes_.swap(index_records);
+  expressions_.swap(expression_records);
+  page_filespaces_.swap(filespace_records);
+  published_.swap(published);
+  cache.publication_epochs_.swap(epochs);
+  for (auto it : erased) cache.snapshots_.erase(it);
+  return result;
+} catch (const std::bad_alloc&) {
+  return {OptimizerStatsPublicationStatus::kResourceExhausted};
+} catch (const std::length_error&) {
+  return {OptimizerStatsPublicationStatus::kResourceExhausted};
+}
+
+std::shared_ptr<const OptimizerStatsSnapshot> OptimizerStatisticsStore::PublishedRelationSnapshot(
+    const planner::CanonicalPlannerUuid& relation_uuid) const {
+  std::lock_guard lock(mutex_);
+  const auto found = published_.find(relation_uuid);
+  return found == published_.end() ? nullptr : found->second;
+}
+
 void OptimizerStatisticsStore::UpsertTable(TableCardinalityStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = tables_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&tables_, std::move(stats), [&](const TableCardinalityStats& existing) { return existing.identity.object_uuid == object_uuid; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const TableCardinalityStats& existing) { return existing.identity.object_uuid == object_uuid; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  tables_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertColumn(ColumnStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = columns_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto column_uuid = stats.column_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&columns_, std::move(stats), [&](const ColumnStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const ColumnStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  columns_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertHistogram(HistogramStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = histograms_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto column_uuid = stats.column_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&histograms_, std::move(stats), [&](const HistogramStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const HistogramStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  histograms_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertMcv(MostCommonValueStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = mcv_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto column_uuid = stats.column_uuid;
   const auto value_encoded = stats.value_encoded;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&mcv_, std::move(stats), [&](const MostCommonValueStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid && existing.value_encoded == value_encoded; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const MostCommonValueStats& existing) { return existing.identity.object_uuid == object_uuid && existing.column_uuid == column_uuid && existing.value_encoded == value_encoded; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  mcv_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertExtendedStatistic(ExtendedOptimizerStatistic stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = extended_stats_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto statistic_uuid = stats.identity.statistic_uuid;
   const auto relation_uuid = stats.relation_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&extended_stats_, std::move(stats), [&](const ExtendedOptimizerStatistic& existing) {
+  Upsert(&staged, std::move(stats), [&](const ExtendedOptimizerStatistic& existing) {
     return existing.identity.statistic_uuid == statistic_uuid ||
            (existing.relation_uuid == relation_uuid && existing.identity.statistic_uuid == statistic_uuid);
   });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  extended_stats_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertIndex(IndexStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = indexes_;
   const auto index_uuid = stats.index_uuid;
   const auto object_uuid = stats.identity.object_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&indexes_, std::move(stats), [&](const IndexStats& existing) { return existing.index_uuid == index_uuid; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, index_uuid, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const IndexStats& existing) { return existing.index_uuid == index_uuid; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, index_uuid, catalog_epoch, stats_epoch, "stats_refresh");
+  indexes_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertExpression(ExpressionStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = expressions_;
   const auto object_uuid = stats.identity.object_uuid;
   const auto expression_digest = stats.expression_digest;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&expressions_, std::move(stats), [&](const ExpressionStats& existing) { return existing.identity.object_uuid == object_uuid && existing.expression_digest == expression_digest; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const ExpressionStats& existing) { return existing.identity.object_uuid == object_uuid && existing.expression_digest == expression_digest; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, {}, catalog_epoch, stats_epoch, "stats_refresh");
+  expressions_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 void OptimizerStatisticsStore::UpsertPageFilespace(PageFilespaceStats stats) {
+  std::lock_guard lock(mutex_);
+  auto staged = page_filespaces_;
   const auto filespace_uuid = stats.filespace_uuid;
   const auto page_family = stats.page_family;
   const auto object_uuid = stats.identity.object_uuid;
   const auto catalog_epoch = stats.identity.catalog_epoch;
   const auto stats_epoch = stats.identity.stats_epoch;
-  Upsert(&page_filespaces_, std::move(stats), [&](const PageFilespaceStats& existing) { return existing.filespace_uuid == filespace_uuid && existing.page_family == page_family; });
-  InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, filespace_uuid, catalog_epoch, stats_epoch, "stats_refresh");
+  Upsert(&staged, std::move(stats), [&](const PageFilespaceStats& existing) { return existing.filespace_uuid == filespace_uuid && existing.page_family == page_family; });
+  InvalidateGlobalPinnedStatsCache("analyze_generation", object_uuid, filespace_uuid, catalog_epoch, stats_epoch, "stats_refresh");
+  page_filespaces_.swap(staged);
+  published_.erase(object_uuid);
 }
 
 std::optional<TableCardinalityStats> OptimizerStatisticsStore::FindTable(const planner::CanonicalPlannerUuid& relation_uuid) const {
+  std::lock_guard lock(mutex_);
   auto it = std::find_if(tables_.begin(), tables_.end(), [&](const TableCardinalityStats& stats) { return stats.identity.object_uuid == relation_uuid; });
   if (it == tables_.end()) return std::nullopt;
   return *it;
 }
 
 std::optional<ColumnStats> OptimizerStatisticsStore::FindColumn(const planner::CanonicalPlannerUuid& relation_uuid, const planner::CanonicalPlannerUuid& column_uuid) const {
+  std::lock_guard lock(mutex_);
   auto it = std::find_if(columns_.begin(), columns_.end(), [&](const ColumnStats& stats) { return stats.identity.object_uuid == relation_uuid && stats.column_uuid == column_uuid; });
   if (it == columns_.end()) return std::nullopt;
   return *it;
@@ -280,6 +471,7 @@ std::optional<ColumnStats> OptimizerStatisticsStore::FindColumn(const planner::C
 
 std::vector<ExtendedOptimizerStatistic> OptimizerStatisticsStore::FindExtendedStatisticsForRelation(
     const planner::CanonicalPlannerUuid& relation_uuid) const {
+  std::lock_guard lock(mutex_);
   std::vector<ExtendedOptimizerStatistic> out;
   for (const auto& stats : extended_stats_) {
     if (stats.relation_uuid == relation_uuid || stats.identity.object_uuid == relation_uuid) {
@@ -290,18 +482,22 @@ std::vector<ExtendedOptimizerStatistic> OptimizerStatisticsStore::FindExtendedSt
 }
 
 std::optional<IndexStats> OptimizerStatisticsStore::FindIndex(const planner::CanonicalPlannerUuid& index_uuid) const {
+  std::lock_guard lock(mutex_);
   auto it = std::find_if(indexes_.begin(), indexes_.end(), [&](const IndexStats& stats) { return stats.index_uuid == index_uuid; });
   if (it == indexes_.end()) return std::nullopt;
   return *it;
 }
 
 std::optional<PageFilespaceStats> OptimizerStatisticsStore::FindFilespace(const planner::CanonicalPlannerUuid& filespace_uuid, const std::string& page_family) const {
+  std::lock_guard lock(mutex_);
   auto it = std::find_if(page_filespaces_.begin(), page_filespaces_.end(), [&](const PageFilespaceStats& stats) { return stats.filespace_uuid == filespace_uuid && stats.page_family == page_family; });
   if (it == page_filespaces_.end()) return std::nullopt;
   return *it;
 }
 
 void OptimizerStatisticsStore::MarkStaleByObject(const planner::CanonicalPlannerUuid& object_uuid, std::uint64_t catalog_epoch) {
+  std::lock_guard lock(mutex_);
+  InvalidateGlobalPinnedStatsCache("statistics_stale", object_uuid, {}, catalog_epoch, 0, "statistics_stale");
   auto mark = [&](OptimizerStatsIdentity* identity) {
     if (identity->object_uuid == object_uuid) {
       identity->freshness = OptimizerStatsFreshnessState::kStale;
@@ -319,10 +515,11 @@ void OptimizerStatisticsStore::MarkStaleByObject(const planner::CanonicalPlanner
   }
   for (auto& stats : expressions_) mark(&stats.identity);
   for (auto& stats : page_filespaces_) mark(&stats.identity);
-  InvalidateGlobalPinnedStatsCache("statistics_stale", object_uuid, {}, catalog_epoch, 0, "statistics_stale");
+  published_.clear();
 }
 
 OptimizerStatsSnapshot OptimizerStatisticsStore::Snapshot(planner::CanonicalPlannerUuid snapshot_id) const {
+  std::lock_guard lock(mutex_);
   OptimizerStatsSnapshot snapshot;
   snapshot.snapshot_id = std::move(snapshot_id);
   snapshot.tables = tables_;
@@ -448,10 +645,35 @@ OptimizerPinnedStatsLookupResult OptimizerPinnedStatsDescriptorCache::Put(
   auto stored = std::make_shared<const OptimizerPinnedStatsDescriptorSnapshot>(std::move(snapshot));
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    snapshots_[validation.cache_key] = stored;
+    const auto stale = [&](const auto& ids) {
+      return std::ranges::any_of(ids, [&](const auto& id) {
+        const auto floor = publication_epochs_.find(id);
+        return floor != publication_epochs_.end() &&
+            (stored->key.catalog_epoch < floor->second.catalog ||
+             stored->key.stats_epoch < floor->second.stats);
+      });
+    };
+    const auto stale_records = [&](const auto& records) {
+      return std::ranges::any_of(records, [&](const auto& record) {
+        const auto floor = publication_epochs_.find(record.identity.object_uuid);
+        return floor != publication_epochs_.end() &&
+            (record.identity.catalog_epoch < floor->second.catalog ||
+             record.identity.stats_epoch < floor->second.stats);
+      });
+    };
+    if (stale(stored->key.object_uuids) || stale(stored->key.index_uuids) ||
+        stale_records(stored->stats_snapshot.tables) || stale_records(stored->stats_snapshot.columns) ||
+        stale_records(stored->stats_snapshot.histograms) || stale_records(stored->stats_snapshot.mcv) ||
+        stale_records(stored->stats_snapshot.extended_stats) || stale_records(stored->stats_snapshot.indexes) ||
+        stale_records(stored->stats_snapshot.expressions) || stale_records(stored->stats_snapshot.page_filespaces)) {
+      return StatsRefusal("SB_OPT_PINNED_STATS_CACHE_MISS",
+                          "snapshot predates published statistics", validation.cache_key);
+    }
+    // Prepare response storage before mutating the live map.
+    validation.diagnostic_code = "SB_OPT_PINNED_STATS_PUT";
+    snapshots_.insert_or_assign(validation.cache_key, stored);
   }
   validation.snapshot = std::move(stored);
-  validation.diagnostic_code = "SB_OPT_PINNED_STATS_PUT";
   return validation;
 }
 
@@ -477,9 +699,18 @@ OptimizerPinnedStatsInvalidationResult OptimizerPinnedStatsDescriptorCache::Inva
   OptimizerPinnedStatsInvalidationResult result;
   const std::string reason = event.reason.empty() ? event.event_kind : event.reason;
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = snapshots_.begin(); it != snapshots_.end();) {
+  auto epochs = publication_epochs_;
+  const auto advance = [&](const auto& id) {
+    if (id.is_nil() || (event.new_catalog_epoch == 0 && event.new_stats_epoch == 0)) return;
+    auto& floor = epochs[id];
+    floor.catalog = std::max(floor.catalog, event.new_catalog_epoch);
+    floor.stats = std::max(floor.stats, event.new_stats_epoch);
+  };
+  advance(event.object_uuid);
+  advance(event.index_uuid);
+  std::vector<decltype(snapshots_)::iterator> erased;
+  for (auto it = snapshots_.begin(); it != snapshots_.end(); ++it) {
     if (!StatsEventInvalidatesSnapshot(*it->second, event)) {
-      ++it;
       continue;
     }
     OptimizerPinnedStatsInvalidatedEntry entry;
@@ -488,8 +719,11 @@ OptimizerPinnedStatsInvalidationResult OptimizerPinnedStatsDescriptorCache::Inva
     entry.object_uuids = it->second->key.object_uuids;
     entry.index_uuids = it->second->key.index_uuids;
     result.invalidated_entries.push_back(std::move(entry));
-    it = snapshots_.erase(it);
+    erased.push_back(it);
   }
+  // No live entry is erased until every evidence/iterator allocation succeeds.
+  publication_epochs_.swap(epochs);
+  for (auto it : erased) snapshots_.erase(it);
   return result;
 }
 
@@ -504,6 +738,7 @@ OptimizerPinnedStatsDescriptorCache& GlobalOptimizerPinnedStatsDescriptorCache()
 }
 
 std::optional<OptimizerStatisticsCatalog> OptimizerStatisticsStore::ToLegacyCatalog() const try {
+  std::lock_guard lock(mutex_);
   OptimizerStatisticsCatalog catalog;
   for (const auto& table : tables_) {
     if (!catalog.Add(MakeUnsignedStatistic("row_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
@@ -601,38 +836,51 @@ std::optional<TableCardinalityStats> BuildTableStatsFromAnalyzeSample(const Anal
 std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const OptimizerStatsSnapshot& snapshot) {
   std::vector<StatisticsContractStatus> statuses;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(snapshot.snapshot_id)) statuses.push_back(Status(false, "SB_OPT_STATS_SNAPSHOT_ID_REQUIRED", "snapshot"));
-  for (const auto& table : snapshot.tables) ValidateIdentity(table.identity, "table", &statuses);
+  for (const auto& table : snapshot.tables) {
+    ValidateIdentity(table.identity, "table", &statuses);
+    if (table.visible_row_count > table.row_count)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", table.identity.object_uuid));
+  }
   for (const auto& column : snapshot.columns) {
     ValidateIdentity(column.identity, "column", &statuses);
-    if (column.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_UUID_REQUIRED", column.identity.object_uuid));
-    if (column.null_fraction < 0.0 || column.null_fraction > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_NULL_FRACTION_INVALID", column.column_uuid));
-    if (column.correlation < -1.0 || column.correlation > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_CORRELATION_INVALID", column.column_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(column.column_uuid)) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_UUID_REQUIRED", column.identity.object_uuid));
+    if (!std::isfinite(column.null_fraction) || column.null_fraction < 0.0 || column.null_fraction > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_NULL_FRACTION_INVALID", column.column_uuid));
+    if (!std::isfinite(column.correlation) || column.correlation < -1.0 || column.correlation > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_CORRELATION_INVALID", column.column_uuid));
     if (column.sample_rows != 0 && column.sample_method.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_SAMPLE_METHOD_REQUIRED", column.column_uuid));
     if (column.sample_rows != 0 && column.sample_provenance_digest.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_SAMPLE_PROVENANCE_REQUIRED", column.column_uuid));
-    if (column.hyperloglog_register_count != 0 && column.hyperloglog_estimated_distinct == 0) statuses.push_back(Status(false, "SB_OPT_STATS_HLL_NDV_REQUIRED", column.column_uuid));
-    if (column.hyperloglog_relative_error < 0.0 || column.hyperloglog_relative_error > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_HLL_ERROR_INVALID", column.column_uuid));
+    if (column.hyperloglog_register_count != 0 && column.hyperloglog_estimated_distinct == 0 &&
+        column.distinct_count != 0) statuses.push_back(Status(false, "SB_OPT_STATS_HLL_NDV_REQUIRED", column.column_uuid));
+    if (!std::isfinite(column.hyperloglog_relative_error) || column.hyperloglog_relative_error < 0.0 || column.hyperloglog_relative_error > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_HLL_ERROR_INVALID", column.column_uuid));
   }
   for (const auto& histogram : snapshot.histograms) {
     ValidateIdentity(histogram.identity, "histogram", &statuses);
-    if (histogram.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_COLUMN_UUID_REQUIRED", histogram.identity.object_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(histogram.column_uuid)) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_COLUMN_UUID_REQUIRED", histogram.identity.object_uuid));
+    double covered_fraction = 0.0;
+    for (const auto& bucket : histogram.buckets) {
+      covered_fraction += bucket.fraction;
+      if (!std::isfinite(bucket.fraction) || bucket.fraction < 0.0 || bucket.fraction > 1.0)
+        statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", histogram.column_uuid));
+    }
+    if (!std::isfinite(covered_fraction) || covered_fraction > 1.000001)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", histogram.column_uuid));
     if (histogram.buckets.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_BUCKET_REQUIRED", histogram.column_uuid));
   }
   for (const auto& mcv_value : snapshot.mcv) {
     ValidateIdentity(mcv_value.identity, "mcv", &statuses);
-    if (mcv_value.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_COLUMN_UUID_REQUIRED", mcv_value.identity.object_uuid));
-    if (mcv_value.frequency < 0.0 || mcv_value.frequency > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_FREQUENCY_INVALID", mcv_value.column_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(mcv_value.column_uuid)) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_COLUMN_UUID_REQUIRED", mcv_value.identity.object_uuid));
+    if (!std::isfinite(mcv_value.frequency) || mcv_value.frequency < 0.0 || mcv_value.frequency > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_FREQUENCY_INVALID", mcv_value.column_uuid));
   }
   for (const auto& stats : snapshot.extended_stats) {
     ValidateIdentity(stats.identity, "extended_stats", &statuses);
-    if (stats.relation_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_RELATION_UUID_REQUIRED", stats.identity.statistic_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(stats.relation_uuid)) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_RELATION_UUID_REQUIRED", stats.identity.statistic_uuid));
     if (stats.column_uuids.empty() && stats.document_path_digests.empty()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_SHAPE_REQUIRED", stats.identity.statistic_uuid));
-    if (stats.functional_dependency_strength < 0.0 || stats.functional_dependency_strength > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_DEPENDENCY_INVALID", stats.identity.statistic_uuid));
-    if (stats.correlation_coefficient < -1.0 || stats.correlation_coefficient > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_CORRELATION_INVALID", stats.identity.statistic_uuid));
-    if (stats.histogram_selectivity < 0.0 || stats.histogram_selectivity > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_HISTOGRAM_INVALID", stats.identity.statistic_uuid));
-    if (stats.sampled_dependency_selectivity < 0.0 || stats.sampled_dependency_selectivity > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_SAMPLE_INVALID", stats.identity.statistic_uuid));
-    if (stats.observed_selectivity_error < -1.0 || stats.observed_selectivity_error > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_OBSERVED_ERROR_INVALID", stats.identity.statistic_uuid));
+    if (!std::isfinite(stats.functional_dependency_strength) || stats.functional_dependency_strength < 0.0 || stats.functional_dependency_strength > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_DEPENDENCY_INVALID", stats.identity.statistic_uuid));
+    if (!std::isfinite(stats.correlation_coefficient) || stats.correlation_coefficient < -1.0 || stats.correlation_coefficient > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_CORRELATION_INVALID", stats.identity.statistic_uuid));
+    if (!std::isfinite(stats.histogram_selectivity) || stats.histogram_selectivity < 0.0 || stats.histogram_selectivity > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_HISTOGRAM_INVALID", stats.identity.statistic_uuid));
+    if (!std::isfinite(stats.sampled_dependency_selectivity) || stats.sampled_dependency_selectivity < 0.0 || stats.sampled_dependency_selectivity > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_SAMPLE_INVALID", stats.identity.statistic_uuid));
+    if (!std::isfinite(stats.observed_selectivity_error) || stats.observed_selectivity_error < -1.0 || stats.observed_selectivity_error > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_OBSERVED_ERROR_INVALID", stats.identity.statistic_uuid));
     for (const auto& entry : stats.joint_mcv) {
-      if (entry.frequency < 0.0 || entry.frequency > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_JOINT_MCV_FREQUENCY_INVALID", stats.identity.statistic_uuid));
+      if (!std::isfinite(entry.frequency) || entry.frequency < 0.0 || entry.frequency > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_JOINT_MCV_FREQUENCY_INVALID", stats.identity.statistic_uuid));
       if (!entry.value_encodings.empty() && !stats.column_uuids.empty() && entry.value_encodings.size() != stats.column_uuids.size()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_JOINT_MCV_SHAPE_INVALID", stats.identity.statistic_uuid));
     }
     if (stats.finality_authority) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_FINALITY_FORBIDDEN", stats.identity.statistic_uuid));
@@ -640,11 +888,15 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& index : snapshot.indexes) {
     ValidateIdentity(index.identity, "index", &statuses);
-    if (index.index_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_UUID_REQUIRED", index.identity.object_uuid));
+    if (!std::isfinite(index.clustering_factor) || !std::isfinite(index.fragmentation_ratio) ||
+        !std::isfinite(index.contention_ratio) || index.clustering_factor < 0.0 ||
+        index.fragmentation_ratio < 0.0 || index.contention_ratio < 0.0)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", index.index_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(index.index_uuid)) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_UUID_REQUIRED", index.identity.object_uuid));
     if (index.index_family.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_FAMILY_REQUIRED", index.index_uuid));
-    if (index.visibility_coverage < 0.0 || index.visibility_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_VISIBILITY_COVERAGE_INVALID", index.index_uuid));
-    if (index.predicate_coverage < 0.0 || index.predicate_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_PREDICATE_COVERAGE_INVALID", index.index_uuid));
-    if (index.false_positive_ratio < 0.0 || index.false_positive_ratio > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_FALSE_POSITIVE_RATIO_INVALID", index.index_uuid));
+    if (!std::isfinite(index.visibility_coverage) || index.visibility_coverage < 0.0 || index.visibility_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_VISIBILITY_COVERAGE_INVALID", index.index_uuid));
+    if (!std::isfinite(index.predicate_coverage) || index.predicate_coverage < 0.0 || index.predicate_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_PREDICATE_COVERAGE_INVALID", index.index_uuid));
+    if (!std::isfinite(index.false_positive_ratio) || index.false_positive_ratio < 0.0 || index.false_positive_ratio > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_FALSE_POSITIVE_RATIO_INVALID", index.index_uuid));
     if (!index.exact_recheck_required || !index.mga_recheck_required || !index.security_recheck_required) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_RECHECK_REQUIRED", index.index_uuid));
     if (!index.family_claim_removed &&
         !index.equality_lookup_supported &&
@@ -655,11 +907,18 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& expression : snapshot.expressions) {
     ValidateIdentity(expression.identity, "expression", &statuses);
+    if (!std::isfinite(expression.null_fraction) || expression.null_fraction < 0.0 ||
+        expression.null_fraction > 1.0)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", expression.identity.object_uuid));
     if (expression.expression_digest.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_EXPRESSION_DIGEST_REQUIRED", expression.identity.object_uuid));
   }
   for (const auto& filespace : snapshot.page_filespaces) {
     ValidateIdentity(filespace.identity, "page_filespace", &statuses);
-    if (filespace.filespace_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_UUID_REQUIRED", filespace.identity.object_uuid));
+    if (!std::isfinite(filespace.sequential_latency_score) || !std::isfinite(filespace.random_latency_score) ||
+        !std::isfinite(filespace.health_score) || filespace.sequential_latency_score < 0.0 ||
+        filespace.random_latency_score < 0.0 || filespace.health_score < 0.0)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", filespace.filespace_uuid));
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(filespace.filespace_uuid)) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_UUID_REQUIRED", filespace.identity.object_uuid));
     if (filespace.degraded) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_DEGRADED", filespace.filespace_uuid));
   }
   if (statuses.empty()) statuses.push_back(Status(true, "SB_OPT_STATS_OK", snapshot.snapshot_id));
