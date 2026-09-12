@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "relational_type_descriptor.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "../../executor/descriptor_value_runtime.hpp"
 #include "../../executor/physical_node_abi.hpp"
@@ -48,12 +49,6 @@ enum class RelationalDagNodeKind : std::uint8_t {
   kTableFunctionInvoke,
 };
 
-enum class RelationalNullability : std::uint8_t {
-  kNonNull = 1,
-  kNullable,
-  kUnknown,
-};
-
 enum class RelationalExpressionKind : std::uint8_t {
   kLiteral = 1,
   kParameter,
@@ -77,28 +72,6 @@ enum class RelationalLiteralKind : std::uint8_t {
   kVector,
   kRegex,
   kRange,
-};
-
-struct RelationalTypeDescriptor {
-  std::uint32_t descriptor_id{0};
-  EngineUuid descriptor_uuid;
-  EngineUuid type_uuid;
-  RelationalNullability nullability{RelationalNullability::kUnknown};
-  std::optional<EngineUuid> collation_uuid;
-  std::optional<std::string> timezone_profile_id;
-  std::optional<std::uint32_t> width;
-  std::optional<std::uint32_t> precision;
-  std::optional<std::uint32_t> scale;
-  bool datatype_identity_authoritative{false};
-  std::uint64_t descriptor_generation{0};
-  std::uint64_t type_generation{0};
-  std::string codec_id;
-  std::uint16_t codec_version{0};
-  std::uint64_t codec_generation{0};
-  EngineUuid statement_receipt_uuid;
-  EngineUuid datatype_catalog_snapshot_uuid;
-  std::uint64_t datatype_catalog_generation{0};
-  std::uint64_t datatype_registry_generation{0};
 };
 
 struct RelationalExpressionRecord {

@@ -231,6 +231,7 @@ enum class SblrValueKind : std::uint16_t {
   parse_text_descriptor = 210,
   catalog_epoch_check_descriptor = 211,
   database_attach_descriptor = 212,
+  relational_type_descriptor = 213,
 };
 
 struct SblrLifecycleCreateDatabaseDescriptorV1 {

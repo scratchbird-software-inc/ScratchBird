@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "relational_descriptor_codec.hpp"
 #include "core/uuid/uuid.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
 #include "sblr_ddl_alter_timeseries_value_cache_runtime.hpp"
@@ -549,6 +550,10 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::principal_ref:
     case SblrValueKind::udr_ref:
       return size == 16 && IsEngineIdentityBytes(data);
+    case SblrValueKind::relational_type_descriptor: {
+      internal_api::RelationalTypeDescriptor descriptor;
+      return depth == 1 && DecodeRelationalTypeDescriptorV1(data, size, &descriptor);
+    }
     case SblrValueKind::descriptor_ref:
       // Core descriptor carriers use fixed-size descriptor bodies; envelope-level
       // validation narrows 320/384-byte forms to their exact operations.
@@ -1542,6 +1547,25 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   std::optional<ContextualTextLiteralExecuteV2> contextual_text_execute;
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];
+    if (operand.value_kind == SblrValueKind::relational_type_descriptor ||
+        operand.type == "relational_descriptor_v3") {
+      internal_api::RelationalTypeDescriptor descriptor;
+      const bool placement = envelope.operation_id == "query.execute" &&
+          envelope.opcode == "SBLR_QUERY_EXECUTE" && envelope.opcode_code == 4615 &&
+          envelope.operation_version_major == 1 && envelope.operation_version_minor <= 1 &&
+          operand.type == "relational_descriptor_v3" &&
+          operand.value_kind == SblrValueKind::relational_type_descriptor &&
+          DecodeRelationalTypeDescriptorV1(operand.value_body.data(), operand.value_body.size(), &descriptor) &&
+          operand.name == "slot_" + std::to_string(descriptor.descriptor_id);
+      if (!placement) {
+        fail("SBLR.OPERAND_INVALID", "binary relational descriptor requires its exact query slot and handle");
+        break;
+      }
+    }
+    if (operand.type == "relational_descriptor_v1" || operand.type == "relational_descriptor_v2") {
+      fail("SBLR.OPERAND_INVALID", "text relational descriptor carriers are not executable");
+      break;
+    }
     bool limit_exceeded = false;
     const bool source_map_descriptor =
         envelope.operation_id == "engine.op.source_map" &&

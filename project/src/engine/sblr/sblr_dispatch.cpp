@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "relational_descriptor_codec.hpp"
 #include "canonical_query_result_metadata.hpp"
 #include "canonical_query_result_values.hpp"
 #include "sblr_event_notification.hpp"
@@ -1562,123 +1563,23 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.row_patterns.push_back(std::move(pattern));
       continue;
     }
-    if (operand.type == "relational_descriptor_v1") {
-      if (decoded.request.relational_dag.descriptors.size() >= 524288 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_descriptor_v3") {
+      if (decoded.request.relational_dag.descriptors.size() >= 524288) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational descriptor transport limit exceeded";
         return decoded;
       }
-      std::uint64_t descriptor_id = 0;
-      std::array<std::string_view, 8> fields{};
-      std::uint64_t nullability = 0;
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[2], std::numeric_limits<std::uint8_t>::max(),
-              &nullability)) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational descriptor record";
-        return decoded;
-      }
       api::RelationalTypeDescriptor descriptor;
-      descriptor.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
-      descriptor.descriptor_uuid = fields[0];
-      descriptor.type_uuid = fields[1];
-      descriptor.nullability =
-          static_cast<api::RelationalNullability>(nullability);
-      if (fields[3] != "-") descriptor.collation_uuid = std::string(fields[3]);
-      if (!DecodeOptionalCanonicalHex(fields[4],
-                                      &descriptor.timezone_profile_id) ||
-          !ParseOptionalCanonicalU32(fields[5], &descriptor.width) ||
-          !ParseOptionalCanonicalU32(fields[6], &descriptor.precision) ||
-          !ParseOptionalCanonicalU32(fields[7], &descriptor.scale)) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational descriptor fields";
+      if (operand.value_kind != SblrValueKind::relational_type_descriptor ||
+          !operand.value.empty() ||
+          !DecodeRelationalTypeDescriptorV1(operand.value_body.data(),
+                                           operand.value_body.size(), &descriptor) ||
+          operand.name != "slot_" + std::to_string(descriptor.descriptor_id)) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "malformed binary relational descriptor or occurrence handle";
         return decoded;
       }
-      decoded.request.relational_dag.descriptors.push_back(
-          std::move(descriptor));
-      continue;
-    }
-    if (operand.type == "relational_descriptor_v2") {
-      if (decoded.request.relational_dag.descriptors.size() >= 524288 ||
-          operand.value.size() > 65536) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
-        decoded.detail = "relational descriptor transport limit exceeded";
-        return decoded;
-      }
-      std::uint64_t descriptor_id = 0;
-      std::uint64_t descriptor_generation = 0;
-      std::uint64_t type_generation = 0;
-      std::uint64_t codec_version = 0;
-      std::uint64_t codec_generation = 0;
-      std::uint64_t nullability = 0;
-      std::uint64_t catalog_generation = 0;
-      std::uint64_t registry_generation = 0;
-      std::array<std::string_view, 17> fields{};
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          descriptor_id == 0 || !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[1], std::numeric_limits<std::uint64_t>::max(),
-              &descriptor_generation) ||
-          descriptor_generation == 0 ||
-          !ParseCanonicalUnsigned(
-              fields[3], std::numeric_limits<std::uint64_t>::max(),
-              &type_generation) ||
-          type_generation == 0 || fields[4].empty() ||
-          fields[4].find('|') != std::string_view::npos ||
-          !ParseCanonicalUnsigned(
-              fields[5], std::numeric_limits<std::uint16_t>::max(),
-              &codec_version) ||
-          codec_version == 0 ||
-          !ParseCanonicalUnsigned(
-              fields[6], std::numeric_limits<std::uint64_t>::max(),
-              &codec_generation) ||
-          codec_generation == 0 ||
-          !ParseCanonicalUnsigned(fields[7], 1, &nullability) ||
-          !ParseCanonicalUnsigned(
-              fields[15], std::numeric_limits<std::uint64_t>::max(),
-              &catalog_generation) ||
-          catalog_generation == 0 ||
-          !ParseCanonicalUnsigned(
-              fields[16], std::numeric_limits<std::uint64_t>::max(),
-              &registry_generation) ||
-          registry_generation == 0) {
-        decoded.diagnostic_id = "SBLR.OPERAND.INVALID";
-        decoded.detail = "malformed authoritative relational descriptor record";
-        return decoded;
-      }
-      api::RelationalTypeDescriptor descriptor;
-      descriptor.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
-      descriptor.descriptor_uuid = fields[0];
-      descriptor.descriptor_generation = descriptor_generation;
-      descriptor.type_uuid = fields[2];
-      descriptor.type_generation = type_generation;
-      descriptor.codec_id = fields[4];
-      descriptor.codec_version = static_cast<std::uint16_t>(codec_version);
-      descriptor.codec_generation = codec_generation;
-      descriptor.nullability = static_cast<api::RelationalNullability>(
-          nullability + 1);
-      if (fields[8] != "-") descriptor.collation_uuid = std::string(fields[8]);
-      if (!DecodeOptionalCanonicalHex(fields[9],
-                                      &descriptor.timezone_profile_id) ||
-          !ParseOptionalCanonicalU32(fields[10], &descriptor.width) ||
-          !ParseOptionalCanonicalU32(fields[11], &descriptor.precision) ||
-          !ParseOptionalCanonicalU32(fields[12], &descriptor.scale)) {
-        decoded.diagnostic_id = "SBLR.OPERAND.INVALID";
-        decoded.detail = "malformed authoritative relational descriptor fields";
-        return decoded;
-      }
-      descriptor.statement_receipt_uuid = fields[13];
-      descriptor.datatype_catalog_snapshot_uuid = fields[14];
-      descriptor.datatype_catalog_generation = catalog_generation;
-      descriptor.datatype_registry_generation = registry_generation;
-      descriptor.datatype_identity_authoritative = true;
+      if (descriptor.datatype_identity_authoritative) {
       scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1 identity;
       for (const auto& row : scratchbird::core::datatypes::
                CurrentDatatypeTypeCodecIdentityRowsV1()) {
@@ -1701,8 +1602,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           identity.row.codec_id == descriptor.codec_id &&
           identity.row.codec_version == descriptor.codec_version &&
           identity.row.codec_generation == descriptor.codec_generation;
-      if (!IsCanonicalNonNilUuid(descriptor.statement_receipt_uuid) ||
-          !IsCanonicalNonNilUuid(descriptor.datatype_catalog_snapshot_uuid) ||
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.statement_receipt_uuid) ||
+          !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.datatype_catalog_snapshot_uuid) ||
           descriptor.statement_receipt_uuid !=
               dispatch_request.context.statement_receipt_uuid ||
           descriptor.datatype_catalog_snapshot_uuid !=
@@ -1717,8 +1618,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
             "authoritative relational datatype identity is stale cross-receipt or contradictory";
         return decoded;
       }
-      decoded.request.relational_dag.descriptors.push_back(
-          std::move(descriptor));
+      }
+      decoded.request.relational_dag.descriptors.push_back(std::move(descriptor));
       continue;
     }
     if (operand.type == "relational_expression_v1") {
@@ -11773,7 +11674,8 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   if (materialize_query_slots || materialize_typed_options) {
     for (auto& operand : request.envelope.operands) {
       if (materialize_query_slots &&
-          (operand.value_kind == SblrValueKind::expression_node_table ||
+          (operand.value_kind == SblrValueKind::relational_type_descriptor ||
+           operand.value_kind == SblrValueKind::expression_node_table ||
            operand.value_kind == SblrValueKind::expression_node_ref ||
            operand.value_kind == SblrValueKind::parameter_node_table ||
            operand.value_kind == SblrValueKind::parameter_node_ref ||

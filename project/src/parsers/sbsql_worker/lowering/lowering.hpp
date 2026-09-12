@@ -23,6 +23,8 @@ struct SblrOperand {
   std::string type;
   std::string name;
   std::string value;
+  std::uint16_t canonical_value_kind{0};
+  std::vector<std::uint8_t> canonical_value_body;
 };
 
 struct SblrEnvelope {

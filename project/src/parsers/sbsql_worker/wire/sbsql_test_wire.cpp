@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/sbsql_test_wire.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -11778,52 +11779,18 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     std::uint64_t descriptor_generation{0};
     CanonicalBytes body;
   };
-  struct DescriptorBinding {
-    std::array<std::uint8_t, 16> descriptor_uuid{};
-    std::array<std::uint8_t, 16> type_uuid_bytes{};
-    std::string descriptor_uuid_text;
-    std::string type_uuid;
-    std::uint64_t descriptor_generation{0};
-    bool authoritative{false};
-    std::vector<std::string_view> fields;
-  };
-  const auto parse_u64 = [](std::string_view text)
-      -> std::optional<std::uint64_t> {
-    std::uint64_t value = 0;
-    const auto [end, error] =
-        std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || end != text.data() + text.size()) {
-      return std::nullopt;
-    }
-    return value;
-  };
-  const auto uuid_text = [](const std::array<std::uint8_t, 16>& uuid) {
-    return LiteralReadUuid(CanonicalBytes(uuid.begin(), uuid.end()), 0);
-  };
-  std::map<std::string, DescriptorBinding> descriptors;
+  std::map<std::string, scratchbird::engine::internal_api::RelationalTypeDescriptor> descriptors;
   for (const auto& operand : lowered.operands) {
-    if (operand.type != "relational_descriptor_v1" &&
-        operand.type != "relational_descriptor_v2") {
-      continue;
-    }
-    const auto fields = SplitCanonicalFields(operand.value);
-    const bool authoritative = operand.type == "relational_descriptor_v2";
-    if (fields.size() != (authoritative ? 17u : 8u)) return std::nullopt;
-    const auto uuid = CanonicalUuidBytes(fields[0]);
-    const auto type_uuid =
-        CanonicalUuidBytes(fields[authoritative ? 2 : 1]);
-    const auto descriptor_generation =
-        authoritative ? parse_u64(fields[1])
-                      : std::optional<std::uint64_t>{0};
-    if (!uuid.has_value() || !type_uuid.has_value() ||
-        !descriptor_generation.has_value() ||
-        !descriptors.emplace(
-            operand.name,
-            DescriptorBinding{*uuid, *type_uuid, std::string(fields[0]),
-                              std::string(fields[authoritative ? 2 : 1]),
-                              *descriptor_generation, authoritative, fields})
-             .second)
-      return std::nullopt;
+    if (operand.type != "relational_descriptor_v3") continue;
+    scratchbird::engine::internal_api::RelationalTypeDescriptor descriptor;
+    if (!operand.value.empty() ||
+        operand.canonical_value_kind != static_cast<std::uint16_t>(
+            scratchbird::engine::sblr::SblrValueKind::relational_type_descriptor) ||
+        !scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+            operand.canonical_value_body.data(), operand.canonical_value_body.size(), &descriptor) ||
+        operand.name != "slot_" + std::to_string(descriptor.descriptor_id)) return std::nullopt;
+    const auto handle = std::to_string(descriptor.descriptor_id);
+    if (!descriptors.emplace(handle, std::move(descriptor)).second) return std::nullopt;
   }
 
   std::map<std::uint32_t, const BoundExpressionAstRecord*> bound_literals;
@@ -11905,14 +11872,13 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     }
     LiteralNode node;
     node.node_id = node_id;
-    node.descriptor_uuid = descriptor->second.descriptor_uuid;
+    node.descriptor_uuid = descriptor->second.descriptor_uuid.bytes;
     if (bound_literal->second->literal_kind ==
         NativeLiteralAstKind::kString) {
       const auto mapping = contextual_profiles.find(node_id);
       if (contextual_prebind == nullptr ||
           mapping == contextual_profiles.end() ||
-          !descriptor->second.authoritative ||
-          descriptor->second.fields.size() != 17 ||
+          !descriptor->second.datatype_identity_authoritative ||
           mapping->second->node_id != node_id ||
           mapping->second->literal_descriptor_handle !=
               bound_literal->second->result_descriptor_id ||
@@ -11920,42 +11886,27 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
           mapping->second->profile.literal_descriptor_handle !=
               bound_literal->second->result_descriptor_id ||
           mapping->second->profile.descriptor_uuid !=
-              descriptor->second.descriptor_uuid ||
+              descriptor->second.descriptor_uuid.bytes ||
           mapping->second->profile.type_uuid !=
-              descriptor->second.type_uuid_bytes ||
+              descriptor->second.type_uuid.bytes ||
           mapping->second->profile.descriptor_generation !=
               descriptor->second.descriptor_generation ||
-          descriptor->second.fields[1] !=
-              std::to_string(mapping->second->profile.descriptor_generation) ||
-          descriptor->second.fields[3] !=
-              std::to_string(mapping->second->profile.type_generation) ||
-          descriptor->second.fields[4] !=
-              scratchbird::engine::sblr::kContextualTextCodecIdentifierV2 ||
-          descriptor->second.fields[5] !=
-              std::to_string(mapping->second->profile.codec_version) ||
-          descriptor->second.fields[6] !=
-              std::to_string(mapping->second->profile.codec_generation) ||
-          descriptor->second.fields[7] != "0" ||
-          descriptor->second.fields[8] !=
-              uuid_text(mapping->second->profile.collation_uuid) ||
-          descriptor->second.fields[9] != "-" ||
-          (mapping->second->profile.target_character_limit ==
-                   std::numeric_limits<std::uint64_t>::max()
-               ? descriptor->second.fields[10] != "-"
-               : descriptor->second.fields[10] !=
-                     std::to_string(
-                         mapping->second->profile.target_character_limit)) ||
-          descriptor->second.fields[11] != "-" ||
-          descriptor->second.fields[12] != "-" ||
-          descriptor->second.fields[13] !=
-              uuid_text(mapping->second->profile.statement_receipt_uuid) ||
-          descriptor->second.fields[14] !=
-              uuid_text(mapping->second->profile.catalog_snapshot_uuid) ||
-          descriptor->second.fields[15] !=
-              std::to_string(mapping->second->profile.catalog_generation) ||
-          descriptor->second.fields[16] !=
-              std::to_string(
-                  mapping->second->profile.datatype_registry_generation) ||
+          descriptor->second.type_generation != mapping->second->profile.type_generation ||
+          descriptor->second.codec_id != scratchbird::engine::sblr::kContextualTextCodecIdentifierV2 ||
+          descriptor->second.codec_version != mapping->second->profile.codec_version ||
+          descriptor->second.codec_generation != mapping->second->profile.codec_generation ||
+          descriptor->second.nullability != scratchbird::engine::internal_api::RelationalNullability::kNonNull ||
+          !descriptor->second.collation_uuid ||
+          descriptor->second.collation_uuid->bytes != mapping->second->profile.collation_uuid ||
+          descriptor->second.timezone_profile_id.has_value() ||
+          (mapping->second->profile.target_character_limit == std::numeric_limits<std::uint64_t>::max()
+              ? descriptor->second.width.has_value()
+              : (!descriptor->second.width || *descriptor->second.width != mapping->second->profile.target_character_limit)) ||
+          descriptor->second.precision.has_value() || descriptor->second.scale.has_value() ||
+          descriptor->second.statement_receipt_uuid.bytes != mapping->second->profile.statement_receipt_uuid ||
+          descriptor->second.datatype_catalog_snapshot_uuid.bytes != mapping->second->profile.catalog_snapshot_uuid ||
+          descriptor->second.datatype_catalog_generation != mapping->second->profile.catalog_generation ||
+          descriptor->second.datatype_registry_generation != mapping->second->profile.datatype_registry_generation ||
           !consumed_contextual_nodes.insert(node_id).second) {
         return std::nullopt;
       }
@@ -11967,12 +11918,12 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
           statement_context.literal_statement_descriptor_profiles,
           [&](const auto& profile) {
             return profile.binding_descriptor_uuid ==
-                       descriptor->second.descriptor_uuid_text &&
+                       descriptor->second.descriptor_uuid &&
                    profile.type_uuid == descriptor->second.type_uuid;
           });
       if (literal_profile ==
               statement_context.literal_statement_descriptor_profiles.end() ||
-          !descriptor->second.authoritative ||
+          !descriptor->second.datatype_identity_authoritative ||
           literal_profile->profile_version != 1 ||
           literal_profile->descriptor_generation == 0 ||
           (literal_profile->codec_id !=
@@ -12011,7 +11962,7 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
                          encoded.canonical_bytes.end());
       }
       if (!PreserveNativeDescriptorAuthority(&numeric_descriptor, statement_context) ||
-          !MatchesNativeNumericDescriptorRecord(descriptor->second.fields, numeric_descriptor)) {
+          !MatchesNativeNumericDescriptorRecord(descriptor->second, numeric_descriptor)) {
         return std::nullopt;
       }
     }
@@ -12849,7 +12800,18 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
       encoded_name = operand.name;
     }
     canonical_operand.name = std::move(encoded_name);
-    if (is_literal_reference) {
+    if (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty()) {
+      scratchbird::engine::internal_api::RelationalTypeDescriptor descriptor;
+      if (is_literal_reference || is_parameter_reference || is_variable_reference ||
+          !operand.value.empty() || operand.type != "relational_descriptor_v3" ||
+          operand.canonical_value_kind != static_cast<std::uint16_t>(
+              engine_sblr::SblrValueKind::relational_type_descriptor) ||
+          !engine_sblr::DecodeRelationalTypeDescriptorV1(
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &descriptor) ||
+          operand.name != "slot_" + std::to_string(descriptor.descriptor_id)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_type_descriptor;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (is_literal_reference) {
       canonical_operand.value_kind = engine_sblr::SblrValueKind::expression_node_ref;
       CanonicalAppendU16(&canonical_operand.value_body, 1);
       CanonicalAppendU16(&canonical_operand.value_body, 0);

@@ -277,6 +277,7 @@ endif()
 # authority.
 if(NOT TARGET sb_sblr_operation_wire_codec)
 add_library(sb_sblr_operation_wire_codec STATIC
+  relational_descriptor_codec.cpp
   sblr_engine_envelope.cpp
   sblr_literal_runtime.cpp
   sblr_opcode_registry.cpp
@@ -438,6 +439,7 @@ add_library(sb_engine_sblr
   sblr_block_runtime.cpp
   sblr_context_variables.cpp
   sblr_domain_runtime.cpp
+  relational_descriptor_codec.cpp
   sblr_engine_envelope.cpp
   sblr_event_notification.cpp
   sblr_execution_metrics.cpp

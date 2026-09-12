@@ -1511,6 +1511,20 @@ set_tests_properties(sbsql_sblr_alignment_sblr_binary_identity_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;SBOP;SBOS;component_codec;not_e2e"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_relational_descriptor_codec
+  relational_descriptor_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_relational_descriptor_codec PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_relational_descriptor_codec PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker
+  ${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc)
+target_link_libraries(sbsql_sblr_alignment_relational_descriptor_codec PRIVATE sb_sblr_operation_wire_codec)
+add_test(NAME sbsql_sblr_alignment_relational_descriptor_codec
+  COMMAND sbsql_sblr_alignment_relational_descriptor_codec)
+set_tests_properties(sbsql_sblr_alignment_relational_descriptor_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;SBOP;relational_descriptor;component_codec;not_e2e"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_contextual_text_envelope_v2
   contextual_text_envelope_v2_test.cpp)
 target_compile_features(sbsql_sblr_alignment_contextual_text_envelope_v2

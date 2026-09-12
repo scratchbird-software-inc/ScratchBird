@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "engine/internal_api/query/relational_type_descriptor.hpp"
 
 #include "binder.hpp"
 #include "core/datatypes/datatype_catalog_manifest.hpp"
@@ -112,32 +113,30 @@ inline bool PreserveNativeDescriptorAuthority(
 // Numeric scalar literals have no collation, timezone or declared width;
 // DECIMAL precision/scale come from its canonical literal encoder.
 inline bool MatchesNativeNumericDescriptorRecord(
-    std::span<const std::string_view> fields,
+    const scratchbird::engine::internal_api::RelationalTypeDescriptor& lowered,
     const NativeDescriptorBindingInput& descriptor) {
-  const auto optional_number = [](const std::optional<std::uint32_t>& n) {
-    return n ? std::to_string(*n) : std::string("-");
-  };
-  return fields.size() == 17 &&
+  return lowered.datatype_identity_authoritative &&
       descriptor.nullability == BoundNullability::kNonNull &&
+      lowered.nullability == scratchbird::engine::internal_api::RelationalNullability::kNonNull &&
       !descriptor.collation_uuid && !descriptor.timezone_profile_id &&
       !descriptor.width_precision_scale.width &&
+      !lowered.collation_uuid && !lowered.timezone_profile_id && !lowered.width &&
       descriptor.descriptor_generation != 0 && descriptor.type_generation != 0 &&
       descriptor.codec_version != 0 && descriptor.codec_generation != 0 &&
       descriptor.datatype_catalog_generation != 0 && descriptor.datatype_registry_generation != 0 &&
-      fields[0] == descriptor.descriptor_uuid &&
-      fields[1] == std::to_string(descriptor.descriptor_generation) &&
-      fields[2] == descriptor.type_uuid &&
-      fields[3] == std::to_string(descriptor.type_generation) &&
-      fields[4] == descriptor.codec_id &&
-      fields[5] == std::to_string(descriptor.codec_version) &&
-      fields[6] == std::to_string(descriptor.codec_generation) &&
-      fields[7] == "0" && fields[8] == "-" && fields[9] == "-" && fields[10] == "-" &&
-      fields[11] == optional_number(descriptor.width_precision_scale.precision) &&
-      fields[12] == optional_number(descriptor.width_precision_scale.scale) &&
-      fields[13] == descriptor.statement_receipt_uuid &&
-      fields[14] == descriptor.datatype_catalog_snapshot_uuid &&
-      fields[15] == std::to_string(descriptor.datatype_catalog_generation) &&
-      fields[16] == std::to_string(descriptor.datatype_registry_generation);
+      lowered.descriptor_uuid == descriptor.descriptor_uuid &&
+      lowered.descriptor_generation == descriptor.descriptor_generation &&
+      lowered.type_uuid == descriptor.type_uuid &&
+      lowered.type_generation == descriptor.type_generation &&
+      lowered.codec_id == descriptor.codec_id &&
+      lowered.codec_version == descriptor.codec_version &&
+      lowered.codec_generation == descriptor.codec_generation &&
+      lowered.precision == descriptor.width_precision_scale.precision &&
+      lowered.scale == descriptor.width_precision_scale.scale &&
+      lowered.statement_receipt_uuid == descriptor.statement_receipt_uuid &&
+      lowered.datatype_catalog_snapshot_uuid == descriptor.datatype_catalog_snapshot_uuid &&
+      lowered.datatype_catalog_generation == descriptor.datatype_catalog_generation &&
+      lowered.datatype_registry_generation == descriptor.datatype_registry_generation;
 }
 
 }  // namespace scratchbird::parser::sbsql

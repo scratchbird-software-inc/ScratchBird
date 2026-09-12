@@ -50,7 +50,8 @@ target_compile_features(sbl_sbsql_parser_pipeline PUBLIC cxx_std_23)
 target_include_directories(sbl_sbsql_parser_pipeline PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC sbl_parser_server_ipc_schema)
+target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC
+  sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec)
 
 set(SBSQL_PARSER_WORKER_CORE_SOURCES
   embedded/embedded_engine_client.cpp

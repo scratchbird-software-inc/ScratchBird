@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lowering/lowering.hpp"
+#include "engine/sblr/relational_descriptor_codec.hpp"
+#include "engine/sblr/sblr_engine_envelope.hpp"
 
 #include "expression/expression_catalog.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
@@ -21,6 +23,7 @@
 #include <iomanip>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -33052,6 +33055,10 @@ bool IsCanonicalBoundSourceUuid(const std::string_view value) {
   return true;
 }
 
+bool IsCanonicalBoundSourceUuid(const scratchbird::core::platform::Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
+}
+
 bool IsCanonicalBoundStatementTimestamp(std::string_view value) {
   if (value.size() != 20 &&
       (value.size() < 22 || value.size() > 30)) {
@@ -33429,8 +33436,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                  descriptor.type_generation != 0 ||
                  !descriptor.codec_id.empty() || descriptor.codec_version != 0 ||
                  descriptor.codec_generation != 0 ||
-                 !descriptor.statement_receipt_uuid.empty() ||
-                 !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+                 !descriptor.statement_receipt_uuid.is_nil() ||
+                 !descriptor.datatype_catalog_snapshot_uuid.is_nil() ||
                  descriptor.datatype_catalog_generation != 0 ||
                  descriptor.datatype_registry_generation != 0;
         };
@@ -33503,7 +33510,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         };
 
     const BoundDescriptorAstRecord* receipt_authority = nullptr;
-    std::unordered_map<std::string, const BoundDescriptorAstRecord*>
+    std::map<scratchbird::core::platform::Uuid, const BoundDescriptorAstRecord*>
         descriptor_authority_by_uuid;
     for (const auto& descriptor : native.descriptors) {
       const bool carries_any =
@@ -33553,49 +33560,40 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     for (const auto& descriptor : native.descriptors) {
-      if (carries_complete_authority(descriptor)) {
-        envelope.operands.push_back(
-            {"relational_descriptor_v2",
-             std::to_string(descriptor.descriptor_id),
-             descriptor.descriptor_uuid + "|" +
-                 std::to_string(descriptor.descriptor_generation) + "|" +
-                 descriptor.type_uuid + "|" +
-                 std::to_string(descriptor.type_generation) + "|" +
-                 descriptor.codec_id + "|" +
-                 std::to_string(descriptor.codec_version) + "|" +
-                 std::to_string(descriptor.codec_generation) + "|" +
-                 std::to_string(static_cast<std::uint8_t>(
-                     descriptor.nullability)) +
-                 "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-                 "|" +
-                 EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale) +
-                 "|" + descriptor.statement_receipt_uuid + "|" +
-                 descriptor.datatype_catalog_snapshot_uuid + "|" +
-                 std::to_string(descriptor.datatype_catalog_generation) + "|" +
-                 std::to_string(descriptor.datatype_registry_generation)});
-      } else {
-        envelope.operands.push_back(
-            {"relational_descriptor_v1",
-             std::to_string(descriptor.descriptor_id),
-             descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
-                 std::to_string(
-                     static_cast<std::uint8_t>(descriptor.nullability) + 1) +
-                 "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
-                 "|" +
-                 EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.width) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.precision) +
-                 "|" + EncodeOptionalCanonicalU32(
-                           descriptor.width_precision_scale.scale)});
+      scratchbird::engine::internal_api::RelationalTypeDescriptor wire;
+      wire.descriptor_id = descriptor.descriptor_id;
+      wire.descriptor_uuid = descriptor.descriptor_uuid;
+      wire.type_uuid = descriptor.type_uuid;
+      wire.nullability = static_cast<scratchbird::engine::internal_api::RelationalNullability>(
+          static_cast<std::uint8_t>(descriptor.nullability) + 1);
+      wire.collation_uuid = descriptor.collation_uuid;
+      wire.timezone_profile_id = descriptor.timezone_profile_id;
+      wire.width = descriptor.width_precision_scale.width;
+      wire.precision = descriptor.width_precision_scale.precision;
+      wire.scale = descriptor.width_precision_scale.scale;
+      wire.datatype_identity_authoritative = carries_complete_authority(descriptor);
+      wire.descriptor_generation = descriptor.descriptor_generation;
+      wire.type_generation = descriptor.type_generation;
+      wire.codec_id = descriptor.codec_id;
+      wire.codec_version = descriptor.codec_version;
+      wire.codec_generation = descriptor.codec_generation;
+      wire.statement_receipt_uuid = descriptor.statement_receipt_uuid;
+      wire.datatype_catalog_snapshot_uuid = descriptor.datatype_catalog_snapshot_uuid;
+      wire.datatype_catalog_generation = descriptor.datatype_catalog_generation;
+      wire.datatype_registry_generation = descriptor.datatype_registry_generation;
+      SblrOperand operand;
+      operand.type = "relational_descriptor_v3";
+      operand.name = "slot_" + std::to_string(descriptor.descriptor_id);
+      operand.canonical_value_kind = static_cast<std::uint16_t>(
+          scratchbird::engine::sblr::SblrValueKind::relational_type_descriptor);
+      if (!scratchbird::engine::sblr::EncodeRelationalTypeDescriptorV1(
+              wire, &operand.canonical_value_body)) {
+        AddNativeRelationalLoweringError(
+            &envelope, "DATATYPE.DESCRIPTOR.INVALID",
+            "relational descriptor cannot be represented by the canonical binary carrier");
+        return false;
       }
+      envelope.operands.push_back(std::move(operand));
     }
     return true;
   };
@@ -44914,10 +44912,10 @@ constexpr std::size_t kMaximumRelationalEnvelopeBytes = 16 * 1024 * 1024;
 
 struct ParsedRelationalDescriptor {
   std::uint32_t id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   std::uint8_t nullability{0};
-  std::optional<std::string> collation_uuid;
+  std::optional<scratchbird::core::platform::Uuid> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
@@ -44928,8 +44926,8 @@ struct ParsedRelationalDescriptor {
   std::string codec_id;
   std::uint16_t codec_version{0};
   std::uint64_t codec_generation{0};
-  std::string statement_receipt_uuid;
-  std::string datatype_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_receipt_uuid;
+  scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
 };
@@ -45167,6 +45165,14 @@ bool IsCanonicalRelationalUuid(const std::string_view value) {
   return true;
 }
 
+bool IsCanonicalRelationalUuid(const scratchbird::core::platform::Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
+}
+
+bool IsNonNullCanonicalRelationalUuid(const scratchbird::core::platform::Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
+}
+
 bool IsNonNullCanonicalRelationalUuid(const std::string_view value) {
   return IsCanonicalRelationalUuid(value) &&
          value != "00000000-0000-0000-0000-000000000000";
@@ -45396,7 +45402,7 @@ bool ParseCanonicalRelationalWindowBound(
 bool AddRelationalCount(const std::size_t addend,
                         const std::size_t maximum,
                         std::size_t* total) {
-  if (total == nullptr || addend > maximum - *total) return false;
+  if (total == nullptr || *total > maximum || addend > maximum - *total) return false;
   *total += addend;
   return true;
 }
@@ -45496,15 +45502,24 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     if (operand.type.size() > kMaximumRelationalOperandBytes ||
         operand.name.size() > kMaximumRelationalOperandBytes ||
         operand.value.size() > kMaximumRelationalOperandBytes ||
+        operand.canonical_value_body.size() > kMaximumRelationalOperandBytes ||
         !AddRelationalCount(operand.type.size(),
                             kMaximumRelationalEnvelopeBytes, &encoded_bytes) ||
         !AddRelationalCount(operand.name.size(),
                             kMaximumRelationalEnvelopeBytes, &encoded_bytes) ||
         !AddRelationalCount(operand.value.size(),
+                            kMaximumRelationalEnvelopeBytes, &encoded_bytes) ||
+        !AddRelationalCount(operand.canonical_value_body.size(),
                             kMaximumRelationalEnvelopeBytes, &encoded_bytes)) {
       return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
                                    "relational operand byte limit exceeded",
                                    "operand_bytes");
+    }
+    if (operand.type != "relational_descriptor_v3" &&
+        (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty())) {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "binary operand body has the wrong relational slot",
+                                   "operand_type");
     }
     if (operand.type == "uint16" &&
         operand.name == "relational_wire_version") {
@@ -45677,112 +45692,42 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       root_present = true;
       continue;
     }
-    if (operand.type == "relational_descriptor_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
+    if (operand.type == "relational_descriptor_v3") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+                                     "relational record limit exceeded", "record_count");
       }
-      std::uint64_t id = 0;
-      std::uint64_t nullability = 0;
-      std::array<std::string_view, 8> fields{};
-      ParsedRelationalDescriptor descriptor;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
-          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[2], std::numeric_limits<std::uint8_t>::max(),
-              &nullability) ||
-          !DecodeOptionalCanonicalRelationalHex(
-              fields[4], &descriptor.timezone_profile_id) ||
-          !ParseOptionalCanonicalRelationalU32(fields[5], &descriptor.width) ||
-          !ParseOptionalCanonicalRelationalU32(fields[6],
-                                               &descriptor.precision) ||
-          !ParseOptionalCanonicalRelationalU32(fields[7], &descriptor.scale)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                     "relational descriptor record is malformed",
+      scratchbird::engine::internal_api::RelationalTypeDescriptor wire;
+      if (!operand.value.empty() ||
+          operand.canonical_value_kind != static_cast<std::uint16_t>(
+              scratchbird::engine::sblr::SblrValueKind::relational_type_descriptor) ||
+          !scratchbird::engine::sblr::DecodeRelationalTypeDescriptorV1(
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &wire) ||
+          operand.name != "slot_" + std::to_string(wire.descriptor_id)) {
+        return RefuseRelationalGraph("DATATYPE.DESCRIPTOR.INVALID",
+                                     "binary relational descriptor or handle is malformed",
                                      "descriptor_record");
       }
-      descriptor.id = static_cast<std::uint32_t>(id);
-      descriptor.descriptor_uuid = fields[0];
-      descriptor.type_uuid = fields[1];
-      descriptor.nullability = static_cast<std::uint8_t>(nullability);
-      if (fields[3] != "-") descriptor.collation_uuid = std::string(fields[3]);
-      graph->descriptors.push_back(std::move(descriptor));
-      continue;
-    }
-    if (operand.type == "relational_descriptor_v2") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
-      }
-      std::uint64_t id = 0;
-      std::uint64_t descriptor_generation = 0;
-      std::uint64_t type_generation = 0;
-      std::uint64_t codec_version = 0;
-      std::uint64_t codec_generation = 0;
-      std::uint64_t nullability = 0;
-      std::uint64_t catalog_generation = 0;
-      std::uint64_t registry_generation = 0;
-      std::array<std::string_view, 17> fields{};
       ParsedRelationalDescriptor descriptor;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
-          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[1], std::numeric_limits<std::uint64_t>::max(),
-              &descriptor_generation) ||
-          descriptor_generation == 0 ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[3], std::numeric_limits<std::uint64_t>::max(),
-              &type_generation) ||
-          type_generation == 0 || fields[4].empty() ||
-          fields[4].find('|') != std::string_view::npos ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[5], std::numeric_limits<std::uint16_t>::max(),
-              &codec_version) ||
-          codec_version == 0 ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[6], std::numeric_limits<std::uint64_t>::max(),
-              &codec_generation) ||
-          codec_generation == 0 ||
-          !ParseCanonicalRelationalUnsigned(fields[7], 1, &nullability) ||
-          !DecodeOptionalCanonicalRelationalHex(
-              fields[9], &descriptor.timezone_profile_id) ||
-          !ParseOptionalCanonicalRelationalU32(fields[10], &descriptor.width) ||
-          !ParseOptionalCanonicalRelationalU32(fields[11],
-                                               &descriptor.precision) ||
-          !ParseOptionalCanonicalRelationalU32(fields[12], &descriptor.scale) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[15], std::numeric_limits<std::uint64_t>::max(),
-              &catalog_generation) ||
-          catalog_generation == 0 ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[16], std::numeric_limits<std::uint64_t>::max(),
-              &registry_generation) ||
-          registry_generation == 0) {
-        return RefuseRelationalGraph("SBLR.OPERAND.INVALID",
-                                     "authoritative relational descriptor record is malformed",
-                                     "descriptor_record");
-      }
-      descriptor.id = static_cast<std::uint32_t>(id);
-      descriptor.descriptor_uuid = fields[0];
-      descriptor.descriptor_generation = descriptor_generation;
-      descriptor.type_uuid = fields[2];
-      descriptor.type_generation = type_generation;
-      descriptor.codec_id = fields[4];
-      descriptor.codec_version = static_cast<std::uint16_t>(codec_version);
-      descriptor.codec_generation = codec_generation;
-      descriptor.nullability = static_cast<std::uint8_t>(nullability + 1);
-      if (fields[8] != "-") descriptor.collation_uuid = std::string(fields[8]);
-      descriptor.statement_receipt_uuid = fields[13];
-      descriptor.datatype_catalog_snapshot_uuid = fields[14];
-      descriptor.datatype_catalog_generation = catalog_generation;
-      descriptor.datatype_registry_generation = registry_generation;
-      descriptor.datatype_identity_authoritative = true;
+      descriptor.id = wire.descriptor_id;
+      descriptor.descriptor_uuid = wire.descriptor_uuid;
+      descriptor.type_uuid = wire.type_uuid;
+      descriptor.nullability = static_cast<std::uint8_t>(wire.nullability);
+      descriptor.collation_uuid = wire.collation_uuid;
+      descriptor.timezone_profile_id = std::move(wire.timezone_profile_id);
+      descriptor.width = wire.width;
+      descriptor.precision = wire.precision;
+      descriptor.scale = wire.scale;
+      descriptor.datatype_identity_authoritative = wire.datatype_identity_authoritative;
+      descriptor.descriptor_generation = wire.descriptor_generation;
+      descriptor.type_generation = wire.type_generation;
+      descriptor.codec_id = std::move(wire.codec_id);
+      descriptor.codec_version = wire.codec_version;
+      descriptor.codec_generation = wire.codec_generation;
+      descriptor.statement_receipt_uuid = wire.statement_receipt_uuid;
+      descriptor.datatype_catalog_snapshot_uuid = wire.datatype_catalog_snapshot_uuid;
+      descriptor.datatype_catalog_generation = wire.datatype_catalog_generation;
+      descriptor.datatype_registry_generation = wire.datatype_registry_generation;
       graph->descriptors.push_back(std::move(descriptor));
       continue;
     }
@@ -47001,7 +46946,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   std::optional<std::uint32_t> search_predicate_root;
   std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
       descriptors;
-  std::unordered_map<std::string, const ParsedRelationalDescriptor*>
+  std::map<scratchbird::core::platform::Uuid, const ParsedRelationalDescriptor*>
       descriptors_by_uuid;
   // The wire ID names a DAG occurrence.  A complete v2 tuple authenticates
   // the immutable datatype row, while nullability/collation/timezone/shape
@@ -47444,18 +47389,18 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                "aggregate.grouped-int64-key-sum.v1";
       });
   if (grouped_sum_node != graph.nodes.end()) {
-    constexpr std::string_view kInt128DescriptorUuid =
-        "019d0000-0000-7000-8000-00000000d714";
+    constexpr scratchbird::core::platform::Uuid kInt128DescriptorUuid =
+        scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x14}};
     const auto is_bigint = [](const auto& descriptor) {
       return IsCanonicalRelationalUuid(descriptor.descriptor_uuid) &&
              descriptor.type_uuid ==
-                 "019d0000-0000-7000-8000-00000000d712" &&
+                 scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}} &&
              descriptor.codec_id == "datatype.int64.le.v1";
     };
     const auto is_int128 = [&](const auto& descriptor) {
       return descriptor.descriptor_uuid == kInt128DescriptorUuid &&
              descriptor.type_uuid ==
-                 "019d0000-0000-7000-8000-00000000d715" &&
+                 scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x15}} &&
              descriptor.codec_id == "datatype.int128.le.v1";
     };
     if (graph.descriptors.size() != 3 ||
@@ -47468,7 +47413,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                  descriptor.codec_version == 1 &&
                  descriptor.codec_generation == 1 &&
                  descriptor.datatype_catalog_snapshot_uuid ==
-                     "019d0000-0000-7000-8000-00000000d701" &&
+                     scratchbird::core::platform::Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
                  descriptor.datatype_catalog_generation == 1 &&
                  descriptor.datatype_registry_generation == 1 &&
                  (bigint || int128);
