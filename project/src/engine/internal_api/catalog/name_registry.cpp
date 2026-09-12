@@ -22,7 +22,6 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <sstream>
 
@@ -79,19 +78,6 @@ bool StartsWithNameRegistry(const std::string& value, const std::string& prefix)
   return value.rfind(prefix, 0) == 0;
 }
 
-std::string NameRegistryFileFingerprint(const std::string& path) {
-  std::error_code ec;
-  const std::filesystem::path fs_path(path);
-  if (!std::filesystem::exists(fs_path, ec) || ec) return path + ":missing";
-  const auto size = std::filesystem::file_size(fs_path, ec);
-  if (ec) return path + ":size_error";
-  const auto mtime = std::filesystem::last_write_time(fs_path, ec);
-  const auto size_value = static_cast<unsigned long long>(size);
-  if (ec) return path + ":" + std::to_string(size_value) + ":mtime_error";
-  const auto mtime_ticks = static_cast<long long>(mtime.time_since_epoch().count());
-  return path + ":" + std::to_string(size_value) + ":" + std::to_string(mtime_ticks);
-}
-
 enum class NameJournalOpenStatus { opened, absent, refused };
 
 NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
@@ -111,81 +97,6 @@ NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
   input.open(path, std::ios::binary);
   return input.is_open() && input.good() ? NameJournalOpenStatus::opened
                                         : NameJournalOpenStatus::refused;
-}
-
-std::string NameRegistryLoadCacheKey(const EngineRequestContext& context,
-                                     std::uint64_t observer_tx) {
-  std::ostringstream key;
-  key << "db=" << context.database_path
-      << "|observer_tx=" << observer_tx
-      << "|local_tx=" << context.local_transaction_id
-      << "|catalog=" << context.catalog_generation_id
-      << "|security=" << context.security_epoch
-      << "|resource=" << context.resource_epoch
-      << "|name_resolution=" << context.name_resolution_epoch
-      << "|identifier_profile=" << context.identifier_profile_uuid
-      << "|language=" << context.language_context.language_tag
-      << "|default_language="
-      << context.language_context.default_language_tag
-      << "|api=" << NameRegistryFileFingerprint(context.database_path + ".sb.api_events")
-      << "|crud=" << NameRegistryFileFingerprint(context.database_path + ".sb.crud_events")
-      << "|mga_meta=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_metadata")
-      << "|mga_desc=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_descriptors")
-      << "|mga_scope=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_scope")
-      << "|mga_savepoints=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_savepoints")
-      << "|domains=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_catalog")
-      << "|domain_events=" << NameRegistryFileFingerprint(context.database_path + ".sb.domain_events")
-      << "|catalog_objects=" << NameRegistryFileFingerprint(context.database_path + ".sb.catalog_object_events");
-  if (context.statement_transaction_inventory_snapshot != nullptr) {
-    const auto& inventory =
-        *context.statement_transaction_inventory_snapshot;
-    key << "|txn_snapshot_db_size=" << inventory.database_file_size
-        << "|txn_snapshot_db_mtime=" << inventory.database_write_time_count
-        << "|txn_snapshot_journal_present="
-        << (inventory.publish_journal_present ? 1 : 0)
-        << "|txn_snapshot_journal_size=" << inventory.publish_journal_size
-        << "|txn_snapshot_journal_mtime="
-        << inventory.publish_journal_write_time_count;
-  } else {
-    key << "|txn_db=" << NameRegistryFileFingerprint(context.database_path)
-        << "|txn_publish="
-        << NameRegistryFileFingerprint(context.database_path +
-                                       ".sb.txn_publish");
-  }
-  return key.str();
-}
-
-std::mutex& NameRegistryLoadCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::map<std::string, std::shared_ptr<const NameRegistryLoadResult>>&
-NameRegistryLoadCache() {
-  static std::map<std::string,
-                  std::shared_ptr<const NameRegistryLoadResult>> cache;
-  return cache;
-}
-
-std::shared_ptr<const NameRegistryLoadResult> LookupNameRegistryLoadCache(
-    const std::string& cache_key) {
-  std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
-  const auto found = NameRegistryLoadCache().find(cache_key);
-  if (found == NameRegistryLoadCache().end()) return {};
-  return found->second;
-}
-
-void StoreNameRegistryLoadCache(const std::string& cache_key,
-                                const NameRegistryLoadResult& result) {
-  if (cache_key.empty() || !result.ok) return;
-  std::lock_guard<std::mutex> guard(NameRegistryLoadCacheMutex());
-  auto& cache = NameRegistryLoadCache();
-  cache[cache_key] =
-      std::make_shared<const NameRegistryLoadResult>(result);
-  constexpr std::size_t kMaxNameRegistryLoadCacheEntries = 64;
-  while (cache.size() > kMaxNameRegistryLoadCacheEntries) {
-    cache.erase(cache.begin());
-  }
 }
 
 void MergeMgaRelationCatalogState(CrudState* base, const RelationReadSnapshot& mga_state) {
@@ -694,8 +605,8 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     result.diagnostic = path_status;
     return result;
   }
-  // A cache hit cannot substitute for present read authority. Never scan the
-  // primary binary database as a substitute for a missing/unreadable journal.
+  // Every load checks current read authority. Never scan the primary binary
+  // database as a substitute for a missing/unreadable journal.
   std::ifstream in;
   if (OpenNameJournal(context, in) == NameJournalOpenStatus::refused) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
@@ -705,11 +616,6 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   EngineApiDiagnostic schema_diagnostic;
   const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, schema_diagnostic);
   if (schema_diagnostic.error) { result.state = {}; result.diagnostic = schema_diagnostic; return result; }
-  const std::string load_cache_key =
-      NameRegistryLoadCacheKey(context, observer_tx);
-  if (auto cached = LookupNameRegistryLoadCache(load_cache_key)) {
-    return *cached;
-  }
   const auto crud = LoadCrudState(context);
   if (!crud.ok) {
     result.diagnostic = crud.diagnostic;
@@ -836,26 +742,17 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   }
   result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-  StoreNameRegistryLoadCache(load_cache_key, result);
   return result;
 }
 
 std::shared_ptr<const NameRegistryLoadResult>
 LoadNameRegistryStateSnapshot(const EngineRequestContext& context,
                               const std::uint64_t observer_tx) {
-  const std::string cache_key =
-      NameRegistryLoadCacheKey(context, observer_tx);
-  // Load performs the access gate even when an immutable snapshot is cached.
-  auto loaded = LoadNameRegistryState(context, observer_tx);
-  if (!loaded.ok) {
-    return std::make_shared<const NameRegistryLoadResult>(
-        std::move(loaded));
-  }
-  if (auto cached = LookupNameRegistryLoadCache(cache_key)) {
-    return cached;
-  }
+  // A pathname/mtime/size key cannot bind database incarnation, transaction
+  // identity, immutable metadata exclusions or the opened file's contents.
+  // Retain this exact load; never substitute another caller's cached snapshot.
   return std::make_shared<const NameRegistryLoadResult>(
-      std::move(loaded));
+      LoadNameRegistryState(context, observer_tx));
 }
 
 NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& request,
