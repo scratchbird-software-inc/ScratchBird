@@ -73,46 +73,147 @@ bool Contains(const std::vector<planner::CanonicalPlannerUuid>& values, const pl
          std::find(values.begin(), values.end(), value) != values.end();
 }
 
-bool StatsEventInvalidatesAll(const StatsInvalidationEvent& event) {
-  return event.event_kind == "catalog_epoch" ||
-         event.event_kind == "security_epoch" ||
-         event.event_kind == "policy_epoch" ||
-         event.event_kind == "resource_epoch" ||
-         event.event_kind == "name_resolution_epoch" ||
-         event.event_kind == "stats_epoch" ||
-         event.event_kind == "stats_refresh" ||
-         event.event_kind == "statistics_refresh" ||
-         event.event_kind == "storage_metric_generation" ||
-         event.event_kind == "runtime_metric_generation" ||
-         event.event_kind == "redaction_epoch" ||
-         event.event_kind == "redaction_policy_epoch";
+
+using GenerationKind = OptimizerStatisticsInvalidationKind;
+using GenerationScope = OptimizerStatsGenerationScope;
+
+std::optional<GenerationKind> GenerationKindForEvent(std::string_view name) {
+  if (name == "catalog_epoch" || name == "catalog_alter" || name == "catalog_drop") return GenerationKind::kCatalogGeneration;
+  if (name == "security_epoch" || name == "security_policy_change") return GenerationKind::kSecurityGeneration;
+  if (name == "redaction_epoch" || name == "redaction_policy_epoch" || name == "redaction_policy_change") return GenerationKind::kRedactionGeneration;
+  if (name == "policy_epoch") return GenerationKind::kPolicyGeneration;
+  if (name == "resource_epoch") return GenerationKind::kResourceGeneration;
+  if (name == "name_resolution_epoch") return GenerationKind::kNameResolutionGeneration;
+  if (name == "analyze_generation") return GenerationKind::kAnalyzeGeneration;
+  if (name == "stats_epoch" || name == "stats_refresh" || name == "statistics_refresh" || name == "statistics_stale") return GenerationKind::kStatsRefresh;
+  if (name == "storage_metric_generation") return GenerationKind::kStorageMetricGeneration;
+  if (name == "runtime_metric_generation") return GenerationKind::kRuntimeMetricGeneration;
+  if (name == "index_change" || name == "index_generation") return GenerationKind::kIndexGeneration;
+  return std::nullopt;
+}
+
+bool GenerationKeyValid(const OptimizerStatsGenerationKey& key) {
+  return key.kind >= GenerationKind::kCatalogGeneration &&
+      key.kind <= GenerationKind::kIndexGeneration &&
+      key.scope >= GenerationScope::kNode && key.scope <= GenerationScope::kRedactionPolicy &&
+      (key.scope == GenerationScope::kNode ? key.scope_uuid.is_nil()
+       : scratchbird::core::uuid::IsEngineIdentityUuid(key.scope_uuid));
+}
+
+bool HasEventScope(const StatsInvalidationEvent& event) {
+  return !event.object_uuid.is_nil() || !event.index_uuid.is_nil() ||
+      !event.filespace_uuid.is_nil() || !event.security_policy_identity.is_nil() ||
+      !event.redaction_policy_identity.is_nil();
+}
+
+bool EventHasScope(const StatsInvalidationEvent& event,
+                   const OptimizerStatsGenerationKey& key) {
+  switch (key.scope) {
+    case GenerationScope::kNode: return !HasEventScope(event);
+    case GenerationScope::kObject: return key.scope_uuid == event.object_uuid;
+    case GenerationScope::kIndex: return key.scope_uuid == event.index_uuid;
+    case GenerationScope::kFilespace: return key.scope_uuid == event.filespace_uuid;
+    case GenerationScope::kSecurityPolicy: return key.scope_uuid == event.security_policy_identity;
+    case GenerationScope::kRedactionPolicy: return key.scope_uuid == event.redaction_policy_identity;
+  }
+  return false;
+}
+
+template <typename Record>
+bool RecordInScope(const Record& record, const OptimizerStatsGenerationKey& key) {
+  if (key.scope == GenerationScope::kNode) return true;
+  if (key.scope == GenerationScope::kSecurityPolicy || key.scope == GenerationScope::kRedactionPolicy)
+    return true;  // Containing pin determines policy membership.
+  if (record.identity.object_uuid == key.scope_uuid) return true;
+  if constexpr (requires { record.relation_uuid; })
+    if (key.scope == GenerationScope::kObject && record.relation_uuid == key.scope_uuid) return true;
+  if constexpr (requires { record.column_uuid; })
+    if (key.scope == GenerationScope::kObject && record.column_uuid == key.scope_uuid) return true;
+  if constexpr (requires { record.index_uuid; })
+    if (key.scope == GenerationScope::kIndex && record.index_uuid == key.scope_uuid) return true;
+  if constexpr (requires { record.filespace_uuid; })
+    if (key.scope == GenerationScope::kFilespace && record.filespace_uuid == key.scope_uuid) return true;
+  return false;
+}
+
+template <typename Predicate>
+bool AnyStatsRecord(const OptimizerStatsSnapshot& snapshot, Predicate predicate) {
+  return std::ranges::any_of(snapshot.tables, predicate) ||
+      std::ranges::any_of(snapshot.columns, predicate) ||
+      std::ranges::any_of(snapshot.histograms, predicate) ||
+      std::ranges::any_of(snapshot.mcv, predicate) ||
+      std::ranges::any_of(snapshot.extended_stats, predicate) ||
+      std::ranges::any_of(snapshot.indexes, predicate) ||
+      std::ranges::any_of(snapshot.expressions, predicate) ||
+      std::ranges::any_of(snapshot.page_filespaces, predicate);
+}
+
+bool GenerationApplies(const OptimizerPinnedStatsDescriptorSnapshot& snapshot,
+                       const OptimizerStatsGenerationKey& key) {
+  if (key.scope == GenerationScope::kNode) return true;
+  if (key.scope == GenerationScope::kSecurityPolicy)
+    return snapshot.key.security_policy_identity == key.scope_uuid;
+  if (key.scope == GenerationScope::kRedactionPolicy)
+    return snapshot.key.redaction_policy_identity == key.scope_uuid;
+  if (Contains(snapshot.key.object_uuids, key.scope_uuid) ||
+      Contains(snapshot.key.index_uuids, key.scope_uuid)) return true;
+  if (std::ranges::any_of(snapshot.key.dependency_generations, [&](const auto& value) {
+        return value.key.scope == key.scope && value.key.scope_uuid == key.scope_uuid;
+      })) return true;
+  return AnyStatsRecord(snapshot.stats_snapshot, [&](const auto& record) {
+    return RecordInScope(record, key);
+  });
+}
+
+std::uint64_t CapturedGeneration(const OptimizerPinnedStatsDescriptorKey& key,
+                                const OptimizerStatsGenerationKey& dependency) {
+  const auto found = std::ranges::find(key.dependency_generations, dependency,
+      &OptimizerStatsGenerationDependency::key);
+  if (found != key.dependency_generations.end()) return found->generation;
+  switch (dependency.kind) {
+    case GenerationKind::kCatalogGeneration: return key.catalog_epoch;
+    case GenerationKind::kSecurityGeneration: return key.security_epoch;
+    case GenerationKind::kNameResolutionGeneration: return key.name_resolution_epoch;
+    case GenerationKind::kStatsRefresh: return key.stats_epoch;
+    default: return 0;  // Independent generations cannot alias another epoch.
+  }
 }
 
 bool StatsEventInvalidatesSnapshot(const OptimizerPinnedStatsDescriptorSnapshot& snapshot,
                                    const StatsInvalidationEvent& event) {
-  if (StatsEventInvalidatesAll(event)) return true;
-  if (!event.object_uuid.is_nil() && Contains(snapshot.key.object_uuids, event.object_uuid)) return true;
-  if (!event.index_uuid.is_nil() && Contains(snapshot.key.index_uuids, event.index_uuid)) return true;
-  if (!event.security_policy_identity.is_nil() &&
-      event.security_policy_identity == snapshot.key.security_policy_identity) {
-    return true;
+  if (!HasEventScope(event)) return true;
+  for (const auto& [scope, id] : {
+      std::pair{GenerationScope::kObject, event.object_uuid},
+      {GenerationScope::kIndex, event.index_uuid},
+      {GenerationScope::kFilespace, event.filespace_uuid},
+      {GenerationScope::kSecurityPolicy, event.security_policy_identity},
+      {GenerationScope::kRedactionPolicy, event.redaction_policy_identity}}) {
+    if (!id.is_nil() && GenerationApplies(snapshot, {GenerationKind::kStatsRefresh, scope, id}))
+      return true;
   }
-  if (!event.redaction_policy_identity.is_nil() &&
-      event.redaction_policy_identity == snapshot.key.redaction_policy_identity) {
-    return true;
+  return false;
+}
+
+void AddEventGeneration(std::map<OptimizerStatsGenerationKey, std::uint64_t>& values,
+                        const StatsInvalidationEvent& event, GenerationKind kind,
+                        std::uint64_t generation) {
+  if (!generation) return;
+  if (!HasEventScope(event)) {
+    auto& floor = values[{kind, GenerationScope::kNode, {}}];
+    floor = std::max(floor, generation);
+    return;
   }
-  return (event.event_kind == "catalog_alter" ||
-          event.event_kind == "catalog_drop" ||
-          event.event_kind == "index_change" ||
-          event.event_kind == "index_generation" ||
-          event.event_kind == "analyze_generation" ||
-          event.event_kind == "security_policy_change" ||
-          event.event_kind == "redaction_policy_change" ||
-          event.event_kind == "statistics_stale") &&
-         event.object_uuid.is_nil() &&
-         event.index_uuid.is_nil() &&
-         event.security_policy_identity.is_nil() &&
-         event.redaction_policy_identity.is_nil();
+  for (const auto& [scope, id] : {
+      std::pair{GenerationScope::kObject, event.object_uuid},
+      {GenerationScope::kIndex, event.index_uuid},
+      {GenerationScope::kFilespace, event.filespace_uuid},
+      {GenerationScope::kSecurityPolicy, event.security_policy_identity},
+      {GenerationScope::kRedactionPolicy, event.redaction_policy_identity}}) {
+    if (!id.is_nil()) {
+      auto& floor = values[{kind, scope, id}];
+      floor = std::max(floor, generation);
+    }
+  }
 }
 
 void InvalidateGlobalPinnedStatsCache(std::string event_kind,
@@ -313,6 +414,25 @@ OptimizerStatsPublicationResult OptimizerStatisticsStore::PublishRelationSnapsho
     if (record.identity.object_uuid == relation) affected.insert(record.index_uuid);
   for (const auto& record : owned->indexes) affected.insert(record.index_uuid);
   for (const auto& record : owned->page_filespaces) affected.insert(record.filespace_uuid);
+  for (const auto& id : affected) {
+    const auto floor = cache.publication_epochs_.find(id);
+    if (floor != cache.publication_epochs_.end() &&
+        (owned->catalog_epoch < floor->second.catalog || owned->stats_epoch < floor->second.stats))
+      return {PublicationStatus::kStaleEpoch};
+  }
+  for (const auto& [dependency, floor] : cache.generation_floors_) {
+    if (dependency.kind != GenerationKind::kCatalogGeneration &&
+        dependency.kind != GenerationKind::kStatsRefresh) continue;
+    // A statistics batch has object/filespace binding; policy membership
+    // is validated separately by the consuming pin/security authority.
+    if (dependency.scope == GenerationScope::kSecurityPolicy ||
+        dependency.scope == GenerationScope::kRedactionPolicy) continue;
+    if (AnyStatsRecord(*owned, [&](const auto& record) {
+          if (!RecordInScope(record, dependency)) return false;
+          return dependency.kind == GenerationKind::kCatalogGeneration
+              ? record.identity.catalog_epoch < floor : record.identity.stats_epoch < floor;
+        })) return {PublicationStatus::kStaleEpoch};
+  }
   for (const auto& id : affected) pin_epoch(id);
   std::vector<decltype(cache.snapshots_)::iterator> erased;
   for (auto it = cache.snapshots_.begin(); it != cache.snapshots_.end(); ++it) {
@@ -569,7 +689,7 @@ OptimizerStatsSnapshot OptimizerStatisticsStore::Snapshot(planner::CanonicalPlan
 
 std::string OptimizerPinnedStatsDescriptorCacheKeyText(const OptimizerPinnedStatsDescriptorKey& key) {
   // Opaque content binding bytes, not a textual UUID or issued snapshot identity.
-  planner::CanonicalPlannerBindingBytes out("optimizer-pinned-statistics-v2");
+  planner::CanonicalPlannerBindingBytes out("optimizer-pinned-statistics-v3");
   out.Number(key.catalog_epoch); out.Number(key.security_epoch);
   out.Number(key.resource_policy_epoch); out.Number(key.name_resolution_epoch);
   out.Number(key.stats_epoch); out.Text(key.descriptor_set_digest);
@@ -580,6 +700,15 @@ std::string OptimizerPinnedStatsDescriptorCacheKeyText(const OptimizerPinnedStat
   for (const auto& uuid : objects) out.Identity(uuid);
   out.Number(indexes.size());
   for (const auto& uuid : indexes) out.Identity(uuid);
+  auto generations = key.dependency_generations;
+  std::ranges::sort(generations, [](const auto& a, const auto& b) { return a.key < b.key; });
+  out.Number(generations.size());
+  for (const auto& dependency : generations) {
+    out.Number(static_cast<std::uint64_t>(dependency.key.kind));
+    out.Number(static_cast<std::uint64_t>(dependency.key.scope));
+    out.Identity(dependency.key.scope_uuid);
+    out.Number(dependency.generation);
+  }
   return std::move(out).Take();
 }
 
@@ -624,6 +753,14 @@ OptimizerPinnedStatsLookupResult ValidateOptimizerPinnedStatsDescriptorKey(
     return StatsRefusal("SB_OPT_PINNED_STATS_REDACTION_POLICY_REQUIRED",
                         "redaction policy identity is required",
                         cache_key);
+  }
+  std::set<OptimizerStatsGenerationKey> generation_keys;
+  for (const auto& dependency : key.dependency_generations) {
+    if (!GenerationKeyValid(dependency.key) || dependency.generation == 0 ||
+        !generation_keys.insert(dependency.key).second) {
+      return StatsRefusal("SB_OPT_PINNED_STATS_EPOCH_REQUIRED",
+                          "invalid or duplicate scoped generation dependency", cache_key);
+    }
   }
   OptimizerPinnedStatsLookupResult result;
   result.ok = true;
@@ -671,6 +808,21 @@ OptimizerPinnedStatsLookupResult OptimizerPinnedStatsDescriptorCache::Put(
       return StatsRefusal("SB_OPT_PINNED_STATS_CACHE_MISS",
                           "snapshot predates published statistics", validation.cache_key);
     }
+    for (const auto& [dependency, floor] : generation_floors_) {
+      if (!GenerationApplies(*stored, dependency)) continue;
+      const bool stale_content = AnyStatsRecord(stored->stats_snapshot, [&](const auto& record) {
+        if (!RecordInScope(record, dependency)) return false;
+        if (dependency.kind == GenerationKind::kCatalogGeneration)
+          return record.identity.catalog_epoch < floor;
+        if (dependency.kind == GenerationKind::kStatsRefresh)
+          return record.identity.stats_epoch < floor;
+        return false;
+      });
+      if (CapturedGeneration(stored->key, dependency) < floor || stale_content) {
+        return StatsRefusal("SB_OPT_PINNED_STATS_CACHE_MISS",
+                            "snapshot predates scoped generation invalidation", validation.cache_key);
+      }
+    }
     // Prepare response storage before mutating the live map.
     validation.diagnostic_code = "SB_OPT_PINNED_STATS_PUT";
     snapshots_.insert_or_assign(validation.cache_key, stored);
@@ -700,8 +852,26 @@ OptimizerPinnedStatsInvalidationResult OptimizerPinnedStatsDescriptorCache::Inva
     const StatsInvalidationEvent& event) {
   OptimizerPinnedStatsInvalidationResult result;
   const std::string reason = event.reason.empty() ? event.event_kind : event.reason;
+  if (!GenerationKindForEvent(event.event_kind)) return result;
+  for (const auto& id : {event.object_uuid, event.index_uuid, event.filespace_uuid,
+                         event.security_policy_identity, event.redaction_policy_identity}) {
+    if (!id.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(id)) return result;
+  }
+  std::map<OptimizerStatsGenerationKey, std::uint64_t> incoming;
+  for (const auto& value : event.generations) {
+    if (!GenerationKeyValid(value.key) || !value.generation ||
+        !EventHasScope(event, value.key) ||
+        !incoming.emplace(value.key, value.generation).second) return result;
+  }
+  AddEventGeneration(incoming, event, GenerationKind::kCatalogGeneration, event.new_catalog_epoch);
+  AddEventGeneration(incoming, event, GenerationKind::kStatsRefresh, event.new_stats_epoch);
   std::lock_guard<std::mutex> lock(mutex_);
   auto epochs = publication_epochs_;
+  auto generation_floors = generation_floors_;
+  for (const auto& [key, value] : incoming) {
+    auto& floor = generation_floors[key];
+    floor = std::max(floor, value);
+  }
   const auto advance = [&](const auto& id) {
     if (id.is_nil() || (event.new_catalog_epoch == 0 && event.new_stats_epoch == 0)) return;
     auto& floor = epochs[id];
@@ -725,7 +895,9 @@ OptimizerPinnedStatsInvalidationResult OptimizerPinnedStatsDescriptorCache::Inva
   }
   // No live entry is erased until every evidence/iterator allocation succeeds.
   publication_epochs_.swap(epochs);
+  generation_floors_.swap(generation_floors);
   for (auto it : erased) snapshots_.erase(it);
+  result.accepted = true;
   return result;
 }
 

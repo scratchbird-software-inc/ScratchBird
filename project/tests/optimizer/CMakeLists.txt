@@ -1457,7 +1457,7 @@ add_executable(
   optimizer_enterprise_stats_invalidation_gate
   optimizer_enterprise_stats_invalidation_gate.cpp
 )
-target_compile_features(optimizer_enterprise_stats_invalidation_gate PRIVATE cxx_std_20)
+target_compile_features(optimizer_enterprise_stats_invalidation_gate PRIVATE cxx_std_23)
 target_link_libraries(
   optimizer_enterprise_stats_invalidation_gate
   PRIVATE
@@ -1468,7 +1468,7 @@ add_test(
   COMMAND optimizer_enterprise_stats_invalidation_gate
 )
 set_tests_properties(optimizer_enterprise_stats_invalidation_gate PROPERTIES
-  LABELS "optimizer_enterprise_stats_invalidation_gate;OEIC-021;optimizer;enterprise;statistics;invalidation;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_enterprise_stats_invalidation_gate;OEIC-021;optimizer;enterprise;statistics;invalidation;component_regression;not_runtime_acceptance"
 )
 
 add_executable(

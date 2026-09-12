@@ -20,20 +20,6 @@ namespace scratchbird::engine::optimizer {
 // Enterprise stats invalidation is cache/pinned-descriptor hygiene only. It
 // refuses unsafe authority and never changes row visibility, transaction
 // finality, parser behavior, reference behavior, or recovery outcome.
-enum class OptimizerStatisticsInvalidationKind {
-  kCatalogGeneration,
-  kSecurityGeneration,
-  kRedactionGeneration,
-  kPolicyGeneration,
-  kResourceGeneration,
-  kNameResolutionGeneration,
-  kAnalyzeGeneration,
-  kStatsRefresh,
-  kStorageMetricGeneration,
-  kRuntimeMetricGeneration,
-  kIndexGeneration,
-};
-
 struct OptimizerStatisticsInvalidationAuthority {
   bool engine_runtime_scope = false;
   bool optimizer_cache_owner = false;
@@ -58,11 +44,11 @@ struct OptimizerStatisticsInvalidationRequest {
   OptimizerStatisticsInvalidationKind kind =
       OptimizerStatisticsInvalidationKind::kStatsRefresh;
   OptimizerStatisticsInvalidationAuthority authority;
-  std::string object_uuid;
-  std::string index_uuid;
-  std::string filespace_uuid;
-  std::string security_policy_identity;
-  std::string redaction_policy_identity;
+  planner::CanonicalPlannerUuid object_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
+  planner::CanonicalPlannerUuid filespace_uuid;
+  planner::CanonicalPlannerUuid security_policy_identity;
+  planner::CanonicalPlannerUuid redaction_policy_identity;
   std::string evidence_digest;
   std::string reason;
   std::uint64_t catalog_epoch = 0;
@@ -70,12 +56,20 @@ struct OptimizerStatisticsInvalidationRequest {
   std::uint64_t security_epoch = 0;
   std::uint64_t redaction_epoch = 0;
   std::uint64_t resource_epoch = 0;
+  std::uint64_t policy_epoch = 0;
+  std::uint64_t name_resolution_epoch = 0;
   std::uint64_t metric_generation = 0;
   std::uint64_t analyze_generation = 0;
   std::uint64_t index_generation = 0;
 };
 
+enum class OptimizerStatisticsInvalidationFailure {
+  kNone, kInvalidRequest, kResourceExhausted, kInternalFailure,
+};
+
 struct OptimizerStatisticsInvalidationResult {
+  OptimizerStatisticsInvalidationFailure failure{
+      OptimizerStatisticsInvalidationFailure::kNone};
   bool accepted = false;
   std::string diagnostic_code;
   std::vector<std::string> evidence;
@@ -90,10 +84,10 @@ struct OptimizerPinnedStatsBenchmarkCleanRequest {
   std::uint64_t required_name_resolution_epoch = 0;
   std::uint64_t required_stats_epoch = 0;
   std::string required_descriptor_set_digest;
-  std::string required_security_policy_identity;
-  std::string required_redaction_policy_identity;
-  std::vector<std::string> required_object_uuids;
-  std::vector<std::string> required_index_uuids;
+  planner::CanonicalPlannerUuid required_security_policy_identity;
+  planner::CanonicalPlannerUuid required_redaction_policy_identity;
+  std::vector<planner::CanonicalPlannerUuid> required_object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> required_index_uuids;
 };
 
 const char* OptimizerStatisticsInvalidationKindName(

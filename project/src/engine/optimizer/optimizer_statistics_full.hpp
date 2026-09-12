@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <tuple>
 
 namespace scratchbird::engine::optimizer {
 
@@ -237,6 +238,42 @@ struct OptimizerStatsSnapshot {
   std::vector<PageFilespaceStats> page_filespaces;
 };
 
+enum class OptimizerStatisticsInvalidationKind {
+  kCatalogGeneration,
+  kSecurityGeneration,
+  kRedactionGeneration,
+  kPolicyGeneration,
+  kResourceGeneration,
+  kNameResolutionGeneration,
+  kAnalyzeGeneration,
+  kStatsRefresh,
+  kStorageMetricGeneration,
+  kRuntimeMetricGeneration,
+  kIndexGeneration,
+};
+
+enum class OptimizerStatsGenerationScope {
+  kNode, kObject, kIndex, kFilespace, kSecurityPolicy, kRedactionPolicy,
+};
+
+// Nil is permitted only for explicit node-wide scope; it is not an object ID.
+struct OptimizerStatsGenerationKey {
+  OptimizerStatisticsInvalidationKind kind{
+      OptimizerStatisticsInvalidationKind::kStatsRefresh};
+  OptimizerStatsGenerationScope scope{OptimizerStatsGenerationScope::kNode};
+  planner::CanonicalPlannerUuid scope_uuid;
+  bool operator==(const OptimizerStatsGenerationKey&) const = default;
+  bool operator<(const OptimizerStatsGenerationKey& other) const {
+    return std::tie(kind, scope, scope_uuid) <
+           std::tie(other.kind, other.scope, other.scope_uuid);
+  }
+};
+struct OptimizerStatsGenerationDependency {
+  OptimizerStatsGenerationKey key;
+  std::uint64_t generation{0};
+  bool operator==(const OptimizerStatsGenerationDependency&) const = default;
+};
+
 struct StatsInvalidationEvent {
   std::string event_kind;
   planner::CanonicalPlannerUuid object_uuid;
@@ -246,6 +283,8 @@ struct StatsInvalidationEvent {
   std::uint64_t new_catalog_epoch = 0;
   std::uint64_t new_stats_epoch = 0;
   std::string reason;
+  planner::CanonicalPlannerUuid filespace_uuid;
+  std::vector<OptimizerStatsGenerationDependency> generations;
 };
 
 struct AnalyzeSampleInput {
@@ -327,6 +366,7 @@ struct OptimizerPinnedStatsDescriptorKey {
   std::vector<planner::CanonicalPlannerUuid> index_uuids;
   planner::CanonicalPlannerUuid security_policy_identity;
   planner::CanonicalPlannerUuid redaction_policy_identity;
+  std::vector<OptimizerStatsGenerationDependency> dependency_generations;
 };
 
 struct OptimizerPinnedStatsDescriptorSnapshot {
@@ -355,6 +395,7 @@ struct OptimizerPinnedStatsInvalidatedEntry {
 };
 
 struct OptimizerPinnedStatsInvalidationResult {
+  bool accepted{false};
   std::vector<OptimizerPinnedStatsInvalidatedEntry> invalidated_entries;
 };
 
@@ -374,6 +415,7 @@ class OptimizerPinnedStatsDescriptorCache {
     std::uint64_t stats = 0;
   };
   std::map<planner::CanonicalPlannerUuid, PublicationEpoch> publication_epochs_;
+  std::map<OptimizerStatsGenerationKey, std::uint64_t> generation_floors_;
   mutable std::mutex mutex_;
   std::map<std::string, std::shared_ptr<const OptimizerPinnedStatsDescriptorSnapshot>> snapshots_;
 };
