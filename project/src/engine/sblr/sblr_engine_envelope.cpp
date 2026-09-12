@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_engine_envelope.hpp"
+#include "core/uuid/uuid.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
 #include "sblr_ddl_alter_timeseries_value_cache_runtime.hpp"
 #include "sblr_ddl_drop_timeseries_value_cache_runtime.hpp"
@@ -499,53 +500,11 @@ bool DecodeText(const std::uint8_t* data,
   return true;
 }
 
-int HexNibble(char ch) {
-  if (ch >= '0' && ch <= '9') return ch - '0';
-  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-  return -1;
-}
-
-bool ParseUuid(std::string_view text, std::array<std::uint8_t, 16>* uuid) {
-  if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
-      text[18] != '-' || text[23] != '-') {
-    return false;
-  }
-  std::size_t out = 0;
-  bool nonzero = false;
-  for (std::size_t i = 0; i < text.size();) {
-    if (text[i] == '-') {
-      ++i;
-      continue;
-    }
-    if (i + 1 >= text.size()) return false;
-    const int high = HexNibble(text[i]);
-    const int low = HexNibble(text[i + 1]);
-    if (high < 0 || low < 0 || out == uuid->size()) return false;
-    (*uuid)[out] = static_cast<std::uint8_t>((high << 4) | low);
-    nonzero = nonzero || (*uuid)[out] != 0;
-    ++out;
-    i += 2;
-  }
-  return out == uuid->size() && nonzero;
-}
-
-bool IsNonzeroUuidBytes(const std::uint8_t* data) {
-  for (std::size_t i = 0; i < 16; ++i) {
-    if (data[i] != 0) return true;
-  }
-  return false;
-}
-
-std::string FormatUuid(const std::uint8_t* uuid) {
-  constexpr char kHex[] = "0123456789abcdef";
-  std::string text;
-  text.reserve(36);
-  for (std::size_t i = 0; i < 16; ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
-    text.push_back(kHex[uuid[i] >> 4]);
-    text.push_back(kHex[uuid[i] & 0x0f]);
-  }
-  return text;
+bool IsEngineIdentityBytes(const std::uint8_t* data) {
+  if (data == nullptr) return false;
+  scratchbird::core::platform::Uuid uuid;
+  std::copy_n(data, uuid.bytes.size(), uuid.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
 }
 
 bool ValidateValueBody(SblrValueKind kind,
@@ -589,15 +548,15 @@ bool ValidateValueBody(SblrValueKind kind,
     case SblrValueKind::policy_ref:
     case SblrValueKind::principal_ref:
     case SblrValueKind::udr_ref:
-      return size == 16 && IsNonzeroUuidBytes(data);
+      return size == 16 && IsEngineIdentityBytes(data);
     case SblrValueKind::descriptor_ref:
       // Core descriptor carriers use fixed-size descriptor bodies; envelope-level
       // validation narrows 320/384-byte forms to their exact operations.
-      return (size == 16 && data != nullptr && IsNonzeroUuidBytes(data)) ||
-             size == 320 || size == 384;
+      return (size == 16 && data != nullptr && IsEngineIdentityBytes(data)) ||
+             (depth == 1 && (size == 320 || size == 384));
     case SblrValueKind::literal_typed:
     case SblrValueKind::proof_token: {
-      if (size < 24 || !IsNonzeroUuidBytes(data)) return false;
+      if (size < 24 || !IsEngineIdentityBytes(data)) return false;
       const std::uint64_t count = Load64(data + 16);
       if (count > kSblrOperationMaximumScalarBytes) {
         *limit_exceeded = true;
@@ -607,13 +566,13 @@ bool ValidateValueBody(SblrValueKind kind,
     }
     case SblrValueKind::parameter_slot:
     case SblrValueKind::result_target:
-      return size == 20 && Load32(data) != 0 && IsNonzeroUuidBytes(data + 4);
+      return size == 20 && Load32(data) != 0 && IsEngineIdentityBytes(data + 4);
     case SblrValueKind::epoch_token:
       return size == 12 && Load16(data) != 0 && Load16(data + 2) == 0;
     case SblrValueKind::profile_ref:
-      return size == 24 && IsNonzeroUuidBytes(data);
+      return size == 24 && IsEngineIdentityBytes(data);
     case SblrValueKind::artifact_ref:
-      if (size < 29 || !IsNonzeroUuidBytes(data)) return false;
+      if (size < 29 || !IsEngineIdentityBytes(data)) return false;
       if (data[24] == 1) return size == 29;
       if (data[24] == 2) return size == 57;
       return false;
@@ -1019,7 +978,7 @@ bool DecodeOperandRecords(Reader* reader,
             value_data, static_cast<std::size_t>(value_size)).ok;
     const bool deferred_source_map_descriptor =
         operand.value_kind == SblrValueKind::descriptor_ref && value_size == 24 &&
-        IsNonzeroUuidBytes(value_data) && Load64(value_data + 16) != 0;
+        IsEngineIdentityBytes(value_data) && Load64(value_data + 16) != 0;
     if ((profile == SblrOperandRecordDecodeProfile::
                         contextual_query_execute_v1_1_pre_kind206 &&
          operand.value_kind ==
@@ -1542,10 +1501,9 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
       !IsValidUtf8(envelope.trace_key)) {
     fail("SBLR.OPERATION.TEXT_INVALID", "trace identity is not canonical");
   }
-  std::array<std::uint8_t, 16> uuid{};
-  if (!ParseUuid(envelope.parser_package_uuid, &uuid) ||
-      !ParseUuid(envelope.registry_snapshot_uuid, &uuid)) {
-    fail("SBLR.OPERATION.HEADER_INVALID", "producer and registry identities require nonzero canonical UUIDs");
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(envelope.parser_package_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(envelope.registry_snapshot_uuid)) {
+    fail("SBLR.OPERATION.HEADER_INVALID", "producer and registry identities require binary RFC-variant UUIDv7 identities");
   }
   const auto identity = ValidateSblrOpcodeIdentity(envelope.opcode_code,
                                                    envelope.operation_id,
@@ -1592,7 +1550,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.type == "source_map.vector" && operand.name == "source_map" &&
         operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 24 &&
-        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        IsEngineIdentityBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
     const bool error_vector_descriptor =
         envelope.operation_id == "engine.op.error_vector" &&
@@ -1601,7 +1559,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.type == "diagnostic.vector" && operand.name == "diagnostics" &&
         operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 24 &&
-        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        IsEngineIdentityBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
     const bool dml_delete_rows_descriptor =
         envelope.operation_id == "dml.delete_rows" &&
@@ -1609,7 +1567,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         envelope.operands.size() == 1 && operand.ordinal == 1 &&
         operand.type == "dml.delete_rows" && operand.name == "request" &&
         operand.value_kind == SblrValueKind::descriptor_ref && operand.value_body.size() == 24 &&
-        IsNonzeroUuidBytes(operand.value_body.data()) && Load64(operand.value_body.data() + 16) != 0;
+        IsEngineIdentityBytes(operand.value_body.data()) && Load64(operand.value_body.data() + 16) != 0;
     const bool dml_update_rows_descriptor =
         envelope.operation_id == "dml.update_rows" &&
         envelope.opcode == "SBLR_DML_UPDATE_ROWS" &&
@@ -1618,7 +1576,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         operand.name == "request" &&
         operand.value_kind == SblrValueKind::descriptor_ref &&
         operand.value_body.size() == 24 &&
-        IsNonzeroUuidBytes(operand.value_body.data()) &&
+        IsEngineIdentityBytes(operand.value_body.data()) &&
         Load64(operand.value_body.data() + 16) != 0;
     PlanImportRowsDescriptorRefV1 plan_import_rows_reference;
     PlanImportRowsCodecDiagnosticV1 plan_import_rows_diagnostic;
@@ -1857,7 +1815,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
           operand.name == "policy" &&
           operand.value_kind == SblrValueKind::uuid_ref &&
           operand.value_body.size() == 16 &&
-          IsNonzeroUuidBytes(operand.value_body.data());
+          IsEngineIdentityBytes(operand.value_body.data());
     }
     if (!canonical_policy_selector) {
       fail("SBLR.OPERAND_INVALID",
@@ -2380,7 +2338,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         envelope.operands.front().name == expected_name &&
         envelope.operands.front().value_kind == SblrValueKind::descriptor_ref &&
         envelope.operands.front().value_body.size() == 16 &&
-        IsNonzeroUuidBytes(envelope.operands.front().value_body.data());
+        IsEngineIdentityBytes(envelope.operands.front().value_body.data());
     if (!exact_operand || envelope.result_shape != expected_result ||
         envelope.diagnostic_shape != "diagnostic_vector") {
       fail("SBLR.OPERAND_INVALID",
@@ -2434,12 +2392,8 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
 std::string EncodeSblrEnvelope(const SblrOperationEnvelope& envelope) {
   if (!ValidateSblrEnvelope(envelope).ok) return {};
 
-  std::array<std::uint8_t, 16> producer_uuid{};
-  std::array<std::uint8_t, 16> registry_uuid{};
-  if (!ParseUuid(envelope.parser_package_uuid, &producer_uuid) ||
-      !ParseUuid(envelope.registry_snapshot_uuid, &registry_uuid)) {
-    return {};
-  }
+  const auto& producer_uuid = envelope.parser_package_uuid.bytes;
+  const auto& registry_uuid = envelope.registry_snapshot_uuid.bytes;
 
   std::array<Bytes, kSblrOperationSectionCount> sections;
   AppendText(&sections[0], envelope.operation_id);
@@ -2634,15 +2588,15 @@ SblrDecodeResult DecodeSblrEnvelope(std::string_view encoded) {
     return DecodeFailure("SBLR.OPERATION.TEXT_INVALID",
                          "trace identity text is not canonical");
   }
-  if (sections[2].size != 28 || !IsNonzeroUuidBytes(sections[2].data) ||
-      sections[3].size != 16 || !IsNonzeroUuidBytes(sections[3].data)) {
+  if (sections[2].size != 28 || !IsEngineIdentityBytes(sections[2].data) ||
+      sections[3].size != 16 || !IsEngineIdentityBytes(sections[3].data)) {
     return DecodeFailure("SBLR.OPERATION.HEADER_INVALID", "producer or registry section is invalid");
   }
-  envelope.parser_package_uuid = FormatUuid(sections[2].data);
+  std::copy_n(sections[2].data, 16, envelope.parser_package_uuid.bytes.begin());
   envelope.parser_package_version_major = Load32(sections[2].data + 16);
   envelope.parser_package_version_minor = Load32(sections[2].data + 20);
   envelope.parser_package_version_patch = Load32(sections[2].data + 24);
-  envelope.registry_snapshot_uuid = FormatUuid(sections[3].data);
+  std::copy_n(sections[3].data, 16, envelope.registry_snapshot_uuid.bytes.begin());
   envelope.parser_resolved_names_to_uuids = true;
   const bool exact_ddl_create_index =
       envelope.opcode_code == 1540 &&
@@ -2705,8 +2659,8 @@ std::string SerializeSblrEnvelopeToJson(const SblrOperationEnvelope& envelope) {
       << "  \"opcode_code\": " << envelope.opcode_code << ",\n"
       << "  \"operation_id\": \"" << JsonEscape(envelope.operation_id) << "\",\n"
       << "  \"opcode\": \"" << JsonEscape(envelope.opcode) << "\",\n"
-      << "  \"producer_uuid\": \"" << JsonEscape(envelope.parser_package_uuid) << "\",\n"
-      << "  \"registry_snapshot_uuid\": \"" << JsonEscape(envelope.registry_snapshot_uuid) << "\",\n"
+      << "  \"producer_uuid\": \"" << scratchbird::core::uuid::UuidToString(envelope.parser_package_uuid) << "\",\n"
+      << "  \"registry_snapshot_uuid\": \"" << scratchbird::core::uuid::UuidToString(envelope.registry_snapshot_uuid) << "\",\n"
       << "  \"result_shape\": \"" << JsonEscape(envelope.result_shape) << "\",\n"
       << "  \"diagnostic_shape\": \"" << JsonEscape(envelope.diagnostic_shape) << "\",\n"
       << "  \"trace_key\": \"" << JsonEscape(envelope.trace_key) << "\",\n"

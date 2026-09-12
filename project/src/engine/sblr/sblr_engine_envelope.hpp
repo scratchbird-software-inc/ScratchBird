@@ -318,11 +318,11 @@ struct SblrOperationEnvelope {
   std::string opcode;
   std::string result_shape;
   std::string diagnostic_shape;
-  std::string parser_package_uuid;
+  scratchbird::core::platform::Uuid parser_package_uuid;
   std::uint32_t parser_package_version_major = 1;
   std::uint32_t parser_package_version_minor = 0;
   std::uint32_t parser_package_version_patch = 0;
-  std::string registry_snapshot_uuid;
+  scratchbird::core::platform::Uuid registry_snapshot_uuid;
   std::string trace_key;
   std::vector<SblrOperand> operands;
   SblrSourceArtifactMap source_artifact_map;

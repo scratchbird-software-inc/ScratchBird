@@ -290,7 +290,7 @@ target_include_directories(sb_sblr_operation_wire_codec PUBLIC
 )
 target_link_libraries(sb_sblr_operation_wire_codec PUBLIC
   sb_sblr_parameter_wire_codec sb_contextual_text_literal_v2_codec
-  sb_core_hash sbl_numeric)
+  sb_core_hash sb_core_uuid sbl_numeric)
 endif()
 
 if(SB_BUILD_QOW_CLOSURE_TESTS)

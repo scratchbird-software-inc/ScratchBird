@@ -18,8 +18,8 @@ inline constexpr std::uint16_t kSblrOpcodeStreamHeaderSize = 64;
 inline constexpr std::uint16_t kSblrOpcodeStreamTrailerSize = 16;
 
 struct SblrOpcodeStream {
-  std::string package_descriptor_uuid;
-  std::string registry_snapshot_uuid;
+  scratchbird::core::platform::Uuid package_descriptor_uuid;
+  scratchbird::core::platform::Uuid registry_snapshot_uuid;
   std::vector<SblrOperationEnvelope> operations;
 };
 
@@ -32,7 +32,7 @@ struct SblrOpcodeStreamResult {
 };
 
 struct SblrOpcodeStreamAdmission {
-  std::string admitted_registry_snapshot_uuid;
+  scratchbird::core::platform::Uuid admitted_registry_snapshot_uuid;
   bool authenticated = false;
   bool descriptor_class_accepted = false;
   bool gateway_pass_through = false;

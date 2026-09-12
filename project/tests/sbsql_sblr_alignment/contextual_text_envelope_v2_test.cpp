@@ -268,9 +268,9 @@ sblr::SblrOperationEnvelope MakeEnvelope(std::uint64_t node_id,
   envelope.result_shape = "query_execute_result";
   envelope.diagnostic_shape = "diagnostic_vector";
   envelope.parser_package_uuid =
-      "019d0000-0000-7000-8000-00000000f201";
+      {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xf2,0x01}};
   envelope.registry_snapshot_uuid =
-      "019d0000-0000-7000-8000-00000000f202";
+      {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xf2,0x02}};
 
   sblr::SblrExpressionNodeTableV1 table;
   sblr::SblrExpressionLiteralNodeV1 node;

@@ -1500,6 +1500,17 @@ set_tests_properties(sbsql_sblr_alignment_contextual_text_sidecar_set_v2
     LABELS "sbsql_sblr_alignment;SBLR_QUERY_EXECUTE;contextual_text_v2;MGA;sealed_sidecar;exact_authority"
     TIMEOUT 30)
 
+add_executable(sbsql_sblr_alignment_sblr_binary_identity_codec
+  sblr_binary_identity_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_sblr_binary_identity_codec PRIVATE cxx_std_20)
+target_link_libraries(sbsql_sblr_alignment_sblr_binary_identity_codec
+  PRIVATE sb_sblr_operation_wire_codec sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_sblr_binary_identity_codec
+  COMMAND sbsql_sblr_alignment_sblr_binary_identity_codec)
+set_tests_properties(sbsql_sblr_alignment_sblr_binary_identity_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;SBOP;SBOS;component_codec;not_e2e"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_contextual_text_envelope_v2
   contextual_text_envelope_v2_test.cpp)
 target_compile_features(sbsql_sblr_alignment_contextual_text_envelope_v2

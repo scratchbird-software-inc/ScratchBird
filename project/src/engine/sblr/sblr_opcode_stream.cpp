@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_opcode_stream.hpp"
+#include "core/uuid/uuid.hpp"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -38,41 +40,6 @@ bool Read64(std::string_view in, std::size_t off, std::uint64_t* v) {
   *v = 0;
   for (unsigned n = 0; n != 8; ++n) *v |= static_cast<std::uint64_t>(static_cast<std::uint8_t>(in[off + n])) << (n * 8);
   return true;
-}
-
-bool ParseUuid(std::string_view text, std::array<std::uint8_t, 16>* out) {
-  if (text.size() != 36) return false;
-  std::size_t p = 0;
-  for (std::size_t i = 0; i != text.size();) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) {
-      if (text[i++] != '-') return false;
-      continue;
-    }
-    auto hex = [](char c) -> int {
-      if (c >= '0' && c <= '9') return c - '0';
-      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-      return -1;
-    };
-    if (i + 1 >= text.size()) return false;
-    const int hi = hex(text[i++]), lo = hex(text[i++]);
-    if (hi < 0 || lo < 0 || p == out->size()) return false;
-    (*out)[p++] = static_cast<std::uint8_t>((hi << 4) | lo);
-  }
-  bool nonzero = false;
-  for (auto b : *out) nonzero = nonzero || b != 0;
-  return p == out->size() && nonzero;
-}
-
-std::string FormatUuid(const std::uint8_t* bytes) {
-  constexpr char h[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t i = 0; i != 16; ++i) {
-    if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-    out.push_back(h[bytes[i] >> 4]);
-    out.push_back(h[bytes[i] & 15]);
-  }
-  return out;
 }
 
 SblrOpcodeStreamResult Fail(std::string id, std::string detail) {
@@ -113,9 +80,10 @@ bool IsFrameShape(const SblrOperationEnvelope& op, bool begin) {
 
 std::vector<std::uint8_t> EncodeSblrOpcodeStream(const SblrOpcodeStream& stream) {
   if (stream.operations.size() < 2 || stream.operations.size() > kSblrOperationMaximumOperands) return {};
-  std::array<std::uint8_t, 16> package{}, registry{};
-  if (!ParseUuid(stream.package_descriptor_uuid, &package) ||
-      !ParseUuid(stream.registry_snapshot_uuid, &registry) ||
+  const auto& package = stream.package_descriptor_uuid.bytes;
+  const auto& registry = stream.registry_snapshot_uuid.bytes;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(stream.package_descriptor_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(stream.registry_snapshot_uuid) ||
       !IsFrame(stream.operations.front(), true, package) ||
       !IsFrame(stream.operations.back(), false, package)) return {};
   Bytes records;
@@ -168,11 +136,13 @@ SblrOpcodeStreamResult DecodeSblrOpcodeStream(std::string_view bytes) {
     return Fail("SBLR.OPERAND_INVALID", "SBOS header trailer count size or CRC is invalid");
   }
   SblrOpcodeStream stream;
-  stream.package_descriptor_uuid = FormatUuid(reinterpret_cast<const std::uint8_t*>(bytes.data() + 24));
-  stream.registry_snapshot_uuid = FormatUuid(reinterpret_cast<const std::uint8_t*>(bytes.data() + 40));
-  std::array<std::uint8_t, 16> package{}, registry{};
-  if (!ParseUuid(stream.package_descriptor_uuid, &package) || !ParseUuid(stream.registry_snapshot_uuid, &registry))
-    return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS package or registry UUID is zero");
+  const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
+  std::copy_n(data + 24, 16, stream.package_descriptor_uuid.bytes.begin());
+  std::copy_n(data + 40, 16, stream.registry_snapshot_uuid.bytes.begin());
+  const auto& package = stream.package_descriptor_uuid.bytes;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(stream.package_descriptor_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(stream.registry_snapshot_uuid))
+    return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS package or registry identity is not RFC-variant UUIDv7");
   std::size_t offset = 64;
   for (std::uint32_t i = 0; i != count; ++i) {
     std::uint64_t size = 0;
