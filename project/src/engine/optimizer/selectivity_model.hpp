@@ -28,8 +28,8 @@ struct SelectivityEstimate {
 };
 
 struct ExtendedStatsSelectivityRequest {
-  std::string relation_uuid;
-  std::vector<std::string> column_uuids;
+  planner::CanonicalPlannerUuid relation_uuid;
+  std::vector<planner::CanonicalPlannerUuid> column_uuids;
   std::vector<std::string> document_path_digests;
   std::vector<std::string> value_encodings;
   std::vector<SelectivityEstimate> children;
@@ -44,6 +44,7 @@ struct ExtendedStatsSelectivityResult {
   ExtendedOptimizerStatisticKind used_kind = ExtendedOptimizerStatisticKind::kMultiColumnNdv;
   std::string diagnostic_code;
   std::vector<std::string> evidence;
+  std::vector<planner::CanonicalPlannerUuid> selected_statistic_uuids;
   bool mga_visibility_recheck_required = true;
   bool security_recheck_required = true;
   bool finality_authority = false;

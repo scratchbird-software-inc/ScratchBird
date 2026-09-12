@@ -693,6 +693,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     full_statistics_binary_store_test.cpp
     ../../src/engine/optimizer/access_path_full.cpp
     ../../src/engine/optimizer/physical_plan.cpp
+    ../../src/engine/optimizer/selectivity_model.cpp
     ../../src/engine/optimizer/optimizer_statistics_full.cpp
     ../../src/engine/optimizer/statistics_catalog.cpp)
   target_compile_features(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE cxx_std_23)

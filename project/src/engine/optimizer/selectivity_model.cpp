@@ -11,10 +11,13 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
 namespace {
+
+bool UnitFraction(double value) { return std::isfinite(value) && value >= 0 && value <= 1; }
 
 double Clamp(double value, double minimum, double maximum) {
   return std::max(minimum, std::min(maximum, value));
@@ -54,6 +57,7 @@ bool ConfidenceAtLeast(CostConfidence actual, CostConfidence minimum) {
 CostConfidence ConfidenceFromStats(bool exact, bool has_stats, CostConfidence input_confidence) {
   if (exact) return CostConfidence::kExact;
   if (input_confidence == CostConfidence::kRejected) return CostConfidence::kRejected;
+  if (!has_stats) return CostConfidence::kLow;
   if (input_confidence == CostConfidence::kUnknown) return has_stats ? CostConfidence::kMedium : CostConfidence::kLow;
   return input_confidence;
 }
@@ -76,23 +80,20 @@ SelectivityEstimate OneRowEstimate(std::uint64_t input_rows, std::string diagnos
                        std::move(diagnostic_code),
                        false);
   estimate.exact_rows_known = true;
-  estimate.exact_rows = 1;
+  estimate.exact_rows = input_rows == 0 ? 0 : 1;
   return estimate;
 }
 
 SelectivityEstimate ScalarEqualityEstimate(const PredicateSelectivityInput& input) {
   const double non_null_fraction = Clamp(1.0 - input.null_fraction, 0.0, 1.0);
-  if (input.has_mcv_frequency || input.has_mcv) {
-    const double frequency = input.has_mcv_frequency ? input.mcv_frequency : 0.05;
-    return Make(Clamp(frequency, OneRowSelectivity(input.input_rows), non_null_fraction),
+  if (input.has_mcv_frequency && UnitFraction(input.mcv_frequency)) {
+    return Make(std::min(input.mcv_frequency, non_null_fraction),
                 ConfidenceFromStats(false, true, input.input_confidence),
                 "SB_OPTIMIZER_SELECTIVITY.MCV_EQ",
                 false);
   }
   if (input.distinct_values != 0) {
-    return Make(Clamp(non_null_fraction / static_cast<double>(input.distinct_values),
-                      OneRowSelectivity(input.input_rows),
-                      non_null_fraction),
+    return Make(non_null_fraction / static_cast<double>(input.distinct_values),
                 ConfidenceFromStats(false, true, input.input_confidence),
                 "SB_OPTIMIZER_SELECTIVITY.NDV_EQ",
                 false);
@@ -142,17 +143,61 @@ bool ChildConservative(const std::vector<SelectivityEstimate>& children) {
   return false;
 }
 
-std::vector<std::string> Sorted(std::vector<std::string> values) {
+template<class T>
+std::vector<T> Sorted(std::vector<T> values) {
   std::sort(values.begin(), values.end());
   return values;
 }
 
-bool SameShape(const std::vector<std::string>& left, const std::vector<std::string>& right) {
+template<class T>
+bool SameShape(const std::vector<T>& left, const std::vector<T>& right) {
   return Sorted(left) == Sorted(right);
 }
 
+template<class T>
+bool UniqueValues(const std::vector<T>& values) {
+  const auto sorted = Sorted(values);
+  return std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end();
+}
+
+bool ValidDimensions(const std::vector<planner::CanonicalPlannerUuid>& columns,
+                     const std::vector<std::string>& paths) {
+  return std::ranges::all_of(columns, [](const auto& id) {
+           return scratchbird::core::uuid::IsEngineIdentityUuid(id);
+         }) && std::ranges::all_of(paths, [](const auto& digest) { return !digest.empty(); }) &&
+         UniqueValues(columns) && UniqueValues(paths);
+}
+
+bool ValidExtendedValues(const ExtendedOptimizerStatistic& stats) {
+  if (stats.kind < ExtendedOptimizerStatisticKind::kMultiColumnNdv ||
+      stats.kind > ExtendedOptimizerStatisticKind::kDocumentPathBridge ||
+      !ValidDimensions(stats.column_uuids, stats.document_path_digests) ||
+      !UnitFraction(stats.functional_dependency_strength) ||
+      !std::isfinite(stats.correlation_coefficient) ||
+      stats.correlation_coefficient < -1 || stats.correlation_coefficient > 1 ||
+      !UnitFraction(stats.histogram_selectivity) || !UnitFraction(stats.sampled_dependency_selectivity) ||
+      (stats.observed_selectivity_error != -1 && !UnitFraction(stats.observed_selectivity_error))) return false;
+  double total = 0;
+  std::vector<std::vector<std::string>> entries;
+  for (const auto& entry : stats.joint_mcv) {
+    if (!UnitFraction(entry.frequency) ||
+        entry.value_encodings.size() != stats.column_uuids.size() + stats.document_path_digests.size()) return false;
+    total += entry.frequency;
+    entries.push_back(entry.value_encodings);
+  }
+  return total <= 1 && UniqueValues(entries);
+}
+
+struct DimensionKey {
+  enum class Kind { kColumn, kDocumentPath };
+  Kind kind = Kind::kColumn;
+  planner::CanonicalPlannerUuid column_uuid;
+  std::string path_digest;
+  auto operator<=>(const DimensionKey&) const = default;
+};
+
 struct ShapeDimension {
-  std::string key;
+  DimensionKey key;
   std::string value_encoding;
   SelectivityEstimate child;
 };
@@ -162,14 +207,14 @@ std::vector<ShapeDimension> RequestDimensions(const ExtendedStatsSelectivityRequ
   dimensions.reserve(request.column_uuids.size() + request.document_path_digests.size());
   for (std::size_t i = 0; i < request.column_uuids.size(); ++i) {
     ShapeDimension dimension;
-    dimension.key = "column:" + request.column_uuids[i];
+    dimension.key = {DimensionKey::Kind::kColumn, request.column_uuids[i], {}};
     if (i < request.value_encodings.size()) dimension.value_encoding = request.value_encodings[i];
     if (i < request.children.size()) dimension.child = request.children[i];
     dimensions.push_back(std::move(dimension));
   }
   for (std::size_t i = 0; i < request.document_path_digests.size(); ++i) {
     ShapeDimension dimension;
-    dimension.key = "path:" + request.document_path_digests[i];
+    dimension.key = {DimensionKey::Kind::kDocumentPath, {}, request.document_path_digests[i]};
     const auto request_index = request.column_uuids.size() + i;
     if (request_index < request.value_encodings.size()) {
       dimension.value_encoding = request.value_encodings[request_index];
@@ -180,11 +225,11 @@ std::vector<ShapeDimension> RequestDimensions(const ExtendedStatsSelectivityRequ
   return dimensions;
 }
 
-std::vector<std::string> StatisticDimensionKeys(const ExtendedOptimizerStatistic& stats) {
-  std::vector<std::string> keys;
+std::vector<DimensionKey> StatisticDimensionKeys(const ExtendedOptimizerStatistic& stats) {
+  std::vector<DimensionKey> keys;
   keys.reserve(stats.column_uuids.size() + stats.document_path_digests.size());
-  for (const auto& column_uuid : stats.column_uuids) keys.push_back("column:" + column_uuid);
-  for (const auto& path_digest : stats.document_path_digests) keys.push_back("path:" + path_digest);
+  for (const auto& column_uuid : stats.column_uuids) keys.push_back({DimensionKey::Kind::kColumn, column_uuid, {}});
+  for (const auto& path_digest : stats.document_path_digests) keys.push_back({DimensionKey::Kind::kDocumentPath, {}, path_digest});
   return keys;
 }
 
@@ -206,7 +251,7 @@ bool FindStatisticShapeInRequest(const std::vector<ShapeDimension>& request_dime
 
 bool ExactShapeMatch(const std::vector<ShapeDimension>& request_dimensions,
                      const ExtendedOptimizerStatistic& stats) {
-  std::vector<std::string> request_keys;
+  std::vector<DimensionKey> request_keys;
   request_keys.reserve(request_dimensions.size());
   for (const auto& dimension : request_dimensions) request_keys.push_back(dimension.key);
   return SameShape(request_keys, StatisticDimensionKeys(stats));
@@ -232,8 +277,7 @@ ExtendedStatsSelectivityRequest SubsetRequest(
     const ExtendedStatsSelectivityRequest& request,
     const std::vector<ShapeDimension>& request_dimensions,
     const ExtendedOptimizerStatistic& stats,
-    const std::vector<std::size_t>& request_indices,
-    bool exact_shape) {
+    const std::vector<std::size_t>& request_indices) {
   ExtendedStatsSelectivityRequest subset;
   subset.relation_uuid = request.relation_uuid;
   subset.column_uuids = stats.column_uuids;
@@ -246,9 +290,6 @@ ExtendedStatsSelectivityRequest SubsetRequest(
   for (const auto index : request_indices) {
     subset.children.push_back(request_dimensions[index].child);
     subset.value_encodings.push_back(request_dimensions[index].value_encoding);
-  }
-  if (exact_shape && request.value_encodings.size() == request_indices.size()) {
-    subset.value_encodings = request.value_encodings;
   }
   return subset;
 }
@@ -309,8 +350,7 @@ double ExtendedSelectivity(const ExtendedStatsSelectivityRequest& request,
     case ExtendedOptimizerStatisticKind::kSampledDependency:
       return stats.sampled_dependency_selectivity;
     case ExtendedOptimizerStatisticKind::kFkPkJoinCardinality:
-      return request.join_cardinality_request && stats.fk_pk_shortcut &&
-                     stats.fk_pk_estimated_rows != 0
+      return request.join_cardinality_request && stats.fk_pk_shortcut
                  ? 1.0
                  : IndependentChildSelectivity(request.children);
     case ExtendedOptimizerStatisticKind::kDocumentPathBridge:
@@ -342,8 +382,7 @@ int FamilyRank(const ExtendedStatsSelectivityRequest& subset_request,
                const ExtendedOptimizerStatistic& stats,
                bool exact_joint_mcv) {
   if (stats.kind == ExtendedOptimizerStatisticKind::kFkPkJoinCardinality &&
-      subset_request.join_cardinality_request && stats.fk_pk_shortcut &&
-      stats.fk_pk_estimated_rows != 0) {
+      subset_request.join_cardinality_request && stats.fk_pk_shortcut) {
     return 800;
   }
   switch (stats.kind) {
@@ -387,8 +426,8 @@ bool CandidateBetter(const ExtendedStatsCandidate& left,
     return ObservedErrorIsBetter(left.observed_selectivity_error,
                                  right.observed_selectivity_error);
   }
-  const auto left_uuid = left.stats == nullptr ? std::string{} : left.stats->identity.statistic_uuid;
-  const auto right_uuid = right.stats == nullptr ? std::string{} : right.stats->identity.statistic_uuid;
+  const auto left_uuid = left.stats == nullptr ? planner::CanonicalPlannerUuid{} : left.stats->identity.statistic_uuid;
+  const auto right_uuid = right.stats == nullptr ? planner::CanonicalPlannerUuid{} : right.stats->identity.statistic_uuid;
   return left_uuid < right_uuid;
 }
 
@@ -530,8 +569,10 @@ SelectivityEstimate EstimatePredicateSelectivity(const PredicateSelectivityInput
 
 std::uint64_t EstimateRowsAfterSelectivity(std::uint64_t input_rows, const SelectivityEstimate& estimate) {
   if (estimate.exact_rows_known) return std::min(input_rows, estimate.exact_rows);
+  if (!UnitFraction(estimate.selectivity)) return input_rows;
   if (input_rows == 0 || estimate.selectivity <= 0.0) return 0;
-  const double rows = std::ceil((static_cast<double>(input_rows) * Clamp(estimate.selectivity, 0.0, 1.0)) - 1e-9);
+  const long double rows = std::ceil(static_cast<long double>(input_rows) * estimate.selectivity);
+  if (rows >= static_cast<long double>(input_rows)) return input_rows;
   return std::max<std::uint64_t>(1, static_cast<std::uint64_t>(rows));
 }
 
@@ -543,22 +584,29 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
   result.diagnostic_code = result.estimate.diagnostic_code;
   result.evidence.push_back("extended_stats_independent_scalar_fallback=true");
 
-  if (request.relation_uuid.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid) ||
       (request.column_uuids.empty() && request.document_path_digests.empty()) ||
-      request.children.empty()) {
+      request.children.empty() ||
+      !ValidDimensions(request.column_uuids, request.document_path_digests) ||
+      !std::ranges::all_of(request.children, [](const auto& child) { return UnitFraction(child.selectivity); })) {
     result.estimate = FallbackEstimate(request,
                                        "SB_OPTIMIZER_EXTENDED_STATS.FALLBACK_SHAPE_MISMATCH");
     result.diagnostic_code = result.estimate.diagnostic_code;
     result.evidence.push_back("extended_stats_shape_match=false");
+    result.estimate.confidence = CostConfidence::kRejected;
+    result.estimate.conservative = true;
     return result;
   }
 
   const auto request_dimensions = RequestDimensions(request);
-  if (request_dimensions.empty() || request.children.size() < request_dimensions.size()) {
+  if (request_dimensions.empty() || request.children.size() != request_dimensions.size() ||
+      (!request.value_encodings.empty() && request.value_encodings.size() != request_dimensions.size())) {
     result.estimate = FallbackEstimate(request,
                                        "SB_OPTIMIZER_EXTENDED_STATS.FALLBACK_SHAPE_MISMATCH");
     result.diagnostic_code = result.estimate.diagnostic_code;
     result.evidence.push_back("extended_stats_shape_match=false");
+    result.estimate.confidence = CostConfidence::kRejected;
+    result.estimate.conservative = true;
     return result;
   }
 
@@ -568,12 +616,18 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
   bool unusable = false;
   bool low_confidence = false;
   std::vector<ExtendedStatsCandidate> candidates;
+  std::map<planner::CanonicalPlannerUuid, std::size_t> statistic_identity_counts;
+  for (const auto& stats : extended_stats) ++statistic_identity_counts[stats.identity.statistic_uuid];
   for (const auto& stats : extended_stats) {
-    if (stats.relation_uuid != request.relation_uuid &&
+    if (stats.relation_uuid != request.relation_uuid ||
         stats.identity.object_uuid != request.relation_uuid) {
       continue;
     }
     relation_seen = true;
+    if (statistic_identity_counts.at(stats.identity.statistic_uuid) != 1) {
+      unusable = true;
+      continue;
+    }
     std::vector<std::size_t> request_indices;
     if (!FindStatisticShapeInRequest(request_dimensions, stats, &request_indices)) {
       shape_mismatch = true;
@@ -584,7 +638,7 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
       stale = true;
       continue;
     }
-    if (!OptimizerStatsIdentityIsUsable(stats.identity) ||
+    if (!OptimizerStatsIdentityIsUsable(stats.identity) || !ValidExtendedValues(stats) ||
         stats.identity.source == StatisticSource::kUnavailable ||
         stats.finality_authority ||
         !stats.mga_visibility_recheck_required ||
@@ -605,8 +659,7 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
     candidate.subset_request = SubsetRequest(request,
                                              request_dimensions,
                                              stats,
-                                             request_indices,
-                                             candidate.exact_shape);
+                                             request_indices);
     candidate.exact_joint_mcv = JointMcvExactValueMatch(candidate.subset_request, stats);
     candidate.family_rank = FamilyRank(candidate.subset_request, stats, candidate.exact_joint_mcv);
     candidate.confidence_rank = ConfidenceRank(stats.identity.confidence);
@@ -667,7 +720,7 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
                          "SB_OPTIMIZER_EXTENDED_STATS.USED",
                          conservative);
   if (selected.kind == ExtendedOptimizerStatisticKind::kFkPkJoinCardinality &&
-      request.join_cardinality_request && selected.fk_pk_estimated_rows != 0 &&
+      request.join_cardinality_request && selected.fk_pk_shortcut &&
       CoveredCount(covered) == covered.size()) {
     result.estimate.exact_rows_known = true;
     result.estimate.exact_rows = selected.fk_pk_estimated_rows;
@@ -704,8 +757,7 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
   for (const auto& candidate : selected_candidates) {
     result.evidence.push_back(std::string("extended_stats_selected_kind=") +
                               ExtendedOptimizerStatisticKindName(candidate.stats->kind));
-    result.evidence.push_back(std::string("extended_stats_selected_uuid=") +
-                              candidate.stats->identity.statistic_uuid);
+    result.selected_statistic_uuids.push_back(candidate.stats->identity.statistic_uuid);
   }
   return result;
 }
@@ -713,10 +765,13 @@ ExtendedStatsSelectivityResult EstimateCorrelatedConjunctionSelectivity(
 std::uint64_t EstimateJoinRowsAfterSelectivity(std::uint64_t left_rows,
                                                std::uint64_t right_rows,
                                                const SelectivityEstimate& estimate) {
-  if (left_rows == 0 || right_rows == 0 || estimate.selectivity <= 0.0) return 0;
-  if (estimate.exact_rows_known) return estimate.exact_rows;
-  const auto pair_count = SaturatingMultiply(left_rows, right_rows);
-  const double rows = std::ceil((static_cast<double>(pair_count) * Clamp(estimate.selectivity, 0.0, 1.0)) - 1e-9);
+  if (left_rows == 0 || right_rows == 0) return 0;
+  if (estimate.exact_rows_known) return std::min(SaturatingMultiply(left_rows, right_rows), estimate.exact_rows);
+  if (!UnitFraction(estimate.selectivity)) return SaturatingMultiply(left_rows, right_rows);
+  if (estimate.selectivity == 0) return 0;
+  const long double rows = std::ceil(static_cast<long double>(left_rows) *
+                                      static_cast<long double>(right_rows) * estimate.selectivity);
+  if (rows >= static_cast<long double>(UINT64_MAX)) return UINT64_MAX;
   return std::max<std::uint64_t>(1, static_cast<std::uint64_t>(rows));
 }
 

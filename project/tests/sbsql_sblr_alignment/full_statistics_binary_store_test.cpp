@@ -2,16 +2,39 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/optimizer/optimizer_statistics_full.hpp"
 #include "../../src/engine/optimizer/access_path_full.hpp"
+#include "../../src/engine/optimizer/selectivity_model.hpp"
 #include "binary_uuid_fixture.hpp"
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <new>
 #include <stdexcept>
+
+namespace fault {
+thread_local long remaining = -1;
+thread_local bool hit = false;
+}
+void* operator new(std::size_t n) {
+  if (fault::remaining >= 0 && fault::remaining-- == 0) {
+    fault::remaining = 0; fault::hit = true; throw std::bad_alloc();
+  }
+  if (void* p = std::malloc(n ? n : 1)) return p;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace o = scratchbird::engine::optimizer;
 using Uuid = scratchbird::engine::planner::CanonicalPlannerUuid;
 static_assert(sizeof(Uuid) == 16);
 namespace {
 unsigned checks = 0;
+unsigned faults = 0;
 void Check(bool value, const char* message) {
   ++checks;
   if (!value) throw std::runtime_error(message);
@@ -152,11 +175,115 @@ void AccessBindings() {
   candidate.index_uuid = Id(6);
   Check(physical.index_uuid == Id(3), "physical node owns independent source binding");
 }
+
+void ExtendedSelectivity() {
+  o::ExtendedStatsSelectivityRequest request;
+  request.relation_uuid = Id(1); request.column_uuids = {Id(4), Id(5)};
+  request.children = {{0.1, o::CostConfidence::kExact, {}, false},
+                      {0.2, o::CostConfidence::kExact, {}, false}};
+  o::ExtendedOptimizerStatistic stats;
+  stats.identity = Identity(1, 6); stats.relation_uuid = Id(1);
+  stats.column_uuids = request.column_uuids; stats.multi_column_distinct_count = 100;
+  auto result = o::EstimateCorrelatedConjunctionSelectivity(request, {stats});
+  Check(result.used_extended_stats && result.estimate.selectivity == 0.01, "binary NDV shape selected");
+  Check(result.selected_statistic_uuids == std::vector<Uuid>{Id(6)}, "selected statistics retain binary identities");
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    auto changed = request; changed.relation_uuid.bytes[bit / 8] ^= 1U << (bit % 8);
+    Check(!o::EstimateCorrelatedConjunctionSelectivity(changed, {stats}).used_extended_stats,
+          "all128 relation bits isolate statistics");
+    changed = request; changed.column_uuids[0].bytes[bit / 8] ^= 1U << (bit % 8);
+    Check(!o::EstimateCorrelatedConjunctionSelectivity(changed, {stats}).used_extended_stats,
+          "all128 column bits isolate statistics");
+  }
+  auto wrong_owner = stats; wrong_owner.identity.object_uuid = Id(2);
+  Check(!o::EstimateCorrelatedConjunctionSelectivity(request, {wrong_owner}).used_extended_stats,
+        "relation match cannot override different statistics owner");
+  auto duplicate = stats; duplicate.column_uuids = {Id(4), Id(4)};
+  Check(!o::EstimateCorrelatedConjunctionSelectivity(request, {duplicate}).used_extended_stats,
+        "duplicate dimensions cannot claim double coverage");
+  duplicate = stats; duplicate.multi_column_distinct_count = 50;
+  Check(!o::EstimateCorrelatedConjunctionSelectivity(request, {stats, duplicate}).used_extended_stats,
+        "duplicate statistic identities cannot publish order-dependent conflicting values");
+  auto bad_request = request; bad_request.children[0].selectivity = std::numeric_limits<double>::quiet_NaN();
+  const auto invalid_request = o::EstimateCorrelatedConjunctionSelectivity(bad_request, {stats});
+  Check(!invalid_request.used_extended_stats && invalid_request.estimate.confidence == o::CostConfidence::kRejected,
+        "malformed request cannot inherit exact fallback confidence");
+  auto bad = stats; bad.histogram_selectivity = std::numeric_limits<double>::quiet_NaN();
+  Check(!o::EstimateCorrelatedConjunctionSelectivity(request, {bad}).used_extended_stats, "NaN statistics refuse");
+  bad = stats; bad.kind = static_cast<o::ExtendedOptimizerStatisticKind>(255);
+  Check(!o::EstimateCorrelatedConjunctionSelectivity(request, {bad}).used_extended_stats, "unknown statistic kind refuses");
+  auto tied = stats; tied.identity.statistic_uuid = Id(7); tied.multi_column_distinct_count = 50;
+  result = o::EstimateCorrelatedConjunctionSelectivity(request, {tied, stats});
+  Check(result.selected_statistic_uuids == std::vector<Uuid>{Id(6)} && result.estimate.selectivity == 0.01,
+        "binary identity deterministically breaks statistic ties");
+  stats.kind = o::ExtendedOptimizerStatisticKind::kJointMcv;
+  stats.joint_mcv = {{{"A", "B"}, 0.3}};
+  request.column_uuids = {Id(5), Id(4)}; request.value_encodings = {"B", "A"};
+  result = o::EstimateCorrelatedConjunctionSelectivity(request, {stats});
+  Check(result.used_extended_stats && result.estimate.selectivity == 0.3,
+        "MCV values follow statistic column ordering after query permutation");
+  stats.kind = o::ExtendedOptimizerStatisticKind::kFkPkJoinCardinality;
+  stats.fk_pk_shortcut = true; stats.fk_pk_estimated_rows = 0;
+  request.join_cardinality_request = true;
+  result = o::EstimateCorrelatedConjunctionSelectivity(request, {stats});
+  Check(result.used_extended_stats && result.estimate.exact_rows_known && result.estimate.exact_rows == 0,
+        "known zero join estimate is not a missing value");
+  o::SelectivityEstimate estimate{1, o::CostConfidence::kExact, {}, false};
+  o::PredicateSelectivityInput equality;
+  equality.predicate_kind = "scalar_eq"; equality.input_rows = 100;
+  equality.has_mcv = true; equality.input_confidence = o::CostConfidence::kExact;
+  auto equality_result = o::EstimatePredicateSelectivity(equality);
+  Check(equality_result.conservative && equality_result.confidence == o::CostConfidence::kLow,
+        "MCV existence without frequency cannot invent an exact measured frequency");
+  equality.has_mcv_frequency = true; equality.mcv_frequency = 0;
+  equality_result = o::EstimatePredicateSelectivity(equality);
+  Check(equality_result.selectivity == 0 && !equality_result.conservative, "measured zero MCV frequency preserved");
+  equality.has_mcv_frequency = false; equality.distinct_values = 10; equality.null_fraction = 1;
+  Check(o::EstimatePredicateSelectivity(equality).selectivity == 0, "all-null column equality has zero non-null selectivity");
+  o::PredicateSelectivityInput empty_unique;
+  empty_unique.predicate_kind = "unique_eq";
+  const auto zero_unique = o::EstimatePredicateSelectivity(empty_unique);
+  Check(zero_unique.exact_rows_known && zero_unique.exact_rows == 0,
+        "unique lookup does not claim a row in known empty input");
+  for (auto rows : {UINT64_C(0), UINT64_C(1), UINT64_C(9007199254740993), UINT64_MAX}) {
+    Check(o::EstimateRowsAfterSelectivity(rows, estimate) == rows, "unit selectivity retains exact uint64 count");
+    Check(o::EstimateJoinRowsAfterSelectivity(rows, 1, estimate) == rows, "single-partner join exact uint64 count");
+  }
+  estimate.selectivity = 0.5;
+  Check(o::EstimateRowsAfterSelectivity(5, estimate) == 3, "cardinality rounds upward");
+  Check(o::EstimateJoinRowsAfterSelectivity(UINT64_MAX, 2, estimate) == UINT64_MAX,
+        "join multiplication saturates after applying selectivity");
+  estimate.selectivity = std::numeric_limits<double>::quiet_NaN();
+  Check(o::EstimateRowsAfterSelectivity(17, estimate) == 17, "invalid estimate conservatively preserves input bound");
+  Check(o::EstimateJoinRowsAfterSelectivity(17, 3, estimate) == 51, "invalid join estimate preserves pair bound");
+  stats.kind = o::ExtendedOptimizerStatisticKind::kJointMcv;
+  request.join_cardinality_request = false;
+  const std::vector<o::ExtendedOptimizerStatistic> sources{stats};
+  bool finished = false;
+  for (long allocation = 0; allocation < 4096; ++allocation) {
+    std::optional<o::ExtendedStatsSelectivityResult> published;
+    fault::remaining = allocation; fault::hit = false;
+    try { published = o::EstimateCorrelatedConjunctionSelectivity(request, sources); }
+    catch (const std::bad_alloc&) {}
+    const bool hit = fault::hit; fault::remaining = -1;
+    if (!hit) {
+      Check(published && published->used_extended_stats && published->estimate.selectivity == 0.3,
+            "unfaulted selection publishes complete actual result");
+      finished = true; break;
+    }
+    ++faults;
+    Check(!published, "allocation failure publishes no partial selected-statistics result");
+    Check(request.value_encodings == std::vector<std::string>{"B", "A"} &&
+          sources[0].joint_mcv[0].value_encodings == std::vector<std::string>{"A", "B"},
+          "failed selection preserves source and query ordering");
+  }
+  Check(finished, "selection allocation sweep exhausted");
+}
 }
 int main() {
   try {
-    StoreAndCounts(); CorrelationsAndIndexes(); BinaryKeys(); AccessBindings();
-    std::cout << "PASS full statistics binary store checks=" << checks << '\n';
+    StoreAndCounts(); CorrelationsAndIndexes(); BinaryKeys(); AccessBindings(); ExtendedSelectivity();
+    std::cout << "PASS full statistics binary store checks=" << checks << " faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << '\n'; return 1;
