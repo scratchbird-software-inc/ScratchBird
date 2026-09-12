@@ -26,6 +26,10 @@ namespace {
 // sb_core_uuid has no injectable provider or deterministic entropy path.
 std::atomic<int> mode{0};
 std::atomic<unsigned> calls{0};
+std::atomic<int> clock_mode{0};
+std::atomic<std::uint64_t> clock_reads{0};
+std::atomic<std::uint64_t> clock_millis{123456};
+std::atomic<bool> clock_failed{false};
 unsigned checks = 0, failures = 0;
 void Check(bool value, const char* detail) {
   ++checks;
@@ -129,6 +133,129 @@ void WallClockConversion() {
             "wall clock refusal lost canonical diagnostic");
   }
 }
+template<class Scenario>
+void FreshRuntime(Scenario scenario) {
+  // A fresh real thread gives the production thread-owned instance its normal
+  // lifetime. There is no test reset hook or modified allocation width.
+  clock_mode = 1;
+  clock_millis = 123456;
+  clock_reads = 0;
+  clock_failed = false;
+  mode = 1;
+  std::thread worker(scenario);
+  worker.join();
+  clock_mode = 0;
+  mode = 0;
+}
+void RuntimeAllocation() {
+  FreshRuntime([] {
+    const auto before = calls.load();
+    auto previous = u::IssueRuntimeIdentityV7();
+    Check(previous.has_value(), "runtime initial seed refused");
+    for (unsigned i = 0; i < 4096; ++i) {
+      const auto current = u::IssueRuntimeIdentityV7();
+      Check(current && previous && *previous < *current, "same-ms runtime allocation did not increase");
+      if (current && previous) {
+        // Independent carry oracle: all 74 allocation bits are concatenated,
+        // incremented as a ten-byte integer, then split back into UUID fields.
+        std::array<unsigned char,10> allocation{};
+        allocation[0] = static_cast<unsigned char>((previous->bytes[6] & 15) >> 2);
+        allocation[1] = static_cast<unsigned char>(((previous->bytes[6] & 3) << 6) |
+                                                 (previous->bytes[7] >> 2));
+        allocation[2] = static_cast<unsigned char>((previous->bytes[7] << 6) |
+                                                 (previous->bytes[8] & 63));
+        std::copy(previous->bytes.begin()+9,previous->bytes.end(),allocation.begin()+3);
+        for (int digit=9; digit>=0; --digit) if (++allocation[digit]) break;
+        auto expected=*previous;
+        expected.bytes[6]=static_cast<unsigned char>(0x70 | (allocation[0] << 2) | (allocation[1] >> 6));
+        expected.bytes[7]=static_cast<unsigned char>((allocation[1] << 2) | (allocation[2] >> 6));
+        expected.bytes[8]=static_cast<unsigned char>(0x80 | (allocation[2] & 63));
+        std::copy(allocation.begin()+3,allocation.end(),expected.bytes.begin()+9);
+        Check(current->bytes == expected.bytes, "runtime74bit increment differs from byte oracle");
+      }
+      previous=current;
+    }
+    Check(calls==before+1, "same-ms allocations consumed fresh entropy instead of sequence");
+    const auto diagnostic=u::NewDiagnosticOccurrenceUuid();
+    Check(previous && previous->bytes < diagnostic && calls==before+1,
+          "diagnostic issuer bypassed the runtime allocation instance");
+    clock_millis=123457;
+    const auto later=u::IssueRuntimeIdentityV7();
+    Check(later && previous && *previous < *later && calls==before+2,
+          "later accepted millisecond did not start a fresh entropy allocation");
+    clock_millis=123456;
+    Check(!u::IssueRuntimeIdentityV7(), "runtime accepted regressing wall time");
+    clock_millis=123457;
+    const auto recovered=u::IssueRuntimeIdentityV7();
+    Check(recovered && later && *later < *recovered && calls==before+2,
+          "clock refusal changed retained allocation or prevented valid recovery");
+    clock_millis=123458;
+    mode=2;
+    Check(!u::IssueRuntimeIdentityV7(), "later-millisecond entropy failure published a UUID");
+    clock_millis=123457;
+    mode=1;
+    const auto retained=u::IssueRuntimeIdentityV7();
+    Check(retained && recovered && *recovered < *retained && calls==before+3,
+          "entropy failure advanced clock authority or consumed retained sequence");
+    clock_failed=true;
+    Check(!u::IssueRuntimeIdentityV7(), "failed actual clock source admitted runtime identity");
+    clock_failed=false;
+    clock_mode=2; // A regressed monotonic observation despite equal wall time.
+    Check(!u::IssueRuntimeIdentityV7(), "runtime accepted regressing monotonic time");
+  });
+  // Carry across the62-bit rand_b /12-bit rand_a split without changing time,
+  // version or variant. The deterministic bytes are injected only at RAND_bytes.
+  FreshRuntime([] {
+    mode=4;
+    const auto first=u::IssueRuntimeIdentityV7();
+    const auto second=u::IssueRuntimeIdentityV7();
+    Check(first && second, "74bit cross-field carry refused");
+    if (first && second) {
+      Check(first->bytes[6]==0x75 && first->bytes[7]==0xa5 && first->bytes[8]==0xbf,
+            "carry seed oracle mismatch");
+      auto expected=*first;
+      expected.bytes[7]=0xa6;
+      expected.bytes[8]=0x80;
+      std::fill(expected.bytes.begin()+9,expected.bytes.end(),0);
+      Check(second->bytes==expected.bytes, "rand_b overflow corrupted rand_a or UUID bits");
+    }
+  });
+  FreshRuntime([] {
+    mode=6;
+    const auto first=u::IssueRuntimeIdentityV7();
+    const auto second=u::IssueRuntimeIdentityV7();
+    Check(first && second, "rand_a byte carry refused");
+    if (first && second) {
+      auto expected=*first;
+      expected.bytes[6]=0x76;
+      expected.bytes[7]=0;
+      expected.bytes[8]=0x80;
+      std::fill(expected.bytes.begin()+9,expected.bytes.end(),0);
+      Check(second->bytes==expected.bytes, "rand_a carry changed version or timestamp bits");
+    }
+  });
+  FreshRuntime([] {
+    mode=5; // All74 bits set: the first allocation consumes the maximum.
+    const auto before=calls.load();
+    Check(u::IssueRuntimeIdentityV7().has_value(), "maximum allocation seed refused");
+    const auto start=std::chrono::steady_clock::now();
+    Check(!u::IssueRuntimeIdentityV7(), "exhausted runtime reused a suffix or invented time");
+    const auto elapsed=std::chrono::steady_clock::now()-start;
+    Check(elapsed>=std::chrono::milliseconds(1000) && elapsed<std::chrono::seconds(5),
+          "exhaustion wait was absent or unbounded");
+    Check(calls==before+1, "exhaustion bypassed sequence with fresh same-ms entropy");
+    clock_millis=123457;
+    Check(u::IssueRuntimeIdentityV7().has_value() && calls==before+2,
+          "exhausted instance failed to recover on a later accepted millisecond");
+  });
+  FreshRuntime([] {
+    mode=5;
+    const auto first=u::IssueRuntimeIdentityV7();
+    clock_mode=3; // Return a later accepted millisecond after three observations.
+    const auto second=u::IssueRuntimeIdentityV7();
+    Check(first && second && *first < *second, "bounded wait failed to use later actual clock observation");
+  });
+}
 bool Transfer(int fd, void* bytes, std::size_t count, bool writing) {
   auto* cursor = static_cast<unsigned char*>(bytes);
   while (count) {
@@ -140,7 +267,13 @@ bool Transfer(int fd, void* bytes, std::size_t count, bool writing) {
   }
   return true;
 }
-void RealBackend() {
+std::optional<p::Uuid> RealIssue(bool runtime) {
+  if (runtime) return u::IssueRuntimeIdentityV7();
+  const auto issued=u::GenerateEngineIdentityV7(p::UuidKind::object,123456);
+  if (!issued.ok()) return std::nullopt;
+  return issued.value.value;
+}
+void RealBackend(bool runtime) {
   constexpr unsigned threads = 4, per_thread = 1024;
   std::array<std::vector<p::Uuid>,threads> values;
   std::array<std::thread,threads> workers;
@@ -149,9 +282,9 @@ void RealBackend() {
     values[i].resize(per_thread);
     workers[i] = std::thread([&,i] {
       for (auto& value : values[i]) {
-        const auto issued = u::GenerateEngineIdentityV7(p::UuidKind::object, 123456);
-        if (!issued.ok()) { valid = false; return; }
-        value = issued.value.value;
+        const auto issued = RealIssue(runtime);
+        if (!issued) { valid = false; return; }
+        value = *issued;
       }
     });
   }
@@ -159,6 +292,17 @@ void RealBackend() {
   Check(valid, "real backend generation failed on a worker");
   std::vector<p::Uuid> all;
   for (const auto& list : values) all.insert(all.end(),list.begin(),list.end());
+  if (runtime) {
+    // This calling thread has a fresh instance. Warm it at a fixed accepted
+    // timestamp so continuing its copied suffix in the child is detectable.
+    // Entropy remains the actual crypto backend, in both parent and child.
+    clock_reads=0;
+    clock_millis=123456;
+    clock_mode=1;
+    const auto warm=RealIssue(true);
+    Check(warm.has_value(), "pre-fork runtime warmup failed");
+    if (warm) all.push_back(*warm);
+  }
   // Warmed backend state is inherited by fork. Children must not replay the
   // parent's random stream. This is an actual backend/process test, not a mock.
   int channel[2];
@@ -168,9 +312,9 @@ void RealBackend() {
     ::close(channel[0]);
     std::array<p::Uuid,64> produced;
     for (auto& value : produced) {
-      const auto issued = u::GenerateEngineIdentityV7(p::UuidKind::row, 123456);
-      if (!issued.ok()) ::_exit(2);
-      value = issued.value.value;
+      const auto issued = RealIssue(runtime);
+      if (!issued) ::_exit(2);
+      value = *issued;
     }
     const bool written = Transfer(channel[1], produced.data(), sizeof(produced), true);
     ::close(channel[1]);
@@ -180,9 +324,9 @@ void RealBackend() {
   if (child < 0) { ::close(channel[0]); Check(false,"fork failed"); return; }
   std::array<p::Uuid,64> received;
   for (unsigned i = 0; i < received.size(); ++i) {
-    const auto issued = u::GenerateEngineIdentityV7(p::UuidKind::row, 123456);
-    Check(issued.ok(), "post-fork parent backend failed");
-    all.push_back(issued.value.value);
+    const auto issued = RealIssue(runtime);
+    Check(issued.has_value(), "post-fork parent backend failed");
+    all.push_back(issued.value_or(p::Uuid{}));
   }
   Check(Transfer(channel[0],received.data(),sizeof(received),false), "child UUID transfer failed");
   ::close(channel[0]);
@@ -196,6 +340,7 @@ void RealBackend() {
           "real backend produced malformed UUIDv7");
   std::sort(all.begin(),all.end());
   Check(std::adjacent_find(all.begin(),all.end()) == all.end(), "thread/fork stream reused a UUID");
+  clock_mode=0;
   Check(u::IssueRuntimeIdentityV7().has_value(), "runtime issuer failed to recover after provider restoration");
 }
 } // namespace
@@ -205,20 +350,47 @@ extern "C" int __wrap_RAND_bytes(unsigned char* bytes, int count) {
   ++calls;
   const auto selected = mode.load();
   if (selected == 0) return __real_RAND_bytes(bytes,count);
+  if (selected==4 || selected==5 || selected==6) {
+    std::memset(bytes,0xff,static_cast<std::size_t>(count));
+    if (selected==4 && count>8) { bytes[6]=0xa5; bytes[7]=0xa5; }
+    if (selected==6 && count>8) bytes[6]=0xa5;
+    return 1;
+  }
   if (count > 0)
     std::memset(bytes, 0xa5, static_cast<std::size_t>(selected == 1 ? count : count/2));
   return selected == 1 ? 1 : selected == 2 ? 0 : -1;
+}
+extern "C" scratchbird::core::time::ClockSnapshotResult
+__real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
+extern "C" scratchbird::core::time::ClockSnapshotResult
+__wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
+  const auto selected=clock_mode.load();
+  if (!selected) return __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
+  const auto sequence=++clock_reads;
+  scratchbird::core::time::ClockSnapshotResult result;
+  if (clock_failed) {
+    result.status={p::StatusCode::time_source_unavailable,p::Severity::error,p::Subsystem::time};
+    return result;
+  }
+  const auto millis=clock_millis.load() + (selected==3 && sequence>3 ? 1 : 0);
+  result.value.wall_clock={static_cast<p::i64>(millis/1000),
+                          static_cast<p::u32>((millis%1000)*1000000)};
+  result.value.monotonic.ticks=selected==2 ? 0 : sequence;
+  return result;
 }
 int main() {
   try {
     SourceFaultsAndLayout();
     WallClockConversion();
-    RealBackend();
+    RuntimeAllocation();
+    RealBackend(false);
+    std::thread runtime_thread([] { RealBackend(true); });
+    runtime_thread.join();
   } catch (const std::exception& error) {
     std::cerr << "unexpected exception: " << error.what() << '\n';
     return 2;
   }
   std::cout << "checks=" << checks << " failures=" << failures
-            << " real_thread_uuids=4096 real_fork_uuids=128\n";
+            << " real_thread_uuids=8192 real_fork_uuids=256\n";
   return failures ? 1 : 0;
 }

@@ -656,17 +656,11 @@ TypedUuidResult GenerateEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis) {
 }
 
 std::array<std::uint8_t, 16> NewDiagnosticOccurrenceUuid() {
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::system_clock::now().time_since_epoch()).count();
-  if (now < 0 || static_cast<std::uint64_t>(now) > 0x0000ffffffffffffULL) {
-    throw std::runtime_error("Diagnostic UUIDv7 clock is outside the canonical time range.");
-  }
-  const auto generated = GenerateEngineIdentityV7(
-      UuidKind::object, static_cast<std::uint64_t>(now));
-  if (!generated.ok()) {
+  const auto generated = IssueRuntimeIdentityV7();
+  if (!generated) {
     throw std::runtime_error("Diagnostic UUIDv7 generation failed.");
   }
-  return generated.value.value.bytes;
+  return generated->bytes;
 }
 
 TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis) {

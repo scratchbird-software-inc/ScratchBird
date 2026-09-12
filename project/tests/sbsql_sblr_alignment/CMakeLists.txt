@@ -443,6 +443,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(sbsql_sblr_alignment_uuid_generation_source PRIVATE
     sb_core_uuid sb_core_time sb_core_diagnostic_catalog Threads::Threads)
   target_link_options(sbsql_sblr_alignment_uuid_generation_source PRIVATE "-Wl,--wrap=RAND_bytes")
+  target_link_options(sbsql_sblr_alignment_uuid_generation_source PRIVATE
+    "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
   add_test(NAME sbsql_sblr_alignment_uuid_generation_source
     COMMAND sbsql_sblr_alignment_uuid_generation_source)
   set_tests_properties(sbsql_sblr_alignment_uuid_generation_source PROPERTIES

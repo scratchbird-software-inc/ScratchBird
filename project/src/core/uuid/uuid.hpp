@@ -117,18 +117,10 @@ TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_mi
 
 // Fresh runtime-object identity only; callers retain its owner and lifetime.
 // Never substitutes a content hash or display label for issued identity.
-inline std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
-  try {
-    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    if (millis < 0 || static_cast<u64>(millis) >= (u64{1} << 48)) return std::nullopt;
-    const auto issued = GenerateEngineIdentityV7(UuidKind::object, static_cast<u64>(millis));
-    if (!issued.ok() || !IsEngineIdentityUuid(issued.value.value)) return std::nullopt;
-    return issued.value.value;
-  } catch (...) {
-    return std::nullopt;
-  }
-}
+// One mutex-protected allocation instance per runtime thread; fresh fork state.
+// Local clock checks, strict regression rejection and bounded 74-bit exhaustion
+// apply. This context-free helper does not supply database/cluster time policy.
+std::optional<Uuid> IssueRuntimeIdentityV7() noexcept;
 
 UuidResult GenerateCompatibilityTimeNodeV1(u64 gregorian_100ns_timestamp,
                                            u16 clock_sequence,
