@@ -1021,7 +1021,7 @@ SblrExecutorAvailabilityLoadResult BootstrapLocked(
   DecodedPair pair;
   pair.snapshot.snapshot_uuid = NewSnapshotUuid(1);
   pair.snapshot.generation = 1;
-  pair.snapshot.database_uuid = context.database_uuid.canonical;
+  pair.snapshot.database_uuid = context.database_uuid;
   pair.snapshot.row_identity_sha256 =
       ComputeSblrExecutorAvailabilityRowIdentitySha256(identity);
   pair.snapshot.installed = true;
@@ -1111,7 +1111,7 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
   std::error_code error;
   const bool exists = std::filesystem::exists(path, error);
   if (error || context.database_path.empty() ||
-      !ValidIdentityUuid(context.database_uuid.canonical,
+      !ValidIdentityUuid(context.database_uuid,
                          scratchbird::core::platform::UuidKind::database)) {
     result.diagnostic = RegistryDiagnostic(
         "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING",
@@ -1138,7 +1138,7 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
     if (cached->second.file_size == file_size &&
         cached->second.last_write_time == last_write_time &&
         cached->second.snapshot.database_uuid ==
-            context.database_uuid.canonical &&
+            context.database_uuid &&
         cached->second.snapshot.row_identity_sha256 == expected_row_identity) {
       result.ok = true;
       result.snapshot = cached->second.snapshot;
@@ -1148,7 +1148,7 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
     if (cached->second.file_size != file_size ||
         cached->second.last_write_time != last_write_time ||
         cached->second.snapshot.database_uuid !=
-            context.database_uuid.canonical) {
+            context.database_uuid) {
       VerifiedSnapshotCache().erase(cached);
     }
   }
@@ -1186,7 +1186,7 @@ SblrExecutorAvailabilityLoadResult LoadLocked(
         evidence.prior_snapshot_uuid != snapshot.prior_snapshot_uuid ||
         evidence.prior_generation != snapshot.prior_generation ||
         evidence.reason_code != snapshot.reason_code ||
-        evidence.snapshot.database_uuid != context.database_uuid.canonical ||
+        evidence.snapshot.database_uuid != context.database_uuid ||
         evidence.snapshot.row_identity_sha256 !=
             ComputeSblrExecutorAvailabilityRowIdentitySha256(identity) ||
         evidence.snapshot.generation != prior.generation + 1 ||
@@ -1247,9 +1247,9 @@ SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
   if (context.statement_executor_availability_cohort != nullptr) {
     const auto& cohort = *context.statement_executor_availability_cohort;
     if (cohort.database_path != context.database_path ||
-        cohort.database_uuid != context.database_uuid.canonical ||
+        cohort.database_uuid != context.database_uuid ||
         cohort.statement_uuid.empty() ||
-        cohort.statement_uuid != context.statement_uuid.canonical) {
+        cohort.statement_uuid != context.statement_uuid) {
       SblrExecutorAvailabilityLoadResult result;
       result.diagnostic = RegistryDiagnostic(
           "SBLR.OPCODE.EXECUTOR_EVIDENCE_STALE",
@@ -1315,12 +1315,12 @@ SblrExecutorAvailabilityBatchLoadResult LoadSblrExecutorAvailabilitySnapshots(
   if (result.ok) {
     result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
   }
-  if (!context.statement_uuid.canonical.empty()) {
+  if (!context.statement_uuid.is_nil()) {
     auto cohort =
         std::make_shared<SblrExecutorAvailabilityStatementCohort>();
     cohort->database_path = context.database_path;
-    cohort->database_uuid = context.database_uuid.canonical;
-    cohort->statement_uuid = context.statement_uuid.canonical;
+    cohort->database_uuid = context.database_uuid;
+    cohort->statement_uuid = context.statement_uuid;
     cohort->identities.assign(exact_row_identities.begin(),
                               exact_row_identities.end());
     cohort->rows = result.rows;
@@ -1364,7 +1364,7 @@ SblrExecutorAvailabilitySetResult SetSblrExecutorAvailability(
         "executor availability administration not admitted");
     return result;
   }
-  if (request.database_uuid != context.database_uuid.canonical ||
+  if (request.database_uuid != context.database_uuid ||
       !ExactAdmittedIdentity(request.exact_row_identity) ||
       StateName(request.requested_state).empty() ||
       !SafeReason(request.reason_code)) {

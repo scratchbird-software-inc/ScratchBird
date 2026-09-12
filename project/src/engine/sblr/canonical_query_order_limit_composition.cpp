@@ -150,7 +150,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto limit_capability_uuid =
@@ -272,7 +272,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
       std::move(limit_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -443,7 +443,7 @@ ExecuteCanonicalObjectFreeSortQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto sort_capability_uuid =
@@ -536,7 +536,7 @@ ExecuteCanonicalObjectFreeSortQuery(
       std::move(sort_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -793,7 +793,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" +
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto distinct_capability_uuid =
@@ -917,7 +917,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
       std::move(limit_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,

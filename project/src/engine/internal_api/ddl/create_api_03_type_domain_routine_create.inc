@@ -18,7 +18,7 @@
   }
   MgaRelationStorageDescriptor relation_descriptor;
   EngineRequestContext relation_descriptor_context = request.context;
-  relation_descriptor_context.current_schema_uuid.canonical =
+  relation_descriptor_context.current_schema_uuid =
       target_schema_uuid;
   const auto relation_descriptor_ready =
       AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
@@ -38,12 +38,12 @@
       "mga_relation_storage_descriptor";
   result.effective_table_descriptor.canonical_type_name = "table";
   result.evidence.push_back(
-      {"mga_relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
+      {"mga_relation_descriptor", relation_descriptor.descriptor_uuid});
   AddDdlPublicationResult(&result,
                           "ddl.create_table",
                           "table",
                           table_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "mga_relation_metadata");
   return result;
 }
@@ -55,7 +55,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
         "ddl.create_index",
         MakeInvalidRequestDiagnostic("ddl.create_index", "local_transaction_id_required"));
   }
-  if (request.target_object.uuid.canonical.empty()) {
+  if (request.target_object.uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
         request.context,
         "ddl.create_index",
@@ -84,12 +84,12 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   }
   const auto loaded_mga = LoadMgaRelationStoreRowsOnlyForMutationTarget(
       request.context,
-      request.target_object.uuid.canonical);
+      request.target_object.uuid);
   if (!loaded_mga.ok) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(request.context, "ddl.create_index", loaded_mga.diagnostic);
   }
   RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
-  const auto target_table = FindVisibleCrudTable(loaded_state, request.target_object.uuid.canonical, request.context.local_transaction_id);
+  const auto target_table = FindVisibleCrudTable(loaded_state, request.target_object.uuid, request.context.local_transaction_id);
   if (!target_table) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
         request.context,
@@ -105,7 +105,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   const std::string index_uuid = UuidStringOrGenerated(definition.requested_index_uuid, "object");
   std::string index_name = "unnamed_index";
   if (!definition.names.empty() && !definition.names.front().name.empty()) { index_name = definition.names.front().name; }
-  CrudIndexRecord created_index = BuildCrudIndexRecord(definition, request.target_object.uuid.canonical, index_uuid, index_name);
+  CrudIndexRecord created_index = BuildCrudIndexRecord(definition, request.target_object.uuid, index_uuid, index_name);
   created_index.creator_tx = request.context.local_transaction_id;
   if (created_index.key_envelopes.empty()) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
@@ -143,7 +143,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
     sorted_build = BuildCreateIndexSortedBulkArtifact(
         request.context,
         created_index,
-        request.target_object.uuid.canonical,
+        request.target_object.uuid,
         index_build_rows);
     if (!sorted_build.ok) {
       return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
@@ -160,7 +160,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
                                                                       "ddl.create_index",
                                                                       index_uuid,
                                                                       "index",
-                                                                      request.target_object.uuid.canonical,
+                                                                      request.target_object.uuid,
                                                                       definition.names,
                                                                       index_name);
   if (index_name_appended.error) {
@@ -189,14 +189,14 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
     }
   }
   auto result = MakeCrudSuccessResult<EngineCreateIndexResult>(request.context, "ddl.create_index");
-  result.primary_object.uuid.canonical = index_uuid;
+  result.primary_object.uuid = index_uuid;
   result.primary_object.object_kind = "index";
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
   result.evidence.push_back({"mga_relation_metadata", "index_create"});
   result.evidence.push_back({"index_family", created_index.family});
   AddApiBehaviorRow(&result, {{"object_uuid", index_uuid},
                               {"object_kind", "index"},
-                              {"schema_uuid", request.target_object.uuid.canonical},
+                              {"schema_uuid", request.target_object.uuid},
                               {"name", index_name},
                               {"state", "active"},
                               {"payload", "mga_relation_metadata=index_create"}});
@@ -221,7 +221,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
                           "ddl.create_index",
                           "index",
                           index_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "mga_relation_metadata.index");
   return result;
 }
@@ -234,26 +234,26 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   }
 
   EngineObjectReference target_table = request.target_table;
-  if (target_table.uuid.canonical.empty() && request.target_object.object_kind == "table") {
+  if (target_table.uuid.is_nil() && request.target_object.object_kind == "table") {
     target_table = request.target_object;
   }
-  if (target_table.uuid.canonical.empty()) {
+  if (target_table.uuid.is_nil()) {
     for (const auto& related : request.related_objects) {
-      if (related.object_kind == "table" && !related.uuid.canonical.empty()) {
+      if (related.object_kind == "table" && !related.uuid.is_nil()) {
         target_table = related;
         break;
       }
     }
   }
-  if (target_table.uuid.canonical.empty()) {
-    target_table.uuid.canonical = SecurityOptionValue(request, "statistics_target_uuid:");
+  if (target_table.uuid.is_nil()) {
+    target_table.uuid = SecurityOptionValue(request, "statistics_target_uuid:");
     target_table.object_kind = SecurityOptionValue(request, "statistics_target_kind:");
   }
-  if (target_table.uuid.canonical.empty()) {
-    target_table.uuid.canonical = SecurityOptionValue(request, "target_table_uuid:");
+  if (target_table.uuid.is_nil()) {
+    target_table.uuid = SecurityOptionValue(request, "target_table_uuid:");
   }
   if (target_table.object_kind.empty()) { target_table.object_kind = "table"; }
-  if (target_table.uuid.canonical.empty()) {
+  if (target_table.uuid.is_nil()) {
     return MakeApiBehaviorDiagnostic<EngineCreateStatisticsResult>(
         request.context,
         kOperation,
@@ -272,7 +272,7 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   }
   const RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   const auto visible_table =
-      FindVisibleCrudTable(loaded_state, target_table.uuid.canonical, request.context.local_transaction_id);
+      FindVisibleCrudTable(loaded_state, target_table.uuid, request.context.local_transaction_id);
   if (!visible_table) {
     return MakeApiBehaviorDiagnostic<EngineCreateStatisticsResult>(
         request.context,
@@ -305,10 +305,10 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   }
 
   const std::string statistics_uuid =
-      !request.requested_statistics_uuid.canonical.empty()
-          ? request.requested_statistics_uuid.canonical
-          : (request.target_object.object_kind == "statistics" && !request.target_object.uuid.canonical.empty()
-                 ? request.target_object.uuid.canonical
+      !request.requested_statistics_uuid.is_nil()
+          ? request.requested_statistics_uuid
+          : (request.target_object.object_kind == "statistics" && !request.target_object.uuid.is_nil()
+                 ? request.target_object.uuid
                  : GenerateCrudEngineUuid("object"));
   std::vector<EngineLocalizedName> names = request.statistics_names.empty()
                                                ? request.localized_names
@@ -316,12 +316,12 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   const std::string statistics_name = DefaultLocalizedName(names, "unnamed_statistics");
 
   EngineApiRequest record_request = request;
-  record_request.target_object.uuid.canonical = statistics_uuid;
+  record_request.target_object.uuid = statistics_uuid;
   record_request.target_object.object_kind = "statistics";
   record_request.localized_names = names;
   record_request.related_objects.push_back(target_table);
   record_request.option_envelopes.push_back("statistics_catalog_table:sys.optimizer.statistics_descriptor");
-  record_request.option_envelopes.push_back("statistics_target_uuid:" + target_table.uuid.canonical);
+  record_request.option_envelopes.push_back("statistics_target_uuid:" + target_table.uuid);
   record_request.option_envelopes.push_back("statistics_target_kind:table");
   record_request.option_envelopes.push_back("statistics_kind:" + statistics_kind);
   record_request.option_envelopes.push_back("statistics_expression_count:" + std::to_string(expression_count));
@@ -337,7 +337,7 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
                                                                 kOperation,
                                                                 statistics_uuid,
                                                                 "statistics",
-                                                                target_table.uuid.canonical,
+                                                                target_table.uuid,
                                                                 names,
                                                                 statistics_name);
   if (name_appended.error) {
@@ -345,29 +345,29 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   }
 
   auto result = MakeApiBehaviorSuccess<EngineCreateStatisticsResult>(request.context, kOperation);
-  result.primary_object.uuid.canonical = statistics_uuid;
+  result.primary_object.uuid = statistics_uuid;
   result.primary_object.object_kind = "statistics";
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
-  result.bound_object_identity.object_uuid.canonical = statistics_uuid;
+  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
+  result.bound_object_identity.object_uuid = statistics_uuid;
   result.bound_object_identity.resolved_object_type = "statistics";
-  result.bound_object_identity.parent_object_uuid.canonical = target_table.uuid.canonical;
+  result.bound_object_identity.parent_object_uuid = target_table.uuid;
   result.bound_object_identity.catalog_generation_id = request.context.catalog_generation_id + 1;
   result.bound_object_identity.security_epoch = request.context.security_epoch;
   result.bound_object_identity.resource_epoch = request.context.resource_epoch;
   result.metadata_cache_epoch = request.context.name_resolution_epoch + 1;
   AddApiBehaviorEvidence(&result, "api_behavior_event", kOperation);
   AddApiBehaviorEvidence(&result, "statistics_descriptor_created", statistics_uuid);
-  AddApiBehaviorEvidence(&result, "statistics_target_table", target_table.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "statistics_target_table", target_table.uuid);
   AddApiBehaviorEvidence(&result, "statistics_kind", statistics_kind);
   AddApiBehaviorEvidence(&result, "statistics_expression_count", std::to_string(expression_count));
-  AddApiBehaviorEvidence(&result, "mga_table_visibility_checked", target_table.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "mga_table_visibility_checked", target_table.uuid);
   AddApiBehaviorEvidence(&result, "ddl_catalog_route", "sys.optimizer.statistics_descriptor");
   AddApiBehaviorEvidence(&result, "name_registry", statistics_uuid);
   AddApiBehaviorRow(&result, {{"object_uuid", statistics_uuid},
                               {"object_kind", "statistics"},
                               {"name", statistics_name},
                               {"state", "active"},
-                              {"statistics_target_uuid", target_table.uuid.canonical},
+                              {"statistics_target_uuid", target_table.uuid},
                               {"statistics_target_kind", "table"},
                               {"statistics_kind", statistics_kind},
                               {"statistics_expression_count", std::to_string(expression_count)},
@@ -376,7 +376,7 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
                           kOperation,
                           "statistics",
                           statistics_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "optimizer.statistics");
   return result;
 }
@@ -414,8 +414,8 @@ EngineCreateDomainResult EngineCreateDomain(const EngineCreateDomainRequest& req
         MakeInvalidRequestDiagnostic("ddl.create_domain", "domain_uuid_already_exists"));
   }
   record.catalog_row_uuid = GenerateCrudEngineUuid("row");
-  record.schema_uuid = request.target_schema.uuid.canonical;
+  record.schema_uuid = request.target_schema.uuid;
   record.default_name = DefaultLocalizedName(request.localized_names, "unnamed_domain");
   record.localized_names_envelope = LocalizedNamesEnvelope(request.localized_names);
   const auto& descriptor = request.descriptors.front();
-  record.base_descriptor_uuid = descriptor.descriptor_uuid.canonical.empty() ? GenerateCrudEngineUuid("object") : descriptor.descriptor_uuid.canonical;
+  record.base_descriptor_uuid = descriptor.descriptor_uuid.is_nil() ? GenerateCrudEngineUuid("object") : descriptor.descriptor_uuid;

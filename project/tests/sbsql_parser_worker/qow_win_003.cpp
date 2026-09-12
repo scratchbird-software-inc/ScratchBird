@@ -66,7 +66,7 @@ api::EngineTypedValue TypedOffset(const std::string& type,
                                   const unsigned uuid = 4910) {
   const auto descriptor = WindowDescriptor(
       uuid, type,
-      "type_uuid=" + WindowUuid(uuid + 100) + ";nullability=non_null");
+      WindowUuid(uuid + 100), "nullability=non_null");
   return WindowValue(descriptor, encoded);
 }
 
@@ -210,7 +210,7 @@ bool ValidateRowsGroupsRangeAndDefaults() {
   auto hidden_range_request = Window401Request();
   const auto hidden_order_descriptor = WindowDescriptor(
       4980, "int64",
-      "type_uuid=" + WindowUuid(4981) + ";nullability=nullable");
+      WindowUuid(4981), "nullability=nullable");
   exec::DescriptorBatch hidden_keys;
   hidden_keys.columns = {hidden_range_request.input_batch.columns[0],
                          hidden_range_request.input_batch.columns[1],
@@ -256,7 +256,7 @@ bool ValidateRowsGroupsRangeAndDefaults() {
 
   auto no_order = Window401Request();
   no_order.order_terms.clear();
-  no_order.ordering_property_uuid.clear();
+  no_order.ordering_property_uuid = {};
   no_order.physical_dag.nodes[1].required_property_uuids.pop_back();
   auto default_without_order = ExecuteFrame(no_order, omitted);
   passed &= Require401(
@@ -364,7 +364,7 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
   temporal.order_terms.pop_back();
   const auto descriptor = WindowDescriptor(
       4920, "timestamp",
-      "type_uuid=" + WindowUuid(4921) + ";nullability=non_null");
+      WindowUuid(4921), "nullability=non_null");
   for (std::size_t row = 0; row < temporal.input_batch.rows.size(); ++row) {
     const auto day = static_cast<unsigned>((row % 4) + 1);
     temporal.input_batch.rows[row].values[2] = WindowValue(
@@ -416,7 +416,7 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
   passed &= Require401(
       !refused.diagnostic.ok && refused.ordered_batch.rows.empty() &&
           refused.effective_frames.empty() &&
-          refused.selected_plan_uuid.empty() &&
+          refused.selected_plan_uuid.is_nil() &&
           refused.executed_physical_node_id == 0 &&
           !exec::PhysicalMgaStatementContextValid(
               refused.mga_statement_context),

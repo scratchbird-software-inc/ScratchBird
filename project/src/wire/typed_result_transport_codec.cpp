@@ -7,12 +7,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "typed_result_transport_codec.hpp"
+#include "typed_result_resource_buffer.hpp"
+#include "typed_result_packet_view.hpp"
 
 #include "datatype_binary.hpp"
+#include "datatype_binary_view.hpp"
+#include "canonical_utf8.hpp"
+#include "sbl_numeric.hpp"
 #include "datatype_layout.hpp"
 #include "hash_digest.hpp"
+#include "hash_digest_parts.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
+#include <cstring>
+#include <type_traits>
 #include <limits>
 #include <map>
 #include <string_view>
@@ -42,7 +51,7 @@ constexpr std::string_view kBatchEvidenceDomain =
 
 constexpr std::size_t kDescriptorEvidenceOffset = 96;
 constexpr std::size_t kBatchEvidenceOffset = 192;
-constexpr u32 kColumnDescriptorFixedBytes = 92;
+constexpr u32 kColumnDescriptorFixedBytes = kTypedResultColumnDescriptorPrefixBytes;
 constexpr u32 kRowFrameFixedBytes = 16;
 constexpr u32 kCellFrameFixedBytes = 20;
 constexpr std::uint8_t kExplicitNullStateEncoding = 1;
@@ -58,17 +67,19 @@ constexpr const char* kFrameInvalid =
 constexpr const char* kResourceLimitExceeded =
     "PARSER_SERVER_IPC.RESOURCE_LIMIT_EXCEEDED";
 constexpr const char* kDatatypeDescriptorInvalid =
-    "DATATYPE.DESCRIPTOR_INVALID";
+    "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kConnectionMismatch =
     "PARSER_SERVER_IPC.CONNECTION_MISMATCH";
 constexpr const char* kSequenceInvalid =
     "PARSER_SERVER_IPC.SEQUENCE_INVALID";
+constexpr const char* kSystemUuidInvalid = "UUID.ENGINE_IDENTITY_NOT_V7";
 
 enum class DescriptorValidationKind {
   ok,
   frame,
   datatype,
   resource,
+  system_uuid,
 };
 
 struct DescriptorValidation {
@@ -105,6 +116,25 @@ bool UuidPresent(const TypedResultUuid& uuid) {
   });
 }
 
+bool InvalidPresentSystemUuid(const TypedResultUuid& uuid) {
+  scratchbird::core::uuid::Uuid identity;
+  identity.bytes = uuid;
+  return !identity.is_nil() &&
+         !scratchbird::core::uuid::IsEngineIdentityUuid(identity);
+}
+
+bool BatchSystemIdentitiesValid(const TypedResultBatch& batch,
+                                const TypedResultCarrierBinding& binding) {
+  for (const auto* identity : {&batch.execution_uuid, &batch.result_set_uuid,
+       &batch.batch_uuid, &batch.row_descriptor_uuid, &batch.snapshot_uuid,
+       &batch.cursor_uuid, &binding.execution_uuid, &binding.result_set_uuid,
+       &binding.snapshot_uuid, &binding.cursor_uuid,
+       &binding.cursor_stream_descriptor_uuid}) {
+    if (InvalidPresentSystemUuid(*identity)) return false;
+  }
+  return true;
+}
+
 bool HashPresent(const TypedResultEvidenceHash& hash) {
   return std::any_of(hash.begin(), hash.end(), [](byte value) {
     return value != 0;
@@ -113,57 +143,16 @@ bool HashPresent(const TypedResultEvidenceHash& hash) {
 
 bool SameHash(const TypedResultEvidenceHash& left,
               const TypedResultEvidenceHash& right) {
-  const std::vector<byte> left_bytes(left.begin(), left.end());
-  const std::vector<byte> right_bytes(right.begin(), right.end());
-  return core_hash::ConstantTimeEqual(left_bytes, right_bytes);
+  byte difference = 0;
+  for (std::size_t index = 0; index != left.size(); ++index)
+    difference = static_cast<byte>(difference | (left[index] ^ right[index]));
+  return difference == 0;
 }
 
 bool ValidUtf8(std::string_view value) {
-  std::size_t offset = 0;
-  while (offset < value.size()) {
-    const auto first = static_cast<unsigned char>(value[offset]);
-    if (first == 0) {
-      return false;
-    }
-    if (first <= 0x7fu) {
-      ++offset;
-      continue;
-    }
-
-    std::size_t continuation_count = 0;
-    std::uint32_t code_point = 0;
-    if (first >= 0xc2u && first <= 0xdfu) {
-      continuation_count = 1;
-      code_point = first & 0x1fu;
-    } else if (first >= 0xe0u && first <= 0xefu) {
-      continuation_count = 2;
-      code_point = first & 0x0fu;
-    } else if (first >= 0xf0u && first <= 0xf4u) {
-      continuation_count = 3;
-      code_point = first & 0x07u;
-    } else {
-      return false;
-    }
-    if (continuation_count > value.size() - offset - 1u) {
-      return false;
-    }
-    for (std::size_t index = 0; index < continuation_count; ++index) {
-      const auto next =
-          static_cast<unsigned char>(value[offset + index + 1u]);
-      if ((next & 0xc0u) != 0x80u) {
-        return false;
-      }
-      code_point = (code_point << 6u) | (next & 0x3fu);
-    }
-    if ((continuation_count == 2u && code_point < 0x800u) ||
-        (continuation_count == 3u && code_point < 0x10000u) ||
-        (code_point >= 0xd800u && code_point <= 0xdfffu) ||
-        code_point > 0x10ffffu) {
-      return false;
-    }
-    offset += continuation_count + 1u;
-  }
-  return true;
+  return value.find('\0') == std::string_view::npos &&
+         datatypes::ValidateCanonicalUtf8(
+             reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
 }
 
 bool ValidCodecId(std::string_view value) {
@@ -197,19 +186,22 @@ bool ValidValueState(TypedResultValueState state) {
   return false;
 }
 
-void AppendU16(std::vector<byte>* out, u16 value) {
+template <typename ByteBuffer>
+void AppendU16(ByteBuffer* out, u16 value) {
   const std::size_t offset = out->size();
   out->resize(offset + sizeof(value));
   StoreLittle16(out->data() + offset, value);
 }
 
-void AppendU32(std::vector<byte>* out, u32 value) {
+template <typename ByteBuffer>
+void AppendU32(ByteBuffer* out, u32 value) {
   const std::size_t offset = out->size();
   out->resize(offset + sizeof(value));
   StoreLittle32(out->data() + offset, value);
 }
 
-void AppendU64(std::vector<byte>* out, u64 value) {
+template <typename ByteBuffer>
+void AppendU64(ByteBuffer* out, u64 value) {
   const std::size_t offset = out->size();
   out->resize(offset + sizeof(value));
   StoreLittle64(out->data() + offset, value);
@@ -223,7 +215,8 @@ void AppendString(std::vector<byte>* out, std::string_view value) {
   out->insert(out->end(), value.begin(), value.end());
 }
 
-bool ReadU8(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadU8(const ByteSequence& bytes,
             std::size_t* offset,
             std::uint8_t* value) {
   if (*offset >= bytes.size()) {
@@ -233,7 +226,8 @@ bool ReadU8(const std::vector<byte>& bytes,
   return true;
 }
 
-bool ReadU16(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadU16(const ByteSequence& bytes,
              std::size_t* offset,
              u16* value) {
   if (*offset > bytes.size() || bytes.size() - *offset < sizeof(*value)) {
@@ -244,7 +238,8 @@ bool ReadU16(const std::vector<byte>& bytes,
   return true;
 }
 
-bool ReadU32(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadU32(const ByteSequence& bytes,
              std::size_t* offset,
              u32* value) {
   if (*offset > bytes.size() || bytes.size() - *offset < sizeof(*value)) {
@@ -255,7 +250,8 @@ bool ReadU32(const std::vector<byte>& bytes,
   return true;
 }
 
-bool ReadU64(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadU64(const ByteSequence& bytes,
              std::size_t* offset,
              u64* value) {
   if (*offset > bytes.size() || bytes.size() - *offset < sizeof(*value)) {
@@ -266,7 +262,8 @@ bool ReadU64(const std::vector<byte>& bytes,
   return true;
 }
 
-bool ReadUuid(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadUuid(const ByteSequence& bytes,
               std::size_t* offset,
               TypedResultUuid* value) {
   if (*offset > bytes.size() || bytes.size() - *offset < value->size()) {
@@ -278,7 +275,8 @@ bool ReadUuid(const std::vector<byte>& bytes,
   return true;
 }
 
-bool ReadString(const std::vector<byte>& bytes,
+template <typename ByteSequence>
+bool ReadString(const ByteSequence& bytes,
                 std::size_t* offset,
                 std::size_t size,
                 std::string* value) {
@@ -300,6 +298,9 @@ bool AddWithinLimit(u64 left, u64 right, u64 limit, u64* sum) {
 
 DescriptorValidation ValidateDescriptor(
     const TypedResultRowDescriptor& descriptor) {
+  if (InvalidPresentSystemUuid(descriptor.descriptor_uuid) ||
+      InvalidPresentSystemUuid(descriptor.datatype_catalog_snapshot_uuid))
+    return {DescriptorValidationKind::system_uuid, "row_descriptor_system_uuid_invalid"};
   if (!UuidPresent(descriptor.descriptor_uuid) ||
       descriptor.descriptor_generation == 0) {
     return {DescriptorValidationKind::frame,
@@ -322,12 +323,14 @@ DescriptorValidation ValidateDescriptor(
   std::map<std::string, u32> name_occurrences;
   for (std::size_t index = 0; index < descriptor.columns.size(); ++index) {
     const auto& column = descriptor.columns[index];
+    if (InvalidPresentSystemUuid(column.descriptor_uuid) ||
+        InvalidPresentSystemUuid(column.type_uuid))
+      return {DescriptorValidationKind::system_uuid, "column_system_uuid_invalid"};
     if (column.ordinal != index) {
       return {DescriptorValidationKind::frame,
               "column_ordinal_not_contiguous"};
     }
-    if (column.name.size() > kMaxColumnNameBytes ||
-        !ValidUtf8(column.name)) {
+    if (!ValidTypedResultColumnName(column.name)) {
       return {DescriptorValidationKind::frame,
               "column_name_invalid_utf8"};
     }
@@ -355,13 +358,20 @@ DescriptorValidation ValidateDescriptor(
       return {DescriptorValidationKind::datatype,
               "column_canonical_type_unsupported"};
     }
-    if (layout.layout.storage_class ==
+    const bool decimal_value = column.canonical_type_id == CanonicalTypeId::decimal;
+    if (decimal_value &&
+        column.canonical_value_bytes !=
+            scratchbird::libraries::sbl_numeric::kExactDecimalBinaryBytes) {
+      return {DescriptorValidationKind::datatype,
+              "column_decimal_value_width_mismatch"};
+    }
+    if (!decimal_value && layout.layout.storage_class ==
             datatypes::DatatypeStorageClass::inline_fixed &&
         column.canonical_value_bytes != layout.layout.inline_bytes) {
       return {DescriptorValidationKind::datatype,
               "column_fixed_width_mismatch"};
     }
-    if (layout.layout.storage_class !=
+    if (!decimal_value && layout.layout.storage_class !=
             datatypes::DatatypeStorageClass::inline_fixed &&
         column.canonical_value_bytes != 0) {
       return {DescriptorValidationKind::datatype,
@@ -378,17 +388,29 @@ TypedResultEvidenceHash DigestHash(
   return hash;
 }
 
+template <typename ByteSequence>
 core_hash::HashDigestResult ComputeEvidence(
     std::string_view domain,
-    const std::vector<byte>& canonical_bytes) {
-  std::vector<byte> material;
-  material.reserve(domain.size() + canonical_bytes.size());
-  for (const char character : domain) {
-    material.push_back(static_cast<byte>(character));
+    const ByteSequence& canonical_bytes,
+    std::size_t evidence_offset) {
+  if (evidence_offset > canonical_bytes.size() ||
+      kTypedResultEvidenceHashBytes > canonical_bytes.size() - evidence_offset) {
+    core_hash::HashDigestResult failure;
+    failure.status = {core::platform::StatusCode::platform_required_feature_missing,
+                      core::platform::Severity::error, core::platform::Subsystem::platform};
+    failure.diagnostic = core_hash::MakeHashDigestDiagnostic(
+        failure.status, "SB-CORE-HASH-SHA256-FAILED", "core.hash.sha256_failed",
+        "evidence_slot_outside_frame");
+    return failure;
   }
-  material.insert(material.end(), canonical_bytes.begin(),
-                  canonical_bytes.end());
-  return core_hash::ComputeSha256Digest(material);
+  const std::array<byte, kTypedResultEvidenceHashBytes> zero{};
+  const auto after_evidence = evidence_offset + zero.size();
+  const core_hash::HashDigestSegment parts[] = {
+      {reinterpret_cast<const byte*>(domain.data()), domain.size()},
+      {canonical_bytes.data(), evidence_offset},
+      {zero.data(), zero.size()},
+      {canonical_bytes.data() + after_evidence, canonical_bytes.size() - after_evidence}};
+  return core_hash::ComputeSha256DigestParts(parts, 4);
 }
 
 bool CellMatchesColumn(const TypedResultCell& cell,
@@ -411,8 +433,9 @@ TypedResultBatchCodecResult DescriptorForBatch(
 
 TypedResultBatchCodecResult ValidateCarrierBinding(
     const TypedResultBatch& batch,
-    const TypedResultCarrierBinding& carrier_binding) {
-  if (carrier_binding.row_count != batch.rows.size() ||
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 row_count) {
+  if (carrier_binding.row_count != row_count ||
       carrier_binding.end_of_rowset != batch.end_of_rowset) {
     return BatchError(TypedResultCodecStatus::shape_invalid, kFrameInvalid,
                       "outer_row_count_or_end_state_mismatch");
@@ -472,11 +495,115 @@ TypedResultBatchCodecResult ValidateCarrierBinding(
                           "public_result_cursor_binding_mismatch");
       }
       break;
+    default:
+      return BatchError(TypedResultCodecStatus::invalid_argument,
+                        kFrameInvalid, "carrier_kind_invalid");
   }
   return {};
 }
 
+struct BorrowedByteSequence {
+  const byte* first;
+  std::size_t length;
+  const byte* data() const noexcept { return first; }
+  const byte* begin() const noexcept { return first; }
+  std::size_t size() const noexcept { return length; }
+  byte operator[](std::size_t offset) const noexcept { return first[offset]; }
+};
+
+TypedResultPacketViewResult PacketError(TypedResultCodecStatus status,
+                                        std::string diagnostic, std::string detail) {
+  TypedResultPacketViewResult result;
+  result.status = status;
+  result.diagnostic_code = std::move(diagnostic);
+  result.detail = std::move(detail);
+  return result;
+}
+
+void WriteRowHeader(u32 row_bytes, u32 cell_count, u64 ordinal, byte* destination) noexcept {
+  StoreLittle32(destination, row_bytes);
+  StoreLittle32(destination + 4, cell_count);
+  StoreLittle64(destination + 8, ordinal);
+}
+
+void WriteCellHeader(const TypedResultCell& cell, u32 value_bytes, byte* destination) noexcept {
+  StoreLittle32(destination, kCellFrameFixedBytes + value_bytes);
+  StoreLittle32(destination + 4, cell.column_ordinal);
+  StoreLittle32(destination + 8, cell.name_occurrence);
+  destination[12] = static_cast<byte>(cell.state);
+  destination[13] = kDatatypeBinaryValueEncoding;
+  StoreLittle16(destination + 14, 0);
+  StoreLittle32(destination + 16, value_bytes);
+}
+
+void WriteBatchHeader(const TypedResultBatch& batch,
+                      const TypedResultRowDescriptor& canonical_descriptor,
+                      u32 row_count, u64 rows_bytes, byte* destination) noexcept {
+  std::memset(destination, 0, kTypedResultBatchHeaderBytes);
+  std::copy(kBatchMagic.begin(), kBatchMagic.end(), destination);
+  StoreLittle16(destination + 8, kTypedResultTransportVersion);
+  StoreLittle16(destination + 10, kTypedResultBatchHeaderBytes);
+  const u32 flags = (batch.end_of_rowset ? 1u : 0u) |
+                    (batch.cursor_bound ? 2u : 0u);
+  StoreLittle32(destination + 12, flags);
+  StoreLittle64(destination + 16, kTypedResultBatchHeaderBytes + rows_bytes);
+  std::copy(batch.execution_uuid.begin(), batch.execution_uuid.end(),
+            destination + 24);
+  std::copy(batch.result_set_uuid.begin(), batch.result_set_uuid.end(),
+            destination + 40);
+  std::copy(batch.batch_uuid.begin(), batch.batch_uuid.end(),
+            destination + 56);
+  StoreLittle64(destination + 72, batch.batch_ordinal);
+  std::copy(canonical_descriptor.descriptor_uuid.begin(),
+            canonical_descriptor.descriptor_uuid.end(),
+            destination + 80);
+  StoreLittle64(destination + 96,
+                canonical_descriptor.descriptor_generation);
+  std::copy(canonical_descriptor.descriptor_evidence_sha256.begin(),
+            canonical_descriptor.descriptor_evidence_sha256.end(),
+            destination + 104);
+  StoreLittle32(destination + 136,
+                row_count);
+  StoreLittle32(destination + 140,
+                static_cast<u32>(canonical_descriptor.columns.size()));
+  StoreLittle64(destination + 144,
+                rows_bytes);
+  std::copy(batch.snapshot_uuid.begin(), batch.snapshot_uuid.end(),
+            destination + 152);
+  std::copy(batch.cursor_uuid.begin(), batch.cursor_uuid.end(),
+            destination + 168);
+}
+
+TypedResultPacketHeader PacketHeaderFromBatch(const TypedResultBatch& batch, u32 rows, u32 columns) noexcept {
+  return {batch.execution_uuid, batch.result_set_uuid, batch.batch_uuid,
+          batch.batch_ordinal, batch.end_of_rowset, batch.cursor_bound,
+          batch.row_descriptor_uuid, batch.row_descriptor_generation,
+          batch.descriptor_evidence_sha256, batch.snapshot_uuid, batch.cursor_uuid,
+          batch.batch_evidence_sha256, rows, columns};
+}
+
+TypedResultBatch BatchFromPacketHeader(const TypedResultPacketHeader& header) {
+  TypedResultBatch batch;
+  batch.execution_uuid = header.execution_uuid;
+  batch.result_set_uuid = header.result_set_uuid;
+  batch.batch_uuid = header.batch_uuid;
+  batch.batch_ordinal = header.batch_ordinal;
+  batch.end_of_rowset = header.end_of_rowset;
+  batch.cursor_bound = header.cursor_bound;
+  batch.row_descriptor_uuid = header.row_descriptor_uuid;
+  batch.row_descriptor_generation = header.row_descriptor_generation;
+  batch.descriptor_evidence_sha256 = header.descriptor_evidence_sha256;
+  batch.snapshot_uuid = header.snapshot_uuid;
+  batch.cursor_uuid = header.cursor_uuid;
+  batch.batch_evidence_sha256 = header.batch_evidence_sha256;
+  return batch;
+}
+
 }  // namespace
+
+bool ValidTypedResultColumnName(std::string_view name) {
+  return name.size() <= kMaxColumnNameBytes && ValidUtf8(name);
+}
 
 const char* TypedResultCodecStatusName(TypedResultCodecStatus status) {
   switch (status) {
@@ -512,6 +639,9 @@ TypedResultDescriptorCodecResult EncodeTypedResultRowDescriptor(
     const TypedResultRowDescriptor& descriptor) {
   const auto validation = ValidateDescriptor(descriptor);
   if (!validation.ok()) {
+    if (validation.kind == DescriptorValidationKind::system_uuid)
+      return DescriptorError(TypedResultCodecStatus::descriptor_invalid,
+                             kSystemUuidInvalid, validation.detail);
     if (validation.kind == DescriptorValidationKind::resource) {
       return DescriptorError(TypedResultCodecStatus::resource_limit_exceeded,
                              kResourceLimitExceeded, validation.detail);
@@ -593,7 +723,7 @@ TypedResultDescriptorCodecResult EncodeTypedResultRowDescriptor(
   result.encoded.insert(result.encoded.end(), columns.begin(), columns.end());
 
   const auto digest = ComputeEvidence(kDescriptorEvidenceDomain,
-                                      result.encoded);
+                                      result.encoded, kDescriptorEvidenceOffset);
   if (!digest.ok()) {
     return DescriptorError(TypedResultCodecStatus::invalid_argument,
                            kFrameInvalid,
@@ -659,13 +789,8 @@ TypedResultDescriptorCodecResult DecodeTypedResultRowDescriptor(
   TypedResultEvidenceHash expected_evidence{};
   std::copy_n(encoded.begin() + kDescriptorEvidenceOffset,
               expected_evidence.size(), expected_evidence.begin());
-  auto evidence_bytes = encoded;
-  std::fill(evidence_bytes.begin() + kDescriptorEvidenceOffset,
-            evidence_bytes.begin() + kDescriptorEvidenceOffset +
-                kTypedResultEvidenceHashBytes,
-            0);
   const auto digest = ComputeEvidence(kDescriptorEvidenceDomain,
-                                      evidence_bytes);
+                                      encoded, kDescriptorEvidenceOffset);
   if (!digest.ok()) {
     return DescriptorError(TypedResultCodecStatus::invalid_argument,
                            kFrameInvalid,
@@ -750,6 +875,9 @@ TypedResultDescriptorCodecResult DecodeTypedResultRowDescriptor(
   }
   const auto validation = ValidateDescriptor(descriptor);
   if (!validation.ok()) {
+    if (validation.kind == DescriptorValidationKind::system_uuid)
+      return DescriptorError(TypedResultCodecStatus::descriptor_invalid,
+                             kSystemUuidInvalid, validation.detail);
     if (validation.kind == DescriptorValidationKind::resource) {
       return DescriptorError(TypedResultCodecStatus::resource_limit_exceeded,
                              kResourceLimitExceeded, validation.detail);
@@ -777,16 +905,52 @@ TypedResultDescriptorCodecResult DecodeTypedResultRowDescriptor(
   return result;
 }
 
-TypedResultBatchCodecResult EncodeTypedResultBatch(
+namespace {
+template <typename ByteBuffer>
+TypedResultBatchCodecResult EncodeTypedResultBatchStorage(
     const TypedResultBatch& batch,
     const TypedResultRowDescriptor& descriptor,
-    const TypedResultCarrierBinding& carrier_binding) {
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 maximum_bytes,
+    ByteBuffer& output) {
+  // First admit the complete byte shape without copying an untrusted payload
+  // or materializing a descriptor. All arithmetic uses remaining capacity;
+  // even a single oversize cell must fail before its first allocation/copy.
+  const u64 packet_limit = std::min(maximum_bytes, kMaxTransportFrameBytes);
+  if (batch.rows.size() > kMaxRowCount ||
+      descriptor.columns.size() > kMaxColumnCount ||
+      packet_limit < kTypedResultBatchHeaderBytes) {
+    return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
+                      kResourceLimitExceeded, "batch_frame_too_large");
+  }
+  u64 admitted_bytes = kTypedResultBatchHeaderBytes;
+  for (const auto& row : batch.rows) {
+    if (row.cells.size() > kMaxColumnCount ||
+        !AddWithinLimit(admitted_bytes, kRowFrameFixedBytes,
+                        packet_limit, &admitted_bytes)) {
+      return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
+                        kResourceLimitExceeded, "batch_frame_too_large");
+    }
+    for (const auto& cell : row.cells) {
+      if (!AddWithinLimit(admitted_bytes,
+                          kCellFrameFixedBytes + datatypes::kDatatypeBinaryEnvelopeHeaderBytes,
+                          packet_limit, &admitted_bytes) ||
+          !AddWithinLimit(admitted_bytes, cell.canonical_payload.size(),
+                          packet_limit, &admitted_bytes)) {
+        return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
+                          kResourceLimitExceeded, "batch_frame_too_large");
+      }
+    }
+  }
   TypedResultRowDescriptor canonical_descriptor;
   const auto descriptor_result =
       DescriptorForBatch(descriptor, &canonical_descriptor);
   if (!descriptor_result.ok()) {
     return descriptor_result;
   }
+  if (!BatchSystemIdentitiesValid(batch, carrier_binding))
+    return BatchError(TypedResultCodecStatus::invalid_argument,
+                      kSystemUuidInvalid, "batch_system_uuid_invalid");
   if (!UuidPresent(batch.execution_uuid) ||
       !UuidPresent(batch.result_set_uuid) || !UuidPresent(batch.batch_uuid) ||
       !UuidPresent(batch.snapshot_uuid)) {
@@ -817,12 +981,14 @@ TypedResultBatchCodecResult EncodeTypedResultBatch(
                       kResourceLimitExceeded,
                       "batch_row_count_limit_exceeded");
   }
-  const auto carrier_result = ValidateCarrierBinding(batch, carrier_binding);
+  const auto carrier_result = ValidateCarrierBinding(batch, carrier_binding, batch.rows.size());
   if (!carrier_result.ok()) {
     return carrier_result;
   }
 
-  std::vector<byte> rows;
+  output.reserve(static_cast<std::size_t>(admitted_bytes));
+  output.assign(kTypedResultBatchHeaderBytes, 0);
+  auto& rows = output;
   for (std::size_t row_index = 0; row_index < batch.rows.size(); ++row_index) {
     const auto& row = batch.rows[row_index];
     if (row.row_ordinal != row_index ||
@@ -831,9 +997,7 @@ TypedResultBatchCodecResult EncodeTypedResultBatch(
                         "row_ordinal_or_cell_count_mismatch");
     }
     const std::size_t row_begin = rows.size();
-    AppendU32(&rows, 0);
-    AppendU32(&rows, static_cast<u32>(row.cells.size()));
-    AppendU64(&rows, row.row_ordinal);
+    rows.resize(row_begin + kRowFrameFixedBytes);
     for (std::size_t cell_index = 0; cell_index < row.cells.size();
          ++cell_index) {
       const auto& cell = row.cells[cell_index];
@@ -850,84 +1014,50 @@ TypedResultBatchCodecResult EncodeTypedResultBatch(
                           kDatatypeDescriptorInvalid,
                           "invalid_sql_null_cell");
       }
-      datatypes::DatatypeBinaryValue value;
-      value.type_id = column.canonical_type_id;
-      value.is_null = cell.state == TypedResultValueState::sql_null;
-      value.payload = cell.canonical_payload;
-      const auto encoded_value = datatypes::EncodeDatatypeBinaryValue(value);
-      if (!encoded_value.ok()) {
-        return BatchError(TypedResultCodecStatus::value_invalid,
-                          kDatatypeDescriptorInvalid,
-                          encoded_value.diagnostic.diagnostic_code);
-      }
+      const u64 value_bytes = datatypes::kDatatypeBinaryEnvelopeHeaderBytes +
+                              static_cast<u64>(cell.canonical_payload.size());
       const u64 cell_bytes_u64 =
-          static_cast<u64>(kCellFrameFixedBytes) + encoded_value.encoded.size();
+          static_cast<u64>(kCellFrameFixedBytes) + value_bytes;
       if (cell_bytes_u64 > std::numeric_limits<u32>::max()) {
         return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
                           kResourceLimitExceeded, "cell_frame_too_large");
       }
-      AppendU32(&rows, static_cast<u32>(cell_bytes_u64));
-      AppendU32(&rows, cell.column_ordinal);
-      AppendU32(&rows, cell.name_occurrence);
-      rows.push_back(static_cast<byte>(cell.state));
-      rows.push_back(kDatatypeBinaryValueEncoding);
-      AppendU16(&rows, 0);
-      AppendU32(&rows, static_cast<u32>(encoded_value.encoded.size()));
-      rows.insert(rows.end(), encoded_value.encoded.begin(),
-                  encoded_value.encoded.end());
+      const auto cell_begin = rows.size();
+      rows.resize(cell_begin + kCellFrameFixedBytes);
+      WriteCellHeader(cell, static_cast<u32>(value_bytes), rows.data() + cell_begin);
+      const auto value_offset = rows.size();
+      rows.resize(value_offset + static_cast<std::size_t>(value_bytes));
+      const auto encoded_value = datatypes::EncodeDatatypeBinaryValueInto(
+          {column.canonical_type_id,
+           cell.state == TypedResultValueState::sql_null, false,
+           cell.canonical_payload.data(), cell.canonical_payload.size()},
+          rows.data() + value_offset, static_cast<std::size_t>(value_bytes));
+      if (!encoded_value.ok() || encoded_value.bytes_written != value_bytes) {
+        return BatchError(TypedResultCodecStatus::value_invalid,
+                          kDatatypeDescriptorInvalid,
+                          encoded_value.diagnostic.diagnostic_code);
+      }
     }
     const u64 row_bytes_u64 = rows.size() - row_begin;
     if (row_bytes_u64 > std::numeric_limits<u32>::max()) {
       return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
                         kResourceLimitExceeded, "row_frame_too_large");
     }
-    StoreLittle32(rows.data() + row_begin, static_cast<u32>(row_bytes_u64));
+    WriteRowHeader(static_cast<u32>(row_bytes_u64), static_cast<u32>(row.cells.size()),
+                   row.row_ordinal, rows.data() + row_begin);
   }
 
-  u64 total_bytes = 0;
-  if (!AddWithinLimit(kTypedResultBatchHeaderBytes, rows.size(),
-                      kMaxTransportFrameBytes, &total_bytes)) {
+  const u64 total_bytes = output.size();
+  if (total_bytes > packet_limit || total_bytes != admitted_bytes) {
     return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
                       kResourceLimitExceeded, "batch_frame_too_large");
   }
 
   TypedResultBatchCodecResult result;
-  result.encoded.assign(kTypedResultBatchHeaderBytes, 0);
-  std::copy(kBatchMagic.begin(), kBatchMagic.end(), result.encoded.begin());
-  StoreLittle16(result.encoded.data() + 8, kTypedResultTransportVersion);
-  StoreLittle16(result.encoded.data() + 10, kTypedResultBatchHeaderBytes);
-  const u32 flags = (batch.end_of_rowset ? 1u : 0u) |
-                    (batch.cursor_bound ? 2u : 0u);
-  StoreLittle32(result.encoded.data() + 12, flags);
-  StoreLittle64(result.encoded.data() + 16, total_bytes);
-  std::copy(batch.execution_uuid.begin(), batch.execution_uuid.end(),
-            result.encoded.begin() + 24);
-  std::copy(batch.result_set_uuid.begin(), batch.result_set_uuid.end(),
-            result.encoded.begin() + 40);
-  std::copy(batch.batch_uuid.begin(), batch.batch_uuid.end(),
-            result.encoded.begin() + 56);
-  StoreLittle64(result.encoded.data() + 72, batch.batch_ordinal);
-  std::copy(canonical_descriptor.descriptor_uuid.begin(),
-            canonical_descriptor.descriptor_uuid.end(),
-            result.encoded.begin() + 80);
-  StoreLittle64(result.encoded.data() + 96,
-                canonical_descriptor.descriptor_generation);
-  std::copy(canonical_descriptor.descriptor_evidence_sha256.begin(),
-            canonical_descriptor.descriptor_evidence_sha256.end(),
-            result.encoded.begin() + 104);
-  StoreLittle32(result.encoded.data() + 136,
-                static_cast<u32>(batch.rows.size()));
-  StoreLittle32(result.encoded.data() + 140,
-                static_cast<u32>(canonical_descriptor.columns.size()));
-  StoreLittle64(result.encoded.data() + 144,
-                static_cast<u64>(rows.size()));
-  std::copy(batch.snapshot_uuid.begin(), batch.snapshot_uuid.end(),
-            result.encoded.begin() + 152);
-  std::copy(batch.cursor_uuid.begin(), batch.cursor_uuid.end(),
-            result.encoded.begin() + 168);
-  result.encoded.insert(result.encoded.end(), rows.begin(), rows.end());
+  WriteBatchHeader(batch, canonical_descriptor, static_cast<u32>(batch.rows.size()),
+                   output.size() - kTypedResultBatchHeaderBytes, output.data());
 
-  const auto digest = ComputeEvidence(kBatchEvidenceDomain, result.encoded);
+  const auto digest = ComputeEvidence(kBatchEvidenceDomain, output, kBatchEvidenceOffset);
   if (!digest.ok()) {
     return BatchError(TypedResultCodecStatus::invalid_argument,
                       kFrameInvalid, digest.diagnostic.diagnostic_code);
@@ -940,37 +1070,99 @@ TypedResultBatchCodecResult EncodeTypedResultBatch(
                       "provided_batch_evidence_mismatch");
   }
   std::copy(evidence.begin(), evidence.end(),
-            result.encoded.begin() + kBatchEvidenceOffset);
+            output.begin() + kBatchEvidenceOffset);
 
   result.status = TypedResultCodecStatus::ok;
-  result.batch = batch;
   result.batch.descriptor_evidence_sha256 =
       canonical_descriptor.descriptor_evidence_sha256;
   result.batch.batch_evidence_sha256 = evidence;
   return result;
 }
 
-TypedResultBatchCodecResult DecodeTypedResultBatch(
-    const std::vector<byte>& encoded,
+template <class Batch>
+TypedResultBatchCodecResult EncodeOwnedTypedResultBatch(
+    Batch&& batch,
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 maximum_bytes) {
+  std::vector<byte> output;
+  auto result = EncodeTypedResultBatchStorage(
+      batch, descriptor, carrier_binding, maximum_bytes, output);
+  if (!result.ok()) return result;
+  const auto descriptor_hash = result.batch.descriptor_evidence_sha256;
+  const auto batch_hash = result.batch.batch_evidence_sha256;
+  // All fallible validation, hashing and packet allocation precede a consuming
+  // caller's ownership transfer. The const overload retains its copy contract.
+  static_assert(std::is_nothrow_move_assignable_v<TypedResultBatch>);
+  result.batch = std::forward<Batch>(batch);
+  result.batch.descriptor_evidence_sha256 = descriptor_hash;
+  result.batch.batch_evidence_sha256 = batch_hash;
+  result.encoded = std::move(output);
+  return result;
+}
+
+}  // namespace
+
+TypedResultBatchCodecResult EncodeTypedResultBatch(
+    const TypedResultBatch& batch,
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 maximum_bytes) {
+  return EncodeOwnedTypedResultBatch(batch, descriptor, carrier_binding, maximum_bytes);
+}
+
+TypedResultBatchCodecResult EncodeTypedResultBatch(
+    TypedResultBatch&& batch,
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 maximum_bytes) {
+  return EncodeOwnedTypedResultBatch(std::move(batch), descriptor, carrier_binding, maximum_bytes);
+}
+
+TypedResultResourceBuffer EncodeTypedResultBatchBuffer(
+    const TypedResultBatch& batch,
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    std::pmr::memory_resource& resource,
+    u64 maximum_bytes) {
+  TypedResultResourceBuffer result(resource);
+  std::pmr::vector<byte> staged(&resource);
+  auto metadata = EncodeTypedResultBatchStorage(
+      batch, descriptor, carrier_binding, maximum_bytes, staged);
+  result.status = metadata.status;
+  result.diagnostic_code = std::move(metadata.diagnostic_code);
+  result.detail = std::move(metadata.detail);
+  if (!result.ok()) return result;
+  result.descriptor_evidence_sha256 = metadata.batch.descriptor_evidence_sha256;
+  result.batch_evidence_sha256 = metadata.batch.batch_evidence_sha256;
+  result.encoded = std::move(staged);
+  return result;
+}
+
+TypedResultPacketViewResult DecodeTypedResultPacketView(
+    const byte* encoded_data, std::size_t encoded_size,
     const TypedResultRowDescriptor& expected_descriptor,
     const TypedResultCarrierBinding& carrier_binding,
-    TypedResultCursorBatchState* cursor_state) {
+    const TypedResultCursorBatchState* cursor_state) {
+  if (encoded_data == nullptr && encoded_size != 0)
+    return PacketError(TypedResultCodecStatus::malformed_frame, kFrameInvalid, "batch_storage_missing");
+  const BorrowedByteSequence encoded{encoded_data, encoded_size};
   if (encoded.size() < kTypedResultBatchHeaderBytes) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_size_invalid");
   }
   if (encoded.size() > kMaxTransportFrameBytes) {
-    return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
+    return PacketError(TypedResultCodecStatus::resource_limit_exceeded,
                       kResourceLimitExceeded,
                       "batch_size_limit_exceeded");
   }
   if (!std::equal(kBatchMagic.begin(), kBatchMagic.end(), encoded.begin())) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_magic_invalid");
   }
   const u16 version = LoadLittle16(encoded.data() + 8);
   if (version != kTypedResultTransportVersion) {
-    return BatchError(TypedResultCodecStatus::unsupported_version,
+    return PacketError(TypedResultCodecStatus::unsupported_version,
                       kFrameInvalid, "batch_version_unsupported");
   }
   const u16 header_bytes = LoadLittle16(encoded.data() + 10);
@@ -981,7 +1173,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
   const u64 rows_bytes = LoadLittle64(encoded.data() + 144);
   const u64 reserved = LoadLittle64(encoded.data() + 184);
   if (row_count > kMaxRowCount || column_count > kMaxColumnCount) {
-    return BatchError(TypedResultCodecStatus::resource_limit_exceeded,
+    return PacketError(TypedResultCodecStatus::resource_limit_exceeded,
                       kResourceLimitExceeded,
                       "batch_count_limit_exceeded");
   }
@@ -989,7 +1181,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
       total_bytes != encoded.size() ||
       rows_bytes != encoded.size() - header_bytes || row_count == 0 ||
       column_count == 0 || reserved != 0) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_header_invalid");
   }
 
@@ -997,18 +1189,13 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
   std::copy_n(encoded.begin() + kBatchEvidenceOffset,
               expected_batch_evidence.size(),
               expected_batch_evidence.begin());
-  auto evidence_bytes = encoded;
-  std::fill(evidence_bytes.begin() + kBatchEvidenceOffset,
-            evidence_bytes.begin() + kBatchEvidenceOffset +
-                kTypedResultEvidenceHashBytes,
-            0);
-  const auto digest = ComputeEvidence(kBatchEvidenceDomain, evidence_bytes);
+  const auto digest = ComputeEvidence(kBatchEvidenceDomain, encoded, kBatchEvidenceOffset);
   if (!digest.ok()) {
-    return BatchError(TypedResultCodecStatus::invalid_argument,
+    return PacketError(TypedResultCodecStatus::invalid_argument,
                       kFrameInvalid, digest.diagnostic.diagnostic_code);
   }
   if (!SameHash(expected_batch_evidence, DigestHash(digest))) {
-    return BatchError(TypedResultCodecStatus::evidence_mismatch,
+    return PacketError(TypedResultCodecStatus::evidence_mismatch,
                       kFrameInvalid, "batch_sha256_mismatch");
   }
 
@@ -1016,7 +1203,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
   const auto descriptor_result =
       DescriptorForBatch(expected_descriptor, &canonical_descriptor);
   if (!descriptor_result.ok()) {
-    return descriptor_result;
+    return PacketError(descriptor_result.status, descriptor_result.diagnostic_code, descriptor_result.detail);
   }
 
   TypedResultBatch batch;
@@ -1027,7 +1214,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
       !ReadU64(encoded, &header_offset, &batch.batch_ordinal) ||
       !ReadUuid(encoded, &header_offset, &batch.row_descriptor_uuid) ||
       !ReadU64(encoded, &header_offset, &batch.row_descriptor_generation)) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_identity_truncated");
   }
   std::copy_n(encoded.begin() + 104,
@@ -1041,10 +1228,14 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
   batch.end_of_rowset = (flags & 1u) != 0;
   batch.cursor_bound = (flags & 2u) != 0;
 
+  if (!BatchSystemIdentitiesValid(batch, carrier_binding))
+    return PacketError(TypedResultCodecStatus::malformed_frame,
+                      kSystemUuidInvalid, "batch_system_uuid_invalid");
+
   if (!UuidPresent(batch.execution_uuid) ||
       !UuidPresent(batch.result_set_uuid) || !UuidPresent(batch.batch_uuid) ||
       !UuidPresent(batch.snapshot_uuid)) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_identity_missing");
   }
   if (batch.row_descriptor_uuid != canonical_descriptor.descriptor_uuid ||
@@ -1053,12 +1244,11 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
       !SameHash(batch.descriptor_evidence_sha256,
                 canonical_descriptor.descriptor_evidence_sha256) ||
       column_count != canonical_descriptor.columns.size()) {
-    return BatchError(TypedResultCodecStatus::descriptor_mismatch,
+    return PacketError(TypedResultCodecStatus::descriptor_mismatch,
                       kDatatypeDescriptorInvalid,
                       "batch_descriptor_binding_mismatch");
   }
 
-  batch.rows.reserve(row_count);
   std::size_t offset = header_bytes;
   for (u32 row_index = 0; row_index < row_count; ++row_index) {
     const std::size_t row_begin = offset;
@@ -1071,11 +1261,10 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
         !ReadU32(encoded, &offset, &cell_count) ||
         !ReadU64(encoded, &offset, &row.row_ordinal) ||
         row.row_ordinal != row_index || cell_count != column_count) {
-      return BatchError(TypedResultCodecStatus::shape_invalid,
+      return PacketError(TypedResultCodecStatus::shape_invalid,
                         kFrameInvalid, "row_frame_shape_invalid");
     }
     const std::size_t row_end = row_begin + row_bytes;
-    row.cells.reserve(cell_count);
     for (u32 cell_index = 0; cell_index < cell_count; ++cell_index) {
       const std::size_t cell_begin = offset;
       u32 cell_bytes = 0;
@@ -1096,32 +1285,30 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
           value_encoding != kDatatypeBinaryValueEncoding || reserved != 0 ||
           value_bytes != cell_bytes - kCellFrameFixedBytes ||
           value_bytes > row_end - offset) {
-        return BatchError(TypedResultCodecStatus::malformed_frame,
+        return PacketError(TypedResultCodecStatus::malformed_frame,
                           kFrameInvalid, "cell_frame_invalid");
       }
       cell.state = static_cast<TypedResultValueState>(value_state);
       const auto& column = canonical_descriptor.columns[cell_index];
       if (!ValidValueState(cell.state) || !CellMatchesColumn(cell, column)) {
-        return BatchError(TypedResultCodecStatus::shape_invalid,
+        return PacketError(TypedResultCodecStatus::shape_invalid,
                           kFrameInvalid,
                           "cell_column_identity_mismatch");
       }
-      std::vector<byte> encoded_value(
-          encoded.begin() + static_cast<std::ptrdiff_t>(offset),
-          encoded.begin() + static_cast<std::ptrdiff_t>(offset + value_bytes));
+      const byte* encoded_value = encoded.data() + offset;
       offset += value_bytes;
       if (offset != cell_begin + cell_bytes ||
-          encoded_value.size() < datatypes::kDatatypeBinaryEnvelopeHeaderBytes ||
-          LoadLittle16(encoded_value.data() + 14) !=
+          value_bytes < datatypes::kDatatypeBinaryEnvelopeHeaderBytes ||
+          LoadLittle16(encoded_value + 14) !=
               datatypes::kDatatypeBinaryEnvelopeHeaderBytes ||
-          (LoadLittle16(encoded_value.data() + 12) & ~1u) != 0 ||
-          LoadLittle32(encoded_value.data() + 20) != 0) {
-        return BatchError(TypedResultCodecStatus::value_invalid,
+          (LoadLittle16(encoded_value + 12) & ~1u) != 0 ||
+          LoadLittle32(encoded_value + 20) != 0) {
+        return PacketError(TypedResultCodecStatus::value_invalid,
                           kDatatypeDescriptorInvalid,
                           "datatype_value_envelope_forbidden_or_malformed");
       }
       const auto decoded_value =
-          datatypes::DecodeDatatypeBinaryValue(encoded_value);
+          datatypes::DecodeDatatypeBinaryValueView(encoded_value, value_bytes);
       if (!decoded_value.ok() ||
           decoded_value.value.type_id != column.canonical_type_id ||
           decoded_value.value.payload_is_toast_reference ||
@@ -1129,63 +1316,64 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
               (cell.state == TypedResultValueState::sql_null) ||
           (cell.state == TypedResultValueState::sql_null &&
            (column.nullability == TypedResultNullability::not_null ||
-            !decoded_value.value.payload.empty()))) {
-        return BatchError(TypedResultCodecStatus::value_invalid,
+            decoded_value.value.payload_bytes != 0))) {
+        return PacketError(TypedResultCodecStatus::value_invalid,
                           kDatatypeDescriptorInvalid,
                           decoded_value.ok()
                               ? "cell_type_state_or_reference_mismatch"
                               : decoded_value.diagnostic.diagnostic_code);
       }
-      const auto canonical_value =
-          datatypes::EncodeDatatypeBinaryValue(decoded_value.value);
-      if (!canonical_value.ok() || canonical_value.encoded != encoded_value) {
-        return BatchError(TypedResultCodecStatus::value_invalid,
-                          kDatatypeDescriptorInvalid,
-                          "datatype_value_noncanonical_reencode");
-      }
-      cell.canonical_payload = decoded_value.value.payload;
-      row.cells.push_back(std::move(cell));
+      std::array<byte, kCellFrameFixedBytes> canonical_cell{};
+      WriteCellHeader(cell, value_bytes, canonical_cell.data());
+      if (std::memcmp(canonical_cell.data(), encoded.data() + cell_begin, canonical_cell.size()) != 0)
+        return PacketError(TypedResultCodecStatus::malformed_frame, kFrameInvalid,
+                           "cell_noncanonical_reencode");
     }
     if (offset != row_end) {
-      return BatchError(TypedResultCodecStatus::shape_invalid,
+      return PacketError(TypedResultCodecStatus::shape_invalid,
                         kFrameInvalid, "row_frame_length_mismatch");
     }
-    batch.rows.push_back(std::move(row));
+    std::array<byte, kRowFrameFixedBytes> canonical_row{};
+    WriteRowHeader(row_bytes, cell_count, row.row_ordinal, canonical_row.data());
+    if (std::memcmp(canonical_row.data(), encoded.data() + row_begin, canonical_row.size()) != 0)
+      return PacketError(TypedResultCodecStatus::malformed_frame, kFrameInvalid,
+                         "row_noncanonical_reencode");
   }
   if (offset != encoded.size()) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
+    return PacketError(TypedResultCodecStatus::malformed_frame,
                       kFrameInvalid, "batch_trailing_bytes");
   }
 
-  const auto carrier_result = ValidateCarrierBinding(batch, carrier_binding);
+  const auto carrier_result = ValidateCarrierBinding(batch, carrier_binding, row_count);
   if (!carrier_result.ok()) {
-    return carrier_result;
+    return PacketError(carrier_result.status, carrier_result.diagnostic_code, carrier_result.detail);
   }
   if (carrier_binding.kind == TypedResultCarrierKind::ps_fetch_result_v1 &&
       cursor_state == nullptr) {
-    return BatchError(TypedResultCodecStatus::invalid_argument,
+    return PacketError(TypedResultCodecStatus::invalid_argument,
                       kSequenceInvalid,
                       "fetch_decode_requires_cursor_batch_state");
   }
 
-  const auto canonical =
-      EncodeTypedResultBatch(batch, canonical_descriptor, carrier_binding);
-  if (!canonical.ok() || canonical.encoded != encoded) {
-    return BatchError(TypedResultCodecStatus::malformed_frame,
-                      kFrameInvalid, "batch_noncanonical_reencode");
-  }
+  std::array<byte, kTypedResultBatchHeaderBytes> canonical_header{};
+  WriteBatchHeader(batch, canonical_descriptor, row_count, rows_bytes, canonical_header.data());
+  std::copy(batch.batch_evidence_sha256.begin(), batch.batch_evidence_sha256.end(),
+            canonical_header.begin() + kBatchEvidenceOffset);
+  if (std::memcmp(canonical_header.data(), encoded.data(), canonical_header.size()) != 0)
+    return PacketError(TypedResultCodecStatus::malformed_frame, kFrameInvalid,
+                       "batch_noncanonical_reencode");
 
   TypedResultCursorBatchState next_state;
   if (cursor_state != nullptr) {
     if (!batch.cursor_bound) {
-      return BatchError(TypedResultCodecStatus::invalid_argument,
+      return PacketError(TypedResultCodecStatus::invalid_argument,
                         kSequenceInvalid,
                         "cursor_state_requires_cursor_bound_batch");
     }
     next_state = *cursor_state;
     if (next_state.initialized) {
       if (next_state.terminal) {
-        return BatchError(TypedResultCodecStatus::sequence_mismatch,
+        return PacketError(TypedResultCodecStatus::sequence_mismatch,
                           kSequenceInvalid,
                           "batch_after_terminal_cursor_batch");
       }
@@ -1193,7 +1381,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
           batch.execution_uuid != next_state.execution_uuid ||
           batch.result_set_uuid != next_state.result_set_uuid ||
           batch.snapshot_uuid != next_state.snapshot_uuid) {
-        return BatchError(TypedResultCodecStatus::cursor_mismatch,
+        return PacketError(TypedResultCodecStatus::cursor_mismatch,
                           kConnectionMismatch,
                           "cursor_stream_execution_or_snapshot_drift");
       }
@@ -1203,7 +1391,7 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
               next_state.cursor_stream_descriptor_version ||
           carrier_binding.cursor_stream_descriptor_generation !=
               next_state.cursor_stream_descriptor_generation) {
-        return BatchError(TypedResultCodecStatus::cursor_mismatch,
+        return PacketError(TypedResultCodecStatus::cursor_mismatch,
                           kConnectionMismatch,
                           "cursor_stream_descriptor_drift");
       }
@@ -1212,18 +1400,18 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
               next_state.row_descriptor_generation ||
           !SameHash(batch.descriptor_evidence_sha256,
                     next_state.descriptor_evidence_sha256)) {
-        return BatchError(TypedResultCodecStatus::descriptor_mismatch,
+        return PacketError(TypedResultCodecStatus::descriptor_mismatch,
                           kDatatypeDescriptorInvalid,
                           "cursor_row_descriptor_drift");
       }
       if (batch.batch_ordinal != next_state.next_batch_ordinal) {
-        return BatchError(TypedResultCodecStatus::sequence_mismatch,
+        return PacketError(TypedResultCodecStatus::sequence_mismatch,
                           kSequenceInvalid,
                           "cursor_batch_ordinal_not_contiguous");
       }
     } else {
       if (batch.batch_ordinal != 0) {
-        return BatchError(TypedResultCodecStatus::sequence_mismatch,
+        return PacketError(TypedResultCodecStatus::sequence_mismatch,
                           kSequenceInvalid,
                           "cursor_first_batch_ordinal_not_zero");
       }
@@ -1247,13 +1435,13 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
     if (std::find(next_state.seen_batch_uuids.begin(),
                   next_state.seen_batch_uuids.end(),
                   batch.batch_uuid) != next_state.seen_batch_uuids.end()) {
-      return BatchError(TypedResultCodecStatus::sequence_mismatch,
+      return PacketError(TypedResultCodecStatus::sequence_mismatch,
                         kSequenceInvalid,
                         "cursor_batch_uuid_reused");
     }
     if (batch.batch_ordinal == std::numeric_limits<u64>::max() &&
         !batch.end_of_rowset) {
-      return BatchError(TypedResultCodecStatus::sequence_mismatch,
+      return PacketError(TypedResultCodecStatus::sequence_mismatch,
                         kSequenceInvalid,
                         "cursor_batch_ordinal_overflow");
     }
@@ -1262,13 +1450,82 @@ TypedResultBatchCodecResult DecodeTypedResultBatch(
     next_state.seen_batch_uuids.push_back(batch.batch_uuid);
   }
 
-  TypedResultBatchCodecResult result;
+  TypedResultPacketViewResult result;
   result.status = TypedResultCodecStatus::ok;
-  result.encoded = encoded;
-  result.batch = std::move(batch);
+  result.view.data_ = encoded_data;
+  result.view.size_ = encoded_size;
+  result.view.header_ = PacketHeaderFromBatch(batch, row_count, column_count);
   if (cursor_state != nullptr) {
-    *cursor_state = std::move(next_state);
+    result.has_cursor_state = true;
+    result.next_cursor_state = std::move(next_state);
   }
+  return result;
+}
+
+bool TypedResultPacketRowCursor::Next(TypedResultPacketRowView* row) noexcept {
+  if (row == nullptr || remaining_ == 0) return false;
+  row->ordinal_ = LoadLittle64(next_ + 8);
+  row->cell_count_ = LoadLittle32(next_ + 4);
+  row->cells_ = next_ + kRowFrameFixedBytes;
+  next_ += LoadLittle32(next_);
+  --remaining_;
+  return true;
+}
+
+bool TypedResultPacketCellCursor::Next(TypedResultPacketCellView* cell) noexcept {
+  if (cell == nullptr || remaining_ == 0) return false;
+  cell->column_ordinal = LoadLittle32(next_ + 4);
+  cell->name_occurrence = LoadLittle32(next_ + 8);
+  cell->state = static_cast<TypedResultValueState>(next_[12]);
+  const byte* value = next_ + kCellFrameFixedBytes;
+  cell->value.type_id = static_cast<CanonicalTypeId>(LoadLittle32(value + 8));
+  const u16 flags = LoadLittle16(value + 12);
+  cell->value.is_null = (flags & 1u) != 0;
+  cell->value.payload_is_toast_reference = (flags & 2u) != 0;
+  cell->value.payload_data = value + datatypes::kDatatypeBinaryEnvelopeHeaderBytes;
+  cell->value.payload_bytes = LoadLittle32(value + 16);
+  next_ += LoadLittle32(next_);
+  --remaining_;
+  return true;
+}
+
+TypedResultBatchCodecResult DecodeTypedResultBatch(
+    const std::vector<byte>& encoded,
+    const TypedResultRowDescriptor& expected_descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    TypedResultCursorBatchState* cursor_state) {
+  auto parsed = DecodeTypedResultPacketView(encoded.data(), encoded.size(),
+      expected_descriptor, carrier_binding, cursor_state);
+  if (!parsed.ok())
+    return BatchError(parsed.status, std::move(parsed.diagnostic_code), std::move(parsed.detail));
+  TypedResultBatchCodecResult result;
+  result.batch = BatchFromPacketHeader(parsed.view.header());
+  result.batch.rows.reserve(parsed.view.header().row_count);
+  auto rows = parsed.view.rows();
+  TypedResultPacketRowView source_row;
+  while (rows.Next(&source_row)) {
+    TypedResultRow row;
+    row.row_ordinal = source_row.row_ordinal();
+    row.cells.reserve(source_row.cell_count());
+    auto cells = source_row.cells();
+    TypedResultPacketCellView source_cell;
+    while (cells.Next(&source_cell)) {
+      TypedResultCell cell;
+      cell.column_ordinal = source_cell.column_ordinal;
+      cell.name_occurrence = source_cell.name_occurrence;
+      cell.state = source_cell.state;
+      cell.canonical_payload.assign(source_cell.value.payload_data,
+          source_cell.value.payload_data + source_cell.value.payload_bytes);
+      row.cells.push_back(std::move(cell));
+    }
+    result.batch.rows.push_back(std::move(row));
+  }
+  result.encoded = encoded;
+  // No caller state advances until all owning result copies exist.
+  static_assert(std::is_nothrow_move_assignable_v<TypedResultCursorBatchState>);
+  if (cursor_state != nullptr)
+    *cursor_state = std::move(parsed.next_cursor_state);
+  result.status = TypedResultCodecStatus::ok;
   return result;
 }
 

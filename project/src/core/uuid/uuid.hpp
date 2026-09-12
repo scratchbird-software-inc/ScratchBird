@@ -11,6 +11,9 @@
 #include "runtime_platform.hpp"
 
 #include <array>
+#include <chrono>
+#include <filesystem>
+#include <optional>
 #include <string>
 
 namespace scratchbird::core::uuid {
@@ -98,6 +101,9 @@ UuidV7IndexCompareResult CompareUuidV7ForIndex(const TypedUuid& left,
                                                const TypedUuid& right,
                                                UuidKind expected_kind);
 std::string UuidToString(const Uuid& uuid);
+// OS filename projection only. Engine ownership and lookup retain the input
+// binary identity; a path component is not a replacement UUID authority.
+std::optional<std::filesystem::path> EngineIdentityPathComponent(const Uuid& uuid);
 UuidParseResult ParseUuid(std::string text);
 TypedUuidResult MakeTypedUuid(UuidKind kind, Uuid value);
 TypedUuidResult ParseTypedUuid(UuidKind kind, std::string text);
@@ -105,6 +111,21 @@ TypedUuidResult MakeDurableEngineIdentityUuid(UuidKind kind, Uuid value);
 TypedUuidResult ParseDurableEngineIdentityUuid(UuidKind kind, std::string text);
 TypedUuidResult GenerateEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis);
 TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis);
+
+// Fresh runtime-object identity only; callers retain its owner and lifetime.
+// Never substitutes a content hash or display label for issued identity.
+inline std::optional<Uuid> IssueRuntimeIdentityV7() noexcept {
+  try {
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (millis < 0 || static_cast<u64>(millis) >= (u64{1} << 48)) return std::nullopt;
+    const auto issued = GenerateEngineIdentityV7(UuidKind::object, static_cast<u64>(millis));
+    if (!issued.ok() || !IsEngineIdentityUuid(issued.value.value)) return std::nullopt;
+    return issued.value.value;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
 
 UuidResult GenerateCompatibilityTimeNodeV1(u64 gregorian_100ns_timestamp,
                                            u16 clock_sequence,

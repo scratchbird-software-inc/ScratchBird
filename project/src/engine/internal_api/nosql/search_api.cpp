@@ -713,14 +713,14 @@ bool ExactBoundSearchStorageDescriptorImpl(
     const MgaRelationStorageDescriptor& descriptor,
     const std::string_view collection_uuid) {
   const auto text_type_uuid = ExactBoundSearchCoreTypeUuid("character");
-  if (descriptor.relation_uuid.canonical != collection_uuid ||
+  if (descriptor.relation_uuid != collection_uuid ||
       text_type_uuid.empty() ||
-      !CanonicalBoundSearchUuid(descriptor.database_uuid.canonical) ||
-      !CanonicalBoundSearchUuid(descriptor.schema_uuid.canonical) ||
+      !CanonicalBoundSearchUuid(descriptor.database_uuid) ||
+      !CanonicalBoundSearchUuid(descriptor.schema_uuid) ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.descriptor_generation == 0 ||
-      !CanonicalBoundSearchUuid(descriptor.descriptor_uuid.canonical) ||
+      !CanonicalBoundSearchUuid(descriptor.descriptor_uuid) ||
       descriptor.columns.size() != 2) {
     return false;
   }
@@ -738,17 +738,17 @@ bool ExactBoundSearchStorageDescriptorImpl(
            column.value_descriptor.descriptor_kind ==
                "canonical_type_descriptor" &&
            column.value_descriptor.canonical_type_name == "text" &&
-           CanonicalBoundSearchUuid(column.column_uuid.canonical) &&
+           CanonicalBoundSearchUuid(column.column_uuid) &&
            CanonicalBoundSearchUuid(
-               column.value_descriptor.descriptor_uuid.canonical) &&
-           column.value_descriptor.descriptor_uuid.canonical ==
-               column.column_uuid.canonical &&
+               column.value_descriptor.descriptor_uuid) &&
+           column.value_descriptor.descriptor_uuid ==
+               column.column_uuid &&
            ExactBoundSearchDescriptorFields(
                column.value_descriptor,
                {{"canonical", "text"},
                 {"type_uuid", text_type_uuid},
                 {"nullable", "false"},
-                {"column_uuid", column.column_uuid.canonical},
+                {"column_uuid", column.column_uuid},
                 {"datatype_descriptor_uuid",
                  "019d0000-0000-7000-8000-00000000d718"},
                 {"datatype_descriptor_generation", "1"},
@@ -760,10 +760,10 @@ bool ExactBoundSearchStorageDescriptorImpl(
                 {"codec_generation", "1"},
                 {"null_encoding", "1"}});
   };
-  return descriptor.columns[0].column_uuid.canonical !=
-             descriptor.columns[1].column_uuid.canonical &&
-         descriptor.columns[0].value_descriptor.descriptor_uuid.canonical !=
-             descriptor.columns[1].value_descriptor.descriptor_uuid.canonical &&
+  return descriptor.columns[0].column_uuid !=
+             descriptor.columns[1].column_uuid &&
+         descriptor.columns[0].value_descriptor.descriptor_uuid !=
+             descriptor.columns[1].value_descriptor.descriptor_uuid &&
          exact_text(descriptor.columns[0], 0, "body", text_type_uuid) &&
          exact_text(descriptor.columns[1], 1, "category", text_type_uuid);
 }
@@ -777,8 +777,8 @@ bool ExactBoundSearchOutputDescriptors(
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     const auto type_uuid = ExactBoundSearchCoreTypeUuid(kTypes[index]);
-    if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid.canonical) ||
-        !descriptor_uuids.insert(descriptor.descriptor_uuid.canonical).second ||
+    if (!CanonicalBoundSearchUuid(descriptor.descriptor_uuid) ||
+        !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
         descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
         descriptor.canonical_type_name != kTypes[index] ||
         !ExactBoundSearchDescriptorFields(
@@ -853,7 +853,7 @@ bool BoundSearchCarrierContextMatches(
              request.selected_capability_uuid &&
          carrier.database_identity ==
              EngineNoSqlProviderDatabaseIdentity(context) &&
-         carrier.database_uuid == context.database_uuid.canonical &&
+         carrier.database_uuid == context.database_uuid &&
          carrier.collection_uuid == request.collection_uuid &&
          carrier.search_segment_base_relation_uuid == request.collection_uuid &&
          carrier.search_segment_analyzer_uuid == request.analyzer_uuid &&
@@ -862,21 +862,21 @@ bool BoundSearchCarrierContextMatches(
          carrier.search_segment_analyzer_pipeline_sha256 ==
              request.analyzer_pipeline_sha256 &&
          carrier.search_segment_statement_uuid ==
-             context.statement_uuid.canonical &&
+             context.statement_uuid &&
          carrier.search_segment_statement_snapshot_uuid ==
-             context.statement_snapshot_uuid.canonical &&
+             context.statement_snapshot_uuid &&
          carrier.search_segment_statement_metadata_snapshot_uuid ==
-             context.statement_metadata_snapshot_uuid.canonical &&
+             context.statement_metadata_snapshot_uuid &&
          carrier.search_segment_owning_transaction_uuid ==
-             context.transaction_uuid.canonical &&
+             context.transaction_uuid &&
          carrier.search_segment_local_transaction_id ==
              context.local_transaction_id &&
          carrier.search_segment_snapshot_visible_through_local_transaction_id ==
              context.snapshot_visible_through_local_transaction_id &&
          carrier.search_segment_security_context_uuid ==
-             context.authorization_context.authority_uuid.canonical &&
+             context.authorization_context.authority_uuid &&
          carrier.search_segment_catalog_epoch_uuid ==
-             context.catalog_epoch_uuid.canonical &&
+             context.catalog_epoch_uuid &&
          carrier.security_epoch == context.security_epoch &&
          carrier.catalog_epoch == context.catalog_generation_id &&
          carrier.search_segment_exact_fallback_available &&
@@ -892,19 +892,19 @@ bool BoundSearchCarrierDescriptorMatches(
     const EngineNoSqlProviderGenerationMetadata& carrier,
     const MgaRelationStorageDescriptor& descriptor) {
   return carrier.search_segment_relation_descriptor_uuid ==
-             descriptor.descriptor_uuid.canonical &&
+             descriptor.descriptor_uuid &&
          carrier.search_segment_relation_descriptor_generation ==
              descriptor.descriptor_generation &&
          carrier.search_segment_body_column_uuid ==
-             descriptor.columns[0].column_uuid.canonical &&
+             descriptor.columns[0].column_uuid &&
          carrier.search_segment_body_descriptor_uuid ==
-             descriptor.columns[0].value_descriptor.descriptor_uuid.canonical &&
+             descriptor.columns[0].value_descriptor.descriptor_uuid &&
          carrier.search_segment_body_type_uuid ==
              BoundSearchTypeUuid(descriptor.columns[0].value_descriptor) &&
          carrier.search_segment_category_column_uuid ==
-             descriptor.columns[1].column_uuid.canonical &&
+             descriptor.columns[1].column_uuid &&
          carrier.search_segment_category_descriptor_uuid ==
-             descriptor.columns[1].value_descriptor.descriptor_uuid.canonical &&
+             descriptor.columns[1].value_descriptor.descriptor_uuid &&
          carrier.search_segment_category_type_uuid ==
              BoundSearchTypeUuid(descriptor.columns[1].value_descriptor);
 }
@@ -1046,9 +1046,9 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
   const auto preflight = LoadMgaRelationStorageDescriptor(
       request.context, request.collection_uuid);
   if (!preflight.ok ||
-      preflight.descriptor.database_uuid.canonical !=
-          request.context.database_uuid.canonical ||
-      preflight.descriptor.descriptor_uuid.canonical !=
+      preflight.descriptor.database_uuid !=
+          request.context.database_uuid ||
+      preflight.descriptor.descriptor_uuid !=
           request.expected_descriptor_uuid ||
       preflight.descriptor.descriptor_generation !=
           request.expected_descriptor_generation ||
@@ -1114,8 +1114,8 @@ EngineBoundSearchReadResultV1 EngineBoundSearchReadV1(
   }
   if (!ExactBoundSearchStorageDescriptorV1(read.descriptor,
                                            request.collection_uuid) ||
-      read.descriptor.descriptor_uuid.canonical !=
-          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_uuid !=
+          preflight.descriptor.descriptor_uuid ||
       read.descriptor.descriptor_generation !=
           preflight.descriptor.descriptor_generation ||
       read.current_relation_base_generation == 0) {

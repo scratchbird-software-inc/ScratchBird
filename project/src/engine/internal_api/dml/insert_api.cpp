@@ -246,7 +246,7 @@ DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(
     const std::string& row_uuid) {
   DmlTargetAccessPlanRequest plan_request;
   plan_request.mutation_kind = "dml.insert_rows.on_conflict";
-  plan_request.database_uuid = request.context.database_uuid.canonical;
+  plan_request.database_uuid = request.context.database_uuid;
   plan_request.relation_uuid = table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = "row_uuid_match";
@@ -254,13 +254,13 @@ DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(
   plan_request.row_uuid = row_uuid;
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid.canonical + ":" +
-      request.context.current_role_uuid.canonical + ":" +
+      request.context.principal_uuid + ":" +
+      request.context.current_role_uuid + ":" +
       std::to_string(request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid.canonical + ":" +
+      request.context.session_uuid + ":" +
       std::to_string(request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
@@ -1755,7 +1755,7 @@ std::vector<EngineRowValue> BuildConflictFreeDirectAppendRows(
   rows.reserve(staged_rows.size());
   for (const auto& staged : staged_rows) {
     EngineRowValue row;
-    row.requested_row_uuid.canonical = staged.row_record.row_uuid;
+    row.requested_row_uuid = staged.row_record.row_uuid;
     row.fields.reserve(staged.logical_values.size());
     for (const auto& [field_name, value] : staged.logical_values) {
       row.fields.push_back({field_name,
@@ -2070,7 +2070,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
   auto serializable_admission = dml::CheckSerializableInsertMutation(
       request.context,
       "dml.insert_rows",
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       input_rows,
       request.option_envelopes);
   mark_phase("serializable_check");
@@ -2107,7 +2107,7 @@ DirectPhysicalInsertAttempt TryDirectPhysicalInsertRoute(
   auto serializable_recorded = dml::RecordSerializableInsertMutation(
       request.context,
       "dml.insert_rows",
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       input_rows,
       request.option_envelopes);
   mark_phase("serializable_record");
@@ -2171,8 +2171,8 @@ bool RuntimeInsertPolicyApplies(const EngineMaterializedAuthorizationPolicy& pol
   if (!policy.right.empty() && policy.right != "INSERT") {
     return false;
   }
-  return policy.target_uuid.canonical.empty() ||
-         policy.target_uuid.canonical == table_uuid;
+  return policy.target_uuid.is_nil() ||
+         policy.target_uuid == table_uuid;
 }
 
 struct InsertRuntimeSecurityPolicyDecision {
@@ -2239,7 +2239,7 @@ EngineEvaluateDeepSecurityResult EvaluateInsertRuntimeSecurityRecheck(
         values);
     if (evidence != nullptr) {
       evidence->push_back({"insert_runtime_security_policy_evaluated",
-                           policy.policy_uuid.canonical});
+                           policy.policy_uuid});
       evidence->push_back({"insert_runtime_security_policy_result",
                            decision.reason + ":" +
                                (decision.denied ? "deny" : "allow")});
@@ -2268,8 +2268,8 @@ EngineEvaluateDeepSecurityResult EvaluateInsertRuntimeSecurityRecheck(
   EngineEvaluateDeepSecurityRequest security;
   security.context = request.context;
   security.target_object = request.target_object;
-  if (security.target_object.uuid.canonical.empty()) {
-    security.target_object.uuid.canonical = table_uuid;
+  if (security.target_object.uuid.is_nil()) {
+    security.target_object.uuid = table_uuid;
   }
   security.phase = "executor";
   security.required_right = "INSERT";
@@ -2694,7 +2694,7 @@ class InsertPreworkQueue {
     auto row_allocation = ReserveDmlPageAllocationRuntime(
         request_.context,
         request_.option_envelopes,
-        request_.target_table.uuid.canonical,
+        request_.target_table.uuid,
         DmlPageAllocationRuntimeFamily::row_data,
         row_count,
         "insert.prework.row_data");
@@ -2715,7 +2715,7 @@ class InsertPreworkQueue {
         request_.context,
         request_.option_envelopes,
         state_,
-        request_.target_table.uuid.canonical,
+        request_.target_table.uuid,
         index_value_batch,
         "insert.prework.index");
     const EngineApiU64 index_allocation_elapsed =
@@ -3356,14 +3356,14 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "local_transaction_id_required"));
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "target_table_uuid_required"));
   }
   if (request.HasAmbiguousInputRows()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "input_rows_or_borrowed_rows_exclusive"));
   }
   const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
-      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::insert);
+      request.context, request.target_table.uuid, MgaDmlMutationKind::insert);
   if (savepoint_admission.error)
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context, "dml.insert_rows", savepoint_admission);
@@ -3419,7 +3419,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   const bool executable_trigger_descriptors_present =
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
-          request.target_table.uuid.canonical);
+          request.target_table.uuid);
   mark_insert_phase("active_trigger_descriptor_lookup");
   if (!direct_initial_input_rows.empty() && !executable_trigger_descriptors_present) {
     auto direct_attempt = TryDirectPhysicalInsertRoute(request,
@@ -3443,7 +3443,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   const bool generated_source_capacity_ready =
       !generated_source_capacity_required || generated_source_capacity.usable;
   std::vector<std::string> generated_insert_scope_uuids{
-      request.target_table.uuid.canonical};
+      request.target_table.uuid};
   generated_insert_scope_uuids.insert(generated_insert_scope_uuids.end(),
                                       generated_source_uuids.begin(),
                                       generated_source_uuids.end());
@@ -3454,10 +3454,10 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                     ? relation_store.LoadConstraintScopes(
                           generated_insert_scope_uuids)
                     : relation_store.LoadConstraintScope(
-                          request.target_table.uuid.canonical);
+                          request.target_table.uuid);
   mark_insert_phase("load_relation_state");
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       ResolveInsertBatchMode(request) == InsertBatchMode::singleton
           ? "singleton"
           : InsertBatchModeName(ResolveInsertBatchMode(request)),
@@ -3472,12 +3472,12 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                  : "insert_target_scoped"));
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
-  const auto table = FindVisibleMgaTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  const auto table = FindVisibleMgaTable(state, request.target_table.uuid, request.context.local_transaction_id);
   mark_insert_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "target_table_not_visible"));
   }
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
         "dml.insert_rows",
@@ -3631,7 +3631,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   auto serializable_admission = dml::CheckSerializableInsertMutation(
       request.context,
       "dml.insert_rows",
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       input_rows,
       request.option_envelopes);
   if (!serializable_admission.ok) {
@@ -3644,7 +3644,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                             serializable_admission.evidence.end());
     return failure;
   }
-  const auto visible_indexes = VisibleMgaIndexesForTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  const auto visible_indexes = VisibleMgaIndexesForTable(state, request.target_table.uuid, request.context.local_transaction_id);
   ConstraintDmlValidationCache constraint_cache;
   const bool unique_route_required =
       UniquePreflightRouteRequired(visible_indexes, conflict_action);
@@ -3820,7 +3820,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   UniqueStatementOverlay statement_overlay;
   const UniquePhysicalProbeCache physical_probe_cache =
       BuildUniquePhysicalProbeCache(state,
-                                    request.target_table.uuid.canonical,
+                                    request.target_table.uuid,
                                     request.context,
                                     visible_indexes);
   result.evidence.push_back({"unique_index_physical_probe_cache_entries",
@@ -3860,7 +3860,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     if (conflict_index) {
       ++result.dml_summary.index_probes;
       const auto conflict = FindUniqueConflictByIndex(state,
-                                                      request.target_table.uuid.canonical,
+                                                      request.target_table.uuid,
                                                       request.context,
                                                       statement_overlay,
                                                       physical_probe_cache,
@@ -3882,7 +3882,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                    conflict->physical_probe_path});
         auto locator_stream = BuildOnConflictRowLocatorStream(
             request,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             conflict_row.row_uuid);
         AppendRowLocatorStreamEvidence("on_conflict", locator_stream, &result.evidence);
         if (!locator_stream.ok) {
@@ -3999,7 +3999,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                       update_toast_required)) {
           CrudRowVersionRecord overlay_row = conflict_row;
           overlay_row.creator_tx = request.context.local_transaction_id;
-          overlay_row.table_uuid = request.target_table.uuid.canonical;
+          overlay_row.table_uuid = request.target_table.uuid;
           overlay_row.deleted = false;
           overlay_row.values = update_values;
           UpsertUniqueStatementOverlayRow(&statement_overlay,
@@ -4016,7 +4016,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         const auto row_allocation = ReserveDmlPageAllocationRuntime(
             request.context,
             request.option_envelopes,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             DmlPageAllocationRuntimeFamily::row_data,
             1,
             "insert.conflict_update.row_data");
@@ -4055,7 +4055,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             request.context,
             request.option_envelopes,
             state,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             update_values,
             "insert.conflict_update.index");
         const EngineApiU64 index_allocation_elapsed =
@@ -4089,7 +4089,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                            "index",
                                            index_allocation_elapsed);
         const auto large_value_persisted = PersistMgaLargeValuesForRow(request.context,
-                                                                       request.target_table.uuid.canonical,
+                                                                       request.target_table.uuid,
                                                                        conflict_row.row_uuid,
                                                                        version_uuid,
                                                                        update_toast_required,
@@ -4103,11 +4103,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         }
         CrudRowVersionRecord row_record;
         row_record.creator_tx = request.context.local_transaction_id;
-        row_record.table_uuid = request.target_table.uuid.canonical;
+        row_record.table_uuid = request.target_table.uuid;
         row_record.row_uuid = conflict_row.row_uuid;
         row_record.version_uuid = version_uuid;
         row_record.temporary_session_uuid =
-            table->temporary ? request.context.session_uuid.canonical : "";
+            table->temporary ? request.context.session_uuid : "";
         row_record.previous_version_uuid = conflict_row.version_uuid;
         row_record.previous_sequence = conflict_row.sequence;
         row_record.deleted = false;
@@ -4142,7 +4142,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         const auto index_appended = PrepareTransactionalIndexVersionMutation(
             request.context,
             synchronous_indexes,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             &conflict_row,
             row_record,
             update_values,
@@ -4165,7 +4165,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         returning_row.creator_tx = request.context.local_transaction_id;
         returning_row.event_sequence = written_event_sequence;
         returning_row.sequence = written_event_sequence;
-        returning_row.table_uuid = request.target_table.uuid.canonical;
+        returning_row.table_uuid = request.target_table.uuid;
         returning_row.version_uuid = version_uuid;
         returning_row.previous_version_uuid = conflict_row.version_uuid;
         returning_row.previous_sequence = conflict_row.sequence;
@@ -4191,7 +4191,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     if (deferred_key_constraint) {
       validation_evidence.PushOrCompact(
           {"constraint_deferred_unique_index_preflight",
-           request.target_table.uuid.canonical},
+           request.target_table.uuid},
           &result.evidence);
     } else {
       result.dml_summary.index_probes += UniqueIndexCount(visible_indexes);
@@ -4207,7 +4207,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             const auto keys = CrudIndexKeysForValues(index, values);
             if (const auto conflict = FindPersistedUniqueIndexConflict(
                     state,
-                    request.target_table.uuid.canonical,
+                    request.target_table.uuid,
                     request.context,
                     physical_probe_cache,
                     index,
@@ -4270,7 +4270,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 	      std::vector<EngineEvidenceReference> security_recheck_evidence;
 	      const auto security_recheck =
 	          EvaluateInsertRuntimeSecurityRecheck(request,
-	                                               request.target_table.uuid.canonical,
+	                                               request.target_table.uuid,
 	                                               values,
 	                                               &security_recheck_evidence);
 	      if (!security_recheck.ok || !security_recheck.admitted) {
@@ -4306,11 +4306,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     const std::string version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
-    row_record.table_uuid = request.target_table.uuid.canonical;
+    row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = version_uuid;
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid.canonical : "";
+        table->temporary ? request.context.session_uuid : "";
     row_record.deleted = false;
     row_record.values = values;
     CrudRowVersionRecord overlay_row = row_record;
@@ -4338,7 +4338,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     auto serializable_recorded = dml::RecordSerializableInsertMutation(
         request.context,
         "dml.insert_rows",
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         input_rows,
         request.option_envelopes);
     if (!serializable_recorded.ok) {
@@ -4437,7 +4437,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       const auto row_allocation = ReserveDmlPageAllocationRuntime(
           request.context,
           request.option_envelopes,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           DmlPageAllocationRuntimeFamily::row_data,
           admitted_rows,
           "insert.row_data");
@@ -4509,7 +4509,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
             request.context,
             request.option_envelopes,
             state,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             index_value_batch,
             "insert.index");
         const EngineApiU64 index_allocation_elapsed =
@@ -4557,7 +4557,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
       for (std::size_t index = window_begin; index < window_end; ++index) {
         auto& staged = staged_insert_rows[index];
         large_value_rows.push_back(
-            MgaLargeValuePersistBatchRowInput{request.target_table.uuid.canonical,
+            MgaLargeValuePersistBatchRowInput{request.target_table.uuid,
                                               staged.row_record.row_uuid,
                                               staged.row_record.version_uuid,
                                               staged.toast_required,
@@ -4669,7 +4669,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         const auto index_prepared = PrepareTransactionalIndexVersionMutation(
             request.context,
             synchronous_indexes,
-            request.target_table.uuid.canonical,
+            request.target_table.uuid,
             nullptr,
             row_record,
             staged_insert_rows[index].logical_values,
@@ -4749,7 +4749,7 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         trigger_row.creator_tx = request.context.local_transaction_id;
         trigger_row.event_sequence = row_record.event_sequence;
         trigger_row.sequence = row_record.sequence;
-        trigger_row.table_uuid = request.target_table.uuid.canonical;
+        trigger_row.table_uuid = request.target_table.uuid;
         trigger_row.row_uuid = row_record.row_uuid;
         trigger_row.version_uuid = row_record.version_uuid;
         trigger_row.deleted = false;
@@ -4842,13 +4842,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
                                                                        : "rs.dml.returning.v1"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
-  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
+  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid});
   result.evidence.push_back({"dml_returning", "affected_rows"});
   result.evidence.push_back({"row_uuid_generation", request.require_generated_row_uuid ? "required" : "caller_allowed"});
   const auto trigger_result =
       dml_trigger_runtime::FireAfterInsertTableTriggers(request.context,
                                                         state,
-                                                        request.target_table.uuid.canonical,
+                                                        request.target_table.uuid,
                                                         trigger_insert_rows,
                                                         request.option_envelopes);
   if (!trigger_result.ok) {

@@ -107,9 +107,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   const auto& info = scratchbird::engine::cluster_provider::DescribeClusterProvider();
-  const std::string expected = info.provider_type == "compile_link_stub"
-      ? std::string(scratchbird::engine::cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode)
-      : std::string(scratchbird::engine::cluster_provider::kClusterSupportNotEnabledCode);
+  const std::string expected = "PROCESS.CLUSTER_PATH_ABSENT";
   if (argc == 3 &&
       (info.provider_type != argv[1] || expected != argv[2])) {
     std::cerr << "configured cluster provider mismatch: mode=" << info.provider_type

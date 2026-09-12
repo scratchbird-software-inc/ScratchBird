@@ -16,8 +16,6 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -645,6 +643,10 @@ PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(const std::string& pat
     result.diagnostic = open.diagnostic;
     return result;
   }
+  return ReadPhysicalFilespaceHeader(device);
+}
+
+PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(FileDevice& device) {
   const auto size = device.Size();
   if (!size.ok()) {
     PhysicalFilespaceHeaderResult result;
@@ -664,30 +666,12 @@ PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(const std::string& pat
 }
 
 PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeaderOffline(const std::string& path) {
-  if (path.empty()) {
-    return ReadError("SB-FILESPACE-HEADER-PATH-REQUIRED", "storage.filespace.header.path_required");
-  }
-  std::error_code ec;
-  const auto file_size = std::filesystem::file_size(path, ec);
-  if (ec) {
-    return ReadError("SB-FILESPACE-HEADER-SIZE-FAILED",
-                     "storage.filespace.header.size_failed",
-                     path + ":" + ec.message());
-  }
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return ReadError("SB-FILESPACE-HEADER-OPEN-FAILED",
-                     "storage.filespace.header.open_failed",
-                     path);
-  }
-  std::vector<unsigned char> buffer(kPhysicalHeaderBytes, 0);
-  in.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
-  if (in.gcount() != static_cast<std::streamsize>(buffer.size())) {
-    return ReadError("SB-FILESPACE-HEADER-READ-SHORT",
-                     "storage.filespace.header.read_short",
-                     std::to_string(in.gcount()));
-  }
-  return ParseBinaryHeader(buffer, file_size);
+  // Offline inspection is not an exception to exclusive process ownership.
+  // The normal reader holds the native FileDevice owner while obtaining both
+  // size and bytes from the same opened file. Same-process maintenance can
+  // borrow a genuine route lease; another process must wait for its release.
+  // This call owns one file only, not the database's coordinated filespace set.
+  return ReadPhysicalFilespaceHeader(path);
 }
 
 PhysicalFilespaceHeaderResult ValidatePhysicalFilespaceHeader(const PhysicalFilespaceHeader& expected,

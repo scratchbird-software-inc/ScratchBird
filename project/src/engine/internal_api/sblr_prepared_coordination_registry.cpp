@@ -206,7 +206,7 @@ bool Replay(const EngineRequestContext& c,
        lines[i].substr(lines[i].find('\t',lines[i].find('\t')+1)) !=
        lines[i+1].substr(lines[i+1].find('\t',lines[i+1].find('\t')+1) ) ||
        ep!=sp || er!=sr || e.kind!=s.kind ||
-       s.database_uuid!=c.database_uuid.canonical ||
+       s.database_uuid!=c.database_uuid ||
        s.coordinator_generation<=*high) return false;
     const auto found=states->find(s.coordination_uuid);
     if((found==states->end() &&
@@ -238,8 +238,8 @@ SblrPreparedCoordinationResult Mutate(
     std::string_view seal_hash, std::string_view reason) {
   if(!HasAuthority(c)) return Denied();
   const auto it=g_live.find(coordination);
-  if(it==g_live.end() || it->second.database_uuid!=c.database_uuid.canonical ||
-     it->second.session_uuid!=c.session_uuid.canonical || it->second.operation_uuid!=operation)
+  if(it==g_live.end() || it->second.database_uuid!=c.database_uuid ||
+     it->second.session_uuid!=c.session_uuid || it->second.operation_uuid!=operation)
     return Denied();
   SblrPreparedCoordinationResult r;
   if(it->second.coordinator_generation!=expected || it->second.state!=from) {
@@ -264,27 +264,27 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
     const EngineRequestContext& c,const std::string& operation) {
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
-  if(c.database_path.empty() || !ValidUuid(c.database_uuid.canonical,scratchbird::core::platform::UuidKind::database) ||
-     !ValidUuid(c.session_uuid.canonical,scratchbird::core::platform::UuidKind::session) ||
+  if(c.database_path.empty() || !ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database) ||
+     !ValidUuid(c.session_uuid,scratchbird::core::platform::UuidKind::session) ||
      !ValidUuid(operation,scratchbird::core::platform::UuidKind::object)) {
     r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.begin_invalid","exact prepared begin identity required"); return r;
   }
-  auto& high=g_high_water[c.database_uuid.canonical];
+  auto& high=g_high_water[c.database_uuid];
   if(high==0 && std::filesystem::exists(Path(c))) {
     std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states;
     if(!Replay(c,&states,&high)) { r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required","registry replay failed or recovery required"); return r; }
     for(const auto& [id,s]:states) if(s.state==SblrPreparedCoordinationState::begun||s.state==SblrPreparedCoordinationState::acquired) {
       r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required","unfinished coordination requires startup recovery"); return r; }
   }
-  SblrPreparedCoordinationSnapshot s; s.coordinator_generation=NextGeneration(c.database_uuid.canonical);
+  SblrPreparedCoordinationSnapshot s; s.coordinator_generation=NextGeneration(c.database_uuid);
   s.provisional_prepared_generation=s.coordinator_generation;
   s.coordination_uuid=NewUuid(s.coordinator_generation*2); s.provisional_prepared_uuid=NewUuid(s.coordinator_generation*2+1);
-  s.operation_uuid=operation; s.database_uuid=c.database_uuid.canonical; s.session_uuid=c.session_uuid.canonical;
+  s.operation_uuid=operation; s.database_uuid=c.database_uuid; s.session_uuid=c.session_uuid;
   s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed); if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
   s.kind=SblrPreparedCoordinationKind::preparation;
   s.state=SblrPreparedCoordinationState::begun; s.decision_evidence_sha256=Hash(Material(s,0,"prepared.begin"));
   if(s.coordinator_generation==0||s.coordination_uuid.empty()||s.provisional_prepared_uuid.empty()||!Publish(c,s,0,"prepared.begin")) {
-    if(s.coordinator_generation) --g_high_water[c.database_uuid.canonical];
+    if(s.coordinator_generation) --g_high_water[c.database_uuid];
     r.diagnostic=Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.begin_publish_failed","durable begin failed"); return r;
   }
   g_live[s.coordination_uuid]=s; r.ok=true;r.snapshot=s;r.diagnostic=Ok();
@@ -297,8 +297,8 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
   if(c.database_path.empty() ||
-     !ValidUuid(c.database_uuid.canonical,scratchbird::core::platform::UuidKind::database) ||
-     !ValidUuid(c.session_uuid.canonical,scratchbird::core::platform::UuidKind::session) ||
+     !ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database) ||
+     !ValidUuid(c.session_uuid,scratchbird::core::platform::UuidKind::session) ||
      !ValidUuid(operation,scratchbird::core::platform::UuidKind::object) ||
      !ValidUuid(prepared,scratchbird::core::platform::UuidKind::object)) {
     r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.execution_begin_invalid","exact prepared execution identity required"); return r;
@@ -308,14 +308,14 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
   if(!Replay(c,&states,&durable_high)) {
     r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.execution_replay_stale","prepared registry replay failed"); return r;
   }
-  g_high_water[c.database_uuid.canonical]=std::max(g_high_water[c.database_uuid.canonical],durable_high);
+  g_high_water[c.database_uuid]=std::max(g_high_water[c.database_uuid],durable_high);
   const SblrPreparedCoordinationSnapshot* sealed=nullptr;
   for(const auto& [id,state]:states) {
     if(state.provisional_prepared_uuid==prepared &&
        state.kind==SblrPreparedCoordinationKind::preparation &&
        state.state==SblrPreparedCoordinationState::sealed &&
-       state.database_uuid==c.database_uuid.canonical &&
-       state.session_uuid==c.session_uuid.canonical) {
+       state.database_uuid==c.database_uuid &&
+       state.session_uuid==c.session_uuid) {
       if(sealed!=nullptr) return Denied();
       sealed=&state;
     }
@@ -332,10 +332,10 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
     return r;
   }
   SblrPreparedCoordinationSnapshot s;
-  s.coordinator_generation=NextGeneration(c.database_uuid.canonical);
+  s.coordinator_generation=NextGeneration(c.database_uuid);
   s.coordination_uuid=NewUuid(s.coordinator_generation*2);
-  s.operation_uuid=operation; s.database_uuid=c.database_uuid.canonical;
-  s.session_uuid=c.session_uuid.canonical;
+  s.operation_uuid=operation; s.database_uuid=c.database_uuid;
+  s.session_uuid=c.session_uuid;
   s.provisional_prepared_uuid=sealed->provisional_prepared_uuid;
   s.provisional_prepared_generation=sealed->provisional_prepared_generation;
   s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
@@ -360,7 +360,7 @@ SblrPreparedCoordinationResult SealSblrPreparedCoordination(
     const EngineRequestContext& c,const std::string& coordination,const std::string& operation,std::uint64_t expected,
     const std::string& prepared,std::uint64_t prepared_generation,const std::string& evidence) {
   std::lock_guard lock(g_mutex); const auto it=g_live.find(coordination);
-  if(!HasAuthority(c)||it==g_live.end()||it->second.database_uuid!=c.database_uuid.canonical||it->second.session_uuid!=c.session_uuid.canonical) return Denied();
+  if(!HasAuthority(c)||it==g_live.end()||it->second.database_uuid!=c.database_uuid||it->second.session_uuid!=c.session_uuid) return Denied();
   if(it->second.provisional_prepared_uuid!=prepared||it->second.provisional_prepared_generation!=prepared_generation||!HashValue(evidence)) {
     SblrPreparedCoordinationResult r;r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.provisional_stale","provisional prepared identity or evidence mismatch");return r; }
   return Mutate(c,coordination,operation,expected,SblrPreparedCoordinationState::acquired,SblrPreparedCoordinationState::sealed,evidence,"prepared.seal");
@@ -375,15 +375,15 @@ SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
 }
 EngineApiDiagnostic RecoverSblrPreparedCoordinationRegistry(const EngineRequestContext& c) {
   std::lock_guard lock(g_mutex); if(!HasRecoveryAuthority(c)) return Diag("SECURITY.ACCESS_DENIED","sblr.prepared_coordination.recovery_denied","startup recovery authority required");
-  if(c.database_path.empty()||!ValidUuid(c.database_uuid.canonical,scratchbird::core::platform::UuidKind::database)) return Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.recovery_invalid","database identity required");
+  if(c.database_path.empty()||!ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database)) return Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.recovery_invalid","database identity required");
   std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states; std::uint64_t high=0;
   if(!Replay(c,&states,&high)) return Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.corrupt","contradictory or torn durable evidence");
-  g_high_water[c.database_uuid.canonical]=high;
+  g_high_water[c.database_uuid]=high;
   for(auto& [id,s]:states) if(s.state==SblrPreparedCoordinationState::begun||s.state==SblrPreparedCoordinationState::acquired) {
-    const auto prior=s.coordinator_generation; s.coordinator_generation=NextGeneration(c.database_uuid.canonical); s.state=SblrPreparedCoordinationState::revoked; s.private_handle=0; s.seal_evidence_sha256.clear(); s.decision_evidence_sha256=Hash(Material(s,prior,"recovery.revoke"));
+    const auto prior=s.coordinator_generation; s.coordinator_generation=NextGeneration(c.database_uuid); s.state=SblrPreparedCoordinationState::revoked; s.private_handle=0; s.seal_evidence_sha256.clear(); s.decision_evidence_sha256=Hash(Material(s,prior,"recovery.revoke"));
     if(s.coordinator_generation==0||!Publish(c,s,prior,"recovery.revoke")) return Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.recovery_publish_failed","durable recovery revocation failed");
   }
-  for(auto it=g_live.begin();it!=g_live.end();) if(it->second.database_uuid==c.database_uuid.canonical) it=g_live.erase(it); else ++it;
+  for(auto it=g_live.begin();it!=g_live.end();) if(it->second.database_uuid==c.database_uuid) it=g_live.erase(it); else ++it;
   return Ok();
 }
 }  // namespace scratchbird::engine::internal_api

@@ -22,14 +22,14 @@ namespace api = scratchbird::engine::internal_api;
 api::EngineRequestContext ToEngineContext(const SblrExecutionContext& context) {
   api::EngineRequestContext out;
   out.database_path = context.database_path;
-  out.database_uuid.canonical = context.database_uuid;
-  out.cluster_uuid.canonical = context.cluster_uuid;
-  out.node_uuid.canonical = context.node_uuid;
-  out.principal_uuid.canonical = context.user_uuid;
-  out.current_role_uuid.canonical = context.current_role_uuid;
-  out.current_schema_uuid.canonical = context.current_schema_uuid;
-  out.session_uuid.canonical = context.session_uuid;
-  out.transaction_uuid.canonical = context.transaction_uuid;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.principal_uuid = context.user_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
+  out.session_uuid = context.session_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id = context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
@@ -43,10 +43,10 @@ api::EngineRequestContext ToEngineContext(const SblrExecutionContext& context) {
 
 api::EngineDescriptor DomainDescriptorFromUuid(std::string domain_uuid) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = std::move(domain_uuid);
+  descriptor.descriptor_uuid = std::move(domain_uuid);
   descriptor.descriptor_kind = "domain";
   descriptor.canonical_type_name = "domain";
-  descriptor.encoded_descriptor = "domain_uuid=" + descriptor.descriptor_uuid.canonical;
+  descriptor.encoded_descriptor = "domain_uuid=" + descriptor.descriptor_uuid;
   return descriptor;
 }
 
@@ -60,7 +60,7 @@ api::EngineDescriptor DescriptorFromSblrValue(const SblrValue& value) {
                                                                         : value.descriptor_id)
                                       : "canonical=" + descriptor.canonical_type_name;
   if (descriptor.descriptor_kind == "domain") {
-    descriptor.descriptor_uuid.canonical = value.descriptor_id.rfind("domain:", 0) == 0
+    descriptor.descriptor_uuid = value.descriptor_id.rfind("domain:", 0) == 0
                                                ? value.descriptor_id.substr(7)
                                                : value.descriptor_id;
   }
@@ -89,8 +89,8 @@ api::EngineTypedValue ToEngineValue(const SblrValue& value) {
 
 SblrValue FromEngineValue(const api::EngineTypedValue& value) {
   SblrValue out;
-  out.descriptor_id = value.descriptor.descriptor_kind == "domain" && !value.descriptor.descriptor_uuid.canonical.empty()
-                          ? "domain:" + value.descriptor.descriptor_uuid.canonical
+  out.descriptor_id = value.descriptor.descriptor_kind == "domain" && !value.descriptor.descriptor_uuid.is_nil()
+                          ? "domain:" + value.descriptor.descriptor_uuid
                           : value.descriptor.canonical_type_name;
   out.is_null = value.is_null || value.encoded_value == "<NULL>";
   if (out.is_null) return out;

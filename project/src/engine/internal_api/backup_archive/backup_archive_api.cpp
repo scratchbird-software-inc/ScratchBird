@@ -175,19 +175,19 @@ std::string RequiredManifestOption(const EngineApiRequest& request, const std::s
 std::string TimelineUuidFor(const EngineApiRequest& request) {
   const auto timeline = OptionValue(request, "timeline_uuid:");
   if (!timeline.empty()) { return timeline; }
-  return request.context.database_uuid.canonical + ":timeline:local";
+  return request.context.database_uuid + ":timeline:local";
 }
 
 std::string ForkUuidFor(const EngineApiRequest& request) {
   const auto fork = OptionValue(request, "fork_uuid:");
   if (!fork.empty()) { return fork; }
-  return request.context.database_uuid.canonical + ":fork:primary";
+  return request.context.database_uuid + ":fork:primary";
 }
 
 std::string KeyLineageFor(const EngineApiRequest& request) {
   const auto lineage = OptionValue(request, "key_lineage_id:");
   if (!lineage.empty()) { return lineage; }
-  return request.context.database_uuid.canonical + ":key-lineage:local";
+  return request.context.database_uuid + ":key-lineage:local";
 }
 
 std::uint64_t CoverageStartFor(const EngineApiRequest& request, std::uint64_t fallback) {
@@ -257,7 +257,7 @@ bool IsLocalArchiveHistoryFilespace(
       !descriptor.database_uuid.valid() || !descriptor.filespace_uuid.valid()) {
     return false;
   }
-  if (TypedUuidText(descriptor.database_uuid) != context.database_uuid.canonical) {
+  if (TypedUuidText(descriptor.database_uuid) != context.database_uuid) {
     return false;
   }
   if (descriptor.path.empty() || !descriptor.archive_owner || !descriptor.read_only ||
@@ -343,8 +343,8 @@ std::string BuildArchiveBeforeReclaimManifestBody(
   body << RecordLine(
       "META",
       {{"manifest_version", "1"},
-       {"archive_uuid", archive_uuid.canonical},
-       {"database_uuid", request.context.database_uuid.canonical},
+       {"archive_uuid", archive_uuid},
+       {"database_uuid", request.context.database_uuid},
        {"archive_filespace_uuid", archive_filespace_uuid},
        {"archive_filespace_role",
         filespace::FilespaceRoleName(request.archive_filespace.role)},
@@ -455,7 +455,7 @@ EngineApiDiagnostic ReadAndVerifyArchiveBeforeReclaimManifest(
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
       meta_found = true;
-      if (ManifestField(fields, "archive_uuid") != archive_uuid.canonical ||
+      if (ManifestField(fields, "archive_uuid") != archive_uuid ||
           ManifestField(fields, "archive_before_reclaim") != "true" ||
           ManifestField(fields, "finality_source") !=
               "local_mga_transaction_inventory" ||
@@ -505,7 +505,7 @@ mga::LocalCleanupReclaimEvidenceRecord ArchiveReclaimEvidenceRecord(
   evidence.successor_transaction = record.metadata.successor_transaction_local_id;
   evidence.authoritative_cleanup_horizon_local_transaction_id = cleanup_horizon;
   evidence.stable_evidence_id =
-      "mga-archive-before-reclaim:" + archive_uuid.canonical + ":" +
+      "mga-archive-before-reclaim:" + archive_uuid + ":" +
       std::to_string(
           record.metadata.identity.creator_transaction.local_id.value) +
       ":" + std::to_string(record.metadata.identity.version_sequence) + ":" +
@@ -535,7 +535,7 @@ bool AppendBackupLifecycleLedger(const EngineApiRequest& request,
   const std::string body =
       "SBBARE1\t" + std::to_string(CurrentUnixMicros()) + "\t" +
       BackupArchiveLifecycleOperationName(operation) + "\t" +
-      request.context.database_uuid.canonical + "\t" +
+      request.context.database_uuid + "\t" +
       std::to_string(request.context.local_transaction_id) + "\t" +
       evidence_kind + "\t" + evidence_detail + "\tengine_owned";
   const auto checksum = Fnv1a64(body);
@@ -569,7 +569,7 @@ bool AppendBackupForwardSessionLedger(
   }
   std::vector<std::pair<std::string, std::string>> ledger_fields = fields;
   ledger_fields.push_back({"event_kind", event_kind});
-  ledger_fields.push_back({"database_uuid", request.context.database_uuid.canonical});
+  ledger_fields.push_back({"database_uuid", request.context.database_uuid});
   ledger_fields.push_back({"local_transaction_id",
                            std::to_string(request.context.local_transaction_id)});
   ledger_fields.push_back({"event_unix_micros",
@@ -835,10 +835,10 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
   const auto filespace_uuid = RequiredManifestOption(request, "filespace_uuid:");
   const auto coverage_start = CoverageStartFor(request, records.snapshot_tx == 0 ? 0 : 1);
   const auto coverage_end = CoverageEndFor(request, records.snapshot_tx);
-  body << RecordLine("META", {{"backup_uuid", records.backup_uuid.canonical},
+  body << RecordLine("META", {{"backup_uuid", records.backup_uuid},
                                {"manifest_version", "1"},
-                               {"snapshot_uuid", records.snapshot_uuid.canonical},
-                               {"database_uuid", request.context.database_uuid.canonical},
+                               {"snapshot_uuid", records.snapshot_uuid},
+                               {"database_uuid", request.context.database_uuid},
                                {"filespace_uuid", filespace_uuid},
                                {"timeline_uuid", TimelineUuidFor(request)},
                                {"fork_uuid", ForkUuidFor(request)},
@@ -846,7 +846,7 @@ std::string BuildManifestBody(const EngineStartLogicalBackupRequest& request, co
                                {"coverage_start_transaction_id", std::to_string(coverage_start)},
                                {"coverage_end_transaction_id", std::to_string(coverage_end)},
                                {"coverage_contiguous", "true"},
-                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid.canonical + filespace_uuid + std::to_string(coverage_start) + ":" + std::to_string(coverage_end)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid + filespace_uuid + std::to_string(coverage_start) + ":" + std::to_string(coverage_end)))},
                                {"checksum_profile", "fnv1a64-manifest-body"},
                                {"signature_profile", "unsigned-local-manifest-proof-v1"},
                                {"snapshot_tx", std::to_string(records.snapshot_tx)},
@@ -980,9 +980,9 @@ std::string BuildPhysicalManifest(const EngineStartPhysicalBackupRequest& reques
   const auto filespace_uuid = RequiredManifestOption(request, "filespace_uuid:");
   const auto coverage_start = CoverageStartFor(request, 0);
   const auto coverage_end = CoverageEndFor(request, request.context.local_transaction_id);
-  body << RecordLine("META", {{"backup_uuid", backup_uuid.canonical},
+  body << RecordLine("META", {{"backup_uuid", backup_uuid},
                                {"manifest_version", "1"},
-                               {"database_uuid", request.context.database_uuid.canonical},
+                               {"database_uuid", request.context.database_uuid},
                                {"filespace_uuid", filespace_uuid},
                                {"timeline_uuid", TimelineUuidFor(request)},
                                {"fork_uuid", ForkUuidFor(request)},
@@ -990,7 +990,7 @@ std::string BuildPhysicalManifest(const EngineStartPhysicalBackupRequest& reques
                                {"coverage_start_transaction_id", std::to_string(coverage_start)},
                                {"coverage_end_transaction_id", std::to_string(coverage_end)},
                                {"coverage_contiguous", "true"},
-                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid.canonical + filespace_uuid + std::to_string(image_checksum)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(request.context.database_uuid + filespace_uuid + std::to_string(image_checksum)))},
                                {"checksum_profile", "fnv1a64-manifest-body"},
                                {"signature_profile", "unsigned-local-manifest-proof-v1"},
                                {"finality_source", "local_mga_transaction_inventory"},
@@ -1077,7 +1077,7 @@ BackupArchiveLifecycleAdmission EvaluateBackupArchiveLifecycleAdmission(
   if (!request.context.security_context_present) {
     return LifecycleRefusal(request, operation, "BACKUP_SECURITY_CONTEXT_REQUIRED");
   }
-  if (request.context.database_uuid.canonical.empty() || request.context.database_path.empty()) {
+  if (request.context.database_uuid.is_nil() || request.context.database_path.empty()) {
     return LifecycleRefusal(request, operation, "BACKUP_DATABASE_CONTEXT_REQUIRED");
   }
   if (OptionValue(request, "scope:") == "cluster" && !request.context.cluster_authority_available) {
@@ -1199,7 +1199,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
     auto result =
         MakeApiBehaviorDiagnostic<EngineArchiveRetainedHistoryBeforeReclaimResult>(
             request.context, kOperation, std::move(diagnostic));
-    result.archive_filespace_uuid.canonical =
+    result.archive_filespace_uuid =
         TypedUuidText(request.archive_filespace.filespace_uuid);
     return result;
   };
@@ -1207,7 +1207,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
   if (!HasBackupCreateRight(request.context)) {
     return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation, "ARCHIVE_DATABASE_CONTEXT_REQUIRED"));
   }
@@ -1278,7 +1278,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
   }
 
   EngineUuid archive_uuid;
-  archive_uuid.canonical = GenerateCrudEngineUuid("archive_before_reclaim");
+  archive_uuid = GenerateCrudEngineUuid("archive_before_reclaim");
   std::uint64_t movement_record_count = 0;
   const auto body = BuildArchiveBeforeReclaimManifestBody(
       request, archive_uuid, &movement_record_count);
@@ -1312,7 +1312,7 @@ EngineArchiveRetainedHistoryBeforeReclaim(
       MakeApiBehaviorSuccess<EngineArchiveRetainedHistoryBeforeReclaimResult>(
           request.context, kOperation);
   result.archive_uuid = archive_uuid;
-  result.archive_filespace_uuid.canonical =
+  result.archive_filespace_uuid =
       TypedUuidText(request.archive_filespace.filespace_uuid);
   result.archived_row_version_count =
       static_cast<EngineApiU64>(request.retained_history.size());
@@ -1341,13 +1341,13 @@ EngineArchiveRetainedHistoryBeforeReclaim(
                          std::to_string(checksum));
   AddApiBehaviorEvidence(&result,
                          "archive_filespace_uuid",
-                         result.archive_filespace_uuid.canonical);
+                         result.archive_filespace_uuid);
   AddApiBehaviorEvidence(&result,
                          "archive_filespace_access_class",
                          "local_archive_history_read_only");
   AddApiBehaviorEvidence(&result,
                          "archive_reclaim_authorization",
-                         archive_uuid.canonical);
+                         archive_uuid);
   AddApiBehaviorEvidence(&result,
                          "transaction_finality_authority",
                          "false");
@@ -1357,9 +1357,9 @@ EngineArchiveRetainedHistoryBeforeReclaim(
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
   AddApiBehaviorRow(
       &result,
-      {{"archive_uuid", archive_uuid.canonical},
+      {{"archive_uuid", archive_uuid},
        {"manifest_uri", manifest_path},
-       {"archive_filespace_uuid", result.archive_filespace_uuid.canonical},
+       {"archive_filespace_uuid", result.archive_filespace_uuid},
        {"archive_filespace_access_class", "local_archive_history_read_only"},
        {"archived_row_versions",
         std::to_string(result.archived_row_version_count)},
@@ -1388,7 +1388,7 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
   if (!HasBackupCreateRight(request.context)) {
     return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_FORWARD_DATABASE_CONTEXT_REQUIRED"));
@@ -1408,7 +1408,7 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
     return fail(BackupInvalid(kOperation,
                               "BACKUP_FORWARD_WRITE_AFTER_REQUIRED"));
   }
-  if (request.base_backup_uuid.canonical.empty() ||
+  if (request.base_backup_uuid.is_nil() ||
       request.base_snapshot_visible_through_local_transaction_id == 0 ||
       request.source_manifest_uri.empty() || request.filespace_uuid.empty()) {
     return fail(BackupInvalid(kOperation,
@@ -1416,7 +1416,7 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
   }
 
   EngineUuid session_uuid;
-  session_uuid.canonical = GenerateCrudEngineUuid("backup_forward_session");
+  session_uuid = GenerateCrudEngineUuid("backup_forward_session");
   const auto timeline = request.timeline_uuid.empty()
                             ? TimelineUuidFor(request)
                             : request.timeline_uuid;
@@ -1428,8 +1428,8 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
   if (!AppendBackupForwardSessionLedger(
           request,
           "start",
-          {{"session_uuid", session_uuid.canonical},
-           {"base_backup_uuid", request.base_backup_uuid.canonical},
+          {{"session_uuid", session_uuid},
+           {"base_backup_uuid", request.base_backup_uuid},
            {"source_manifest_uri", request.source_manifest_uri},
            {"filespace_uuid", request.filespace_uuid},
            {"timeline_uuid", timeline},
@@ -1459,11 +1459,11 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
   result.write_after_requested = true;
   result.write_after_recovery_authority = false;
   result.transaction_finality_authority = false;
-  AddApiBehaviorEvidence(&result, "backup_forward_session", session_uuid.canonical);
+  AddApiBehaviorEvidence(&result, "backup_forward_session", session_uuid);
   AddApiBehaviorEvidence(&result, "backup_forward_ledger", ledger_id);
   AddApiBehaviorEvidence(&result,
                          "base_backup_uuid",
-                         request.base_backup_uuid.canonical);
+                         request.base_backup_uuid);
   AddApiBehaviorEvidence(&result,
                          "selected_start_transaction_id",
                          std::to_string(selected_start));
@@ -1479,8 +1479,8 @@ EngineStartBackupForwardSessionResult EngineStartBackupForwardSession(
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
   AddApiBehaviorRow(
       &result,
-      {{"session_uuid", session_uuid.canonical},
-       {"base_backup_uuid", request.base_backup_uuid.canonical},
+      {{"session_uuid", session_uuid},
+       {"base_backup_uuid", request.base_backup_uuid},
        {"source_manifest_uri", request.source_manifest_uri},
        {"filespace_uuid", request.filespace_uuid},
        {"timeline_uuid", timeline},
@@ -1505,7 +1505,7 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   if (!HasBackupCreateRight(request.context)) {
     return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_FORWARD_DATABASE_CONTEXT_REQUIRED"));
@@ -1525,8 +1525,8 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
     return fail(BackupInvalid(kOperation,
                               "BACKUP_FORWARD_WRITE_AFTER_REQUIRED"));
   }
-  if (request.session_uuid.canonical.empty() ||
-      request.base_backup_uuid.canonical.empty() ||
+  if (request.session_uuid.is_nil() ||
+      request.base_backup_uuid.is_nil() ||
       request.source_manifest_uri.empty() || request.delta_manifest_uri.empty() ||
       request.filespace_uuid.empty() ||
       request.selected_start_transaction_id == 0 ||
@@ -1549,7 +1549,7 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   delta.context = request.context;
   delta.option_envelopes = {
       "target_uri:" + request.delta_manifest_uri,
-      "source_backup_uuid:" + request.base_backup_uuid.canonical,
+      "source_backup_uuid:" + request.base_backup_uuid,
       "filespace_uuid:" + request.filespace_uuid,
       "start_transaction_id:" +
           std::to_string(request.selected_start_transaction_id),
@@ -1581,9 +1581,9 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   if (!AppendBackupForwardSessionLedger(
           request,
           "finish",
-          {{"session_uuid", request.session_uuid.canonical},
-           {"base_backup_uuid", request.base_backup_uuid.canonical},
-           {"delta_uuid", packaged.delta_uuid.canonical},
+          {{"session_uuid", request.session_uuid},
+           {"base_backup_uuid", request.base_backup_uuid},
+           {"delta_uuid", packaged.delta_uuid},
            {"source_manifest_uri", request.source_manifest_uri},
            {"delta_manifest_uri", request.delta_manifest_uri},
            {"filespace_uuid", request.filespace_uuid},
@@ -1623,7 +1623,7 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   result.transaction_finality_authority = false;
   AddApiBehaviorEvidence(&result,
                          "backup_forward_session",
-                         request.session_uuid.canonical);
+                         request.session_uuid);
   AddApiBehaviorEvidence(&result, "backup_forward_ledger", ledger_id);
   AddApiBehaviorEvidence(&result,
                          "delta_manifest",
@@ -1647,9 +1647,9 @@ EngineFinishBackupForwardSessionResult EngineFinishBackupForwardSession(
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
   AddApiBehaviorRow(
       &result,
-      {{"session_uuid", request.session_uuid.canonical},
-       {"base_backup_uuid", request.base_backup_uuid.canonical},
-       {"delta_uuid", packaged.delta_uuid.canonical},
+      {{"session_uuid", request.session_uuid},
+       {"base_backup_uuid", request.base_backup_uuid},
+       {"delta_uuid", packaged.delta_uuid},
        {"source_manifest_uri", request.source_manifest_uri},
        {"delta_manifest_uri", request.delta_manifest_uri},
        {"filespace_uuid", request.filespace_uuid},
@@ -1698,7 +1698,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
   auto add_common_evidence =
       [&](EngineEvaluateHistoryDisposalMultiHorizonResult* result) {
         AddApiBehaviorEvidence(result, "multi_horizon_disposal_guard",
-                               result->decision_uuid.canonical);
+                               result->decision_uuid);
         AddApiBehaviorEvidence(result, "filespace_uuid",
                                request.filespace_uuid);
         AddApiBehaviorEvidence(result, "disposable_range",
@@ -1728,7 +1728,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
         AddApiBehaviorEvidence(result, "authoritative_wal", "false");
         AddApiBehaviorRow(
             result,
-            {{"decision_uuid", result->decision_uuid.canonical},
+            {{"decision_uuid", result->decision_uuid},
              {"filespace_uuid", request.filespace_uuid},
              {"disposable_start_transaction_id",
               std::to_string(request.disposable_start_transaction_id)},
@@ -1761,7 +1761,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
         MakeApiBehaviorDiagnostic<EngineEvaluateHistoryDisposalMultiHorizonResult>(
             request.context, kOperation, std::move(diagnostic));
     populate_common(&result);
-    result.decision_uuid.canonical = GenerateCrudEngineUuid("history_disposal_refusal");
+    result.decision_uuid = GenerateCrudEngineUuid("history_disposal_refusal");
     result.blocking_horizon_kind =
         MultiHorizonProofDisplayName(blocking_horizon_kind);
     result.blocking_horizon_transaction_id =
@@ -1775,7 +1775,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
                 "security_context",
                 0);
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation,
                               "MULTI_HORIZON_DATABASE_CONTEXT_REQUIRED"),
@@ -1916,7 +1916,7 @@ EngineEvaluateHistoryDisposalMultiHorizon(
       MakeApiBehaviorSuccess<EngineEvaluateHistoryDisposalMultiHorizonResult>(
           request.context, kOperation);
   populate_common(&result);
-  result.decision_uuid.canonical = GenerateCrudEngineUuid("history_disposal_guard");
+  result.decision_uuid = GenerateCrudEngineUuid("history_disposal_guard");
   result.disposal_authorized = true;
   result.physical_reclaim_authorized = request.physical_reclaim_requested;
   result.archive_deletion_authorized = request.archive_deletion_requested;
@@ -1993,7 +1993,7 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
       [&](EngineCoordinateBackupRestoreArchiveSnapshotResult* result) {
         AddApiBehaviorEvidence(result,
                                "ipar_p5_10_snapshot_coordination",
-                               result->coordination_uuid.canonical);
+                               result->coordination_uuid);
         AddApiBehaviorEvidence(result,
                                "online_backup_blockers_verified",
                                result->online_backup_blockers_verified
@@ -2043,9 +2043,9 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
         AddApiBehaviorEvidence(result, "authoritative_wal", "false");
         AddApiBehaviorRow(
             result,
-            {{"coordination_uuid", result->coordination_uuid.canonical},
-             {"backup_uuid", request.backup_uuid.canonical},
-             {"snapshot_uuid", request.snapshot_uuid.canonical},
+            {{"coordination_uuid", result->coordination_uuid},
+             {"backup_uuid", request.backup_uuid},
+             {"snapshot_uuid", request.snapshot_uuid},
              {"snapshot_visible_through_local_transaction_id",
               std::to_string(
                   request.snapshot_visible_through_local_transaction_id)},
@@ -2084,7 +2084,7 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
             EngineCoordinateBackupRestoreArchiveSnapshotResult>(
             request.context, kOperation, std::move(diagnostic));
     populate_common(&result);
-    result.coordination_uuid.canonical =
+    result.coordination_uuid =
         GenerateCrudEngineUuid("backup_snapshot_coordination_refusal");
     add_common_evidence(&result);
     return result;
@@ -2093,7 +2093,7 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
   if (!request.context.security_context_present) {
     return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_SNAPSHOT_DATABASE_CONTEXT_REQUIRED"));
@@ -2116,8 +2116,8 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
                               "BACKUP_SNAPSHOT_MGA_AUTHORITY_REQUIRED"));
   }
   if (request.online_backup_active) {
-    if (request.backup_uuid.canonical.empty() ||
-        request.snapshot_uuid.canonical.empty() ||
+    if (request.backup_uuid.is_nil() ||
+        request.snapshot_uuid.is_nil() ||
         request.snapshot_visible_through_local_transaction_id == 0) {
       return fail(BackupInvalid(kOperation,
                                 "BACKUP_SNAPSHOT_IDENTITY_REQUIRED"));
@@ -2160,7 +2160,7 @@ EngineCoordinateBackupRestoreArchiveSnapshot(
           EngineCoordinateBackupRestoreArchiveSnapshotResult>(
           request.context, kOperation);
   populate_common(&result);
-  result.coordination_uuid.canonical =
+  result.coordination_uuid =
       GenerateCrudEngineUuid("backup_snapshot_coordination");
   result.admitted = true;
   result.fail_closed = false;
@@ -2517,8 +2517,8 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
   }
   const RelationReadSnapshot loaded_state = BuildCrudCompatibilityStateFromMga(loaded_mga.state);
   LogicalBackupRecordSet records;
-  records.backup_uuid.canonical = GenerateCrudEngineUuid("backup");
-  records.snapshot_uuid.canonical = GenerateCrudEngineUuid("snapshot");
+  records.backup_uuid = GenerateCrudEngineUuid("backup");
+  records.snapshot_uuid = GenerateCrudEngineUuid("snapshot");
   records.snapshot_tx = MaxCommittedTransaction(loaded_state);
   records.transaction_states = loaded_state.transactions;
   const auto unsafe_gap = UnsafeFinalityGap(loaded_state, records.snapshot_tx);
@@ -2576,8 +2576,8 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
   AddApiBehaviorEvidence(&result, "lineage_source", "mga_row_version_lineage");
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
   AddTemporaryBackupExclusionEvidence(&result, temporary_exclusions);
-  AddApiBehaviorRow(&result, {{"backup_uuid", result.backup_uuid.canonical},
-                              {"snapshot_uuid", result.snapshot_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"backup_uuid", result.backup_uuid},
+                              {"snapshot_uuid", result.snapshot_uuid},
                               {"manifest_uri", path},
                               {"snapshot_tx", std::to_string(records.snapshot_tx)},
                               {"finality_boundary_local_transaction_id", std::to_string(records.snapshot_tx)},
@@ -2631,7 +2631,7 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
       auto it = fields.find("backup_uuid");
-      if (it != fields.end()) { backup_uuid.canonical = it->second; }
+      if (it != fields.end()) { backup_uuid = it->second; }
     } else if (kind == "TABLE") {
       CrudTableRecord table;
       table.creator_tx = request.context.local_transaction_id;
@@ -2670,7 +2670,7 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
   if (verify_only) {
     auto result = MakeApiBehaviorSuccess<EngineRestoreLogicalBackupResult>(request.context, kOperation);
     AddBackupLifecycleEvidence(&result, lifecycle);
-    result.restore_uuid.canonical = GenerateCrudEngineUuid("restore-verify");
+    result.restore_uuid = GenerateCrudEngineUuid("restore-verify");
     result.source_backup_uuid = backup_uuid;
     result.restored_table_count = tables.size();
     result.restored_row_count = rows.size();
@@ -2681,8 +2681,8 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
     AddApiBehaviorEvidence(&result, "mutation_performed", "false");
     AddApiBehaviorEvidence(&result, "evidence_before_success", "logical_restore_verified");
     AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
-    AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid.canonical},
-                                {"source_backup_uuid", result.source_backup_uuid.canonical},
+    AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid},
+                                {"source_backup_uuid", result.source_backup_uuid},
                                 {"source_manifest_uri", path},
                                 {"tables", std::to_string(result.restored_table_count)},
                                 {"rows", std::to_string(result.restored_row_count)},
@@ -2731,7 +2731,7 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
   (void)scratchbird::core::metrics::PublishBackupProgressPercent(100.0, "logical_restore");
   auto result = MakeApiBehaviorSuccess<EngineRestoreLogicalBackupResult>(request.context, kOperation);
   AddBackupLifecycleEvidence(&result, lifecycle);
-  result.restore_uuid.canonical = GenerateCrudEngineUuid("restore");
+  result.restore_uuid = GenerateCrudEngineUuid("restore");
   result.source_backup_uuid = backup_uuid;
   result.restored_table_count = tables.size();
   result.restored_row_count = rows.size();
@@ -2740,8 +2740,8 @@ EngineRestoreLogicalBackupResult EngineRestoreLogicalBackup(const EngineRestoreL
   AddApiBehaviorEvidence(&result, "restore_manifest_validated", path);
   AddApiBehaviorEvidence(&result, "evidence_before_success", "logical_restore_applied");
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
-  AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid.canonical},
-                              {"source_backup_uuid", result.source_backup_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid},
+                              {"source_backup_uuid", result.source_backup_uuid},
                               {"source_manifest_uri", path},
                               {"tables", std::to_string(result.restored_table_count)},
                               {"rows", std::to_string(result.restored_row_count)},
@@ -2762,10 +2762,10 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
   body << kDeltaPackageMagic << "\n";
   const auto filespace_uuid = RequiredManifestOption(request, "filespace_uuid:");
   const auto source_backup_uuid = RequiredManifestOption(request, "source_backup_uuid:");
-  body << RecordLine("META", {{"delta_uuid", delta_uuid.canonical},
+  body << RecordLine("META", {{"delta_uuid", delta_uuid},
                                {"manifest_version", "1"},
                                {"source_backup_uuid", source_backup_uuid},
-                               {"database_uuid", request.context.database_uuid.canonical},
+                               {"database_uuid", request.context.database_uuid},
                                {"filespace_uuid", filespace_uuid},
                                {"timeline_uuid", TimelineUuidFor(request)},
                                {"fork_uuid", ForkUuidFor(request)},
@@ -2776,7 +2776,7 @@ std::string BuildDeltaManifestBody(const EnginePackageDeltaStreamRequest& reques
                                {"coverage_end_transaction_id", std::to_string(end_tx)},
                                {"coverage_contiguous", "true"},
                                {"coverage_gap_classification", "none"},
-                               {"coverage_proof", std::to_string(Fnv1a64(delta_uuid.canonical + filespace_uuid + std::to_string(start_tx) + ":" + std::to_string(end_tx)))},
+                               {"coverage_proof", std::to_string(Fnv1a64(delta_uuid + filespace_uuid + std::to_string(start_tx) + ":" + std::to_string(end_tx)))},
                                {"idempotency_key", OptionValue(request, "idempotency_key:")},
                                {"restore_point_name", OptionValue(request, "restore_point_name:")},
                                {"coverage_start_unix_micros", OptionValue(request, "coverage_start_unix_micros:")},
@@ -2923,7 +2923,7 @@ EngineUpdateBackupFromVerifiedCoverage(
   if (!HasBackupCreateRight(request.context)) {
     return fail(MakeSecurityContextRequiredDiagnostic(kOperation));
   }
-  if (request.context.database_uuid.canonical.empty() ||
+  if (request.context.database_uuid.is_nil() ||
       request.context.database_path.empty()) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_UPDATE_DATABASE_CONTEXT_REQUIRED"));
@@ -2939,7 +2939,7 @@ EngineUpdateBackupFromVerifiedCoverage(
     return fail(BackupInvalid(kOperation,
                               "BACKUP_UPDATE_AUTHORITATIVE_WAL_FORBIDDEN"));  // no_wal refusal evidence
   }
-  if (request.backup_uuid.canonical.empty() ||
+  if (request.backup_uuid.is_nil() ||
       request.base_manifest_uri.empty() ||
       request.filespace_uuid.empty() ||
       request.target_end_transaction_id == 0) {
@@ -2956,7 +2956,7 @@ EngineUpdateBackupFromVerifiedCoverage(
   const auto base_meta =
       ExtractManifestMetaFields(base_body, kLogicalBackupMagic);
   const auto base_backup_uuid = ManifestField(base_meta, "backup_uuid");
-  if (base_backup_uuid != request.backup_uuid.canonical) {
+  if (base_backup_uuid != request.backup_uuid) {
     return fail(BackupInvalid(kOperation,
                               "BACKUP_UPDATE_BASE_BACKUP_UUID_MISMATCH"));
   }
@@ -2985,7 +2985,7 @@ EngineUpdateBackupFromVerifiedCoverage(
     segment.source_backup_uuid = ManifestField(meta, "source_backup_uuid");
     segment.filespace_uuid = ManifestField(meta, "filespace_uuid");
     segment.idempotency_key = ManifestField(meta, "idempotency_key");
-    if (segment.source_backup_uuid != request.backup_uuid.canonical) {
+    if (segment.source_backup_uuid != request.backup_uuid) {
       return fail(BackupInvalid(kOperation,
                                 "BACKUP_UPDATE_SEGMENT_BACKUP_UUID_MISMATCH"));
     }
@@ -3034,7 +3034,7 @@ EngineUpdateBackupFromVerifiedCoverage(
   auto result =
       MakeApiBehaviorSuccess<EngineUpdateBackupFromVerifiedCoverageResult>(
           request.context, kOperation);
-  result.update_uuid.canonical = GenerateCrudEngineUuid("backup_update");
+  result.update_uuid = GenerateCrudEngineUuid("backup_update");
   result.backup_uuid = request.backup_uuid;
   result.base_coverage_end_transaction_id = base_coverage_end;
   result.reused_coverage_end_transaction_id = current_coverage_end;
@@ -3060,7 +3060,7 @@ EngineUpdateBackupFromVerifiedCoverage(
     package.context = request.context;
     package.option_envelopes = {
         "target_uri:" + request.update_manifest_uri,
-        "source_backup_uuid:" + request.backup_uuid.canonical,
+        "source_backup_uuid:" + request.backup_uuid,
         "filespace_uuid:" + request.filespace_uuid,
         "start_transaction_id:" + std::to_string(current_coverage_end + 1),
         "end_transaction_id:" +
@@ -3088,9 +3088,9 @@ EngineUpdateBackupFromVerifiedCoverage(
   }
 
   AddApiBehaviorEvidence(&result, "backup_update_uuid",
-                         result.update_uuid.canonical);
+                         result.update_uuid);
   AddApiBehaviorEvidence(&result, "base_backup_uuid",
-                         request.backup_uuid.canonical);
+                         request.backup_uuid);
   AddApiBehaviorEvidence(&result, "base_manifest_uri",
                          request.base_manifest_uri);
   AddApiBehaviorEvidence(&result, "historical_coverage_reused", "true");
@@ -3107,8 +3107,8 @@ EngineUpdateBackupFromVerifiedCoverage(
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
   AddApiBehaviorRow(
       &result,
-      {{"update_uuid", result.update_uuid.canonical},
-       {"backup_uuid", request.backup_uuid.canonical},
+      {{"update_uuid", result.update_uuid},
+       {"backup_uuid", request.backup_uuid},
        {"base_coverage_end_transaction_id",
         std::to_string(base_coverage_end)},
        {"reused_coverage_end_transaction_id",
@@ -3212,7 +3212,7 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
     }
   }
   EngineUuid delta_uuid;
-  delta_uuid.canonical = GenerateCrudEngineUuid("delta");
+  delta_uuid = GenerateCrudEngineUuid("delta");
   const auto body = BuildDeltaManifestBody(request, delta_uuid, start_tx, end_tx, tables, indexes, rows, loaded_state);
   const auto checksum = Fnv1a64(body);
   if (!WriteBinaryFile(path, body + "CHECKSUM\t" + std::to_string(checksum) + "\n")) {
@@ -3251,7 +3251,7 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   AddApiBehaviorEvidence(&result, "archive_slice_bytes", std::to_string(delta_payload.size()));
   AddApiBehaviorEvidence(&result, "archive_retention_max_age_microseconds", std::to_string(ArchiveMaxAgeMicroseconds(request)));
   AddTemporaryBackupExclusionEvidence(&result, temporary_exclusions);
-  AddApiBehaviorRow(&result, {{"delta_uuid", delta_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"delta_uuid", delta_uuid},
                               {"delta_manifest_uri", path},
                               {"start_transaction_id", std::to_string(start_tx)},
                               {"end_transaction_id", std::to_string(end_tx)},
@@ -3350,7 +3350,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
     std::string kind;
     const auto fields = DecodeRecordFields(line, &kind);
     if (kind == "META") {
-      delta_uuid.canonical = fields.at("delta_uuid");
+      delta_uuid = fields.at("delta_uuid");
       start_tx = ParseU64(fields.at("start_transaction_id"));
       end_tx = ParseU64(fields.at("end_transaction_id"));
     } else if (kind == "TABLE") {
@@ -3390,7 +3390,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   if (pitr_target_transaction_id != 0 && tables.empty() && indexes.empty() && rows.empty()) {
     auto result = MakeApiBehaviorSuccess<EngineApplyDeltaStreamResult>(request.context, kOperation);
     AddBackupLifecycleEvidence(&result, lifecycle);
-    result.apply_uuid.canonical = GenerateCrudEngineUuid("delta_apply");
+    result.apply_uuid = GenerateCrudEngineUuid("delta_apply");
     result.delta_uuid = delta_uuid;
     result.pitr_target_transaction_id = pitr_target_transaction_id;
     result.pitr_restore_point_name = pitr_restore_point_name;
@@ -3401,8 +3401,8 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
     AddApiBehaviorEvidence(&result, "pitr_rollforward_profile", ManifestField(delta_meta, "replay_profile"));
     AddApiBehaviorEvidence(&result, "pitr_target_transaction_id", std::to_string(pitr_target_transaction_id));
     AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
-    AddApiBehaviorRow(&result, {{"apply_uuid", result.apply_uuid.canonical},
-                                {"delta_uuid", delta_uuid.canonical},
+    AddApiBehaviorRow(&result, {{"apply_uuid", result.apply_uuid},
+                                {"delta_uuid", delta_uuid},
                                 {"delta_manifest_uri", path},
                                 {"start_transaction_id", std::to_string(start_tx)},
                                 {"end_transaction_id", std::to_string(end_tx)},
@@ -3473,7 +3473,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   AddBackupLifecycleEvidence(&result, lifecycle);
   (void)scratchbird::core::metrics::PublishArchiveDeltaApplyLagTransactions(0.0, "local_delta", "applied");
   (void)scratchbird::core::metrics::PublishArchiveHealthState(1.0, "healthy", "local_delta");
-  result.apply_uuid.canonical = GenerateCrudEngineUuid("delta_apply");
+  result.apply_uuid = GenerateCrudEngineUuid("delta_apply");
   result.delta_uuid = delta_uuid;
   result.pitr_target_transaction_id = pitr_target_transaction_id;
   result.pitr_restore_point_name = pitr_restore_point_name;
@@ -3482,7 +3482,7 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   result.delta_manifest_uri = path;
   AddApiBehaviorEvidence(&result, "delta_manifest_validated", path);
   AddApiBehaviorEvidence(&result, "evidence_before_success", "delta_applied");
-  AddApiBehaviorEvidence(&result, "idempotency_key", delta_uuid.canonical + ":" + std::to_string(start_tx) + ".." + std::to_string(end_tx));
+  AddApiBehaviorEvidence(&result, "idempotency_key", delta_uuid + ":" + std::to_string(start_tx) + ".." + std::to_string(end_tx));
   AddApiBehaviorEvidence(&result, "already_applied_rows", std::to_string(rows.size() - rows_to_apply.size()));
   AddApiBehaviorEvidence(&result, "coverage_proof", ManifestField(delta_meta, "coverage_proof"));
   AddApiBehaviorEvidence(&result, "pitr_rollforward_profile", ManifestField(delta_meta, "replay_profile"));
@@ -3490,8 +3490,8 @@ EngineApplyDeltaStreamResult EngineApplyDeltaStream(const EngineApplyDeltaStream
   if (pitr_target_transaction_id != 0) {
     AddApiBehaviorEvidence(&result, "pitr_target_transaction_id", std::to_string(pitr_target_transaction_id));
   }
-  AddApiBehaviorRow(&result, {{"apply_uuid", result.apply_uuid.canonical},
-                              {"delta_uuid", delta_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"apply_uuid", result.apply_uuid},
+                              {"delta_uuid", delta_uuid},
                               {"delta_manifest_uri", path},
                               {"start_transaction_id", std::to_string(start_tx)},
                               {"end_transaction_id", std::to_string(end_tx)},
@@ -3546,7 +3546,7 @@ EngineStartPhysicalBackupResult EngineStartPhysicalBackup(const EngineStartPhysi
                                                                       BackupInvalid(kOperation, "BACKUP_IMAGE_WRITE_FAILED"));
   }
   EngineUuid backup_uuid;
-  backup_uuid.canonical = GenerateCrudEngineUuid("physical_backup");
+  backup_uuid = GenerateCrudEngineUuid("physical_backup");
   const auto image_checksum = Fnv1a64(image_bytes);
   const auto body = BuildPhysicalManifest(request,
                                           backup_uuid,
@@ -3571,7 +3571,7 @@ EngineStartPhysicalBackupResult EngineStartPhysicalBackup(const EngineStartPhysi
   AddApiBehaviorEvidence(&result, "physical_backup_image", image_uri);
   AddApiBehaviorEvidence(&result, "image_checksum", std::to_string(image_checksum));
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
-  AddApiBehaviorRow(&result, {{"backup_uuid", backup_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"backup_uuid", backup_uuid},
                               {"manifest_uri", manifest_path},
                               {"image_uri", image_uri},
                               {"image_bytes", std::to_string(result.image_bytes)},
@@ -3626,7 +3626,7 @@ EngineRestorePhysicalBackupResult EngineRestorePhysicalBackup(const EngineRestor
   (void)scratchbird::core::metrics::PublishBackupProgressPercent(100.0, "physical_restore");
   auto result = MakeApiBehaviorSuccess<EngineRestorePhysicalBackupResult>(request.context, kOperation);
   AddBackupLifecycleEvidence(&result, lifecycle);
-  result.restore_uuid.canonical = GenerateCrudEngineUuid("physical_restore");
+  result.restore_uuid = GenerateCrudEngineUuid("physical_restore");
   result.source_backup_uuid = backup_uuid;
   result.source_manifest_uri = manifest_path;
   result.restored_database_path = request.context.database_path;
@@ -3634,8 +3634,8 @@ EngineRestorePhysicalBackupResult EngineRestorePhysicalBackup(const EngineRestor
   AddApiBehaviorEvidence(&result, "physical_restore_manifest_validated", manifest_path);
   AddApiBehaviorEvidence(&result, "physical_restore_image_checksum", std::to_string(expected_checksum));
   AddApiBehaviorEvidence(&result, "evidence_before_success", "physical_restore_installed");
-  AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid.canonical},
-                              {"source_backup_uuid", backup_uuid.canonical},
+  AddApiBehaviorRow(&result, {{"restore_uuid", result.restore_uuid},
+                              {"source_backup_uuid", backup_uuid},
                               {"source_manifest_uri", manifest_path},
                               {"restored_database_path", request.context.database_path},
                               {"image_bytes", std::to_string(result.image_bytes)}});

@@ -32,7 +32,7 @@ SblrAtomicRmwCoordinationResult CompileSblrAtomicRmwDescriptor(
   SblrAtomicRmwCoordinationResult result;
   if (!Tagged(context, "private_atomic_rmw_compiler") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid.canonical || occurrence == 0 ||
+      receipt != context.statement_uuid || occurrence == 0 ||
       rmw_occurrence == 0 || availability_generation == 0) {
     result.diagnostic = Diagnostic("SBLR.OPERAND_INVALID", "sblr.atomic_rmw.coordination_invalid");
     return result;

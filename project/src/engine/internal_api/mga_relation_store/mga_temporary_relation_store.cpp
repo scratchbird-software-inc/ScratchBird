@@ -200,14 +200,6 @@ bool AppendLine(const std::string& path, const std::string& line) {
   return static_cast<bool>(output);
 }
 
-std::vector<std::string> ReadLines(const std::string& path) {
-  std::vector<std::string> lines;
-  std::ifstream input(path, std::ios::binary);
-  std::string line;
-  while (std::getline(input, line)) lines.push_back(std::move(line));
-  return lines;
-}
-
 std::uint64_t ParseU64(const std::string& text,
                        const std::uint64_t fallback = 0) {
   if (text.empty()) return fallback;
@@ -300,7 +292,7 @@ MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
   result.visible_to_session =
       visible->temporary_scope == "global" ||
       (!visible->temporary_session_uuid.empty() &&
-       visible->temporary_session_uuid == context.session_uuid.canonical);
+       visible->temporary_session_uuid == context.session_uuid);
   return result;
 }
 
@@ -318,6 +310,10 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   };
 
   MgaTemporaryRecoveryClassificationResult result;
+  // Recovery admission starts fenced and can be relaxed only after complete
+  // metadata, row, large-value and transaction authority has been read.
+  result.classification = "fenced";
+  result.write_admission_must_remain_fenced = true;
   if (context.database_path.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.temporary_recovery",
@@ -337,6 +333,15 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
             : loaded.diagnostic.message_key,
         loaded.diagnostic.remediation_hint,
         true);
+    return result;
+  }
+  std::vector<std::string> metadata_records;
+  std::vector<std::string> row_records;
+  if (!ReadCompleteMgaTextRecords(MetadataStorePath(context), &metadata_records) ||
+      !ReadCompleteMgaTextRecords(RowStorePath(context), &row_records)) {
+    result.action = "temporary_recovery_store_read_failed";
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.temporary_recovery", "temporary_recovery_store_read_failed");
     return result;
   }
   std::map<std::uint64_t, std::string> transaction_states;
@@ -367,7 +372,7 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   std::set<std::string> durable_global_tables;
   std::set<std::string> committed_private_tables;
   std::set<std::string> retired_private_tables;
-  for (const auto& line : ReadLines(MetadataStorePath(context))) {
+  for (const auto& line : metadata_records) {
     const auto fields = SplitTabs(line);
     const bool legacy_temporary_table =
         fields.size() >= 11 && fields[0] == kRowStoreMagic &&
@@ -413,7 +418,7 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   }
 
   std::map<std::string, LatestRowState> latest_rows;
-  for (const auto& line : ReadLines(RowStorePath(context))) {
+  for (const auto& line : row_records) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 12 || fields[0] != kRowStoreMagic ||
         fields[1] != "ROW_VERSION") {
@@ -447,6 +452,12 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   const auto large_values = ClassifyMgaTemporaryLargeValueRecovery(
       context, temporary_tables, transaction_states);
   if (large_values.diagnostic.error) {
+    // Do not publish a partial orphan inventory when a later authority read
+    // fails; the caller cannot use partial zero counters to admit writes.
+    result = {};
+    result.classification = "fenced";
+    result.action = "temporary_large_value_recovery_read_failed";
+    result.write_admission_must_remain_fenced = true;
     result.diagnostic = large_values.diagnostic;
     return result;
   }
@@ -481,9 +492,11 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
              result.retired_private_metadata_count != 0) {
     result.classification = "new_state";
     result.action = "open_allowed_no_orphaned_temporary_state";
+    result.write_admission_must_remain_fenced = false;
   } else {
     result.classification = "old_state";
     result.action = "open_allowed_no_visible_temporary_state";
+    result.write_admission_must_remain_fenced = false;
   }
   result.evidence.push_back({"temporary_recovery_classification",
                              result.classification});
@@ -549,7 +562,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
   if (retired_private_metadata_count != nullptr) {
     *retired_private_metadata_count = 0;
   }
-  if (context.session_uuid.canonical.empty()) {
+  if (context.session_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("mga.temporary_session_cleanup",
                                         "session_uuid_required");
   }
@@ -611,7 +624,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
     if (tombstones_appended.error) { return tombstones_appended; }
     if (retire_private_metadata &&
         table.temporary_scope != "global" &&
-        table.temporary_session_uuid == context.session_uuid.canonical) {
+        table.temporary_session_uuid == context.session_uuid) {
       const auto retired = AppendMgaTemporaryTableMetadataRetirement(
           context,
           local_transaction_id,
@@ -688,7 +701,7 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
     result.diagnostic = savepoint;
     return result;
   }
-  if (context.session_uuid.canonical.empty()) {
+  if (context.session_uuid.is_nil()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "ddl.drop_object",
         "temporary_table_requires_session_uuid");

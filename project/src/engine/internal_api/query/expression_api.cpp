@@ -10,6 +10,7 @@
 
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
+#include "../../../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -297,7 +298,22 @@ bool QowCanonicalDescriptorU32FieldV1(const std::string& descriptor,
 
 // QOW-SOURCE-QRY-008-DESC-V1
 bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
-  return QowCanonicalUuidV1(descriptor.descriptor_uuid.canonical) &&
+  // These identities have dedicated binary slots. A second textual carrier
+  // is ambiguous even when both values appear to agree; never parse it back.
+  std::string_view fields = descriptor.encoded_descriptor;
+  while (!fields.empty()) {
+    const auto end = fields.find(';');
+    const auto field = fields.substr(0, end);
+    const auto key = field.substr(0, field.find('='));
+    if (key == "descriptor_uuid" || key == "datatype_descriptor_uuid" ||
+        key == "type_uuid" || key == "collation_uuid") return false;
+    if (end == std::string_view::npos) break;
+    fields.remove_prefix(end + 1);
+  }
+  return scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) &&
+         (descriptor.collation_uuid.is_nil() ||
+          scratchbird::core::uuid::IsEngineIdentityUuid(descriptor.collation_uuid)) &&
          !descriptor.descriptor_kind.empty() &&
          !descriptor.canonical_type_name.empty() &&
          !descriptor.encoded_descriptor.empty();
@@ -1802,9 +1818,9 @@ bool QowBindCanonicalExpressionReferenceV1(
     return refuse("ambiguous_reference",
                   "typed expression reference has multiple resolution candidates");
   }
-  if (!QowCanonicalUuidV1(identity.object_uuid.canonical) ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.object_uuid) ||
       identity.resolved_object_type.empty() ||
-      !QowCanonicalUuidV1(identity.resolved_schema_uuid.canonical)) {
+      !scratchbird::core::uuid::IsEngineIdentityUuid(identity.resolved_schema_uuid)) {
     return refuse("unresolved_reference",
                   "typed expression reference has no canonical object binding");
   }
@@ -1813,7 +1829,7 @@ bool QowBindCanonicalExpressionReferenceV1(
                   "resolved object kind does not match the bound reference kind");
   }
   if (!context.statement_metadata_snapshot_engine_owned ||
-      !QowCanonicalUuidV1(context.statement_metadata_snapshot_uuid.canonical) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(context.statement_metadata_snapshot_uuid) ||
       context.catalog_generation_id == 0 || context.security_epoch == 0 ||
       context.resource_epoch == 0 || identity.catalog_generation_id == 0 ||
       identity.security_epoch == 0 || identity.resource_epoch == 0 ||
@@ -1834,8 +1850,8 @@ bool QowBindCanonicalExpressionReferenceV1(
 
   const auto& authorization = context.authorization_context;
   if (!context.security_context_present || !authorization.present ||
-      authorization.principal_uuid.canonical !=
-          context.principal_uuid.canonical ||
+      authorization.principal_uuid !=
+          context.principal_uuid ||
       authorization.security_epoch != context.security_epoch ||
       authorization.catalog_generation_id != context.catalog_generation_id ||
       authorization.policy_epoch == 0) {
@@ -1845,7 +1861,7 @@ bool QowBindCanonicalExpressionReferenceV1(
   const auto effective_subject = [&](const EngineUuid& subject_uuid,
                                      const std::string& subject_kind) {
     for (const auto& subject : authorization.effective_subjects) {
-      if (subject.subject_uuid.canonical == subject_uuid.canonical &&
+      if (subject.subject_uuid == subject_uuid &&
           subject.subject_kind == subject_kind) {
         return true;
       }
@@ -1853,8 +1869,8 @@ bool QowBindCanonicalExpressionReferenceV1(
     return false;
   };
   const auto target_matches = [&](const EngineUuid& target_uuid) {
-    return target_uuid.canonical.empty() ||
-           target_uuid.canonical == identity.object_uuid.canonical;
+    return target_uuid.is_nil() ||
+           target_uuid == identity.object_uuid;
   };
   bool select_allowed = false;
   for (const auto& grant : authorization.grants) {
@@ -1956,7 +1972,7 @@ EngineTypedValue RequestSecondValue(const EngineApiRequest& request, const Engin
 }
 
 EngineDescriptor RequestTargetDescriptor(const EngineApiRequest& request, const EngineDescriptor& target_descriptor) {
-  if (!target_descriptor.canonical_type_name.empty() || !target_descriptor.descriptor_uuid.canonical.empty()) {
+  if (!target_descriptor_type_name.empty() || !target_descriptor.descriptor_uuid.is_nil()) {
     return target_descriptor;
   }
   if (request.descriptors.size() >= 2) { return request.descriptors[1]; }
@@ -1965,7 +1981,7 @@ EngineDescriptor RequestTargetDescriptor(const EngineApiRequest& request, const 
 }
 
 EngineDescriptor RequestPrimaryDescriptor(const EngineApiRequest& request, const EngineDescriptor& descriptor) {
-  if (!descriptor.canonical_type_name.empty() || !descriptor.descriptor_uuid.canonical.empty() ||
+  if (!descriptor_type_name.empty() || !descriptor.descriptor_uuid.is_nil() ||
       !descriptor.encoded_descriptor.empty()) {
     return descriptor;
   }
@@ -2259,7 +2275,7 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
       !request.sql_object_reference.expected_object_type.empty() ||
       !request.sql_object_reference.object_name.raw_text.empty() ||
       !request.sql_object_reference.object_name.normalized_lookup_key.empty() ||
-      !request.bound_object_identity.object_uuid.canonical.empty() ||
+      !request.bound_object_identity.object_uuid.is_nil() ||
       !request.related_objects.empty();
   if (!canonical_reference_requested) {
     return ApiFailure<EngineBindExpressionResult>(
@@ -2291,7 +2307,7 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
   }
   const auto authorization = EvaluateMaterializedAuthorization(
       context, context.authorization_context, "SELECT",
-      bound_reference.uuid.canonical);
+      bound_reference.uuid);
   if (!authorization.authorized) {
     return refuse(
         "unauthorized_reference",
@@ -2310,9 +2326,9 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
       {"query_binding", "canonical_expression_reference"});
   result.evidence.push_back(
       {"statement_metadata_snapshot",
-       context.statement_metadata_snapshot_uuid.canonical});
+       context.statement_metadata_snapshot_uuid});
   result.evidence.push_back(
-      {"bound_object_uuid", result.primary_object.uuid.canonical});
+      {"bound_object_uuid", result.primary_object.uuid});
   return result;
 }
 
@@ -2330,8 +2346,8 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
       !DomainUuidFromDescriptor(target).empty();
   const bool canonical_descriptor_route =
       !domain_descriptor_route &&
-      (!input.descriptor.descriptor_uuid.canonical.empty() ||
-       !target.descriptor_uuid.canonical.empty());
+      (!input.descriptor.descriptor_uuid.is_nil() ||
+       !target.descriptor_uuid.is_nil());
   if (canonical_descriptor_route) {
     EngineTypedValue coerced;
     std::string category;
@@ -2356,7 +2372,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     result.evidence.push_back({"datatype_cast", result.cast_category});
     result.evidence.push_back(
         {"canonical_descriptor_identity",
-         result.value.descriptor.descriptor_uuid.canonical});
+         result.value.descriptor.descriptor_uuid});
     return result;
   }
   const auto source_type = TypeFromDescriptor(input.descriptor);
@@ -2459,11 +2475,11 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
     return refuse("bound scalar collation UUID is absent or mismatched");
   }
   EngineUuid collation_uuid;
-  collation_uuid.canonical = left_collation;
+  collation_uuid = left_collation;
   const auto resolved = LookupEngineResourceDescriptorByUuid(
       context, collation_uuid, "collation");
   if (!resolved.ok || !resolved.resource_descriptor.present ||
-      resolved.resource_descriptor.resource_uuid.canonical != left_collation) {
+      resolved.resource_descriptor.resource_uuid != left_collation) {
     const std::string detail = resolved.diagnostic.code.empty()
                                    ? "bound collation resource was not resolved"
                                    : resolved.diagnostic.code;
@@ -2859,9 +2875,9 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   const EngineDescriptor result_descriptor =
       request.descriptors.empty() ? left.descriptor : request.descriptors.front();
   const bool canonical_descriptor_route =
-      !left.descriptor.descriptor_uuid.canonical.empty() ||
-      !right.descriptor.descriptor_uuid.canonical.empty() ||
-      !result_descriptor.descriptor_uuid.canonical.empty();
+      !left.descriptor.descriptor_uuid.is_nil() ||
+      !right.descriptor.descriptor_uuid.is_nil() ||
+      !result_descriptor.descriptor_uuid.is_nil();
   if (canonical_descriptor_route &&
       (!QowCanonicalDescriptorIdentityV1(left.descriptor) ||
        !QowCanonicalDescriptorIdentityV1(right.descriptor) ||
@@ -3090,7 +3106,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
          dt::DatatypeNumericOperationKindName(numeric_request.operation)});
     result.evidence.push_back(
         {"canonical_numeric_descriptor",
-         result.value.descriptor.descriptor_uuid.canonical});
+         result.value.descriptor.descriptor_uuid});
     return result;
   }
 

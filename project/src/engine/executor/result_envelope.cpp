@@ -7,10 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <limits>
+#include <locale>
 #include <mutex>
 #include <sstream>
 #include <string_view>
@@ -21,11 +24,11 @@ namespace scratchbird::engine::executor {
 
 struct CanonicalResultCursorSession::State {
   std::mutex mutex;
-  std::string cursor_uuid;
-  std::string statement_uuid;
+  internal_api::EngineUuid cursor_uuid;
+  internal_api::EngineUuid statement_uuid;
   PhysicalMgaStatementContext mga_statement_context;
-  std::string catalog_epoch_uuid;
-  std::string execution_attempt_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  internal_api::EngineUuid execution_attempt_uuid;
   TypedPhysicalNodeDag selected_physical_dag;
   CanonicalResultInvocationMode invocation_mode =
       CanonicalResultInvocationMode::kDirect;
@@ -37,6 +40,7 @@ struct CanonicalResultCursorSession::State {
   std::uint64_t next_row_ordinal = 0;
   bool metadata_delivered = false;
   bool released = false;
+  bool release_succeeded = false;
   CanonicalResultCursorCancellationProbe cancellation_requested;
   CanonicalResultDiagnosticRecord cancellation_diagnostic;
   CanonicalResultCursorReleaseCallback release;
@@ -64,12 +68,16 @@ bool CanonicalResultCursorSession::Release(
   CanonicalResultCursorReleaseCallback release;
   {
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->released) return true;
+    if (state_->released) return state_->release_succeeded;
     state_->released = true;
-    release = state_->release;
+    // std::function move is noexcept; copying here could allocate in a
+    // noexcept destructor/release path and terminate the process.
+    release = std::move(state_->release);
   }
   try {
     release(reason);
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->release_succeeded = true;
     return true;
   } catch (...) {
     return false;
@@ -96,17 +104,8 @@ DescriptorRuntimeDiagnostic Refusal(std::string detail,
   return diagnostic;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const internal_api::EngineUuid& value) noexcept {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool IsValidResultKind(const CanonicalResultKind kind) {
@@ -213,13 +212,7 @@ bool ExecutorColumnDescriptorEqual(const ExecutorColumnDescriptor& left,
   return left.stable_name == right.stable_name &&
          left.nullable == right.nullable &&
          left.descriptor_id == right.descriptor_id &&
-         left.descriptor.descriptor_uuid.canonical ==
-             right.descriptor.descriptor_uuid.canonical &&
-         left.descriptor.descriptor_kind == right.descriptor.descriptor_kind &&
-         left.descriptor.canonical_type_name ==
-             right.descriptor.canonical_type_name &&
-         left.descriptor.encoded_descriptor ==
-             right.descriptor.encoded_descriptor;
+         left.descriptor == right.descriptor;
 }
 
 bool ExecutorColumnDescriptorVectorsEqual(
@@ -440,7 +433,8 @@ DescriptorRuntimeDiagnostic ValidatePublishedDescriptor(
   if (published.ordinal != expected_ordinal || published.name_utf8.empty() ||
       published.name_utf8 != physical.stable_name ||
       published.descriptor_uuid !=
-          physical.descriptor.descriptor_uuid.canonical ||
+          physical.descriptor.descriptor_uuid ||
+      !internal_api::QowCanonicalDescriptorIdentityV1(physical.descriptor) ||
       !IsCanonicalUuid(published.descriptor_uuid) ||
       !IsCanonicalUuid(published.type_uuid) ||
       !IsValidNullability(published.nullability) ||
@@ -457,7 +451,6 @@ DescriptorRuntimeDiagnostic ValidatePublishedDescriptor(
     return Refusal("physical descriptor encoding is malformed", 0,
                    expected_ordinal);
   }
-  const auto type = fields->find("type_uuid");
   const auto canonical_nullability = fields->find("nullability");
   const auto storage_nullable = fields->find("nullable");
   std::optional<CanonicalResultNullability> admitted_nullability;
@@ -494,11 +487,11 @@ DescriptorRuntimeDiagnostic ValidatePublishedDescriptor(
     }
     admitted_nullability = storage_nullability;
   }
-  if (type == fields->end() || type->second != published.type_uuid ||
+  if (physical.descriptor.type_uuid != published.type_uuid ||
       !admitted_nullability.has_value() ||
       *admitted_nullability != published.nullability ||
-      !OptionalFieldMatches(*fields, "collation_uuid",
-                            published.collation_uuid) ||
+      physical.descriptor.collation_uuid !=
+          published.collation_uuid.value_or(internal_api::EngineUuid{}) ||
       !OptionalFieldMatches(*fields, "timezone_profile_id",
                             published.timezone_profile_id)) {
     return Refusal("published result descriptor differs from physical authority",
@@ -519,7 +512,7 @@ DescriptorRuntimeDiagnostic ValidateDiagnosticArgument(
     const std::size_t argument_index) {
   const auto fields =
       ParseDescriptorFields(value.descriptor.encoded_descriptor);
-  if (!IsCanonicalUuid(value.descriptor.descriptor_uuid.canonical) ||
+  if (!internal_api::QowCanonicalDescriptorIdentityV1(value.descriptor) ||
       value.descriptor.descriptor_kind != "scalar" ||
       value.descriptor.canonical_type_name.empty() ||
       !fields.has_value()) {
@@ -528,17 +521,11 @@ DescriptorRuntimeDiagnostic ValidateDiagnosticArgument(
   }
   const auto type = fields->find("type_uuid");
   const auto nullability = fields->find("nullability");
-  if (type == fields->end() || !IsCanonicalUuid(type->second) ||
-      nullability == fields->end() ||
+  if (nullability == fields->end() ||
       (nullability->second != "non_null" &&
        nullability->second != "nullable" &&
        nullability->second != "unknown")) {
     return Refusal("diagnostic argument type fields are not canonical",
-                   diagnostic_index, argument_index);
-  }
-  const auto collation = fields->find("collation_uuid");
-  if (collation != fields->end() && !IsCanonicalUuid(collation->second)) {
-    return Refusal("diagnostic argument collation is not canonical",
                    diagnostic_index, argument_index);
   }
   const auto timezone = fields->find("timezone_profile_id");
@@ -599,6 +586,15 @@ void AppendLengthField(std::ostringstream* out,
   *out << key << '=' << value.size() << ':' << value << '\n';
 }
 
+// UUID payloads are their sixteen canonical bytes, never a rendered spelling.
+void AppendLengthField(std::ostringstream* out,
+                       const std::string_view key,
+                       const internal_api::EngineUuid& value) {
+  *out << key << "=16:";
+  out->write(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  *out << '\n';
+}
+
 std::string HexBytes(const std::vector<std::uint8_t>& bytes) {
   static constexpr char kHex[] = "0123456789abcdef";
   std::string output;
@@ -653,6 +649,7 @@ void AppendMgaStatementContext(
                       std::to_string(transaction_id));
   }
   AppendLengthField(out, "mga.snapshot_kind", context.snapshot_kind);
+  AppendLengthField(out, "mga.statement_timestamp", context.statement_timestamp);
   AppendLengthField(
       out, "mga.publication_inventory_next_local_transaction_id",
       std::to_string(
@@ -665,9 +662,11 @@ void AppendMgaStatementContext(
                     context.current ? "true" : "false");
 }
 
-std::string EncodeEnvelope(const CanonicalResultEnvelopeV1& envelope) {
+std::string EncodeEnvelope(const CanonicalResultEnvelopeV2& envelope) {
   std::ostringstream out;
-  AppendLengthField(&out, "abi_family_id", "QOW-RESULT-DIAGNOSTIC-ABI-V1");
+  out.exceptions(std::ios::badbit | std::ios::failbit);
+  out.imbue(std::locale::classic());
+  AppendLengthField(&out, "abi_family_id", "QOW-RESULT-DIAGNOSTIC-ABI-V2");
   AppendLengthField(&out, "abi_version", std::to_string(envelope.abi_version));
   AppendLengthField(&out, "statement_uuid", envelope.statement_uuid);
   AppendMgaStatementContext(&out, envelope.mga_statement_context);
@@ -684,8 +683,11 @@ std::string EncodeEnvelope(const CanonicalResultEnvelopeV1& envelope) {
     AppendLengthField(&out, "column.type_uuid", column.type_uuid);
     AppendLengthField(&out, "column.nullability",
                       NullabilityName(column.nullability));
-    AppendLengthField(&out, "column.collation_uuid",
-                      column.collation_uuid.value_or(""));
+    if (column.collation_uuid) {
+      AppendLengthField(&out, "column.collation_uuid", *column.collation_uuid);
+    } else {
+      AppendLengthField(&out, "column.collation_uuid", std::string_view{});
+    }
     AppendLengthField(&out, "column.timezone_profile_id",
                       column.timezone_profile_id.value_or(""));
   }
@@ -729,7 +731,9 @@ std::string EncodeEnvelope(const CanonicalResultEnvelopeV1& envelope) {
                       std::to_string(diagnostic.argument_values.size()));
     for (const auto& argument : diagnostic.argument_values) {
       AppendLengthField(&out, "argument.descriptor_uuid",
-                        argument.descriptor.descriptor_uuid.canonical);
+                        argument.descriptor.descriptor_uuid);
+      AppendLengthField(&out, "argument.type_uuid", argument.descriptor.type_uuid);
+      AppendLengthField(&out, "argument.collation_uuid", argument.descriptor.collation_uuid);
       AppendLengthField(&out, "argument.descriptor_kind",
                         argument.descriptor.descriptor_kind);
       AppendLengthField(&out, "argument.canonical_type_name",
@@ -779,7 +783,7 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
           CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
 #endif
 
-  if (request.abi_version != 1 ||
+  if (request.abi_version != 2 ||
       !IsCanonicalUuid(request.statement_uuid) ||
       !accepted_mga_authority_origin ||
       !IsCanonicalUuid(request.selected_catalog_epoch_uuid) ||
@@ -842,7 +846,7 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
   } else if (request.command_tag.has_value() || request.cursor_state.has_value()) {
     return refuse(Refusal("non-command/non-cursor result carries route fields"));
   }
-  if (!cursor && (!request.cursor_uuid.empty() || request.cursor_session ||
+  if (!cursor && (!request.cursor_uuid.is_nil() || request.cursor_session ||
                   request.cursor_batch_ordinal != 0 ||
                   request.cursor_first_row_ordinal != 0 ||
                   request.cursor_cancellation_requested ||
@@ -984,6 +988,9 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
       CanonicalResultCursorReleaseReason::kCompleted;
   std::uint64_t delivery_batch_ordinal = 0;
   std::uint64_t delivery_first_row_ordinal = 0;
+  // Keep the admitted cursor sequence locked until all fallible result
+  // construction has completed. Failed construction must not advance it.
+  std::unique_lock<std::mutex> cursor_publication_lock;
 
   if (cursor) {
     cursor_session = request.cursor_session;
@@ -1033,7 +1040,9 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
           Refusal("cursor cancellation probe raised an exception"));
     }
 
-    std::unique_lock<std::mutex> lock(cursor_session->state_->mutex);
+    cursor_publication_lock =
+        std::unique_lock<std::mutex>(cursor_session->state_->mutex);
+    auto& lock = cursor_publication_lock;
     auto& state = *cursor_session->state_;
     if (state.released || state.cursor_uuid != request.cursor_uuid ||
         state.statement_uuid != request.statement_uuid ||
@@ -1074,9 +1083,13 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
       release_reason = CanonicalResultCursorReleaseReason::kCancelled;
     } else {
       result.envelope.diagnostics = request.diagnostics;
-      state.next_row_ordinal +=
-          static_cast<std::uint64_t>(visible_batch.rows.size());
-      if (!visible_batch.rows.empty()) ++state.next_batch_ordinal;
+      if (visible_batch.rows.size() >
+              std::numeric_limits<std::uint64_t>::max() - state.next_row_ordinal ||
+          (!visible_batch.rows.empty() &&
+           state.next_batch_ordinal == std::numeric_limits<std::uint64_t>::max())) {
+        lock.unlock();
+        return refuse_cursor(Refusal("cursor delivery ordinal overflow"));
+      }
       if (*request.cursor_state == CanonicalResultCursorState::kClosed) {
         release_cursor = true;
         release_reason = terminal_diagnostic
@@ -1084,22 +1097,22 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
                              : CanonicalResultCursorReleaseReason::kCompleted;
       }
     }
-    state.metadata_delivered = true;
 
     result.cursor_session = cursor_session;
     result.cursor_uuid = state.cursor_uuid;
     result.cursor_batch_ordinal = delivery_batch_ordinal;
     result.cursor_first_row_ordinal = delivery_first_row_ordinal;
-    result.cursor_next_batch_ordinal = state.next_batch_ordinal;
-    result.cursor_next_row_ordinal = state.next_row_ordinal;
+    result.cursor_next_batch_ordinal =
+        state.next_batch_ordinal + (visible_batch.rows.empty() ? 0 : 1);
+    result.cursor_next_row_ordinal =
+        state.next_row_ordinal + static_cast<std::uint64_t>(visible_batch.rows.size());
     result.cursor_metadata_delivered = publish_metadata;
     result.cursor_end_of_stream = release_cursor;
-    lock.unlock();
   } else {
     result.envelope.diagnostics = request.diagnostics;
   }
 
-  result.envelope.abi_version = 1;
+  result.envelope.abi_version = 2;
   result.envelope.statement_uuid = request.statement_uuid;
   result.envelope.mga_statement_context = statement_context;
   result.envelope.catalog_epoch_uuid = request.selected_catalog_epoch_uuid;
@@ -1159,6 +1172,26 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
          std::nullopt});
   }
   if (release_cursor) {
+    // Allocate the terminal delivery record before retiring the cursor.
+    result.delivery_records.push_back(
+        {CanonicalResultDeliveryKind::kResourceRelease, std::nullopt,
+         delivery_batch_ordinal});
+  }
+  const auto final_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.selected_physical_dag);
+  if (!final_authority.ok) {
+    if (cursor_publication_lock.owns_lock()) cursor_publication_lock.unlock();
+    if (cursor_session) cursor_session->Release(CanonicalResultCursorReleaseReason::kError);
+    return refuse(final_authority);
+  }
+  if (cursor) {
+    auto& state = *cursor_session->state_;
+    state.next_batch_ordinal = result.cursor_next_batch_ordinal;
+    state.next_row_ordinal = result.cursor_next_row_ordinal;
+    state.metadata_delivered = true;
+    cursor_publication_lock.unlock();
+  }
+  if (release_cursor) {
     if (!cursor_session->Release(release_reason)) {
       result = {};
       result.diagnostic =
@@ -1167,9 +1200,6 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     }
     result.cursor_resource_released = true;
     result.cursor_release_reason = release_reason;
-    result.delivery_records.push_back(
-        {CanonicalResultDeliveryKind::kResourceRelease, std::nullopt,
-         delivery_batch_ordinal});
   }
   result.diagnostic = {};
   result.published = true;

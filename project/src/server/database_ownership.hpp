@@ -10,11 +10,17 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 
+namespace scratchbird::storage::disk { class RouteOwnershipLease; }
+
 namespace scratchbird::server {
+
+struct DatabaseOwnershipRequest;
+struct DatabaseOwnershipResult;
 
 struct DatabaseOwnershipDescriptor {
   std::string format;
@@ -34,7 +40,7 @@ class DatabaseOwnershipLock {
       int;
 #endif
 
-  DatabaseOwnershipLock(NativeHandle handle, std::filesystem::path lock_path);
+
   ~DatabaseOwnershipLock();
 
   DatabaseOwnershipLock(const DatabaseOwnershipLock&) = delete;
@@ -43,14 +49,24 @@ class DatabaseOwnershipLock {
   DatabaseOwnershipLock& operator=(DatabaseOwnershipLock&& other) noexcept;
 
   [[nodiscard]] bool valid() const;
-  [[nodiscard]] NativeHandle native_handle() const { return handle_; }
+  [[nodiscard]] NativeHandle native_handle() const;
 #ifndef _WIN32
-  [[nodiscard]] int fd() const { return handle_; }
+  [[nodiscard]] int fd() const { return native_handle(); }
 #endif
   [[nodiscard]] const std::filesystem::path& lock_path() const { return lock_path_; }
   void release();
 
  private:
+  friend DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&);
+  DatabaseOwnershipLock(NativeHandle handle, NativeHandle storage_handle,
+                        std::filesystem::path lock_path);
+  bool PublishStorageLease();
+#ifdef _WIN32
+  std::uint32_t PrepareStorageLease(const std::string& database_path);
+#else
+  int PrepareStorageLease(const std::string& database_path);
+#endif
+  std::shared_ptr<storage::disk::RouteOwnershipLease> lease_;
   NativeHandle handle_{
 #ifdef _WIN32
       nullptr
@@ -58,6 +74,15 @@ class DatabaseOwnershipLock {
       -1
 #endif
   };
+  // Server routing and direct storage must contend on the same storage lock.
+  NativeHandle storage_handle_{
+#ifdef _WIN32
+      nullptr
+#else
+      -1
+#endif
+  };
+  std::uint64_t owner_pid_ = 0;
   std::filesystem::path lock_path_;
 };
 

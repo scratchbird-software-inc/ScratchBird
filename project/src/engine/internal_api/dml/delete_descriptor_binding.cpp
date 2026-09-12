@@ -42,7 +42,7 @@ EngineDmlDeleteRowsBindResultV1 BindDmlDeleteRowsDescriptorV1(
   };
   try {
     if (!grant.receipt || !grant.receipt->AuthenticatesContext(context) ||
-        demand.authenticated_statement_receipt_uuid != context.statement_receipt_uuid.canonical ||
+        demand.authenticated_statement_receipt_uuid != context.statement_receipt_uuid ||
         !demand.structural_occurrence_id) return refuse("authenticated_receipt_and_occurrence_required", "SECURITY.ACCESS_DENIED");
     // Freeze catalog/security/source capture against the same engine append
     // authority used by execution. A new descriptor has no competing owner.
@@ -54,7 +54,7 @@ EngineDmlDeleteRowsBindResultV1 BindDmlDeleteRowsDescriptorV1(
     const auto predicate = BindDmlDeletePredicateV1(context, demand, d.descriptor_uuid, 1,
         d.target_relation_occurrence_uuid, 1);
     if (!predicate.ok) { result.diagnostic = predicate.diagnostic; return result; }
-    const auto target = predicate.relation.relation_uuid.canonical;
+    const auto target = predicate.relation.relation_uuid;
     const auto security = CaptureDmlDeleteSecurityAuthorityV1(context, target);
     if (!security.ok) { result.diagnostic = security.diagnostic; return result; }
     const auto effects = CaptureDmlDeleteEffectAuthorityV1(context, target);
@@ -68,13 +68,13 @@ EngineDmlDeleteRowsBindResultV1 BindDmlDeleteRowsDescriptorV1(
     b.resource_budget = *grant.resource.carrier();
     b.predicate = predicate.predicate; b.security = security.snapshot;
     b.matched_grant_uuids = security.matched_grant_uuids; b.effects = effects.snapshot; b.executor = executor.snapshot;
-    if (!p::TypedUuid(context.database_uuid.canonical, &b.database_uuid) ||
-        !p::TypedUuid(context.session_uuid.canonical, &b.session_uuid) ||
-        !p::TypedUuid(context.principal_uuid.canonical, &b.principal_uuid) ||
-        !p::TypedUuid(context.statement_receipt_uuid.canonical, &d.authenticated_statement_receipt_uuid) ||
-        !p::TypedUuid(context.transaction_uuid.canonical, &d.owning_transaction_uuid) ||
-        !p::TypedUuid(context.statement_snapshot_uuid.canonical, &d.statement_snapshot_uuid) ||
-        !p::TypedUuid(context.statement_metadata_snapshot_uuid.canonical, &d.catalog_snapshot_uuid) ||
+    if (!p::TypedUuid(context.database_uuid, &b.database_uuid) ||
+        !p::TypedUuid(context.session_uuid, &b.session_uuid) ||
+        !p::TypedUuid(context.principal_uuid, &b.principal_uuid) ||
+        !p::TypedUuid(context.statement_receipt_uuid, &d.authenticated_statement_receipt_uuid) ||
+        !p::TypedUuid(context.transaction_uuid, &d.owning_transaction_uuid) ||
+        !p::TypedUuid(context.statement_snapshot_uuid, &d.statement_snapshot_uuid) ||
+        !p::TypedUuid(context.statement_metadata_snapshot_uuid, &d.catalog_snapshot_uuid) ||
         !p::TypedUuid(security.snapshot.security_context_uuid, &d.security_context_uuid) ||
         !p::TypedUuid(security.snapshot.snapshot_uuid, &d.security_snapshot_uuid) ||
         !p::TypedUuid(target, &d.target_relation_uuid) || !Issue(&b.bundle_uuid) || !Issue(&b.reserved_statement_savepoint_uuid) ||

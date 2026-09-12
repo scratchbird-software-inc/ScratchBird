@@ -736,12 +736,17 @@ std::string MetricRegistry::NormalizeKey(const std::string& family, const Metric
     sorted.push_back({label.key, label.value});
   }
   std::sort(sorted.begin(), sorted.end());
-  std::ostringstream out;
-  out << family;
+  // A stream can swallow allocation failure and return a truncated key.
+  // Publish only a completely constructed identity; string appends propagate
+  // failure before UpdateValue can use the key to select a metric series.
+  std::string out = family;
   for (const auto& label : sorted) {
-    out << '|' << label.first << '=' << label.second;
+    out.push_back('|');
+    out.append(label.first);
+    out.push_back('=');
+    out.append(label.second);
   }
-  return out.str();
+  return out;
 }
 
 void MetricRegistry::LoadBuiltinDescriptors() {

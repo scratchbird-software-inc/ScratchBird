@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_ddl_create_schema_execution_journal.hpp"
+#include "sblr_ddl_create_schema_journal_lock.hpp"
+#include "sblr_ddl_create_schema_journal_io.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_registry.hpp"
@@ -193,31 +195,31 @@ bool HasAuthority(
          context.statement_metadata_snapshot_engine_owned &&
          !context.database_path.empty() && !context.cluster_authority_available &&
          !context.cluster_transaction_active && !context.route_fence_present &&
-         context.database_uuid.canonical == UuidText(descriptor.database_uuid) &&
-         context.statement_receipt_uuid.canonical == UuidText(descriptor.receipt) &&
-         context.transaction_uuid.canonical ==
+         context.database_uuid == UuidText(descriptor.database_uuid) &&
+         context.statement_receipt_uuid == UuidText(descriptor.receipt) &&
+         context.transaction_uuid ==
              UuidText(descriptor.owning_transaction_uuid) &&
          context.local_transaction_id ==
              descriptor.owning_local_transaction_id &&
-         context.statement_snapshot_uuid.canonical ==
+         context.statement_snapshot_uuid ==
              UuidText(descriptor.statement_snapshot_uuid) &&
-         context.catalog_epoch_uuid.canonical ==
+         context.catalog_epoch_uuid ==
              UuidText(descriptor.catalog_epoch_uuid) &&
          context.catalog_generation_id == descriptor.catalog_generation &&
          context.security_epoch == descriptor.security_epoch &&
          context.authorization_context.present &&
-         context.authorization_context.authority_uuid.canonical ==
+         context.authorization_context.authority_uuid ==
              UuidText(descriptor.security_context_uuid) &&
          context.authorization_context.security_epoch ==
              descriptor.security_epoch &&
-         context.transaction_policy_snapshot_uuid.canonical ==
+         context.transaction_policy_snapshot_uuid ==
              UuidText(descriptor.policy_snapshot_uuid) &&
          context.transaction_policy_snapshot_generation ==
              descriptor.policy_generation &&
-         context.resource_admission_uuid.canonical ==
+         context.resource_admission_uuid ==
              UuidText(descriptor.resource_grant_uuid) &&
          context.resource_epoch == descriptor.resource_generation &&
-         context.principal_uuid.canonical ==
+         context.principal_uuid ==
              UuidText(descriptor.owner_principal_uuid) &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),
                    kJournalTraceTag) != context.trace_tags.end();
@@ -239,8 +241,8 @@ bool RecoverySessionAuthenticated(
   return context.security_context_present &&
          context.authorization_context.present &&
          !context.database_path.empty() &&
-         context.database_uuid.canonical == UuidText(descriptor.database_uuid) &&
-         context.principal_uuid.canonical ==
+         context.database_uuid == UuidText(descriptor.database_uuid) &&
+         context.principal_uuid ==
              UuidText(descriptor.owner_principal_uuid) &&
          !context.cluster_authority_available &&
          !context.cluster_transaction_active && !context.route_fence_present;
@@ -328,8 +330,9 @@ bool ExactRecoveryPostcondition(
     expected_payload.append(extension);
   }
 
-  const auto schemas = VisibleSchemaTreeRecords(context,
-                                                 observer_transaction_id);
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = VisibleSchemaTreeRecords(context, observer_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return mismatch("schema_tree_read_failed");
   std::size_t exact_schema_count = 0;
   for (const auto& schema : schemas) {
     if (schema.schema_uuid != schema_uuid) continue;
@@ -600,57 +603,11 @@ ReadStatus ReadFile(const std::string& path,
 #endif
 }
 
-bool SyncParent(const std::string& path) {
-#if defined(_WIN32)
-  (void)path;
-  return true;
-#else
-  auto parent = std::filesystem::path(path).parent_path();
-  if (parent.empty()) parent = ".";
-  const int fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (fd < 0) return false;
-  const bool ok = ::fsync(fd) == 0;
-  ::close(fd);
-  return ok;
-#endif
-}
-
-enum class CreateStatus { created, exists, failed };
+using CreateStatus = detail::CreateSchemaJournalFileStatus;
 
 CreateStatus CreateFile(const std::string& path,
                         const std::vector<std::uint8_t>& bytes) {
-#if defined(_WIN32)
-  if (std::filesystem::exists(path)) return CreateStatus::exists;
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output) return CreateStatus::failed;
-  output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-  output.flush();
-  return output ? CreateStatus::created : CreateStatus::failed;
-#else
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL |
-                                          O_CLOEXEC | O_NOFOLLOW,
-                        0600);
-  if (fd < 0) return errno == EEXIST ? CreateStatus::exists
-                                     : CreateStatus::failed;
-  std::size_t offset = 0;
-  bool ok = true;
-  while (offset != bytes.size()) {
-    const auto count =
-        ::write(fd, bytes.data() + offset, bytes.size() - offset);
-    if (count <= 0) {
-      ok = false;
-      break;
-    }
-    offset += static_cast<std::size_t>(count);
-  }
-  ok = ok && ::fsync(fd) == 0;
-  if (::close(fd) != 0) ok = false;
-  if (!ok) {
-    (void)::unlink(path.c_str());
-    return CreateStatus::failed;
-  }
-  return SyncParent(path) ? CreateStatus::created : CreateStatus::failed;
-#endif
+  return detail::CreateSchemaJournalFileExclusive(path, bytes);
 }
 
 std::uint64_t ProcessOrdinal() {
@@ -667,61 +624,15 @@ bool ReplaceFile(const std::string& path,
   const auto temp = path + ".tmp." + std::to_string(ProcessOrdinal()) + "." +
                     std::to_string(ordinal);
   if (CreateFile(temp, bytes) != CreateStatus::created) return false;
-  std::error_code error;
-  std::filesystem::rename(temp, path, error);
-  if (error) {
-    std::filesystem::remove(temp, error);
+  if (!detail::PublishCreateSchemaJournalReplacement(temp, path)) {
+    std::error_code ignored;
+    std::filesystem::remove(temp, ignored);
     return false;
   }
-  return SyncParent(path);
+  return true;
 }
 
-class ScopedFileLock {
- public:
-  ScopedFileLock() = default;
-  ScopedFileLock(const ScopedFileLock&) = delete;
-  ScopedFileLock& operator=(const ScopedFileLock&) = delete;
-  ~ScopedFileLock() { Release(); }
-
-  bool Acquire(const std::string& path) {
-#if defined(_WIN32)
-    (void)path;
-    acquired_ = true;
-    return true;
-#else
-    fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
-                 0600);
-    if (fd_ < 0) return false;
-    struct stat metadata {};
-    if (::fstat(fd_, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
-        ::flock(fd_, LOCK_EX) != 0) {
-      Release();
-      return false;
-    }
-    acquired_ = true;
-    return true;
-#endif
-  }
-
- private:
-  void Release() {
-#if defined(_WIN32)
-    acquired_ = false;
-#else
-    if (fd_ >= 0) {
-      if (acquired_) (void)::flock(fd_, LOCK_UN);
-      (void)::close(fd_);
-    }
-    fd_ = -1;
-    acquired_ = false;
-#endif
-  }
-
-  bool acquired_ = false;
-#if !defined(_WIN32)
-  int fd_ = -1;
-#endif
-};
+using ScopedFileLock = detail::ScopedCreateSchemaJournalLock;
 
 SblrDdlCreateSchemaJournalResultV1 Refused(std::string code,
                                            std::string key,
@@ -1150,28 +1061,28 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
   EngineRequestContext operation_context = authenticated_context;
   operation_context.statement_transaction_inventory_snapshot =
       inventory.snapshot;
-  operation_context.statement_receipt_uuid.canonical =
+  operation_context.statement_receipt_uuid =
       UuidText(descriptor.receipt);
-  operation_context.transaction_uuid.canonical =
+  operation_context.transaction_uuid =
       UuidText(descriptor.owning_transaction_uuid);
   operation_context.local_transaction_id =
       descriptor.owning_local_transaction_id;
   operation_context.snapshot_visible_through_local_transaction_id =
       original_transaction.entry.begin_visible_through_local_transaction_id;
-  operation_context.statement_snapshot_uuid.canonical =
+  operation_context.statement_snapshot_uuid =
       UuidText(descriptor.statement_snapshot_uuid);
   operation_context.statement_metadata_snapshot_uuid =
       operation_context.statement_snapshot_uuid;
   operation_context.statement_metadata_snapshot_engine_owned = true;
-  operation_context.catalog_epoch_uuid.canonical =
+  operation_context.catalog_epoch_uuid =
       UuidText(descriptor.catalog_epoch_uuid);
   operation_context.catalog_generation_id = descriptor.catalog_generation;
   operation_context.security_epoch = descriptor.security_epoch;
-  operation_context.transaction_policy_snapshot_uuid.canonical =
+  operation_context.transaction_policy_snapshot_uuid =
       UuidText(descriptor.policy_snapshot_uuid);
   operation_context.transaction_policy_snapshot_generation =
       descriptor.policy_generation;
-  operation_context.resource_admission_uuid.canonical =
+  operation_context.resource_admission_uuid =
       UuidText(descriptor.resource_grant_uuid);
   operation_context.resource_epoch = descriptor.resource_generation;
   operation_context.trace_tags.push_back(std::string(kJournalTraceTag));
@@ -1266,30 +1177,30 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
   create.operation_id = "ddl.create_schema";
   create.target_database.uuid = operation_context.database_uuid;
   create.target_database.object_kind = "database";
-  create.target_schema.uuid.canonical =
+  create.target_schema.uuid =
       NonZero(descriptor.parent_schema_uuid)
           ? UuidText(descriptor.parent_schema_uuid)
           : std::string{};
   create.target_schema.object_kind = "schema";
-  create.target_object.uuid.canonical = UuidText(descriptor.schema_uuid);
+  create.target_object.uuid = UuidText(descriptor.schema_uuid);
   create.target_object.object_kind = "schema";
   create.localized_names.push_back(
       {"en", "primary", canonical_path, leaf_name, true});
-  create.recovery_operation_uuid.canonical = UuidText(descriptor.recovery_uuid);
-  create.requested_catalog_row_uuid.canonical =
+  create.recovery_operation_uuid = UuidText(descriptor.recovery_uuid);
+  create.requested_catalog_row_uuid =
       UuidText(planned_result.catalog_row_uuid);
-  create.mutation_uuid.canonical = UuidText(planned_result.mutation_uuid);
-  create.statement_publication_barrier_uuid.canonical =
+  create.mutation_uuid = UuidText(planned_result.mutation_uuid);
+  create.statement_publication_barrier_uuid =
       UuidText(planned_result.publication_barrier);
   create.option_envelopes.push_back(
       "catalog_ddl_mutation_audit:" +
-      create.recovery_operation_uuid.canonical);
+      create.recovery_operation_uuid);
   const auto created = EngineCreateSchema(create);
   if (!created.ok || created.primary_object.object_kind != "schema" ||
-      created.primary_object.uuid.canonical !=
-          create.target_object.uuid.canonical ||
-      created.catalog_row_uuid.canonical !=
-          create.requested_catalog_row_uuid.canonical) {
+      created.primary_object.uuid !=
+          create.target_object.uuid ||
+      created.catalog_row_uuid !=
+          create.requested_catalog_row_uuid) {
     auto result = Refused(
         "DDL.CREATE_SCHEMA_FAILED",
         "sblr.ddl_create_schema.recovery_catalog_mutation_failed",

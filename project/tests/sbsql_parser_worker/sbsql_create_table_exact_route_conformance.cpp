@@ -32,6 +32,19 @@
 #include <utility>
 #include <vector>
 
+#include <stdexcept>
+#include <utility>
+
+namespace scratchbird::engine::internal_api {
+template <typename... Args>
+auto CheckedSchemaTreeRecords(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = VisibleSchemaTreeRecords(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+}  // namespace scratchbird::engine::internal_api
+
 namespace {
 
 using namespace scratchbird::parser::sbsql;
@@ -806,7 +819,7 @@ api::EngineRequestContext EngineContext(const std::string& database_uuid) {
 
 std::string SchemaUuidForPath(const api::EngineRequestContext& context,
                               const std::string& path) {
-  for (const auto& schema : api::VisibleSchemaTreeRecords(context,
+  for (const auto& schema : api::CheckedSchemaTreeRecords(context,
                                                           context.local_transaction_id)) {
     for (const auto& name : schema.localized_names) {
       if (name.path == path) return schema.schema_uuid;

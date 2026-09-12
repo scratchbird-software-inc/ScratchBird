@@ -24,6 +24,7 @@ namespace scratchbird::parser::native_v3_package {
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace rendering = scratchbird::server::legacy_rendering;
 namespace ast = scratchbird::parser::ast;
 namespace bound = scratchbird::parser::bound_ast;
 namespace lowering = scratchbird::parser::lowering;
@@ -76,9 +77,9 @@ api::EngineRequestContext MakeEngineContext(const NativeV3ParserPackageRequest& 
   context.trust_mode = api::EngineTrustMode::server_isolated;
   context.request_id = "sbsql-parser-package";
   context.database_path = request.database_path;
-  context.database_uuid.canonical = request.database_uuid;
-  context.session_uuid.canonical = request.session_uuid;
-  context.principal_uuid.canonical = request.principal_uuid;
+  context.database_uuid = request.database_uuid;
+  context.session_uuid = request.session_uuid;
+  context.principal_uuid = request.principal_uuid;
   context.security_context_present = request.security_context_present;
   context.cluster_authority_available = false;
   context.trace_tags.push_back("parser_package_uuid:" + request.parser_package_uuid);
@@ -90,7 +91,7 @@ api::EngineApiRequest MakeBaseApiRequest(const NativeV3ParserPackageRequest& req
                                          const lowering::LogicalEnvelope& envelope) {
   api::EngineApiRequest api_request;
   api_request.operation_id = OperationIdForLogicalKey(envelope.operation_key);
-  api_request.target_database.uuid.canonical = request.database_uuid;
+  api_request.target_database.uuid = request.database_uuid;
   api_request.target_database.object_kind = "database";
   api_request.option_envelopes.push_back("parser_package_uuid:" + request.parser_package_uuid);
   api_request.option_envelopes.push_back("parser_package_version:" + request.parser_package_version);
@@ -119,8 +120,8 @@ sblr::SblrOperationEnvelope MakeEngineSblrEnvelope(const NativeV3ParserPackageRe
   return engine_envelope;
 }
 
-api::EngineParserPackageRenderOptions RenderOptions(const NativeV3ParserPackageRequest& request) {
-  api::EngineParserPackageRenderOptions options;
+rendering::EngineParserPackageRenderOptions RenderOptions(const NativeV3ParserPackageRequest& request) {
+  rendering::EngineParserPackageRenderOptions options;
   options.parser_package_uuid = request.parser_package_uuid;
   options.parser_package_version = request.parser_package_version;
   options.client_dialect = request.client_dialect;
@@ -138,11 +139,11 @@ std::string RenderDiagnosticEnvelope(std::string operation_id, std::string code,
                                                              "parser.sbsql.package",
                                                              std::move(detail),
                                                              true));
-  api::EngineParserPackageRenderOptions options;
+  rendering::EngineParserPackageRenderOptions options;
   options.parser_package_uuid = "00000000-0000-7000-8000-000000000000";
   options.parser_package_version = "diagnostic-only";
   options.client_dialect = "sbsql_v3";
-  const auto envelope = api::RenderEngineApiResultForParserPackage(failure, std::move(options));
+  const auto envelope = rendering::RenderEngineApiResultForParserPackage(failure, std::move(options));
   return envelope.diagnostics.empty() ? "" : envelope.diagnostics.front().code;
 }
 
@@ -235,11 +236,11 @@ NativeV3ParserPackageResult ExecuteNativeV3ParserPackageRequest(const NativeV3Pa
     return result;
   }
 
-  result.rendered_result = api::RenderEngineApiResultForParserPackage(dispatch_result.api_result,
+  result.rendered_result = rendering::RenderEngineApiResultForParserPackage(dispatch_result.api_result,
                                                                       RenderOptions(request));
   result.rendered_for_parser_package = true;
   std::vector<std::string> render_errors;
-  if (!api::ValidateEngineRenderedResultEnvelope(result.rendered_result, &render_errors)) {
+  if (!rendering::ValidateLegacyRenderedProjectionStructure(result.rendered_result, &render_errors)) {
     for (const auto& error : render_errors) { result.diagnostics.push_back(error); }
     Fail(&result, "render", "sbsql_render_validation_failed");
     return result;

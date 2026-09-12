@@ -48,7 +48,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveRowNumberRegistration(
   if (!strict_dispatcher_memory ||
       !account_string(row_number_column.stable_name) ||
       !account_string(
-          row_number_column.descriptor.descriptor_uuid.canonical) ||
+          row_number_column.descriptor.descriptor_uuid) ||
       !account_string(row_number_column.descriptor.descriptor_kind) ||
       !account_string(
           row_number_column.descriptor.canonical_type_name) ||
@@ -182,7 +182,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
     exec::CanonicalDescriptorOrderTerm order_term,
     api::EngineTypedValue bucket_count_operand,
     std::string function_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
@@ -201,8 +200,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
        order_term = std::move(order_term),
        bucket_count_operand = std::move(bucket_count_operand),
        function_uuid = std::move(function_uuid),
-       order_term_binding_evidence_uuid =
-           std::move(order_term_binding_evidence_uuid),
        deterministic_order_evidence_uuid =
            std::move(deterministic_order_evidence_uuid),
        maximum_input_row_count, mga_context = std::move(mga_context)](
@@ -255,12 +252,31 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
         request.function_abi_version = 1;
         request.builtin_id = "sb.window.ntile";
         request.function_uuid = function_uuid;
-        request.order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        if (order_term.column >= input_batch.columns.size() ||
+            node.required_property_uuids.size() != 1) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term binding is unresolved";
+          return step;
+        }
+        request.order_term_binding_receipt =
+            exec::CanonicalWindowOrderBindingReceipt::Issue(
+                *execution_dag, node.physical_node_id,
+                input_batch.columns[order_term.column], order_term,
+                node.required_property_uuids.front(), request.mga_authority,
+                node.memory_bytes_required);
+        if (!request.order_term_binding_receipt) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term receipt admission failed";
+          return step;
+        }
+        request.order_term_binding_evidence_uuid =
+            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorNtile(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -324,7 +340,6 @@ exec::CanonicalPhysicalExecutorRegistration
 MakeLivePeerRankingRegistration(
     exec::ExecutorColumnDescriptor ranking_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string capability_uuid,
     const std::size_t maximum_input_row_count,
@@ -342,8 +357,6 @@ MakeLivePeerRankingRegistration(
   registration.execute =
       [ranking_column = std::move(ranking_column),
        order_term = std::move(order_term),
-       order_term_binding_evidence_uuid =
-           std::move(order_term_binding_evidence_uuid),
        deterministic_order_evidence_uuid =
            std::move(deterministic_order_evidence_uuid),
        maximum_input_row_count, maximum_peer_comparisons, profile,
@@ -398,13 +411,32 @@ MakeLivePeerRankingRegistration(
         request.function_abi_version = 1;
         request.builtin_id = std::string(profile.builtin_id);
         request.function_uuid = std::string(profile.function_uuid);
-        request.order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.maximum_peer_comparisons = maximum_peer_comparisons;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        if (order_term.column >= input_batch.columns.size() ||
+            node.required_property_uuids.size() != 1) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term binding is unresolved";
+          return step;
+        }
+        request.order_term_binding_receipt =
+            exec::CanonicalWindowOrderBindingReceipt::Issue(
+                *execution_dag, node.physical_node_id,
+                input_batch.columns[order_term.column], order_term,
+                node.required_property_uuids.front(), request.mga_authority,
+                node.memory_bytes_required);
+        if (!request.order_term_binding_receipt) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term receipt admission failed";
+          return step;
+        }
+        request.order_term_binding_evidence_uuid =
+            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorPeerRanking(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -469,7 +501,6 @@ MakeLiveNavigationWindowRegistration(
     const std::size_t value_column,
     std::optional<api::EngineTypedValue> nth_value_position_operand,
     std::string window_frame_descriptor_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string frame_property_binding_evidence_uuid,
     std::string capability_uuid,
@@ -492,8 +523,6 @@ MakeLiveNavigationWindowRegistration(
        nth_value_position_operand = std::move(nth_value_position_operand),
        window_frame_descriptor_uuid =
            std::move(window_frame_descriptor_uuid),
-       order_term_binding_evidence_uuid =
-           std::move(order_term_binding_evidence_uuid),
        deterministic_order_evidence_uuid =
            std::move(deterministic_order_evidence_uuid),
        frame_property_binding_evidence_uuid =
@@ -559,8 +588,6 @@ MakeLiveNavigationWindowRegistration(
         request.function_uuid = std::string(profile.function_uuid);
         request.window_frame_descriptor_uuid =
             window_frame_descriptor_uuid;
-        request.order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.frame_property_binding_evidence_uuid =
@@ -571,6 +598,27 @@ MakeLiveNavigationWindowRegistration(
             maximum_effective_row_references;
         request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, *execution_dag);
+        if (order_term.column >= input_batch.columns.size() ||
+            node.required_property_uuids.size() != 1) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term binding is unresolved";
+          return step;
+        }
+        request.order_term_binding_receipt =
+            exec::CanonicalWindowOrderBindingReceipt::Issue(
+                *execution_dag, node.physical_node_id,
+                input_batch.columns[order_term.column], order_term,
+                node.required_property_uuids.front(), request.mga_authority,
+                node.memory_bytes_required);
+        if (!request.order_term_binding_receipt) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term receipt admission failed";
+          return step;
+        }
+        request.order_term_binding_evidence_uuid =
+            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorNavigationWindow(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {
@@ -641,7 +689,6 @@ MakeLiveAggregateWindowRegistration(
     std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
     std::string window_frame_descriptor_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string frame_property_binding_evidence_uuid,
     std::string capability_uuid,
@@ -665,8 +712,6 @@ MakeLiveAggregateWindowRegistration(
        aggregate_descriptor = std::move(aggregate_descriptor),
        window_frame_descriptor_uuid =
            std::move(window_frame_descriptor_uuid),
-       order_term_binding_evidence_uuid =
-           std::move(order_term_binding_evidence_uuid),
        deterministic_order_evidence_uuid =
            std::move(deterministic_order_evidence_uuid),
        frame_property_binding_evidence_uuid =
@@ -724,8 +769,6 @@ MakeLiveAggregateWindowRegistration(
         request.result_column = result_column;
         request.window_frame_descriptor_uuid =
             window_frame_descriptor_uuid;
-        request.order_term_binding_evidence_uuid =
-            order_term_binding_evidence_uuid;
         request.deterministic_order_evidence_uuid =
             deterministic_order_evidence_uuid;
         request.frame_property_binding_evidence_uuid =
@@ -737,6 +780,27 @@ MakeLiveAggregateWindowRegistration(
         request.maximum_transition_count = maximum_transition_count;
         request.mga_authority = BuildCanonicalExecutionMgaAuthority(
             mga_context, *execution_dag);
+        if (order_term.column >= input_batch.columns.size() ||
+            node.required_property_uuids.size() != 1) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term binding is unresolved";
+          return step;
+        }
+        request.order_term_binding_receipt =
+            exec::CanonicalWindowOrderBindingReceipt::Issue(
+                *execution_dag, node.physical_node_id,
+                input_batch.columns[order_term.column], order_term,
+                node.required_property_uuids.front(), request.mga_authority,
+                node.memory_bytes_required);
+        if (!request.order_term_binding_receipt) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-PROPERTY-BINDING";
+          step.diagnostic.detail = "window order-term receipt admission failed";
+          return step;
+        }
+        request.order_term_binding_evidence_uuid =
+            request.order_term_binding_receipt->identity();
         auto window = exec::ExecuteCanonicalDescriptorAggregateWindow(
             request, *execution_dag, input_batch);
         if (!window.diagnostic.ok) {

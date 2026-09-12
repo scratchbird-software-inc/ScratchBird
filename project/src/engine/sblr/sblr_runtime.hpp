@@ -158,6 +158,7 @@ struct SblrExecutionContext {
   std::string application_name;
   std::string security_snapshot_uuid;
   std::vector<std::string> active_savepoint_names;
+  SblrRuntimeDiagnostic savepoint_authority_diagnostic;
   std::shared_ptr<SblrSessionRuntimeState> session_runtime_state =
       std::make_shared<SblrSessionRuntimeState>();
   std::uint64_t backend_process_id = 0;

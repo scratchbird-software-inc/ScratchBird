@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_descriptor.hpp"
+#include "uuid.hpp"
 
 #include <cstdint>
 #include <utility>
@@ -545,6 +546,45 @@ ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
                                   descriptor.stable_name);
   }
 
+  // Catalog references are durable engine authority, not ordinary UUID data.
+  // Validate all supplied binary identities before assembling any descriptor.
+  // Only the default unknown-kind/nil pair denotes an absent optional field;
+  // malformed supplied fields must not disappear behind TypedUuid::valid().
+  const TypedUuid* references[] = {
+      &metadata.descriptor_uuid, &metadata.domain_uuid, &metadata.charset_uuid,
+      &metadata.collation_uuid, &metadata.timezone_uuid,
+      &metadata.element_descriptor_uuid, &metadata.security_policy_uuid};
+  for (const auto* reference : references) {
+    if (reference != &metadata.descriptor_uuid &&
+        reference->kind == scratchbird::core::platform::UuidKind::unknown &&
+        reference->value.is_nil()) {
+      continue;
+    }
+    const auto identity = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+        reference->kind, reference->value);
+    if (!identity.ok()) {
+      ExecutionTypeDescriptorResult refused;
+      refused.status = identity.status;
+      refused.diagnostic = identity.diagnostic;
+      return refused;
+    }
+  }
+  for (const auto& reference : metadata.domain_stack) {
+    if (!reference.valid()) {
+      return DescriptorBuildFailure("SB-EDR-DESCRIPTOR-BAD-DOMAIN-STACK",
+                                    "execution_type_descriptor.bad_domain_stack",
+                                    descriptor.stable_name);
+    }
+    const auto identity = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+        reference.kind, reference.value);
+    if (!identity.ok()) {
+      ExecutionTypeDescriptorResult refused;
+      refused.status = identity.status;
+      refused.diagnostic = identity.diagnostic;
+      return refused;
+    }
+  }
+
   ExecutionTypeDescriptorResult result;
   result.status = DatatypeOkStatus();
   result.descriptor.descriptor_uuid = ToEngineUuid(metadata.descriptor_uuid.value);
@@ -594,11 +634,6 @@ ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
   }
 
   for (const TypedUuid& domain_uuid : metadata.domain_stack) {
-    if (!domain_uuid.valid()) {
-      return DescriptorBuildFailure("SB-EDR-DESCRIPTOR-BAD-DOMAIN-STACK",
-                                    "execution_type_descriptor.bad_domain_stack",
-                                    descriptor.stable_name);
-    }
     result.descriptor.domain_stack.push_back(ToEngineUuid(domain_uuid.value));
   }
   if (!result.descriptor.domain_stack.empty()) {

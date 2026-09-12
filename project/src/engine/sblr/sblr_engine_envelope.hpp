@@ -337,6 +337,8 @@ struct SblrEnvelopeDiagnostic {
   std::string code;
   std::string message;
   bool error = true;
+  std::array<std::uint8_t, 16> occurrence_uuid =
+      scratchbird::core::uuid::NewDiagnosticOccurrenceUuid();
 };
 
 struct SblrEnvelopeValidationResult {

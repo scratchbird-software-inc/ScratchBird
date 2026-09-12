@@ -32,8 +32,8 @@ struct IndexRuntimeEngineRecheckProof {
 };
 
 struct LateMaterializedIndexedRow {
-  std::string row_uuid;
-  std::string version_uuid;
+  internal_api::EngineUuid row_uuid;
+  internal_api::EngineUuid version_uuid;
   std::uint64_t stream_ordinal = 0;
   std::vector<std::string> projected_values;
   bool redacted = false;
@@ -80,8 +80,8 @@ struct CoveringProjectionCell {
 };
 
 struct CoveringProjectionRow {
-  std::string row_uuid;
-  std::string version_uuid;
+  internal_api::EngineUuid row_uuid;
+  internal_api::EngineUuid version_uuid;
   std::uint64_t stream_ordinal = 0;
   std::vector<CoveringProjectionCell> cells;
 };

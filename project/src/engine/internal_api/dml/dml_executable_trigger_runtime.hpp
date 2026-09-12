@@ -184,26 +184,26 @@ inline scratchbird::engine::sblr::SblrExecutionContext TriggerSblrContext(
     const EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.cluster_uuid = context.cluster_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid = context.statement_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.current_role_uuid = context.current_role_uuid.canonical;
-  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_uuid = context.statement_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
   out.statement_timestamp = context.statement_timestamp;
   out.transaction_timestamp = context.transaction_timestamp;
   out.current_timestamp = context.current_timestamp;
   out.current_monotonic_ns = context.current_monotonic_ns;
   out.security_context_present = context.security_context_present;
   out.transaction_context_present =
-      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+      context.local_transaction_id != 0 || !context.transaction_uuid.is_nil();
   out.cluster_authority_available = context.cluster_authority_available;
   out.read_only_mode = context.read_only_mode;
   return out;
@@ -360,7 +360,7 @@ inline std::string ResolveVisibleObjectByPresentedName(const EngineRequestContex
   request.sql_object_reference.object_name = ResolverIdentifierAtom(parts.back());
   const auto resolved = EngineResolveName(request);
   if (!resolved.ok) return {};
-  return resolved.bound_object_identity.object_uuid.canonical;
+  return resolved.bound_object_identity.object_uuid;
 }
 
 inline std::string ResolveVisibleSequenceByPresentedName(const EngineRequestContext& context,
@@ -448,7 +448,7 @@ inline DmlExecutableTriggerRuntimeResult InsertAuditRows(
   if (rows.empty()) return result;
   EngineInsertRowsRequest insert;
   insert.context = context;
-  insert.target_table.uuid.canonical = audit_table_uuid;
+  insert.target_table.uuid = audit_table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(rows);
   insert.require_generated_row_uuid = true;
@@ -498,15 +498,15 @@ inline std::string ActiveTriggerDescriptorCacheKey(
     const std::string& target_table_uuid) {
   std::string key;
   key.reserve(context.database_path.size() + target_table_uuid.size() + 192);
-  key += context.database_uuid.canonical;
+  key += context.database_uuid;
   key.push_back('|');
   key += context.database_path;
   key.push_back('|');
   key += target_table_uuid;
   key.push_back('|');
-  key += context.principal_uuid.canonical;
+  key += context.principal_uuid;
   key.push_back('|');
-  key += context.current_role_uuid.canonical;
+  key += context.current_role_uuid;
   key.push_back('|');
   key += std::to_string(context.catalog_generation_id);
   key.push_back('|');

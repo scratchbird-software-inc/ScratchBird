@@ -40,9 +40,9 @@ opt::NoSqlFamilyStatisticInput ToOptimizerStatistic(
 opt::NoSqlStatisticsAdvisorRequest ToOptimizerRequest(
     const EnginePlanNoSqlStatisticsAdvisorRequest& request) {
   opt::NoSqlStatisticsAdvisorRequest advisor_request;
-  advisor_request.object_uuid = request.target_object.uuid.canonical;
+  advisor_request.object_uuid = request.target_object.uuid;
   if (advisor_request.object_uuid.empty()) {
-    advisor_request.object_uuid = request.bound_object_identity.object_uuid.canonical;
+    advisor_request.object_uuid = request.bound_object_identity.object_uuid;
   }
   advisor_request.stats_epoch = request.stats_epoch;
   advisor_request.required_stats_epoch = request.required_stats_epoch;

@@ -41,22 +41,22 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c, std::string_v
     if (!projection::TypedUuid(value->canonical, &id)) return Error("owner_identity", "MGA.TRANSACTION.STALE");
   if (!c.local_transaction_id || !c.catalog_generation_id || !c.security_epoch ||
       !c.authorization_context.security_context_generation ||
-      c.authorization_context.principal_uuid.canonical != c.principal_uuid.canonical ||
+      c.authorization_context.principal_uuid != c.principal_uuid ||
       c.read_only_mode || c.cluster_transaction_active || c.route_fence_present)
     return Error("owner_generation_or_write_fence", "MGA.TRANSACTION.STALE");
   return Ok();
 }
 auto Owner(const EngineRequestContext& c) {
-  return std::tie(c.database_path, c.database_uuid.canonical, c.session_uuid.canonical,
-      c.principal_uuid.canonical, c.current_role_uuid.canonical, c.transaction_uuid.canonical,
-      c.local_transaction_id, c.statement_receipt_uuid.canonical, c.statement_snapshot_uuid.canonical,
+  return std::tie(c.database_path, c.database_uuid, c.session_uuid,
+      c.principal_uuid, c.current_role_uuid, c.transaction_uuid,
+      c.local_transaction_id, c.statement_receipt_uuid, c.statement_snapshot_uuid,
       c.statement_snapshot_generation, c.snapshot_visible_through_local_transaction_id,
-      c.statement_metadata_snapshot_uuid.canonical, c.statement_metadata_snapshot_visible_through_local_transaction_id,
+      c.statement_metadata_snapshot_uuid, c.statement_metadata_snapshot_visible_through_local_transaction_id,
       c.statement_metadata_snapshot_active_excluded_local_transaction_ids,
       c.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids,
-      c.catalog_generation_id, c.security_epoch, c.authorization_context.authority_uuid.canonical,
+      c.catalog_generation_id, c.security_epoch, c.authorization_context.authority_uuid,
       c.authorization_context.security_context_generation, c.authorization_context.policy_epoch,
-      c.datatype_catalog_snapshot_uuid.canonical, c.datatype_catalog_generation, c.datatype_registry_generation,
+      c.datatype_catalog_snapshot_uuid, c.datatype_catalog_generation, c.datatype_registry_generation,
       c.transaction_isolation_level);
 }
 void Number(std::vector<std::uint8_t>* bytes, std::uint64_t value) {
@@ -86,12 +86,12 @@ EngineApiDiagnostic Project(const EngineRequestContext& context, const std::stri
   const auto loaded = TransactionalRelationStore(context).LoadRelationDescriptor(target);
   if (!loaded.ok) return loaded.diagnostic;
   const auto& relation = loaded.descriptor;
-  if (ValidateMgaRelationStorageDescriptor(relation).error || relation.relation_uuid.canonical != target ||
+  if (ValidateMgaRelationStorageDescriptor(relation).error || relation.relation_uuid != target ||
       relation.storage_profile != "local_mga_rowstore_v1" || relation.relation_kind != "table" ||
       relation.mutation_rule != "copy_on_write") return Error("relation_storage_profile");
   if (!projection::TypedUuid(target, &snapshot->target_relation_uuid) ||
-      !projection::TypedUuid(relation.descriptor_uuid.canonical, &snapshot->relation_descriptor_uuid))
-    return Error("relation_identity", "DATATYPE.DESCRIPTOR_INVALID");
+      !projection::TypedUuid(relation.descriptor_uuid, &snapshot->relation_descriptor_uuid))
+    return Error("relation_identity", "DATATYPE.DESCRIPTOR.INVALID");
   snapshot->target_relation_generation = relation.relation_generation;
   snapshot->relation_descriptor_generation = relation.descriptor_generation;
 
@@ -113,7 +113,7 @@ EngineApiDiagnostic Project(const EngineRequestContext& context, const std::stri
   // normal copy-on-write DML is itself permitted to advance. Descriptor text
   // stays in memory; durable snapshot fields contain hashes and binary UUIDs.
   std::vector<std::uint8_t> shape;
-  if (!Identity(&shape, target) || !Identity(&shape, relation.descriptor_uuid.canonical))
+  if (!Identity(&shape, target) || !Identity(&shape, relation.descriptor_uuid))
     return Error("shape_identity");
   Number(&shape, relation.relation_generation); Number(&shape, relation.descriptor_generation);
   Text(&shape, relation.storage_profile); Text(&shape, relation.mutation_rule);
@@ -122,8 +122,8 @@ EngineApiDiagnostic Project(const EngineRequestContext& context, const std::stri
   Number(&shape, relation.columns.size());
   for (const auto& column : relation.columns) {
     if (column.storage_class != "inline_row_value" || column.overflow_policy != "mga_large_value_locator" ||
-        !Identity(&shape, column.column_uuid.canonical) ||
-        !Identity(&shape, column.value_descriptor.descriptor_uuid.canonical) ||
+        !Identity(&shape, column.column_uuid) ||
+        !Identity(&shape, column.value_descriptor.descriptor_uuid) ||
         !Identity(&shape, column.charset_uuid, true) || !Identity(&shape, column.collation_uuid, true))
       return Error("column_storage_or_identity_profile");
     Number(&shape, column.column_generation); Number(&shape, column.ordinal);

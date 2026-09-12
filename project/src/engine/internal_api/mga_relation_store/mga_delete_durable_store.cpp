@@ -143,10 +143,10 @@ struct MgaDmlDeleteDurableStoreV1::Impl {
   bool Matches(const w::TypedDeleteJournalRecord& value) const {
     return value.descriptor.descriptor_uuid == descriptor_uuid &&
         value.descriptor.descriptor_generation == descriptor_generation &&
-        detail::DmlUpdateDurableTypedUuidText(value.database_uuid) == context.database_uuid.canonical &&
-        detail::DmlUpdateDurableTypedUuidText(value.owning_transaction_uuid) == context.transaction_uuid.canonical &&
+        detail::DmlUpdateDurableTypedUuidText(value.database_uuid) == context.database_uuid &&
+        detail::DmlUpdateDurableTypedUuidText(value.owning_transaction_uuid) == context.transaction_uuid &&
         value.owning_local_transaction_id == context.local_transaction_id &&
-        detail::DmlUpdateDurableTypedUuidText(value.authenticated_statement_receipt_uuid) == context.statement_receipt_uuid.canonical;
+        detail::DmlUpdateDurableTypedUuidText(value.authenticated_statement_receipt_uuid) == context.statement_receipt_uuid;
   }
   bool ActiveInventory() const {
     const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
@@ -154,7 +154,7 @@ struct MgaDmlDeleteDurableStoreV1::Impl {
     const auto transaction = mga::LookupLocalTransaction(inventory.snapshot->inventory,
         mga::MakeLocalTransactionId(context.local_transaction_id));
     w::TypedUpdateUuid transaction_uuid{};
-    if (!detail::DmlUpdateDurableTypedUuid(context.transaction_uuid.canonical, &transaction_uuid)) return false;
+    if (!detail::DmlUpdateDurableTypedUuid(context.transaction_uuid, &transaction_uuid)) return false;
     return transaction.ok() && transaction.entry.state == mga::TransactionState::active &&
         std::equal(transaction_uuid.begin(), transaction_uuid.end(),
                    transaction.entry.identity.transaction_uuid.value.bytes.begin()) &&
@@ -199,7 +199,7 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   if (!inventory.ok()) return refuse("owning_database_inventory_required");
   const auto owner = mga::LookupLocalTransaction(inventory.snapshot->inventory,
       mga::MakeLocalTransactionId(context.local_transaction_id));
-  if (!owner.ok() || !detail::DmlUpdateDurableTypedUuid(context.transaction_uuid.canonical, &checked_uuid) ||
+  if (!owner.ok() || !detail::DmlUpdateDurableTypedUuid(context.transaction_uuid, &checked_uuid) ||
       !std::equal(checked_uuid.begin(), checked_uuid.end(), owner.entry.identity.transaction_uuid.value.bytes.begin()) ||
       !scratchbird::storage::database::RevalidateLocalTransactionInventorySnapshot(*inventory.snapshot).ok())
     return refuse("owning_transaction_inventory_required");

@@ -77,14 +77,14 @@ std::string ChannelName(const EngineApiRequest& request) {
 std::string ChannelUuid(const EngineApiRequest& request) {
   const auto from_option = OptionValue(request, "channel_uuid:");
   if (!from_option.empty()) { return from_option; }
-  if (request.target_object.object_kind == "event_channel" && !request.target_object.uuid.canonical.empty()) {
-    return request.target_object.uuid.canonical;
+  if (request.target_object.object_kind == "event_channel" && !request.target_object.uuid.is_nil()) {
+    return request.target_object.uuid;
   }
-  if (!request.target_object.uuid.canonical.empty() && request.operation_id.find("event.channel") == 0) {
-    return request.target_object.uuid.canonical;
+  if (!request.target_object.uuid.is_nil() && request.operation_id.find("event.channel") == 0) {
+    return request.target_object.uuid;
   }
   for (const auto& object : request.related_objects) {
-    if (object.object_kind == "event_channel" && !object.uuid.canonical.empty()) { return object.uuid.canonical; }
+    if (object.object_kind == "event_channel" && !object.uuid.is_nil()) { return object.uuid; }
   }
   return {};
 }
@@ -92,8 +92,8 @@ std::string ChannelUuid(const EngineApiRequest& request) {
 std::string SubscriptionUuid(const EngineApiRequest& request) {
   const auto from_option = OptionValue(request, "subscription_uuid:");
   if (!from_option.empty()) { return from_option; }
-  if (request.target_object.object_kind == "event_subscription" && !request.target_object.uuid.canonical.empty()) {
-    return request.target_object.uuid.canonical;
+  if (request.target_object.object_kind == "event_subscription" && !request.target_object.uuid.is_nil()) {
+    return request.target_object.uuid;
   }
   return GenerateCrudEngineUuid("event_subscription");
 }
@@ -101,8 +101,8 @@ std::string SubscriptionUuid(const EngineApiRequest& request) {
 std::string PayloadDescriptorUuid(const EngineApiRequest& request) {
   const auto from_option = OptionValue(request, "payload_descriptor_uuid:");
   if (!from_option.empty()) { return from_option; }
-  if (!request.descriptors.empty() && !request.descriptors.front().descriptor_uuid.canonical.empty()) {
-    return request.descriptors.front().descriptor_uuid.canonical;
+  if (!request.descriptors.empty() && !request.descriptors.front().descriptor_uuid.is_nil()) {
+    return request.descriptors.front().descriptor_uuid;
   }
   return "event_payload_descriptor:text.v1";
 }
@@ -468,8 +468,8 @@ EngineListenNotificationResult EngineListenNotification(const EngineListenNotifi
   if (status.error) { return MakeCrudDiagnosticResult<EngineListenNotificationResult>(request.context, operation_id, status); }
   EventSubscriptionShape subscription;
   subscription.subscription_uuid = SubscriptionUuid(request);
-  subscription.session_uuid = request.context.session_uuid.canonical.empty() ? OptionValue(request, "session_uuid:") : request.context.session_uuid.canonical;
-  subscription.principal_uuid = request.context.principal_uuid.canonical.empty() ? OptionValue(request, "principal_uuid:") : request.context.principal_uuid.canonical;
+  subscription.session_uuid = request.context.session_uuid.is_nil() ? OptionValue(request, "session_uuid:") : request.context.session_uuid;
+  subscription.principal_uuid = request.context.principal_uuid.is_nil() ? OptionValue(request, "principal_uuid:") : request.context.principal_uuid;
   subscription.channel_uuid = channel_uuid;
   subscription.delivery_profile = OptionValue(request, "delivery_profile:").empty() ? "ephemeral_session" : OptionValue(request, "delivery_profile:");
   subscription.state = "active";
@@ -498,8 +498,8 @@ EngineUnlistenNotificationResult EngineUnlistenNotification(const EngineUnlisten
   if (status.error) { return MakeCrudDiagnosticResult<EngineUnlistenNotificationResult>(request.context, operation_id, status); }
   EventSubscriptionShape subscription;
   subscription.subscription_uuid = SubscriptionUuid(request);
-  subscription.session_uuid = request.context.session_uuid.canonical.empty() ? OptionValue(request, "session_uuid:") : request.context.session_uuid.canonical;
-  subscription.principal_uuid = request.context.principal_uuid.canonical;
+  subscription.session_uuid = request.context.session_uuid.is_nil() ? OptionValue(request, "session_uuid:") : request.context.session_uuid;
+  subscription.principal_uuid = request.context.principal_uuid;
   subscription.channel_uuid = channel_uuid;
   subscription.delivery_profile = "ephemeral_session";
   subscription.state = "inactive";
@@ -543,7 +543,7 @@ EngineNotifyEventChannelResult EngineNotifyEventChannel(const EngineNotifyEventC
   publication.payload = payload;
   publication.redaction_state = OptionBool(request, "redact_payload:", false) ? "redacted" : "clean";
   publication.source_object_uuid = OptionValue(request, "source_object_uuid:");
-  if (publication.source_object_uuid.empty()) { publication.source_object_uuid = request.target_object.uuid.canonical; }
+  if (publication.source_object_uuid.empty()) { publication.source_object_uuid = request.target_object.uuid; }
   publication.local_transaction_id = request.context.local_transaction_id;
   publication.state = "pending_commit";
   status = AppendEventRecord(request.context, "PUBLICATION", publication.event_uuid,
@@ -568,7 +568,7 @@ EngineListEventSubscriptionsResult EngineListEventSubscriptions(const EngineList
   const auto state = LoadEventState(request.context);
   auto result = MakeCrudSuccessResult<EngineListEventSubscriptionsResult>(request.context, operation_id);
   for (const auto& [key, subscription] : VisibleSubscriptions(state, request.context)) {
-    if (!request.context.session_uuid.canonical.empty() && subscription.session_uuid != request.context.session_uuid.canonical &&
+    if (!request.context.session_uuid.is_nil() && subscription.session_uuid != request.context.session_uuid &&
         !OptionBool(request, "admin_scope:", false)) {
       continue;
     }
@@ -590,7 +590,7 @@ EnginePollEventDeliveryResult EnginePollEventDelivery(const EnginePollEventDeliv
   const auto acknowledged = VisibleAcknowledgementKeys(state, request.context);
   auto result = MakeCrudSuccessResult<EnginePollEventDeliveryResult>(request.context, operation_id);
   for (const auto& [key, subscription] : subscriptions) {
-    if (!request.context.session_uuid.canonical.empty() && subscription.session_uuid != request.context.session_uuid.canonical) { continue; }
+    if (!request.context.session_uuid.is_nil() && subscription.session_uuid != request.context.session_uuid) { continue; }
     for (auto publication : VisiblePublications(state, request.context, subscription.channel_uuid)) {
       const std::string ack_key = subscription.session_uuid + "|" + subscription.subscription_uuid + "|" + publication.event_uuid;
       if (acknowledged.count(ack_key) != 0) { continue; }
@@ -621,8 +621,8 @@ EngineAcknowledgeEventDeliveryResult EngineAcknowledgeEventDelivery(const Engine
   std::string channel_uuid;
   for (const auto& [key, subscription] : VisibleSubscriptions(state, request.context)) {
     if (subscription.subscription_uuid == subscription_uuid &&
-        (request.context.session_uuid.canonical.empty() ||
-         subscription.session_uuid == request.context.session_uuid.canonical)) {
+        (request.context.session_uuid.is_nil() ||
+         subscription.session_uuid == request.context.session_uuid)) {
       subscription_found = true;
       channel_uuid = subscription.channel_uuid;
       break;
@@ -646,7 +646,7 @@ EngineAcknowledgeEventDeliveryResult EngineAcknowledgeEventDelivery(const Engine
   }
   const auto acknowledgement_uuid = GenerateCrudEngineUuid("event_ack");
   status = AppendEventRecord(request.context, "ACK", acknowledgement_uuid,
-                             {{"session_uuid", request.context.session_uuid.canonical},
+                             {{"session_uuid", request.context.session_uuid},
                               {"subscription_uuid", subscription_uuid},
                               {"event_uuid", event_uuid},
                               {"state", "acknowledged"}});
@@ -666,7 +666,7 @@ EngineUnlistenSessionNotificationsResult EngineUnlistenSessionNotifications(cons
   if (status.error) { return MakeCrudDiagnosticResult<EngineUnlistenSessionNotificationsResult>(request.context, operation_id, status); }
   const auto state = LoadEventState(request.context);
   auto result = MakeCrudSuccessResult<EngineUnlistenSessionNotificationsResult>(request.context, operation_id);
-  const auto session_uuid = request.context.session_uuid.canonical.empty() ? OptionValue(request, "session_uuid:") : request.context.session_uuid.canonical;
+  const auto session_uuid = request.context.session_uuid.is_nil() ? OptionValue(request, "session_uuid:") : request.context.session_uuid;
   for (const auto& [key, subscription] : VisibleSubscriptions(state, request.context)) {
     if (subscription.session_uuid != session_uuid) { continue; }
     status = AppendEventRecord(request.context, "SUBSCRIPTION", subscription.subscription_uuid,

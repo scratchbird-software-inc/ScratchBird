@@ -32,36 +32,6 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
-bool CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
-    const CanonicalExecutionMgaAuthority& authority) {
-  const CanonicalExecutionMgaAuthority empty;
-  const auto exact_empty_string = [](const std::string& value,
-                                     const std::string& baseline) {
-    return value.empty() && value.capacity() == baseline.capacity();
-  };
-  const auto& context = authority.statement_context;
-  const auto& empty_context = empty.statement_context;
-  return authority.origin == empty.origin && !authority.resolve_current &&
-         PhysicalMgaStatementContextEqual(context, empty_context) &&
-         exact_empty_string(context.statement_uuid,
-                            empty_context.statement_uuid) &&
-         exact_empty_string(context.owning_transaction_uuid,
-                            empty_context.owning_transaction_uuid) &&
-         exact_empty_string(context.statement_snapshot_uuid,
-                            empty_context.statement_snapshot_uuid) &&
-         exact_empty_string(context.statement_metadata_snapshot_uuid,
-                            empty_context.statement_metadata_snapshot_uuid) &&
-         exact_empty_string(context.snapshot_kind,
-                            empty_context.snapshot_kind) &&
-         exact_empty_string(context.statement_timestamp,
-                            empty_context.statement_timestamp) &&
-         context.active_excluded_local_transaction_ids.empty() &&
-         context.active_excluded_local_transaction_ids.capacity() ==
-             empty_context.active_excluded_local_transaction_ids.capacity() &&
-         context.in_doubt_excluded_local_transaction_ids.empty() &&
-         context.in_doubt_excluded_local_transaction_ids.capacity() ==
-             empty_context.in_doubt_excluded_local_transaction_ids.capacity();
-}
 
 bool FilterBatchPayloadBytes(const DescriptorBatch& batch,
                              std::size_t* bytes) {

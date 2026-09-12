@@ -44,22 +44,21 @@ void BindContractOnlyCanonicalPersistedRowDescriptorAuthorityV1(
     if (bound.datatype_identity_authoritative) return std::nullopt;
     if (bound_descriptor_id == 0 ||
         bound_descriptor_id != bound.descriptor_id ||
-        bound.descriptor_uuid.empty() || bound.type_uuid.empty() ||
+        bound.descriptor_uuid.is_nil() || bound.type_uuid.is_nil() ||
         effective_nullability == api::RelationalNullability::kUnknown ||
-        persisted.descriptor_uuid.canonical != bound.descriptor_uuid ||
+        persisted.descriptor_uuid != bound.descriptor_uuid ||
+        persisted.type_uuid != bound.type_uuid ||
+        persisted.collation_uuid != bound.collation_uuid.value_or(api::EngineUuid{}) ||
         persisted.descriptor_kind != "scalar" ||
         persisted.canonical_type_name.empty() ||
         persisted.canonical_type_name == "unknown") {
       return false;
     }
     std::string expected =
-        "type_uuid=" + bound.type_uuid + ";nullability=" +
+        std::string("nullability=") +
         (effective_nullability == api::RelationalNullability::kNullable
              ? "nullable"
              : "non_null");
-    if (bound.collation_uuid.has_value()) {
-      expected += ";collation_uuid=" + *bound.collation_uuid;
-    }
     if (bound.timezone_profile_id.has_value()) {
       expected += ";timezone_profile_id=" + *bound.timezone_profile_id;
     }
@@ -564,10 +563,7 @@ std::string TypedUuidText(const scratchbird::core::platform::TypedUuid& uuid) {
 
 bool SameDescriptor(const api::EngineDescriptor& left,
                     const api::EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool ExactCanonicalBooleanRelationalDescriptorV1(
@@ -654,7 +650,7 @@ bool BuildExactCanonicalBooleanRuntimeDescriptorV1(
                                                    effective_nullability)) {
     return false;
   }
-  descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
+  descriptor->descriptor_uuid = source.descriptor_uuid;
   descriptor->descriptor_kind = "scalar";
   descriptor->canonical_type_name = "boolean";
   descriptor->encoded_descriptor =
@@ -697,7 +693,7 @@ bool SamePersistedRowDescriptor(
   }
   if (bound.descriptor_uuid == bound.type_uuid) {
     api::EngineDescriptor expected;
-    return actual.descriptor_uuid.canonical == bound.descriptor_uuid &&
+    return actual.descriptor_uuid == bound.descriptor_uuid &&
            BuildExactCanonicalBooleanRuntimeDescriptorV1(
                bound, expected_nullability, &expected) &&
            SameDescriptor(expected, actual);
@@ -734,7 +730,7 @@ bool SamePersistedRowDescriptor(
         authority_refusal_detail);
   }
 
-  if (actual.descriptor_uuid.canonical != bound.descriptor_uuid) return false;
+  if (actual.descriptor_uuid != bound.descriptor_uuid) return false;
 
   static const auto canonical_type_name_by_type_uuid = [] {
     std::unordered_map<std::string, std::string> names;
@@ -952,7 +948,7 @@ bool SamePersistedRowDescriptor(
       codec_uuid_seen = true;
     } else if (key == "column_uuid") {
       if (column_uuid_seen || value != bound.descriptor_uuid ||
-          value != actual.descriptor_uuid.canonical) {
+          value != actual.descriptor_uuid) {
         return false;
       }
       column_uuid_seen = true;
@@ -1067,7 +1063,7 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
   const auto descriptor_dynamic_bytes = [&](const api::EngineDescriptor& d,
                                             std::uint64_t* bytes) {
     *bytes = 0;
-    return account_string(bytes, d.descriptor_uuid.canonical) &&
+    return account_string(bytes, d.descriptor_uuid) &&
            account_string(bytes, d.descriptor_kind) &&
            account_string(bytes, d.canonical_type_name) &&
            account_string(bytes, d.encoded_descriptor);
@@ -1138,7 +1134,8 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
              BuildExactCanonicalBooleanRuntimeDescriptorV1(
                  source, effective_nullability, descriptor);
     }
-    descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
+    descriptor->descriptor_uuid = source.descriptor_uuid;
+    descriptor->type_uuid = source.type_uuid;
     descriptor->descriptor_kind = "scalar";
     descriptor->canonical_type_name = type_name;
     const char* nullability = "unknown";
@@ -1149,11 +1146,8 @@ BoundCanonicalRowPredicateLogicalMemoryV1(
       nullability = "nullable";
     }
     descriptor->encoded_descriptor =
-        "type_uuid=" + source.type_uuid + ";nullability=" + nullability;
-    if (source.collation_uuid.has_value()) {
-      descriptor->encoded_descriptor +=
-          ";collation_uuid=" + *source.collation_uuid;
-    }
+        std::string("nullability=") + nullability;
+    descriptor->collation_uuid = source.collation_uuid.value_or(api::EngineUuid{});
     if (source.timezone_profile_id.has_value()) {
       descriptor->encoded_descriptor +=
           ";timezone_profile_id=" + *source.timezone_profile_id;
@@ -2159,7 +2153,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
           (api::QowCanonicalDescriptorIdentityV1(value->descriptor) ? "1"
                                                                     : "0") +
           ":uuid=" +
-          (value->descriptor.descriptor_uuid.canonical ==
+          (value->descriptor.descriptor_uuid ==
                    descriptor->second->descriptor_uuid
                ? "1"
                : "0") +
@@ -3028,9 +3022,10 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
         "scalar descriptor/type alias is not exact canonical boolean authority";
     return false;
   }
-  descriptor->descriptor_uuid.canonical = source.descriptor_uuid;
+  descriptor->descriptor_uuid = source.descriptor_uuid;
   descriptor->descriptor_kind = "scalar";
   descriptor->canonical_type_name = std::string(type_name);
+  descriptor->type_uuid = source.type_uuid;
   const char* nullability = "unknown";
   if (source.nullability == api::RelationalNullability::kNonNull) {
     nullability = "non_null";
@@ -3038,10 +3033,8 @@ bool CanonicalRelationalExpressionRuntime::BuildDescriptor(
     nullability = "nullable";
   }
   descriptor->encoded_descriptor =
-      "type_uuid=" + source.type_uuid + ";nullability=" + nullability;
-  if (source.collation_uuid.has_value()) {
-    descriptor->encoded_descriptor += ";collation_uuid=" + *source.collation_uuid;
-  }
+      std::string("nullability=") + nullability;
+  descriptor->collation_uuid = source.collation_uuid.value_or(api::EngineUuid{});
   if (source.timezone_profile_id.has_value()) {
     descriptor->encoded_descriptor +=
         ";timezone_profile_id=" + *source.timezone_profile_id;
@@ -3348,7 +3341,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
       const auto digest=scratchbird::core::hash::ComputeSha256Digest(
           typed.canonical_value_bytes);
       if(typed.value_state!="value"||typed.descriptor_generation==0||
-         typed.descriptor_uuid!=result_descriptor.descriptor_uuid.canonical||
+         typed.descriptor_uuid!=result_descriptor.descriptor_uuid||
          !digest.ok()||digest.digest!=typed.canonical_value_sha256){
         *refusal_detail="typed_value_v1 descriptor, state, bytes, or SHA differs";
         return false;
@@ -3410,7 +3403,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
         typed.canonical_value_bytes);
     if ((typed.value_state != "value" && typed.value_state != "null") ||
         typed.descriptor_generation == 0 ||
-        typed.descriptor_uuid != result_descriptor.descriptor_uuid.canonical ||
+        typed.descriptor_uuid != result_descriptor.descriptor_uuid ||
         !digest.ok() || digest.digest != typed.canonical_value_sha256 ||
         (typed.value_state == "value" &&
          typed.canonical_value_bytes.size() != 8) ||

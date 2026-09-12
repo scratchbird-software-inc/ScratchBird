@@ -32,10 +32,10 @@ std::string PublicDisplayNameForObject(const EngineApiRequest& request,
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_CATALOG_LOOKUP_API_BEHAVIOR
 EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& request) {
-  if (request.target_object.uuid.canonical.empty() && request.localized_names.empty()) {
+  if (request.target_object.uuid.is_nil() && request.localized_names.empty()) {
     return MakeApiBehaviorDiagnostic<EngineLookupObjectResult>(request.context, "catalog.lookup_object", MakeInvalidRequestDiagnostic("catalog.lookup_object", "target_object_uuid_required"));
   }
-  if (!request.localized_names.empty() && request.target_object.uuid.canonical.empty()) {
+  if (!request.localized_names.empty() && request.target_object.uuid.is_nil()) {
     const auto resolved = ResolveNameRegistryPublic(request, "schema");
     if (!resolved.ok) {
       return MakeApiBehaviorDiagnostic<EngineLookupObjectResult>(request.context, "catalog.lookup_object", resolved.diagnostic);
@@ -48,7 +48,7 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
     }
     if (resolved.matches.size() == 1) {
       auto result = MakeApiBehaviorSuccess<EngineLookupObjectResult>(request.context, "catalog.lookup_object");
-      result.primary_object.uuid.canonical = resolved.matches.front().object_uuid;
+      result.primary_object.uuid = resolved.matches.front().object_uuid;
       result.primary_object.object_kind = "schema";
       AddApiBehaviorRow(&result, {{"object_uuid", resolved.matches.front().object_uuid},
                                   {"object_kind", "schema"},
@@ -58,12 +58,15 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
       return result;
     }
   }
-  if (const auto schema = FindVisibleSchemaTreeRecord(request.context,
-                                                     request.target_object.uuid.canonical,
-                                                     request.context.local_transaction_id)) {
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schema = FindVisibleSchemaTreeRecord(request.context, request.target_object.uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineLookupObjectResult>(
+      request.context, "catalog.lookup_object", schema_diagnostic);
+  if (schema) {
     const std::string display_name = PublicDisplayNameForObject(request, schema->schema_uuid, "schema");
     auto result = MakeApiBehaviorSuccess<EngineLookupObjectResult>(request.context, "catalog.lookup_object");
-    result.primary_object.uuid.canonical = schema->schema_uuid;
+    result.primary_object.uuid = schema->schema_uuid;
     result.primary_object.object_kind = "schema";
     AddApiBehaviorRow(&result, {{"object_uuid", schema->schema_uuid},
                                 {"object_kind", "schema"},
@@ -71,20 +74,20 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
                                 {"payload", schema->payload}});
     return result;
   }
-  const auto record = FindVisibleApiBehaviorRecord(request.context, request.target_object.uuid.canonical, request.context.local_transaction_id);
+  const auto record = FindVisibleApiBehaviorRecord(request.context, request.target_object.uuid, request.context.local_transaction_id);
   auto result = MakeApiBehaviorSuccess<EngineLookupObjectResult>(request.context, "catalog.lookup_object");
   if (record) {
     const std::string display_name = PublicDisplayNameForObject(request, record->object_uuid, record->object_kind);
-    result.primary_object.uuid.canonical = record->object_uuid;
+    result.primary_object.uuid = record->object_uuid;
     result.primary_object.object_kind = record->object_kind;
     AddApiBehaviorRow(&result, {{"object_uuid", record->object_uuid}, {"object_kind", record->object_kind}, {"name", display_name}});
     return result;
   }
   const auto crud = LoadCrudState(request.context);
   if (crud.ok) {
-    if (const auto table = FindVisibleCrudTable(crud.state, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+    if (const auto table = FindVisibleCrudTable(crud.state, request.target_object.uuid, request.context.local_transaction_id)) {
       const std::string display_name = PublicDisplayNameForObject(request, table->table_uuid, "table");
-      result.primary_object.uuid.canonical = table->table_uuid;
+      result.primary_object.uuid = table->table_uuid;
       result.primary_object.object_kind = "table";
       AddApiBehaviorRow(&result, {{"object_uuid", table->table_uuid}, {"object_kind", "table"}, {"name", display_name}});
       return result;
@@ -93,9 +96,9 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
   const auto mga_relations = LoadMgaRelationStoreState(request.context);
   if (mga_relations.ok) {
     const RelationReadSnapshot mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
-    if (const auto table = FindVisibleCrudTable(mga_crud, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+    if (const auto table = FindVisibleCrudTable(mga_crud, request.target_object.uuid, request.context.local_transaction_id)) {
       const std::string display_name = PublicDisplayNameForObject(request, table->table_uuid, "table");
-      result.primary_object.uuid.canonical = table->table_uuid;
+      result.primary_object.uuid = table->table_uuid;
       result.primary_object.object_kind = "table";
       AddApiBehaviorRow(&result, {{"object_uuid", table->table_uuid},
                                   {"object_kind", "table"},
@@ -108,9 +111,9 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
         continue;
       }
       for (const auto& index : VisibleCrudIndexesForTable(mga_crud, table.table_uuid, request.context.local_transaction_id)) {
-        if (index.index_uuid == request.target_object.uuid.canonical) {
+        if (index.index_uuid == request.target_object.uuid) {
           const std::string display_name = PublicDisplayNameForObject(request, index.index_uuid, "index");
-          result.primary_object.uuid.canonical = index.index_uuid;
+          result.primary_object.uuid = index.index_uuid;
           result.primary_object.object_kind = "index";
           AddApiBehaviorRow(&result, {{"object_uuid", index.index_uuid},
                                       {"object_kind", "index"},
@@ -121,9 +124,9 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
       }
     }
   }
-  if (const auto domain = FindVisibleDomain(request.context, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+  if (const auto domain = FindVisibleDomain(request.context, request.target_object.uuid, request.context.local_transaction_id)) {
     const std::string display_name = PublicDisplayNameForObject(request, domain->domain_uuid, "domain");
-    result.primary_object.uuid.canonical = domain->domain_uuid;
+    result.primary_object.uuid = domain->domain_uuid;
     result.primary_object.object_kind = "domain";
     AddApiBehaviorRow(&result, {{"object_uuid", domain->domain_uuid}, {"object_kind", "domain"}, {"name", display_name}});
     return result;
@@ -136,9 +139,9 @@ EngineGetDependenciesResult EngineGetDependencies(const EngineGetDependenciesReq
   const auto catalog_objects = LoadCatalogObjectLifecycleState(request.context);
   if (catalog_objects.ok) {
     for (const auto& dependency : catalog_objects.state.dependencies) {
-      if (!request.target_object.uuid.canonical.empty() &&
-          dependency.source_uuid != request.target_object.uuid.canonical &&
-          dependency.dependency_uuid != request.target_object.uuid.canonical) {
+      if (!request.target_object.uuid.is_nil() &&
+          dependency.source_uuid != request.target_object.uuid &&
+          dependency.dependency_uuid != request.target_object.uuid) {
         continue;
       }
       AddApiBehaviorRow(&result, {{"source_uuid", dependency.source_uuid},
@@ -147,11 +150,15 @@ EngineGetDependenciesResult EngineGetDependencies(const EngineGetDependenciesReq
                                   {"source_kind", dependency.source_kind}});
     }
   }
-  if (request.target_object.object_kind == "schema" && !request.target_object.uuid.canonical.empty()) {
-    for (const auto& schema : VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id)) {
-      if (schema.parent_schema_uuid == request.target_object.uuid.canonical) {
+  if (request.target_object.object_kind == "schema" && !request.target_object.uuid.is_nil()) {
+    EngineApiDiagnostic schema_diagnostic;
+    const auto schemas = VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id, schema_diagnostic);
+    if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineGetDependenciesResult>(
+        request.context, "catalog.get_dependencies", schema_diagnostic);
+    for (const auto& schema : schemas) {
+      if (schema.parent_schema_uuid == request.target_object.uuid) {
         const std::string display_name = PublicDisplayNameForObject(request, schema.schema_uuid, "schema");
-        AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid.canonical},
+        AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid},
                                     {"dependency_uuid", schema.schema_uuid},
                                     {"dependency_kind", "child_schema"},
                                     {"name", display_name}});
@@ -161,9 +168,9 @@ EngineGetDependenciesResult EngineGetDependencies(const EngineGetDependenciesReq
     if (domains.ok) {
       for (const auto& domain : domains.domains) {
         const auto visible = FindVisibleDomain(request.context, domain.domain_uuid, request.context.local_transaction_id);
-        if (visible && visible->schema_uuid == request.target_object.uuid.canonical) {
+        if (visible && visible->schema_uuid == request.target_object.uuid) {
           const std::string display_name = PublicDisplayNameForObject(request, visible->domain_uuid, "domain");
-          AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid.canonical},
+          AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid},
                                       {"dependency_uuid", visible->domain_uuid},
                                       {"dependency_kind", "domain"},
                                       {"name", display_name}});
@@ -172,7 +179,7 @@ EngineGetDependenciesResult EngineGetDependencies(const EngineGetDependenciesReq
     }
   }
   for (const auto& object : request.related_objects) {
-    AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid.canonical}, {"dependency_uuid", object.uuid.canonical}, {"dependency_kind", object.object_kind}});
+    AddApiBehaviorRow(&result, {{"source_uuid", request.target_object.uuid}, {"dependency_uuid", object.uuid}, {"dependency_kind", object.object_kind}});
   }
   AddApiBehaviorEvidence(&result, "dependency_scan", std::to_string(request.related_objects.size()));
   return result;

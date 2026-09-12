@@ -47,7 +47,7 @@ std::string StableDigest(const std::vector<std::string>& parts) {
 }
 
 std::string DescriptorText(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid.canonical + ":" + descriptor.descriptor_kind + ":" +
+  return descriptor.descriptor_uuid + ":" + descriptor.descriptor_kind + ":" +
          descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
 }
 
@@ -149,7 +149,7 @@ std::string CatalogPinnedDescriptorSetDigest(const std::vector<EngineDescriptor>
     parts.push_back("descriptor:" + DescriptorText(descriptor));
   }
   for (const auto& column : columns) {
-    parts.push_back("column:" + column.requested_column_uuid.canonical + ":" +
+    parts.push_back("column:" + column.requested_column_uuid + ":" +
                     std::to_string(column.ordinal) + ":" +
                     (column.nullable ? "nullable" : "required") + ":" +
                     DescriptorText(column.descriptor));

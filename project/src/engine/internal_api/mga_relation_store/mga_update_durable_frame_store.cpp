@@ -214,11 +214,11 @@ bool DmlUpdateDurableIdentityMatchesContext(
     const MgaDmlUpdateDurableOperationIdentityV1& identity) {
   return !context.database_path.empty() &&
          DmlUpdateDurableIdentityValid(identity) &&
-         context.database_uuid.canonical == identity.database_uuid &&
-         context.transaction_uuid.canonical ==
+         context.database_uuid == identity.database_uuid &&
+         context.transaction_uuid ==
              identity.owning_transaction_uuid &&
          context.local_transaction_id == identity.owning_local_transaction_id &&
-         context.statement_receipt_uuid.canonical ==
+         context.statement_receipt_uuid ==
              identity.authenticated_statement_receipt_uuid;
 }
 

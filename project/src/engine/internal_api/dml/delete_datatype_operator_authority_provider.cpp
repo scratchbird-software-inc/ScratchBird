@@ -35,7 +35,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context, std::st
       context.local_transaction_id == 0 || !context.statement_snapshot_generation ||
       !context.catalog_generation_id || !context.datatype_catalog_generation ||
       !context.datatype_registry_generation || !context.authorization_context.security_context_generation ||
-      context.authorization_context.principal_uuid.canonical != context.principal_uuid.canonical)
+      context.authorization_context.principal_uuid != context.principal_uuid)
     return Error("MGA.TRANSACTION.STALE", "context_generation");
   wire::TypedUpdateUuid binary{};
   for (const auto* id : {&context.database_uuid, &context.session_uuid, &context.principal_uuid,
@@ -47,13 +47,13 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context, std::st
   return Ok();
 }
 auto OwnerKey(const EngineRequestContext& c) {
-  return std::tie(c.database_path, c.database_uuid.canonical, c.session_uuid.canonical,
-      c.principal_uuid.canonical, c.transaction_uuid.canonical, c.local_transaction_id,
-      c.statement_receipt_uuid.canonical, c.statement_snapshot_uuid.canonical,
-      c.statement_snapshot_generation, c.statement_metadata_snapshot_uuid.canonical,
-      c.catalog_generation_id, c.datatype_catalog_snapshot_uuid.canonical,
+  return std::tie(c.database_path, c.database_uuid, c.session_uuid,
+      c.principal_uuid, c.transaction_uuid, c.local_transaction_id,
+      c.statement_receipt_uuid, c.statement_snapshot_uuid,
+      c.statement_snapshot_generation, c.statement_metadata_snapshot_uuid,
+      c.catalog_generation_id, c.datatype_catalog_snapshot_uuid,
       c.datatype_catalog_generation, c.datatype_registry_generation,
-      c.authorization_context.authority_uuid.canonical,
+      c.authorization_context.authority_uuid,
       c.authorization_context.security_context_generation, c.security_epoch);
 }
 EngineDmlDeleteDatatypeAuthorityResultV1 Project(
@@ -64,7 +64,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
     result.diagnostic = Error(std::move(code), std::move(field)); return result;
   };
   const auto same_uuid = [](const wire::TypedUpdateUuid& binary, const EngineUuid& text) {
-    return projection::UuidText(binary) == text.canonical;
+    return projection::UuidText(binary) == text;
   };
   if (!same_uuid(descriptor.authenticated_statement_receipt_uuid, context.statement_receipt_uuid) ||
       !same_uuid(descriptor.owning_transaction_uuid, context.transaction_uuid) ||
@@ -87,7 +87,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
         node.output_type_uuid, node.output_type_generation, node.output_codec_id,
         node.output_codec_version, node.output_codec_generation}, &references);
   if (references.empty() || references.size() > 2)
-    return refuse("DATATYPE.DESCRIPTOR_INVALID", "predicate_datatype_count");
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", "predicate_datatype_count");
   auto& datatypes = result.datatypes;
   datatypes.identity.vector_uuid = wire::kTypedUpdateDatatypeSnapshotUuid;
   datatypes.identity.vector_generation = descriptor.datatype_registry_generation;
@@ -97,7 +97,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
     wire::TypedUpdateDatatypeAuthorityRecord row;
     if (!projection::BuildDatatypeRecord(context, reference, &row) ||
         row.datatype_identity_code == wire::TypedUpdateDatatypeIdentityCode::text_v2)
-      return refuse("DATATYPE.DESCRIPTOR_INVALID", "fixed_width_live_registry_row_required");
+      return refuse("DATATYPE.DESCRIPTOR.INVALID", "fixed_width_live_registry_row_required");
     datatypes.records.push_back(std::move(row));
   }
   std::sort(datatypes.records.begin(), datatypes.records.end(), projection::DatatypeRowLess);
@@ -111,7 +111,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
   if (predicate.records.size() == 3) {
     wire::TypedUpdateBuiltinOperatorAuthorityRecord row;
     if (!projection::BuildOperatorRecord(descriptor, predicate, &row))
-      return refuse("DATATYPE.DESCRIPTOR_INVALID", "live_equality_operator_required");
+      return refuse("DATATYPE.DESCRIPTOR.INVALID", "live_equality_operator_required");
     operators.records.push_back(std::move(row));
   }
   wire::TypedUpdateCarrierError shared;
@@ -122,7 +122,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
       !wire::EncodeTypedUpdateBuiltinOperatorAuthorityVector(operators, &bytes, &shared) ||
       !wire::DecodeAndValidateTypedUpdateBuiltinOperatorAuthorityVector(bytes, &operators, &shared) ||
       !wire::ValidateTypedDeleteDatatypeOperatorAuthority(descriptor, predicate, datatypes, operators, &error))
-    return refuse("DATATYPE.DESCRIPTOR_INVALID", error.field.empty() ? shared.field : error.field);
+    return refuse("DATATYPE.DESCRIPTOR.INVALID", error.field.empty() ? shared.field : error.field);
   result.ok = true; result.diagnostic = Ok(); return result;
 }
 }  // namespace
@@ -169,7 +169,7 @@ EngineApiDiagnostic RevalidateDmlDeleteDatatypeAuthorityV1(
   const auto valid = ValidateContext(context, "private_dml_delete_rows_consumer");
   if (valid.error) return valid;
   if (!captured.ok || !captured.handle.valid())
-    return Error("DATATYPE.DESCRIPTOR_INVALID", "engine_handle_required");
+    return Error("DATATYPE.DESCRIPTOR.INVALID", "engine_handle_required");
   const auto& authority = *captured.handle.authority_;
   if (OwnerKey(context) != OwnerKey(authority.owner)) return Error("MGA.TRANSACTION.STALE", "handle_owner");
   wire::TypedDeleteDescriptorCarrier descriptor;

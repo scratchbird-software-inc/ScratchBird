@@ -22,11 +22,11 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool Empty(const EngineUuid& uuid) {
-  return uuid.canonical.empty();
+  return uuid.is_nil();
 }
 
 bool Empty(const EngineObjectReference& object) {
-  return object.uuid.canonical.empty();
+  return object.uuid.is_nil();
 }
 
 std::string MetricLabel(const std::string& value) {
@@ -39,8 +39,8 @@ void RecordRouteFenceMetrics(const EngineClusterInsertRouteFenceRequest& request
   if (!request.context.cluster_authority_available) {
     return;
   }
-  const std::string database_uuid = MetricLabel(request.context.database_uuid.canonical);
-  const std::string table_uuid = MetricLabel(request.target_table.uuid.canonical);
+  const std::string database_uuid = MetricLabel(request.context.database_uuid);
+  const std::string table_uuid = MetricLabel(request.target_table.uuid);
   const std::string route_epoch = request.route_epoch == 0 ? "unknown" : std::to_string(request.route_epoch);
   (void)scratchbird::core::metrics::RecordClusterInsertRouteCheck(database_uuid,
                                                                   table_uuid,
@@ -56,7 +56,7 @@ void RecordRouteFenceMetrics(const EngineClusterInsertRouteFenceRequest& request
         database_uuid,
         table_uuid,
         route_epoch,
-        MetricLabel(request.owner_node_uuid.canonical));
+        MetricLabel(request.owner_node_uuid));
   }
 }
 
@@ -77,8 +77,8 @@ EngineClusterInsertRouteFenceResult RouteFenceFailure(const EngineClusterInsertR
     result.evidence.push_back({"standalone_cluster_boundary", "cluster_metric_path_skipped"});
     result.evidence.push_back({"standalone_cluster_boundary", "cluster_route_not_entered"});
   }
-  if (!request.target_table.uuid.canonical.empty()) {
-    result.evidence.push_back({"target_table_uuid", request.target_table.uuid.canonical});
+  if (!request.target_table.uuid.is_nil()) {
+    result.evidence.push_back({"target_table_uuid", request.target_table.uuid});
   }
   RecordRouteFenceMetrics(request, "refused", reason);
   return result;
@@ -187,18 +187,18 @@ EngineClusterInsertRouteFenceResult EngineValidateClusterInsertRouteFence(
                                    provider_result,
                                    "cluster.validate_insert_route_fence");
   result.evidence.push_back({"cluster_insert_route_activation", "fail_closed_until_finality"});
-  result.evidence.push_back({"target_table_uuid", request.target_table.uuid.canonical});
-  result.evidence.push_back({"target_shard_uuid", request.target_shard.uuid.canonical});
-  result.evidence.push_back({"target_range_uuid", request.target_range.uuid.canonical});
-  result.evidence.push_back({"owner_node_uuid", request.owner_node_uuid.canonical});
-  result.evidence.push_back({"route_epoch_uuid", request.route_epoch_uuid.canonical});
+  result.evidence.push_back({"target_table_uuid", request.target_table.uuid});
+  result.evidence.push_back({"target_shard_uuid", request.target_shard.uuid});
+  result.evidence.push_back({"target_range_uuid", request.target_range.uuid});
+  result.evidence.push_back({"owner_node_uuid", request.owner_node_uuid});
+  result.evidence.push_back({"route_epoch_uuid", request.route_epoch_uuid});
   result.evidence.push_back({"route_epoch", std::to_string(request.route_epoch)});
   result.evidence.push_back({"route_generation", std::to_string(request.route_generation)});
-  result.evidence.push_back({"participant_uuid", request.participant_uuid.canonical});
-  result.evidence.push_back({"policy_snapshot_uuid", request.policy_snapshot_uuid.canonical});
-  result.evidence.push_back({"finality_service_uuid", request.finality_service_uuid.canonical});
-  if (!request.participant_node_uuid.canonical.empty()) {
-    result.evidence.push_back({"participant_node_uuid", request.participant_node_uuid.canonical});
+  result.evidence.push_back({"participant_uuid", request.participant_uuid});
+  result.evidence.push_back({"policy_snapshot_uuid", request.policy_snapshot_uuid});
+  result.evidence.push_back({"finality_service_uuid", request.finality_service_uuid});
+  if (!request.participant_node_uuid.is_nil()) {
+    result.evidence.push_back({"participant_node_uuid", request.participant_node_uuid});
   }
   if (!request.handoff_proof_ref.empty()) {
     result.evidence.push_back({"handoff_proof_ref", request.handoff_proof_ref});

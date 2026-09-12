@@ -128,10 +128,12 @@ EngineApiDiagnostic ValidateExternalGitRequest(const EngineApiRequest& request,
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestContext& context) {
+std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestContext& context, EngineApiDiagnostic& diagnostic) {
   std::vector<ArtifactSnapshotEntry> rows;
   std::set<std::string> schema_tree_uuids;
-  for (const auto& schema : VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+  const auto schemas = VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
+  for (const auto& schema : schemas) {
     schema_tree_uuids.insert(schema.schema_uuid);
     ArtifactSnapshotEntry entry;
     entry.object_uuid = schema.schema_uuid;
@@ -218,7 +220,7 @@ void AddExternalGitManifestRow(EngineApiResult* result,
                     {{"artifact_format", "sb.external_git.catalog_snapshot.v1"},
                      {"snapshot_entry_kind", "manifest"},
                      {"snapshot_mode", mode},
-                     {"database_uuid", context.database_uuid.canonical},
+                     {"database_uuid", context.database_uuid},
                      {"local_transaction_id", std::to_string(context.local_transaction_id)},
                      {"catalog_artifact_format", "sb.catalog.artifact.v1"},
                      {"entry_count", entry_count},
@@ -311,8 +313,10 @@ bool PayloadFailsPolicyValidation(const std::string& payload) {
 
 bool ExistingArtifactObjectVisible(const EngineRequestContext& context,
                                    const std::string& object_uuid,
-                                   std::uint64_t observer_tx) {
-  if (FindVisibleSchemaTreeRecord(context, object_uuid, observer_tx)) { return true; }
+                                   std::uint64_t observer_tx, EngineApiDiagnostic& diagnostic) {
+  const auto schema = FindVisibleSchemaTreeRecord(context, object_uuid, observer_tx, diagnostic);
+  if (diagnostic.error) return false;
+  if (schema) return true;
   if (FindVisibleApiBehaviorRecord(context, object_uuid, observer_tx)) { return true; }
   return false;
 }
@@ -342,8 +346,11 @@ EngineApiDiagnostic ValidateArtifactImportRow(const EngineImportCatalogArtifacts
   if (conflict_policy != "reject" && conflict_policy != "replace") {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_conflict_policy_invalid");
   }
-  if (conflict_policy == "reject" &&
-      ExistingArtifactObjectVisible(request.context, target_uuid, request.context.local_transaction_id)) {
+  EngineApiDiagnostic schema_diagnostic;
+  const bool exists = ExistingArtifactObjectVisible(request.context, target_uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return schema_diagnostic;
+  if (conflict_policy == "reject" && exists) {
     return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_uuid_conflict:" + target_uuid);
   }
   if (PayloadFailsPolicyValidation(payload)) {
@@ -351,18 +358,18 @@ EngineApiDiagnostic ValidateArtifactImportRow(const EngineImportCatalogArtifacts
   }
   if (object_kind == "schema") {
     const std::string parent_schema_uuid = ParentSchemaFromPayload(payload);
-    if (!parent_schema_uuid.empty() &&
-        !FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid, request.context.local_transaction_id) &&
-        !staged_uuids.contains(parent_schema_uuid)) {
+    const auto parent = FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid,
+        request.context.local_transaction_id, schema_diagnostic);
+    if (schema_diagnostic.error) return schema_diagnostic;
+    if (!parent_schema_uuid.empty() && !parent && !staged_uuids.contains(parent_schema_uuid)) {
       return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_parent_schema_not_visible");
     }
     if (!HasOption(request, "allow_name_conflict:true")) {
       const auto names = LocalizedNamesFromPayload(payload, FieldValue(row, "default_name"));
-      if (const auto conflict = SchemaTreePathConflict(request.context,
-                                                      target_uuid,
-                                                      parent_schema_uuid,
-                                                      names,
-                                                      request.context.local_transaction_id)) {
+      const auto conflict = SchemaTreePathConflict(request.context, target_uuid, parent_schema_uuid,
+          names, request.context.local_transaction_id, schema_diagnostic);
+      if (schema_diagnostic.error) return schema_diagnostic;
+      if (conflict) {
         return MakeInvalidRequestDiagnostic("artifact.import_catalog", "artifact_schema_path_conflict:" + *conflict);
       }
     }
@@ -403,7 +410,11 @@ EngineExportCatalogArtifactsResult EngineExportCatalogArtifacts(const EngineExpo
   auto result = MakeApiBehaviorSuccess<EngineExportCatalogArtifactsResult>(request.context, "artifact.export_catalog");
   std::size_t count = 0;
   std::set<std::string> schema_tree_uuids;
-  for (const auto& schema : VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id)) {
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = VisibleSchemaTreeRecords(request.context, request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineExportCatalogArtifactsResult>(
+      request.context, "artifact.export_catalog", schema_diagnostic);
+  for (const auto& schema : schemas) {
     schema_tree_uuids.insert(schema.schema_uuid);
     AddArtifactRow(&result, "catalog_object", schema.schema_uuid, "schema", schema.default_name, schema.payload);
     ++count;
@@ -484,7 +495,7 @@ EngineImportCatalogArtifactsResult EngineImportCatalogArtifacts(const EngineImpo
   }
   auto result = MakeApiBehaviorSuccess<EngineImportCatalogArtifactsResult>(request.context, "artifact.import_catalog");
   for (const auto& record : staged) {
-    result.primary_object.uuid.canonical = record.object_uuid;
+    result.primary_object.uuid = record.object_uuid;
     result.primary_object.object_kind = record.object_kind;
     AddApiBehaviorRow(&result,
                       {{"object_uuid", record.object_uuid},
@@ -519,7 +530,10 @@ EngineExportExternalGitSnapshotResult EngineExportExternalGitSnapshot(
   }
   auto result = MakeApiBehaviorSuccess<EngineExportExternalGitSnapshotResult>(
       request.context, "artifact.external_git.export_snapshot");
-  const auto rows = CurrentArtifactSnapshot(request.context);
+  EngineApiDiagnostic schema_diagnostic;
+  const auto rows = CurrentArtifactSnapshot(request.context, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineExportExternalGitSnapshotResult>(
+      request.context, "artifact.external_git.export_snapshot", schema_diagnostic);
   AddExternalGitManifestRow(&result,
                             request.context,
                             std::to_string(rows.size()),
@@ -551,7 +565,10 @@ EngineDiffExternalGitSnapshotResult EngineDiffExternalGitSnapshot(
   }
   auto result = MakeApiBehaviorSuccess<EngineDiffExternalGitSnapshotResult>(
       request.context, "artifact.external_git.diff_snapshot");
-  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context));
+  EngineApiDiagnostic schema_diagnostic;
+  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context, schema_diagnostic));
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineDiffExternalGitSnapshotResult>(
+      request.context, "artifact.external_git.diff_snapshot", schema_diagnostic);
   const auto candidate = SnapshotMap(candidate_rows);
   std::size_t changed = 0;
   for (const auto& [uuid, current_entry] : current) {
@@ -605,7 +622,10 @@ EnginePlanExternalGitRollbackResult EnginePlanExternalGitRollback(
   }
   auto result = MakeApiBehaviorSuccess<EnginePlanExternalGitRollbackResult>(
       request.context, "artifact.external_git.rollback_plan");
-  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context));
+  EngineApiDiagnostic schema_diagnostic;
+  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context, schema_diagnostic));
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EnginePlanExternalGitRollbackResult>(
+      request.context, "artifact.external_git.rollback_plan", schema_diagnostic);
   const auto target = SnapshotMap(target_rows);
   std::size_t plan_rows = 0;
   for (const auto& [uuid, current_entry] : current) {

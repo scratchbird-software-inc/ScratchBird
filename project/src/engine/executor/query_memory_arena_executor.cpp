@@ -154,7 +154,7 @@ ExecutorQueryMemoryResult RequestExecutorQueryMemory(
 
 scratchbird::core::memory::QueryMemoryArenaReleaseResult ReleaseExecutorQueryMemory(
     scratchbird::core::memory::QueryMemoryArena* arena,
-    const std::string& grant_id) {
+    const scratchbird::core::memory::QueryMemoryUuid& grant_id) {
   if (arena != nullptr) {
     auto result = arena->Release(grant_id);
     result.evidence.push_back("executor.query_memory.release_routed=true");

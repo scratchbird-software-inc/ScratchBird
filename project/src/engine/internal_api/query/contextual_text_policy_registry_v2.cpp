@@ -103,12 +103,12 @@ EngineContextualTextPolicyRowSetV2 ExactRows() {
 
 bool LiveContextAdmitted(const EngineRequestContext& context) {
   return context.security_context_present && context.resource_epoch != 0 &&
-         ExactNonNilUuid(context.database_uuid.canonical) &&
-         ExactNonNilUuid(context.session_uuid.canonical) &&
-         ExactNonNilUuid(context.statement_uuid.canonical) &&
-         ExactNonNilUuid(context.statement_receipt_uuid.canonical) &&
-         ExactNonNilUuid(context.statement_snapshot_uuid.canonical) &&
-         context.datatype_catalog_snapshot_uuid.canonical ==
+         ExactNonNilUuid(context.database_uuid) &&
+         ExactNonNilUuid(context.session_uuid) &&
+         ExactNonNilUuid(context.statement_uuid) &&
+         ExactNonNilUuid(context.statement_receipt_uuid) &&
+         ExactNonNilUuid(context.statement_snapshot_uuid) &&
+         context.datatype_catalog_snapshot_uuid ==
              kCatalogSnapshotUuid &&
          context.datatype_catalog_generation == 1 &&
          context.datatype_registry_generation == 1;

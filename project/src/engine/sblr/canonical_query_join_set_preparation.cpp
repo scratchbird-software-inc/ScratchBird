@@ -525,7 +525,7 @@ bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(
     // registry above. This projection closes the executor-only carrier; it
     // does not infer authority from the persisted descriptor text.
     if (!ExactCanonicalBooleanJoinAliasDescriptorV1(*descriptor->second) ||
-        column.descriptor.descriptor_uuid.canonical !=
+        column.descriptor.descriptor_uuid !=
             descriptor->second->descriptor_uuid ||
         column.descriptor.descriptor_kind != "scalar" ||
         column.descriptor.canonical_type_name != "boolean" ||
@@ -544,8 +544,8 @@ bool ProjectCanonicalBooleanJoinAliasRuntimeCarriersV1(
     }
     for (auto& row : batch->rows) {
       if (ordinal >= row.values.size() ||
-          row.values[ordinal].descriptor.descriptor_uuid.canonical !=
-              column.descriptor.descriptor_uuid.canonical ||
+          row.values[ordinal].descriptor.descriptor_uuid !=
+              column.descriptor.descriptor_uuid ||
           row.values[ordinal].descriptor.descriptor_kind !=
               column.descriptor.descriptor_kind ||
           row.values[ordinal].descriptor.canonical_type_name !=
@@ -975,7 +975,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
     }
 
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid.canonical =
+    engine_descriptor.descriptor_uuid =
         descriptor->second->descriptor_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name = result_type_name;
@@ -985,10 +985,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
                  api::RelationalNullability::kNullable
              ? "nullable"
              : "non_null");
-    if (descriptor->second->collation_uuid.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";collation_uuid=" + *descriptor->second->collation_uuid;
-    }
+    engine_descriptor.collation_uuid = descriptor->second->collation_uuid.value_or(api::EngineUuid{});
     if (descriptor->second->timezone_profile_id.has_value()) {
       engine_descriptor.encoded_descriptor +=
           ";timezone_profile_id=" + *descriptor->second->timezone_profile_id;
@@ -1046,12 +1043,12 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       return result;
 #else
       api::EngineUuid collation_uuid;
-      collation_uuid.canonical = *descriptor->second->collation_uuid;
+      collation_uuid = *descriptor->second->collation_uuid;
       const auto resolved = api::LookupEngineResourceDescriptorByUuid(
           context, collation_uuid, "collation");
       if (!resolved.ok || !resolved.resource_descriptor.present ||
-          resolved.resource_descriptor.resource_uuid.canonical !=
-              collation_uuid.canonical) {
+          resolved.resource_descriptor.resource_uuid !=
+              collation_uuid) {
         result.detail =
             "set-operation character equality lacks current engine "
             "collation authority";
@@ -1059,7 +1056,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       }
       exec::CanonicalSetOperationCollationBinding binding;
       binding.result_column = column;
-      binding.collation_uuid = collation_uuid.canonical;
+      binding.collation_uuid = collation_uuid;
       binding.resource_epoch =
           resolved.resource_descriptor.resource_epoch;
       binding.collation_epoch = resolved.resource_descriptor.family_epoch;

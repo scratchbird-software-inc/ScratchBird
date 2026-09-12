@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_large_value_store.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
 
@@ -73,15 +74,6 @@ std::uint64_t ParseU64(const std::string& text,
   } catch (...) {
     return fallback;
   }
-}
-
-std::vector<std::string> ReadLines(const std::string& path) {
-  std::vector<std::string> lines;
-  std::ifstream input(path, std::ios::binary);
-  if (!input) return lines;
-  std::string line;
-  while (std::getline(input, line)) lines.push_back(line);
-  return lines;
 }
 
 bool AppendLine(const std::string& path, const std::string& line) {
@@ -172,7 +164,12 @@ MgaLargeValueReclaimLoadResult LoadVisibleMgaLargeValueReclaimsImpl(
     result.diagnostic = authority;
     return result;
   }
-  for (const auto& line : ReadLines(LargeValueStorePath(context))) {
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
+    return result;
+  }
+  for (const auto& line : records) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kRowStoreMagic ||
         fields[1] != "LARGE_VALUE_RECLAIMED") {
@@ -197,7 +194,12 @@ LargeValueLoadResult LoadMgaLargeValuePayloads(const EngineRequestContext& conte
     return result;
   }
   std::map<std::string, LargeValueRecord> records;
-  for (const auto& line : ReadLines(LargeValueStorePath(context))) {
+  std::vector<std::string> store_records;
+  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &store_records)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
+    return result;
+  }
+  for (const auto& line : store_records) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 2 || fields[0] != kRowStoreMagic) { continue; }
     if (fields[1] == "LARGE_VALUE" && fields.size() >= 11) {
@@ -283,6 +285,11 @@ MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     const std::set<std::string>& temporary_tables,
     const std::map<std::uint64_t, std::string>& transaction_states) {
   MgaTemporaryLargeValueRecoveryResult result;
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
+    return result;
+  }
   std::set<std::string> committed_large_values;
   std::set<std::string> reclaimed_large_values;
   auto classify_event = [&](const std::uint64_t creator_tx) {
@@ -303,7 +310,7 @@ MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
     return std::string("active_or_unresolved");
   };
 
-  for (const auto& line : ReadLines(LargeValueStorePath(context))) {
+  for (const auto& line : records) {
     const auto fields = SplitTabs(line);
     if (fields.size() >= 11 && fields[0] == kRowStoreMagic &&
         fields[1] == "LARGE_VALUE") {
@@ -506,7 +513,11 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
   if (already_reclaimed_overflow_uuids == nullptr || reclaimed_count == nullptr) {
     return MakeInvalidRequestDiagnostic("mga.large_value", "reclaim_state_required");
   }
-  for (const auto& line : ReadLines(LargeValueStorePath(context))) {
+  std::vector<std::string> records;
+  if (!ReadCompleteMgaTextRecords(LargeValueStorePath(context), &records)) {
+    return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_store_read_failed");
+  }
+  for (const auto& line : records) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
         fields[1] != "LARGE_VALUE" ||
@@ -516,9 +527,16 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
       continue;
     }
     const std::string& overflow_uuid = fields[3];
-    if (!already_reclaimed_overflow_uuids->insert(overflow_uuid).second) {
+    if (already_reclaimed_overflow_uuids->count(overflow_uuid) != 0) {
       continue;
     }
+    // Allocate the bookkeeping node before the write, without publishing it
+    // to the caller's reclaimed set. Failure (including an allocation
+    // exception) must not cause a subsequent retry to skip a missing marker.
+    // Transfer of the prepared node after append needs no new allocation.
+    std::set<std::string> staged_reclaim;
+    auto staged = staged_reclaim.insert(overflow_uuid);
+    auto reclaimed_node = staged_reclaim.extract(staged.first);
     const std::string reclaim_line =
         JoinLine({kRowStoreMagic,
                   "LARGE_VALUE_RECLAIMED",
@@ -533,6 +551,7 @@ EngineApiDiagnostic AppendMgaLargeValueReclaimMarkersForRowVersion(
       return MakeInvalidRequestDiagnostic("mga.large_value",
                                           "large_value_reclaim_append_failed");
     }
+    already_reclaimed_overflow_uuids->insert(std::move(reclaimed_node));
     ++(*reclaimed_count);
   }
   return OkDiagnostic();

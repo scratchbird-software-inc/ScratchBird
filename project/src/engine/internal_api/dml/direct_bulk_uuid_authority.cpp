@@ -203,7 +203,7 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
   for (std::size_t index = 0; index < row_count; ++index) {
     const bool caller_uuid_available =
         index < request.borrowed_input_rows.size() &&
-        !request.borrowed_input_rows[index].requested_row_uuid.canonical.empty();
+        !request.borrowed_input_rows[index].requested_row_uuid.is_nil();
     if (!caller_uuid_available) {
       ++generated_row_count;
     }
@@ -221,14 +221,14 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
   for (std::size_t index = 0; index < row_count; ++index) {
     const bool caller_uuid_available =
         index < request.borrowed_input_rows.size() &&
-        !request.borrowed_input_rows[index].requested_row_uuid.canonical.empty();
+        !request.borrowed_input_rows[index].requested_row_uuid.is_nil();
     if (!caller_uuid_available) {
       ++batch.generated_row_uuids;
       batch.row_uuids.push_back(std::move(generated_uuids[generated_index++]));
     } else {
       ++batch.caller_row_uuids;
       batch.row_uuids.push_back(
-          request.borrowed_input_rows[index].requested_row_uuid.canonical);
+          request.borrowed_input_rows[index].requested_row_uuid);
     }
     batch.version_uuids.push_back(std::move(generated_uuids[generated_index++]));
     if (request.before_row_publication) {

@@ -778,7 +778,7 @@ ExecuteCanonicalObjectFreePivotQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto pivot_capability_uuid =
@@ -950,7 +950,7 @@ ExecuteCanonicalObjectFreePivotQuery(
       std::move(pivot_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(identity_scope + ":" +
                                request.context.current_monotonic_ns,
@@ -1260,7 +1260,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
       });
   if (label_descriptor == request.relational_dag.descriptors.end() ||
       label_descriptor->descriptor_uuid !=
-          in_items.front().pivot_value.descriptor.descriptor_uuid.canonical ||
+          in_items.front().pivot_value.descriptor.descriptor_uuid ||
       outputs[group_count]->output_name_utf8.empty()) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
                   "UNPIVOT label result descriptor is unresolved");
@@ -1385,7 +1385,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto unpivot_capability_uuid =
@@ -1522,7 +1522,7 @@ ExecuteCanonicalObjectFreeUnpivotQuery(
       std::move(unpivot_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(identity_scope + ":" +
                                request.context.current_monotonic_ns,

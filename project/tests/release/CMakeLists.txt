@@ -302,6 +302,8 @@ target_include_directories(public_database_ownership_gate PRIVATE
 )
 target_link_libraries(public_database_ownership_gate PRIVATE
   sb_storage_disk
+  sb_storage_database
+  sb_core_uuid
 )
 add_test(
   NAME public_database_ownership_gate

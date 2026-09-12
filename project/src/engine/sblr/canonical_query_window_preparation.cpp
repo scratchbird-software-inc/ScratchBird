@@ -97,7 +97,7 @@ bool ExactCanonicalBooleanWindowSourceV1(
     const std::string_view window_frame_descriptor_uuid) {
   return !boolean_type_uuid.empty() &&
          relational_descriptor.descriptor_uuid ==
-             runtime_descriptor.descriptor_uuid.canonical &&
+             runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
              relational_descriptor.type_uuid &&
          relational_descriptor.descriptor_uuid != function_uuid &&
@@ -210,7 +210,7 @@ bool ExactCanonicalScalarWindowOperandV1(
   return CanonicalUuidText(relational_descriptor.type_uuid) &&
          !result_type_uuid.empty() &&
          relational_descriptor.descriptor_uuid ==
-             runtime_descriptor.descriptor_uuid.canonical &&
+             runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
              relational_descriptor.type_uuid &&
          relational_descriptor.descriptor_uuid != result_type_uuid &&
@@ -281,7 +281,7 @@ bool ExactCanonicalBoundedSignedWindowSourceV1(
          !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
          !result_type_uuid.empty() &&
          relational_descriptor.descriptor_uuid ==
-             runtime_descriptor.descriptor_uuid.canonical &&
+             runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
              relational_descriptor.type_uuid &&
          relational_descriptor.descriptor_uuid != result_type_uuid &&
@@ -338,7 +338,7 @@ bool ExactCanonicalBoundedSignedWindowOrderV1(
          !type_uuid->empty() && type_index < kBoundedSignedTypeNames.size() &&
          !result_type_uuid.empty() &&
          relational_descriptor.descriptor_uuid ==
-             runtime_descriptor.descriptor_uuid.canonical &&
+             runtime_descriptor.descriptor_uuid &&
          relational_descriptor.descriptor_uuid !=
              relational_descriptor.type_uuid &&
          relational_descriptor.descriptor_uuid != result_type_uuid &&
@@ -841,7 +841,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
         !operand.binary_value.empty() ||
         operand.descriptor.canonical_type_name != "int64" ||
         !api::QowCanonicalDescriptorIdentityV1(operand.descriptor) ||
-        operand.descriptor.descriptor_uuid.canonical !=
+        operand.descriptor.descriptor_uuid !=
             argument_descriptor->descriptor_uuid) {
       result.detail = std::string(family_label) +
                       " NTILE bucket count materialization failed";
@@ -1013,7 +1013,7 @@ PreparedGlobalRowNumberWindowBinding PrepareGlobalRankingWindowBinding(
           !operand.binary_value.empty() ||
           operand.descriptor.canonical_type_name != "int64" ||
           !api::QowCanonicalDescriptorIdentityV1(operand.descriptor) ||
-          operand.descriptor.descriptor_uuid.canonical !=
+          operand.descriptor.descriptor_uuid !=
               position_descriptor->descriptor_uuid) {
         result.detail = std::string(family_label) +
                         " NTH_VALUE position materialization failed";

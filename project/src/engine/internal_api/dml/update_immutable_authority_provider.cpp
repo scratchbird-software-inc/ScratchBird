@@ -198,15 +198,15 @@ EngineApiDiagnostic ValidateBase(
   }
   if (context.read_only_mode || context.cluster_transaction_active ||
       context.route_fence_present || context.local_transaction_id == 0 ||
-      !ParseExactUuid(context.transaction_uuid.canonical) ||
-      !ParseExactUuid(context.statement_snapshot_uuid.canonical) ||
+      !ParseExactUuid(context.transaction_uuid) ||
+      !ParseExactUuid(context.statement_snapshot_uuid) ||
       !ParseExactUuid(request.authenticated_statement_receipt_uuid) ||
       request.authenticated_statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       request.structural_occurrence_id == 0 ||
       !ParseExactUuid(request.catalog_snapshot_uuid) ||
       request.catalog_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       request.catalog_generation == 0 ||
       request.catalog_generation != context.catalog_generation_id ||
       !ParseExactUuid(request.relation_occurrence.relation_uuid) ||

@@ -50,11 +50,7 @@ exec::CanonicalResultNullability ResultNullability(
 
 bool SameExactEngineDescriptorV1(const api::EngineDescriptor& left,
                                  const api::EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical ==
-             right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool SameExactRelationalTypeDescriptorV2(

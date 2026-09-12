@@ -17,6 +17,8 @@
 
 namespace scratchbird::storage::disk {
 
+class RouteOwnershipLease;
+
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;
 using scratchbird::core::platform::Subsystem;
@@ -212,6 +214,7 @@ class FileDevice {
   bool read_only_ = false;
   bool owner_lock_held_ = false;
   bool owner_lock_exclusive_ = false;
+  std::shared_ptr<RouteOwnershipLease> route_owner_lease_;
   std::unique_lock<std::recursive_mutex> route_owner_storage_guard_;
 #ifdef _WIN32
   void* file_handle_ = nullptr;

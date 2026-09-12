@@ -2881,7 +2881,24 @@ END;)SBSQL";
                     : operation == "cursor-fetch"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);if(!begun.accepted)return begun;auto opened=session.RunCursorOpenForWire();return opened.accepted?session.RunCursorFetchForWire():opened; }()
                     : operation == "cursor-close"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);if(!begun.accepted)return begun;auto opened=session.RunCursorOpenForWire();return opened.accepted?session.RunCursorCloseForWire():opened; }()
+                          ? [&session] {
+                              // Bounded IPC handle lifecycle, not real row-delivery proof.
+                              auto begun = session.RunPipeline("BEGIN TRANSACTION", true);
+                              if (!begun.accepted) return begun;
+                              auto opened = session.RunCursorOpenForWire();
+                              if (!opened.accepted) return opened;
+                              auto first = session.RunCursorFetchForWire();
+                              if (!first.accepted) return first;
+                              auto second = session.RunCursorFetchForWire();
+                              if (!second.accepted) return second;
+                              auto closed = session.RunCursorCloseForWire();
+                              if (!closed.accepted) return closed;
+                              if (session.RunCursorFetchForWire().accepted ||
+                                  session.RunCursorCloseForWire().accepted) {
+                                closed.accepted = false;
+                              }
+                              return closed;
+                            }()
                     : operation == "read-by-key"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunReadByKeyForWire():begun; }()
                     : operation == "read-range"
@@ -2988,7 +3005,7 @@ END;)SBSQL";
                     : operation == "parse-text"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunParseTextForWire():begun; }()
                     : operation == "catalog-epoch-check"
-                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunCatalogEpochCheckForWire():begun; }()
+                          ? session.RunPipeline("CATALOG EPOCH CHECK;", true)
                     : operation == "database-attach"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true);return begun.accepted?session.RunDatabaseAttachForWire():begun; }()
                     : operation == "database-detach"
@@ -4073,6 +4090,18 @@ END;)SBSQL";
       }
       return 4;
     }
+    // ROLLBACK above finalizes the selected transaction, not necessarily all
+    // session-owned transactions. Await cleanup before the independent
+    // observer can capture its transaction-inventory authority.
+    scratchbird::parser::sbsql::MessageVectorSet cleanup_messages;
+    if (!session.DisconnectExecutionRoute(&cleanup_messages) ||
+        cleanup_messages.has_errors()) {
+      std::cerr << "CSC-TEST-003609 acknowledged session cleanup failed\n";
+      for (const auto& diagnostic : cleanup_messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+      }
+      return 4;
+    }
     std::cout << "CSC-TEST-003609 CATALOG_INTROSPECT_SHOW_TABLE accepted "
                  "canonical_sblr=true receipt_name_bound=true "
                  "typed_cirs=true cursor_rows=true identity=true "
@@ -4455,6 +4484,8 @@ END;)SBSQL";
                 << " detail=" << detail
                 << " outer_ok=" << outer_root_shape
                 << " result_ok=" << result_shape
+                << " status=" << static_cast<unsigned>(decoded_result.status)
+                << " visibility=" << static_cast<unsigned>(decoded_result.visibility)
                 << " result_bytes=" << result.server_result_payload.size()
                 << '\n';
       for (const auto& diagnostic : result.messages.diagnostics) {
@@ -4463,6 +4494,18 @@ END;)SBSQL";
           std::cerr << diagnostic.code << ':' << field.name << '='
                     << field.value << '\n';
         }
+      }
+      return 4;
+    }
+    // A physical socket close is asynchronous at the server. Await the real
+    // disconnect response so rollback of this session cannot invalidate the
+    // next independent process's receipt between bind and observation.
+    scratchbird::parser::sbsql::MessageVectorSet cleanup_messages;
+    if (!session.DisconnectExecutionRoute(&cleanup_messages) ||
+        cleanup_messages.has_errors()) {
+      std::cerr << "CSC-TEST-003629 acknowledged session cleanup failed\n";
+      for (const auto& diagnostic : cleanup_messages.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
       }
       return 4;
     }

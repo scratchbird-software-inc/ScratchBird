@@ -7,15 +7,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "prepared_execution_template.hpp"
+#include "runtime_identity.hpp"
+#include "../internal_api/query/expression_api.hpp"
 
 #include <algorithm>
-#include <cctype>
-#include <iomanip>
-#include <sstream>
+#include <limits>
 #include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::executor {
+
+struct PreparedTemplateMemoryOwnership {
+  memory::ResultCursorPlanMemoryGovernor* governor = nullptr;
+  memory::HierarchicalMemoryBudgetLedger* ledger = nullptr;
+  PreparedUuid prepared_lease;
+  PreparedUuid descriptor_lease;
+  ~PreparedTemplateMemoryOwnership() {
+    if (!governor) return;
+    if (!descriptor_lease.is_nil()) (void)governor->ReleaseNoAlloc(descriptor_lease);
+    if (!prepared_lease.is_nil()) (void)governor->ReleaseNoAlloc(prepared_lease);
+  }
+};
+
 namespace {
 
 using scratchbird::engine::internal_api::EngineApiU64;
@@ -28,7 +41,8 @@ bool Contains(const std::vector<std::string>& values, const std::string& value) 
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-std::vector<std::string> Sorted(std::vector<std::string> values) {
+template <class T>
+std::vector<T> Sorted(std::vector<T> values) {
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
@@ -44,73 +58,12 @@ std::string ProfileSetDigest(
   return PreparedTemplateStableDigest(parts);
 }
 
-std::string DescriptorText(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid.canonical + ":" + descriptor.descriptor_kind + ":" +
-         descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
-}
-
-std::string EpochText(const PreparedTemplateEpochs& epochs) {
-  std::ostringstream out;
-  out << "catalog=" << epochs.catalog_epoch
-      << "|security=" << epochs.security_epoch
-      << "|policy_resource=" << epochs.policy_resource_epoch
-      << "|name_resolution=" << epochs.name_resolution_epoch;
-  return out.str();
-}
-
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
-}
-
-std::string LocalTransactionIdsText(const std::vector<std::uint64_t>& values) {
-  std::ostringstream out;
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    if (index != 0) out << ',';
-    out << values[index];
-  }
-  return out.str();
-}
-
-std::string MgaStatementContextText(
-    const PhysicalMgaStatementContext& context) {
-  std::ostringstream out;
-  out << "statement=" << context.statement_uuid
-      << "|owner_uuid=" << context.owning_transaction_uuid
-      << "|snapshot=" << context.statement_snapshot_uuid
-      << "|metadata_snapshot=" << context.statement_metadata_snapshot_uuid
-      << "|owner_local=" << context.owning_local_transaction_id
-      << "|committed_high_water=" << context.visible_committed_high_watermark
-      << "|oldest_active=" << context.oldest_active_transaction_id
-      << "|oldest_interesting=" << context.oldest_interesting_transaction_id
-      << "|oldest_snapshot=" << context.oldest_snapshot_transaction_id
-      << "|retention_horizon=" << context.retention_horizon_transaction_id
-      << "|active_excluded="
-      << LocalTransactionIdsText(
-             context.active_excluded_local_transaction_ids)
-      << "|in_doubt_excluded="
-      << LocalTransactionIdsText(
-             context.in_doubt_excluded_local_transaction_ids)
-      << "|snapshot_kind=" << context.snapshot_kind
-      << "|inventory_next="
-      << context.publication_inventory_next_local_transaction_id
-      << "|inventory_authoritative="
-      << (context.inventory_authoritative ? "true" : "false")
-      << "|complete=" << (context.complete ? "true" : "false")
-      << "|current=" << (context.current ? "true" : "false");
-  return out.str();
+bool IsCanonicalUuid(const PreparedUuid& value) {
+  return core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool CatalogEpochUuidIndependent(
-    const std::string& catalog_epoch_uuid,
+    const PreparedUuid& catalog_epoch_uuid,
     const PhysicalMgaStatementContext& statement_context) {
   return catalog_epoch_uuid != statement_context.statement_uuid &&
          catalog_epoch_uuid != statement_context.owning_transaction_uuid &&
@@ -146,13 +99,13 @@ PreparedMgaResolutionCheck ResolveExactPreparedMgaStatementContext(
   }
   if (engine_context != nullptr &&
       (authority.statement_context.statement_uuid !=
-           engine_context->statement_uuid.canonical ||
+           engine_context->statement_uuid ||
        authority.statement_context.owning_transaction_uuid !=
-           engine_context->transaction_uuid.canonical ||
+           engine_context->transaction_uuid ||
        authority.statement_context.statement_snapshot_uuid !=
-           engine_context->statement_snapshot_uuid.canonical ||
+           engine_context->statement_snapshot_uuid ||
        authority.statement_context.statement_metadata_snapshot_uuid !=
-           engine_context->statement_metadata_snapshot_uuid.canonical ||
+           engine_context->statement_metadata_snapshot_uuid ||
        authority.statement_context.owning_local_transaction_id !=
            engine_context->local_transaction_id ||
        authority.statement_context.visible_committed_high_watermark !=
@@ -195,14 +148,10 @@ PreparedMgaResolutionCheck ResolveExactPreparedMgaStatementContext(
   return check;
 }
 
-std::string UInt64Hex(std::uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << std::setw(16) << std::setfill('0') << value;
-  return out.str();
-}
-
 PreparedTemplatePrepareResult PrepareFailure(std::string code, std::string detail) {
   PreparedTemplatePrepareResult result;
+  result.failure_kind = PreparedTemplateFailureKind::kAdmission;
+  if (code == "PREPARED.IDENTITY_ISSUANCE_FAILED") result.failure_kind = PreparedTemplateFailureKind::kIdentity;
   result.ok = false;
   result.reused_existing_template = false;
   result.diagnostic_code = std::move(code);
@@ -215,13 +164,15 @@ PreparedTemplateBindResult BindFailure(const PreparedExecutionTemplate& prepared
                                        std::string detail) {
   (void)prepared_template;
   PreparedTemplateBindResult result;
+  result.failure_kind = PreparedTemplateFailureKind::kAdmission;
+  if (code == "PREPARED.IDENTITY_ISSUANCE_FAILED") result.failure_kind = PreparedTemplateFailureKind::kIdentity;
   result.ok = false;
   result.diagnostic_code = std::move(code);
   result.detail = std::move(detail);
   return result;
 }
 
-bool DependencySetMatches(std::vector<std::string> expected, std::vector<std::string> actual) {
+bool DependencySetMatches(std::vector<PreparedUuid> expected, std::vector<PreparedUuid> actual) {
   return Sorted(std::move(expected)) == Sorted(std::move(actual));
 }
 
@@ -249,9 +200,11 @@ std::optional<std::string> UnsafePinnedDescriptor(
     const std::vector<PreparedPinnedDescriptorReference>& pinned_descriptors) {
   for (const auto& descriptor : pinned_descriptors) {
     if (descriptor.cache_key.empty() ||
-        descriptor.catalog_epoch_uuid.empty() ||
+        !IsCanonicalUuid(descriptor.catalog_epoch_uuid) ||
         descriptor.descriptor_set_digest.empty() ||
-        descriptor.object_uuid.empty() ||
+        !IsCanonicalUuid(descriptor.object_uuid) ||
+        !IsCanonicalUuid(descriptor.descriptor_uuid) ||
+        (!descriptor.index_uuid.is_nil() && !IsCanonicalUuid(descriptor.index_uuid)) ||
         descriptor.security_policy_identity.empty() ||
         descriptor.redaction_policy_identity.empty()) {
       return "pinned descriptor cache key, catalog epoch UUID, object UUID, descriptor digest, and policy identities are required";
@@ -289,13 +242,37 @@ std::optional<PreparedTemplatePrepareResult> ValidateAndCanonicalizeAdmission(
     return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_SLOT_REQUIRED",
                           "at least one descriptor slot is required");
   }
-  if (admission->result_shape.digest.empty()) {
-    admission->result_shape.digest =
-        PreparedResultShapeDigest(admission->result_shape);
-  }
-  if (admission->result_shape.digest != admission->key.result_shape_digest) {
+  const auto actual_shape_digest = PreparedResultShapeDigest(admission->result_shape);
+  if ((!admission->result_shape.digest.empty() && admission->result_shape.digest != actual_shape_digest) ||
+      actual_shape_digest != admission->key.result_shape_digest) {
     return PrepareFailure("SB_PREPARED_TEMPLATE_RESULT_SHAPE_MISMATCH",
-                          "result shape digest does not match the cache key");
+                          "actual result shape does not match its supplied digests");
+  }
+  admission->result_shape.digest = actual_shape_digest;
+  for (const auto& id : admission->key.dependency_uuids) {
+    if (!IsCanonicalUuid(id))
+      return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH", "binary dependency UUIDv7 required");
+  }
+  admission->key.dependency_uuids = Sorted(std::move(admission->key.dependency_uuids));
+  for (const auto& slot : admission->descriptor_slots) {
+    if (!internal_api::QowCanonicalDescriptorIdentityV1(slot.descriptor))
+      return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH", "invalid descriptor slot identity");
+  }
+  for (const auto& slot : admission->result_shape.columns) {
+    if (!internal_api::QowCanonicalDescriptorIdentityV1(slot.descriptor))
+      return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH", "invalid result slot identity");
+  }
+  for (const auto& slot : admission->parameter_slots) {
+    if (!internal_api::QowCanonicalDescriptorIdentityV1(slot.descriptor))
+      return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH", "invalid parameter slot identity");
+  }
+  for (const auto& index : admission->index_descriptors) {
+    if (!IsCanonicalUuid(index.index_uuid) || !IsCanonicalUuid(index.relation_uuid) ||
+        std::any_of(index.key_column_uuids.begin(), index.key_column_uuids.end(),
+                    [](const auto& id) { return !IsCanonicalUuid(id); }) ||
+        std::any_of(index.covered_column_uuids.begin(), index.covered_column_uuids.end(),
+                    [](const auto& id) { return !IsCanonicalUuid(id); }))
+      return PrepareFailure("SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH", "invalid binary index dependency identity");
   }
   if (!admission->policy_metadata.cached_metadata_only ||
       !admission->policy_metadata.security_recheck_required ||
@@ -309,17 +286,20 @@ std::optional<PreparedTemplatePrepareResult> ValidateAndCanonicalizeAdmission(
     return PrepareFailure("SB_PREPARED_TEMPLATE_PINNED_DESCRIPTOR_UNSAFE",
                           *unsafe);
   }
-  if (admission->key.pinned_descriptor_set_digest.empty()) {
-    admission->key.pinned_descriptor_set_digest =
-        PreparedPinnedDescriptorDigest(admission->pinned_descriptors);
+  const auto actual_pin_digest = PreparedPinnedDescriptorDigest(admission->pinned_descriptors);
+  if (!admission->key.pinned_descriptor_set_digest.empty() &&
+      admission->key.pinned_descriptor_set_digest != actual_pin_digest) {
+    return PrepareFailure("SB_PREPARED_TEMPLATE_PINNED_DESCRIPTOR_UNSAFE",
+                          "actual pinned content does not match its supplied digest");
   }
+  admission->key.pinned_descriptor_set_digest = actual_pin_digest;
   return std::nullopt;
 }
 
 void PopulatePreparedTemplate(PreparedExecutionTemplate* prepared_template,
                               PreparedTemplateAdmission admission,
-                              const std::string& canonical_key) {
-  prepared_template->template_id = PreparedTemplateStableDigest({canonical_key});
+                              const PreparedUuid& identity) {
+  prepared_template->template_id = identity;
   prepared_template->key = std::move(admission.key);
   prepared_template->descriptor_slots = std::move(admission.descriptor_slots);
   prepared_template->field_offsets = std::move(admission.field_offsets);
@@ -329,6 +309,20 @@ void PopulatePreparedTemplate(PreparedExecutionTemplate* prepared_template,
   prepared_template->index_descriptors = std::move(admission.index_descriptors);
   prepared_template->pinned_descriptors = std::move(admission.pinned_descriptors);
   prepared_template->policy_metadata = std::move(admission.policy_metadata);
+}
+
+template <class Metadata>
+bool MetadataMatches(const PreparedExecutionTemplate& retained,
+                     const Metadata& admission) {
+  return retained.key == admission.key &&
+      retained.descriptor_slots == admission.descriptor_slots &&
+      retained.field_offsets == admission.field_offsets &&
+      retained.result_shape == admission.result_shape &&
+      retained.predicate_slots == admission.predicate_slots &&
+      retained.parameter_slots == admission.parameter_slots &&
+      retained.index_descriptors == admission.index_descriptors &&
+      retained.pinned_descriptors == admission.pinned_descriptors &&
+      retained.policy_metadata == admission.policy_metadata;
 }
 
 bool PreparedEpochStale(const memory::ResultCursorPlanMemoryEpochs& record,
@@ -383,91 +377,7 @@ PreparedTemplateStatementUseReceipt::Create() {
   return std::make_shared<ConstructionAccess>();
 }
 
-std::string PreparedTemplateStableDigest(const std::vector<std::string>& parts) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const auto& part : parts) {
-    for (const unsigned char ch : part) {
-      hash ^= static_cast<std::uint64_t>(ch);
-      hash *= 1099511628211ull;
-    }
-    hash ^= 0xffu;
-    hash *= 1099511628211ull;
-  }
-  return "fnv1a64:" + UInt64Hex(hash);
-}
-
-std::string PreparedDescriptorSetDigest(const std::vector<EngineDescriptor>& descriptors,
-                                        const std::vector<EngineColumnDefinition>& columns) {
-  std::vector<std::string> parts;
-  parts.reserve(descriptors.size() + columns.size());
-  for (const auto& descriptor : descriptors) {
-    parts.push_back("descriptor:" + DescriptorText(descriptor));
-  }
-  for (const auto& column : columns) {
-    parts.push_back("column:" + column.requested_column_uuid.canonical + ":" +
-                    std::to_string(column.ordinal) + ":" + DescriptorText(column.descriptor) + ":" +
-                    (column.nullable ? "nullable" : "required"));
-  }
-  return PreparedTemplateStableDigest(parts);
-}
-
-std::string PreparedResultShapeDigest(const PreparedResultShapeDescriptor& result_shape) {
-  std::vector<std::string> parts;
-  parts.push_back("kind:" + result_shape.result_kind);
-  for (const auto& column : result_shape.columns) {
-    parts.push_back("column:" + column.stable_name + ":" + std::to_string(column.ordinal) + ":" +
-                    DescriptorText(column.descriptor));
-  }
-  return PreparedTemplateStableDigest(parts);
-}
-
-std::string PreparedDependencyDigest(std::vector<std::string> dependency_uuids) {
-  return PreparedTemplateStableDigest(Sorted(std::move(dependency_uuids)));
-}
-
-std::string PreparedPinnedDescriptorDigest(
-    const std::vector<PreparedPinnedDescriptorReference>& pinned_descriptors) {
-  if (pinned_descriptors.empty()) return {};
-  std::vector<std::string> parts;
-  parts.reserve(pinned_descriptors.size());
-  for (const auto& descriptor : pinned_descriptors) {
-    std::ostringstream out;
-    out << "cache_key=" << descriptor.cache_key
-        << "|catalog_epoch_uuid=" << descriptor.catalog_epoch_uuid
-        << "|descriptor_uuid=" << descriptor.descriptor_uuid
-        << "|object_uuid=" << descriptor.object_uuid
-        << "|index_uuid=" << descriptor.index_uuid
-        << "|descriptor_set_digest=" << descriptor.descriptor_set_digest
-        << "|catalog_epoch=" << descriptor.catalog_epoch
-        << "|security_epoch=" << descriptor.security_epoch
-        << "|resource_policy_epoch=" << descriptor.resource_policy_epoch
-        << "|name_resolution_epoch=" << descriptor.name_resolution_epoch
-        << "|stats_epoch=" << descriptor.stats_epoch
-        << "|security_policy_identity=" << descriptor.security_policy_identity
-        << "|redaction_policy_identity=" << descriptor.redaction_policy_identity
-        << "|read_only_snapshot=" << (descriptor.read_only_snapshot ? "true" : "false")
-        << "|security_recheck_required=" << (descriptor.security_recheck_required ? "true" : "false")
-        << "|visibility_recheck_required=" << (descriptor.visibility_recheck_required ? "true" : "false")
-        << "|finality_authority_cached=" << (descriptor.finality_authority_cached ? "true" : "false");
-    parts.push_back(out.str());
-  }
-  return PreparedTemplateStableDigest(Sorted(std::move(parts)));
-}
-
-std::string PreparedTemplateCanonicalKey(const PreparedTemplateKey& key) {
-  std::ostringstream out;
-  out << "operation=" << key.operation_id
-      << "|sblr=" << key.sblr_digest_or_trace_key
-      << "|catalog_epoch_uuid=" << key.catalog_epoch_uuid
-      << "|descriptor_set=" << key.descriptor_set_digest
-      << "|pinned_descriptor_set=" << key.pinned_descriptor_set_digest
-      << "|result_shape=" << key.result_shape_digest
-      << '|' << EpochText(key.epochs)
-      << "|dependencies=" << PreparedDependencyDigest(key.dependency_uuids);
-  return out.str();
-}
-
-PreparedTemplatePrepareResult PreparedTemplateCache::Prepare(PreparedTemplateAdmission admission) {
+PreparedTemplatePrepareResult PreparedTemplateCache::Prepare(PreparedTemplateAdmission admission) try {
   if (auto failure = ValidateAndCanonicalizeAdmission(&admission);
       failure.has_value()) {
     return *failure;
@@ -476,6 +386,8 @@ PreparedTemplatePrepareResult PreparedTemplateCache::Prepare(PreparedTemplateAdm
   const std::string canonical_key = PreparedTemplateCanonicalKey(admission.key);
   std::lock_guard<std::mutex> lock(mutex_);
   if (const auto existing = templates_.find(canonical_key); existing != templates_.end()) {
+    if (!MetadataMatches(*existing->second, admission))
+      return PrepareFailure("PREPARED.METADATA_CONFLICT", "cache key does not identify identical retained metadata");
     PreparedTemplatePrepareResult result;
     result.ok = true;
     result.reused_existing_template = true;
@@ -484,34 +396,55 @@ PreparedTemplatePrepareResult PreparedTemplateCache::Prepare(PreparedTemplateAdm
     return result;
   }
 
+  const auto issued = IssueRuntimeIdentityV7();
+  if (!issued) return PrepareFailure("PREPARED.IDENTITY_ISSUANCE_FAILED", "template identity issuance failed");
   auto prepared_template = std::make_shared<PreparedExecutionTemplate>();
-  PopulatePreparedTemplate(prepared_template.get(),
-                           std::move(admission),
-                           canonical_key);
-
-  templates_.emplace(canonical_key, prepared_template);
+  PopulatePreparedTemplate(prepared_template.get(), std::move(admission), *issued);
 
   PreparedTemplatePrepareResult result;
   result.ok = true;
   result.reused_existing_template = false;
   result.diagnostic_code = kOk;
-  result.prepared_template = std::move(prepared_template);
+  result.prepared_template = prepared_template;
+  templates_.emplace(canonical_key, std::move(prepared_template));
   return result;
+} catch (const std::bad_alloc&) {
+  PreparedTemplatePrepareResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kAllocation;
+  return failure;
+} catch (const PreparedContentHashFailure&) {
+  PreparedTemplatePrepareResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kContentHash;
+  return failure;
 }
 
 PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     PreparedTemplateAdmission admission,
-    PreparedTemplateMemoryGovernanceRequest governance) {
+    PreparedTemplateMemoryGovernanceRequest governance) try {
   if (auto failure = ValidateAndCanonicalizeAdmission(&admission);
       failure.has_value()) {
     return *failure;
   }
+  if (governance.governor == nullptr || governance.ledger == nullptr ||
+      !IsCanonicalUuid(governance.scope.process_id) || !IsCanonicalUuid(governance.scope.database_id) ||
+      !IsCanonicalUuid(governance.scope.session_id))
+    return PrepareFailure("PREPARED.OWNER_MISMATCH", "actual governor, ledger and binary process/database/session are required");
   const std::string canonical_key = PreparedTemplateCanonicalKey(admission.key);
-  const std::string template_id = PreparedTemplateStableDigest({canonical_key});
+  const auto issued = IssueRuntimeIdentityV7();
+  if (!issued) return PrepareFailure("PREPARED.IDENTITY_ISSUANCE_FAILED", "template identity issuance failed");
+  const PreparedUuid template_id = *issued;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (const auto existing = templates_.find(canonical_key);
         existing != templates_.end()) {
+      if (!MetadataMatches(*existing->second, admission))
+        return PrepareFailure("PREPARED.METADATA_CONFLICT", "cache key does not identify identical retained metadata");
+      if (existing->second->memory_owner_ &&
+          (existing->second->memory_owner_->governor != governance.governor ||
+           existing->second->memory_owner_->ledger != governance.ledger ||
+           existing->second->memory_scope.process_id != governance.scope.process_id ||
+           existing->second->memory_scope.database_id != governance.scope.database_id))
+        return PrepareFailure("PREPARED.OWNER_MISMATCH", "governed cache owner cannot be transferred by a lookup");
       if (!existing->second->memory_governed) {
         return PrepareFailure("SB_PREPARED_TEMPLATE_EXISTING_UNGOVERNED",
                               "existing prepared template was not created through CEIC-020 memory governance");
@@ -533,18 +466,23 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     return PrepareFailure("SB_PREPARED_TEMPLATE_MEMORY_BYTES_REQUIRED",
                           "prepared template estimated memory bytes are required");
   }
-  if (governance.scope.database_id.empty() ||
-      governance.scope.session_id.empty()) {
+  if (governance.estimated_descriptor_snapshot_bytes >
+      std::numeric_limits<std::uint64_t>::max() - governance.estimated_template_bytes)
+    return PrepareFailure("SB_PREPARED_TEMPLATE_MEMORY_BYTES_REQUIRED", "combined prepared reservation size overflow");
+  if (governance.scope.database_id.is_nil() ||
+      governance.scope.session_id.is_nil()) {
     return PrepareFailure("SB_PREPARED_TEMPLATE_MEMORY_SCOPE_REQUIRED",
                           "database and session scope are required for prepared template memory");
   }
   governance.scope.plan_cache_key = canonical_key;
-  if (governance.scope.prepared_statement_id.empty()) {
+  if (governance.scope.prepared_statement_id.is_nil()) {
     governance.scope.prepared_statement_id = template_id;
   }
   if (governance.estimated_descriptor_snapshot_bytes != 0 &&
-      governance.scope.descriptor_snapshot_id.empty()) {
-    governance.scope.descriptor_snapshot_id = "descriptor-snapshot:" + template_id;
+      governance.scope.descriptor_snapshot_id.is_nil()) {
+    const auto descriptor_id = IssueRuntimeIdentityV7();
+    if (!descriptor_id) return PrepareFailure("PREPARED.IDENTITY_ISSUANCE_FAILED", "descriptor snapshot identity issuance failed");
+    governance.scope.descriptor_snapshot_id = *descriptor_id;
   }
   FillPreparedGovernanceEpochsFromKey(admission.key, &governance.epochs);
   if (governance.provenance.source ==
@@ -554,6 +492,11 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     governance.provenance.source_label = "engine.executor.prepared_template";
   }
 
+  // Allocate the pending owner before obtaining any lease. It remains local
+  // until all metadata/result allocations and cache registration succeed.
+  auto memory_owner = std::make_shared<PreparedTemplateMemoryOwnership>();
+  memory_owner->governor = governance.governor;
+  memory_owner->ledger = governance.ledger;
   memory::ResultCursorPlanMemoryLeaseRequest prepared_lease;
   prepared_lease.surface =
       memory::ResultCursorPlanMemorySurface::prepared_statement;
@@ -563,7 +506,7 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
   prepared_lease.epochs = governance.epochs;
   prepared_lease.provenance = governance.provenance;
   prepared_lease.memory_class = "ceic_020.prepared_execution_template";
-  prepared_lease.owner_id = "executor.prepared_template:" + template_id;
+  prepared_lease.owner_id = template_id;
   prepared_lease.route_label = admission.key.operation_id;
   prepared_lease.requested_bytes = governance.estimated_template_bytes;
   prepared_lease.cluster_route_requested = governance.cluster_route_requested;
@@ -576,8 +519,9 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
         "prepared template memory reservation refused");
     return failure;
   }
+  memory_owner->prepared_lease = prepared_acquired.lease_id;
 
-  std::string descriptor_lease_id;
+  PreparedUuid descriptor_lease_id;
   std::vector<std::string> descriptor_evidence;
   if (governance.estimated_descriptor_snapshot_bytes != 0) {
     memory::ResultCursorPlanMemoryLeaseRequest descriptor_lease;
@@ -589,7 +533,7 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     descriptor_lease.epochs = governance.epochs;
     descriptor_lease.provenance = governance.provenance;
     descriptor_lease.memory_class = "ceic_020.prepared_descriptor_snapshot";
-    descriptor_lease.owner_id = "executor.prepared_descriptor:" + template_id;
+    descriptor_lease.owner_id = governance.scope.descriptor_snapshot_id;
     descriptor_lease.route_label = admission.key.operation_id;
     descriptor_lease.requested_bytes =
         governance.estimated_descriptor_snapshot_bytes;
@@ -597,9 +541,6 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     auto descriptor_acquired =
         governance.governor->Acquire(std::move(descriptor_lease));
     if (!descriptor_acquired.ok()) {
-      (void)governance.governor->Release(
-          prepared_acquired.lease_id,
-          memory::ResultCursorPlanMemoryReleaseReason::explicit_release);
       return PrepareFailure(
           descriptor_acquired.diagnostic.diagnostic_code.empty()
               ? "SB_PREPARED_TEMPLATE_DESCRIPTOR_MEMORY_RESERVATION_REFUSED"
@@ -607,13 +548,14 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
           "prepared descriptor snapshot memory reservation refused");
     }
     descriptor_lease_id = descriptor_acquired.lease_id;
+    memory_owner->descriptor_lease = descriptor_lease_id;
     descriptor_evidence = descriptor_acquired.evidence;
   }
 
   auto prepared_template = std::make_shared<PreparedExecutionTemplate>();
   PopulatePreparedTemplate(prepared_template.get(),
                            std::move(admission),
-                           canonical_key);
+                           template_id);
   prepared_template->memory_governed = true;
   prepared_template->memory_reserved_bytes =
       governance.estimated_template_bytes +
@@ -630,19 +572,24 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
       descriptor_evidence.end());
   prepared_template->memory_governance_evidence.push_back(
       "CEIC-020_PREPARED_TEMPLATE_MEMORY_GOVERNED");
+  prepared_template->memory_owner_ = memory_owner;
+  PreparedTemplatePrepareResult published;
+  published.ok = true;
+  published.diagnostic_code = kOk;
+  published.prepared_template = prepared_template;
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (const auto existing = templates_.find(canonical_key);
         existing != templates_.end()) {
-      (void)governance.governor->Release(
-          prepared_acquired.lease_id,
-          memory::ResultCursorPlanMemoryReleaseReason::explicit_release);
-      if (!prepared_template->descriptor_snapshot_memory_lease_id.empty()) {
-        (void)governance.governor->Release(
-            prepared_template->descriptor_snapshot_memory_lease_id,
-            memory::ResultCursorPlanMemoryReleaseReason::explicit_release);
-      }
+      const bool metadata_matches = MetadataMatches(*existing->second, *prepared_template);
+      if (!metadata_matches) return PrepareFailure("PREPARED.METADATA_CONFLICT", "concurrent cache admission retained different metadata");
+      if (existing->second->memory_owner_ &&
+          (existing->second->memory_owner_->governor != governance.governor ||
+           existing->second->memory_owner_->ledger != governance.ledger ||
+           existing->second->memory_scope.process_id != governance.scope.process_id ||
+           existing->second->memory_scope.database_id != governance.scope.database_id))
+        return PrepareFailure("PREPARED.OWNER_MISMATCH", "concurrent admission cannot transfer the retained owner");
       if (!existing->second->memory_governed) {
         return PrepareFailure("SB_PREPARED_TEMPLATE_EXISTING_UNGOVERNED",
                               "existing prepared template was not created through CEIC-020 memory governance");
@@ -657,62 +604,57 @@ PreparedTemplatePrepareResult PreparedTemplateCache::PrepareGoverned(
     templates_.emplace(canonical_key, prepared_template);
   }
 
-  PreparedTemplatePrepareResult result;
-  result.ok = true;
-  result.reused_existing_template = false;
-  result.diagnostic_code = kOk;
-  result.prepared_template = std::move(prepared_template);
-  return result;
+  return published;
+} catch (const std::bad_alloc&) {
+  PreparedTemplatePrepareResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kAllocation;
+  return failure;
+} catch (const PreparedContentHashFailure&) {
+  PreparedTemplatePrepareResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kContentHash;
+  return failure;
 }
 
 std::uint64_t PreparedTemplateCache::InvalidateGovernedByEpoch(
     const memory::ResultCursorPlanMemoryEpochs& current_epochs,
     memory::ResultCursorPlanMemoryGovernor* governor) {
-  struct Eviction {
-    std::string cache_key;
-    std::string prepared_lease_id;
-    std::string descriptor_lease_id;
-  };
-  std::vector<Eviction> evictions;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [cache_key, prepared_template] : templates_) {
-      if (prepared_template->memory_governed &&
-          PreparedEpochStale(prepared_template->memory_epochs, current_epochs)) {
-        evictions.push_back({cache_key,
-                             prepared_template->prepared_memory_lease_id,
-                             prepared_template->descriptor_snapshot_memory_lease_id});
-      }
-    }
-    for (const auto& eviction : evictions) {
-      templates_.erase(eviction.cache_key);
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::uint64_t evicted = 0;
+  for (auto it = templates_.begin(); it != templates_.end();) {
+    auto& value = *it->second;
+    if (value.memory_governed &&
+        (governor == nullptr || value.memory_owner_->governor == governor) &&
+        PreparedEpochStale(value.memory_epochs, current_epochs)) {
+      value.usable_.store(false, std::memory_order_release);
+      it = templates_.erase(it);
+      ++evicted;
+      // A live shared template or use receipt still owns the metadata and its
+      // reservations. Its actual destruction retires the leases, not eviction.
+    } else {
+      ++it;
     }
   }
-  if (governor != nullptr) {
-    for (const auto& eviction : evictions) {
-      if (!eviction.prepared_lease_id.empty()) {
-        (void)governor->Release(
-            eviction.prepared_lease_id,
-            memory::ResultCursorPlanMemoryReleaseReason::epoch_invalidation);
-      }
-      if (!eviction.descriptor_lease_id.empty()) {
-        (void)governor->Release(
-            eviction.descriptor_lease_id,
-            memory::ResultCursorPlanMemoryReleaseReason::epoch_invalidation);
-      }
-    }
-  }
-  return static_cast<std::uint64_t>(evictions.size());
+  return evicted;
 }
 
 std::shared_ptr<const PreparedExecutionTemplate> PreparedTemplateCache::Lookup(const PreparedTemplateKey& key) const {
+  auto canonical = key;
+  canonical.dependency_uuids = Sorted(std::move(canonical.dependency_uuids));
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto found = templates_.find(PreparedTemplateCanonicalKey(key));
-  return found == templates_.end() ? nullptr : found->second;
+  const auto found = templates_.find(PreparedTemplateCanonicalKey(canonical));
+  return found == templates_.end() || found->second->key != canonical ? nullptr : found->second;
 }
 
 PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTemplate& prepared_template,
-                                                       const PreparedTemplateBindContext& bind_context) const {
+                                                       const PreparedTemplateBindContext& bind_context) const try {
+  std::shared_ptr<const PreparedExecutionTemplate> owner;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = templates_.find(PreparedTemplateCanonicalKey(prepared_template.key));
+    if (found == templates_.end() || found->second.get() != &prepared_template)
+      return BindFailure(prepared_template, "PREPARED.OWNER_MISMATCH", "template is not the actual object registered by this cache");
+    owner = found->second;
+  }
   const auto& context = bind_context.engine_context;
   const auto& key = prepared_template.key;
 
@@ -722,13 +664,13 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
                        "security context is required for this prepared template");
   }
   if (prepared_template.policy_metadata.requires_transaction_context &&
-      context.transaction_uuid.canonical.empty() && context.local_transaction_id == 0) {
+      context.transaction_uuid.is_nil() && context.local_transaction_id == 0) {
     return BindFailure(prepared_template,
                        "SB_PREPARED_TEMPLATE_MISSING_TRANSACTION_CONTEXT",
                        "transaction context is required for this prepared template");
   }
-  if (!IsCanonicalUuid(context.catalog_epoch_uuid.canonical) ||
-      context.catalog_epoch_uuid.canonical != key.catalog_epoch_uuid) {
+  if (!IsCanonicalUuid(context.catalog_epoch_uuid) ||
+      context.catalog_epoch_uuid != key.catalog_epoch_uuid) {
     return BindFailure(prepared_template,
                        "SB_PREPARED_TEMPLATE_STALE_CATALOG_EPOCH_UUID",
                        "canonical catalog epoch UUID does not match the prepared template");
@@ -762,9 +704,7 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
   const auto expected_visibility_policy_digest = PreparedTemplateStableDigest(
       {"visibility_recheck:engine_statement_use",
        "isolation:" + context.transaction_isolation_level});
-  const auto expected_authorization_policy_digest = PreparedTemplateStableDigest(
-      {"principal:" + context.principal_uuid.canonical,
-       "role:" + context.current_role_uuid.canonical});
+  const auto expected_authorization_policy_digest = PreparedAuthorizationDigest(context.principal_uuid, context.current_role_uuid);
   if ((!prepared_template.policy_metadata.security_policy_digest.empty() &&
        prepared_template.policy_metadata.security_policy_digest !=
            expected_security_policy_digest) ||
@@ -779,7 +719,9 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
         "SB_PREPARED_TEMPLATE_POLICY_METADATA_MISMATCH",
         "current security, visibility, or authorization policy identity does not match the prepared metadata");
   }
-  if (bind_context.descriptor_set_digest != key.descriptor_set_digest ||
+  const auto current_descriptor_digest = PreparedDescriptorSetDigest(bind_context.request.descriptors, bind_context.request.columns);
+  if (bind_context.descriptor_set_digest != current_descriptor_digest ||
+      current_descriptor_digest != key.descriptor_set_digest ||
       !DependencySetMatches(key.dependency_uuids, bind_context.dependency_uuids)) {
     return BindFailure(prepared_template,
                        "SB_PREPARED_TEMPLATE_DESCRIPTOR_MISMATCH",
@@ -814,7 +756,7 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
                              std::to_string(pinned.catalog_epoch) + " to " +
                              std::to_string(context.catalog_generation_id));
     }
-    if (pinned.catalog_epoch_uuid != context.catalog_epoch_uuid.canonical) {
+    if (pinned.catalog_epoch_uuid != context.catalog_epoch_uuid) {
       return BindFailure(
           prepared_template,
           "SB_PREPARED_TEMPLATE_PINNED_DESCRIPTOR_STALE_CATALOG_EPOCH_UUID",
@@ -858,7 +800,10 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
         "catalog epoch UUID must be independent from statement and transaction MGA identities");
   }
 
+  if (!prepared_template.usable_.load(std::memory_order_acquire))
+    return BindFailure(prepared_template, "PREPARED.OWNER_MISMATCH", "prepared owner was invalidated during binding");
   auto receipt = PreparedTemplateStatementUseReceipt::Create();
+  receipt->prepared_owner_ = owner;
   receipt->prepared_template_id_ = prepared_template.template_id;
   receipt->catalog_epoch_uuid_ = key.catalog_epoch_uuid;
   receipt->statement_context_ = mga_check.current_statement_context;
@@ -866,46 +811,52 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
   receipt->authority_origin_ = bind_context.mga_authority.origin;
   receipt->metadata_dependencies_revalidated_ = true;
   receipt->security_authorization_recheck_preserved_ = true;
-  receipt->receipt_id_ = PreparedTemplateStableDigest(
-      {prepared_template.template_id, key.catalog_epoch_uuid,
-       MgaStatementContextText(receipt->statement_context_)});
+  const auto receipt_id = IssueRuntimeIdentityV7();
+  if (!receipt_id) return BindFailure(prepared_template, "PREPARED.IDENTITY_ISSUANCE_FAILED", "statement-use identity issuance failed");
+  receipt->receipt_id_ = *receipt_id;
 
   PreparedTemplateBindResult result;
   result.ok = true;
   result.diagnostic_code = kOk;
   result.statement_use_receipt = std::move(receipt);
+  result.prepared_template = std::move(owner);
   result.evidence = {
       "prepared_template_cached_metadata_only=true",
       "mga_visibility_recheck=preserved",
       "mga_statement_context_exact_match=true",
       "mga_finality_authority=engine_transaction_inventory",
       "security_authorization_recheck=preserved",
-      "statement_use_receipt_id=" + result.statement_use_receipt->receipt_id(),
+      "statement_use_receipt_identity=typed_binary_uuid",
       "statement_use_receipt_immutable=true",
       "statement_use_receipt_executable=false",
       "metadata_dependencies_revalidated=true",
-      "catalog_epoch_uuid_rechecked=" + context.catalog_epoch_uuid.canonical,
+      "catalog_epoch_uuid_rechecked=true",
       "pinned_descriptor_snapshots_consumed=" + std::to_string(prepared_template.pinned_descriptors.size()),
       "pinned_descriptor_set_digest_rechecked=" + prepared_template.key.pinned_descriptor_set_digest,
       "catalog_epoch_rechecked=" + std::to_string(context.catalog_generation_id),
       "security_epoch_rechecked=" + std::to_string(context.security_epoch),
       "policy_resource_epoch_rechecked=" + std::to_string(context.resource_epoch),
       "name_resolution_epoch_rechecked=" + std::to_string(context.name_resolution_epoch),
-      "statement_uuid_rechecked=" +
-          result.statement_use_receipt->statement_context().statement_uuid,
-      "statement_snapshot_uuid_rechecked=" +
-          result.statement_use_receipt->statement_context()
-              .statement_snapshot_uuid,
+      "statement_uuid_rechecked=true",
+      "statement_snapshot_uuid_rechecked=true",
       "visibility_snapshot_high_water_rechecked=" +
           std::to_string(result.statement_use_receipt->statement_context()
                              .visible_committed_high_watermark),
   };
   return result;
+} catch (const std::bad_alloc&) {
+  PreparedTemplateBindResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kAllocation;
+  return failure;
+} catch (const PreparedContentHashFailure&) {
+  PreparedTemplateBindResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kContentHash;
+  return failure;
 }
 
 PreparedTemplateUseValidationResult RevalidatePreparedTemplateStatementUse(
     const PreparedExecutionTemplate& prepared_template,
-    const std::shared_ptr<const PreparedTemplateStatementUseReceipt>& receipt) {
+    const std::shared_ptr<const PreparedTemplateStatementUseReceipt>& receipt) try {
   PreparedTemplateUseValidationResult result;
   if (!receipt || !receipt->resolve_current_) {
     result.diagnostic_code =
@@ -914,7 +865,9 @@ PreparedTemplateUseValidationResult RevalidatePreparedTemplateStatementUse(
         "an immutable statement-bound use receipt is required before executable use";
     return result;
   }
-  if (receipt->prepared_template_id_ != prepared_template.template_id ||
+  if (!prepared_template.usable_.load(std::memory_order_acquire) ||
+      receipt->prepared_owner_.get() != &prepared_template ||
+      receipt->prepared_template_id_ != prepared_template.template_id ||
       receipt->catalog_epoch_uuid_ !=
           prepared_template.key.catalog_epoch_uuid ||
       !receipt->metadata_dependencies_revalidated_ ||
@@ -951,21 +904,29 @@ PreparedTemplateUseValidationResult RevalidatePreparedTemplateStatementUse(
   result.diagnostic_code = kOk;
   result.executable_receipt = receipt;
   result.evidence = {
-      "statement_use_receipt_id=" + receipt->receipt_id_,
+      "statement_use_receipt_identity=typed_binary_uuid",
       "statement_use_receipt_executable=true",
       "mga_statement_context_exact_match_before_use=true",
       "mga_finality_authority=engine_transaction_inventory",
-      "catalog_epoch_uuid_rechecked=" + receipt->catalog_epoch_uuid_,
-      "statement_uuid_rechecked=" + receipt->statement_context_.statement_uuid,
+      "catalog_epoch_uuid_rechecked=true",
+      "statement_uuid_rechecked=true",
       "visibility_snapshot_high_water_rechecked=" +
           std::to_string(
               receipt->statement_context_.visible_committed_high_watermark),
   };
   return result;
+} catch (const std::bad_alloc&) {
+  PreparedTemplateUseValidationResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kAllocation;
+  return failure;
+} catch (const PreparedContentHashFailure&) {
+  PreparedTemplateUseValidationResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kContentHash;
+  return failure;
 }
 
 PreparedTemplateBindResult PreparedTemplateCache::LookupAndBind(const PreparedTemplateKey& key,
-                                                                const PreparedTemplateBindContext& bind_context) const {
+                                                                const PreparedTemplateBindContext& bind_context) const try {
   const auto prepared_template = Lookup(key);
   if (!prepared_template) {
     PreparedTemplateBindResult result;
@@ -979,6 +940,14 @@ PreparedTemplateBindResult PreparedTemplateCache::LookupAndBind(const PreparedTe
     result.prepared_template = prepared_template;
   }
   return result;
+} catch (const std::bad_alloc&) {
+  PreparedTemplateBindResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kAllocation;
+  return failure;
+} catch (const PreparedContentHashFailure&) {
+  PreparedTemplateBindResult failure;
+  failure.failure_kind = PreparedTemplateFailureKind::kContentHash;
+  return failure;
 }
 
 scratchbird::engine::optimizer::FixedRouteOverheadEvidence
@@ -1037,7 +1006,7 @@ BuildFixedRouteOverheadEvidenceFromPreparedRoute(
       bind_consumed_prepared_metadata && prepared_template != nullptr &&
       !prepared_template->result_shape.digest.empty();
   if (evidence.selected_path.empty() && prepared_template != nullptr) {
-    evidence.selected_path = "prepared_template:" + prepared_template->template_id;
+    evidence.selected_path = "prepared_template";
   }
   if (evidence.fallback_reason.empty() && !evidence.warmed_prepared_route) {
     evidence.fallback_reason =

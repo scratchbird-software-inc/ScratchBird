@@ -25,6 +25,7 @@ using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::Status;
 using scratchbird::core::platform::u64;
+using TempWorkspaceUuid = scratchbird::core::platform::Uuid;
 
 enum class TempStorageClass {
   memory_workspace,
@@ -93,7 +94,10 @@ enum class TempWorkspaceState {
   cleanup_refused,
   cleanup_failed,
   quarantined,
-  review_required
+  review_required,
+  // Durable cleanup intent. A missing file is admissible only in this state;
+  // the exact owner and reservation remain until cleanup finishes.
+  cleanup_pending
 };
 
 // MMCH_TEMP_DISK_RESERVATION_SEMANTICS
@@ -105,10 +109,12 @@ enum class TempWorkspaceDiskReservationMode {
 
 struct TempWorkspacePolicy {
   std::string policy_name = "engine_temp_workspace_default";
+  TempWorkspaceUuid database_uuid{};
+  TempWorkspaceUuid engine_uuid{};
   // MMCH_MEMORY_METADATA_OPEN_UPGRADE_COMPATIBILITY
   // Temp workspace metadata versions gate open/upgrade decisions. They do not
   // make temp metadata a recovery or transaction authority.
-  u64 metadata_format_version = 2;
+  u64 metadata_format_version = 3;
   u64 manifest_generation = 1;
   std::string manifest_writer_identity;
   std::filesystem::path root_path;
@@ -132,21 +138,22 @@ struct TempWorkspacePolicy {
 };
 
 struct TempWorkspaceOwner {
-  std::string temp_object_uuid;
-  std::string database_id;
-  std::string engine_id;
-  std::string session_id;
-  std::string transaction_id;
-  std::string statement_id;
-  std::string cursor_id;
-  std::string result_set_id;
-  std::string operation_id;
-  std::string scheduler_task_id;
+  TempWorkspaceUuid temp_object_uuid{};
+  TempWorkspaceUuid database_id{};
+  TempWorkspaceUuid engine_id{};
+  TempWorkspaceUuid session_id{};
+  TempWorkspaceUuid transaction_id{};
+  TempWorkspaceUuid statement_id{};
+  TempWorkspaceUuid cursor_id{};
+  TempWorkspaceUuid result_set_id{};
+  TempWorkspaceUuid operation_id{};
+  TempWorkspaceUuid scheduler_task_id{};
   u64 policy_generation = 0;
   u64 security_generation = 0;
-  std::string snapshot_boundary;
-  std::string metadata_boundary;
-  std::string resource_budget_reference;
+  TempWorkspaceUuid snapshot_boundary{};
+  TempWorkspaceUuid metadata_boundary{};
+  TempWorkspaceUuid resource_budget_reference{};
+  bool operator==(const TempWorkspaceOwner&) const = default;
 };
 
 struct TempWorkspaceAllocationRequest {
@@ -211,7 +218,7 @@ struct TempWorkspaceBudgetReservationEvidence {
   MemoryCategory category = MemoryCategory::unknown;
   std::string memory_class;
   HierarchicalMemoryReservationToken token;
-  std::vector<std::string> scope_chain;
+  std::vector<HierarchicalMemoryScopeRef> scope_chain;
   std::string ledger_model;
   std::string failure_reason;
   std::string authority_boundary;
@@ -267,10 +274,10 @@ struct TempWorkspaceAccountingSnapshot {
   u64 ceic_011_reservation_refusal_count = 0;
   u64 ceic_011_reservation_release_count = 0;
   u64 ceic_011_reservation_release_failure_count = 0;
-  std::map<std::string, u64> session_bytes;
-  std::map<std::string, u64> transaction_bytes;
-  std::map<std::string, u64> statement_bytes;
-  std::map<std::string, u64> operation_bytes;
+  std::map<TempWorkspaceUuid, u64> session_bytes;
+  std::map<TempWorkspaceUuid, u64> transaction_bytes;
+  std::map<TempWorkspaceUuid, u64> statement_bytes;
+  std::map<TempWorkspaceUuid, u64> operation_bytes;
 };
 
 struct TempWorkspaceResult {
@@ -310,13 +317,13 @@ class TempWorkspaceLifecycleManager {
   TempWorkspaceResult AllocateSortSpill(TempWorkspaceAllocationRequest request);
   TempWorkspaceResult AllocateHashSpill(TempWorkspaceAllocationRequest request);
 
-  TempWorkspaceCleanupResult CleanupOnCommit(const std::string& transaction_id,
+  TempWorkspaceCleanupResult CleanupOnCommit(const TempWorkspaceUuid& transaction_id,
                                              TempTransactionOutcomeEvidence evidence);
-  TempWorkspaceCleanupResult CleanupOnRollback(const std::string& transaction_id,
+  TempWorkspaceCleanupResult CleanupOnRollback(const TempWorkspaceUuid& transaction_id,
                                                TempTransactionOutcomeEvidence evidence);
-  TempWorkspaceCleanupResult CleanupOnDisconnect(const std::string& session_id);
+  TempWorkspaceCleanupResult CleanupOnDisconnect(const TempWorkspaceUuid& session_id);
   TempWorkspaceCleanupResult CleanupOnShutdown();
-  TempWorkspaceCleanupResult CleanupOperation(const std::string& operation_id);
+  TempWorkspaceCleanupResult CleanupOperation(const TempWorkspaceUuid& operation_id);
   TempWorkspaceCleanupResult CleanupRecoverySafe(const TempWorkspaceRecoveryEvidence& evidence);
 
   TempWorkspaceRecoveryResult ClassifyForRecovery(const std::string& allocation_id,
@@ -356,21 +363,22 @@ class TempWorkspaceLifecycleManager {
                                       DiagnosticRecord* diagnostic);
   TempWorkspaceCleanupResult CleanupWhereLocked(TempCleanupReason reason,
                                                 TempTransactionOutcomeEvidence evidence,
-                                                const std::string& scope_id);
+                                                const TempWorkspaceUuid& scope_id);
   bool RecordMatchesCleanupScope(const TempWorkspaceRecord& record,
                                  TempCleanupReason reason,
-                                 const std::string& scope_id) const;
+                                 const TempWorkspaceUuid& scope_id) const;
   bool CleanupRequiresOutcome(TempCleanupReason reason) const;
   bool CleanupOutcomeMatches(TempCleanupReason reason, TempTransactionOutcomeEvidence evidence) const;
   bool ProtectedFromOrdinaryCleanup(const TempWorkspaceRecord& record) const;
+  bool PrepareCleanupIntentLocked(TempWorkspaceRecord& record, DiagnosticRecord* diagnostic);
   bool RemoveRecordFile(const TempWorkspaceRecord& record, DiagnosticRecord* diagnostic) const;
   void AddAccountingLocked(const TempWorkspaceRecord& record);
   void RemoveAccountingLocked(const TempWorkspaceRecord& record);
   bool LoadManifestFromDisk();
-  bool PersistManifestLocked(DiagnosticRecord* diagnostic);
+  bool PersistManifestLocked(DiagnosticRecord* diagnostic, bool* published = nullptr);
   std::filesystem::path ManifestPath() const;
   std::filesystem::path ManifestPathForVersion(u64 version) const;
-  std::optional<TempWorkspaceRecord> ParseManifestLine(const std::string& line) const;
+  std::optional<TempWorkspaceRecord> ParseManifestRecord(const std::string& bytes) const;
   std::string SerializeManifestRecord(const TempWorkspaceRecord& record) const;
   std::optional<std::string> NextAllocationIdLocked(const TempWorkspaceAllocationRequest& request,
                                                     std::string* error) const;

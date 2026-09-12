@@ -692,18 +692,28 @@ void TestExternalProviderFailClosedClosure() {
       std::string(cluster_provider::kClusterProviderInfoOperationId));
   const auto inspect =
       cluster_provider::InspectClusterProvider(inspect_request);
-  Require(inspect.ok, "cluster provider inspect route failed");
-  Require(inspect.result_shape.rows.size() == 1,
-          "cluster provider inspect route did not emit one info row");
-  Require(ProviderRowField(inspect.result_shape.rows.front(),
-                           "provider_type") == provider_type,
-          "cluster provider inspect row changed provider type");
-  Require(ProviderRowField(inspect.result_shape.rows.front(),
-                           "support_status") == support_status,
-          "cluster provider inspect row changed support status");
-  Require(ProviderRowField(inspect.result_shape.rows.front(),
-                           "supports_execution") == "false",
-          "cluster provider inspect row claimed execution support");
+  if (info.provider_type == "no_cluster" || info.provider_type == "compile_link_stub") {
+    Require(!inspect.ok && inspect.cluster_authority_required,
+            "standalone inspection fabricated cluster success");
+    Require(inspect.result_shape.rows.empty() &&
+                inspect.result_shape.columns.empty(),
+            "standalone inspection fabricated typed identities");
+    Require(HasDiagnostic(inspect, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "standalone inspection lost normative absent-path diagnostic");
+  } else {
+    Require(inspect.ok, "cluster provider inspect route failed");
+    Require(inspect.result_shape.rows.size() == 1,
+            "cluster provider inspect route did not emit one info row");
+    Require(ProviderRowField(inspect.result_shape.rows.front(),
+                             "provider_type") == provider_type,
+            "cluster provider inspect row changed provider type");
+    Require(ProviderRowField(inspect.result_shape.rows.front(),
+                             "support_status") == support_status,
+            "cluster provider inspect row changed support status");
+    Require(ProviderRowField(inspect.result_shape.rows.front(),
+                             "supports_execution") == "false",
+            "cluster provider inspect row claimed execution support");
+  }
 
   const auto executed = cluster_provider::ExecuteClusterOperation(
       ProviderRequest("cluster.public_catalog_readiness"));
@@ -722,7 +732,7 @@ void TestExternalProviderFailClosedClosure() {
   } else {
     Require(HasDiagnostic(
                 executed,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub did not publish compile-link-only diagnostic");
     Require(HasUnsupportedFeature(executed, "cluster.provider.stub"),
             "compile-link stub did not publish unsupported feature");

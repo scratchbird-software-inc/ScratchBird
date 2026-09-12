@@ -293,8 +293,12 @@ void TestManifestRows() {
       "cluster_provider.v1");
   Require(provider != nullptr &&
               provider->non_cluster_refusal_code ==
-                  cluster_provider::kClusterSupportNotEnabledCode,
-          "cluster provider manifest refusal code does not match live API");
+                  "PROCESS.CLUSTER_PATH_ABSENT" &&
+              provider->non_cluster_behavior ==
+                  "provider_inspection_and_execution_refused" &&
+              provider->positive_cluster_boundary ==
+                  "external_cluster_provider_required",
+          "cluster provider manifest must describe truthful standalone refusal");
 }
 
 void TestParserPackageBoundary(const std::filesystem::path& database_path) {
@@ -399,9 +403,8 @@ void TestClusterProviderBoundary() {
 
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical = "cluster-provider-boundary-database";
-  context.session_uuid.canonical = "cluster-provider-boundary-session";
-  context.principal_uuid.canonical = "cluster-provider-boundary-principal";
+  // Provider-routing component fixture; do not forge UUID authority from names.
+  context.local_transaction_id = 1;
 
   auto info_envelope =
       scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
@@ -419,7 +422,20 @@ void TestClusterProviderBoundary() {
   Require(info_result.envelope_validated && info_result.accepted &&
               info_result.dispatched_to_api,
           "cluster provider info did not route through SBLR provider boundary");
-  Require(info_result.api_result.ok,
+  const auto provider_info = cluster_provider::DescribeClusterProvider();
+  if (provider_info.provider_type == "no_cluster" ||
+      provider_info.provider_type == "compile_link_stub") {
+    Require(!info_result.api_result.ok && info_result.api_result.cluster_authority_required,
+            "standalone provider inspection fabricated success");
+    Require(info_result.api_result.result_shape.rows.empty() &&
+                info_result.api_result.result_shape.columns.empty() &&
+                info_result.api_result.result_shape.result_kind.empty(),
+            "standalone provider inspection fabricated result identities");
+    Require(HasDiagnostic(info_result.api_result, "PROCESS.CLUSTER_PATH_ABSENT") &&
+                HasDispatchDiagnostic(info_result, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "standalone provider inspection lost absent-path diagnostic");
+  } else {
+   Require(info_result.api_result.ok,
           "cluster provider info command failed");
   Require(FieldValue(info_result.api_result, "provider_name") ==
               cluster_provider::DescribeClusterProvider().provider_name,
@@ -438,6 +454,7 @@ void TestClusterProviderBoundary() {
                    ? "true"
                    : "false"),
           "cluster provider info execution-support flag drifted");
+  }
 
   auto cluster_envelope =
       scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
@@ -460,7 +477,6 @@ void TestClusterProviderBoundary() {
                       cluster_provider::DescribeClusterProvider().provider_type),
           "cluster provider execution omitted provider-type evidence");
 
-  const auto provider_info = cluster_provider::DescribeClusterProvider();
   if (cluster_provider::ClusterProviderSupportsExecution()) {
     Require(cluster_result.api_result.ok,
             "cluster execution provider did not return success");
@@ -476,11 +492,11 @@ void TestClusterProviderBoundary() {
             "compile-link stub omitted cluster-authority requirement");
     Require(HasDiagnostic(
                 cluster_result.api_result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub emitted the wrong API diagnostic");
     Require(HasDispatchDiagnostic(
                 cluster_result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub emitted the wrong dispatch diagnostic");
     Require(HasEvidence(cluster_result.api_result, "cluster_provider", "stub") &&
                 HasEvidence(cluster_result.api_result,

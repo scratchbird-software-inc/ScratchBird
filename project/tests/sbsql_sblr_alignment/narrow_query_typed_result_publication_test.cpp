@@ -285,7 +285,7 @@ wire::TypedResultDescriptorAuthorityValidator DescriptorAuthority(
     decision.accepted = control->live && !descriptor.columns.empty() &&
                         descriptor.columns[0].canonical_type_id ==
                             datatypes::CanonicalTypeId::int64;
-    decision.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+    decision.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
     decision.detail = decision.accepted ? "" : "fixture_descriptor_stale";
     return decision;
   };
@@ -424,7 +424,7 @@ void TestImmutableDescriptorsAndOccurrences() {
               invalid_prepared.status == api::
                   NarrowQueryTypedResultPublicationStatusV1::descriptor_invalid &&
               invalid_prepared.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR_INVALID" &&
+                  "DATATYPE.DESCRIPTOR.INVALID" &&
               !invalid_prepared.generic_fallback_permitted(),
           "unsupported datatype code was inferred or fell back");
 }

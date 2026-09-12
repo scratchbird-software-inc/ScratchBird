@@ -629,8 +629,8 @@ EngineAlterMetricRetentionPolicyResult EngineAlterMetricRetentionPolicy(
   const auto persisted = scratchbird::core::metrics::UpsertMetricRetentionPolicy(
       path,
       policy,
-      request.context.principal_uuid.canonical.empty() ? "system.metrics_admin" : request.context.principal_uuid.canonical,
-      request.context.transaction_uuid.canonical);
+      request.context.principal_uuid.is_nil() ? "system.metrics_admin" : request.context.principal_uuid,
+      request.context.transaction_uuid);
   if (!persisted.ok) {
     return MakeApiBehaviorDiagnostic<EngineAlterMetricRetentionPolicyResult>(
         request.context,
@@ -798,8 +798,8 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
       {{"operation", operation},
        {"result", result_class},
        {"route_class", route.empty() ? "engine_internal" : route},
-       {"database_uuid", request.context.database_uuid.canonical},
-       {"session_uuid", request.context.session_uuid.canonical}},
+       {"database_uuid", request.context.database_uuid},
+       {"session_uuid", request.context.session_uuid}},
       1,
       "database_lifecycle_observability");
   if (!request.diagnostic_code.empty()) {
@@ -816,8 +816,8 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
       {{"operation", operation},
        {"result", result_class},
        {"route_class", route.empty() ? "engine_internal" : route},
-       {"database_uuid", request.context.database_uuid.canonical},
-       {"session_uuid", request.context.session_uuid.canonical},
+       {"database_uuid", request.context.database_uuid},
+       {"session_uuid", request.context.session_uuid},
        {"diagnostic_code", request.diagnostic_code.empty() ? "none" : request.diagnostic_code}},
       1,
       "database_lifecycle_observability");

@@ -22,7 +22,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace {
 
 bool EmptyUuid(const api::EngineUuid& uuid) {
-  return uuid.canonical.empty();
+  return uuid.is_nil();
 }
 
 bool IsCanonicalUuid(const std::string_view value) {
@@ -39,7 +39,7 @@ bool IsCanonicalUuid(const std::string_view value) {
 }
 
 void AddUuid(std::vector<std::string>* out, const api::EngineUuid& uuid) {
-  if (out != nullptr && !EmptyUuid(uuid)) out->push_back(uuid.canonical);
+  if (out != nullptr && !EmptyUuid(uuid)) out->push_back(uuid);
 }
 
 std::vector<std::string> UniqueSorted(std::vector<std::string> values) {
@@ -70,7 +70,7 @@ std::string ProfileDigest(const api::EngineProfileSet& profile_set) {
 }
 
 std::string DescriptorSlotName(const api::EngineColumnDefinition& column, std::size_t fallback) {
-  if (!column.requested_column_uuid.canonical.empty()) return column.requested_column_uuid.canonical;
+  if (!column.requested_column_uuid.is_nil()) return column.requested_column_uuid;
   if (!column.names.empty() && !column.names.front().normalized_lookup_key.empty()) {
     return column.names.front().normalized_lookup_key;
   }
@@ -94,9 +94,9 @@ std::vector<exec::PreparedDescriptorSlot> DescriptorSlotsFromRequest(const api::
 
   for (std::size_t i = 0; i < request.descriptors.size(); ++i) {
     exec::PreparedDescriptorSlot slot;
-    slot.stable_name = request.descriptors[i].descriptor_uuid.canonical.empty()
+    slot.stable_name = request.descriptors[i].descriptor_uuid.is_nil()
                            ? "descriptor:" + std::to_string(i)
-                           : request.descriptors[i].descriptor_uuid.canonical;
+                           : request.descriptors[i].descriptor_uuid;
     slot.descriptor = request.descriptors[i];
     slot.ordinal = static_cast<std::uint32_t>(i);
     slots.push_back(std::move(slot));
@@ -178,8 +178,8 @@ std::vector<exec::PreparedIndexDescriptor> IndexDescriptorsFromRequest(const api
   indexes.reserve(request.indexes.size());
   for (const auto& index : request.indexes) {
     exec::PreparedIndexDescriptor prepared;
-    prepared.index_uuid = index.requested_index_uuid.canonical;
-    prepared.relation_uuid = request.target_object.uuid.canonical;
+    prepared.index_uuid = index.requested_index_uuid;
+    prepared.relation_uuid = request.target_object.uuid;
     prepared.descriptor_digest = exec::PreparedTemplateStableDigest(
         {"index_kind:" + index.index_kind,
          "physical_profile:" + index.physical_profile,
@@ -249,7 +249,7 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
     return BuildFailure("SB_SBLR_PREPARED_TEMPLATE_OPERATION_MISMATCH",
                         "engine API operation_id does not match the SBLR operation envelope");
   }
-  if (!IsCanonicalUuid(context.catalog_epoch_uuid.canonical)) {
+  if (!IsCanonicalUuid(context.catalog_epoch_uuid)) {
     return BuildFailure("SB_SBLR_PREPARED_TEMPLATE_CATALOG_EPOCH_UUID_REQUIRED",
                         "engine context must carry a canonical catalog epoch UUID");
   }
@@ -278,8 +278,8 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
           {"visibility_recheck:engine_statement_use",
            "isolation:" + context.transaction_isolation_level});
   admission.policy_metadata.authorization_policy_digest =
-      exec::PreparedTemplateStableDigest({"principal:" + context.principal_uuid.canonical,
-                                          "role:" + context.current_role_uuid.canonical});
+      exec::PreparedTemplateStableDigest({"principal:" + context.principal_uuid,
+                                          "role:" + context.current_role_uuid});
   admission.policy_metadata.requires_security_context = envelope.requires_security_context;
   admission.policy_metadata.requires_transaction_context = envelope.requires_transaction_context;
 
@@ -288,7 +288,7 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
   admission.key.sblr_digest_or_trace_key = envelope.trace_key.empty()
                                                ? exec::PreparedTemplateStableDigest({EncodeSblrEnvelope(envelope)})
                                                : envelope.trace_key;
-  admission.key.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  admission.key.catalog_epoch_uuid = context.catalog_epoch_uuid;
   admission.key.descriptor_set_digest = exec::PreparedDescriptorSetDigest(request.descriptors, request.columns);
   admission.key.result_shape_digest = result_shape.digest;
   admission.key.epochs.catalog_epoch = context.catalog_generation_id;
@@ -316,7 +316,7 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
       "sblr_prepared_template_source=operation_envelope",
       "parser_sql_text_authority=false",
       "uuid_bound_descriptors_authority=true",
-      "catalog_epoch_uuid_bound=" + context.catalog_epoch_uuid.canonical,
+      "catalog_epoch_uuid_bound=" + context.catalog_epoch_uuid,
       "shared_template_transaction_visibility_authority=false",
   };
   return result;

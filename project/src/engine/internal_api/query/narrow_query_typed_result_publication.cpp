@@ -24,7 +24,7 @@ constexpr const char* kOperandInvalid = "SBLR.OPERAND.INVALID";
 constexpr const char* kAccessDenied = "SECURITY.ACCESS_DENIED";
 constexpr const char* kTransactionInvalid = "MGA.TRANSACTION.INVALID";
 constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
-constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR_INVALID";
+constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kProjectionOutputInvalid =
     "PROJECTION.OUTPUT_ROWSET.INVALID";
 constexpr const char* kResultShapeInvalid = "RESULT_SET.SHAPE_INVALID";
@@ -727,7 +727,8 @@ PublishNarrowQueryTypedResultDirectBatchV1(
   carrier_binding.result_set_uuid = batch.result_set_uuid;
   carrier_binding.snapshot_uuid = batch.snapshot_uuid;
   auto encoded_batch = wire::EncodeTypedResultBatch(
-      batch, state.row_descriptor, carrier_binding);
+      batch, state.row_descriptor, carrier_binding,
+      request.maximum_row_packet_bytes);
   if (!encoded_batch.ok()) {
     return Refuse<NarrowQueryTypedResultDirectResultV1>(
         StatusForDiagnostic(

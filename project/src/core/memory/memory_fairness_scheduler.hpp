@@ -13,6 +13,7 @@
 
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -164,6 +165,9 @@ class MultiTenantMemoryFairnessScheduler {
  public:
   explicit MultiTenantMemoryFairnessScheduler(
       HierarchicalMemoryBudgetLedger* ledger);
+  // The ledger must outlive this owning scheduler. Grant users must quiesce
+  // before explicit release/destruction; revocation alone does not free bytes.
+  ~MultiTenantMemoryFairnessScheduler();
   MultiTenantMemoryFairnessScheduler(
       const MultiTenantMemoryFairnessScheduler&) = delete;
   MultiTenantMemoryFairnessScheduler& operator=(
@@ -174,6 +178,7 @@ class MultiTenantMemoryFairnessScheduler {
   MemoryFairnessDecision Admit(MemoryFairnessRequest request);
   HierarchicalMemoryBudgetOperationResult Release(
       MemoryFairnessGrantToken grant);
+  Status ReleaseNoAlloc(MemoryFairnessGrantToken grant);
   MemoryFairnessSnapshot Snapshot() const;
 
  private:
@@ -197,7 +202,8 @@ class MultiTenantMemoryFairnessScheduler {
 
   struct GrantRecord {
     MemoryFairnessGrantToken grant;
-    std::vector<HierarchicalMemoryScopeRef> scope_chain;
+    std::vector<ScopeState*> scopes;
+    HierarchicalMemoryReservationLease lease;
     u64 priority_weight = 1;
     bool burst_used = false;
   };
@@ -223,7 +229,6 @@ class MultiTenantMemoryFairnessScheduler {
       bool burst_used,
       bool starvation_prevention_applied);
 
-  ScopeState& MutableScopeStateLocked(const HierarchicalMemoryScopeRef& scope);
   const ScopeState* FindScopeStateLocked(
       const HierarchicalMemoryScopeRef& scope) const;
   void RefreshBurstWindowLocked(ScopeState* state, u64 now_ms);
@@ -233,14 +238,15 @@ class MultiTenantMemoryFairnessScheduler {
                               bool* expired) const;
   u64 RequestPriorityWeight(const MemoryFairnessRequest& request) const;
   u64 RootHardLimitLocked(const MemoryFairnessRequest& request) const;
-  u64 ProtectedForegroundHeadroomLocked(
+  std::optional<u64> ProtectedForegroundHeadroomLocked(
       const MemoryFairnessRequest& request,
       u64 request_priority_weight) const;
   bool RequestContainsScopeLocked(const std::string& scope_key,
                                   const MemoryFairnessRequest& request) const;
   MemoryFairnessDecisionAction ReliefActionForRequest(
       const MemoryFairnessRequest& request) const;
-  void CountDecisionLocked(const MemoryFairnessDecision& decision);
+  void CountDecisionLocked(const MemoryFairnessDecision& decision,
+                           const std::vector<HierarchicalMemoryScopeRef>& scopes) noexcept;
   void AttachEvidenceRows(MemoryFairnessDecision* decision,
                           const MemoryFairnessRequest& request,
                           const std::string& reason) const;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "mga_relation_store/mga_row_version_reader.hpp"
+#include "hash_digest.hpp"
 #include "dml/test_optimization_profile.hpp"
 
 #include <algorithm>
@@ -62,20 +63,17 @@ std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
          ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
 }
 
-bool FileExistsAndNotEmpty(const std::string& path) {
-  std::error_code ignored;
-  return std::filesystem::exists(path, ignored) &&
-         std::filesystem::file_size(path, ignored) != 0;
-}
-
-std::vector<std::string> ReadLines(const std::string& path) {
-  std::vector<std::string> lines;
-  std::ifstream in(path, std::ios::binary);
-  std::string line;
-  while (std::getline(in, line)) {
-    lines.push_back(std::move(line));
-  }
-  return lines;
+bool InspectRowSegment(const std::string& path, bool* present) {
+  *present = false;
+  std::error_code error;
+  const auto link = std::filesystem::symlink_status(path, error);
+  if (link.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) return true;
+  if (error) return false;
+  const auto status = std::filesystem::status(path, error);
+  if (error || !std::filesystem::is_regular_file(status)) return false;
+  *present = true;
+  return true;
 }
 
 std::vector<std::string> SplitTabs(const std::string& line) {
@@ -154,15 +152,9 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
 }
 
 struct ScopedDecodedRowCacheEntry {
-  std::uintmax_t file_size = 0;
-  std::int64_t file_mtime_ticks = 0;
   std::vector<CrudRowVersionRecord> rows;
-};
-
-struct ScopedRelationFileIdentity {
-  std::uintmax_t file_size = 0;
-  std::int64_t file_mtime_ticks = 0;
-  bool ok = false;
+  scratchbird::core::hash::Digest256 text_digest{};
+  scratchbird::core::hash::Digest256 binary_digest{};
 };
 
 std::mutex& ScopedDecodedRowCacheMutex() {
@@ -176,93 +168,19 @@ ScopedDecodedRowCache() {
   return cache;
 }
 
-ScopedRelationFileIdentity ScopedRelationTextFileIdentity(
-    const std::string& path) {
-  ScopedRelationFileIdentity identity;
-  std::error_code ignored;
-  const auto file_size = std::filesystem::file_size(path, ignored);
-  if (ignored || file_size == static_cast<std::uintmax_t>(-1)) {
-    return identity;
-  }
-  ignored.clear();
-  const auto mtime = std::filesystem::last_write_time(path, ignored);
-  if (ignored) {
-    return identity;
-  }
-  identity.file_size = file_size;
-  identity.file_mtime_ticks =
-      static_cast<std::int64_t>(mtime.time_since_epoch().count());
-  identity.ok = true;
-  return identity;
-}
-
-ScopedRelationFileIdentity ExistingFileIdentity(const std::string& path) {
-  std::error_code ignored;
-  if (path.empty() || !std::filesystem::exists(path, ignored)) {
-    return {};
-  }
-  return ScopedRelationTextFileIdentity(path);
-}
-
 }  // namespace
 
 void UpdateScopedDecodedRowCacheAfterAppend(
     const std::map<std::string, std::vector<CrudRowVersionRecord>>&
         decoded_appends_by_path,
     const std::map<std::string, std::string>& encoded_appends_by_path) {
-  if (decoded_appends_by_path.empty()) { return; }
+  // Append completion invalidates the old content receipt. Writer hints alone
+  // cannot prove the full readable file; the next reader admits and decodes it
+  // once before subsequent readers may reuse the digest-bound decoded rows.
   const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
   auto& cache = ScopedDecodedRowCache();
-  for (const auto& [path, decoded_rows] : decoded_appends_by_path) {
-    if (decoded_rows.empty()) { continue; }
-    if (decoded_rows.size() > kScopedDecodedRowCacheMaxAutoWarmRows) {
-      cache.erase(path);
-      continue;
-    }
-    const auto encoded = encoded_appends_by_path.find(path);
-    if (encoded == encoded_appends_by_path.end()) {
-      cache.erase(path);
-      continue;
-    }
-    const auto identity = ScopedRelationTextFileIdentity(path);
-    if (!identity.ok) {
-      cache.erase(path);
-      continue;
-    }
-    const std::uintmax_t appended_bytes =
-        static_cast<std::uintmax_t>(encoded->second.size());
-    auto existing = cache.find(path);
-    if (existing == cache.end()) {
-      if (identity.file_size == appended_bytes) {
-        cache.emplace(path,
-                      ScopedDecodedRowCacheEntry{identity.file_size,
-                                                 identity.file_mtime_ticks,
-                                                 decoded_rows});
-      }
-      continue;
-    }
-    if (existing->second.rows.size() + decoded_rows.size() >
-        kScopedDecodedRowCacheMaxAutoWarmRows) {
-      cache.erase(existing);
-      continue;
-    }
-    if (identity.file_size < appended_bytes ||
-        existing->second.file_size != identity.file_size - appended_bytes) {
-      cache.erase(existing);
-      if (identity.file_size == appended_bytes) {
-        cache.emplace(path,
-                      ScopedDecodedRowCacheEntry{identity.file_size,
-                                                 identity.file_mtime_ticks,
-                                                 decoded_rows});
-      }
-      continue;
-    }
-    existing->second.rows.insert(existing->second.rows.end(),
-                                 decoded_rows.begin(),
-                                 decoded_rows.end());
-    existing->second.file_size = identity.file_size;
-    existing->second.file_mtime_ticks = identity.file_mtime_ticks;
-  }
+  for (const auto& [path, rows] : decoded_appends_by_path) cache.erase(path);
+  for (const auto& [path, bytes] : encoded_appends_by_path) cache.erase(path);
 }
 
 bool LoadDecodedScopedRowsForTable(
@@ -270,105 +188,84 @@ bool LoadDecodedScopedRowsForTable(
     const std::string& table_uuid,
     std::vector<CrudRowVersionRecord>* rows,
     bool* used_segment) {
-  if (rows == nullptr) { return false; }
+  if (rows == nullptr) return false;
   rows->clear();
-  if (used_segment != nullptr) { *used_segment = false; }
+  if (used_segment != nullptr) *used_segment = false;
   const std::string path = ScopedRowStorePath(context, table_uuid);
   const std::string binary_path = ScopedRowBinaryStorePath(context, table_uuid);
-  const bool text_exists = FileExistsAndNotEmpty(path);
-  const bool binary_exists = FileExistsAndNotEmpty(binary_path);
-  if (!text_exists && !binary_exists) {
-    return true;
-  }
-  if (used_segment != nullptr) { *used_segment = true; }
-  std::error_code ignored;
-  std::uintmax_t file_size = 0;
-  if (text_exists) {
-    const auto identity = ScopedRelationTextFileIdentity(path);
-    if (!identity.ok) {
-      return false;
-    }
-    file_size += identity.file_size;
-  }
-  if (binary_exists) {
-    ignored.clear();
-    const auto binary_size = std::filesystem::file_size(binary_path, ignored);
-    if (ignored || binary_size == static_cast<std::uintmax_t>(-1)) {
-      return false;
-    }
-    file_size += binary_size;
-  }
-  if (file_size == 0) {
+  std::vector<scratchbird::core::index::byte> text_bytes, binary_bytes;
+  const auto invalidate = [&] {
+    const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
+    ScopedDecodedRowCache().erase(path);
     return false;
-  }
+  };
+  if (!ReadCompleteMgaBinaryFile(path, &text_bytes) ||
+      !ReadCompleteMgaBinaryFile(binary_path, &binary_bytes)) return invalidate();
+  // Cache reuse never substitutes for current complete read admission. Bind
+  // both exact contents, not a summed size or timestamps which can be reused.
+  if (!text_bytes.empty() && text_bytes.back() != '\n') return invalidate();
+  const auto text_digest = scratchbird::core::hash::ComputeSha256Digest(text_bytes);
+  const auto binary_digest = scratchbird::core::hash::ComputeSha256Digest(binary_bytes);
+  if (!text_digest.ok() || !binary_digest.ok()) return invalidate();
+  const bool any_segment = !text_bytes.empty() || !binary_bytes.empty();
   if (!dml::TestScanScalarProfile()) {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
     const auto cached = ScopedDecodedRowCache().find(path);
     if (cached != ScopedDecodedRowCache().end()) {
-      const auto identity = text_exists
-                                ? ScopedRelationTextFileIdentity(path)
-                                : ScopedRelationFileIdentity{};
-      const bool text_identity_matches =
-          !text_exists ||
-          (identity.ok && cached->second.file_mtime_ticks ==
-                              identity.file_mtime_ticks);
-      if (cached->second.file_size == file_size && text_identity_matches) {
+      if (cached->second.text_digest == text_digest.digest &&
+          cached->second.binary_digest == binary_digest.digest) {
         *rows = cached->second.rows;
+        if (used_segment != nullptr) *used_segment = any_segment;
         dml::RecordTestOptimizationBranch("decoded_row_cache_hit");
         return true;
       }
       ScopedDecodedRowCache().erase(cached);
     }
   }
-
   dml::RecordTestOptimizationBranch("decoded_rows_from_store");
   std::vector<CrudRowVersionRecord> decoded_rows;
   std::unordered_map<std::string, std::string> row_value_key_cache;
   row_value_key_cache.reserve(64);
-  if (text_exists) {
-    for (const auto& line : ReadLines(path)) {
-      const auto fields = SplitTabs(line);
-      if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-          fields[1] != "ROW_VERSION") {
-        continue;
-      }
-      CrudRowVersionRecord row;
-      row.creator_tx = ParseU64(fields[2]);
-      row.event_sequence = ParseU64(fields[3]);
-      row.sequence = row.event_sequence;
-      row.table_uuid = fields[4];
-      row.row_uuid = fields[5];
-      row.version_uuid = fields[6];
-      row.deleted = fields[7] == "1";
-      row.previous_version_uuid = fields[8];
-      row.previous_sequence = ParseU64(fields[9]);
-      row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
-      if (fields.size() >= 12) {
-        row.temporary_session_uuid = fields[11];
-      }
-      decoded_rows.push_back(std::move(row));
-    }
+  const std::string_view text = text_bytes.empty() ? std::string_view{} :
+      std::string_view(reinterpret_cast<const char*>(text_bytes.data()), text_bytes.size());
+  std::size_t start = 0;
+  while (start < text.size()) {
+    const auto end = text.find('\n', start);
+    if (end == std::string_view::npos) return invalidate();
+    const auto fields = SplitTabs(std::string(text.substr(start, end - start)));
+    start = end + 1;
+    if ((fields.size() != 11 && fields.size() != 12) ||
+        fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION" ||
+        fields[4] != table_uuid || (fields[7] != "0" && fields[7] != "1")) return invalidate();
+    CrudRowVersionRecord row;
+    row.creator_tx = ParseU64(fields[2]);
+    row.event_sequence = ParseU64(fields[3]);
+    row.sequence = row.event_sequence;
+    row.table_uuid = fields[4];
+    row.row_uuid = fields[5];
+    row.version_uuid = fields[6];
+    row.deleted = fields[7] == "1";
+    row.previous_version_uuid = fields[8];
+    row.previous_sequence = ParseU64(fields[9]);
+    row.values = DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
+    if (fields.size() == 12) row.temporary_session_uuid = fields[11];
+    decoded_rows.push_back(std::move(row));
   }
-  if (binary_exists) {
-    ScopedRelationSummary binary_summary;
-    if (!DecodeScopedRowBinaryStore(binary_path,
-                                    &decoded_rows,
-                                    &binary_summary) ||
-        binary_summary.malformed) {
-      return false;
-    }
-  }
+  ScopedRelationSummary binary_summary;
+  if (!DecodeScopedRowBinaryBytes(binary_bytes, &decoded_rows, &binary_summary) ||
+      binary_summary.malformed) return invalidate();
+  if (std::any_of(decoded_rows.begin(), decoded_rows.end(),
+          [&](const auto& row) { return row.table_uuid != table_uuid; })) return invalidate();
   if (!dml::TestScanScalarProfile()) {
     const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());
-    const auto identity = text_exists
-                              ? ScopedRelationTextFileIdentity(path)
-                              : ScopedRelationFileIdentity{};
-    ScopedDecodedRowCache()[path] = {
-        file_size,
-        identity.ok ? identity.file_mtime_ticks : 0,
-        decoded_rows};
+    ScopedDecodedRowCacheEntry entry;
+    entry.rows = decoded_rows;
+    entry.text_digest = text_digest.digest;
+    entry.binary_digest = binary_digest.digest;
+    ScopedDecodedRowCache()[path] = std::move(entry);
   }
   *rows = std::move(decoded_rows);
+  if (used_segment != nullptr) *used_segment = any_segment;
   return true;
 }
 
@@ -410,13 +307,19 @@ bool LoadDecodedScopedRowsForTableBounded(
   const std::string binary_path =
       ScopedRowBinaryStorePath(context, table_uuid);
   const auto text_existence_started = std::chrono::steady_clock::now();
-  const bool text_exists = FileExistsAndNotEmpty(text_path);
+  bool text_exists = false;
+  const bool text_admitted = InspectRowSegment(text_path, &text_exists);
   if (!AccountHeapReadWait(control, text_existence_started)) return false;
   const auto binary_existence_started = std::chrono::steady_clock::now();
-  const bool binary_exists = FileExistsAndNotEmpty(binary_path);
+  bool binary_exists = false;
+  const bool binary_admitted = InspectRowSegment(binary_path, &binary_exists);
   if (!AccountHeapReadWait(control, binary_existence_started)) return false;
+  if (!text_admitted || !binary_admitted) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_scoped_segment_status_failed";
+    return false;
+  }
   if (!text_exists && !binary_exists) { return true; }
-  if (used_segment != nullptr) { *used_segment = true; }
 
   const auto authorize_file = [&](const std::string& path,
                                   std::uint64_t* authorized_file_bytes) {
@@ -536,9 +439,12 @@ bool LoadDecodedScopedRowsForTableBounded(
         return false;
       }
       const auto fields = SplitTabs(line);
-      if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
-          fields[1] != "ROW_VERSION") {
-        return true;
+      if ((fields.size() != 11 && fields.size() != 12) || fields[0] != kRowStoreMagic ||
+          fields[1] != "ROW_VERSION" || fields[4] != table_uuid ||
+          (fields[7] != "0" && fields[7] != "1")) {
+        control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
+        control->refusal_detail = "heap_read_scoped_text_record_invalid";
+        return false;
       }
       CrudRowVersionRecord row;
       row.creator_tx = ParseU64(fields[2]);
@@ -644,7 +550,11 @@ bool LoadDecodedScopedRowsForTableBounded(
       control->refusal_detail = "heap_read_scoped_text_changed_during_read";
       return false;
     }
-    if (!line.empty() && !consume_line(line)) { return false; }
+    if (!line.empty()) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
+      control->refusal_detail = "heap_read_scoped_text_record_unterminated";
+      return false;
+    }
     const auto parent_memory = decode_parent_memory();
     const auto row_memory = HeapReadRowVectorMemoryBytes(decoded_rows);
     std::uint64_t phase_memory = 0;
@@ -689,11 +599,16 @@ bool LoadDecodedScopedRowsForTableBounded(
       return false;
     }
   }
+  if (std::any_of(decoded_rows.begin(), decoded_rows.end(),
+          [&](const auto& row) { return row.table_uuid != table_uuid; })) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
+    control->refusal_detail = "heap_read_scoped_binary_table_mismatch";
+    return false;
+  }
   *rows = std::move(decoded_rows);
+  if (used_segment != nullptr) *used_segment = authorized_text_bytes != 0 || authorized_binary_bytes != 0;
   return true;
 }
-
-
 
 void ClearScopedDecodedRowCache() {
   const std::lock_guard<std::mutex> guard(ScopedDecodedRowCacheMutex());

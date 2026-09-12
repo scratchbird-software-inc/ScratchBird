@@ -1114,8 +1114,8 @@ std::string StableGenerationUuid(const EngineRequestContext& context,
                                  const std::string& collection_uuid,
                                  std::uint64_t generation_id) {
   const std::string database_seed =
-      !context.database_uuid.canonical.empty()
-          ? context.database_uuid.canonical
+      !context.database_uuid.is_nil()
+          ? context.database_uuid
           : EngineNoSqlProviderDatabaseIdentity(context);
   const std::string seed = database_seed + "|" + provider_id + "|" +
                            collection_uuid + "|" +
@@ -1849,11 +1849,11 @@ std::string GenerationKey(const EngineNoSqlProviderGenerationMetadata& metadata)
 
 bool BoundToContext(const EngineRequestContext& context,
                     const EngineNoSqlProviderGenerationMetadata& metadata) {
-  if (!context.database_uuid.canonical.empty() &&
+  if (!context.database_uuid.is_nil() &&
       !metadata.database_uuid.empty() &&
-      IsValidUuid(context.database_uuid.canonical) &&
+      IsValidUuid(context.database_uuid) &&
       IsValidUuid(metadata.database_uuid)) {
-    return context.database_uuid.canonical == metadata.database_uuid;
+    return context.database_uuid == metadata.database_uuid;
   }
   const auto identity = EngineNoSqlProviderDatabaseIdentity(context);
   return metadata.database_identity.empty() || metadata.database_identity == identity;
@@ -2245,8 +2245,8 @@ std::string EngineNoSqlProviderDatabaseIdentity(
   if (!context.database_path.empty()) {
     return context.database_path;
   }
-  if (!context.database_uuid.canonical.empty()) {
-    return context.database_uuid.canonical;
+  if (!context.database_uuid.is_nil()) {
+    return context.database_uuid;
   }
   return "embedded_transient_nosql_provider";
 }
@@ -2260,8 +2260,8 @@ EngineNoSqlProviderGenerationMetadata MakeDocumentProviderGenerationMetadata(
   metadata.family = EngineNoSqlProviderFamily::kDocument;
   metadata.provider_id = provider_id;
   metadata.database_identity = EngineNoSqlProviderDatabaseIdentity(context);
-  metadata.database_uuid = IsValidUuid(context.database_uuid.canonical)
-                               ? context.database_uuid.canonical
+  metadata.database_uuid = IsValidUuid(context.database_uuid)
+                               ? context.database_uuid
                                : GenerateCrudEngineUuid("database");
   metadata.collection_uuid = collection_uuid;
   metadata.generation_id = generation_id;
@@ -2293,8 +2293,8 @@ EngineNoSqlProviderGenerationResult PublishNoSqlProviderGeneration(
   auto writable = metadata;
   writable.database_identity = EngineNoSqlProviderDatabaseIdentity(context);
   if (writable.database_uuid.empty() || !IsValidUuid(writable.database_uuid)) {
-    writable.database_uuid = IsValidUuid(context.database_uuid.canonical)
-                                 ? context.database_uuid.canonical
+    writable.database_uuid = IsValidUuid(context.database_uuid)
+                                 ? context.database_uuid
                                  : GenerateCrudEngineUuid("database");
   }
   if (writable.descriptor_epoch == 0) {

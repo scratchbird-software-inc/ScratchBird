@@ -325,7 +325,8 @@ bool DurableSavepointMarkerProof(const std::filesystem::path& work_dir) {
   release_savepoint.option_envelopes.push_back("savepoint_name:pcr072_sp");
   ok = ExpectApiOk(api::EngineReleaseSavepoint(release_savepoint),
                    "PCR-072 savepoint release should succeed after rollback") && ok;
-  ok = Expect(api::ActiveMgaSavepointNames(context).empty(),
+  const auto active_savepoints = api::ActiveMgaSavepointNames(context);
+  ok = Expect(!active_savepoints.diagnostic.error && active_savepoints.names.empty(),
               "PCR-072 released savepoint should not remain active") && ok;
   return ok;
 }

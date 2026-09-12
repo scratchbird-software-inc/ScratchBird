@@ -82,7 +82,7 @@ EngineEvaluateDeepSecurityResult EngineEvaluateDeepSecurity(const EngineEvaluate
                   request.required_right);
   }
 
-  const std::string target_uuid = request.target_object.uuid.canonical;
+  const std::string target_uuid = request.target_object.uuid;
   const bool authorized = SecurityContextHasRight(request.context, request.required_right, target_uuid);
   if (!authorized) {
     const bool discovery = request.phase == "catalog_discovery" || request.phase == "name_resolution";

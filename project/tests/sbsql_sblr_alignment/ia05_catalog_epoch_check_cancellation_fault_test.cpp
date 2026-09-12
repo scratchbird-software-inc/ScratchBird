@@ -43,11 +43,20 @@ sblr::SblrOperationEnvelope CatalogEpochCheckMember(
 
 }  // namespace
 
-int main() {
+void RunCleanupOrderingCase(bool cleanup_after_capture) {
   auto fixture = CreateFixture();
   PublicSession session(fixture);
   std::atomic<unsigned> probes{0};
   std::atomic<unsigned> cancel_on_probe{0};
+  auto cleanup_context = BeginTransaction(fixture, &probes);
+  cleanup_context.query_cancellation_requested = {};
+  const auto finish_other_transaction = [&] {
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = cleanup_context;
+    Require(api::EngineRollbackTransaction(rollback).ok,
+            "catalog epoch competing transaction cleanup failed");
+  };
+  if (!cleanup_after_capture) finish_other_transaction();
   auto context = BeginTransaction(fixture, &probes);
   const auto parser_uuid = Text(NewUuid(platform::UuidKind::object, 36320));
   context.current_package_uuid.canonical = parser_uuid;
@@ -208,6 +217,21 @@ int main() {
               still_begun.snapshot.canonical_result_bytes.empty(),
           "003632 prepublication cancellation changed durable result state");
 
+  // Deterministic interleaving: a different active transaction is rolled back
+  // after receipt capture but before observation, just as delayed session
+  // cleanup can do. Do not forge an epoch, touch a timestamp, or mock a fence.
+  const auto before_cleanup = db::AcquireStrongLocalTransactionInventorySnapshot(
+      fixture.database_path.string());
+  Require(before_cleanup.ok(), "catalog epoch pre-cleanup inventory snapshot");
+  if (cleanup_after_capture) finish_other_transaction();
+  const auto cleanup_fence = db::RevalidateLocalTransactionInventorySnapshot(
+      *before_cleanup.snapshot);
+  Require(cleanup_fence.ok() == !cleanup_after_capture,
+          "real transaction cleanup must change only the late-capture fence");
+  const auto before_observation = db::AcquireStrongLocalTransactionInventorySnapshot(
+      fixture.database_path.string());
+  Require(before_observation.ok(), "catalog epoch observation inventory snapshot");
+
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
   bridge::StatementPackageAdmissionReservationHandle success_reservation;
@@ -224,7 +248,7 @@ int main() {
               first_result.data(), first_result.size(), &decoded_result,
               &detail) &&
               decoded_result.check_uuid == descriptor.check_uuid &&
-              decoded_result.status == 1 &&
+              decoded_result.status == (cleanup_after_capture ? 2 : 1) &&
               decoded_result.visibility == 1 &&
               decoded_result.observed_catalog_epoch_uuid ==
                   descriptor.requested_catalog_epoch_uuid &&
@@ -232,6 +256,14 @@ int main() {
                   descriptor.requested_catalog_generation &&
               probes.load(std::memory_order_relaxed) == 2,
           "003632 successful retry omitted canonical SECR");
+  const auto after_observation = db::AcquireStrongLocalTransactionInventorySnapshot(
+      fixture.database_path.string());
+  Require(after_observation.ok() &&
+              after_observation.snapshot->publish_journal_sha256 ==
+                  before_observation.snapshot->publish_journal_sha256 &&
+              after_observation.snapshot->inventory_root_body_sha256 ==
+                  before_observation.snapshot->inventory_root_body_sha256,
+          "catalog epoch observation mutated transaction inventory");
   (void)sb_engine_result_release(result);
   result = nullptr;
   authority = {};
@@ -249,6 +281,14 @@ int main() {
               published.snapshot.journal_generation == 2 &&
               published.snapshot.canonical_result_bytes == first_result,
           "003632 durable journal did not recover exact SECR");
+
+  // A later real inventory change must not rewrite either published outcome.
+  auto later_context = BeginTransaction(fixture, &probes);
+  later_context.query_cancellation_requested = {};
+  api::EngineRollbackTransactionRequest later_rollback;
+  later_rollback.context = later_context;
+  Require(api::EngineRollbackTransaction(later_rollback).ok,
+          "catalog epoch postpublication transaction cleanup failed");
 
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
@@ -270,5 +310,14 @@ int main() {
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,
           "003632 fixture transaction rollback failed");
+  std::cout << "catalog_epoch_cleanup_order="
+            << (cleanup_after_capture ? "after_capture" : "before_capture")
+            << " status=" << (cleanup_after_capture ? 2 : 1)
+            << " cancellation_and_exact_replay=PASS\n";
+}
+
+int main() {
+  RunCleanupOrderingCase(false);
+  RunCleanupOrderingCase(true);
   return EXIT_SUCCESS;
 }

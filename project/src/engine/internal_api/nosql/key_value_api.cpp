@@ -50,7 +50,7 @@ std::map<std::string, KeyValueMap>& PhysicalStores() {
 
 std::string StoreKey(const EngineRequestContext& context) {
   if (!context.database_path.empty()) { return context.database_path; }
-  if (!context.database_uuid.canonical.empty()) { return context.database_uuid.canonical; }
+  if (!context.database_uuid.is_nil()) { return context.database_uuid; }
   return "embedded_transient_kv_provider";
 }
 
@@ -60,8 +60,8 @@ std::string RequestKey(const EngineApiRequest& request,
   if (!request.localized_names.empty() && !request.localized_names.front().name.empty()) {
     return request.localized_names.front().name;
   }
-  if (!request.target_object.uuid.canonical.empty()) {
-    return request.target_object.uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) {
+    return request.target_object.uuid;
   }
   return {};
 }
@@ -378,8 +378,8 @@ void UpsertPhysicalRecord(const EngineKeyValuePutRequest& request,
                           const EngineKeyValuePutResult& result) {
   PhysicalKeyValueRecord record;
   record.key = RequestKey(request, request.key);
-  record.object_uuid = result.primary_object.uuid.canonical;
-  record.row_uuid = result.catalog_row_uuid.canonical;
+  record.object_uuid = result.primary_object.uuid;
+  record.row_uuid = result.catalog_row_uuid;
   if (record.row_uuid.empty()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
   record.value = RequestPayloadValue(request, result);
   record.creator_tx = request.context.local_transaction_id;
@@ -391,7 +391,7 @@ void UpsertPhysicalRecord(const EngineKeyValuePutRequest& request,
   if (!logical_key.empty()) {
     auto& stored = PhysicalStores()[StoreKey(request.context)];
     stored[logical_key] = std::move(record);
-    const auto canonical_key = result.primary_object.uuid.canonical;
+    const auto canonical_key = result.primary_object.uuid;
     if (!canonical_key.empty() && canonical_key != logical_key) {
       auto alias = stored[logical_key];
       alias.key = canonical_key;
@@ -789,7 +789,7 @@ bool ExactKeyValueValueDescriptor(const EngineDescriptor& descriptor,
         !fields.contains("datatype_descriptor_uuid") ||
         fields.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
-        descriptor.descriptor_uuid.canonical !=
+        descriptor.descriptor_uuid !=
             expected_column_uuid ||
         !fields.contains("datatype_descriptor_generation") ||
         fields.at("datatype_descriptor_generation") !=
@@ -866,14 +866,14 @@ bool ExactKeyValueStorageDescriptorImpl(
         column.identity_column || column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
-        !CanonicalKeyValueUuid(column.column_uuid.canonical) ||
+        !CanonicalKeyValueUuid(column.column_uuid) ||
         !CanonicalKeyValueUuid(
-            column.value_descriptor.descriptor_uuid.canonical) ||
-        !column_uuids.insert(column.column_uuid.canonical).second ||
+            column.value_descriptor.descriptor_uuid) ||
+        !column_uuids.insert(column.column_uuid).second ||
         !ExactKeyValueValueDescriptor(column.value_descriptor,
                                       kTypes[ordinal], expected_type_uuid,
                                       expected_registry_identity,
-                                      column.column_uuid.canonical,
+                                      column.column_uuid,
                                       kNullable[ordinal])) {
       return false;
     }
@@ -1032,13 +1032,13 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
                   detail);
   }
   const auto& persisted = preflight.descriptor;
-  if (persisted.relation_uuid.canonical != request.object_uuid ||
-      persisted.database_uuid.canonical !=
-          request.context.database_uuid.canonical ||
-      persisted.schema_uuid.canonical.empty() ||
+  if (persisted.relation_uuid != request.object_uuid ||
+      persisted.database_uuid !=
+          request.context.database_uuid ||
+      persisted.schema_uuid.is_nil() ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
-      persisted.descriptor_uuid.canonical !=
+      persisted.descriptor_uuid !=
           request.expected_descriptor_uuid ||
       persisted.descriptor_generation !=
           request.expected_descriptor_generation) {
@@ -1093,7 +1093,7 @@ EngineBoundKeyValueReadResultV1 EngineBoundKeyValueReadV1(
   result.exact_fallback_observed = request.exact_fallback_selected;
   result.scanned_row_version_count = read.scanned_row_version_count;
   result.selected_visible_row_count = read.visible_rows.size();
-  result.descriptor_uuid = read.descriptor.descriptor_uuid.canonical;
+  result.descriptor_uuid = read.descriptor.descriptor_uuid;
   result.descriptor_generation = read.descriptor.descriptor_generation;
   result.selected_alternative_uuid = request.selected_alternative_uuid;
   result.capability_uuid = request.capability_uuid;

@@ -19,11 +19,18 @@
 #include "uuid.hpp"
 
 #include <filesystem>
+#include <mutex>
 #include <sstream>
 
 namespace scratchbird::server {
 
 namespace {
+
+// Server process lifetime, not a copyable HostedEngineState or a path namespace.
+// Serialize acquisition before any filesystem activity and permanently bind
+// this process after the first successful hosted open. Failed startup can retry.
+std::mutex hosted_process_mutex;
+bool hosted_process_bound = false;
 
 std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
@@ -94,20 +101,20 @@ const char* HostedDatabaseStateName(HostedDatabaseState state) {
 
 std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
     const HostedEngineState& state,
-    std::string_view database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     std::string_view canonical_database_path) {
   for (const auto& runtime : state.database_runtimes) {
     if (!runtime) {
       continue;
     }
-    if (!database_uuid.empty() && runtime->database_uuid != database_uuid) {
+    if (!database_uuid.is_nil() && runtime->database_uuid != database_uuid) {
       continue;
     }
     if (!canonical_database_path.empty() &&
         runtime->canonical_database_path != canonical_database_path) {
       continue;
     }
-    if (!database_uuid.empty() || !canonical_database_path.empty()) {
+    if (!database_uuid.is_nil() || !canonical_database_path.empty()) {
       return runtime;
     }
   }
@@ -127,8 +134,35 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
       config.database_policy_seed_pack_root.string();
   snapshot.lifecycle_mode = config.database_open_mode;
 
+  if (config.database_daemon_scope != "dedicated") {
+    result.state.engine_context_active = false;
+    snapshot.state = HostedDatabaseState::kFailed;
+    snapshot.diagnostic_code = "SERVER.DAEMON.SCOPE_INVALID";
+    snapshot.diagnostic_message_key = "server.daemon.scope_invalid";
+    result.diagnostics.push_back(EngineHostDiagnostic(
+        snapshot.diagnostic_code, snapshot.diagnostic_message_key,
+        "A server process requires dedicated single-database ownership.",
+        snapshot.database_path));
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
+
   if (snapshot.database_path.empty()) {
     snapshot.state = HostedDatabaseState::kNotConfigured;
+    result.state.databases.push_back(snapshot);
+    return result;
+  }
+
+  std::unique_lock process_lock(hosted_process_mutex, std::try_to_lock);
+  if (!process_lock.owns_lock() || hosted_process_bound) {
+    result.state.engine_context_active = false;
+    snapshot.state = HostedDatabaseState::kFailed;
+    snapshot.diagnostic_code = "SERVER.STARTUP.DATABASE_OPEN_FAILED";
+    snapshot.diagnostic_message_key = "server.startup.database_open_failed";
+    result.diagnostics.push_back(EngineHostDiagnostic(
+        snapshot.diagnostic_code, snapshot.diagnostic_message_key,
+        "This server process is already opening or bound to a database; use a separate server process.",
+        snapshot.database_path));
     result.state.databases.push_back(snapshot);
     return result;
   }
@@ -270,10 +304,8 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   }
   snapshot.database_created = false;
   snapshot.database_open = true;
-  snapshot.database_uuid =
-      scratchbird::core::uuid::UuidToString(lifecycle_open.state.database_uuid.value);
-  snapshot.filespace_uuid =
-      scratchbird::core::uuid::UuidToString(lifecycle_open.state.filespace_uuid.value);
+  snapshot.database_uuid = lifecycle_open.state.database_uuid.value;
+  snapshot.filespace_uuid = lifecycle_open.state.filespace_uuid.value;
   snapshot.page_size_bytes = lifecycle_open.state.header.page_size;
   snapshot.state = StateForConfig(config);
   snapshot.startup_recovery_classification =
@@ -341,7 +373,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   // retained.
   engine::internal_api::EngineRequestContext prepared_recovery_context;
   prepared_recovery_context.database_path = snapshot.database_path;
-  prepared_recovery_context.database_uuid.canonical = snapshot.database_uuid;
+  prepared_recovery_context.database_uuid = snapshot.database_uuid;
   prepared_recovery_context.security_context_present = true;
   prepared_recovery_context.trace_tags.push_back(
       "right:SBLR_PREPARED_COORDINATION_ADMIN");
@@ -471,6 +503,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   }
   result.state.database_runtimes.push_back(std::move(database_runtime));
   result.state.databases.push_back(snapshot);
+  hosted_process_bound = true;
   return result;
 }
 
@@ -483,8 +516,12 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
     if (i != 0) out << ',';
     out << "{\"state\":\"" << HostedDatabaseStateName(database.state) << "\","
         << "\"database_path\":\"" << JsonEscape(database.database_path) << "\","
-        << "\"database_uuid\":\"" << JsonEscape(database.database_uuid) << "\","
-        << "\"filespace_uuid\":\"" << JsonEscape(database.filespace_uuid) << "\","
+        << "\"database_uuid\":\""
+        << JsonEscape(scratchbird::core::uuid::UuidToString(database.database_uuid))
+        << "\","
+        << "\"filespace_uuid\":\""
+        << JsonEscape(scratchbird::core::uuid::UuidToString(database.filespace_uuid))
+        << "\","
         << "\"page_size_bytes\":" << database.page_size_bytes << ","
         << "\"database_created\":" << (database.database_created ? "true" : "false") << ","
         << "\"database_open\":" << (database.database_open ? "true" : "false") << ","
@@ -495,7 +532,8 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
         << "\"database_engine_agent_state\":\""
         << JsonEscape(database.database_engine_agent_state) << "\","
         << "\"database_engine_agent_instance_uuid\":\""
-        << JsonEscape(database.database_engine_agent_instance_uuid) << "\","
+        << JsonEscape(scratchbird::core::uuid::UuidToString(
+               database.database_engine_agent_instance_uuid)) << "\","
         << "\"database_engine_agent_health_generation\":"
         << database.database_engine_agent_health_generation << ","
         << "\"database_engine_agent_ordinary_admission_allowed\":"

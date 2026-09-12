@@ -12,26 +12,15 @@
 
 #include <algorithm>
 #include <ranges>
+#include <new>
+#include <stdexcept>
 #include <string_view>
 
 namespace scratchbird::engine::optimizer {
 namespace {
 
-bool CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  bool nonzero = false;
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-    nonzero = nonzero || ch != '0';
-  }
-  return nonzero;
+bool CanonicalUuid(const planner::CanonicalPlannerUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool CanonicalDigest(const std::string_view value) {
@@ -59,7 +48,7 @@ bool CommonAuthorityValid(const CanonicalPlannerContextAuthority& authority,
 
 const planner::CanonicalLogicalPropertyRecord* FindProperty(
     const planner::CanonicalLogicalPropertyCatalog& properties,
-    const std::string& property_uuid) {
+    const planner::CanonicalPlannerUuid& property_uuid) {
   const auto found = std::ranges::find_if(
       properties.properties, [&](const auto& property) {
         return property.property_uuid == property_uuid;
@@ -68,45 +57,67 @@ const planner::CanonicalLogicalPropertyRecord* FindProperty(
 }
 
 bool RootRequires(const planner::CanonicalLogicalRelationalNode& root,
-                  const std::string& property_uuid) {
+                  const planner::CanonicalPlannerUuid& property_uuid) {
   return std::ranges::find(root.required_property_uuids, property_uuid) !=
          root.required_property_uuids.end();
 }
 
-std::string HypothesisSetDigest(
-    const CanonicalPlannerWhatIfContext& context) {
-  std::string payload = context.authority.context_uuid + "|" +
-                        std::to_string(context.authority.generation) + "|" +
-                        context.policy_uuid + "|" +
-                        std::to_string(context.policy_generation);
-  for (const auto& hypothesis : context.hypotheses) {
-    payload += "|" +
-               std::to_string(static_cast<std::uint8_t>(
-                   hypothesis.hypothesis_kind)) +
-               ":" + hypothesis.hypothesis_uuid + ":" +
-               std::to_string(hypothesis.generation) + ":" +
-               hypothesis.definition_digest;
-  }
-  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
-      reinterpret_cast<const scratchbird::core::platform::byte*>(
-          payload.data()),
-      payload.size());
-  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest)
-                     : std::string{};
+void EncodeAuthority(planner::CanonicalPlannerBindingBytes& out,
+                     const CanonicalPlannerContextAuthority& authority) {
+  out.Identity(authority.context_uuid);
+  out.Number(authority.generation);
+  out.Identity(authority.authority_uuid);
+  out.Number(authority.authority_generation);
+  out.Number(authority.confidence_basis_points);
+  out.Text(authority.dependency_signature);
+  out.Text(authority.invalid_state_behavior_id);
+  out.Flag(authority.engine_owned);
+  out.Flag(authority.parser_execution_authority_claimed);
+  out.Flag(authority.transaction_visibility_authority_claimed);
+  out.Flag(authority.transaction_finality_authority_claimed);
+  out.Flag(authority.recovery_authority_claimed);
 }
 
-std::string ReplayIdentity(
-    const CanonicalPlannerContinuationContext& context) {
-  return context.authority.context_uuid + ":" +
-         std::to_string(context.authority.generation) + ":" +
-         context.prepared_statement_uuid + ":" +
-         std::to_string(context.prepared_statement_generation) + ":" +
-         context.cursor_uuid + ":" +
-         std::to_string(context.cursor_generation) + ":" +
-         context.continuation_token_uuid + ":" +
-         std::to_string(context.continuation_token_generation) + ":" +
-         context.resume_boundary_uuid + ":" +
-         std::to_string(context.resume_boundary_generation);
+std::string HypothesisSetDigest(const CanonicalPlannerWhatIfContext& context) {
+  planner::CanonicalPlannerBindingBytes out("planner-what-if-v2");
+  out.Number(context.abi_version);
+  EncodeAuthority(out, context.authority);
+  out.Identity(context.policy_uuid);
+  out.Number(context.policy_generation);
+  out.Flag(context.enabled); out.Flag(context.advisory_only);
+  out.Flag(context.normal_plan_influence_permitted);
+  out.Number(context.hypotheses.size());
+  for (const auto& hypothesis : context.hypotheses) {
+    out.Number(static_cast<std::uint8_t>(hypothesis.hypothesis_kind));
+    out.Identity(hypothesis.hypothesis_uuid);
+    out.Number(hypothesis.generation);
+    out.Text(hypothesis.definition_digest);
+  }
+  const auto bytes = std::move(out).Take();
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const scratchbird::core::platform::byte*>(bytes.data()), bytes.size());
+  return digest.ok() ? scratchbird::core::hash::HexLower(digest.digest) : std::string{};
+}
+
+std::string ReplayIdentity(const CanonicalPlannerContinuationContext& context) {
+  planner::CanonicalPlannerBindingBytes out("planner-continuation-replay-v2");
+  out.Number(context.abi_version);
+  EncodeAuthority(out, context.authority);
+  out.Identity(context.prepared_statement_uuid);
+  out.Number(context.prepared_statement_generation);
+  out.Identity(context.cursor_uuid); out.Number(context.cursor_generation);
+  out.Identity(context.continuation_token_uuid);
+  out.Number(context.continuation_token_generation);
+  out.Identity(context.resume_boundary_uuid); out.Number(context.resume_boundary_generation);
+  out.Identity(context.result_schema_uuid);
+  out.Identity(context.required_ordering_property_uuid);
+  out.Identity(context.required_materialization_property_uuid);
+  out.Identity(context.required_rewindability_property_uuid);
+  out.Number(static_cast<std::uint8_t>(context.cursor_mode));
+  out.Number(static_cast<std::uint8_t>(context.holdability));
+  out.Flag(context.continuation_requested);
+  out.Flag(context.single_use_replay_required);
+  return std::move(out).Take();
 }
 
 }  // namespace
@@ -115,7 +126,7 @@ CanonicalPlannerContextValidationResult ValidateCanonicalPlannerContexts(
     const planner::CanonicalLogicalRelationalGraph& graph,
     const planner::CanonicalLogicalPropertyCatalog& properties,
     const std::optional<CanonicalPlannerContinuationContext>& continuation,
-    const std::optional<CanonicalPlannerWhatIfContext>& what_if) {
+    const std::optional<CanonicalPlannerWhatIfContext>& what_if) try {
   CanonicalPlannerContextValidationResult result;
   const auto refuse = [&](std::string field_id) {
     result = {};
@@ -233,20 +244,20 @@ CanonicalPlannerContextValidationResult ValidateCanonicalPlannerContexts(
       context.hypotheses.size() > 64) {
     return refuse("what_if_isolation");
   }
-  std::string previous_key;
+  using HypothesisKey = std::pair<std::uint8_t, planner::CanonicalPlannerUuid>;
+  std::optional<HypothesisKey> previous_key;
   for (const auto& hypothesis : context.hypotheses) {
     const auto known_kind =
         hypothesis.hypothesis_kind >=
             CanonicalPlannerWhatIfHypothesisKind::kIndex &&
         hypothesis.hypothesis_kind <=
             CanonicalPlannerWhatIfHypothesisKind::kPolicy;
-    const auto key = std::to_string(static_cast<std::uint8_t>(
-                         hypothesis.hypothesis_kind)) +
-                     ":" + hypothesis.hypothesis_uuid;
+    const HypothesisKey key{static_cast<std::uint8_t>(hypothesis.hypothesis_kind),
+                            hypothesis.hypothesis_uuid};
     if (!known_kind || !CanonicalUuid(hypothesis.hypothesis_uuid) ||
         hypothesis.generation == 0 ||
         !CanonicalDigest(hypothesis.definition_digest) ||
-        (!previous_key.empty() && key <= previous_key)) {
+        (previous_key && key <= *previous_key)) {
       return refuse("what_if_hypothesis_inventory");
     }
     previous_key = key;
@@ -266,12 +277,18 @@ CanonicalPlannerContextValidationResult ValidateCanonicalPlannerContexts(
   result.execution_allowed = false;
   result.what_if_receipt = std::move(receipt);
   return result;
+} catch (const std::bad_alloc&) {
+  return {};
+} catch (const std::length_error&) {
+  return {};
 }
 
 bool ValidateCanonicalContinuationPhysicalRoot(
     CanonicalPlannerContinuationReceipt* receipt,
     const executor::TypedPhysicalNodeDag& dag) {
-  if (receipt == nullptr || !CanonicalPlannerContinuationReceiptValid(*receipt) ||
+  if (receipt == nullptr) return false;
+  receipt->physical_root_delivery_validated = false;
+  if (!CanonicalPlannerContinuationReceiptValid(*receipt) ||
       !dag.optimizer_published || !dag.immutable_node_identity_validated ||
       !dag.property_contract_validated ||
       dag.bound_sblr_tree_uuid != receipt->bound_sblr_tree_uuid) {
@@ -284,7 +301,7 @@ bool ValidateCanonicalContinuationPhysicalRoot(
       root->relational_node_id != receipt->root_logical_node_id) {
     return false;
   }
-  const auto delivered = [&](const std::string& property_uuid) {
+  const auto delivered = [&](const planner::CanonicalPlannerUuid& property_uuid) {
     return std::ranges::find(root->delivered_property_uuids, property_uuid) !=
            root->delivered_property_uuids.end();
   };
@@ -335,7 +352,9 @@ bool CanonicalPlannerContinuationReplayMatches(
     const CanonicalPlannerContinuationReceipt& expected,
     const CanonicalPlannerContinuationReplayRequest& replay,
     CanonicalPlannerContinuationReplayReceipt* receipt) {
-  if (receipt == nullptr || !CanonicalPlannerContinuationReceiptValid(expected) ||
+  if (receipt == nullptr) return false;
+  *receipt = {};
+  if (!CanonicalPlannerContinuationReceiptValid(expected) ||
       replay.abi_version != 1 || !replay.engine_replay_authorized ||
       !replay.cursor_state_revalidated ||
       !replay.continuation_state_revalidated ||
@@ -344,24 +363,32 @@ bool CanonicalPlannerContinuationReplayMatches(
       replay.recovery_authority_claimed || replay.context != expected.context) {
     return false;
   }
-  receipt->replay_identity = ReplayIdentity(replay.context);
-  receipt->continuation_context_uuid = replay.context.authority.context_uuid;
-  receipt->continuation_generation = replay.context.authority.generation;
-  receipt->prepared_statement_uuid = replay.context.prepared_statement_uuid;
-  receipt->prepared_statement_generation =
-      replay.context.prepared_statement_generation;
-  receipt->cursor_uuid = replay.context.cursor_uuid;
-  receipt->cursor_generation = replay.context.cursor_generation;
-  receipt->continuation_token_uuid = replay.context.continuation_token_uuid;
-  receipt->continuation_token_generation =
-      replay.context.continuation_token_generation;
-  receipt->resume_boundary_uuid = replay.context.resume_boundary_uuid;
-  receipt->resume_boundary_generation =
-      replay.context.resume_boundary_generation;
-  receipt->identity_revalidated = true;
-  receipt->dependency_revalidated = true;
-  receipt->optimizer_reinvoked = false;
-  return true;
+  try {
+    CanonicalPlannerContinuationReplayReceipt staged;
+    staged.replay_identity = ReplayIdentity(replay.context);
+    staged.continuation_context_uuid = replay.context.authority.context_uuid;
+    staged.continuation_generation = replay.context.authority.generation;
+    staged.prepared_statement_uuid = replay.context.prepared_statement_uuid;
+    staged.prepared_statement_generation =
+        replay.context.prepared_statement_generation;
+    staged.cursor_uuid = replay.context.cursor_uuid;
+    staged.cursor_generation = replay.context.cursor_generation;
+    staged.continuation_token_uuid = replay.context.continuation_token_uuid;
+    staged.continuation_token_generation =
+        replay.context.continuation_token_generation;
+    staged.resume_boundary_uuid = replay.context.resume_boundary_uuid;
+    staged.resume_boundary_generation =
+        replay.context.resume_boundary_generation;
+    staged.identity_revalidated = true;
+    staged.dependency_revalidated = true;
+    staged.optimizer_reinvoked = false;
+    *receipt = std::move(staged);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
 }
 
 }  // namespace scratchbird::engine::optimizer

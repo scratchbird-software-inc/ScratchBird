@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "statistics_catalog.hpp"
+
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -51,6 +53,7 @@ struct OptimizerRuntimeFeedback {
   bool mga_visibility_recheck_preserved = true;
   bool parser_or_reference_authority = false;
   std::string transaction_finality_authority = "engine_transaction_inventory";
+  std::optional<OptimizerStatisticTarget> statistic_target;
 };
 
 struct OptimizerCalibratedCostProfile {
@@ -64,6 +67,7 @@ struct OptimizerCalibratedCostProfile {
   std::uint64_t spill_penalty_pages = 0;
   std::uint64_t uncertainty_penalty = 0;
   std::string profile_id = "feedback_disabled";
+  std::optional<OptimizerStatisticTarget> statistic_target;
 };
 
 struct OptimizerMemoryGrantFeedback {

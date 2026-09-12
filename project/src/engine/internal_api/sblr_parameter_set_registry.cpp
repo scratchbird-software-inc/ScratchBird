@@ -504,7 +504,7 @@ SblrParameterBindPublicationResult LoadBindLocked(
     const EngineRequestContext& context, const std::string& descriptor_uuid) {
   SblrParameterBindPublicationResult result;
   if (context.database_path.empty() ||
-      !ValidUuid(context.database_uuid.canonical,
+      !ValidUuid(context.database_uuid,
                  scratchbird::core::platform::UuidKind::database) ||
       !ValidUuid(descriptor_uuid,
                  scratchbird::core::platform::UuidKind::object)) {
@@ -524,7 +524,7 @@ SblrParameterBindPublicationResult LoadBindLocked(
   std::string trailing;
   if (!std::getline(in, line) || std::getline(in, trailing) || !in.eof() ||
       !DecodeBindRecord(line, &result.snapshot) ||
-      result.snapshot.database_uuid != context.database_uuid.canonical ||
+      result.snapshot.database_uuid != context.database_uuid ||
       result.snapshot.parameter_set_descriptor_uuid != descriptor_uuid) {
     result.diagnostic = Diagnostic("SBLR.PARAMETER.STALE",
                                    "sblr.parameter_bind.corrupt",
@@ -582,7 +582,7 @@ SblrParameterSetLoadResult LoadLocked(const EngineRequestContext& context,
                                      const std::string& descriptor_uuid) {
   SblrParameterSetLoadResult result;
   if (context.database_path.empty() ||
-      !ValidUuid(context.database_uuid.canonical,
+      !ValidUuid(context.database_uuid,
                  scratchbird::core::platform::UuidKind::database) ||
       !ValidUuid(descriptor_uuid,scratchbird::core::platform::UuidKind::object)) {
     result.diagnostic=Diagnostic("SBLR.PARAMETER.STALE","sblr.parameter_set.identity_invalid","fail closed");
@@ -602,7 +602,7 @@ SblrParameterSetLoadResult LoadLocked(const EngineRequestContext& context,
         !DecodeRecord(lines[i+1],"SNAPSHOT",&snapshot,&sp,&sg,&sr) ||
         lines[i].substr(lines[i].find('\t',lines[i].find('\t')+1)) !=
             lines[i+1].substr(lines[i+1].find('\t',lines[i+1].find('\t')+1)) ||
-        ep!=sp || eg!=sg || er!=sr || snapshot.database_uuid!=context.database_uuid.canonical ||
+        ep!=sp || eg!=sg || er!=sr || snapshot.database_uuid!=context.database_uuid ||
         snapshot.parameter_set_descriptor_uuid!=descriptor_uuid ||
         ((i==0) ? (!ep.empty()||eg!=0||snapshot.snapshot_generation!=1||
                     snapshot.descriptor_generation!=1||
@@ -626,8 +626,8 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
     const EngineRequestContext& context,const SblrParameterSetIssueRequest& request) {
   std::lock_guard lock(RegistryMutex()); SblrParameterSetMutationResult result;
   if (!HasPrivateReceiptAuthority(context)) { result.diagnostic=Diagnostic("SECURITY.ACCESS_DENIED","sblr.parameter_set.issue_denied","engine-owned private statement receipt required"); return result; }
-  if (!ValidUuid(context.database_uuid.canonical,scratchbird::core::platform::UuidKind::database) ||
-      !ValidUuid(context.session_uuid.canonical,scratchbird::core::platform::UuidKind::session) ||
+  if (!ValidUuid(context.database_uuid,scratchbird::core::platform::UuidKind::database) ||
+      !ValidUuid(context.session_uuid,scratchbird::core::platform::UuidKind::session) ||
       !ValidUuid(request.statement_receipt_uuid,scratchbird::core::platform::UuidKind::object) ||
       !ValidUuid(request.execution_uuid,scratchbird::core::platform::UuidKind::object) ||
       context.catalog_generation_id==0||context.security_epoch==0||context.resource_epoch==0||
@@ -642,8 +642,8 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
     result.diagnostic=Diagnostic("SBLR.OPERAND_INVALID","sblr.parameter_set.identity_matrix_invalid","prepared and dynamic identities are mutually exclusive"); return result;
   }
   SblrParameterSetSnapshot value; value.snapshot_uuid=GenerateUuid(scratchbird::core::platform::UuidKind::object,1);
-  value.snapshot_generation=1; value.database_uuid=context.database_uuid.canonical;
-  value.session_uuid=context.session_uuid.canonical; value.statement_receipt_uuid=request.statement_receipt_uuid;
+  value.snapshot_generation=1; value.database_uuid=context.database_uuid;
+  value.session_uuid=context.session_uuid; value.statement_receipt_uuid=request.statement_receipt_uuid;
   value.execution_uuid=request.execution_uuid; value.parameter_set_descriptor_uuid=GenerateUuid(scratchbird::core::platform::UuidKind::object,2);
   value.descriptor_generation=1; value.prepared_statement_uuid=request.prepared_statement_uuid;
   value.prepared_generation=request.prepared_generation; value.batch_uuid=request.batch_uuid;
@@ -655,7 +655,7 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
     const auto& demand=request.slots[i]; const auto direction=static_cast<unsigned>(demand.direction);
     if (!ValidUuid(demand.datatype_descriptor_uuid,scratchbird::core::platform::UuidKind::object)||
         demand.datatype_descriptor_generation==0||direction<1||direction>3) {
-      result.diagnostic=Diagnostic("DATATYPE.DESCRIPTOR_INVALID","sblr.parameter_set.slot_descriptor_invalid","exact datatype identity required"); return result;
+      result.diagnostic=Diagnostic("DATATYPE.DESCRIPTOR.INVALID","sblr.parameter_set.slot_descriptor_invalid","exact datatype identity required"); return result;
     }
     value.slots.push_back({static_cast<std::uint32_t>(i),GenerateUuid(scratchbird::core::platform::UuidKind::object,3+i),demand.datatype_descriptor_uuid,demand.datatype_descriptor_generation,demand.direction,demand.nullable});
   }
@@ -698,9 +698,9 @@ SblrParameterBindPublicationResult PublishSblrParameterBinding(
   const char* authority_mismatch = nullptr;
   if (admitted.state != SblrParameterSetState::active)
     authority_mismatch = "parameter_set_not_active";
-  else if (admitted.database_uuid != context.database_uuid.canonical)
+  else if (admitted.database_uuid != context.database_uuid)
     authority_mismatch = "database_uuid";
-  else if (admitted.session_uuid != context.session_uuid.canonical)
+  else if (admitted.session_uuid != context.session_uuid)
     authority_mismatch = "session_uuid";
   else if (request.parameter_set_descriptor_uuid !=
            admitted.parameter_set_descriptor_uuid)
@@ -760,8 +760,8 @@ SblrParameterBindPublicationResult PublishSblrParameterBinding(
                   "canonical bind identities and value evidence required");
   }
   SblrParameterBindPublicationSnapshot proposed;
-  proposed.database_uuid = context.database_uuid.canonical;
-  proposed.session_uuid = context.session_uuid.canonical;
+  proposed.database_uuid = context.database_uuid;
+  proposed.session_uuid = context.session_uuid;
   proposed.statement_receipt_uuid = request.statement_receipt_uuid;
   proposed.execution_uuid = request.execution_uuid;
   proposed.prepared_statement_uuid = request.prepared_statement_uuid;
@@ -855,7 +855,7 @@ EngineApiDiagnostic BeginSblrParameterSetRegistryRecovery(
     return Diagnostic("SECURITY.ACCESS_DENIED","sblr.parameter_set.recovery_denied","startup recovery authority required");
   }
   for (auto it=LiveSets().begin();it!=LiveSets().end();) {
-    if (it->second.database_uuid==context.database_uuid.canonical) it=LiveSets().erase(it);
+    if (it->second.database_uuid==context.database_uuid) it=LiveSets().erase(it);
     else ++it;
   }
   return MakeEngineApiDiagnostic("OK","ok",{},false);
@@ -895,7 +895,7 @@ EngineApiDiagnostic RevalidateSblrParameterSet(
   if(!loaded.ok)return loaded.diagnostic; if(current)*current=loaded.snapshot;
   if(loaded.snapshot.state!=SblrParameterSetState::active)return Diagnostic("SBLR.PARAMETER.STALE","sblr.parameter_set.revoked","parameter set revoked");
   if(loaded.snapshot.snapshot_uuid!=admitted.snapshot_uuid||loaded.snapshot.snapshot_generation!=admitted.snapshot_generation||loaded.snapshot.descriptor_generation!=admitted.descriptor_generation||
-     loaded.snapshot.session_uuid!=context.session_uuid.canonical||loaded.snapshot.statement_receipt_uuid!=receipt||loaded.snapshot.execution_uuid!=execution||
+     loaded.snapshot.session_uuid!=context.session_uuid||loaded.snapshot.statement_receipt_uuid!=receipt||loaded.snapshot.execution_uuid!=execution||
      loaded.snapshot.prepared_statement_uuid!=prepared||loaded.snapshot.prepared_generation!=prepared_generation||loaded.snapshot.batch_uuid!=batch||loaded.snapshot.batch_generation!=batch_generation||loaded.snapshot.dynamic_package_uuid!=dynamic||loaded.snapshot.dynamic_generation!=dynamic_generation||
      loaded.snapshot.catalog_generation!=context.catalog_generation_id||loaded.snapshot.security_epoch!=context.security_epoch||loaded.snapshot.resource_epoch!=context.resource_epoch)
     return Diagnostic("SBLR.PARAMETER.STALE","sblr.parameter_set.binding_stale","immutable binding changed");

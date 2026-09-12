@@ -10,9 +10,8 @@
 
 #include "uuid.hpp"
 
-#include <cstdlib>
-#include <map>
-#include <sstream>
+#include <algorithm>
+#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -26,8 +25,13 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
-using scratchbird::core::uuid::ParseTypedUuid;
-using scratchbird::core::uuid::UuidToString;
+using scratchbird::core::platform::byte;
+using scratchbird::core::platform::LoadLittle16;
+using scratchbird::core::platform::LoadLittle32;
+using scratchbird::core::platform::StoreLittle16;
+using scratchbird::core::platform::StoreLittle32;
+constexpr std::size_t kBinaryHeaderBytes = 96;
+constexpr std::size_t kMaxBinaryRecordBytes = 131072;
 using scratchbird::storage::page::CatalogPageRowKind;
 
 Status CodecOkStatus() {
@@ -50,43 +54,14 @@ CatalogRecordCodecResult CodecError(std::string diagnostic_code,
   return result;
 }
 
-std::string Escape(std::string value) {
-  for (char& ch : value) {
-    if (ch == '\n' || ch == '\r') {
-      ch = ' ';
-    }
-  }
-  return value;
-}
-
-std::string Field(std::string key, std::string value) {
-  return std::move(key) + "=" + Escape(std::move(value)) + "\n";
-}
-
-std::map<std::string, std::string> ParseFields(const std::string& payload) {
-  std::map<std::string, std::string> fields;
-  std::stringstream stream(payload);
-  std::string line;
-  while (std::getline(stream, line)) {
-    const std::size_t pos = line.find('=');
-    if (pos == std::string::npos) {
-      continue;
-    }
-    fields[line.substr(0, pos)] = line.substr(pos + 1);
-  }
-  return fields;
-}
-
 bool IsTypedIdentity(const scratchbird::core::platform::TypedUuid& uuid, UuidKind expected) {
   return uuid.kind == expected && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
 
-std::string MaybeUuidString(const scratchbird::core::platform::TypedUuid& uuid) {
-  return uuid.valid() ? UuidToString(uuid.value) : "";
-}
-
-CatalogRecordKind ParseKind(const std::string& value) {
-  return static_cast<CatalogRecordKind>(std::strtoul(value.c_str(), nullptr, 10));
+bool IsSuppliedIdentity(const scratchbird::core::platform::TypedUuid& uuid) {
+  // Only the default pair denotes absence. A malformed supplied reference
+  // must not vanish behind TypedUuid::valid() during catalog serialization.
+  return uuid.kind != UuidKind::unknown || !uuid.value.is_nil();
 }
 
 }  // namespace
@@ -105,12 +80,14 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
                       "catalog.record_codec.version_unsupported",
                       CatalogRecordKindName(record.header.kind));
   }
-  if (descriptor.descriptor.requires_row_uuid && !IsTypedIdentity(record.header.row_uuid, UuidKind::row)) {
+  if ((descriptor.descriptor.requires_row_uuid || IsSuppliedIdentity(record.header.row_uuid)) &&
+      !IsTypedIdentity(record.header.row_uuid, UuidKind::row)) {
     return CodecError("SB-CATALOG-RECORD-CODEC-ROW-UUID-MUST-BE-V7",
                       "catalog.record_codec.row_uuid_must_be_v7",
                       CatalogRecordKindName(record.header.kind));
   }
-  if (descriptor.descriptor.requires_object_uuid && !IsTypedIdentity(record.header.object_uuid, UuidKind::object)) {
+  if ((descriptor.descriptor.requires_object_uuid || IsSuppliedIdentity(record.header.object_uuid)) &&
+      !IsTypedIdentity(record.header.object_uuid, UuidKind::object)) {
     return CodecError("SB-CATALOG-RECORD-CODEC-OBJECT-UUID-MUST-BE-V7",
                       "catalog.record_codec.object_uuid_must_be_v7",
                       CatalogRecordKindName(record.header.kind));
@@ -127,18 +104,45 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
                       CatalogRecordKindName(record.header.kind));
   }
 
+  if (IsSuppliedIdentity(record.header.parent_uuid)) {
+    const auto parent = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+        record.header.parent_uuid.kind, record.header.parent_uuid.value);
+    if (!parent.ok()) {
+      CatalogRecordCodecResult refused;
+      refused.status = parent.status;
+      refused.diagnostic = parent.diagnostic;
+      return refused;
+    }
+  }
+
+  if (record.payload.size() > kMaxBinaryRecordBytes - kBinaryHeaderBytes) {
+    return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+                      "catalog.record_codec.fields_missing", "binary_record_size_limit");
+  }
   CatalogRecordCodecResult result;
   result.status = CodecOkStatus();
   result.record = record;
   result.row.kind = CatalogPageRowKind::typed_catalog_record;
   result.row.ordinal = ordinal;
-  result.row.payload = Field("kind", std::to_string(static_cast<u16>(record.header.kind))) +
-                       Field("record_version", std::to_string(record.header.record_version)) +
-                       Field("deleted", record.header.deleted ? "1" : "0") +
-                       Field("row_uuid", MaybeUuidString(record.header.row_uuid)) +
-                       Field("object_uuid", MaybeUuidString(record.header.object_uuid)) +
-                       Field("parent_uuid", MaybeUuidString(record.header.parent_uuid)) +
-                       Field("payload", record.payload);
+  result.row.payload.assign(kBinaryHeaderBytes + record.payload.size(), '\0');
+  auto* bytes = reinterpret_cast<byte*>(result.row.payload.data());
+  std::memcpy(bytes, "SBCTREC2", 8);
+  StoreLittle16(bytes + 8, 2);
+  StoreLittle16(bytes + 10, kBinaryHeaderBytes);
+  StoreLittle32(bytes + 12, static_cast<u32>(result.row.payload.size()));
+  StoreLittle16(bytes + 16, static_cast<u16>(record.header.kind));
+  StoreLittle32(bytes + 20, record.header.record_version);
+  StoreLittle32(bytes + 24, record.header.deleted ? 1 : 0);
+  StoreLittle32(bytes + 28, static_cast<u32>(record.payload.size()));
+  const scratchbird::core::platform::TypedUuid* identities[] = {
+      &record.header.row_uuid, &record.header.object_uuid, &record.header.parent_uuid};
+  for (std::size_t i = 0; i < 3; ++i) {
+    bytes[32 + i] = static_cast<byte>(identities[i]->kind);
+    const auto& id = identities[i]->value.bytes;
+    std::copy(id.begin(), id.end(), bytes + 40 + i * 16);
+  }
+  std::copy(record.payload.begin(), record.payload.end(),
+            result.row.payload.begin() + kBinaryHeaderBytes);
   return result;
 }
 
@@ -147,50 +151,40 @@ CatalogRecordCodecResult DecodeCatalogTypedRecord(const CatalogPageRow& row) {
     return CodecError("SB-CATALOG-RECORD-CODEC-ROW-KIND-INVALID",
                       "catalog.record_codec.row_kind_invalid");
   }
-  const auto fields = ParseFields(row.payload);
-  if (fields.count("kind") == 0 || fields.count("row_uuid") == 0) {
+  const auto malformed = [](const char* detail) {
     return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
-                      "catalog.record_codec.fields_missing");
+                      "catalog.record_codec.fields_missing", detail);
+  };
+  if (row.payload.size() < kBinaryHeaderBytes || row.payload.size() > kMaxBinaryRecordBytes) {
+    return malformed("binary_record_size_invalid");
   }
-
+  const auto* bytes = reinterpret_cast<const byte*>(row.payload.data());
+  if (std::memcmp(bytes, "SBCTREC2", 8) != 0 || LoadLittle16(bytes + 8) != 2 ||
+      LoadLittle16(bytes + 10) != kBinaryHeaderBytes) {
+    return CodecError("SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
+                      "catalog.record_codec.version_unsupported", "binary_header_required");
+  }
+  if (LoadLittle32(bytes + 12) != row.payload.size() ||
+      LoadLittle32(bytes + 28) != row.payload.size() - kBinaryHeaderBytes ||
+      LoadLittle16(bytes + 18) != 0 || (LoadLittle32(bytes + 24) & ~1u) != 0 ||
+      !std::all_of(bytes + 35, bytes + 40, [](byte value) { return value == 0; }) ||
+      !std::all_of(bytes + 88, bytes + 96, [](byte value) { return value == 0; })) {
+    return malformed("binary_lengths_flags_or_reserved_invalid");
+  }
   CatalogTypedRecord record;
-  record.header.kind = ParseKind(fields.at("kind"));
-  record.header.record_version = fields.count("record_version") == 0
-                                     ? 1
-                                     : static_cast<u32>(std::strtoul(fields.at("record_version").c_str(), nullptr, 10));
-  record.header.deleted = fields.count("deleted") != 0 && fields.at("deleted") == "1";
-
-  const auto row_uuid = ParseTypedUuid(UuidKind::row, fields.at("row_uuid"));
-  if (!row_uuid.ok()) {
-    CatalogRecordCodecResult result;
-    result.status = row_uuid.status;
-    result.diagnostic = row_uuid.diagnostic;
-    return result;
+  record.header.kind = static_cast<CatalogRecordKind>(LoadLittle16(bytes + 16));
+  record.header.record_version = LoadLittle32(bytes + 20);
+  record.header.deleted = LoadLittle32(bytes + 24) != 0;
+  scratchbird::core::platform::TypedUuid* identities[] = {
+      &record.header.row_uuid, &record.header.object_uuid, &record.header.parent_uuid};
+  for (std::size_t i = 0; i < 3; ++i) {
+    identities[i]->kind = static_cast<UuidKind>(bytes[32 + i]);
+    std::copy(bytes + 40 + i * 16, bytes + 56 + i * 16, identities[i]->value.bytes.begin());
   }
-  record.header.row_uuid = row_uuid.value;
-
-  if (fields.count("object_uuid") != 0 && !fields.at("object_uuid").empty()) {
-    const auto object_uuid = ParseTypedUuid(UuidKind::object, fields.at("object_uuid"));
-    if (!object_uuid.ok()) {
-      CatalogRecordCodecResult result;
-      result.status = object_uuid.status;
-      result.diagnostic = object_uuid.diagnostic;
-      return result;
-    }
-    record.header.object_uuid = object_uuid.value;
-  }
-  if (fields.count("parent_uuid") != 0 && !fields.at("parent_uuid").empty()) {
-    const auto parent_uuid = ParseTypedUuid(UuidKind::object, fields.at("parent_uuid"));
-    if (!parent_uuid.ok()) {
-      CatalogRecordCodecResult result;
-      result.status = parent_uuid.status;
-      result.diagnostic = parent_uuid.diagnostic;
-      return result;
-    }
-    record.header.parent_uuid = parent_uuid.value;
-  }
-  record.payload = fields.count("payload") == 0 ? "" : fields.at("payload");
-
+  record.payload.assign(row.payload.data() + kBinaryHeaderBytes,
+                        row.payload.size() - kBinaryHeaderBytes);
+  // The shared admission path enforces descriptor requiredness and exact UUID
+  // kind/version/variant policy before publishing any decoded authority.
   return EncodeCatalogTypedRecord(record, row.ordinal);
 }
 

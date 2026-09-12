@@ -232,7 +232,7 @@ inline scratchbird::storage::page::LargePayloadStore& EngineNoSqlLargePayloadSto
   namespace page = scratchbird::storage::page;
   static std::map<std::string, page::LargePayloadStore> stores;
   std::string key = context.database_path;
-  if (key.empty()) { key = context.database_uuid.canonical; }
+  if (key.empty()) { key = context.database_uuid; }
   if (key.empty()) { key = "embedded_transient_large_payload_store"; }
   return stores[key];
 }
@@ -251,7 +251,7 @@ inline EngineApiU64 EngineNoSqlDiagnosticPayloadSeed(
   };
   mix(operation_id);
   mix(object_kind);
-  mix(request.target_object.uuid.canonical);
+  mix(request.target_object.uuid);
   mix(payload);
   hash ^= request.context.local_transaction_id;
   return hash == 0 ? 1 : hash;
@@ -287,7 +287,7 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
     split_request.database_uuid = EngineNoSqlParseUuid(
         platform::UuidKind::database,
         EngineNoSqlOptionValue(request, "large_payload.database_uuid")
-            .value_or(request.context.database_uuid.canonical));
+            .value_or(request.context.database_uuid));
     split_request.filespace_uuid = EngineNoSqlParseUuid(
         platform::UuidKind::filespace,
         EngineNoSqlOptionValue(request, "large_payload.filespace_uuid")
@@ -295,17 +295,17 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
     split_request.owner_object_uuid = EngineNoSqlParseUuid(
         platform::UuidKind::object,
         EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
-            .value_or(request.target_object.uuid.canonical));
+            .value_or(request.target_object.uuid));
     split_request.row_uuid = split_request.owner_object_uuid;
     split_request.transaction_uuid = EngineNoSqlParseUuid(
         platform::UuidKind::transaction,
         EngineNoSqlOptionValue(request, "large_payload.transaction_uuid")
-            .value_or(request.context.transaction_uuid.canonical));
+            .value_or(request.context.transaction_uuid));
     split_request.chunk_policy_uuid = EngineNoSqlParseUuid(
         platform::UuidKind::object,
         EngineNoSqlOptionValue(request, "large_payload.chunk_policy_uuid")
             .value_or(EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
-                          .value_or(request.target_object.uuid.canonical)));
+                          .value_or(request.target_object.uuid)));
     split_request.local_transaction_id = request.context.local_transaction_id;
     split_request.family = EngineNoSqlLargePayloadFamily(object_kind);
     split_request.cold_threshold_bytes = inline_threshold;
@@ -316,7 +316,7 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
         "nosql_hot_cold_split;diagnostic_only=true;finality_authority=false;visibility_authority=false;mga_authority=durable_transaction_inventory";
     split_request.fields.push_back({"surface", object_kind, true, true, true, false, true, false});
     split_request.fields.push_back({"object_uuid",
-                                    request.target_object.uuid.canonical,
+                                    request.target_object.uuid,
                                     true,
                                     true,
                                     true,
@@ -376,7 +376,7 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
   storage_request.database_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::database,
       EngineNoSqlOptionValue(request, "large_payload.database_uuid")
-          .value_or(request.context.database_uuid.canonical));
+          .value_or(request.context.database_uuid));
   storage_request.filespace_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::filespace,
       EngineNoSqlOptionValue(request, "large_payload.filespace_uuid")
@@ -384,16 +384,16 @@ inline EngineNoSqlPayloadResolution EngineNoSqlResolvePayloadForStorage(
   storage_request.owner_object_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::object,
       EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
-          .value_or(request.target_object.uuid.canonical));
+          .value_or(request.target_object.uuid));
   storage_request.transaction_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::transaction,
       EngineNoSqlOptionValue(request, "large_payload.transaction_uuid")
-          .value_or(request.context.transaction_uuid.canonical));
+          .value_or(request.context.transaction_uuid));
   storage_request.chunk_policy_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::object,
       EngineNoSqlOptionValue(request, "large_payload.chunk_policy_uuid")
           .value_or(EngineNoSqlOptionValue(request, "large_payload.owner_object_uuid")
-                        .value_or(request.target_object.uuid.canonical)));
+                        .value_or(request.target_object.uuid)));
   storage_request.local_transaction_id = request.context.local_transaction_id;
   storage_request.family = EngineNoSqlLargePayloadFamily(object_kind);
   storage_request.payload_bytes = EngineNoSqlPayloadBytes(resolution.payload);
@@ -595,10 +595,10 @@ TResult EngineNoSqlPublishHeavyImmutableGeneration(
       platform::UuidKind::object,
       EngineNoSqlOptionValue(request,
                              "heavy_generation.table_or_collection_uuid")
-          .value_or(request.target_object.uuid.canonical));
+          .value_or(request.target_object.uuid));
   validation.identity.transaction_uuid = EngineNoSqlParseUuid(
       platform::UuidKind::transaction,
-      request.context.transaction_uuid.canonical);
+      request.context.transaction_uuid);
   validation.identity.family = family;
   validation.identity.profile = profile;
   const auto source_rows =

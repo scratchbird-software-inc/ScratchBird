@@ -271,7 +271,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
                 ? std::map<std::string, std::string>::const_iterator{}
                 : fields->find("datatype_descriptor_uuid");
         const bool canonical_text =
-            column.value_descriptor.descriptor_uuid.canonical ==
+            column.value_descriptor.descriptor_uuid ==
                 kCanonicalTextDescriptorUuid ||
             (fields != std::nullopt && embedded != fields->end() &&
              embedded->second == kCanonicalTextDescriptorUuid);
@@ -331,7 +331,7 @@ EngineApiDiagnostic AppendMgaTableMetadataWithSealedContextualTextDescriptorV2(
   fields[stf::kTemporarySessionUuid] = writable.temporary_session_uuid;
   fields[stf::kOnCommitAction] = writable.on_commit_action;
   fields[stf::kRelationDescriptorUuid] =
-      material.relation_descriptor.descriptor_uuid.canonical;
+      material.relation_descriptor.descriptor_uuid;
   fields[stf::kRelationDescriptorGeneration] =
       std::to_string(material.relation_descriptor.descriptor_generation);
   fields[stf::kDescriptorFieldCount] =
@@ -379,7 +379,7 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
       !ValidConstraintBatchUuid(
           batch.constraint_uuid,
           scratchbird::core::platform::UuidKind::object) ||
-      batch.database_uuid != context.database_uuid.canonical ||
+      batch.database_uuid != context.database_uuid ||
       !ValidConstraintBatchUuid(
           batch.owner_table_uuid,
           scratchbird::core::platform::UuidKind::object) ||
@@ -688,17 +688,17 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   if (!parent_storage.ok) return parent_storage.diagnostic;
   const auto& child_relation = child_storage.descriptor;
   const auto& parent_relation = parent_storage.descriptor;
-  if (child_relation.database_uuid.canonical != batch.database_uuid ||
-      child_relation.relation_uuid.canonical != batch.owner_table_uuid ||
-      child_relation.schema_uuid.canonical != batch.child_schema_uuid ||
-      child_relation.descriptor_uuid.canonical !=
+  if (child_relation.database_uuid != batch.database_uuid ||
+      child_relation.relation_uuid != batch.owner_table_uuid ||
+      child_relation.schema_uuid != batch.child_schema_uuid ||
+      child_relation.descriptor_uuid !=
           batch.child_relation_descriptor_uuid ||
       child_relation.descriptor_generation !=
           batch.child_relation_descriptor_generation ||
-      parent_relation.database_uuid.canonical != batch.database_uuid ||
-      parent_relation.relation_uuid.canonical != batch.parent_table_uuid ||
-      parent_relation.schema_uuid.canonical != batch.parent_schema_uuid ||
-      parent_relation.descriptor_uuid.canonical !=
+      parent_relation.database_uuid != batch.database_uuid ||
+      parent_relation.relation_uuid != batch.parent_table_uuid ||
+      parent_relation.schema_uuid != batch.parent_schema_uuid ||
+      parent_relation.descriptor_uuid !=
           batch.parent_relation_descriptor_uuid ||
       parent_relation.descriptor_generation !=
           batch.parent_relation_descriptor_generation) {
@@ -708,12 +708,12 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   const auto child_column = std::find_if(
       child_relation.columns.begin(), child_relation.columns.end(),
       [&](const MgaRelationColumnStorageDescriptor& column) {
-        return column.column_uuid.canonical == batch.child_column_uuid;
+        return column.column_uuid == batch.child_column_uuid;
       });
   const auto parent_column = std::find_if(
       parent_relation.columns.begin(), parent_relation.columns.end(),
       [&](const MgaRelationColumnStorageDescriptor& column) {
-        return column.column_uuid.canonical == batch.parent_column_uuid;
+        return column.column_uuid == batch.parent_column_uuid;
       });
   const std::string quoted = RelationDescriptorFieldOrEmpty(
       *envelope_fields, {"constraint_name_quoted"});
@@ -761,7 +761,7 @@ EngineApiDiagnostic AppendMgaConstraintMutationBatch(
   const auto descriptor_support = std::find_if(
       parent_relation.indexes.begin(), parent_relation.indexes.end(),
       [&](const MgaRelationIndexStorageDescriptor& index) {
-        return index.index_uuid.canonical == batch.support_uuid &&
+        return index.index_uuid == batch.support_uuid &&
                index.unique && index.family == "btree";
       });
   auto key_columns = [](const CrudIndexRecord& index) {
@@ -875,8 +875,8 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     return result;
   };
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      context.transaction_uuid.is_nil()) {
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "bigint_identity_migration_context_invalid",
                   "active MGA transaction and database path required");
   }
@@ -892,10 +892,10 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
       request.prior_catalog_snapshot_uuid == request.new_catalog_snapshot_uuid ||
       request.prior_catalog_generation == 0 ||
       request.new_catalog_generation != request.prior_catalog_generation + 1 ||
-      (!context.statement_metadata_snapshot_uuid.canonical.empty() &&
-       context.statement_metadata_snapshot_uuid.canonical !=
+      (!context.statement_metadata_snapshot_uuid.is_nil() &&
+       context.statement_metadata_snapshot_uuid !=
            request.prior_catalog_snapshot_uuid)) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "bigint_identity_migration_snapshot_stale",
                   "exact prior snapshot and consecutive catalog generation required");
   }
@@ -941,7 +941,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
     }
     if (exact == nullptr ||
         newest_visible_generation != requested.old_row_generation) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "bigint_identity_migration_row_generation_stale",
                     requested.object_uuid);
     }
@@ -971,7 +971,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
       const auto type = descriptor_fields->find("type_uuid");
       if (type == descriptor_fields->end() ||
           type->second != kLegacyBigintTypeUuid) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "bigint_identity_migration_legacy_identity_required",
                       requested.column_uuid);
       }
@@ -1004,7 +1004,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
   }
   for (std::size_t i = 0; i < tables.size(); ++i) {
     if (reservation.first <= request.rows[i].old_row_generation) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "bigint_identity_migration_generation_not_advanced",
                     request.rows[i].object_uuid);
     }
@@ -1016,19 +1016,19 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
   for (std::size_t i = 0; i < request.rows.size(); ++i) {
     decisions.push_back(BigintMigrationDecisionHash(
         request, request.rows[i], tables[i].event_sequence,
-        context.transaction_uuid.canonical));
+        context.transaction_uuid));
     if (decisions.back().empty()) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "bigint_identity_migration_hash_failed", "sha256");
     }
   }
   const std::string payload = CanonicalBigintMigrationPayload(
       request, context.local_transaction_id, reservation.first,
-      context.transaction_uuid.canonical, tables,
+      context.transaction_uuid, tables,
       decisions);
   result.decision_sha256 = Sha256Tagged(payload);
   if (result.decision_sha256.empty()) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "bigint_identity_migration_hash_failed", "batch");
   }
   std::vector<std::string> fields{
@@ -1040,7 +1040,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
       "sealed",
       result.decision_sha256,
       request.migration_id,
-      context.transaction_uuid.canonical,
+      context.transaction_uuid,
       request.prior_catalog_snapshot_uuid,
       request.new_catalog_snapshot_uuid,
       std::to_string(request.prior_catalog_generation),
@@ -1064,7 +1064,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
   // Publication is this single append. MGA visibility subsequently admits it
   // only for its creator or after the owning transaction commits.
   if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "bigint_identity_migration_append_failed",
                   "sealed batch was not published");
   }
@@ -1073,7 +1073,7 @@ MgaBigintIdentityMigrationResult AppendMgaBigintIdentityMigrationBatch(
   result.diagnostic = OkDiagnostic();
   result.evidence = {
       {"migration_id", request.migration_id},
-      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"transaction_uuid", context.transaction_uuid},
       {"prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid},
       {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
       {"prior_catalog_generation", std::to_string(request.prior_catalog_generation)},
@@ -1093,8 +1093,8 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
     return result;
   };
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      context.transaction_uuid.is_nil()) {
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "int32_identity_migration_context_invalid",
                   "active MGA transaction and database path required");
   }
@@ -1110,10 +1110,10 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
       request.prior_catalog_snapshot_uuid == request.new_catalog_snapshot_uuid ||
       request.prior_catalog_generation == 0 ||
       request.new_catalog_generation != request.prior_catalog_generation + 1 ||
-      (!context.statement_metadata_snapshot_uuid.canonical.empty() &&
-       context.statement_metadata_snapshot_uuid.canonical !=
+      (!context.statement_metadata_snapshot_uuid.is_nil() &&
+       context.statement_metadata_snapshot_uuid !=
            request.prior_catalog_snapshot_uuid)) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "int32_identity_migration_snapshot_stale",
                   "exact prior snapshot and consecutive catalog generation required");
   }
@@ -1145,7 +1145,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
         requested.object_uuid);
     if (object_generation != object_generations.end() &&
         object_generation->second != requested.old_row_generation) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "int32_identity_migration_row_generation_stale",
                     requested.object_uuid);
     }
@@ -1175,7 +1175,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
       }
       if (exact == nullptr ||
           newest_visible_generation != requested.old_row_generation) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "int32_identity_migration_row_generation_stale",
                       requested.object_uuid);
       }
@@ -1211,7 +1211,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
           type_uuid == descriptor_fields->end() ||
           descriptor_uuid->second != kLegacyInt32DescriptorUuid ||
           type_uuid->second != kLegacyInt32TypeUuid) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "int32_identity_migration_legacy_identity_required",
                       requested.column_uuid);
       }
@@ -1249,7 +1249,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
   }
   for (auto& [object_uuid, table] : updated_by_object) {
     if (reservation.first <= object_generations[object_uuid]) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "int32_identity_migration_generation_not_advanced",
                     object_uuid);
     }
@@ -1266,18 +1266,18 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
   for (std::size_t i = 0; i < request.rows.size(); ++i) {
     decisions.push_back(Int32MigrationDecisionHash(
         request, request.rows[i], tables[i].event_sequence,
-        context.transaction_uuid.canonical));
+        context.transaction_uuid));
     if (decisions.back().empty()) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "int32_identity_migration_hash_failed", "sha256");
     }
   }
   const std::string payload = CanonicalInt32MigrationPayload(
       request, context.local_transaction_id, reservation.first,
-      context.transaction_uuid.canonical, tables, decisions);
+      context.transaction_uuid, tables, decisions);
   result.decision_sha256 = Sha256Tagged(payload);
   if (result.decision_sha256.empty()) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "int32_identity_migration_hash_failed", "batch");
   }
   std::vector<std::string> fields{
@@ -1289,7 +1289,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
       "sealed",
       result.decision_sha256,
       request.migration_id,
-      context.transaction_uuid.canonical,
+      context.transaction_uuid,
       request.prior_catalog_snapshot_uuid,
       request.new_catalog_snapshot_uuid,
       std::to_string(request.prior_catalog_generation),
@@ -1313,7 +1313,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
         "0", "", "", ""});
   }
   if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "int32_identity_migration_append_failed",
                   "sealed batch was not published");
   }
@@ -1322,7 +1322,7 @@ MgaInt32IdentityMigrationResult AppendMgaInt32IdentityMigrationBatch(
   result.diagnostic = OkDiagnostic();
   result.evidence = {
       {"migration_id", request.migration_id},
-      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"transaction_uuid", context.transaction_uuid},
       {"prior_catalog_snapshot_uuid", request.prior_catalog_snapshot_uuid},
       {"new_catalog_snapshot_uuid", request.new_catalog_snapshot_uuid},
       {"prior_catalog_generation",
@@ -1348,8 +1348,8 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     return result;
   };
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      context.transaction_uuid.is_nil()) {
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_context_invalid",
                   "active MGA transaction and database path required");
   }
@@ -1369,9 +1369,9 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
           std::numeric_limits<std::uint64_t>::max() ||
       request.new_catalog_generation != request.prior_catalog_generation + 1 ||
       context.catalog_generation_id != request.prior_catalog_generation ||
-      context.statement_metadata_snapshot_uuid.canonical !=
+      context.statement_metadata_snapshot_uuid !=
           request.prior_catalog_snapshot_uuid) {
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_snapshot_stale",
                   "exact prior snapshot, registry row, and consecutive catalog generation required");
   }
@@ -1412,7 +1412,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
         requested.object_uuid);
     if (object_generation != object_generations.end() &&
         object_generation->second != requested.old_row_generation) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_row_generation_stale",
                     requested.object_uuid);
     }
@@ -1444,7 +1444,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
       }
       if (exact == nullptr ||
           newest_visible_generation != requested.old_row_generation) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "text_identity_migration_row_generation_stale",
                       requested.object_uuid);
       }
@@ -1458,13 +1458,13 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
       const auto loaded_descriptor = LoadMgaRelationStorageDescriptor(
           context, requested.object_uuid);
       if (!loaded_descriptor.ok ||
-          loaded_descriptor.descriptor.database_uuid.canonical !=
-              context.database_uuid.canonical ||
-          loaded_descriptor.descriptor.relation_uuid.canonical !=
+          loaded_descriptor.descriptor.database_uuid !=
+              context.database_uuid ||
+          loaded_descriptor.descriptor.relation_uuid !=
               requested.object_uuid ||
           loaded_descriptor.descriptor.relation_generation !=
               requested.old_row_generation) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "text_identity_migration_relation_snapshot_stale",
                       requested.object_uuid);
       }
@@ -1478,16 +1478,16 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     std::size_t storage_matches = 0;
     for (auto candidate = storage.columns.begin();
          candidate != storage.columns.end(); ++candidate) {
-      if (candidate->column_uuid.canonical != requested.column_uuid) continue;
+      if (candidate->column_uuid != requested.column_uuid) continue;
       ++storage_matches;
       storage_column = candidate;
     }
     if (storage_matches != 1 || storage_column == storage.columns.end() ||
         storage_column->canonical_name_key.empty() ||
         storage_column->column_generation != requested.old_row_generation ||
-        storage_column->value_descriptor.descriptor_uuid.canonical !=
+        storage_column->value_descriptor.descriptor_uuid !=
             requested.column_uuid) {
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_relation_column_stale",
                     requested.column_uuid);
     }
@@ -1503,7 +1503,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
           !RewriteLegacyTextDescriptor(context, &migrated_storage_descriptor,
                                        requested.column_uuid) ||
           descriptor != migrated_storage_descriptor) {
-        return refuse("DATATYPE.DESCRIPTOR_INVALID",
+        return refuse("DATATYPE.DESCRIPTOR.INVALID",
                       "text_identity_migration_legacy_identity_required",
                       requested.column_uuid);
       }
@@ -1515,7 +1515,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                       "text_identity_migration_nullability_conflict",
                       requested.column_uuid);
       }
-      storage_column->value_descriptor.descriptor_uuid.canonical =
+      storage_column->value_descriptor.descriptor_uuid =
           requested.column_uuid;
       storage_column->value_descriptor.canonical_type_name = "text";
       storage_column->value_descriptor.encoded_descriptor = descriptor;
@@ -1541,7 +1541,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
                                    [&context](const auto& column) {
           return ExactCanonicalMigratedTextDescriptor(
                      context, column.value_descriptor.encoded_descriptor,
-                     column.column_uuid.canonical) &&
+                     column.column_uuid) &&
                  !column.charset_uuid.empty() &&
                  !column.collation_uuid.empty();
         });
@@ -1574,7 +1574,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   for (auto& [object_uuid, table] : updated_by_object) {
     if (reservation.first <= object_generations[object_uuid]) {
       abandon_reservation();
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_generation_not_advanced",
                     object_uuid);
     }
@@ -1584,7 +1584,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     descriptor.relation_generation = reservation.first;
     for (auto& column : descriptor.columns) {
       if (changed_columns_by_object[object_uuid].contains(
-              column.column_uuid.canonical)) {
+              column.column_uuid)) {
         column.column_generation = reservation.first;
       }
     }
@@ -1592,7 +1592,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
         ValidateMgaRelationStorageDescriptor(descriptor);
     if (descriptor_validation.error) {
       abandon_reservation();
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_relation_descriptor_invalid",
                     descriptor_validation.detail);
     }
@@ -1600,7 +1600,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     if (DeserializeMgaRelationStorageDescriptor(serialized)
             .relation_generation != reservation.first) {
       abandon_reservation();
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_relation_descriptor_roundtrip_failed",
                     object_uuid);
     }
@@ -1619,7 +1619,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
     snapshot.event_sequence = table.event_sequence;
     snapshot.relation_uuid = object_uuid;
     snapshot.relation_descriptor_uuid =
-        material.relation_descriptor.descriptor_uuid.canonical;
+        material.relation_descriptor.descriptor_uuid;
     snapshot.relation_descriptor_generation =
         material.relation_descriptor.descriptor_generation;
     snapshot.descriptor_field_count =
@@ -1655,28 +1655,28 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   for (std::size_t i = 0; i < request.rows.size(); ++i) {
     decisions.push_back(TextMigrationDecisionHash(
         request, request.rows[i], tables[i].event_sequence,
-        context.transaction_uuid.canonical,
-        context.datatype_catalog_snapshot_uuid.canonical,
+        context.transaction_uuid,
+        context.datatype_catalog_snapshot_uuid,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,
         relation_descriptor_snapshots[i]));
     if (decisions.back().empty()) {
       abandon_reservation();
-      return refuse("DATATYPE.DESCRIPTOR_INVALID",
+      return refuse("DATATYPE.DESCRIPTOR.INVALID",
                     "text_identity_migration_hash_failed", "sha256");
     }
   }
   const std::string payload = CanonicalTextMigrationPayload(
       request, context.local_transaction_id, reservation.first,
-      context.transaction_uuid.canonical,
-      context.datatype_catalog_snapshot_uuid.canonical,
+      context.transaction_uuid,
+      context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation,
       context.datatype_registry_generation,
       tables, relation_descriptor_snapshots, decisions);
   result.decision_sha256 = Sha256Tagged(payload);
   if (result.decision_sha256.empty()) {
     abandon_reservation();
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_hash_failed", "batch");
   }
   std::vector<std::string> fields{
@@ -1688,12 +1688,12 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
       "sealed",
       result.decision_sha256,
       request.migration_id,
-      context.transaction_uuid.canonical,
+      context.transaction_uuid,
       request.prior_catalog_snapshot_uuid,
       request.new_catalog_snapshot_uuid,
       std::to_string(request.prior_catalog_generation),
       std::to_string(request.new_catalog_generation),
-      context.datatype_catalog_snapshot_uuid.canonical,
+      context.datatype_catalog_snapshot_uuid,
       std::to_string(context.datatype_catalog_generation),
       std::to_string(context.datatype_registry_generation),
       std::to_string(request.rows.size())};
@@ -1727,7 +1727,7 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   }
   if (!AppendLine(MetadataStorePath(context), JoinLine(fields))) {
     abandon_reservation();
-    return refuse("DATATYPE.DESCRIPTOR_INVALID",
+    return refuse("DATATYPE.DESCRIPTOR.INVALID",
                   "text_identity_migration_append_failed",
                   "sealed batch and relation descriptor were not published");
   }
@@ -1741,9 +1741,9 @@ MgaTextIdentityMigrationResult AppendMgaTextIdentityMigrationBatch(
   result.diagnostic = OkDiagnostic();
   result.evidence = {
       {"migration_id", request.migration_id},
-      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"transaction_uuid", context.transaction_uuid},
       {"datatype_catalog_snapshot_uuid",
-       context.datatype_catalog_snapshot_uuid.canonical},
+       context.datatype_catalog_snapshot_uuid},
       {"datatype_catalog_generation",
        std::to_string(context.datatype_catalog_generation)},
       {"datatype_registry_generation",

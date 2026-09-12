@@ -56,8 +56,8 @@ struct IndexedPhysicalOperatorRequest {
 };
 
 struct IndexedPhysicalOperatorLocator {
-  std::string row_uuid;
-  std::string version_uuid;
+  internal_api::EngineUuid row_uuid;
+  internal_api::EngineUuid version_uuid;
   std::vector<scratchbird::core::platform::byte> encoded_key;
   std::uint64_t outer_ordinal = 0;
   std::uint64_t leaf_page_number = 0;

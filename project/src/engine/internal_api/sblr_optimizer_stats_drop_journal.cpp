@@ -166,8 +166,8 @@ bool ContextValid(const EngineRequestContext& context) {
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          context.statement_transaction_inventory_snapshot != nullptr &&
-         !context.database_path.empty() && !context.database_uuid.canonical.empty() &&
-         !context.transaction_uuid.canonical.empty() &&
+         !context.database_path.empty() && !context.database_uuid.is_nil() &&
+         !context.transaction_uuid.is_nil() &&
          context.local_transaction_id != 0;
 }
 
@@ -338,7 +338,7 @@ TransactionVisibility RecordVisibility(
   const bool own = record.owning_local_transaction_id ==
                        context.local_transaction_id &&
                    UuidText(record.owning_transaction_uuid) ==
-                       context.transaction_uuid.canonical;
+                       context.transaction_uuid;
   if (own && (found.entry.state == State::active ||
               found.entry.state == State::preparing ||
               found.entry.state == State::prepared ||
@@ -478,7 +478,7 @@ SblrOptimizerStatsEpochSnapshotV1 InspectSblrOptimizerStatsEpochV1(
         "statement_inventory_authority_required");
     return result;
   }
-  const auto database_uuid = UuidBytes(context.database_uuid.canonical);
+  const auto database_uuid = UuidBytes(context.database_uuid);
   if (!NonZero(database_uuid)) {
     SblrOptimizerStatsEpochSnapshotV1 result;
     result.diagnostic = Diagnostic(
@@ -537,10 +537,10 @@ SblrOptimizerStatsDropPublicationV1 PublishSblrOptimizerStatsDropV1(
         "canonical_descriptor_and_statement_authority_required");
     return result;
   }
-  const auto database_uuid = UuidBytes(context.database_uuid.canonical);
+  const auto database_uuid = UuidBytes(context.database_uuid);
   if (!NonZero(database_uuid) ||
       descriptor.owning_transaction_uuid !=
-          UuidBytes(context.transaction_uuid.canonical) ||
+          UuidBytes(context.transaction_uuid) ||
       descriptor.owning_local_transaction_id != context.local_transaction_id ||
       descriptor.inventory_generation !=
           context.statement_transaction_inventory_snapshot->inventory

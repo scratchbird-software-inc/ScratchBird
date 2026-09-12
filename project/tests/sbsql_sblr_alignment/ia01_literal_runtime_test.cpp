@@ -82,7 +82,7 @@ int main(){
            std::string_view{"1e-39"}, std::string_view{"1e38"}}) {
     const auto result = sblr::EncodeSblrLiteralExactDecimalV1(overflow);
     Require(!result.ok &&
-                result.diagnostic_id == "DATATYPE.DESCRIPTOR_INVALID",
+                result.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
             "exact decimal overflow did not refuse with descriptor diagnostic");
   }
   for (const auto malformed : {

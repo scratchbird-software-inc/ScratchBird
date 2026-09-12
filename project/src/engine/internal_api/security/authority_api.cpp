@@ -17,10 +17,10 @@ EngineResolveSecurityAuthorityResult EngineResolveSecurityAuthority(
     const EngineResolveSecurityAuthorityRequest& request) {
   SecurityAuthorityDescriptor descriptor = request.candidate;
   if (descriptor.authority_class.empty()) { descriptor = SecurityAuthorityDescriptorFromRequest(request); }
-  if (descriptor.authority_uuid.canonical.empty()) {
-    descriptor.authority_uuid.canonical = request.context.database_uuid.canonical.empty()
+  if (descriptor.authority_uuid.is_nil()) {
+    descriptor.authority_uuid = request.context.database_uuid.is_nil()
         ? "00000000-0000-7000-8000-0000000sec01"
-        : request.context.database_uuid.canonical;
+        : request.context.database_uuid;
   }
   if (!IsSupportedSecurityAuthorityClass(descriptor.authority_class)) {
     return SecurityFailure<EngineResolveSecurityAuthorityResult>(
@@ -50,7 +50,7 @@ EngineResolveSecurityAuthorityResult EngineResolveSecurityAuthority(
   result.primary_object.uuid = descriptor.authority_uuid;
   result.primary_object.object_kind = "security_authority";
   AddSecurityEvidence(&result, "security_authority", descriptor.authority_class);
-  AddSecurityRow(&result, {{"authority_uuid", descriptor.authority_uuid.canonical},
+  AddSecurityRow(&result, {{"authority_uuid", descriptor.authority_uuid},
                            {"authority_class", descriptor.authority_class},
                            {"policy_epoch", std::to_string(descriptor.policy_epoch)},
                            {"offline_behavior", descriptor.offline_behavior},

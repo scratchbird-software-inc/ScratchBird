@@ -9,6 +9,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "mga_relation_store/mga_row_codec.hpp"
 
 #include "api_diagnostics.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
@@ -141,15 +142,6 @@ std::vector<std::string> ReadLines(const std::string& path) {
     }
   }
   return lines;
-}
-
-std::vector<std::uint8_t> ReadBinaryFile(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return {};
-  }
-  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in),
-                                   std::istreambuf_iterator<char>());
 }
 
 std::vector<std::string> SplitTabs(const std::string& line) {
@@ -785,7 +777,7 @@ EngineApiDiagnostic BuildSecondaryIndexDeltaLedgerRecord(
                                     scratchbird::core::platform::UuidKind::row,
                                     &record.delta.version_uuid);
   if (diagnostic.error) { return diagnostic; }
-  diagnostic = ParseLedgerTypedUuid(context.transaction_uuid.canonical,
+  diagnostic = ParseLedgerTypedUuid(context.transaction_uuid,
                                     scratchbird::core::platform::UuidKind::transaction,
                                     &record.delta.transaction_uuid);
   if (diagnostic.error) { return diagnostic; }
@@ -816,18 +808,23 @@ MgaSecondaryIndexDeltaLedgerResult LoadSecondaryIndexDeltaLedgerFromPath(
     return result;
   }
   const std::string path = SecondaryIndexDeltaLedgerStorePath(context);
-  std::error_code exists_error;
-  if (!std::filesystem::exists(path, exists_error)) {
+  std::error_code status_error;
+  const auto status=std::filesystem::symlink_status(path,status_error);
+  if ((!status_error && status.type()==std::filesystem::file_type::not_found) ||
+      status_error==std::errc::no_such_file_or_directory) {
     result.ok = true;
     result.diagnostic = OkDiagnostic();
     return result;
   }
-  const auto bytes = ReadBinaryFile(path);
-  if (bytes.empty()) {
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
+  std::vector<idx::byte> bytes;
+  if (status_error || !ReadCompleteMgaBinaryFile(
+          path,&bytes,DefaultSecondaryIndexDeltaLedgerLimits().max_encoded_bytes)) {
+    result.diagnostic=MakeInvalidRequestDiagnostic(
+        "mga.secondary_index_delta_ledger","ledger_store_read_failed");
     return result;
   }
+  // An existing empty ledger is truncated authority, not an unpublished ledger.
+  // Even a valid zero-record ledger must carry its complete format envelope.
   const auto decoded = idx::DecodePersistentSecondaryIndexDeltaLedger(
       bytes,
       DefaultSecondaryIndexDeltaLedgerLimits());
@@ -908,7 +905,7 @@ EngineApiDiagnostic AppendMgaSecondaryIndexDeltaLedgerEntries(
       context,
       "mga.secondary_index_delta_ledger.append");
   if (authority.error) { return authority; }
-  if (context.transaction_uuid.canonical.empty()) {
+  if (context.transaction_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("mga.secondary_index_delta_ledger",
                                         "transaction_uuid_required");
   }
@@ -2001,7 +1998,7 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
     return RefuseIndexedLookup("secondary_index_overlay_table_uuid_invalid",
                                diagnostic);
   }
-  diagnostic = ParseLedgerTypedUuid(context.transaction_uuid.canonical,
+  diagnostic = ParseLedgerTypedUuid(context.transaction_uuid,
                                     scratchbird::core::platform::UuidKind::transaction,
                                     &overlay_request.transaction_uuid);
   if (diagnostic.error) {

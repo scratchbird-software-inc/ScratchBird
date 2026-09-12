@@ -29,6 +29,26 @@
 #include <unistd.h>
 #endif
 
+#include <stdexcept>
+#include <utility>
+
+namespace scratchbird::engine::internal_api {
+template <typename... Args>
+auto CheckedSchemaTreeRecords(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = VisibleSchemaTreeRecords(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+template <typename... Args>
+auto CheckedFindSchemaTreeRecord(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = FindVisibleSchemaTreeRecord(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+}  // namespace scratchbird::engine::internal_api
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -722,7 +742,7 @@ int main() {
                     api::SblrDdlCreateSchemaJournalStateV1::published,
             "real CREATE SCHEMA catalog recovery did not publish CSRS");
 
-    const auto own_schemas = api::VisibleSchemaTreeRecords(
+    const auto own_schemas = api::CheckedSchemaTreeRecords(
         catalog_context, catalog_context.local_transaction_id);
     Require(std::count_if(
                 own_schemas.begin(), own_schemas.end(),
@@ -747,7 +767,7 @@ int main() {
                                      catalog_database_uuid,
                                      catalog_principal_uuid, 230);
     const auto observed_schemas =
-        api::VisibleSchemaTreeRecords(observer, observer.local_transaction_id);
+        api::CheckedSchemaTreeRecords(observer, observer.local_transaction_id);
     Require(std::count_if(
                 observed_schemas.begin(), observed_schemas.end(),
                 [&](const api::EngineSchemaTreeRecord& record) {
@@ -820,7 +840,7 @@ int main() {
                 rolled_back_refusal.diagnostic.code ==
                     "MGA.TRANSACTION_INVALID",
             "rolled-back CREATE SCHEMA operation was recoverable");
-    Require(!api::FindVisibleSchemaTreeRecord(
+    Require(!api::CheckedFindSchemaTreeRecord(
                 rollback_observer, rolled_back_schema_uuid,
                 rollback_observer.local_transaction_id)
                  .has_value(),

@@ -130,10 +130,10 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
                         : *bounded_request.borrowed_selected_physical_dag;
   const auto& authorization = context.authorization_context;
   if (!context.security_context_present || !authorization.present ||
-      authorization.authority_uuid.canonical.empty() ||
-      dag.security_context_uuid != authorization.authority_uuid.canonical ||
-      context.principal_uuid.canonical !=
-          authorization.principal_uuid.canonical ||
+      authorization.authority_uuid.is_nil() ||
+      dag.security_context_uuid != authorization.authority_uuid ||
+      context.principal_uuid !=
+          authorization.principal_uuid ||
       context.security_epoch == 0 ||
       dag.security_epoch != context.security_epoch ||
       authorization.security_epoch != context.security_epoch ||
@@ -146,9 +146,9 @@ api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
   }
   if (context.resource_epoch == 0 ||
       dag.resource_epoch != context.resource_epoch ||
-      context.optimizer_resource_snapshot_uuid.canonical.empty() ||
+      context.optimizer_resource_snapshot_uuid.is_nil() ||
       dag.resource_snapshot_uuid !=
-          context.optimizer_resource_snapshot_uuid.canonical ||
+          context.optimizer_resource_snapshot_uuid ||
       context.optimizer_memory_budget_bytes == 0 ||
       dag.memory_budget_bytes != context.optimizer_memory_budget_bytes) {
     return refuse_boundary("resource_budget_binding");

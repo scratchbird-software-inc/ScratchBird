@@ -12,12 +12,15 @@
 #include "runtime_platform.hpp"
 
 #include <cstddef>
+#include <array>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::core::memory {
@@ -81,6 +84,64 @@ enum class AllocationFailureMode {
   fatal_status
 };
 
+using MemoryBinaryUuid = std::array<std::uint8_t, 16>;
+enum class MemoryBinaryScopeKind : std::uint8_t {
+  context, owner, database, session, transaction, statement, query,
+  process, tenant, user, role, operator_scope, page_cache, background, plugin,
+  connection, cursor, plan_cache_entry, prepared_statement, descriptor_snapshot
+};
+struct MemoryBinaryScopeKey {
+  MemoryBinaryScopeKind kind = MemoryBinaryScopeKind::context;
+  MemoryBinaryUuid uuid{};
+  auto operator<=>(const MemoryBinaryScopeKey&) const = default;
+};
+constexpr bool MemoryUuidPresent(const MemoryBinaryUuid& uuid) {
+  for (auto byte : uuid) if (byte != 0) return true;
+  return false;
+}
+constexpr bool MemorySystemUuidValid(const MemoryBinaryUuid& uuid) {
+  return MemoryUuidPresent(uuid) && (uuid[6] & 0xf0u) == 0x70u &&
+         (uuid[8] & 0xc0u) == 0x80u;
+}
+constexpr const char* MemoryBinaryScopeKindName(MemoryBinaryScopeKind kind) {
+  switch (kind) {
+    case MemoryBinaryScopeKind::context: return "context";
+    case MemoryBinaryScopeKind::owner: return "owner";
+    case MemoryBinaryScopeKind::database: return "database";
+    case MemoryBinaryScopeKind::session: return "session";
+    case MemoryBinaryScopeKind::transaction: return "transaction";
+    case MemoryBinaryScopeKind::statement: return "statement";
+    case MemoryBinaryScopeKind::query: return "query";
+    case MemoryBinaryScopeKind::process: return "process";
+    case MemoryBinaryScopeKind::tenant: return "tenant";
+    case MemoryBinaryScopeKind::user: return "user";
+    case MemoryBinaryScopeKind::role: return "role";
+    case MemoryBinaryScopeKind::operator_scope: return "operator";
+    case MemoryBinaryScopeKind::page_cache: return "page_cache";
+    case MemoryBinaryScopeKind::background: return "background";
+    case MemoryBinaryScopeKind::plugin: return "plugin";
+    case MemoryBinaryScopeKind::connection: return "connection";
+    case MemoryBinaryScopeKind::cursor: return "cursor";
+    case MemoryBinaryScopeKind::plan_cache_entry: return "plan_cache_entry";
+    case MemoryBinaryScopeKind::prepared_statement: return "prepared_statement";
+    case MemoryBinaryScopeKind::descriptor_snapshot: return "descriptor_snapshot";
+  }
+  return "invalid";
+}
+struct MemoryBinaryOwnership {
+  std::array<MemoryBinaryUuid, 7> scopes{};
+  bool empty() const {
+    for (const auto& uuid : scopes) if (MemoryUuidPresent(uuid)) return false;
+    return true;
+  }
+  auto& operator[](MemoryBinaryScopeKind kind) { return scopes.at(static_cast<usize>(kind)); }
+  const auto& operator[](MemoryBinaryScopeKind kind) const { return scopes.at(static_cast<usize>(kind)); }
+  bool operator==(const MemoryBinaryOwnership&) const = default;
+};
+// Legacy label keys remain for existing callers pending their migration.
+// Binary identities never pass through the legacy string alternative.
+using MemoryContextKey = std::variant<std::pair<std::string, std::string>, MemoryBinaryScopeKey>;
+
 struct MemoryTag {
   Subsystem subsystem = Subsystem::memory;
   std::string purpose;
@@ -94,7 +155,19 @@ struct MemoryTag {
   std::string statement_id;
   std::string query_id;
   std::string callsite;
+  MemoryBinaryOwnership binary_ownership;
 };
+
+inline bool MemoryBinaryOwnershipValid(const MemoryTag& tag) {
+  if (tag.binary_ownership.empty()) return true;
+  if (!tag.owner.empty() || !tag.context_id.empty() || !tag.database_id.empty() ||
+      !tag.session_id.empty() || !tag.transaction_id.empty() ||
+      !tag.statement_id.empty() || !tag.query_id.empty()) return false;
+  for (const auto& uuid : tag.binary_ownership.scopes)
+    if (MemoryUuidPresent(uuid) && !MemorySystemUuidValid(uuid)) return false;
+  return MemorySystemUuidValid(tag.binary_ownership[MemoryBinaryScopeKind::context]) &&
+         MemorySystemUuidValid(tag.binary_ownership[MemoryBinaryScopeKind::owner]);
+}
 
 // SB-MEMORY-POLICY-ANCHOR
 struct AllocationPolicy {
@@ -128,17 +201,20 @@ struct MemoryCategorySnapshot {
   u64 deallocation_count = 0;
   u64 failure_count = 0;
   u64 active_allocation_count = 0;
+  u64 reserved_capacity_bytes = 0;
 };
 
 struct MemoryContextSnapshot {
   std::string scope_kind;
   std::string scope_id;
+  std::optional<MemoryBinaryScopeKey> binary_scope;
   u64 current_bytes = 0;
   u64 peak_bytes = 0;
   u64 allocation_count = 0;
   u64 deallocation_count = 0;
   u64 failure_count = 0;
   u64 active_allocation_count = 0;
+  u64 reserved_capacity_bytes = 0;
 };
 
 // SB-MEMORY-METRICS-ANCHOR
@@ -151,6 +227,9 @@ struct MemoryAccountingSnapshot {
   u64 active_allocation_count = 0;
   u64 policy_rejection_count = 0;
   u64 unknown_pointer_failure_count = 0;
+  // Optional diagnostic/telemetry detail dropped under allocation pressure.
+  // Ownership and authoritative byte accounting are never dropped.
+  u64 telemetry_truncation_count = 0;
   u64 page_buffer_current_bytes = 0;
   u64 page_buffer_peak_bytes = 0;
   u64 arena_current_bytes = 0;
@@ -171,6 +250,9 @@ struct MemoryAccountingSnapshot {
   std::vector<MemoryCategorySnapshot> categories;
   std::vector<MemoryContextSnapshot> contexts;
   std::vector<MemoryCategory> reserved_categories;
+  // Unconsumed admission credits, not resident/committed storage.
+  u64 reserved_capacity_bytes = 0;
+  u64 active_capacity_reservation_count = 0;
 };
 
 struct AllocationResult {
@@ -267,6 +349,7 @@ struct MemoryFailureInjectionRule {
   MemoryFailureInjectionScopeKind scope_kind = MemoryFailureInjectionScopeKind::any;
   std::string scope_id;
   u64 fail_on_matched_sequence = 1;
+  MemoryBinaryUuid binary_scope_uuid{};
 };
 
 struct MemoryFailureInjectionConfiguration {
@@ -350,9 +433,10 @@ struct ProtectedMemoryEvidence {
   bool no_dump_attempted = false;
   bool no_dump_supported = false;
   bool no_dump_succeeded = false;
-  std::string platform_name = "unknown";
-  std::string authority_scope =
-      "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+  // Empty on an unissued/failed request; successful allocation fills evidence.
+  // Default construction and moved-from cleanup must not allocate.
+  std::string platform_name;
+  std::string authority_scope;
 };
 
 struct ProtectedMemoryRequest {
@@ -473,6 +557,38 @@ struct ProtectedBufferResult {
   }
 };
 
+class BoundedAllocator;
+class MemoryCapacityReservation {
+ public:
+  // The allocator must outlive this lease and all buffers allocated from it.
+  // Quiesce lease users before destruction. Closing releases unused admission
+  // credit, not outstanding storage: those buffers remain allocator-owned and
+  // charged until explicitly freed. Their release cannot resurrect a closed
+  // lease. Reserved allocation uses the exact immutable admitted owner tag.
+  MemoryCapacityReservation(const MemoryCapacityReservation&) = delete;
+  MemoryCapacityReservation& operator=(const MemoryCapacityReservation&) = delete;
+  ~MemoryCapacityReservation();
+  AllocationResult Allocate(usize bytes, usize alignment = 0);
+ private:
+  MemoryCapacityReservation(BoundedAllocator* allocator, u64 id, MemoryTag tag)
+      : allocator_(allocator), id_(id), tag_(std::move(tag)) {}
+  BoundedAllocator* allocator_;
+  u64 id_;
+  MemoryTag tag_;
+  friend class BoundedAllocator;
+};
+struct MemoryCapacityReservationResult {
+  Status status;
+  std::unique_ptr<MemoryCapacityReservation> reservation;
+  bool ok() const { return status.ok() && reservation != nullptr; }
+};
+
+struct MemoryCapacityAvailability {
+  Status status;
+  usize available_bytes = 0;
+  bool ok() const { return status.ok(); }
+};
+
 class BoundedAllocator {
  public:
   explicit BoundedAllocator(AllocationPolicy policy);
@@ -481,9 +597,20 @@ class BoundedAllocator {
   ~BoundedAllocator();
 
   AllocationResult Allocate(usize bytes, usize alignment, MemoryTag tag);
+  MemoryCapacityReservationResult ReserveCapacity(usize bytes, MemoryTag tag);
+  // Allocation-free, read-only policy headroom under the allocator lock.
+  // Includes live bytes and unconsumed capacity credit at every applicable
+  // scope. This is a planning hint, not a reservation: Allocate/ReserveCapacity
+  // must still perform their authoritative admission checks.
+  MemoryCapacityAvailability AvailableCapacity(const MemoryTag& tag) const;
   AllocationResult AllocateZeroed(usize bytes, usize alignment, MemoryTag tag);
   AllocationResult Reallocate(void* pointer, usize bytes, usize alignment, MemoryTag tag);
   DeallocationResult Deallocate(void* pointer, MemoryTag tag);
+  // Forced owner cleanup bypasses test refusal and never allocates diagnostics.
+  Status DeallocateNoAlloc(void* pointer);
+  DeallocationResult DeallocateProtected(void* pointer, MemoryTag tag,
+                                       const ProtectedMemoryEvidence& evidence);
+  Status DeallocateProtectedNoAlloc(void* pointer, const ProtectedMemoryEvidence& evidence);
   MemoryAccountingSnapshot Snapshot() const;
   const AllocationPolicy& policy() const;
   MemoryFailureInjectionConfigurationResult EnableAllocationFailureInjection(
@@ -496,6 +623,29 @@ class BoundedAllocator {
   ProtectedBufferResult AllocateProtected(ProtectedMemoryRequest request);
 
  private:
+  friend class MemoryCapacityReservation;
+  AllocationResult AllocateImpl(usize bytes, usize alignment, MemoryTag tag, u64 capacity_id);
+  void CloseCapacity(u64 id);
+  struct CapacityRecord {
+    u64 unused_bytes = 0;
+    u64 live_bytes = 0;
+    bool open = true;
+    MemoryCategory category = MemoryCategory::unknown;
+    std::vector<MemoryContextKey> context_keys;
+  };
+  void AddCapacityCredits(CapacityRecord& record, u64 bytes);
+  void ConsumeCapacityCredits(CapacityRecord& record, u64 bytes);
+  struct FailureTelemetryExit {
+    BoundedAllocator* allocator;
+    ~FailureTelemetryExit() { allocator->PublishFailureTelemetryNoThrow(); }
+  };
+  void PublishFailureTelemetryNoThrow();
+  using PendingFailureCounts = std::array<std::array<u64, 3>,
+      static_cast<usize>(MemoryCategory::test_probe) + 1>;
+  PendingFailureCounts pending_failure_counts_{};
+  DeallocationResult DeallocateImpl(void* pointer, MemoryTag tag,
+                                   const ProtectedMemoryEvidence* evidence);
+  Status DeallocateNoAllocImpl(void* pointer, const ProtectedMemoryEvidence* evidence);
   struct AllocationRecord {
     usize bytes = 0;
     usize alignment = 0;
@@ -503,6 +653,8 @@ class BoundedAllocator {
     u64 sharded_token_id = 0;
     usize sharded_shard_index = 0;
     bool sharded_accounting_committed = false;
+    std::vector<MemoryContextKey> context_keys;
+    u64 capacity_id = 0;
   };
 
   struct CategoryAccounting {
@@ -512,6 +664,7 @@ class BoundedAllocator {
     u64 deallocation_count = 0;
     u64 failure_count = 0;
     u64 active_allocation_count = 0;
+    u64 reserved_capacity_bytes = 0;
   };
 
   struct ContextAccounting {
@@ -521,6 +674,7 @@ class BoundedAllocator {
     u64 deallocation_count = 0;
     u64 failure_count = 0;
     u64 active_allocation_count = 0;
+    u64 reserved_capacity_bytes = 0;
   };
 
   struct ContextLimitEvidence {
@@ -582,7 +736,7 @@ class BoundedAllocator {
                                                  std::vector<DiagnosticArgument> extra_arguments = {}) const;
   void RecordFailure(const MemoryTag& tag, bool policy_rejection, bool unknown_pointer);
   void RecordFailure(MemoryCategory category, bool policy_rejection, bool unknown_pointer);
-  void RecordAllocation(void* pointer, usize bytes, usize alignment, const MemoryTag& tag);
+  AllocationResult AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag);
   void ApplyAllocationRemovalAccounting(const AllocationRecord& record);
   AllocationRecord RemoveAllocation(void* pointer, bool* found);
 
@@ -592,11 +746,26 @@ class BoundedAllocator {
   std::unique_ptr<ShardedMemoryAccountingLedger> sharded_accounting_;
   std::unordered_map<void*, AllocationRecord> active_;
   std::map<MemoryCategory, CategoryAccounting> category_accounting_;
-  std::map<std::pair<std::string, std::string>, ContextAccounting> context_accounting_;
+  std::map<MemoryContextKey, ContextAccounting> context_accounting_;
+  std::map<u64, CapacityRecord> capacity_reservations_;
+  u64 next_capacity_id_ = 1;
   FailureInjectionState failure_injection_;
 };
 
 // SB-MEMORY-ARENA-ANCHOR
+struct ArenaCapacitySnapshot {
+  u64 retained_bytes = 0;
+  u64 consumed_bytes = 0;
+  u64 chunk_count = 0;
+};
+
+struct ArenaAllocationPlan {
+  Status status;
+  usize alignment = 0;
+  usize growth_bytes = 0;
+  bool ok() const { return status.ok(); }
+};
+
 class ArenaAllocator {
  public:
   ArenaAllocator(BoundedAllocator* allocator, MemoryTag tag);
@@ -607,7 +776,18 @@ class ArenaAllocator {
   ~ArenaAllocator();
 
   AllocationResult Allocate(usize bytes, usize alignment = 0);
+  // Plans do not mutate the bump cursor or allocate. Callers serialize planning
+  // and allocation, as with all other operations on this arena.
+  ArenaAllocationPlan PlanAllocation(usize bytes, usize alignment,
+                                    usize growth_limit_bytes) const noexcept;
+  // New backing is exactly the planned growth, or the allocation fails. This
+  // path never silently falls back to a differently sized backing allocation.
+  AllocationResult AllocateWithinCapacity(usize bytes, usize alignment,
+                                         usize growth_limit_bytes);
+  ArenaCapacitySnapshot CapacitySnapshot() const noexcept;
   DeallocationResult Reset();
+  // Legacy backing-allocator diagnostics; use CapacitySnapshot for this arena's
+  // own physical chunks and admission, never differences of global snapshots.
   MemoryAccountingSnapshot Snapshot() const;
 
  private:

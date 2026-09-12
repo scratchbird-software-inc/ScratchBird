@@ -94,21 +94,21 @@ std::uint64_t U64Option(const EngineApiRequest& request, const std::string& pref
 bool HasUdrManageRight(const EngineApiRequest& request) {
   return SecurityContextHasRight(request.context,
                                  "UDR_MANAGE",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasUdrInspectRight(const EngineApiRequest& request) {
   return HasUdrManageRight(request) ||
          SecurityContextHasRight(request.context,
                                  "UDR_INSPECT",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasUdrInvokeRight(const EngineApiRequest& request) {
   return HasUdrManageRight(request) ||
          SecurityContextHasRight(request.context,
                                  "UDR_INVOKE",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasTrustedUdrProfile(const EngineApiRequest& request) {
@@ -244,7 +244,7 @@ bool ResourceBudgetExceeded(const EngineApiRequest& request, std::string* detail
 std::vector<std::string> DependencyUuids(const EngineApiRequest& request) {
   std::vector<std::string> dependencies = OptionValues(request, "dependency:");
   for (const auto& related : request.related_objects) {
-    if (!related.uuid.canonical.empty()) { dependencies.push_back(related.uuid.canonical); }
+    if (!related.uuid.is_nil()) { dependencies.push_back(related.uuid); }
   }
   return dependencies;
 }
@@ -420,7 +420,7 @@ TResult ValidateUdrAuthority(const EngineApiRequest& request,
 
 template <typename TResult>
 TResult RequireTargetUuid(const EngineApiRequest& request, const std::string& operation_id) {
-  if (request.target_object.uuid.canonical.empty()) {
+  if (request.target_object.uuid.is_nil()) {
     return MakeUdrFailure<TResult>(
         request.context,
         operation_id,
@@ -438,7 +438,7 @@ TResult RequireVisibleUdr(const EngineApiRequest& request,
   if (!target.ok) { return target; }
   const auto record = FindVisibleApiBehaviorRecord(
       request.context,
-      request.target_object.uuid.canonical,
+      request.target_object.uuid,
       request.context.local_transaction_id);
   if (!record || record->object_kind != kUdrKind) {
     return MakeUdrFailure<TResult>(
@@ -490,7 +490,7 @@ void EmitUdrMetric(const std::string& family,
                    const std::string& reason = {}) {
   auto& registry = scratchbird::core::metrics::DefaultMetricRegistry();
   (void)registry.IncrementCounter(family,
-                                  {{"object_uuid", request.target_object.uuid.canonical.empty() ? "none" : request.target_object.uuid.canonical},
+                                  {{"object_uuid", request.target_object.uuid.is_nil() ? "none" : request.target_object.uuid},
                                    {"action", action},
                                    {"result", result},
                                    {"reason", reason.empty() ? "none" : reason}},
@@ -543,10 +543,10 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
   }
   auto target = RequireTargetUuid<EngineRegisterUdrPackageResult>(request, kRegisterOperation);
   if (!target.ok) { return target; }
-  if (!request.target_object.uuid.canonical.empty()) {
+  if (!request.target_object.uuid.is_nil()) {
     const auto existing = FindVisibleApiBehaviorRecord(
         request.context,
-        request.target_object.uuid.canonical,
+        request.target_object.uuid,
         request.context.local_transaction_id);
     if (existing && existing->object_kind == kUdrKind) {
       return MakeUdrFailure<EngineRegisterUdrPackageResult>(
@@ -556,7 +556,7 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
           "target_udr_package_already_registered");
     }
   }
-  const auto descriptor = udr_runtime::FindPackageDescriptor(request.target_object.uuid.canonical);
+  const auto descriptor = udr_runtime::FindPackageDescriptor(request.target_object.uuid);
   if (!descriptor) {
     EmitUdrMetric("sb_udr_registration_total", request, "refused", "register", "runtime_descriptor_required");
     return MakeUdrFailure<EngineRegisterUdrPackageResult>(
@@ -633,7 +633,7 @@ EngineAlterUdrPackageResult EngineAlterUdrPackage(const EngineAlterUdrPackageReq
         "SB_ENGINE_API_UDR_ABI_UNSUPPORTED",
         "supported_udr_abi_required");
   }
-  const auto descriptor = udr_runtime::FindPackageDescriptor(request.target_object.uuid.canonical);
+  const auto descriptor = udr_runtime::FindPackageDescriptor(request.target_object.uuid);
   if (HasOptionToken(request, "linked_udr_package:true")) {
     if (!descriptor) {
       EmitUdrMetric("sb_udr_alter_total", request, "refused", "alter", "runtime_descriptor_required");
@@ -687,7 +687,7 @@ EngineLoadUdrPackageResult EngineLoadUdrPackage(const EngineLoadUdrPackageReques
   }
   auto dependencies = ValidateDependencies<EngineLoadUdrPackageResult>(request, kLoadOperation);
   if (!dependencies.ok) { return dependencies; }
-  const auto runtime_loaded = udr_runtime::LoadPackage(request.target_object.uuid.canonical);
+  const auto runtime_loaded = udr_runtime::LoadPackage(request.target_object.uuid);
   if (!runtime_loaded.ok) {
     EmitUdrMetric("sb_udr_load_total", request, "refused", "load", runtime_loaded.diagnostic_code);
     return RuntimeStatusFailure<EngineLoadUdrPackageResult>(
@@ -724,7 +724,7 @@ EngineUnloadUdrPackageResult EngineUnloadUdrPackage(const EngineUnloadUdrPackage
   ApiBehaviorRecord existing;
   auto visible = RequireVisibleUdr<EngineUnloadUdrPackageResult>(request, kUnloadOperation, &existing);
   if (!visible.ok) { return visible; }
-  const auto runtime_unloaded = udr_runtime::UnloadPackage(request.target_object.uuid.canonical);
+  const auto runtime_unloaded = udr_runtime::UnloadPackage(request.target_object.uuid);
   if (!runtime_unloaded.ok) {
     EmitUdrMetric("sb_udr_unload_total", request, "refused", "unload", runtime_unloaded.diagnostic_code);
     return RuntimeStatusFailure<EngineUnloadUdrPackageResult>(
@@ -762,7 +762,7 @@ EngineDropUdrPackageResult EngineDropUdrPackage(const EngineDropUdrPackageReques
   auto visible = RequireVisibleUdr<EngineDropUdrPackageResult>(request, kDropOperation, &existing);
   if (!visible.ok) { return visible; }
   const auto runtime_unregistered =
-      udr_runtime::UnregisterPackage(request.target_object.uuid.canonical);
+      udr_runtime::UnregisterPackage(request.target_object.uuid);
   if (!runtime_unregistered.ok &&
       runtime_unregistered.diagnostic_code != "UDR.RUNTIME.PACKAGE_NOT_REGISTERED") {
     EmitUdrMetric("sb_udr_drop_total", request, "refused", "drop", runtime_unregistered.diagnostic_code);

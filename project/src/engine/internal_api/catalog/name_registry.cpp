@@ -92,6 +92,27 @@ std::string NameRegistryFileFingerprint(const std::string& path) {
   return path + ":" + std::to_string(size_value) + ":" + std::to_string(mtime_ticks);
 }
 
+enum class NameJournalOpenStatus { opened, absent, refused };
+
+NameJournalOpenStatus OpenNameJournal(const EngineRequestContext& context,
+                                      std::ifstream& input) {
+  const std::filesystem::path path = context.database_path + ".sb.api_events";
+  std::error_code error;
+  const auto entry = std::filesystem::symlink_status(path, error);
+  if (entry.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) {
+    return NameJournalOpenStatus::absent;
+  }
+  // Reject non-files before opening: opening a FIFO could block indefinitely.
+  // A dangling/looping symlink is a refused journal, not optional absence.
+  if (error || !std::filesystem::is_regular_file(path, error) || error) {
+    return NameJournalOpenStatus::refused;
+  }
+  input.open(path, std::ios::binary);
+  return input.is_open() && input.good() ? NameJournalOpenStatus::opened
+                                        : NameJournalOpenStatus::refused;
+}
+
 std::string NameRegistryLoadCacheKey(const EngineRequestContext& context,
                                      std::uint64_t observer_tx) {
   std::ostringstream key;
@@ -452,10 +473,10 @@ std::vector<std::string> ScopeCandidates(const EngineApiRequest& request) {
   auto push = [&](std::string value) {
     if (std::find(scopes.begin(), scopes.end(), value) == scopes.end()) { scopes.push_back(std::move(value)); }
   };
-  push(request.target_schema.uuid.canonical);
-  push(request.context.current_schema_uuid.canonical);
-  for (const auto& schema : request.context.search_path_schema_uuids) { push(schema.canonical); }
-  push(request.context.default_root_uuid.canonical);
+  push(request.target_schema.uuid);
+  push(request.context.current_schema_uuid);
+  for (const auto& schema : request.context.search_path_schema_uuids) { push(schema); }
+  push(request.context.default_root_uuid);
   push({});
   return scopes;
 }
@@ -673,6 +694,17 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     result.diagnostic = path_status;
     return result;
   }
+  // A cache hit cannot substitute for present read authority. Never scan the
+  // primary binary database as a substitute for a missing/unreadable journal.
+  std::ifstream in;
+  if (OpenNameJournal(context, in) == NameJournalOpenStatus::refused) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "catalog.name_registry.load", "name_journal_unreadable");
+    return result;
+  }
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, schema_diagnostic);
+  if (schema_diagnostic.error) { result.state = {}; result.diagnostic = schema_diagnostic; return result; }
   const std::string load_cache_key =
       NameRegistryLoadCacheKey(context, observer_tx);
   if (auto cached = LookupNameRegistryLoadCache(load_cache_key)) {
@@ -692,12 +724,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
   }
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  std::ifstream in(context.database_path + ".sb.api_events", std::ios::binary);
-  if (!in) { in.open(context.database_path, std::ios::binary); }
-  if (!in) {
-    result.diagnostic = MakeInvalidRequestDiagnostic("catalog.name_registry.load", "database_path_unreadable");
-    return result;
-  }
+
   std::set<std::string> added_entries;
   std::set<std::string> suppress_legacy_objects;
   std::uint64_t event_sequence = 0;
@@ -754,7 +781,13 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
       ReplaceEntry(&result.state, &added_entries, std::move(entry));
     }
   }
-  for (const auto& schema : VisibleSchemaTreeRecords(context, observer_tx)) {
+  if (in.bad()) {
+    result.state = {};
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "catalog.name_registry.load", "name_journal_read_failed");
+    return result;
+  }
+  for (const auto& schema : schemas) {
     if (suppress_legacy_objects.count(schema.schema_uuid) != 0) { continue; }
     for (const auto& localized : schema.localized_names) {
       AddIfNoExplicit(&result.state,
@@ -812,9 +845,7 @@ LoadNameRegistryStateSnapshot(const EngineRequestContext& context,
                               const std::uint64_t observer_tx) {
   const std::string cache_key =
       NameRegistryLoadCacheKey(context, observer_tx);
-  if (auto cached = LookupNameRegistryLoadCache(cache_key)) {
-    return cached;
-  }
+  // Load performs the access gate even when an immutable snapshot is cached.
   auto loaded = LoadNameRegistryState(context, observer_tx);
   if (!loaded.ok) {
     return std::make_shared<const NameRegistryLoadResult>(
@@ -958,9 +989,9 @@ namespace {
 std::string UuidToNameTargetUuid(const EngineApiRequest& request,
                                  const std::string& object_uuid) {
   if (!object_uuid.empty()) { return object_uuid; }
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    return request.bound_object_identity.object_uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    return request.bound_object_identity.object_uuid;
   }
   return {};
 }
@@ -1102,9 +1133,11 @@ bool NameRegistryWouldConflict(const EngineRequestContext& context,
                                const std::string& scope_uuid,
                                const std::vector<EngineLocalizedName>& names,
                                std::uint64_t observer_tx,
-                               std::string* conflict_name) {
+                               std::string* conflict_name,
+                               EngineApiDiagnostic& diagnostic) {
   const auto loaded = LoadNameRegistryState(context, observer_tx);
-  if (!loaded.ok) { return false; }
+  diagnostic = loaded.ok ? MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false) : loaded.diagnostic;
+  if (!loaded.ok) return false;
   const std::string default_language = NameRegistryDefaultLanguage(context);
   for (const auto& name : names) {
     const auto wanted = MakeNameRegistryEntry(context, object_uuid, object_class, scope_uuid, name, name.name);

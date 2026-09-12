@@ -17,6 +17,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -61,12 +62,14 @@ using scratchbird::transaction::mga::BeginLocalTransaction;
 using scratchbird::transaction::mga::CommitLocalTransaction;
 using scratchbird::transaction::mga::CopyOnWriteMutationPhase;
 using scratchbird::transaction::mga::EvaluateVisibility;
+using scratchbird::transaction::mga::EvaluateVersionEffectVisibility;
 using scratchbird::transaction::mga::kInvalidLocalTransactionId;
 using scratchbird::transaction::mga::LocalTransactionId;
 using scratchbird::transaction::mga::LocalTransactionInventory;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 using scratchbird::transaction::mga::PlanLocalCopyOnWriteMutationForTransaction;
+using scratchbird::transaction::mga::ValidateCopyOnWriteTransactionState;
 using scratchbird::transaction::mga::RollbackLocalTransaction;
 using scratchbird::transaction::mga::RowIdentity;
 using scratchbird::transaction::mga::RowVersionMetadata;
@@ -261,9 +264,9 @@ Result ValidateCommonRequest(const std::string& path,
 }
 
 PhysicalMgaCowMutationResult ValidateMutationRequest(
-    const PhysicalMgaCowMutationRequest& request) {
+    const PhysicalMgaCowMutation& request, const std::string& database_path) {
   auto common =
-      ValidateCommonRequest<PhysicalMgaCowMutationResult>(request.database_path,
+      ValidateCommonRequest<PhysicalMgaCowMutationResult>(database_path,
                                                           request.relation_uuid,
                                                           request.page_number);
   if (!common.ok()) {
@@ -384,7 +387,7 @@ RowVersionMetadata MetadataForRow(const RowDataRecord& row,
 
 PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
                                              const DatabaseContextResult& context,
-                                             const PhysicalMgaCowMutationRequest& request,
+                                             const PhysicalMgaCowMutation& request,
                                              RowDataPageBody* body) {
   if (body == nullptr) {
     return ErrorResult<PhysicalMgaCowMutationResult>(
@@ -574,6 +577,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
 
 BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
                                const LocalTransactionInventory& inventory,
+                               const TransactionInventoryEntry& writer,
                                const TypedUuid& row_uuid,
                                bool* blocked,
                                DiagnosticRecord* diagnostic) {
@@ -595,7 +599,9 @@ BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
             [](const auto& left, const auto& right) {
               return left.second.row_version > right.second.row_version;
             });
-  const VisibilitySnapshot snapshot = LatestCommittedSnapshot(inventory);
+  VisibilitySnapshot snapshot = LatestCommittedSnapshot(inventory);
+  snapshot.reader_transaction = writer.identity.local_id;
+  snapshot.allow_reader_own_uncommitted = true;
   for (const auto& candidate : candidates) {
     const auto entry = LookupLocalTransaction(
         inventory,
@@ -609,10 +615,11 @@ BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
       }
       return selection;
     }
-    if (entry.entry.state == TransactionState::active ||
+    if (entry.entry.identity.local_id.value != writer.identity.local_id.value &&
+        (entry.entry.state == TransactionState::active ||
         entry.entry.state == TransactionState::preparing ||
         entry.entry.state == TransactionState::prepared ||
-        entry.entry.state == TransactionState::committing) {
+        entry.entry.state == TransactionState::committing)) {
       if (blocked != nullptr) {
         *blocked = true;
       }
@@ -629,17 +636,11 @@ BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
         entry.entry.state == TransactionState::failed_terminal) {
       continue;
     }
-    if (candidate.second.deleted &&
-        (entry.entry.state == TransactionState::committed ||
-         entry.entry.state == TransactionState::archived) &&
-        candidate.second.local_transaction_id <=
-            snapshot.visible_through_local_transaction_id) {
-      return selection;
-    }
-    const auto visible = EvaluateVisibility(MetadataForRow(candidate.second,
+    const auto visible = EvaluateVersionEffectVisibility(MetadataForRow(candidate.second,
                                                           entry.entry),
                                             snapshot);
     if (visible.decision == VisibilityDecision::visible) {
+      if (candidate.second.deleted) return selection;
       selection.found = true;
       selection.index = candidate.first;
       selection.row = candidate.second;
@@ -688,7 +689,7 @@ const char* PhysicalMgaCowFinalizeDecisionName(PhysicalMgaCowFinalizeDecision de
 
 PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
     const PhysicalMgaCowMutationRequest& request) {
-  const auto valid = ValidateMutationRequest(request);
+  const auto valid = ValidateMutationRequest(request, request.database_path);
   if (!valid.ok()) {
     return valid;
   }
@@ -697,6 +698,15 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   const auto open = device.Open(request.database_path, FileOpenMode::open_existing);
   if (!open.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(open.status, open.diagnostic);
+  }
+  return WritePhysicalMgaCowUnpublishedMutationToOpenDevice(device, request);
+}
+
+PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
+    FileDevice& device, const PhysicalMgaCowMutation& request) {
+  const auto valid = ValidateMutationRequest(request, device.path());
+  if (!valid.ok()) {
+    return valid;
   }
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
@@ -726,12 +736,9 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
           "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-MISMATCH",
           "storage.physical_mga_cow.transaction_uuid_mismatch");
     }
-    if (existing.entry.state != TransactionState::active &&
-        existing.entry.state != TransactionState::preparing &&
-        existing.entry.state != TransactionState::committing) {
-      return ErrorResult<PhysicalMgaCowMutationResult>(
-          "SB-PHYSICAL-MGA-COW-TRANSACTION-NOT-ACTIVE",
-          "storage.physical_mga_cow.transaction_not_active");
+    const auto admission = ValidateCopyOnWriteTransactionState(existing.entry);
+    if (!admission.ok()) {
+      return Propagate<PhysicalMgaCowMutationResult>(admission.status, admission.diagnostic);
     }
     active_entry = existing.entry;
   } else {
@@ -764,6 +771,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
   DiagnosticRecord blocked_diagnostic;
   const BaseRowSelection base = SelectBaseRow(row_page,
                                               active_inventory,
+                                              active_entry,
                                               request.row_uuid,
                                               &blocked,
                                               &blocked_diagnostic);
@@ -866,6 +874,44 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
 
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     PhysicalMgaCowMutationBatchRequest request) {
+  if (request.mutations.empty()) {
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+        "SB-PHYSICAL-MGA-COW-BATCH-EMPTY",
+        "storage.physical_mga_cow.batch_empty");
+  }
+  const auto& path = request.mutations.front().database_path;
+  for (const auto& mutation : request.mutations) {
+    const auto valid = ValidateMutationRequest(mutation, mutation.database_path);
+    if (!valid.ok()) {
+      return Propagate<PhysicalMgaCowMutationBatchResult>(valid.status, valid.diagnostic);
+    }
+    if (mutation.database_path != path) {
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>(
+          "SB-PHYSICAL-MGA-COW-BATCH-SCOPE-MISMATCH",
+          "storage.physical_mga_cow.batch_scope_mismatch");
+    }
+  }
+  FileDevice device;
+  const auto open = device.Open(path, FileOpenMode::open_existing);
+  if (!open.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(open.status, open.diagnostic);
+  }
+  PhysicalMgaCowMutationBatch batch;
+  batch.sync_after_batch = request.sync_after_batch;
+  batch.engine_generated_unique_insert_rows = request.engine_generated_unique_insert_rows;
+  batch.mutations.reserve(request.mutations.size());
+  for (auto& mutation : request.mutations) {
+    batch.mutations.push_back(std::move(static_cast<PhysicalMgaCowMutation&>(mutation)));
+  }
+  auto result = WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(device, std::move(batch));
+  if (result.ok()) {
+    result.evidence.push_back("physical_mga_cow.batch_database_open_once=true");
+  }
+  return result;
+}
+
+PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(
+    FileDevice& device, PhysicalMgaCowMutationBatch request) {
   const auto trace_start = PhysicalCowSteadyClock::now();
   auto trace_last = trace_start;
   std::vector<std::pair<std::string, u64>> phase_micros;
@@ -883,7 +929,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
         "storage.physical_mga_cow.batch_empty");
   }
 
-  const auto first_valid = ValidateMutationRequest(request.mutations.front());
+  const auto first_valid = ValidateMutationRequest(request.mutations.front(), device.path());
   if (!first_valid.ok()) {
     return Propagate<PhysicalMgaCowMutationBatchResult>(first_valid.status,
                                                         first_valid.diagnostic);
@@ -897,13 +943,6 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
   }
   mark_phase("validate_first");
 
-  FileDevice device;
-  const auto open = device.Open(first.database_path, FileOpenMode::open_existing);
-  if (!open.ok()) {
-    return Propagate<PhysicalMgaCowMutationBatchResult>(open.status,
-                                                        open.diagnostic);
-  }
-  mark_phase("open_device");
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowMutationBatchResult>(context.status,
@@ -933,12 +972,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
         "SB-PHYSICAL-MGA-COW-TRANSACTION-UUID-MISMATCH",
         "storage.physical_mga_cow.transaction_uuid_mismatch");
   }
-  if (existing.entry.state != TransactionState::active &&
-      existing.entry.state != TransactionState::preparing &&
-      existing.entry.state != TransactionState::committing) {
-    return ErrorResult<PhysicalMgaCowMutationBatchResult>(
-        "SB-PHYSICAL-MGA-COW-TRANSACTION-NOT-ACTIVE",
-        "storage.physical_mga_cow.transaction_not_active");
+  const auto admission = ValidateCopyOnWriteTransactionState(existing.entry);
+  if (!admission.ok()) {
+    return Propagate<PhysicalMgaCowMutationBatchResult>(admission.status, admission.diagnostic);
   }
   const TransactionInventoryEntry active_entry = existing.entry;
   mark_phase("lookup_transaction");
@@ -955,13 +991,12 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
   std::map<u64, std::set<std::array<scratchbird::core::platform::byte, 16>>>
       page_insert_row_uuids;
   for (auto& mutation_request : request.mutations) {
-    const auto valid = ValidateMutationRequest(mutation_request);
+    const auto valid = ValidateMutationRequest(mutation_request, device.path());
     if (!valid.ok()) {
       return Propagate<PhysicalMgaCowMutationBatchResult>(valid.status,
                                                           valid.diagnostic);
     }
-    if (mutation_request.database_path != first.database_path ||
-        !(mutation_request.transaction_uuid.value ==
+    if (!(mutation_request.transaction_uuid.value ==
           first.transaction_uuid.value) ||
         !mutation_request.use_existing_transaction ||
         mutation_request.existing_local_transaction_id.value !=
@@ -1047,6 +1082,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     DiagnosticRecord blocked_diagnostic;
     const BaseRowSelection base = SelectBaseRow(row_page,
                                                 active_inventory,
+                                                active_entry,
                                                 mutation_request.row_uuid,
                                                 &blocked,
                                                 &blocked_diagnostic);
@@ -1150,7 +1186,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
   mark_phase("sync");
   result.written_rows = static_cast<u64>(request.mutations.size());
   result.evidence.push_back("physical_mga_cow.batch=true");
-  result.evidence.push_back("physical_mga_cow.batch_database_open_once=true");
+  result.evidence.push_back("physical_mga_cow.batch_borrowed_device=true");
   result.evidence.push_back("physical_mga_cow.batch_inventory_loaded_once=true");
   result.evidence.push_back(
       request.engine_generated_unique_insert_rows
@@ -1254,6 +1290,28 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
   if (!open.ok()) {
     return Propagate<PhysicalMgaCowReadResult>(open.status, open.diagnostic);
   }
+  return ReadPhysicalMgaCowRowsFromOpenDevice(
+      device, request.relation_uuid, request.page_number,
+      request.visibility_snapshot, request.use_latest_committed_snapshot);
+}
+
+PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
+    FileDevice& device,
+    const TypedUuid& relation_uuid,
+    u64 page_number,
+    const VisibilitySnapshot& visibility_snapshot,
+    bool use_latest_committed_snapshot) {
+  PhysicalMgaCowReadRequest request;
+  request.database_path = device.path();
+  request.relation_uuid = relation_uuid;
+  request.page_number = page_number;
+  request.visibility_snapshot = visibility_snapshot;
+  request.use_latest_committed_snapshot = use_latest_committed_snapshot;
+  const auto common = ValidateCommonRequest<PhysicalMgaCowReadResult>(
+      request.database_path, request.relation_uuid, request.page_number);
+  if (!common.ok()) {
+    return common;
+  }
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowReadResult>(context.status,
@@ -1284,9 +1342,10 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
   result.evidence.push_back("physical_mga_cow.read_visibility_authority=durable_transaction_inventory");
   result.evidence.push_back("physical_mga_cow.row_page_finality_authority=false");
 
-  std::map<std::string, std::vector<RowDataRecord>> by_row;
+  std::map<std::array<scratchbird::core::platform::byte, 16>,
+           std::vector<RowDataRecord>> by_row;
   for (const RowDataRecord& row : row_page.rows) {
-    by_row[scratchbird::core::uuid::UuidToString(row.row_uuid.value)].push_back(row);
+    by_row[row.row_uuid.value.bytes].push_back(row);
   }
   for (auto& entry : by_row) {
     std::vector<RowDataRecord>& versions = entry.second;
@@ -1305,17 +1364,14 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
       PhysicalMgaCowReadRow observed;
       observed.row = row;
       observed.metadata = MetadataForRow(row, creator.entry);
-      observed.decision = EvaluateVisibility(observed.metadata, snapshot).decision;
+      observed.decision = EvaluateVersionEffectVisibility(observed.metadata, snapshot).decision;
       if (creator.entry.state == TransactionState::rolled_back ||
           creator.entry.state == TransactionState::failed_terminal) {
         ++result.rolled_back_version_count;
         result.rows.push_back(std::move(observed));
         continue;
       }
-      if (row.deleted &&
-          (creator.entry.state == TransactionState::committed ||
-           creator.entry.state == TransactionState::archived) &&
-          row.local_transaction_id <= snapshot.visible_through_local_transaction_id) {
+      if (row.deleted && observed.decision == VisibilityDecision::visible) {
         observed.visible_delete_marker = true;
         ++result.visible_delete_marker_count;
         result.rows.push_back(std::move(observed));

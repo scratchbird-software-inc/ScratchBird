@@ -424,15 +424,17 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
             EvidenceMessage(row, "dispatch", "cluster-stub build executed route"));
     Require(dispatch.api_result.cluster_authority_required,
             EvidenceMessage(row, "dispatch", "cluster-stub result did not require cluster authority"));
-    Require(dispatch.api_result.result_shape.result_kind == "cluster.provider.stub.v1",
-            EvidenceMessage(row, "dispatch", "cluster-stub result kind changed"));
+    Require(dispatch.api_result.result_shape.result_kind.empty() &&
+                dispatch.api_result.result_shape.rows.empty() &&
+                dispatch.api_result.result_shape.columns.empty(),
+            EvidenceMessage(row, "dispatch", "cluster-stub fabricated a result"));
     Require(HasApiDiagnosticCode(
                 dispatch.api_result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             EvidenceMessage(row, "dispatch", "cluster-stub compile-link vector missing"));
     Require(HasDispatchDiagnosticCode(
                 dispatch,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             EvidenceMessage(row, "dispatch", "cluster-stub dispatch vector missing"));
     Require(HasEvidence(dispatch.api_result, "cluster_provider", "stub"),
             EvidenceMessage(row, "dispatch", "cluster-stub provider evidence missing"));
@@ -452,9 +454,9 @@ void RequireRegistryAndDispatch(const RouteRow& row) {
             EvidenceMessage(row, "dispatch", "non-cluster build unexpectedly executed route"));
     Require(dispatch.api_result.cluster_authority_required,
             EvidenceMessage(row, "dispatch", "non-cluster result did not require cluster authority"));
-    Require(HasApiDiagnosticCode(dispatch.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasApiDiagnosticCode(dispatch.api_result, "PROCESS.CLUSTER_PATH_ABSENT"),
             EvidenceMessage(row, "dispatch", "non-cluster unsupported vector missing"));
-    Require(HasDispatchDiagnosticCode(dispatch, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDispatchDiagnosticCode(dispatch, "PROCESS.CLUSTER_PATH_ABSENT"),
             EvidenceMessage(row, "dispatch", "non-cluster dispatch vector missing"));
     Require(!HasApiDiagnosticCode(dispatch.api_result, "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY"),
             EvidenceMessage(row, "dispatch", "non-cluster build called the stub provider"));
@@ -643,6 +645,19 @@ void RequireProviderInfoRoute() {
   request.api_request.context = request.context;
   request.api_request.operation_id = "cluster.inspect_provider";
   const auto dispatch = sblr::DispatchSblrOperation(request);
+  if (info.provider_type == "no_cluster" || info.provider_type == "compile_link_stub") {
+    Require(dispatch.envelope_validated && dispatch.accepted && dispatch.dispatched_to_api,
+            "SHOW CLUSTER PROVIDER did not reach the standalone provider");
+    Require(!dispatch.api_result.ok && dispatch.api_result.cluster_authority_required,
+            "SHOW CLUSTER PROVIDER fabricated standalone success");
+    Require(HasApiDiagnosticCode(dispatch.api_result, "PROCESS.CLUSTER_PATH_ABSENT") &&
+                HasDispatchDiagnosticCode(dispatch, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "SHOW CLUSTER PROVIDER lost its absent-path response");
+    Require(dispatch.api_result.result_shape.rows.empty() &&
+                dispatch.api_result.result_shape.columns.empty(),
+            "SHOW CLUSTER PROVIDER fabricated result identities");
+    return;
+  }
   Require(dispatch.api_result.ok, "SHOW CLUSTER PROVIDER dispatch did not return provider info");
   Require(dispatch.api_result.result_shape.result_kind == "cluster.provider.info.v1",
           "SHOW CLUSTER PROVIDER result kind changed");

@@ -8,6 +8,9 @@
 
 #pragma once
 
+#include "../../core/uuid/diagnostic_identity.hpp"
+#include "../../core/diagnostics/canonical_diagnostic_snapshot.hpp"
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -24,6 +27,8 @@ namespace scratchbird::engine::internal_api {
 
 struct SblrExecutorAvailabilityStatementCohort;
 class EngineDmlUpdateResourceReceiptV1;
+struct EngineQueryResultMetadataV1;
+struct EngineQueryResultValuesV1;
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_BASE_TYPES
 // Engine-owned API types. This API is not SQL authority and is not a parser API.
@@ -52,8 +57,25 @@ inline constexpr EngineApiU64
 inline constexpr EngineApiU64
     kMaximumTypedResultTransportBytesPerPacket = 16ull * 1024ull * 1024ull;
 
-struct EngineUuid {
-  std::string canonical;
+// Engine identities are the canonical sixteen UUID bytes, never display text.
+// Reuse the platform value so the API, storage and index representations cannot
+// drift or silently allocate/parse through a string compatibility wrapper.
+// Admission separately enforces UUIDv7 for system authority; user UUID values
+// retain their descriptor-governed version policy.
+using EngineUuid = scratchbird::core::platform::Uuid;
+static_assert(sizeof(EngineUuid) == 16);
+
+// Ephemeral container hashing over canonical bytes. This is not a durable
+// index encoding, cryptographic digest, identity generator or authority proof.
+struct EngineUuidHash {
+  std::size_t operator()(const EngineUuid& value) const noexcept {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const auto byte : value.bytes) {
+      hash ^= byte;
+      hash *= 1099511628211ull;
+    }
+    return static_cast<std::size_t>(hash);
+  }
 };
 
 struct EngineObjectReference {
@@ -144,6 +166,12 @@ struct EngineDescriptor {
   std::string descriptor_kind;
   std::string canonical_type_name;
   std::string encoded_descriptor;
+  // Bound datatype authority, not a UUID spelling embedded in descriptor text.
+  // Nil denotes absent type authority and cannot authorize typed execution.
+  EngineUuid type_uuid;
+  // Nil is the absence of a collation; otherwise this is its bound UUIDv7.
+  EngineUuid collation_uuid;
+  bool operator==(const EngineDescriptor&) const = default;
 };
 
 // SEARCH_KEY: EDR_ENGINE_VALUE_STATE
@@ -278,6 +306,12 @@ struct EngineResultShape {
   std::string result_kind;
   std::vector<EngineDescriptor> columns;
   std::vector<EngineRowValue> rows;
+  // Frozen by canonical query dispatch from the validated output bindings,
+  // never reconstructed from row text or the first non-NULL value.
+  std::shared_ptr<const EngineQueryResultMetadataV1> query_metadata;
+  // Canonical values retain the exact schema they were materialized against.
+  // Response consumers must not derive typed cells from legacy rendered rows.
+  std::shared_ptr<const EngineQueryResultValuesV1> query_values;
 };
 
 struct EngineUnsupportedFeature {
@@ -523,6 +557,16 @@ struct EngineApiDiagnostic {
   // Callers must not infer semantics by parsing `detail`; exact presentation
   // adapters key on the diagnostic code and declared fields instead.
   std::vector<EngineApiDiagnosticField> fields;
+  // Source occurrence, never a registry code UUID. Default copy/move retains
+  // it; adapters must carry it instead of constructing a replacement record.
+  std::array<std::uint8_t, 16> occurrence_uuid =
+      scratchbird::core::uuid::NewDiagnosticOccurrenceUuid();
+  // Trusted source transport only. These fields are not parser-safe payloads
+  // and cannot be flattened into public string fields or used to infer finality.
+  std::optional<scratchbird::core::diagnostics::CanonicalDiagnosticMetadata>
+      canonical_metadata;
+  std::optional<scratchbird::core::diagnostics::NativeDiagnosticSource>
+      native_source;
 };
 
 struct EngineDmlSummaryCounters {

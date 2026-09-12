@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <cstdint>
+#include <array>
 #include <map>
 #include <memory>
 #include <set>
@@ -29,6 +30,13 @@ using DescriptorFieldsByRelation =
     std::map<std::string,
              std::vector<std::pair<std::string, std::string>>>;
 
+// Transitional MGA text sidecars must be completely readable before their
+// records confer authority. Missing optional files are empty; I/O failures or
+// partial records return false and clear output. This is not the required
+// binary metadata migration and does not validate each record's semantics.
+bool ReadCompleteMgaTextRecords(const std::string& path,
+                               std::vector<std::string>* records);
+
 struct MgaMetadataCacheKey {
   std::string database_uuid;
   std::string metadata_path;
@@ -38,18 +46,24 @@ struct MgaMetadataCacheKey {
   std::uintmax_t savepoint_file_size = 0;
   std::int64_t savepoint_file_mtime_ticks = 0;
   std::uint64_t local_transaction_id = 0;
+  std::array<std::uint8_t,32> metadata_content_sha256{};
+  std::array<std::uint8_t,32> savepoint_content_sha256{};
+  std::string descriptor_path;
+  std::array<std::uint8_t,32> descriptor_content_sha256{};
 
   bool operator<(const MgaMetadataCacheKey& other) const {
     return std::tie(database_uuid, metadata_path, metadata_file_size,
                     metadata_file_mtime_ticks, savepoint_path,
                     savepoint_file_size, savepoint_file_mtime_ticks,
-                    local_transaction_id) <
+                    local_transaction_id,metadata_content_sha256,savepoint_content_sha256,
+                    descriptor_path,descriptor_content_sha256) <
            std::tie(other.database_uuid, other.metadata_path,
                     other.metadata_file_size,
                     other.metadata_file_mtime_ticks, other.savepoint_path,
                     other.savepoint_file_size,
                     other.savepoint_file_mtime_ticks,
-                    other.local_transaction_id);
+                    other.local_transaction_id,other.metadata_content_sha256,other.savepoint_content_sha256,
+                    other.descriptor_path,other.descriptor_content_sha256);
   }
 };
 

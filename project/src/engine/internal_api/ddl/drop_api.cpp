@@ -78,8 +78,8 @@ EngineDropObjectResult DropCatalogBackedObject(const EngineDropObjectRequest& re
     AddDdlPublicationResult(&result,
                             "ddl.drop_object",
                             kind,
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "catalog." + kind);
   }
   return result;
@@ -91,13 +91,13 @@ EngineApiDiagnostic DropCatalogLifecycleObjectIfPresent(const EngineDropObjectRe
   if (dropped_lifecycle_object != nullptr) {
     *dropped_lifecycle_object = false;
   }
-  if (request.target_object.uuid.canonical.empty()) {
+  if (request.target_object.uuid.is_nil()) {
     return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
   EngineCatalogDropObjectRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = "ddl.drop_object";
-  catalog_request.target_object.uuid.canonical = request.target_object.uuid.canonical;
+  catalog_request.target_object.uuid = request.target_object.uuid;
   catalog_request.target_object.object_kind = kind;
   const auto dropped = EngineCatalogDropObject(catalog_request);
   if (!dropped.ok) {
@@ -141,19 +141,19 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
           "ddl.drop_object",
           MakeInvalidRequestDiagnostic("ddl.drop_object", "local_transaction_id_required"));
     }
-    if (request.target_object.uuid.canonical.empty()) {
+    if (request.target_object.uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineDropObjectResult>(
           request.context,
           "ddl.drop_object",
           MakeInvalidRequestDiagnostic("ddl.drop_object", "target_domain_uuid_required"));
     }
-    if (!FindVisibleDomain(request.context, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+    if (!FindVisibleDomain(request.context, request.target_object.uuid, request.context.local_transaction_id)) {
       return MakeCrudDiagnosticResult<EngineDropObjectResult>(
           request.context,
           "ddl.drop_object",
           MakeInvalidRequestDiagnostic("ddl.drop_object", "target_domain_not_visible"));
     }
-    if (DomainHasCrudDependencies(request.context, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+    if (DomainHasCrudDependencies(request.context, request.target_object.uuid, request.context.local_transaction_id)) {
       return MakeCrudDiagnosticResult<EngineDropObjectResult>(
           request.context,
           "ddl.drop_object",
@@ -161,13 +161,13 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     }
     const auto appended = AppendDomainEvent(
         request.context,
-        MakeDomainDropEvent(request.context.local_transaction_id, request.target_object.uuid.canonical));
+        MakeDomainDropEvent(request.context.local_transaction_id, request.target_object.uuid));
     if (appended.error) {
       return MakeCrudDiagnosticResult<EngineDropObjectResult>(request.context, "ddl.drop_object", appended);
     }
     const auto retired = RetireNameRegistryEntriesForObject(request.context,
                                                            "ddl.drop_object",
-                                                           request.target_object.uuid.canonical);
+                                                           request.target_object.uuid);
     if (retired.error) {
       return MakeCrudDiagnosticResult<EngineDropObjectResult>(request.context, "ddl.drop_object", retired);
     }
@@ -177,13 +177,13 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     AddDdlPublicationResult(&result,
                             "ddl.drop_object",
                             "domain",
-                            request.target_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            request.target_object.uuid,
+                            result.catalog_row_uuid,
                             "domain_event");
     return result;
   }
   if (kind == "table" || kind == "relation") {
-    const std::string object_uuid = request.target_object.uuid.canonical;
+    const std::string object_uuid = request.target_object.uuid;
     auto temporary_drop = DropMgaTemporaryTable(request.context, object_uuid);
     if (!temporary_drop.ok) {
       if (temporary_drop.target_was_temporary) {
@@ -224,7 +224,7 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
                               "ddl.drop_object",
                               result.primary_object.object_kind,
                               object_uuid,
-                              result.catalog_row_uuid.canonical,
+                              result.catalog_row_uuid,
                               "temporary_relation_metadata");
       return result;
     }
@@ -242,9 +242,9 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
   }
   auto result = PersistedRecordResult<EngineDropObjectResult>(request, "ddl.drop_object", kind, true, "dropped", true);
   if (!result.ok) { return result; }
-  const std::string object_uuid = request.target_object.uuid.canonical.empty()
-                                      ? result.primary_object.uuid.canonical
-                                      : request.target_object.uuid.canonical;
+  const std::string object_uuid = request.target_object.uuid.is_nil()
+                                      ? result.primary_object.uuid
+                                      : request.target_object.uuid;
   const auto retired = RetireNameRegistryEntriesForObject(request.context, "ddl.drop_object", object_uuid);
   if (retired.error) {
     return MakeCrudDiagnosticResult<EngineDropObjectResult>(request.context, "ddl.drop_object", retired);
@@ -257,7 +257,7 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
                           "ddl.drop_object",
                           kind,
                           object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           kind);
   return result;
 }
@@ -267,12 +267,12 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
   EngineCatalogDropObjectRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = kOperation;
-  std::string constraint_uuid = request.target_object.uuid.canonical;
+  std::string constraint_uuid = request.target_object.uuid;
   const std::string constraint_name = SecurityOptionValue(request, "constraint_name:");
   const std::string target_kind = request.target_object.object_kind;
   if (!constraint_name.empty() && target_kind != "constraint") {
     std::string owner_uuid = SecurityOptionValue(request, "owner_object_uuid:");
-    if (owner_uuid.empty()) owner_uuid = request.target_object.uuid.canonical;
+    if (owner_uuid.empty()) owner_uuid = request.target_object.uuid;
     if (owner_uuid.empty()) {
       return MakeCrudDiagnosticResult<EngineDropConstraintResult>(
           request.context,
@@ -313,7 +313,7 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
     }
   }
   if (!constraint_uuid.empty()) {
-    catalog_request.target_object.uuid.canonical = constraint_uuid;
+    catalog_request.target_object.uuid = constraint_uuid;
   }
   catalog_request.target_object.object_kind = "constraint";
   const auto dropped = EngineCatalogDropObject(catalog_request);
@@ -336,8 +336,8 @@ EngineDropConstraintResult EngineDropConstraint(const EngineDropConstraintReques
     AddDdlPublicationResult(&result,
                             kOperation,
                             "constraint",
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "constraint_descriptor");
   }
   return result;
@@ -347,7 +347,7 @@ EngineDropTriggerResult EngineDropTrigger(
     const EngineDropTriggerRequest& request) {
   constexpr const char* kOperation = "ddl.drop_trigger";
   if (request.target_object.object_kind != "trigger" ||
-      request.target_object.uuid.canonical.empty() ||
+      request.target_object.uuid.is_nil() ||
       request.expected_executable_generation == 0) {
     return MakeCrudDiagnosticResult<EngineDropTriggerResult>(
         request.context, kOperation,
@@ -364,7 +364,7 @@ EngineDropTriggerResult EngineDropTrigger(
   const auto executable = std::find_if(
       executable_state.state.objects.begin(),
       executable_state.state.objects.end(), [&](const auto& object) {
-        return object.object_uuid == request.target_object.uuid.canonical;
+        return object.object_uuid == request.target_object.uuid;
       });
   if (executable == executable_state.state.objects.end() ||
       executable->object_kind != "trigger" || executable->deleted ||
@@ -376,12 +376,12 @@ EngineDropTriggerResult EngineDropTrigger(
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.drop_trigger.executable_generation_mismatch",
-            request.target_object.uuid.canonical, true));
+            request.target_object.uuid, true));
   }
   const auto active_invocation = std::find_if(
       executable_state.state.active_invocations.begin(),
       executable_state.state.active_invocations.end(), [&](const auto& row) {
-        return row.object_uuid == request.target_object.uuid.canonical &&
+        return row.object_uuid == request.target_object.uuid &&
                row.lifecycle_state == "active";
       });
   if (active_invocation != executable_state.state.active_invocations.end()) {
@@ -390,7 +390,7 @@ EngineDropTriggerResult EngineDropTrigger(
         MakeEngineApiDiagnostic(
             "DDL.DEPENDENCY_CONFLICT",
             "ddl.drop_trigger.active_invocation_conflict",
-            request.target_object.uuid.canonical, true));
+            request.target_object.uuid, true));
   }
 
   EngineCatalogDropObjectRequest catalog_request;
@@ -435,8 +435,8 @@ EngineDropTriggerResult EngineDropTrigger(
   AddApiBehaviorEvidence(&result, "trigger_tombstone_generation",
                          std::to_string(result.executable_generation));
   AddDdlPublicationResult(&result, kOperation, "trigger",
-                          result.primary_object.uuid.canonical,
-                          result.catalog_row_uuid.canonical,
+                          result.primary_object.uuid,
+                          result.catalog_row_uuid,
                           "trigger_tombstone_descriptor");
   return result;
 }

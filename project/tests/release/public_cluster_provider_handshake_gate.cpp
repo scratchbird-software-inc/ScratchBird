@@ -496,7 +496,7 @@ void VerifyInTreeExecutionMessageVector(std::string_view provider_type,
     Require(HasUnsupportedFeature(executed, "cluster.provider.stub"),
             "compile-link stub returned the wrong unsupported feature");
     Require(HasApiDiagnostic(executed,
-                             cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                             "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub returned the wrong API diagnostic");
     Require(HasEvidence(executed, "cluster_provider", "stub"),
             "compile-link stub provider evidence is missing");
@@ -545,17 +545,27 @@ void TestInTreeProviderFailsClosedBeforeRouteAdmission() {
   auto inspect_request =
       ProviderRequest(std::string(cluster_provider::kClusterProviderInfoOperationId));
   const auto inspect = cluster_provider::InspectClusterProvider(inspect_request);
-  Require(inspect.ok, "provider inspection failed");
-  Require(inspect.result_shape.rows.size() == 1,
-          "provider inspection should return one row");
-  const auto& row = inspect.result_shape.rows.front();
-  Require(FieldValue(row, "handshake_status") == "failed_closed",
-          "provider inspection did not publish failed-closed handshake status");
-  Require(FieldValue(row, "route_admission_allowed") == "false",
-          "provider inspection claimed route admission");
-  Require(FieldValue(row, "catalog_compatibility_digest") ==
-              std::string(cluster_provider::kClusterProviderCatalogCompatibilityDigest),
-          "provider inspection lost catalog compatibility digest");
+  if (info.provider_type == "no_cluster" || info.provider_type == "compile_link_stub") {
+    Require(!inspect.ok && inspect.cluster_authority_required,
+            "standalone inspection fabricated cluster success");
+    Require(inspect.result_shape.rows.empty() &&
+                inspect.result_shape.columns.empty(),
+            "standalone inspection fabricated typed identities");
+    Require(HasApiDiagnostic(inspect, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "standalone inspection lost normative absent-path diagnostic");
+  } else {
+    Require(inspect.ok, "provider inspection failed");
+    Require(inspect.result_shape.rows.size() == 1,
+            "provider inspection should return one row");
+    const auto& row = inspect.result_shape.rows.front();
+    Require(FieldValue(row, "handshake_status") == "failed_closed",
+            "provider inspection did not publish failed-closed handshake status");
+    Require(FieldValue(row, "route_admission_allowed") == "false",
+            "provider inspection claimed route admission");
+    Require(FieldValue(row, "catalog_compatibility_digest") ==
+                std::string(cluster_provider::kClusterProviderCatalogCompatibilityDigest),
+            "provider inspection lost catalog compatibility digest");
+  }
 
   for (const auto operation_id :
        cluster_provider::RequiredClusterProviderOperationSet()) {

@@ -8,6 +8,10 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_database_record_codec.hpp"
+#include "catalog_filespace_record_codec.hpp"
+#include "catalog_schema_record_codec.hpp"
+#include "catalog_localized_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
@@ -234,7 +238,12 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
       std::cerr << decoded.diagnostic.diagnostic_code << '\n';
     }
     Require(decoded.ok(), "typed catalog record decode failed");
-    records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
+    const auto kind=decoded.record.header.kind;
+    const bool binary=kind==catalog::CatalogRecordKind::database ||
+        kind==catalog::CatalogRecordKind::filespace || kind==catalog::CatalogRecordKind::schema ||
+        kind==catalog::CatalogRecordKind::localized_name || kind==catalog::CatalogRecordKind::localized_comment;
+    records.push_back({decoded.record, binary ? std::map<std::string,std::string>{}
+                                             : ParsePayloadFields(decoded.record.payload)});
   }
   Require(!records.empty(), "no typed catalog records were decoded");
   return records;
@@ -261,6 +270,27 @@ std::uint32_t CountKind(const std::vector<DecodedRecord>& records, catalog::Cata
 
 void RequireAllTypedRecordsCreatedByTx1(const std::vector<DecodedRecord>& records) {
   for (const auto& record : records) {
+    const auto kind=record.record.header.kind;
+    const auto& bytes=record.record.payload;
+    const auto require_binary_tx1=[](const auto& decoded) {
+      Require(decoded.ok(), "binary catalog payload did not decode");
+      Require(decoded.record->creator_transaction_number==1, "binary catalog record was not created by tx1");
+    };
+    if(kind==catalog::CatalogRecordKind::database) {
+      require_binary_tx1(catalog::DecodeCatalogDatabaseRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::filespace) {
+      require_binary_tx1(catalog::DecodeCatalogFilespaceRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::schema) {
+      require_binary_tx1(catalog::DecodeCatalogSchemaRecord(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::localized_name) {
+      require_binary_tx1(catalog::DecodeCatalogLocalizedName(bytes));continue;
+    }
+    if(kind==catalog::CatalogRecordKind::localized_comment) {
+      require_binary_tx1(catalog::DecodeCatalogLocalizedComment(bytes));continue;
+    }
     const auto found = record.fields.find("creator_tx");
     Require(found != record.fields.end(), "typed catalog record payload is missing creator_tx");
     Require(found->second == "1", "typed catalog record payload was not created by tx1");
@@ -309,10 +339,10 @@ void RequireSchemas(const std::vector<DecodedRecord>& records) {
     if (record.record.header.kind != catalog::CatalogRecordKind::schema) {
       continue;
     }
-    const auto found = record.fields.find("path");
-    if (found != record.fields.end()) {
-      paths.insert(found->second);
-    }
+    const auto decoded=catalog::DecodeCatalogSchemaRecord(record.record.payload);
+    Require(decoded.ok(), "bootstrap schema binary payload invalid");
+    Require(catalog::CatalogSchemaPayloadMatchesHeader(record.record), "bootstrap schema binary header binding invalid");
+    paths.insert(decoded.record->path_cache);
   }
 
   const std::vector<std::string> required = {

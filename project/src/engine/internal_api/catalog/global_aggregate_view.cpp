@@ -53,11 +53,7 @@ EngineApiDiagnostic ViewDiagnostic(std::string detail) {
 
 bool DescriptorExactlyMatches(const EngineDescriptor& left,
                               const EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical ==
-             right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 std::vector<std::string> OptionValues(const EngineApiRequest& request,
@@ -177,12 +173,12 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
     const EngineRequestContext& context,
     bool require_write) {
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return ViewDiagnostic("exact_active_transaction_identity_required");
   }
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return ViewDiagnostic("transaction_uuid_invalid");
   }
@@ -305,29 +301,29 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
   }
 
   EngineGlobalAggregateViewDescriptor descriptor;
-  descriptor.view_uuid.canonical = record.object_uuid;
-  descriptor.view_descriptor_uuid.canonical =
+  descriptor.view_uuid = record.object_uuid;
+  descriptor.view_descriptor_uuid =
       options[1].substr(std::string("view_descriptor_uuid:").size());
   const auto view_generation = ParseCanonicalU64(
       options[2].substr(
           std::string("view_descriptor_generation:").size()));
-  descriptor.source_relation_uuid.canonical =
+  descriptor.source_relation_uuid =
       options[3].substr(std::string("source_relation_uuid:").size());
-  descriptor.source_relation_descriptor_uuid.canonical =
+  descriptor.source_relation_descriptor_uuid =
       options[4].substr(
           std::string("source_relation_descriptor_uuid:").size());
   const auto source_generation = ParseCanonicalU64(
       options[5].substr(
           std::string("source_relation_descriptor_generation:").size()));
-  descriptor.source_column_uuid.canonical =
+  descriptor.source_column_uuid =
       options[6].substr(std::string("source_column_uuid:").size());
-  descriptor.source_column_descriptor_uuid.canonical =
+  descriptor.source_column_descriptor_uuid =
       options[7].substr(
           std::string("source_column_descriptor_uuid:").size());
   const auto literal = ParseCanonicalI32(
       options[10].substr(
           std::string("expression_literal_value:").size()));
-  descriptor.aggregate_function_uuid.canonical =
+  descriptor.aggregate_function_uuid =
       options[12].substr(
           std::string("aggregate_function_uuid:").size());
   descriptor.result_alias =
@@ -340,17 +336,17 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
   const std::string target_uuid =
       PayloadFieldValue(record.payload, "target=");
   const std::set<std::string> persisted_identities = {
-      descriptor.view_uuid.canonical,
-      descriptor.view_descriptor_uuid.canonical,
-      descriptor.source_relation_uuid.canonical,
-      descriptor.source_relation_descriptor_uuid.canonical,
-      descriptor.source_column_uuid.canonical,
-      descriptor.aggregate_function_uuid.canonical};
+      descriptor.view_uuid,
+      descriptor.view_descriptor_uuid,
+      descriptor.source_relation_uuid,
+      descriptor.source_relation_descriptor_uuid,
+      descriptor.source_column_uuid,
+      descriptor.aggregate_function_uuid};
   const bool source_column_descriptor_identity_conflicts =
-      descriptor.source_column_descriptor_uuid.canonical !=
-          descriptor.source_column_uuid.canonical &&
+      descriptor.source_column_descriptor_uuid !=
+          descriptor.source_column_uuid &&
       persisted_identities.contains(
-          descriptor.source_column_descriptor_uuid.canonical);
+          descriptor.source_column_descriptor_uuid);
 
   if (!view_generation || *view_generation == 0 || !source_generation ||
       *source_generation == 0 || !literal ||
@@ -360,18 +356,18 @@ std::optional<EngineGlobalAggregateViewDescriptor> ParsePersistedDescriptor(
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
                           record.object_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.view_descriptor_uuid.canonical) ||
+                          descriptor.view_descriptor_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.source_relation_uuid.canonical) ||
+                          descriptor.source_relation_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.source_relation_descriptor_uuid.canonical) ||
+                          descriptor.source_relation_descriptor_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.source_column_uuid.canonical) ||
+                          descriptor.source_column_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.source_column_descriptor_uuid.canonical) ||
+                          descriptor.source_column_descriptor_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.aggregate_function_uuid.canonical) ||
-      descriptor.aggregate_function_uuid.canonical !=
+                          descriptor.aggregate_function_uuid) ||
+      descriptor.aggregate_function_uuid !=
           EngineGlobalAggregateAvgFunctionUuid() ||
       source_column_descriptor_identity_conflicts ||
       !SafeAlias(descriptor.result_alias) || persisted_identities.size() != 6) {
@@ -392,7 +388,7 @@ const MgaRelationColumnStorageDescriptor* FindExactColumn(
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
   for (const auto& column : relation.columns) {
-    if (column.column_uuid.canonical != column_uuid) continue;
+    if (column.column_uuid != column_uuid) continue;
     if (found != nullptr) {
       if (duplicate != nullptr) *duplicate = true;
       return nullptr;
@@ -495,12 +491,12 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       HasForbiddenRequestData(request) ||
       (request.target_object.object_kind != "view" &&
        !request.target_object.object_kind.empty()) ||
-      request.target_schema.uuid.canonical.empty() ||
+      request.target_schema.uuid.is_nil() ||
       (request.target_schema.object_kind != "schema" &&
        !request.target_schema.object_kind.empty()) ||
       request.related_objects.size() != 1 ||
       request.related_objects.front().object_kind != "table" ||
-      request.related_objects.front().uuid.canonical.empty() ||
+      request.related_objects.front().uuid.is_nil() ||
       request.columns.size() != 1 || request.columns.front().ordinal != 0 ||
       request.assignments.size() != 1 ||
       request.assignments.front().first != "int32_literal" ||
@@ -512,12 +508,12 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
         "global_aggregate_view_request_shape_invalid");
     return result;
   }
+  EngineApiDiagnostic schema_diagnostic;
+  const auto target_schema = FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) { result.diagnostic = schema_diagnostic; return result; }
   if (!CanonicalTypedUuid(scratchbird::core::platform::UuidKind::schema,
-                          request.target_schema.uuid.canonical) ||
-      !FindVisibleSchemaTreeRecord(
-          request.context,
-          request.target_schema.uuid.canonical,
-          request.context.local_transaction_id)) {
+                          request.target_schema.uuid) || !target_schema) {
     result.diagnostic = ViewDiagnostic(
         "global_aggregate_view_schema_not_visible");
     return result;
@@ -546,7 +542,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   }
 
   const std::string source_uuid =
-      request.related_objects.front().uuid.canonical;
+      request.related_objects.front().uuid;
   const auto source =
       LoadMgaRelationStorageDescriptor(request.context, source_uuid);
   if (!source.ok) {
@@ -557,9 +553,9 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   const auto expected_source_generation = ParseCanonicalU64(
       SingleOptionValue(request,
                         "source_relation_descriptor_generation:"));
-  if (relation.relation_uuid.canonical != source_uuid ||
+  if (relation.relation_uuid != source_uuid ||
       relation.relation_kind != "table" ||
-      relation.descriptor_uuid.canonical !=
+      relation.descriptor_uuid !=
           SingleOptionValue(request, "source_relation_descriptor_uuid:") ||
       !expected_source_generation || *expected_source_generation == 0 ||
       relation.descriptor_generation != *expected_source_generation) {
@@ -570,13 +566,13 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   bool duplicate_column = false;
   const auto* source_column = FindExactColumn(
       relation,
-      request.columns.front().requested_column_uuid.canonical,
+      request.columns.front().requested_column_uuid,
       &duplicate_column);
   if (duplicate_column || source_column == nullptr ||
       dt::CanonicalTypeIdFromStableName(
           source_column->value_descriptor.canonical_type_name) !=
           dt::CanonicalTypeId::int32 ||
-      source_column->value_descriptor.descriptor_uuid.canonical.empty() ||
+      source_column->value_descriptor.descriptor_uuid.is_nil() ||
       !DescriptorExactlyMatches(request.columns.front().descriptor,
                                 source_column->value_descriptor)) {
     result.diagnostic = ViewDiagnostic(
@@ -588,7 +584,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
 
   EngineGlobalAggregateProjection projection;
   projection.operation = EngineGlobalAggregateOperation::avg_field;
-  projection.aggregate_function_uuid.canonical = aggregate_uuid;
+  projection.aggregate_function_uuid = aggregate_uuid;
   projection.source_field.column_uuid = source_column->column_uuid;
   projection.source_field.value_descriptor =
       source_column->value_descriptor;
@@ -621,7 +617,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   }
 
   std::optional<ApiBehaviorRecord> existing;
-  std::string view_uuid = request.target_object.uuid.canonical;
+  std::string view_uuid = request.target_object.uuid;
   if (!view_uuid.empty()) {
     const auto lookup =
         LookupVisibleApiBehaviorRecord(request.context, view_uuid);
@@ -667,7 +663,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
         existing->state != "created" || existing->deleted ||
         existing->default_name != view_name ||
         PayloadFieldValue(existing->payload, "schema=") !=
-            request.target_schema.uuid.canonical) {
+            request.target_schema.uuid) {
       result.diagnostic = ViewDiagnostic(
           "global_aggregate_view_existing_descriptor_invalid");
       return result;
@@ -690,9 +686,9 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   if (!CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
                           view_uuid) ||
       view_uuid == source_uuid ||
-      view_uuid == relation.descriptor_uuid.canonical ||
-      view_uuid == source_column->column_uuid.canonical ||
-      view_uuid == source_column->value_descriptor.descriptor_uuid.canonical ||
+      view_uuid == relation.descriptor_uuid ||
+      view_uuid == source_column->column_uuid ||
+      view_uuid == source_column->value_descriptor.descriptor_uuid ||
       view_uuid == aggregate_uuid) {
     result.diagnostic = ViewDiagnostic(
         "global_aggregate_view_uuid_allocation_failed");
@@ -708,8 +704,8 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
 
   EngineGlobalAggregateViewDescriptor descriptor;
   descriptor.present = true;
-  descriptor.view_uuid.canonical = view_uuid;
-  descriptor.view_descriptor_uuid.canonical =
+  descriptor.view_uuid = view_uuid;
+  descriptor.view_descriptor_uuid =
       GenerateCrudEngineUuid("object");
   descriptor.view_descriptor_generation =
       result.altered_existing
@@ -723,24 +719,24 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
   descriptor.source_column_descriptor_uuid =
       source_column->value_descriptor.descriptor_uuid;
   descriptor.expression_literal_int32 = *literal;
-  descriptor.aggregate_function_uuid.canonical = aggregate_uuid;
+  descriptor.aggregate_function_uuid = aggregate_uuid;
   descriptor.result_alias = alias;
   descriptor.result_descriptor = request.descriptors[1];
   descriptor.diagnostic = OkDiagnostic();
   if (!CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.view_descriptor_uuid.canonical) ||
-      descriptor.view_descriptor_uuid.canonical == view_uuid ||
-      descriptor.view_descriptor_uuid.canonical == source_uuid ||
-      descriptor.view_descriptor_uuid.canonical ==
-          relation.descriptor_uuid.canonical ||
-      descriptor.view_descriptor_uuid.canonical ==
-          source_column->column_uuid.canonical ||
-      descriptor.view_descriptor_uuid.canonical ==
-          source_column->value_descriptor.descriptor_uuid.canonical ||
-      descriptor.view_descriptor_uuid.canonical == aggregate_uuid ||
+                          descriptor.view_descriptor_uuid) ||
+      descriptor.view_descriptor_uuid == view_uuid ||
+      descriptor.view_descriptor_uuid == source_uuid ||
+      descriptor.view_descriptor_uuid ==
+          relation.descriptor_uuid ||
+      descriptor.view_descriptor_uuid ==
+          source_column->column_uuid ||
+      descriptor.view_descriptor_uuid ==
+          source_column->value_descriptor.descriptor_uuid ||
+      descriptor.view_descriptor_uuid == aggregate_uuid ||
       (result.altered_existing &&
-       descriptor.view_descriptor_uuid.canonical ==
-           previous.view_descriptor_uuid.canonical)) {
+       descriptor.view_descriptor_uuid ==
+           previous.view_descriptor_uuid)) {
     result.diagnostic = ViewDiagnostic(
         "global_aggregate_view_descriptor_uuid_allocation_failed");
     return result;
@@ -750,19 +746,19 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
       std::string("view_query_shape:") +
           kEngineGlobalAggregateViewMarkerV1,
       "view_descriptor_uuid:" +
-          descriptor.view_descriptor_uuid.canonical,
+          descriptor.view_descriptor_uuid,
       "view_descriptor_generation:" +
           std::to_string(descriptor.view_descriptor_generation),
       "source_relation_uuid:" +
-          descriptor.source_relation_uuid.canonical,
+          descriptor.source_relation_uuid,
       "source_relation_descriptor_uuid:" +
-          descriptor.source_relation_descriptor_uuid.canonical,
+          descriptor.source_relation_descriptor_uuid,
       "source_relation_descriptor_generation:" +
           std::to_string(
               descriptor.source_relation_descriptor_generation),
-      "source_column_uuid:" + descriptor.source_column_uuid.canonical,
+      "source_column_uuid:" + descriptor.source_column_uuid,
       "source_column_descriptor_uuid:" +
-          descriptor.source_column_descriptor_uuid.canonical,
+          descriptor.source_column_descriptor_uuid,
       std::string("expression_kind:") +
           kEngineGlobalAggregateViewInt32MultiplyV1,
       "expression_literal_type:int32",
@@ -770,7 +766,7 @@ PrepareEngineGlobalAggregateViewCreate(const EngineApiRequest& request) {
           std::to_string(descriptor.expression_literal_int32),
       "expression_result_type:int64",
       "aggregate_function_uuid:" +
-          descriptor.aggregate_function_uuid.canonical,
+          descriptor.aggregate_function_uuid,
       "aggregate_result_alias:" + descriptor.result_alias,
       "aggregate_result_type:int64_nullable"};
   result.descriptor = std::move(descriptor);
@@ -831,8 +827,8 @@ EngineGlobalAggregateViewDescriptor DescribeEngineGlobalAggregateView(
 EngineDescriptor EngineGlobalAggregateViewSemanticDescriptor(
     const EngineGlobalAggregateViewDescriptor& descriptor) {
   EngineDescriptor semantic;
-  if (!descriptor.present || descriptor.view_uuid.canonical.empty() ||
-      descriptor.view_descriptor_uuid.canonical.empty() ||
+  if (!descriptor.present || descriptor.view_uuid.is_nil() ||
+      descriptor.view_descriptor_uuid.is_nil() ||
       descriptor.view_descriptor_generation == 0 ||
       !SafeAlias(descriptor.result_alias) ||
       !DescriptorExactlyMatches(
@@ -845,7 +841,7 @@ EngineDescriptor EngineGlobalAggregateViewSemanticDescriptor(
   semantic.canonical_type_name = kEngineGlobalAggregateViewMarkerV1;
   semantic.encoded_descriptor =
       std::string("marker=") + kEngineGlobalAggregateViewMarkerV1 +
-      ";view_uuid=" + descriptor.view_uuid.canonical +
+      ";view_uuid=" + descriptor.view_uuid +
       ";view_descriptor_generation=" +
       std::to_string(descriptor.view_descriptor_generation) +
       ";result_alias=" + descriptor.result_alias +
@@ -884,7 +880,7 @@ EngineApiDiagnostic ExpandEngineGlobalAggregateViewSelect(
       base.size() == 1 &&
       base.front() == kEngineGlobalAggregateViewMarkerV1 && select.empty();
   if ((!exact_select && !exact_base) ||
-      request.source_object.uuid.canonical.empty() ||
+      request.source_object.uuid.is_nil() ||
       request.descriptors.size() != 1 ||
       !request.global_aggregate_projection.outputs.empty() ||
       !request.select_predicate.predicate_kind.empty() ||
@@ -898,7 +894,7 @@ EngineApiDiagnostic ExpandEngineGlobalAggregateViewSelect(
   }
 
   auto descriptor = DescribeEngineGlobalAggregateView(
-      request.context, request.source_object.uuid.canonical);
+      request.context, request.source_object.uuid);
   if (descriptor.diagnostic.error) return descriptor.diagnostic;
   if (!descriptor.present) {
     return ViewDiagnostic("global_aggregate_view_descriptor_required");
@@ -910,13 +906,13 @@ EngineApiDiagnostic ExpandEngineGlobalAggregateViewSelect(
   }
 
   const auto source = LoadMgaRelationStorageDescriptor(
-      request.context, descriptor.source_relation_uuid.canonical);
+      request.context, descriptor.source_relation_uuid);
   if (!source.ok) return source.diagnostic;
   const auto& relation = source.descriptor;
-  if (relation.relation_uuid.canonical !=
-          descriptor.source_relation_uuid.canonical ||
-      relation.descriptor_uuid.canonical !=
-          descriptor.source_relation_descriptor_uuid.canonical ||
+  if (relation.relation_uuid !=
+          descriptor.source_relation_uuid ||
+      relation.descriptor_uuid !=
+          descriptor.source_relation_descriptor_uuid ||
       relation.descriptor_generation !=
           descriptor.source_relation_descriptor_generation) {
     return ViewDiagnostic(
@@ -925,11 +921,11 @@ EngineApiDiagnostic ExpandEngineGlobalAggregateViewSelect(
   bool duplicate_column = false;
   const auto* source_column = FindExactColumn(
       relation,
-      descriptor.source_column_uuid.canonical,
+      descriptor.source_column_uuid,
       &duplicate_column);
   if (duplicate_column || source_column == nullptr ||
-      source_column->value_descriptor.descriptor_uuid.canonical !=
-          descriptor.source_column_descriptor_uuid.canonical ||
+      source_column->value_descriptor.descriptor_uuid !=
+          descriptor.source_column_descriptor_uuid ||
       dt::CanonicalTypeIdFromStableName(
           source_column->value_descriptor.canonical_type_name) !=
           dt::CanonicalTypeId::int32) {

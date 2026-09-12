@@ -26,6 +26,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <set>
 #include <span>
@@ -34,6 +35,26 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+// A source's actual forced Close must work without allocating diagnostics.
+namespace close_fault {
+thread_local bool armed = false;
+thread_local bool hit = false;
+}
+void* operator new(std::size_t n) {
+  if (close_fault::armed) { close_fault::hit = true; throw std::bad_alloc(); }
+  if (auto p = std::malloc(n ? n : 1)) return p;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+  try { return ::operator new(n); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { return ::operator new(n, std::nothrow); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -505,7 +526,12 @@ api::EngineNarrowQueryProfileSourceExecutionMetricsV1 TerminalMetrics(
 void CloseProfile(OpenedProfile* opened) {
   Require(opened != nullptr && opened->source != nullptr,
           "narrow source close target is absent");
+  close_fault::hit = false;
+  close_fault::armed = true;
   opened->source->Close(api::TypedResultProducerReleaseReasonV1::eos);
+  opened->source->Close(api::TypedResultProducerReleaseReasonV1::eos);
+  close_fault::armed = false;
+  Require(!close_fault::hit, "actual narrow source forced cleanup attempted allocation");
 }
 
 const api::NarrowQueryTypedResultOccurrenceCellV1& Cell(

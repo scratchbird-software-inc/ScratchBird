@@ -21,7 +21,7 @@ namespace scratchbird::engine::optimizer {
 
 struct OrderedLimitPlanningRequest {
   bool present = false;
-  std::vector<std::string> order_by_column_uuids;
+  std::vector<planner::CanonicalPlannerUuid> order_by_column_uuids;
   std::uint64_t limit_count = 0;
 };
 
@@ -58,13 +58,13 @@ struct CoveringPayloadPlanningProof {
 
 // SEARCH_KEY: SB_OPTIMIZER_ACCESS_PATH_FULL
 struct AccessPathPlanningRequest {
-  std::string relation_uuid;
+  planner::CanonicalPlannerUuid relation_uuid;
   std::string predicate_kind;
   std::string predicate_text;
   std::optional<CanonicalSblrExpressionNode> sblr_expression;
   std::string descriptor_digest;
   std::string collation_identity;
-  std::vector<std::string> projected_column_uuids;
+  std::vector<planner::CanonicalPlannerUuid> projected_column_uuids;
   OrderedLimitPlanningRequest ordered_limit;
   BitmapPlanningRequest bitmap;
   SummaryPrunePlanningRequest summary_prune;

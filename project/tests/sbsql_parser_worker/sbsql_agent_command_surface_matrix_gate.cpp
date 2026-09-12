@@ -251,11 +251,11 @@ void RequireOperationRoute(const OperationRow& row) {
                   " compile-link stub unexpectedly executed cluster route");
       Require(HasApiDiagnostic(
                   dispatch.api_result,
-                  cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                  "PROCESS.CLUSTER_PATH_ABSENT"),
               std::string(row.operation_id) + " stub diagnostic missing");
       Require(HasDispatchDiagnostic(
                   dispatch,
-                  cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                  "PROCESS.CLUSTER_PATH_ABSENT"),
               std::string(row.operation_id) + " stub dispatch diagnostic missing");
       Require(HasEvidence(dispatch.api_result, "cluster_provider", "stub"),
               std::string(row.operation_id) + " stub provider evidence missing");
@@ -266,10 +266,10 @@ void RequireOperationRoute(const OperationRow& row) {
       Require(!dispatch.api_result.ok,
               std::string(row.operation_id) + " no-cluster route accepted");
       Require(HasApiDiagnostic(dispatch.api_result,
-                               "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+                               "PROCESS.CLUSTER_PATH_ABSENT"),
               std::string(row.operation_id) + " no-cluster API diagnostic missing");
       Require(HasDispatchDiagnostic(dispatch,
-                                    "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+                                    "PROCESS.CLUSTER_PATH_ABSENT"),
               std::string(row.operation_id) + " no-cluster dispatch diagnostic missing");
     }
     return;
@@ -362,9 +362,9 @@ int main() {
       {"pages.allocation.family.show", "SBLR_SHOW_PAGE_ALLOCATION_BY_FAMILY", "OBS_METRICS_READ_FAMILY", "METRIC.STALE", false, false},
       {"pages.relocation_backlog.show", "SBLR_SHOW_PAGE_RELOCATION_BACKLOG", "OBS_METRICS_READ_FAMILY", "METRIC.STALE", false, false},
       {"filespaces.shrink_readiness.show", "SBLR_SHOW_FILESPACE_SHRINK_READINESS", "OBS_METRICS_READ_FAMILY", "FILESPACE.SHRINK_BLOCKED", false, false},
-      {"cluster.agent.list", "SBLR_CLUSTER_AGENT_LIST", "OBS_CLUSTER_HEALTH_INSPECT", "SBLR.CLUSTER.SUPPORT_NOT_ENABLED", false, true},
-      {"cluster.agent.get", "SBLR_CLUSTER_AGENT_GET", "OBS_CLUSTER_HEALTH_INSPECT", "SBLR.CLUSTER.SUPPORT_NOT_ENABLED", false, true},
-      {"cluster.agent.control", "SBLR_CLUSTER_AGENT_CONTROL", "OBS_CLUSTER_CONTROL", "SBLR.CLUSTER.SUPPORT_NOT_ENABLED", false, true},
+      {"cluster.agent.list", "SBLR_CLUSTER_AGENT_LIST", "OBS_CLUSTER_HEALTH_INSPECT", "PROCESS.CLUSTER_PATH_ABSENT", false, true},
+      {"cluster.agent.get", "SBLR_CLUSTER_AGENT_GET", "OBS_CLUSTER_HEALTH_INSPECT", "PROCESS.CLUSTER_PATH_ABSENT", false, true},
+      {"cluster.agent.control", "SBLR_CLUSTER_AGENT_CONTROL", "OBS_CLUSTER_CONTROL", "PROCESS.CLUSTER_PATH_ABSENT", false, true},
   };
   for (const auto& operation : operations) {
     RequireOperationRoute(operation);

@@ -558,10 +558,7 @@ IparStatementPoolPlan PlanIparStatementMemoryPools(
     AddBaseEvidence(&result.evidence, kStatementPoolAnchor);
     return result;
   }
-  if (Blank(request.context.statement_id) ||
-      Blank(request.context.session_id) ||
-      Blank(request.context.transaction_id) ||
-      Blank(request.context.database_id) ||
+  if (!QueryMemoryContextIdentitiesValid(request.context) ||
       request.statement_limit_bytes == 0 ||
       request.max_batch_rows == 0) {
     result.status = ErrorStatus();
@@ -574,21 +571,36 @@ IparStatementPoolPlan PlanIparStatementMemoryPools(
     return result;
   }
 
-  const u64 row_pool = request.row_version_bytes * request.max_batch_rows;
-  const u64 key_pool = request.key_buffer_bytes * request.max_batch_rows;
-  const u64 diagnostic_pool = request.diagnostic_bytes * std::min<u64>(request.max_batch_rows, 16);
-  const u64 coercion_pool = request.coercion_temp_bytes * request.max_batch_rows;
-  const u64 scratch_pool = request.scratch_bytes * request.max_batch_rows;
-  const u64 requested_total = row_pool + key_pool + diagnostic_pool +
-                              coercion_pool + scratch_pool;
-  if (requested_total == 0 || requested_total > request.statement_limit_bytes) {
+  bool pool_size_overflow = false;
+  auto multiply = [&](u64 bytes, u64 count) -> u64 {
+    if (count != 0 && bytes > std::numeric_limits<u64>::max() / count) {
+      pool_size_overflow = true;
+      return 0;
+    }
+    return bytes * count;
+  };
+  const u64 row_pool = multiply(request.row_version_bytes, request.max_batch_rows);
+  const u64 key_pool = multiply(request.key_buffer_bytes, request.max_batch_rows);
+  const u64 diagnostic_pool = multiply(request.diagnostic_bytes, std::min<u64>(request.max_batch_rows, 16));
+  const u64 coercion_pool = multiply(request.coercion_temp_bytes, request.max_batch_rows);
+  const u64 scratch_pool = multiply(request.scratch_bytes, request.max_batch_rows);
+  u64 requested_total = 0;
+  for (u64 bytes : {row_pool, key_pool, diagnostic_pool, coercion_pool, scratch_pool}) {
+    if (bytes > std::numeric_limits<u64>::max() - requested_total) {
+      pool_size_overflow = true;
+      break;
+    }
+    requested_total += bytes;
+  }
+  if (pool_size_overflow || requested_total == 0 || requested_total > request.statement_limit_bytes) {
     result.status = ErrorStatus(StatusCode::memory_limit_exceeded);
     result.fail_closed = true;
     result.diagnostic = Diagnostic(result.status,
                                    "SB_IPAR_STATEMENT_POOL.LIMIT_EXCEEDED",
                                    "ipar.statement_pool.limit_exceeded",
                                    {{"slice", kStatementPoolAnchor},
-                                    {"requested_bytes", std::to_string(requested_total)}});
+                                    {"requested_bytes", std::to_string(requested_total)},
+                                    {"pool_size_overflow", pool_size_overflow ? "true" : "false"}});
     AddBaseEvidence(&result.evidence, kStatementPoolAnchor);
     return result;
   }

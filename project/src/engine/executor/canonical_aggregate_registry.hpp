@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #pragma once
+#include "../../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -72,7 +73,7 @@ struct CanonicalAggregateRegistryEntry {
   std::uint16_t abi_version = 0;
   CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
   std::string builtin_id;
-  std::string function_uuid;
+  scratchbird::core::platform::Uuid function_uuid;
   bool executable = false;
   bool aggregate_as_window = false;
   bool moving_window_inverse = false;
@@ -89,12 +90,12 @@ const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByFunctionV1(
 const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByBuiltinIdV1(
     std::string_view builtin_id);
 const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByUuidV1(
-    std::string_view function_uuid);
+    const scratchbird::core::platform::Uuid& function_uuid);
 const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateExactV1(
     std::uint16_t abi_version,
     CanonicalAggregateFunction function,
     std::string_view builtin_id,
-    std::string_view function_uuid);
+    const scratchbird::core::platform::Uuid& function_uuid);
 
 std::vector<std::string> ValidateCanonicalAggregateRuntimeRegistryV1();
 

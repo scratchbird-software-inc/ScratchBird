@@ -120,9 +120,9 @@ TResult PersistedRecordResult(const TRequest& request,
     return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id, persisted.diagnostic);
   }
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
-  result.primary_object.uuid.canonical = persisted.record.object_uuid;
+  result.primary_object.uuid = persisted.record.object_uuid;
   result.primary_object.object_kind = persisted.record.object_kind;
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", operation_id);
   AddApiBehaviorEvidence(&result, persisted.record.object_kind, persisted.record.object_uuid);
   AddApiBehaviorRow(&result, {{"object_uuid", persisted.record.object_uuid},
@@ -134,7 +134,7 @@ TResult PersistedRecordResult(const TRequest& request,
                           operation_id,
                           persisted.record.object_kind,
                           persisted.record.object_uuid,
-                          result.catalog_row_uuid.canonical);
+                          result.catalog_row_uuid);
   return result;
 }
 
@@ -157,9 +157,9 @@ TResult PersistedRecordResultWithPayload(const TRequest& request,
     return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id, persisted.diagnostic);
   }
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
-  result.primary_object.uuid.canonical = persisted.record.object_uuid;
+  result.primary_object.uuid = persisted.record.object_uuid;
   result.primary_object.object_kind = persisted.record.object_kind;
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", operation_id);
   AddApiBehaviorEvidence(&result, persisted.record.object_kind, persisted.record.object_uuid);
   AddApiBehaviorRow(&result, {{"object_uuid", persisted.record.object_uuid},
@@ -171,7 +171,7 @@ TResult PersistedRecordResultWithPayload(const TRequest& request,
                           operation_id,
                           persisted.record.object_kind,
                           persisted.record.object_uuid,
-                          result.catalog_row_uuid.canonical);
+                          result.catalog_row_uuid);
   return result;
 }
 

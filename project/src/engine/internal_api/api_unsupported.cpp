@@ -18,6 +18,20 @@ EngineApiDiagnostic MakeEngineApiDiagnostic(std::string code, std::string messag
   diagnostic.message_key = std::move(message_key);
   diagnostic.detail = std::move(detail);
   diagnostic.error = error;
+  diagnostic.canonical_metadata =
+      scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(
+          diagnostic.code);
+  return diagnostic;
+}
+
+EngineApiDiagnostic MakeEngineApiDiagnosticFromNative(
+    const scratchbird::core::platform::DiagnosticRecord& source,
+    std::string code, std::string message_key, std::string detail, bool error) {
+  auto diagnostic = MakeEngineApiDiagnostic(
+      std::move(code), std::move(message_key), std::move(detail), error);
+  diagnostic.native_source = scratchbird::core::diagnostics::NativeDiagnosticSource{
+      source, scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(
+                  source.diagnostic_code)};
   return diagnostic;
 }
 

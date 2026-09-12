@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "disk_device.hpp"
+#include "route_ownership_lease.hpp"
+#include "windows_data_ownership.hpp"
 
 #include "metric_contracts.hpp"
 #include "metric_producer.hpp"
@@ -41,6 +43,18 @@
 
 namespace scratchbird::storage::disk {
 namespace {
+
+// Before FileDevice publishes ownership, all native handles are provisional.
+// Error-string construction and other allocations may throw between native
+// operations. The release lambdas clear their handle after explicit cleanup or
+// transfer, making this guard safe on success and every exceptional exit.
+template<class Release>
+struct ProvisionalHandleCleanup {
+  Release release;
+  ~ProvisionalHandleCleanup() noexcept { release(); }
+};
+template<class Release>
+ProvisionalHandleCleanup(Release) -> ProvisionalHandleCleanup<Release>;
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::MakeDiagnostic;
@@ -201,27 +215,8 @@ bool MulWouldOverflow(u64 lhs, u64 rhs) {
 
 enum class RouteOwnerProbeResult {
   kAvailable,
-  kHeldByCurrentProcess,
   kHeldByOtherProcess,
 };
-
-bool RouteOwnerLockHeldByCurrentProcess(const std::string& route_lock_path) {
-  std::ifstream in(route_lock_path);
-  std::string line;
-  while (std::getline(in, line)) {
-    constexpr const char* kPidPrefix = "pid=";
-    if (line.rfind(kPidPrefix, 0) != 0) {
-      continue;
-    }
-    const std::string pid = line.substr(std::strlen(kPidPrefix));
-#ifdef _WIN32
-    return pid == std::to_string(static_cast<unsigned long long>(::GetCurrentProcessId()));
-#else
-    return pid == std::to_string(static_cast<unsigned long long>(::getpid()));
-#endif
-  }
-  return false;
-}
 
 std::mutex& RouteOwnedStorageRegistryMutex() {
   static std::mutex mutex;
@@ -338,18 +333,18 @@ bool DurableSyncParentDirectory(const std::string& path, std::string* detail) {
 }
 
 void* OpenOwnerLockFile(const std::string& path,
-                        bool shared_read_only,
+                        bool read_only,
                         bool* lock_held,
                         std::string* detail) {
   if (lock_held != nullptr) {
     *lock_held = false;
   }
-  const DWORD share_mode =
-      shared_read_only ? FILE_SHARE_READ : 0;
+  // Read-only data access does not permit a second database owner.
+  const DWORD share_mode = 0;
   const DWORD access =
-      shared_read_only ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
+      read_only ? GENERIC_READ : (GENERIC_READ | GENERIC_WRITE);
   const DWORD flags = FILE_ATTRIBUTE_NORMAL |
-                      ForcedOrderedWriteFileFlags(!shared_read_only);
+                      ForcedOrderedWriteFileFlags(!read_only);
   HANDLE handle = ::CreateFileA(path.c_str(),
                                 access,
                                 share_mode,
@@ -419,7 +414,8 @@ void* OpenDataFileHandle(const std::string& path,
       disposition = CREATE_NEW;
       break;
     case FileOpenMode::create_or_truncate:
-      disposition = CREATE_ALWAYS;
+      // Actual truncation waits for native ownership and opened-file identity.
+      disposition = OPEN_ALWAYS;
       break;
   }
   const DWORD access = GENERIC_READ | (read_only_open ? 0 : GENERIC_WRITE);
@@ -627,9 +623,7 @@ RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
     if (detail != nullptr) {
       *detail = route_lock_path + ":" + WindowsLastErrorText();
     }
-    return RouteOwnerLockHeldByCurrentProcess(route_lock_path)
-               ? RouteOwnerProbeResult::kHeldByCurrentProcess
-               : RouteOwnerProbeResult::kHeldByOtherProcess;
+    return RouteOwnerProbeResult::kHeldByOtherProcess;
   }
   ::CloseHandle(handle);
   return RouteOwnerProbeResult::kAvailable;
@@ -697,6 +691,14 @@ bool DurableSyncParentDirectory(const std::string& path, std::string* detail) {
   return ok;
 }
 
+int LockDataFile(int fd) {
+  struct stat info{};
+  if (::fstat(fd, &info) != 0) return errno;
+  if (!S_ISREG(info.st_mode)) return EINVAL;
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) return errno;
+  return 0;
+}
+
 int OpenDataFileHandle(const std::string& path,
                        FileOpenMode mode,
                        bool read_only_open,
@@ -716,7 +718,8 @@ int OpenDataFileHandle(const std::string& path,
     if (!std::filesystem::exists(path) && created != nullptr) {
       *created = true;
     }
-    flags |= O_CREAT | O_TRUNC;
+    // Truncation must wait until the actual inode has been exclusively owned.
+    flags |= O_CREAT;
   }
   if (!read_only_open) {
     flags |= ForcedOrderedWriteOpenFlag();
@@ -925,9 +928,7 @@ RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
     if (detail != nullptr) {
       *detail = route_lock_path + ":" + std::strerror(saved_errno);
     }
-    return RouteOwnerLockHeldByCurrentProcess(route_lock_path)
-               ? RouteOwnerProbeResult::kHeldByCurrentProcess
-               : RouteOwnerProbeResult::kHeldByOtherProcess;
+    return RouteOwnerProbeResult::kHeldByOtherProcess;
   }
   (void)::flock(fd, LOCK_UN);
   (void)::close(fd);
@@ -936,6 +937,218 @@ RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
 #endif
 
 }  // namespace
+
+namespace {
+std::uint64_t OwnershipProcessId() {
+#ifdef _WIN32
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
+struct RouteLeaseRegistry {
+  const std::uint64_t process_id = OwnershipProcessId();
+  std::mutex mutex;
+  std::map<std::string, std::weak_ptr<RouteOwnershipLease>> leases;
+};
+
+RouteLeaseRegistry& LeaseRegistry() {
+  static RouteLeaseRegistry registry;
+  return registry;
+}
+}  // namespace
+
+RouteOwnershipLease::RouteOwnershipLease(std::string route_path,
+                                         std::uint64_t owner_pid)
+    : route_path_(std::move(route_path)), owner_pid_(owner_pid) {}
+
+RouteOwnershipLease::~RouteOwnershipLease() {
+#ifdef _WIN32
+  if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE)
+    ::CloseHandle(static_cast<HANDLE>(handle_));
+  if (storage_handle_ != nullptr && storage_handle_ != INVALID_HANDLE_VALUE)
+    ::CloseHandle(static_cast<HANDLE>(storage_handle_));
+  if (data_handle_ != nullptr && data_handle_ != INVALID_HANDLE_VALUE)
+    ::CloseHandle(static_cast<HANDLE>(data_handle_));
+#else
+  // Close, never LOCK_UN: a fork may share these open-file descriptions.
+  // The last process-local reader pin retains both native handles.
+  if (handle_ >= 0) (void)::close(handle_);
+  if (storage_handle_ >= 0) (void)::close(storage_handle_);
+  if (data_fd_ >= 0) (void)::close(data_fd_);
+#endif
+}
+
+bool RouteOwnershipLease::valid() const {
+  if (owner_pid_ != OwnershipProcessId()) return false;
+#ifdef _WIN32
+  return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE &&
+         storage_handle_ != nullptr && storage_handle_ != INVALID_HANDLE_VALUE;
+#else
+  return handle_ >= 0 && storage_handle_ >= 0;
+#endif
+}
+
+bool RouteOwnershipLease::Publish(const std::shared_ptr<RouteOwnershipLease>& self) {
+  auto& registry = LeaseRegistry();
+  // A child must exec before using an inherited registry, including its mutex.
+  if (!valid() || registry.process_id != OwnershipProcessId()) return false;
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  auto& entry = registry.leases[route_path_];
+  if (!entry.expired()) return false;
+  entry = self;
+  accepting_ = true;
+  return true;
+}
+
+std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::Borrow(
+    const std::string& route_path) {
+  auto& registry = LeaseRegistry();
+  if (registry.process_id != OwnershipProcessId()) return {};
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  const auto entry = registry.leases.find(route_path);
+  if (entry == registry.leases.end()) return {};
+  auto lease = entry->second.lock();
+  if (!lease || !lease->accepting_ || !lease->valid()) return {};
+  return lease;
+}
+
+void RouteOwnershipLease::Withdraw() {
+  auto& registry = LeaseRegistry();
+  if (owner_pid_ != OwnershipProcessId() ||
+      registry.process_id != OwnershipProcessId()) return;
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  accepting_ = false;
+  const auto entry = registry.leases.find(route_path_);
+  if (entry != registry.leases.end() && entry->second.lock().get() == this)
+    registry.leases.erase(entry);
+}
+
+#ifdef _WIN32
+std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
+    const std::string& path) {
+  auto& registry = LeaseRegistry();
+  if (registry.process_id != OwnershipProcessId()) return {};
+  HANDLE requested_file = ::CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (requested_file == INVALID_HANDLE_VALUE) return {};
+  FILE_ID_INFO requested{};
+  const DWORD error = detail::WindowsDataFileIdentity(requested_file, &requested);
+  (void)::CloseHandle(requested_file);
+  if (error != ERROR_SUCCESS) return {};
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  for (const auto& entry : registry.leases) {
+    auto lease = entry.second.lock();
+    if (!lease || !lease->accepting_ || !lease->valid() || !lease->data_handle_) continue;
+    FILE_ID_INFO held{};
+    if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) ==
+            ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held)) return lease;
+  }
+  return {};
+}
+
+std::uint32_t RouteOwnershipLease::BindDataFile(void* file) {
+  auto& registry = LeaseRegistry();
+  if (!valid() || registry.process_id != OwnershipProcessId()) return ERROR_ACCESS_DENIED;
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  FILE_ID_INFO requested{};
+  const DWORD error = detail::WindowsDataFileIdentity(static_cast<HANDLE>(file), &requested);
+  if (error != ERROR_SUCCESS) return error;
+  if (data_handle_) {
+    FILE_ID_INFO held{};
+    const DWORD held_error = detail::WindowsDataFileIdentity(static_cast<HANDLE>(data_handle_), &held);
+    if (held_error != ERROR_SUCCESS) return held_error;
+    return detail::WindowsSameDataFile(requested, held) ? ERROR_SUCCESS : ERROR_FILE_INVALID;
+  }
+  // Reopen the actual file object, never its mutable pathname. Lock the
+  // retained handle itself so closing the creator cannot release this lock.
+  HANDLE retained = ::ReOpenFile(static_cast<HANDLE>(file), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
+  if (retained == INVALID_HANDLE_VALUE) return ::GetLastError();
+  const DWORD locked = detail::WindowsLockDataFile(retained);
+  if (locked != ERROR_SUCCESS) {
+    (void)::CloseHandle(retained);
+    return locked;
+  }
+  data_handle_ = retained;
+  return ERROR_SUCCESS;
+}
+
+std::uint32_t RouteOwnershipLease::AcquireDataFile(const std::string& path) {
+  HANDLE file = ::CreateFileA(path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    // Missing primary permits a pathname reservation, not an engine open.
+    return error == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : error;
+  }
+  const DWORD error = BindDataFile(file);
+  (void)::CloseHandle(file);
+  return error;
+}
+#else
+std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
+    const std::string& path) {
+  auto& registry = LeaseRegistry();
+  if (registry.process_id != OwnershipProcessId()) return {};
+  struct stat requested{};
+  if (::stat(path.c_str(), &requested) != 0 || !S_ISREG(requested.st_mode)) return {};
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  for (const auto& entry : registry.leases) {
+    auto lease = entry.second.lock();
+    if (!lease || !lease->accepting_ || !lease->valid() || lease->data_fd_ < 0) continue;
+    struct stat held{};
+    if (::fstat(lease->data_fd_, &held) == 0 &&
+        requested.st_dev == held.st_dev && requested.st_ino == held.st_ino)
+      return lease;
+  }
+  return {};
+}
+
+int RouteOwnershipLease::BindDataFile(int fd) {
+  auto& registry = LeaseRegistry();
+  if (!valid() || registry.process_id != OwnershipProcessId()) return EPERM;
+  std::lock_guard<std::mutex> guard(registry.mutex);
+  struct stat requested{};
+  if (::fstat(fd, &requested) != 0) return errno;
+  if (!S_ISREG(requested.st_mode)) return EINVAL;
+  if (data_fd_ >= 0) {
+    struct stat held{};
+    if (::fstat(data_fd_, &held) != 0) return errno;
+    // A name match or a prior stat is insufficient: validate the opened inode
+    // before any read, write or truncate, including after pathname replacement.
+    return requested.st_dev == held.st_dev && requested.st_ino == held.st_ino
+        ? 0 : ESTALE;
+  }
+  const int locked = LockDataFile(fd);
+  if (locked != 0) return locked;
+#ifdef F_DUPFD_CLOEXEC
+  const int retained = ::fcntl(fd, F_DUPFD_CLOEXEC, 0);
+  if (retained < 0) return errno;
+#else
+  const int retained = ::dup(fd);
+  if (retained < 0) return errno;
+  if (::fcntl(retained, F_SETFD, FD_CLOEXEC) != 0) {
+    const int error = errno;
+    (void)::close(retained);
+    return error;
+  }
+#endif
+  data_fd_ = retained;
+  return 0;
+}
+
+int RouteOwnershipLease::AcquireDataFile(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | FileOpenCloexecFlag());
+  if (fd < 0) return errno == ENOENT ? 0 : errno;
+  const int error = BindDataFile(fd);
+  (void)::close(fd);
+  return error;
+}
+#endif
 
 FileDevice::FileDevice() = default;
 
@@ -960,10 +1173,8 @@ FileDevice::~FileDevice() {
     owner_lock_fd_ = -1;
   }
 #endif
-  if (owner_lock_held_ && owner_lock_exclusive_ && !owner_lock_path_.empty()) {
-    std::error_code ignored;
-    std::filesystem::remove(owner_lock_path_, ignored);
-  }
+  // Retain the lock file: a contender may already have its inode open.
+  // Unlinking after release would let later opens lock a different inode.
 }
 
 IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
@@ -983,24 +1194,28 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
                        path);
   }
 
-  // OWNER_LOCK: direct storage opens must not bypass an active server route owner.
-  std::string route_owner_lock_detail;
-  const auto route_owner_probe =
-      ProbeRouteOwnerLock(path, &route_owner_lock_detail);
-  if (route_owner_probe == RouteOwnerProbeResult::kHeldByOtherProcess) {
-    return MakeIoError("SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD",
-                       "storage.disk.route_owner_lock_held",
-                       route_owner_lock_detail);
+  // Borrow linearizes admission with owner withdrawal and immediately pins
+  // both native handles, including while an admitted open waits locally.
+  auto route_owner_lease =
+      RouteOwnershipLease::Borrow(path + ".sb.route.owner.lock");
+  if (!route_owner_lease) route_owner_lease = RouteOwnershipLease::BorrowAlias(path);
+  const bool route_owned_by_current_process = static_cast<bool>(route_owner_lease);
+  // OWNER_LOCK: only a live process-local pin on actual OS handles may bypass
+  // independent locking. Sidecar PID/endpoint text is discovery data only.
+  if (!route_owner_lease) {
+    std::string route_owner_lock_detail;
+    if (ProbeRouteOwnerLock(path, &route_owner_lock_detail) ==
+        RouteOwnerProbeResult::kHeldByOtherProcess) {
+      return MakeIoError("SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD",
+                         "storage.disk.route_owner_lock_held",
+                         route_owner_lock_detail);
+    }
   }
-  const bool route_owned_by_current_process =
-      route_owner_probe == RouteOwnerProbeResult::kHeldByCurrentProcess;
-  // Serialize same-process opens for the same database path before taking the
-  // cross-process owner lock. This keeps concurrent local sessions from racing
-  // each other into a nonblocking owner-lock refusal while preserving the
-  // cross-process fail-closed lock semantics.
+
+  // Refuse foreign/inherited ownership before touching a possibly inherited
+  // local serialization mutex. Nested admitted readers remain serialized.
   std::unique_lock<std::recursive_mutex> route_owner_storage_guard =
       AcquireRouteOwnedStorageGuard(path);
-
   const std::string prospective_owner_lock_path = path + ".sb.owner.lock";
 #ifdef _WIN32
   std::string owner_lock_open_detail;
@@ -1045,7 +1260,9 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
                          "storage.disk.owner_lock_open_failed",
                          prospective_owner_lock_path + ":" + std::strerror(errno));
     }
-    const int lock_mode = (read_only_open ? LOCK_SH : LOCK_EX) | LOCK_NB;
+    // Every independent open requires exclusive process ownership, even when
+    // data access is read-only. Owner-internal opens use the route guard above.
+    const int lock_mode = LOCK_EX | LOCK_NB;
     if (::flock(prospective_owner_lock_fd, lock_mode) != 0) {
       (void)::close(prospective_owner_lock_fd);
       prospective_owner_lock_fd = -1;
@@ -1063,6 +1280,7 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   };
 #endif
 
+  const ProvisionalHandleCleanup owner_cleanup{release_owner_lock};
 #ifdef _WIN32
   bool create_exists = false;
   std::string open_detail;
@@ -1095,6 +1313,31 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
       prospective_file_handle = nullptr;
     }
   };
+  const ProvisionalHandleCleanup data_cleanup{release_file_handle};
+  const DWORD data_owner_error = route_owner_lease
+      ? route_owner_lease->BindDataFile(prospective_file_handle)
+      : detail::WindowsLockDataFile(static_cast<HANDLE>(prospective_file_handle));
+  if (data_owner_error != ERROR_SUCCESS) {
+    release_file_handle();
+    release_owner_lock();
+    const bool conflict = WindowsSharingConflict(data_owner_error);
+    return MakeIoError(conflict ? "SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD"
+                                : "SB-STORAGE-DISK-DATA-OWNER-LOCK-FAILED",
+                       conflict ? "storage.disk.data_owner_lock_held"
+                                : "storage.disk.data_owner_lock_failed",
+                       path + ":" + WindowsLastErrorText(data_owner_error));
+  }
+  if (mode == FileOpenMode::create_or_truncate) {
+    LARGE_INTEGER zero{};
+    if (!::SetFilePointerEx(static_cast<HANDLE>(prospective_file_handle), zero, nullptr, FILE_BEGIN) ||
+        !::SetEndOfFile(static_cast<HANDLE>(prospective_file_handle))) {
+      const DWORD error = ::GetLastError();
+      release_file_handle();
+      release_owner_lock();
+      return MakeIoError("SB-STORAGE-DISK-TRUNCATE-FAILED", "storage.disk.truncate_failed",
+                         path + ":" + WindowsLastErrorText(error));
+    }
+  }
 #else
   bool create_exists = false;
   std::string open_detail;
@@ -1127,6 +1370,27 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
       prospective_file_fd = -1;
     }
   };
+  const ProvisionalHandleCleanup data_cleanup{release_file_handle};
+  const int data_owner_error = route_owner_lease
+      ? route_owner_lease->BindDataFile(prospective_file_fd)
+      : LockDataFile(prospective_file_fd);
+  if (data_owner_error != 0) {
+    release_file_handle();
+    release_owner_lock();
+    const bool conflict = data_owner_error == EWOULDBLOCK || data_owner_error == EAGAIN;
+    return MakeIoError(conflict ? "SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD"
+                                : "SB-STORAGE-DISK-DATA-OWNER-LOCK-FAILED",
+                       conflict ? "storage.disk.data_owner_lock_held"
+                                : "storage.disk.data_owner_lock_failed",
+                       path + ":" + std::strerror(data_owner_error));
+  }
+  if (mode == FileOpenMode::create_or_truncate && ::ftruncate(prospective_file_fd, 0) != 0) {
+    const int error = errno;
+    release_file_handle();
+    release_owner_lock();
+    return MakeIoError("SB-STORAGE-DISK-TRUNCATE-FAILED", "storage.disk.truncate_failed",
+                       path + ":" + std::strerror(error));
+  }
 #endif
 
   if (!read_only_open && !route_owned_by_current_process) {
@@ -1205,6 +1469,7 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   path_ = std::move(path);
   owner_lock_path_ =
       route_owned_by_current_process ? std::string{} : prospective_owner_lock_path;
+  route_owner_lease_ = std::move(route_owner_lease);
   route_owner_storage_guard_ = std::move(route_owner_storage_guard);
 #ifdef _WIN32
   file_handle_ = prospective_file_handle;
@@ -1219,7 +1484,7 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
 #endif
   read_only_ = read_only_open;
   owner_lock_held_ = !route_owned_by_current_process;
-  owner_lock_exclusive_ = !route_owned_by_current_process && !read_only_open;
+  owner_lock_exclusive_ = !route_owned_by_current_process;
   capabilities_.write_at = !read_only_;
 #if defined(_WIN32) || defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
   capabilities_.extent_preallocation = !read_only_;
@@ -1278,15 +1543,14 @@ IoResult FileDevice::Close() {
     owner_lock_fd_ = -1;
   }
 #endif
-  if (owner_lock_held_ && owner_lock_exclusive_ && !owner_lock_path_.empty()) {
-    std::error_code ignored;
-    std::filesystem::remove(owner_lock_path_, ignored);
-  }
+  // Keep the stable lock inode across orderly close, just as after a crash.
+  // Lock ownership is represented by the OS lock, not file existence.
   path_.clear();
   owner_lock_path_.clear();
   read_only_ = false;
   owner_lock_held_ = false;
   owner_lock_exclusive_ = false;
+  route_owner_lease_.reset();  // data handle is closed before the last lock pin
   route_owner_storage_guard_ = std::unique_lock<std::recursive_mutex>{};
   capabilities_.write_at = true;
   capabilities_.extent_preallocation = false;

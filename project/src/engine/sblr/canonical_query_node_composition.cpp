@@ -87,7 +87,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& graph = request.optimizer_request.logical_graph;
-  if (graph.nodes.size() < 3) return result;
+  // One producer plus one unary operator is already a composed DAG.
+  // The node-specific validation below, not a three-node minimum, admits it.
+  if (graph.nodes.size() < 2) return result;
 
   const auto find_node = [&](const std::uint32_t node_id) {
     return std::ranges::find_if(graph.nodes, [&](const auto& node) {
@@ -414,7 +416,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       break;
     }
     if (current->input_logical_node_ids.size() != 1 ||
-        !unary_kinds.insert(current->node_kind).second) {
+        (current->node_kind != plan::CanonicalLogicalRelationalNodeKind::kCte &&
+         !unary_kinds.insert(current->node_kind).second)) {
       return result;
     }
     switch (current->node_kind) {
@@ -734,7 +737,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   bool planning_values_exact = true;
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.values.capability");
   const auto join_capability_uuid =
@@ -1321,7 +1324,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               return false;
             }
             api::EngineDescriptor engine_descriptor;
-            engine_descriptor.descriptor_uuid.canonical =
+            engine_descriptor.descriptor_uuid =
                 descriptor->descriptor_uuid;
             engine_descriptor.descriptor_kind = "scalar";
             engine_descriptor.canonical_type_name =
@@ -4378,9 +4381,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     input_batch.columns.size() ||
                 (order_column != *ranking.navigation_value_column &&
                  input_batch.columns[order_column]
-                         .descriptor.descriptor_uuid.canonical ==
+                         .descriptor.descriptor_uuid ==
                      input_batch.columns[*ranking.navigation_value_column]
-                         .descriptor.descriptor_uuid.canonical)))) {
+                         .descriptor.descriptor_uuid)))) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 "composition " + std::string(ranking_name) +
@@ -4416,7 +4419,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ranking_profile.function_uuid,
                   output_descriptor->descriptor_uuid, result_type_uuid,
                   input_batch.columns[order_column]
-                      .descriptor.descriptor_uuid.canonical,
+                      .descriptor.descriptor_uuid,
                   order_relational_descriptor->type_uuid,
                   source_column == order_column,
                   prepared_sort->ordering_property_uuid,
@@ -4455,7 +4458,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ranking_profile.function_uuid,
                   output_descriptor->descriptor_uuid, result_type_uuid,
                   input_batch.columns[order_column]
-                      .descriptor.descriptor_uuid.canonical,
+                      .descriptor.descriptor_uuid,
                   order_relational_descriptor->type_uuid,
                   source_column == order_column,
                   prepared_sort->ordering_property_uuid,
@@ -4468,7 +4471,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   ranking_profile.function_uuid,
                   output_descriptor->descriptor_uuid, result_type_uuid,
                   input_batch.columns[source_column]
-                      .descriptor.descriptor_uuid.canonical,
+                      .descriptor.descriptor_uuid,
                   source_relational_descriptor->type_uuid,
                   source_column == order_column,
                   prepared_sort->ordering_property_uuid,
@@ -4563,7 +4566,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "composition COUNT(*) result materialization exceeds its "
                 "memory budget");
           }
-          descriptor.descriptor_uuid.canonical =
+          descriptor.descriptor_uuid =
               output_descriptor->descriptor_uuid;
           descriptor.descriptor_kind = "scalar";
           descriptor.canonical_type_name = "int64";
@@ -4627,7 +4630,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     " result materialization exceeds its memory budget");
           }
           if (aggregate_bounded_signed_window) {
-            descriptor.descriptor_uuid.canonical =
+            descriptor.descriptor_uuid =
                 output_descriptor->descriptor_uuid;
             descriptor.descriptor_kind = "scalar";
             descriptor.canonical_type_name = "int64";
@@ -4638,7 +4641,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             descriptor = input_batch
                              .columns[*ranking.navigation_value_column]
                              .descriptor;
-            descriptor.descriptor_uuid.canonical =
+            descriptor.descriptor_uuid =
                 output_descriptor->descriptor_uuid;
             if (!exec::DeriveCanonicalNullableDescriptorEncoding(&descriptor) ||
                 !exec::CanonicalDerivedDescriptorTypeMatches(
@@ -4657,7 +4660,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             "preserve its exact source shape");
             }
           } else {
-            descriptor.descriptor_uuid.canonical =
+            descriptor.descriptor_uuid =
                 output_descriptor->descriptor_uuid;
             descriptor.descriptor_kind = "scalar";
             descriptor.canonical_type_name = "int64";
@@ -4666,7 +4669,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 ";nullability=non_null";
           }
         } else {
-          descriptor.descriptor_uuid.canonical =
+          descriptor.descriptor_uuid =
               output_descriptor->descriptor_uuid;
           descriptor.descriptor_kind = "scalar";
           descriptor.canonical_type_name =
@@ -5085,7 +5088,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if (peer_ranking_window || ntile_window || value_window) {
           std::uint64_t planned_receipt_workspace_bytes = 0;
           std::uint64_t actual_receipt_workspace_bytes = 0;
-          if (!exec::PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+          if (!exec::PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
                   prepared_sort->order_terms.front(),
                   prepared_sort->ordering_property_uuid,
                   &planned_receipt_workspace_bytes) ||
@@ -5097,7 +5100,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     " order-term receipt exceeds its memory budget");
           }
           const auto order_term_binding_evidence_uuid =
-              exec::ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+              exec::ComputeCanonicalDescriptorOrderTermBindingDigest(
                   prepared_sort->order_terms.front(),
                   prepared_sort->ordering_property_uuid,
                   planned_receipt_workspace_bytes,
@@ -5469,7 +5472,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               !CanonicalDescriptorFieldEqualsForComposition(
                   prepared.result_column.descriptor, "type_uuid",
                   std::string_view(canonical_boolean_type_uuid)) ||
-              prepared.result_column.descriptor.descriptor_uuid.canonical ==
+              prepared.result_column.descriptor.descriptor_uuid ==
                   canonical_boolean_type_uuid) {
             return refuse(
                 std::string(kPayloadDiagnostic),
@@ -5754,7 +5757,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           const auto source_type_uuid = ExactEncodedDescriptorField(
               source_column.descriptor.encoded_descriptor, "type_uuid");
           if (!CanonicalUuidText(
-                  source_column.descriptor.descriptor_uuid.canonical) ||
+                  source_column.descriptor.descriptor_uuid) ||
               !source_type_uuid.has_value() ||
               !CanonicalUuidText(*source_type_uuid)) {
             return refuse(
@@ -5762,7 +5765,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 "cardinality subquery source identity domain is unresolved");
           }
           cardinality_result_identity_domain.insert(
-              source_column.descriptor.descriptor_uuid.canonical);
+              source_column.descriptor.descriptor_uuid);
           cardinality_result_identity_domain.insert(*source_type_uuid);
         }
         for (std::size_t column = 0; column < output.columns.size(); ++column) {
@@ -5782,7 +5785,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                   node.semantic_variant_id + "." + std::to_string(column) +
                   "." +
                   input_batch.columns[column]
-                      .descriptor.descriptor_uuid.canonical);
+                      .descriptor.descriptor_uuid);
           if (!CanonicalUuidText(result_descriptor_uuid) ||
               !cardinality_result_identity_domain
                    .insert(result_descriptor_uuid)
@@ -5791,7 +5794,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                 std::string(kPayloadDiagnostic),
                 "cardinality subquery result descriptor identity collides with its bound role domain");
           }
-          output.columns[column].descriptor.descriptor_uuid.canonical =
+          output.columns[column].descriptor.descriptor_uuid =
               result_descriptor_uuid;
           if (result_bindings[column].visible) {
             if (!result_bindings[column].published_descriptor.has_value()) {
@@ -6276,7 +6279,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             *prepared_ntile, *prepared_ntile_order_term,
             *prepared_ntile_bucket_count_operand,
             std::string(kGlobalNtileProfile.function_uuid),
-            ntile_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
             ntile_order_term_binding_evidence_uuid, sort_input_row_count,
             request.context));
@@ -6291,7 +6293,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             *prepared_navigation_value_column,
             prepared_navigation_nth_value_position_operand,
             prepared_navigation_frame_descriptor_uuid,
-            navigation_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
             navigation_frame_property_binding_evidence_uuid,
             navigation_capability_uuid,
@@ -6309,7 +6310,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared_aggregate_window_value_column,
             prepared_aggregate_window_descriptor,
             prepared_aggregate_window_frame_descriptor_uuid,
-            aggregate_window_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
             aggregate_window_frame_property_binding_evidence_uuid,
             aggregate_window_capability_uuid, sort_input_row_count,
@@ -6323,7 +6323,6 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     execution_request.available_executors.push_back(
         MakeLivePeerRankingRegistration(
             *prepared_peer_ranking, *prepared_peer_ranking_order_term,
-            peer_ranking_order_term_binding_evidence_uuid,
             row_number_order_evidence_uuid,
             peer_ranking_order_term_binding_evidence_uuid,
             sort_input_row_count, peer_ranking_maximum_peer_comparisons,
@@ -6386,7 +6385,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
 
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,

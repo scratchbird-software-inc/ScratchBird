@@ -17,10 +17,13 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <new>
 #include <set>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 
 #if defined(_WIN32)
@@ -82,25 +85,40 @@ double ElapsedMicros(Clock::time_point start) {
   return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count());
 }
 
-void PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot, const AllocationPolicy& policy) {
-  (void)scratchbird::core::metrics::SetGauge(
+scratchbird::core::metrics::MetricLabelSet MemoryMetricLabels(
+    std::initializer_list<std::pair<std::string_view, std::string_view>> input) {
+  scratchbird::core::metrics::MetricLabelSet labels;
+  labels.reserve(input.size());
+  for (const auto& [name, value] : input) {
+    if (name.empty() || value.empty()) continue;
+    labels.emplace_back();
+    labels.back().key = name;
+    labels.back().value = value;
+  }
+  return labels;
+}
+
+bool PublishMemorySnapshot(const MemoryAccountingSnapshot& snapshot, const AllocationPolicy& policy) {
+  bool published = true;
+  published = scratchbird::core::metrics::SetGauge(
       "sb_memory_allocated_bytes",
-      scratchbird::core::metrics::Labels({{"component", "core.memory"}, {"operation", "snapshot"}}),
+      MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"}}),
       static_cast<double>(snapshot.current_bytes),
-      "core_memory");
-  (void)scratchbird::core::metrics::SetGauge(
+      "core_memory").ok && published;
+  published = scratchbird::core::metrics::SetGauge(
       "sb_memory_emergency_reserve_bytes",
-      scratchbird::core::metrics::Labels({{"component", "core.memory"}, {"operation", "snapshot"}}),
+      MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"}}),
       EffectiveHardLimit(policy) > snapshot.current_bytes ? static_cast<double>(EffectiveHardLimit(policy) - snapshot.current_bytes) : 0.0,
-      "core_memory");
+      "core_memory").ok && published;
   for (const auto& category : snapshot.categories) {
-    (void)scratchbird::core::metrics::SetGauge(
+    published = scratchbird::core::metrics::SetGauge(
         "sb_memory_allocated_bytes",
-        scratchbird::core::metrics::Labels({{"component", "core.memory"}, {"operation", "snapshot"},
+        MemoryMetricLabels({{"component", "core.memory"}, {"operation", "snapshot"},
                                             {"producer", MemoryCategoryName(category.category)}}),
         static_cast<double>(category.current_bytes),
-        "core_memory");
+        "core_memory").ok && published;
   }
+  return published;
 }
 
 std::string PlatformNameForProtectedMemory() {
@@ -309,7 +327,7 @@ DiagnosticRecord DefaultManagerDiagnostic(Status status,
                         "Install the memory policy during server bootstrap before memory-managed subsystems are initialized.");
 }
 
-using ContextKey = std::pair<std::string, std::string>;
+using ContextKey = MemoryContextKey;
 
 void AddContextKey(std::vector<ContextKey>* keys,
                    std::set<ContextKey>* seen,
@@ -318,7 +336,7 @@ void AddContextKey(std::vector<ContextKey>* keys,
   if (scope_id.empty()) {
     return;
   }
-  ContextKey key{std::move(scope_kind), scope_id};
+  ContextKey key{std::pair{std::move(scope_kind), scope_id}};
   if (seen->insert(key).second) {
     keys->push_back(std::move(key));
   }
@@ -326,6 +344,14 @@ void AddContextKey(std::vector<ContextKey>* keys,
 
 std::vector<ContextKey> ContextKeysForTag(const MemoryTag& tag) {
   std::vector<ContextKey> keys;
+  if (!tag.binary_ownership.empty()) {
+    for (usize i = 0; i < tag.binary_ownership.scopes.size(); ++i) {
+      const auto& uuid = tag.binary_ownership.scopes[i];
+      if (MemoryUuidPresent(uuid))
+        keys.emplace_back(MemoryBinaryScopeKey{static_cast<MemoryBinaryScopeKind>(i), uuid});
+    }
+    return keys;
+  }
   std::set<ContextKey> seen;
   AddContextKey(&keys, &seen, "context", tag.context_id);
   AddContextKey(&keys, &seen, "owner", tag.owner);
@@ -340,10 +366,11 @@ std::vector<ContextKey> ContextKeysForTag(const MemoryTag& tag) {
 std::vector<std::string> ShardedScopeIdsForTag(const MemoryTag& tag) {
   std::vector<std::string> scopes;
   for (const auto& key : ContextKeysForTag(tag)) {
-    if (key.first == "context" || key.second.empty()) {
+    const auto* legacy = std::get_if<std::pair<std::string, std::string>>(&key);
+    if (!legacy || legacy->first == "context" || legacy->second.empty()) {
       continue;
     }
-    scopes.push_back(key.first + ":" + key.second);
+    scopes.push_back(legacy->first + ":" + legacy->second);
   }
   return scopes;
 }
@@ -390,6 +417,26 @@ bool FailureInjectionRuleMatches(const MemoryFailureInjectionRule& rule, const M
     return false;
   }
   if (rule.scope_kind != MemoryFailureInjectionScopeKind::any) {
+    if (MemoryUuidPresent(rule.binary_scope_uuid)) {
+      switch (rule.scope_kind) {
+        case MemoryFailureInjectionScopeKind::context:
+          return tag.binary_ownership[MemoryBinaryScopeKind::context] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::owner:
+          return tag.binary_ownership[MemoryBinaryScopeKind::owner] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::database:
+          return tag.binary_ownership[MemoryBinaryScopeKind::database] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::session:
+          return tag.binary_ownership[MemoryBinaryScopeKind::session] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::transaction:
+          return tag.binary_ownership[MemoryBinaryScopeKind::transaction] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::statement:
+          return tag.binary_ownership[MemoryBinaryScopeKind::statement] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::query:
+          return tag.binary_ownership[MemoryBinaryScopeKind::query] == rule.binary_scope_uuid;
+        case MemoryFailureInjectionScopeKind::any: break;
+      }
+      return false;
+    }
     return !rule.scope_id.empty() && ScopeValueForTag(rule.scope_kind, tag) == rule.scope_id;
   }
   return true;
@@ -551,7 +598,7 @@ ScopedAllocation::ScopedAllocation(ScopedAllocation&& other) noexcept
 
 ScopedAllocation& ScopedAllocation::operator=(ScopedAllocation&& other) noexcept {
   if (this != &other) {
-    Reset();
+    if (allocator_ && pointer_) (void)allocator_->DeallocateNoAlloc(pointer_);
     allocator_ = other.allocator_;
     pointer_ = other.pointer_;
     bytes_ = other.bytes_;
@@ -566,18 +613,22 @@ ScopedAllocation& ScopedAllocation::operator=(ScopedAllocation&& other) noexcept
 }
 
 ScopedAllocation::~ScopedAllocation() {
-  Reset();
+  if (allocator_ && pointer_) (void)allocator_->DeallocateNoAlloc(pointer_);
 }
 
-DeallocationResult ScopedAllocation::Reset() {
+DeallocationResult ScopedAllocation::Reset() try {
   if (allocator_ == nullptr || pointer_ == nullptr) {
     return {OkStatus(), {}};
   }
-  void* pointer = pointer_;
-  pointer_ = nullptr;
-  bytes_ = 0;
-  alignment_ = 0;
-  return allocator_->Deallocate(pointer, tag_);
+  auto result = allocator_->Deallocate(pointer_, tag_);
+  if (result.ok()) {
+    pointer_ = nullptr;
+    bytes_ = 0;
+    alignment_ = 0;
+  }
+  return result;
+} catch (const std::bad_alloc&) {
+  return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}, {}};
 }
 
 ScopedPageBuffer::ScopedPageBuffer(BoundedAllocator* allocator, PageBuffer buffer, MemoryTag tag)
@@ -591,7 +642,7 @@ ScopedPageBuffer::ScopedPageBuffer(ScopedPageBuffer&& other) noexcept
 
 ScopedPageBuffer& ScopedPageBuffer::operator=(ScopedPageBuffer&& other) noexcept {
   if (this != &other) {
-    Reset();
+    if (allocator_ && buffer_.pointer) (void)allocator_->DeallocateNoAlloc(buffer_.pointer);
     allocator_ = other.allocator_;
     buffer_ = other.buffer_;
     tag_ = std::move(other.tag_);
@@ -602,16 +653,18 @@ ScopedPageBuffer& ScopedPageBuffer::operator=(ScopedPageBuffer&& other) noexcept
 }
 
 ScopedPageBuffer::~ScopedPageBuffer() {
-  Reset();
+  if (allocator_ && buffer_.pointer) (void)allocator_->DeallocateNoAlloc(buffer_.pointer);
 }
 
-DeallocationResult ScopedPageBuffer::Reset() {
+DeallocationResult ScopedPageBuffer::Reset() try {
   if (allocator_ == nullptr || !buffer_.valid()) {
     return {OkStatus(), {}};
   }
-  PageBuffer buffer = buffer_;
-  buffer_ = {};
-  return allocator_->ReleasePageBuffer(buffer, tag_);
+  auto result = allocator_->ReleasePageBuffer(buffer_, tag_);
+  if (result.ok()) buffer_ = {};
+  return result;
+} catch (const std::bad_alloc&) {
+  return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}, {}};
 }
 
 ScopedProtectedBuffer::ScopedProtectedBuffer(BoundedAllocator* allocator,
@@ -643,7 +696,7 @@ ScopedProtectedBuffer::ScopedProtectedBuffer(ScopedProtectedBuffer&& other) noex
 
 ScopedProtectedBuffer& ScopedProtectedBuffer::operator=(ScopedProtectedBuffer&& other) noexcept {
   if (this != &other) {
-    Reset();
+    if (allocator_ && pointer_) (void)allocator_->DeallocateProtectedNoAlloc(pointer_, evidence_);
     allocator_ = other.allocator_;
     pointer_ = other.pointer_;
     bytes_ = other.bytes_;
@@ -660,25 +713,24 @@ ScopedProtectedBuffer& ScopedProtectedBuffer::operator=(ScopedProtectedBuffer&& 
 }
 
 ScopedProtectedBuffer::~ScopedProtectedBuffer() {
-  Reset();
+  if (allocator_ && pointer_) (void)allocator_->DeallocateProtectedNoAlloc(pointer_, evidence_);
 }
 
 void ScopedProtectedBuffer::Zeroize() {
   SecureZeroMemory(pointer_, bytes_);
 }
 
-DeallocationResult ScopedProtectedBuffer::Reset() {
-  if (allocator_ == nullptr || pointer_ == nullptr) {
-    return {OkStatus(), {}};
+DeallocationResult ScopedProtectedBuffer::Reset() try {
+  if (allocator_ == nullptr || pointer_ == nullptr) return {OkStatus(), {}};
+  auto result = allocator_->DeallocateProtected(pointer_, tag_, evidence_);
+  if (result.ok()) {
+    pointer_ = nullptr;
+    bytes_ = 0;
+    alignment_ = 0;
   }
-  void* pointer = pointer_;
-  const usize bytes = bytes_;
-  pointer_ = nullptr;
-  bytes_ = 0;
-  alignment_ = 0;
-  SecureZeroMemory(pointer, bytes);
-  ReleaseProtectedPlatformEvidence(pointer, bytes, evidence_);
-  return allocator_->Deallocate(pointer, tag_);
+  return result;
+} catch (const std::bad_alloc&) {
+  return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}, {}};
 }
 
 BoundedAllocator::BoundedAllocator(AllocationPolicy policy)
@@ -688,9 +740,148 @@ BoundedAllocator::BoundedAllocator(AllocationPolicy policy)
   accounting_.reserved_categories = ReservedMemoryCategories();
 }
 
-BoundedAllocator::~BoundedAllocator() = default;
+BoundedAllocator::~BoundedAllocator() {
+  // Allocator destruction is context teardown. Its scoped consumers must die
+  // first; any remaining raw allocations still belong to this context.
+  while (!active_.empty()) (void)DeallocateNoAlloc(active_.begin()->first);
+}
 
 AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, MemoryTag tag) {
+  return AllocateImpl(bytes, alignment, std::move(tag), 0);
+}
+
+MemoryCapacityReservation::~MemoryCapacityReservation() {
+  allocator_->CloseCapacity(id_);
+}
+
+AllocationResult MemoryCapacityReservation::Allocate(usize bytes, usize alignment) try {
+  return allocator_->AllocateImpl(bytes, alignment, tag_, id_);
+} catch (const std::bad_alloc&) {
+  return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory},
+          nullptr, 0, 0, {}};
+}
+
+void BoundedAllocator::AddCapacityCredits(CapacityRecord& record, u64 bytes) {
+  record.unused_bytes += bytes;
+  accounting_.reserved_capacity_bytes += bytes;
+  category_accounting_.at(record.category).reserved_capacity_bytes += bytes;
+  for (const auto& key : record.context_keys)
+    context_accounting_.at(key).reserved_capacity_bytes += bytes;
+}
+
+void BoundedAllocator::ConsumeCapacityCredits(CapacityRecord& record, u64 bytes) {
+  record.unused_bytes -= bytes;
+  accounting_.reserved_capacity_bytes -= bytes;
+  category_accounting_.at(record.category).reserved_capacity_bytes -= bytes;
+  for (const auto& key : record.context_keys)
+    context_accounting_.at(key).reserved_capacity_bytes -= bytes;
+}
+
+MemoryCapacityReservationResult BoundedAllocator::ReserveCapacity(usize bytes, MemoryTag tag) try {
+  if (bytes == 0 || !MemoryBinaryOwnershipValid(tag) || policy_.refuse_all_allocations)
+    return {MemoryStatus(StatusCode::memory_invalid_request, Severity::error), {}};
+  // Construct every fallible owner and accounting key before publication. A
+  // provisional lease has no registered token and its cleanup is harmless.
+  auto lease = std::unique_ptr<MemoryCapacityReservation>(
+      new MemoryCapacityReservation(this, 0, tag));
+  CapacityRecord prepared;
+  prepared.category = tag.category;
+  prepared.context_keys = ContextKeysForTag(tag);
+  std::lock_guard lock(mutex_);
+  if (next_capacity_id_ == 0)
+    return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error), {}};
+  if (WouldExceedHardLimit(bytes) || WouldExceedPerContextLimit(bytes, tag).exceeded)
+    return {MemoryStatus(StatusCode::memory_limit_exceeded,
+        policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error), {}};
+  if (policy_.reject_over_soft_limit && WouldExceedSoftLimit(bytes))
+    return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::warning), {}};
+  if (WouldExceedPageBufferPoolLimit(bytes, tag.category))
+    return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error), {}};
+  category_accounting_.try_emplace(tag.category);
+  for (const auto& key : prepared.context_keys) context_accounting_.try_emplace(key);
+  auto inserted = capacity_reservations_.emplace(next_capacity_id_, std::move(prepared));
+  AddCapacityCredits(inserted.first->second, bytes);
+  lease->id_ = next_capacity_id_++;
+  ++accounting_.active_capacity_reservation_count;
+  return {OkStatus(), std::move(lease)};
+} catch (const std::bad_alloc&) {
+  return {MemoryStatus(StatusCode::memory_allocation_failed, Severity::error), {}};
+}
+
+void BoundedAllocator::CloseCapacity(u64 id) {
+  if (id == 0) return;
+  std::lock_guard lock(mutex_);
+  auto found = capacity_reservations_.find(id);
+  if (found == capacity_reservations_.end() || !found->second.open) return;
+  auto& record = found->second;
+  ConsumeCapacityCredits(record, record.unused_bytes);
+  record.open = false;
+  --accounting_.active_capacity_reservation_count;
+  // A closed lease cannot mint new credit when outstanding storage is freed.
+  if (record.live_bytes == 0) capacity_reservations_.erase(found);
+}
+
+MemoryCapacityAvailability BoundedAllocator::AvailableCapacity(const MemoryTag& tag) const {
+  if (!MemoryBinaryOwnershipValid(tag))
+    return {MemoryStatus(StatusCode::memory_invalid_request, Severity::error), 0};
+  std::lock_guard lock(mutex_);
+  if (policy_.refuse_all_allocations)
+    return {MemoryStatus(StatusCode::memory_invalid_request, Severity::error), 0};
+  u64 available = std::numeric_limits<usize>::max();
+  const auto constrain = [&](u64 limit, u64 current, u64 reserved) {
+    // Zero means unlimited policy, not unlimited integer arithmetic.
+    const auto ceiling = limit == 0 ? std::numeric_limits<u64>::max() : limit;
+    const auto after_live = current <= ceiling ? ceiling - current : 0;
+    const auto remaining = reserved <= after_live ? after_live - reserved : 0;
+    available = std::min(available, remaining);
+  };
+  constrain(EffectiveHardLimit(policy_), accounting_.current_bytes, accounting_.reserved_capacity_bytes);
+  if (policy_.reject_over_soft_limit)
+    constrain(policy_.soft_limit_bytes, accounting_.current_bytes, accounting_.reserved_capacity_bytes);
+  if (tag.category == MemoryCategory::page_buffer) {
+    const auto category = category_accounting_.find(tag.category);
+    constrain(policy_.page_buffer_pool_limit_bytes, accounting_.page_buffer_current_bytes,
+              category == category_accounting_.end() ? 0 : category->second.reserved_capacity_bytes);
+  }
+  if (policy_.per_context_limit_bytes != 0) {
+    if (!tag.binary_ownership.empty()) {
+      for (usize i = 0; i != tag.binary_ownership.scopes.size(); ++i) {
+        const auto& id = tag.binary_ownership.scopes[i];
+        if (!MemoryUuidPresent(id)) continue;
+        const MemoryContextKey key = MemoryBinaryScopeKey{static_cast<MemoryBinaryScopeKind>(i), id};
+        const auto context = context_accounting_.find(key);
+        constrain(policy_.per_context_limit_bytes,
+                  context == context_accounting_.end() ? 0 : context->second.current_bytes,
+                  context == context_accounting_.end() ? 0 : context->second.reserved_capacity_bytes);
+      }
+    } else {
+      // Existing nonbinary callers retain their separate label semantics. Do
+      // not allocate/copy label keys or convert binary identities to strings.
+      const std::pair<std::string_view, std::string_view> scopes[] = {
+          {"context", tag.context_id}, {"owner", tag.owner}, {"database", tag.database_id},
+          {"session", tag.session_id}, {"transaction", tag.transaction_id},
+          {"statement", tag.statement_id}, {"query", tag.query_id}};
+      for (const auto& [kind, id] : scopes) {
+        if (id.empty()) continue;
+        constrain(policy_.per_context_limit_bytes, 0, 0);
+        for (const auto& [key, context] : context_accounting_) {
+          const auto* label = std::get_if<std::pair<std::string, std::string>>(&key);
+          if (label && label->first == kind && label->second == id) {
+            constrain(policy_.per_context_limit_bytes, context.current_bytes, context.reserved_capacity_bytes);
+            break;
+          }
+        }
+      }
+    }
+  }
+  return {OkStatus(), static_cast<usize>(available)};
+}
+
+AllocationResult BoundedAllocator::AllocateImpl(
+    usize bytes, usize alignment, MemoryTag tag, u64 capacity_id) {
+  FailureTelemetryExit telemetry_exit{this};
+  bool failure_recorded = false;
+  try {
   const auto metric_start = Clock::now();
   AllocationResult result;
   result.status = OkStatus();
@@ -698,8 +889,20 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
     tag.callsite = kDefaultAllocationCallsite;
   }
 
+  if (!MemoryBinaryOwnershipValid(tag)) {
+    std::lock_guard lock(mutex_);
+    failure_recorded = true;
+    RecordFailure(tag.category, true, false);
+    result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeMemoryDiagnostic(result.status,
+        "MEMORY.BINARY_OWNER_INVALID", "memory.binary_owner_invalid",
+        {}, bytes, alignment);
+    return result;
+  }
+
   if (bytes == 0) {
     std::lock_guard<std::mutex> lock(mutex_);
+    failure_recorded = true;
     RecordFailure(tag, false, false);
     result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeMemoryDiagnostic(result.status,
@@ -711,15 +914,9 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
     return result;
   }
 
-  if (alignment == 0) {
-    alignment = kDefaultAlignment;
-  }
-  if (alignment < kDefaultAlignment) {
-    alignment = kDefaultAlignment;
-  }
-
-  if (!IsPowerOfTwo(alignment)) {
+  if (alignment != 0 && !IsPowerOfTwo(alignment)) {
     std::lock_guard<std::mutex> lock(mutex_);
+    failure_recorded = true;
     RecordFailure(tag, false, false);
     result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeMemoryDiagnostic(result.status,
@@ -730,12 +927,14 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
                                              alignment);
     return result;
   }
+  if (alignment == 0 || alignment < kDefaultAlignment) alignment = kDefaultAlignment;
 
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto injected = EvaluateFailureInjectionLocked(tag);
     if (injected.inject) {
-      RecordFailure(tag, false, false);
+      failure_recorded = true;
+    RecordFailure(tag, false, false);
       result.status = MemoryStatus(StatusCode::memory_allocation_failed, Severity::error);
       result.diagnostic = MakeFailureInjectionDiagnostic(result.status,
                                                          tag,
@@ -746,7 +945,8 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
     }
 
     if (policy_.refuse_all_allocations) {
-      RecordFailure(tag, true, false);
+      failure_recorded = true;
+    RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
       result.diagnostic = MakeMemoryDiagnostic(
           result.status,
@@ -760,9 +960,23 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
       return result;
     }
 
-    const auto context_limit = WouldExceedPerContextLimit(bytes, tag);
+    auto capacity = capacity_reservations_.end();
+    if (capacity_id != 0) {
+      capacity = capacity_reservations_.find(capacity_id);
+      if (capacity == capacity_reservations_.end() || !capacity->second.open ||
+          bytes > capacity->second.unused_bytes) {
+        failure_recorded = true;
+        RecordFailure(tag, true, false);
+        result.status = MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error);
+        return result;
+      }
+    }
+    // Reserved allocations convert already-admitted credit to physical bytes;
+    // ordinary allocations must leave every outstanding credit untouched.
+    const auto context_limit = capacity_id ? ContextLimitEvidence{} : WouldExceedPerContextLimit(bytes, tag);
     if (context_limit.exceeded) {
-      RecordFailure(tag, true, false);
+      failure_recorded = true;
+    RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded,
                                    policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error);
       result.diagnostic = MakeMemoryDiagnostic(result.status,
@@ -777,8 +991,9 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
                                                 {"scope_limit_bytes", std::to_string(context_limit.limit_bytes)}});
       return result;
     }
-    if (WouldExceedHardLimit(bytes)) {
-      RecordFailure(tag, true, false);
+    if (!capacity_id && WouldExceedHardLimit(bytes)) {
+      failure_recorded = true;
+    RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded,
                                    policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error);
       result.diagnostic = MakeMemoryDiagnostic(result.status,
@@ -789,8 +1004,9 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
                                                alignment);
       return result;
     }
-    if (WouldExceedSoftLimit(bytes) && policy_.reject_over_soft_limit) {
-      RecordFailure(tag, true, false);
+    if (!capacity_id && WouldExceedSoftLimit(bytes) && policy_.reject_over_soft_limit) {
+      failure_recorded = true;
+    RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded, Severity::warning);
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-ALLOC-SOFT-LIMIT-REJECTED",
@@ -800,8 +1016,9 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
                                                alignment);
       return result;
     }
-    if (WouldExceedPageBufferPoolLimit(bytes, tag.category)) {
-      RecordFailure(tag, true, false);
+    if (!capacity_id && WouldExceedPageBufferPoolLimit(bytes, tag.category)) {
+      failure_recorded = true;
+    RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error);
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-PAGE-BUFFER-POOL-LIMIT-EXCEEDED",
@@ -812,23 +1029,17 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
       return result;
     }
 
-    void* pointer = nullptr;
-    try {
-      pointer = ::operator new(bytes, std::align_val_t(alignment));
-    } catch (const std::bad_alloc&) {
+    result = AllocateRecorded(bytes, alignment, tag);
+    if (!result.ok()) {
+      failure_recorded = true;
       RecordFailure(tag, false, false);
-      result.status = MemoryStatus(StatusCode::memory_allocation_failed, Severity::error);
-      result.diagnostic = MakeMemoryDiagnostic(result.status,
-                                               "SB-MEMORY-ALLOC-UNDERLYING-BAD-ALLOC",
-                                               "memory.allocate.underlying_bad_alloc",
-                                               std::move(tag),
-                                               bytes,
-                                               alignment);
       return result;
     }
-
-    RecordAllocation(pointer, bytes, alignment, tag);
-    result.pointer = pointer;
+    if (capacity_id) {
+      active_.at(result.pointer).capacity_id = capacity_id;
+      ConsumeCapacityCredits(capacity->second, bytes);
+      capacity->second.live_bytes += bytes;
+    }
   }
 
   if (policy_.zero_memory_on_allocate) {
@@ -837,14 +1048,29 @@ AllocationResult BoundedAllocator::Allocate(usize bytes, usize alignment, Memory
 
   result.bytes = bytes;
   result.alignment = alignment;
-  PublishMemorySnapshot(Snapshot(), policy_);
-  (void)scratchbird::core::metrics::ObserveHistogram(
+  try {
+  const bool snapshot_published = PublishMemorySnapshot(Snapshot(), policy_);
+  const auto latency_published = scratchbird::core::metrics::ObserveHistogram(
       "sb_memory_allocation_latency_microseconds",
-      scratchbird::core::metrics::Labels({{"component", "core.memory"}, {"operation", "allocate"}, {"result", "ok"},
+      MemoryMetricLabels({{"component", "core.memory"}, {"operation", "allocate"}, {"result", "ok"},
                                           {"producer", MemoryCategoryName(tag.category)}}),
       ElapsedMicros(metric_start),
       "core_memory");
+  if (!snapshot_published || !latency_published.ok) {
+    std::lock_guard lock(mutex_);
+    ++accounting_.telemetry_truncation_count;
+  }
+  } catch (const std::bad_alloc&) {
+    std::lock_guard lock(mutex_);
+    ++accounting_.telemetry_truncation_count;
+  }
   return result;
+} catch (const std::bad_alloc&) {
+  std::lock_guard lock(mutex_);
+  if (!failure_recorded) RecordFailure(tag, false, false);
+  ++accounting_.telemetry_truncation_count;
+  return {MemoryStatus(StatusCode::memory_allocation_failed, Severity::error), nullptr, 0, 0, {}};
+}
 }
 
 AllocationResult BoundedAllocator::AllocateZeroed(usize bytes, usize alignment, MemoryTag tag) {
@@ -856,96 +1082,108 @@ AllocationResult BoundedAllocator::AllocateZeroed(usize bytes, usize alignment, 
 }
 
 AllocationResult BoundedAllocator::Reallocate(void* pointer, usize bytes, usize alignment, MemoryTag tag) {
-  if (pointer == nullptr) {
-    return Allocate(bytes, alignment, std::move(tag));
-  }
-
-  AllocationRecord old_record;
-  bool found = false;
+  FailureTelemetryExit telemetry_exit{this};
+  bool failure_recorded = false;
+  try {
+  if (!pointer) return Allocate(bytes, alignment, std::move(tag));
+  u64 original_token = 0;
+  MemoryTag old_tag;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard lock(mutex_);
     auto it = active_.find(pointer);
-    if (it != active_.end()) {
-      old_record = it->second;
-      found = true;
+    if (it == active_.end()) {
+      failure_recorded = true;
+    RecordFailure(tag, false, true);
+      AllocationResult result;
+      result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+      result.diagnostic = MakeMemoryDiagnostic(result.status, "SB-MEMORY-REALLOC-UNKNOWN-POINTER",
+          "memory.reallocate.unknown_pointer", std::move(tag), bytes, alignment);
+      return result;
+    }
+    original_token = it->second.sharded_token_id;
+    // Explicit allocate/copy/free through the lease preserves its capacity.
+    // The ordinary reallocator cannot silently detach a reservation owner.
+    if (it->second.capacity_id != 0)
+      return {MemoryStatus(StatusCode::memory_invalid_request, Severity::error), nullptr, 0, 0, {}};
+    old_tag = it->second.tag;
+    if (old_tag.binary_ownership != tag.binary_ownership ||
+        old_tag.owner != tag.owner || old_tag.context_id != tag.context_id ||
+        old_tag.database_id != tag.database_id || old_tag.session_id != tag.session_id ||
+        old_tag.transaction_id != tag.transaction_id || old_tag.statement_id != tag.statement_id ||
+        old_tag.query_id != tag.query_id || old_tag.category != tag.category ||
+        old_tag.lifetime != tag.lifetime || old_tag.subsystem != tag.subsystem) {
+      failure_recorded = true;
+    RecordFailure(tag, false, false);
+      AllocationResult result;
+      result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+      result.diagnostic = MakeMemoryDiagnostic(result.status, "SB-MEMORY-REALLOC-OWNER-CHANGE",
+          "memory.reallocate.owner_change_requires_explicit_transfer", std::move(tag), bytes, alignment);
+      return result;
     }
   }
-  if (!found) {
-    AllocationResult result;
-    result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      RecordFailure(tag, false, true);
-    }
-    result.diagnostic = MakeMemoryDiagnostic(result.status,
-                                             "SB-MEMORY-REALLOC-UNKNOWN-POINTER",
-                                             "memory.reallocate.unknown_pointer",
-                                             std::move(tag),
-                                             bytes,
-                                             alignment);
-    return result;
-  }
-
-  AllocationResult replacement = Allocate(bytes, alignment, tag);
-  if (!replacement.ok()) {
-    return replacement;
-  }
-
-  bool replacement_accounting_removed = false;
+  old_tag.callsite = kDefaultDeallocationCallsite;
+  MemoryTag validation_tag = tag;
+  validation_tag.callsite = kReallocateActiveMapValidationCallsite;
+  auto replacement = Allocate(bytes, alignment, tag);
+  if (!replacement.ok()) return replacement;
+  auto cleanup = [this](void* p) { (void)DeallocateNoAlloc(p); };
+  std::unique_ptr<void, decltype(cleanup)> pending(replacement.pointer, cleanup);
   {
-    MemoryTag validation_tag = tag;
-    validation_tag.callsite = kReallocateActiveMapValidationCallsite;
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto injected = EvaluateFailureInjectionLocked(validation_tag);
+    std::lock_guard lock(mutex_);
+    auto original = active_.find(pointer);
+    // The pointer may have been released/reused while reserving replacement.
+    // Its non-reused ledger token, not its address alone, identifies this owner.
+    if (original == active_.end() || original->second.sharded_token_id != original_token ||
+        EvaluateFailureInjectionLocked(validation_tag).inject) {
+      failure_recorded = true;
+    RecordFailure(validation_tag, false, true);
+      AllocationResult result;
+      result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+      result.diagnostic = MakeMemoryDiagnostic(result.status,
+          "SB-MEMORY-REALLOC-ACTIVE-MAP-VALIDATION-FAILED",
+          "memory.reallocate.active_map_validation_failed", std::move(tag), bytes, alignment);
+      return result;
+    }
+    const auto injected = EvaluateFailureInjectionLocked(old_tag);
     if (injected.inject) {
-      bool replacement_found = false;
-      (void)RemoveAllocation(replacement.pointer, &replacement_found);
-      replacement_accounting_removed = replacement_found;
+      failure_recorded = true;
+    RecordFailure(old_tag, false, false);
+      AllocationResult result;
+      result.status = MemoryStatus(StatusCode::memory_allocation_failed, Severity::error);
+      result.diagnostic = MakeFailureInjectionDiagnostic(result.status, old_tag, 0, 0, injected);
+      return result;
     }
+    // No release can race this copy. All fallible work precedes consumption.
+    std::memcpy(replacement.pointer, pointer, std::min(original->second.bytes, replacement.bytes));
+    bool found = false;
+    const auto old = RemoveAllocation(pointer, &found);
+    if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, old.bytes);
+    ::operator delete(pointer, std::align_val_t(old.alignment));
   }
-
-  bool replacement_active = false;
-  {
-    MemoryTag validation_tag = tag;
-    validation_tag.callsite = kReallocateActiveMapValidationCallsite;
-    std::lock_guard<std::mutex> lock(mutex_);
-    replacement_active = active_.find(replacement.pointer) != active_.end();
-    if (!replacement_active && !replacement_accounting_removed) {
-      ApplyAllocationRemovalAccounting({replacement.bytes, replacement.alignment, tag});
-      RecordFailure(validation_tag, false, true);
-    } else if (!replacement_active) {
-      RecordFailure(validation_tag, false, true);
-    }
-  }
-  if (!replacement_active) {
-    if (policy_.zero_memory_on_release) {
-      std::memset(replacement.pointer, 0, replacement.bytes);
-    }
-    ::operator delete(replacement.pointer, std::align_val_t(replacement.alignment));
-    AllocationResult result;
-    result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
-    result.diagnostic = MakeMemoryDiagnostic(result.status,
-                                             "SB-MEMORY-REALLOC-ACTIVE-MAP-VALIDATION-FAILED",
-                                             "memory.reallocate.active_map_validation_failed",
-                                             std::move(tag),
-                                             bytes,
-                                             alignment);
-    return result;
-  }
-
-  std::memcpy(replacement.pointer, pointer, std::min(old_record.bytes, replacement.bytes));
-  const auto freed = Deallocate(pointer, old_record.tag);
-  if (!freed.ok()) {
-    (void)Deallocate(replacement.pointer, tag);
-    AllocationResult result;
-    result.status = freed.status;
-    result.diagnostic = freed.diagnostic;
-    return result;
-  }
+  (void)pending.release();
   return replacement;
+} catch (const std::bad_alloc&) {
+  std::lock_guard lock(mutex_);
+  if (!failure_recorded) RecordFailure(tag, false, false);
+  ++accounting_.telemetry_truncation_count;
+  return {MemoryStatus(StatusCode::memory_allocation_failed, Severity::error), nullptr, 0, 0, {}};
+}
 }
 
 DeallocationResult BoundedAllocator::Deallocate(void* pointer, MemoryTag tag) {
+  return DeallocateImpl(pointer, std::move(tag), nullptr);
+}
+
+DeallocationResult BoundedAllocator::DeallocateProtected(
+    void* pointer, MemoryTag tag, const ProtectedMemoryEvidence& evidence) {
+  return DeallocateImpl(pointer, std::move(tag), &evidence);
+}
+
+DeallocationResult BoundedAllocator::DeallocateImpl(
+    void* pointer, MemoryTag tag, const ProtectedMemoryEvidence* evidence) {
+  FailureTelemetryExit telemetry_exit{this};
+  bool failure_recorded = false;
+  try {
   DeallocationResult result;
   result.status = OkStatus();
   if (tag.callsite.empty() || tag.callsite == kDefaultAllocationCallsite) {
@@ -962,7 +1200,8 @@ DeallocationResult BoundedAllocator::Deallocate(void* pointer, MemoryTag tag) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto injected = EvaluateFailureInjectionLocked(tag);
     if (injected.inject) {
-      RecordFailure(tag, false, false);
+      failure_recorded = true;
+    RecordFailure(tag, false, false);
       result.status = MemoryStatus(StatusCode::memory_allocation_failed, Severity::error);
       result.diagnostic = MakeFailureInjectionDiagnostic(result.status,
                                                          tag,
@@ -971,9 +1210,17 @@ DeallocationResult BoundedAllocator::Deallocate(void* pointer, MemoryTag tag) {
                                                          injected);
       return result;
     }
+    const auto owned = active_.find(pointer);
+    if (owned != active_.end()) {
+      if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
+      if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
+      ::operator delete(pointer, std::align_val_t(owned->second.alignment));
+    }
+    // Credit becomes reusable only after physical storage is gone.
     record = RemoveAllocation(pointer, &found);
     if (!found) {
-      RecordFailure(tag, false, true);
+      failure_recorded = true;
+    RecordFailure(tag, false, true);
       result.status = MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-DEALLOC-UNKNOWN-POINTER",
@@ -983,11 +1230,37 @@ DeallocationResult BoundedAllocator::Deallocate(void* pointer, MemoryTag tag) {
     }
   }
 
-  if (policy_.zero_memory_on_release) {
-    std::memset(pointer, 0, record.bytes);
-  }
-  ::operator delete(pointer, std::align_val_t(record.alignment));
   return result;
+} catch (const std::bad_alloc&) {
+  std::lock_guard lock(mutex_);
+  if (!failure_recorded) RecordFailure(tag, false, false);
+  ++accounting_.telemetry_truncation_count;
+  return {MemoryStatus(StatusCode::memory_allocation_failed, Severity::error), {}};
+}
+}
+
+Status BoundedAllocator::DeallocateNoAlloc(void* pointer) {
+  return DeallocateNoAllocImpl(pointer, nullptr);
+}
+
+Status BoundedAllocator::DeallocateProtectedNoAlloc(
+    void* pointer, const ProtectedMemoryEvidence& evidence) {
+  return DeallocateNoAllocImpl(pointer, &evidence);
+}
+
+Status BoundedAllocator::DeallocateNoAllocImpl(
+    void* pointer, const ProtectedMemoryEvidence* evidence) {
+  if (!pointer) return OkStatus();
+  std::lock_guard lock(mutex_);
+  const auto owned = active_.find(pointer);
+  if (owned == active_.end()) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  if (policy_.zero_memory_on_release || evidence) SecureZeroMemory(pointer, owned->second.bytes);
+  if (evidence) ReleaseProtectedPlatformEvidence(pointer, owned->second.bytes, *evidence);
+  ::operator delete(pointer, std::align_val_t(owned->second.alignment));
+  bool found = false;
+  auto record = RemoveAllocation(pointer, &found);
+  if (!found) return MemoryStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  return OkStatus();
 }
 
 MemoryAccountingSnapshot BoundedAllocator::Snapshot() const {
@@ -1026,19 +1299,27 @@ MemoryAccountingSnapshot BoundedAllocator::Snapshot() const {
     category.deallocation_count = entry.second.deallocation_count;
     category.failure_count = entry.second.failure_count;
     category.active_allocation_count = entry.second.active_allocation_count;
+    category.reserved_capacity_bytes = entry.second.reserved_capacity_bytes;
     snapshot.categories.push_back(category);
   }
   snapshot.contexts.clear();
   for (const auto& entry : context_accounting_) {
     MemoryContextSnapshot context;
-    context.scope_kind = entry.first.first;
-    context.scope_id = entry.first.second;
+    if (const auto* binary = std::get_if<MemoryBinaryScopeKey>(&entry.first)) {
+      context.binary_scope = *binary;
+      context.scope_kind = MemoryBinaryScopeKindName(binary->kind);
+    } else {
+      const auto& legacy = std::get<std::pair<std::string, std::string>>(entry.first);
+      context.scope_kind = legacy.first;
+      context.scope_id = legacy.second;
+    }
     context.current_bytes = entry.second.current_bytes;
     context.peak_bytes = entry.second.peak_bytes;
     context.allocation_count = entry.second.allocation_count;
     context.deallocation_count = entry.second.deallocation_count;
     context.failure_count = entry.second.failure_count;
     context.active_allocation_count = entry.second.active_allocation_count;
+    context.reserved_capacity_bytes = entry.second.reserved_capacity_bytes;
     snapshot.contexts.push_back(std::move(context));
   }
   snapshot.reserved_categories = ReservedMemoryCategories();
@@ -1108,7 +1389,12 @@ MemoryFailureInjectionConfigurationResult BoundedAllocator::EnableAllocationFail
            {"compile_policy", configuration.test_guard.compile_policy()},
            {"fixture_name", next.fixture_name}});
     }
-    if (rule.scope_kind != MemoryFailureInjectionScopeKind::any && rule.scope_id.empty()) {
+    if (static_cast<unsigned>(rule.scope_kind) > static_cast<unsigned>(MemoryFailureInjectionScopeKind::query) ||
+        (MemoryUuidPresent(rule.binary_scope_uuid) &&
+         (!MemorySystemUuidValid(rule.binary_scope_uuid) || !rule.scope_id.empty() ||
+          rule.scope_kind == MemoryFailureInjectionScopeKind::any)) ||
+        (rule.scope_kind != MemoryFailureInjectionScopeKind::any && rule.scope_id.empty() &&
+         !MemoryUuidPresent(rule.binary_scope_uuid))) {
       return FailureInjectionConfigurationFailure(
           invalid_request,
           "SB-MEMORY-FAILURE-INJECTION-RULE-INVALID",
@@ -1169,7 +1455,8 @@ MemoryFailureInjectionSnapshot BoundedAllocator::FailureInjectionSnapshot() cons
   return snapshot;
 }
 
-PageBufferResult BoundedAllocator::AllocatePageBuffer(PageBufferRequest request) {
+PageBufferResult BoundedAllocator::AllocatePageBuffer(PageBufferRequest request) try {
+  FailureTelemetryExit telemetry_exit{this};
   PageBufferResult result;
   result.status = OkStatus();
   if (request.tag.callsite.empty()) {
@@ -1215,7 +1502,7 @@ PageBufferResult BoundedAllocator::AllocatePageBuffer(PageBufferRequest request)
   AllocationResult allocation = AllocateZeroed(bytes, request.alignment, request.tag);
   if (!allocation.ok()) {
     result.status = allocation.status;
-    result.diagnostic = allocation.diagnostic;
+    result.diagnostic = std::move(allocation.diagnostic);
     return result;
   }
 
@@ -1226,9 +1513,15 @@ PageBufferResult BoundedAllocator::AllocatePageBuffer(PageBufferRequest request)
   result.buffer.alignment = allocation.alignment;
   return result;
 }
+ catch (const std::bad_alloc&) {
+  PageBufferResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
+}
 
-DeallocationResult BoundedAllocator::ReleasePageBuffer(PageBuffer buffer, MemoryTag tag) {
+DeallocationResult BoundedAllocator::ReleasePageBuffer(PageBuffer buffer, MemoryTag tag) try {
   if (!buffer.valid()) {
+    std::lock_guard lock(mutex_);
     DeallocationResult result;
     result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeMemoryDiagnostic(result.status,
@@ -1244,8 +1537,14 @@ DeallocationResult BoundedAllocator::ReleasePageBuffer(PageBuffer buffer, Memory
   tag.lifetime = MemoryLifetime::page_buffer;
   return Deallocate(buffer.pointer, std::move(tag));
 }
+ catch (const std::bad_alloc&) {
+  DeallocationResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
+}
 
-ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest request) {
+ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest request) try {
+  FailureTelemetryExit telemetry_exit{this};
   ProtectedBufferResult result;
   result.status = OkStatus();
   result.evidence.protected_material_redacted = true;
@@ -1284,6 +1583,7 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
 
   AllocationResult allocation = Allocate(request.bytes, request.alignment, tag);
   if (!allocation.ok()) {
+    std::lock_guard lock(mutex_);
     result.status = allocation.status;
     result.diagnostic = MakeProtectedMemoryDiagnostic(
         result.status,
@@ -1299,6 +1599,10 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
     return result;
   }
 
+  auto cleanup = [this, &result](void* pointer) {
+    (void)DeallocateProtectedNoAlloc(pointer, result.evidence);
+  };
+  std::unique_ptr<void, decltype(cleanup)> pending(allocation.pointer, cleanup);
   if (request.zero_on_allocate) {
     std::memset(allocation.pointer, 0, allocation.bytes);
   }
@@ -1314,9 +1618,8 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
       ProtectedPolicyRequiresNoDump(request.platform_policy) &&
       (!result.evidence.no_dump_supported || !result.evidence.no_dump_succeeded);
   if (required_lock_failed || required_no_dump_failed) {
-    SecureZeroMemory(allocation.pointer, allocation.bytes);
-    ReleaseProtectedPlatformEvidence(allocation.pointer, allocation.bytes, result.evidence);
-    (void)Deallocate(allocation.pointer, tag);
+    pending.reset();
+    std::lock_guard lock(mutex_);
     result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeProtectedMemoryDiagnostic(
         result.status,
@@ -1339,30 +1642,40 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
                                         allocation.alignment,
                                         tag,
                                         result.evidence);
+  (void)pending.release();
+  return result;
+} catch (const std::bad_alloc&) {
+  ProtectedBufferResult result;
+  result.status = MemoryStatus(StatusCode::memory_allocation_failed, Severity::error);
   return result;
 }
 
 bool BoundedAllocator::WouldExceedHardLimit(usize bytes) const {
   const u64 hard_limit = EffectiveHardLimit(policy_);
+  const u64 admitted = accounting_.current_bytes + accounting_.reserved_capacity_bytes;
+  if (bytes > std::numeric_limits<u64>::max() - admitted) return true;
   if (hard_limit == 0) {
     return false;
   }
-  return bytes > hard_limit || accounting_.current_bytes > hard_limit - bytes;
+  return bytes > hard_limit || admitted > hard_limit - bytes;
 }
 
 bool BoundedAllocator::WouldExceedSoftLimit(usize bytes) const {
   if (policy_.soft_limit_bytes == 0) {
     return false;
   }
-  return bytes > policy_.soft_limit_bytes || accounting_.current_bytes > policy_.soft_limit_bytes - bytes;
+  return bytes > policy_.soft_limit_bytes ||
+         accounting_.current_bytes + accounting_.reserved_capacity_bytes > policy_.soft_limit_bytes - bytes;
 }
 
 bool BoundedAllocator::WouldExceedPageBufferPoolLimit(usize bytes, MemoryCategory category) const {
   if (category != MemoryCategory::page_buffer || policy_.page_buffer_pool_limit_bytes == 0) {
     return false;
   }
+  const auto category_it = category_accounting_.find(category);
+  const u64 reserved = category_it == category_accounting_.end() ? 0 : category_it->second.reserved_capacity_bytes;
   return bytes > policy_.page_buffer_pool_limit_bytes ||
-         accounting_.page_buffer_current_bytes > policy_.page_buffer_pool_limit_bytes - bytes;
+         accounting_.page_buffer_current_bytes + reserved > policy_.page_buffer_pool_limit_bytes - bytes;
 }
 
 BoundedAllocator::ContextLimitEvidence BoundedAllocator::WouldExceedPerContextLimit(
@@ -1378,12 +1691,18 @@ BoundedAllocator::ContextLimitEvidence BoundedAllocator::WouldExceedPerContextLi
   }
   for (const auto& key : keys) {
     const auto it = context_accounting_.find(key);
-    const u64 current = it == context_accounting_.end() ? 0 : it->second.current_bytes;
+    const u64 current = it == context_accounting_.end() ? 0 :
+        it->second.current_bytes + it->second.reserved_capacity_bytes;
     if (bytes > policy_.per_context_limit_bytes ||
         current > policy_.per_context_limit_bytes - bytes) {
       evidence.exceeded = true;
-      evidence.scope_kind = key.first;
-      evidence.scope_id = key.second;
+      if (const auto* binary = std::get_if<MemoryBinaryScopeKey>(&key)) {
+        evidence.scope_kind = MemoryBinaryScopeKindName(binary->kind);
+      } else {
+        const auto& legacy = std::get<std::pair<std::string, std::string>>(key);
+        evidence.scope_kind = legacy.first;
+        evidence.scope_id = legacy.second;
+      }
       evidence.current_bytes = current;
       evidence.limit_bytes = policy_.per_context_limit_bytes;
       return evidence;
@@ -1555,100 +1874,154 @@ DiagnosticRecord BoundedAllocator::MakeProtectedMemoryDiagnostic(
 
 void BoundedAllocator::RecordFailure(const MemoryTag& tag, bool policy_rejection, bool unknown_pointer) {
   RecordFailure(tag.category, policy_rejection, unknown_pointer);
-  for (const auto& key : ContextKeysForTag(tag)) {
-    ContextAccounting& context = context_accounting_[key];
-    ++context.failure_count;
+  try {
+    for (const auto& key : ContextKeysForTag(tag)) ++context_accounting_[key].failure_count;
+  } catch (const std::bad_alloc&) {
+    ++accounting_.telemetry_truncation_count;
   }
 }
 
 void BoundedAllocator::RecordFailure(MemoryCategory category, bool policy_rejection, bool unknown_pointer) {
   ++accounting_.failure_count;
-  if (policy_rejection) {
-    ++accounting_.policy_rejection_count;
+  if (policy_rejection) ++accounting_.policy_rejection_count;
+  if (unknown_pointer) ++accounting_.unknown_pointer_failure_count;
+  auto index = static_cast<usize>(category);
+  if (index >= pending_failure_counts_.size()) index = 0;
+  ++pending_failure_counts_[index][unknown_pointer ? 2 : (policy_rejection ? 1 : 0)];
+  try {
+    ++category_accounting_[category].failure_count;
+  } catch (const std::bad_alloc&) {
+    ++accounting_.telemetry_truncation_count;
   }
-  if (unknown_pointer) {
-    ++accounting_.unknown_pointer_failure_count;
-  }
-  CategoryAccounting& category_accounting = category_accounting_[category];
-  ++category_accounting.failure_count;
-  (void)scratchbird::core::metrics::IncrementCounter(
-      "sb_memory_allocation_failures_total",
-      scratchbird::core::metrics::Labels({{"component", "core.memory"},
-                                          {"producer", MemoryCategoryName(category)},
-                                          {"reason", unknown_pointer ? "unknown_pointer" : (policy_rejection ? "policy_rejection" : "allocation_failure")}}),
-      1.0,
-      "core_memory");
 }
 
-void BoundedAllocator::RecordAllocation(void* pointer, usize bytes, usize alignment, const MemoryTag& tag) {
+void BoundedAllocator::PublishFailureTelemetryNoThrow() {
+  PendingFailureCounts pending{};
+  {
+    std::lock_guard lock(mutex_);
+    pending.swap(pending_failure_counts_);
+  }
+  for (usize category = 0; category < pending.size(); ++category) {
+    for (usize reason = 0; reason < 3; ++reason) {
+      if (pending[category][reason] == 0) continue;
+      try {
+        const auto published = scratchbird::core::metrics::IncrementCounter(
+            "sb_memory_allocation_failures_total",
+            MemoryMetricLabels({{"component", "core.memory"},
+              {"producer", MemoryCategoryName(static_cast<MemoryCategory>(category))},
+              {"reason", reason == 2 ? "unknown_pointer" : (reason == 1 ? "policy_rejection" : "allocation_failure")}}),
+            static_cast<double>(pending[category][reason]), "core_memory");
+        if (!published.ok) {
+          std::lock_guard lock(mutex_);
+          ++accounting_.telemetry_truncation_count;
+        }
+      } catch (const std::bad_alloc&) {
+        std::lock_guard lock(mutex_);
+        ++accounting_.telemetry_truncation_count;
+      }
+    }
+  }
+}
+
+AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment, const MemoryTag& tag) {
+  // All fallible metadata preparation precedes reservation and physical storage.
   AllocationRecord record;
   record.bytes = bytes;
   record.alignment = alignment;
   record.tag = tag;
-  if (sharded_accounting_ != nullptr) {
-    ShardedMemoryAccountingEvent event;
-    event.bytes = bytes;
-    event.tag = tag;
-    event.scope_ids = ShardedScopeIdsForTag(tag);
-    event.page_buffer_bytes = tag.category == MemoryCategory::page_buffer ||
-                              tag.lifetime == MemoryLifetime::page_buffer;
-    const auto reserved = sharded_accounting_->Reserve(std::move(event));
-    if (reserved.ok()) {
-      const auto committed = sharded_accounting_->Commit(reserved.token);
-      if (committed.ok()) {
-        record.sharded_token_id = reserved.token.token_id;
-        record.sharded_shard_index = reserved.token.shard_index;
-        record.sharded_accounting_committed = true;
-      }
+  record.context_keys = ContextKeysForTag(tag);
+  category_accounting_.try_emplace(tag.category);
+  for (const auto& key : record.context_keys) context_accounting_.try_emplace(key);
+  active_.reserve(active_.size() + 1);
+  decltype(active_) staging;
+  staging.emplace(nullptr, std::move(record));
+  auto node = staging.extract(nullptr);
+  ShardedMemoryAccountingEvent event;
+  event.bytes = bytes;
+  event.tag = tag;
+  event.scope_ids = ShardedScopeIdsForTag(tag);
+  event.page_buffer_bytes = tag.category == MemoryCategory::page_buffer ||
+                            tag.lifetime == MemoryLifetime::page_buffer;
+  const auto reserved = sharded_accounting_->Reserve(std::move(event));
+  if (!reserved.ok()) return {reserved.status, nullptr, 0, 0, {}};
+  void* pointer = nullptr;
+  try {
+    pointer = ::operator new(bytes, std::align_val_t(alignment));
+    const auto committed = sharded_accounting_->Commit(reserved.token);
+    if (!committed.ok()) {
+      if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
+      ::operator delete(pointer, std::align_val_t(alignment));
+      (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);
+      return {committed.status, nullptr, 0, 0, {}};
     }
+    node.key() = pointer;
+    node.mapped().sharded_token_id = reserved.token.token_id;
+    node.mapped().sharded_shard_index = reserved.token.shard_index;
+    node.mapped().sharded_accounting_committed = true;
+    // Capacity and node storage exist; pointer hashing and equality cannot throw.
+    auto inserted = active_.insert(std::move(node));
+    const auto& published_record = inserted.position->second;
+    accounting_.current_bytes += bytes;
+    accounting_.peak_bytes = std::max(accounting_.peak_bytes, accounting_.current_bytes);
+    ++accounting_.allocation_count;
+    ++accounting_.active_allocation_count;
+
+    CategoryAccounting& category = category_accounting_.at(tag.category);
+    category.current_bytes += bytes;
+    category.peak_bytes = std::max(category.peak_bytes, category.current_bytes);
+    ++category.allocation_count;
+    ++category.active_allocation_count;
+
+    if (tag.category == MemoryCategory::page_buffer) {
+      accounting_.page_buffer_current_bytes += bytes;
+      accounting_.page_buffer_peak_bytes = std::max(accounting_.page_buffer_peak_bytes,
+                                                    accounting_.page_buffer_current_bytes);
+    }
+    if (tag.lifetime == MemoryLifetime::arena) {
+      accounting_.arena_current_bytes += bytes;
+      accounting_.arena_peak_bytes = std::max(accounting_.arena_peak_bytes, accounting_.arena_current_bytes);
+    }
+
+    for (const auto& key : published_record.context_keys) {
+      ContextAccounting& context = context_accounting_.at(key);
+      context.current_bytes += bytes;
+      context.peak_bytes = std::max(context.peak_bytes, context.current_bytes);
+      ++context.allocation_count;
+      ++context.active_allocation_count;
+    }
+
+    return {OkStatus(), pointer, bytes, alignment, {}};
+  } catch (...) {
+    if (pointer) {
+      if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
+      ::operator delete(pointer, std::align_val_t(alignment));
+    }
+    (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);
+    throw;
   }
-
-  accounting_.current_bytes += bytes;
-  accounting_.peak_bytes = std::max(accounting_.peak_bytes, accounting_.current_bytes);
-  ++accounting_.allocation_count;
-  ++accounting_.active_allocation_count;
-
-  CategoryAccounting& category = category_accounting_[tag.category];
-  category.current_bytes += bytes;
-  category.peak_bytes = std::max(category.peak_bytes, category.current_bytes);
-  ++category.allocation_count;
-  ++category.active_allocation_count;
-
-  if (tag.category == MemoryCategory::page_buffer) {
-    accounting_.page_buffer_current_bytes += bytes;
-    accounting_.page_buffer_peak_bytes = std::max(accounting_.page_buffer_peak_bytes,
-                                                  accounting_.page_buffer_current_bytes);
-  }
-  if (tag.lifetime == MemoryLifetime::arena) {
-    accounting_.arena_current_bytes += bytes;
-    accounting_.arena_peak_bytes = std::max(accounting_.arena_peak_bytes, accounting_.arena_current_bytes);
-  }
-
-  for (const auto& key : ContextKeysForTag(tag)) {
-    ContextAccounting& context = context_accounting_[key];
-    context.current_bytes += bytes;
-    context.peak_bytes = std::max(context.peak_bytes, context.current_bytes);
-    ++context.allocation_count;
-    ++context.active_allocation_count;
-  }
-
-  active_[pointer] = std::move(record);
 }
 
 void BoundedAllocator::ApplyAllocationRemovalAccounting(const AllocationRecord& record) {
+  if (record.capacity_id != 0) {
+    auto capacity = capacity_reservations_.find(record.capacity_id);
+    auto& owner = capacity->second;
+    owner.live_bytes -= record.bytes;
+    if (owner.open) AddCapacityCredits(owner, record.bytes);
+    else if (owner.live_bytes == 0) capacity_reservations_.erase(capacity);
+  }
   if (record.sharded_accounting_committed && sharded_accounting_ != nullptr) {
     ShardedMemoryAccountingToken token;
     token.token_id = record.sharded_token_id;
     token.bytes = record.bytes;
     token.shard_index = record.sharded_shard_index;
-    (void)sharded_accounting_->Release(token);
+    (void)sharded_accounting_->ReleaseNoAlloc(token);
   }
 
   SubtractCounter(accounting_.current_bytes, record.bytes);
   DecrementCounter(accounting_.active_allocation_count);
   ++accounting_.deallocation_count;
 
-  CategoryAccounting& category = category_accounting_[record.tag.category];
+  CategoryAccounting& category = category_accounting_.at(record.tag.category);
   SubtractCounter(category.current_bytes, record.bytes);
   DecrementCounter(category.active_allocation_count);
   ++category.deallocation_count;
@@ -1659,7 +2032,7 @@ void BoundedAllocator::ApplyAllocationRemovalAccounting(const AllocationRecord& 
   if (record.tag.lifetime == MemoryLifetime::arena) {
     SubtractCounter(accounting_.arena_current_bytes, record.bytes);
   }
-  for (const auto& key : ContextKeysForTag(record.tag)) {
+  for (const auto& key : record.context_keys) {
     auto it = context_accounting_.find(key);
     if (it == context_accounting_.end()) {
       continue;
@@ -1677,7 +2050,7 @@ BoundedAllocator::AllocationRecord BoundedAllocator::RemoveAllocation(void* poin
   if (it == active_.end()) {
     return record;
   }
-  record = it->second;
+  record = std::move(it->second);
   active_.erase(it);
   *found = true;
 
@@ -1698,7 +2071,7 @@ ArenaAllocator::ArenaAllocator(ArenaAllocator&& other) noexcept
 
 ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
   if (this != &other) {
-    Reset();
+    if (allocator_) for (auto& chunk : chunks_) (void)allocator_->DeallocateNoAlloc(chunk.pointer);
     allocator_ = other.allocator_;
     tag_ = std::move(other.tag_);
     chunks_ = std::move(other.chunks_);
@@ -1709,105 +2082,123 @@ ArenaAllocator& ArenaAllocator::operator=(ArenaAllocator&& other) noexcept {
 }
 
 ArenaAllocator::~ArenaAllocator() {
-  Reset();
+  if (allocator_) for (auto& chunk : chunks_) (void)allocator_->DeallocateNoAlloc(chunk.pointer);
+}
+
+namespace {
+std::optional<usize> ArenaAllocationOffset(const void* pointer, usize capacity,
+                                           usize used, usize bytes, usize alignment) noexcept {
+  const auto base = reinterpret_cast<std::uintptr_t>(pointer);
+  if (base > std::numeric_limits<std::uintptr_t>::max() - used) return std::nullopt;
+  const auto current = base + used;
+  const auto mask = static_cast<std::uintptr_t>(alignment - 1);
+  if (current > std::numeric_limits<std::uintptr_t>::max() - mask) return std::nullopt;
+  const auto aligned = (current + mask) & ~mask;
+  if (aligned < base) return std::nullopt;
+  const auto offset = static_cast<usize>(aligned - base);
+  if (offset > capacity || bytes > capacity - offset) return std::nullopt;
+  return offset;
+}
+}  // namespace
+
+ArenaCapacitySnapshot ArenaAllocator::CapacitySnapshot() const noexcept {
+  ArenaCapacitySnapshot snapshot;
+  for (const auto& chunk : chunks_) {
+    snapshot.retained_bytes += chunk.bytes;
+    snapshot.consumed_bytes += chunk.used;
+  }
+  snapshot.chunk_count = chunks_.size();
+  return snapshot;
+}
+
+ArenaAllocationPlan ArenaAllocator::PlanAllocation(usize bytes, usize alignment,
+                                                   usize growth_limit_bytes) const noexcept {
+  ArenaAllocationPlan plan;
+  plan.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
+  if (allocator_ == nullptr || bytes == 0) return plan;
+  if (alignment != 0 && !IsPowerOfTwo(alignment)) return plan;
+  if (alignment == 0 || alignment < kDefaultAlignment) alignment = kDefaultAlignment;
+  plan.alignment = alignment;
+  for (auto it = chunks_.rbegin(); it != chunks_.rend(); ++it) {
+    if (ArenaAllocationOffset(it->pointer, it->bytes, it->used, bytes, alignment)) {
+      plan.status = OkStatus();
+      return plan;
+    }
+  }
+  plan.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::memory};
+  if (bytes > growth_limit_bytes) return plan;
+  // The bounded allocator aligns the new chunk's base, so a fresh chunk needs
+  // exactly bytes, not an extra alignment-1 of otherwise uncharged padding.
+  const usize growth = std::min(std::max(kDefaultArenaChunkBytes, bytes), growth_limit_bytes);
+  if (growth > std::numeric_limits<u64>::max() - CapacitySnapshot().retained_bytes) return plan;
+  plan.growth_bytes = growth;
+  plan.status = OkStatus();
+  return plan;
 }
 
 AllocationResult ArenaAllocator::Allocate(usize bytes, usize alignment) {
+  const auto plan = PlanAllocation(bytes, alignment, std::numeric_limits<usize>::max());
+  if (!plan.ok()) {
+    AllocationResult result;
+    result.status = plan.status;
+    return result;
+  }
+  auto result = AllocateWithinCapacity(bytes, alignment, std::numeric_limits<usize>::max());
+  // Preserve the generic allocator's minimal-backing fallback. Admission that
+  // reserves an exact physical capacity uses AllocateWithinCapacity directly.
+  if (!result.ok() && plan.growth_bytes > bytes)
+    result = AllocateWithinCapacity(bytes, alignment, bytes);
+  return result;
+}
+
+AllocationResult ArenaAllocator::AllocateWithinCapacity(usize bytes, usize alignment,
+                                                        usize growth_limit_bytes) try {
   AllocationResult result;
-  result.status = OkStatus();
-  if (allocator_ == nullptr) {
-    result.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
-    return result;
-  }
-  if (bytes == 0) {
-    result.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
-    return result;
-  }
-  if (alignment == 0 || alignment < kDefaultAlignment) {
-    alignment = kDefaultAlignment;
-  }
-  if (!IsPowerOfTwo(alignment)) {
-    result.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
-    return result;
-  }
-
-  auto try_allocate_from_chunk = [&](Chunk& chunk) -> void* {
-    const auto base = reinterpret_cast<std::uintptr_t>(chunk.pointer);
-    if (base > std::numeric_limits<std::uintptr_t>::max() - chunk.used) {
-      return nullptr;
-    }
-    const auto current = base + chunk.used;
-    const auto mask = static_cast<std::uintptr_t>(alignment - 1);
-    if (current > std::numeric_limits<std::uintptr_t>::max() - mask) {
-      return nullptr;
-    }
-    const auto aligned = (current + mask) & ~mask;
-    if (aligned < base) {
-      return nullptr;
-    }
-    const auto offset = static_cast<usize>(aligned - base);
-    if (offset > chunk.bytes || bytes > chunk.bytes - offset) {
-      return nullptr;
-    }
-    chunk.used = offset + bytes;
-    return reinterpret_cast<void*>(aligned);
-  };
-
+  const auto plan = PlanAllocation(bytes, alignment, growth_limit_bytes);
+  result.status = plan.status;
+  if (!plan.ok()) return result;
+  alignment = plan.alignment;
   for (auto it = chunks_.rbegin(); it != chunks_.rend(); ++it) {
-    if (void* pointer = try_allocate_from_chunk(*it)) {
-      result.pointer = pointer;
+    const auto offset = ArenaAllocationOffset(it->pointer, it->bytes, it->used, bytes, alignment);
+    if (offset) {
+      it->used = *offset + bytes;
+      result.pointer = static_cast<unsigned char*>(it->pointer) + *offset;
       result.bytes = bytes;
       result.alignment = alignment;
       return result;
     }
   }
-
-  if (bytes > std::numeric_limits<usize>::max() - (alignment - 1)) {
+  if (plan.growth_bytes == 0 || chunks_.size() == chunks_.max_size()) {
     result.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::memory};
     return result;
   }
-  const usize needed = bytes + alignment - 1;
+  chunks_.reserve(chunks_.size() + 1);
   MemoryTag tag = tag_;
   tag.lifetime = MemoryLifetime::arena;
-  auto allocate_chunk = [&](usize chunk_bytes) {
-    return allocator_->Allocate(chunk_bytes, alignment, tag);
-  };
-  const usize preferred_chunk_bytes = std::max(kDefaultArenaChunkBytes, needed);
-  AllocationResult chunk = allocate_chunk(preferred_chunk_bytes);
-  if (!chunk.ok() && needed < preferred_chunk_bytes) {
-    chunk = allocate_chunk(needed);
-  }
-  if (!chunk.ok()) {
-    return chunk;
-  }
-  chunks_.push_back({chunk.pointer, chunk.bytes, chunk.alignment, 0});
-  result.pointer = try_allocate_from_chunk(chunks_.back());
-  if (result.pointer == nullptr) {
-    DeallocationResult released = allocator_->Deallocate(chunk.pointer, tag);
-    chunks_.pop_back();
-    result.status = released.status.ok()
-                        ? Status{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}
-                        : released.status;
-    result.diagnostic = released.diagnostic;
-    return result;
-  }
+  auto chunk = allocator_->Allocate(plan.growth_bytes, alignment, std::move(tag));
+  if (!chunk.ok()) return chunk;
+  // All fallible bookkeeping precedes the real backing allocation.
+  chunks_.push_back({chunk.pointer, chunk.bytes, chunk.alignment, bytes});
+  result.pointer = chunk.pointer;
   result.bytes = bytes;
   result.alignment = alignment;
   return result;
+} catch (const std::bad_alloc&) {
+  AllocationResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
 }
 
-DeallocationResult ArenaAllocator::Reset() {
-  DeallocationResult last;
-  last.status = OkStatus();
-  if (allocator_ == nullptr) {
-    chunks_.clear();
-    return last;
+DeallocationResult ArenaAllocator::Reset() try {
+  if (allocator_ == nullptr) return {OkStatus(), {}};
+  while (!chunks_.empty()) {
+    auto result = allocator_->Deallocate(chunks_.back().pointer, tag_);
+    if (!result.ok()) return result;
+    chunks_.pop_back();
   }
-  for (auto it = chunks_.rbegin(); it != chunks_.rend(); ++it) {
-    last = allocator_->Deallocate(it->pointer, tag_);
-  }
-  chunks_.clear();
-  return last;
+  return {OkStatus(), {}};
+} catch (const std::bad_alloc&) {
+  return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}, {}};
 }
 
 MemoryAccountingSnapshot ArenaAllocator::Snapshot() const {
@@ -1843,26 +2234,36 @@ ProtectedBufferResult MemoryManager::AllocateProtected(ProtectedMemoryRequest re
   return allocator_.AllocateProtected(std::move(request));
 }
 
-ScopedAllocationResult MemoryManager::AllocateScoped(usize bytes, usize alignment, MemoryTag tag) {
+ScopedAllocationResult MemoryManager::AllocateScoped(usize bytes, usize alignment, MemoryTag tag) try {
   ScopedAllocationResult result;
   AllocationResult allocation = Allocate(bytes, alignment, tag);
   result.status = allocation.status;
-  result.diagnostic = allocation.diagnostic;
+  result.diagnostic = std::move(allocation.diagnostic);
   if (allocation.ok()) {
     result.allocation = ScopedAllocation(&allocator_, allocation.pointer, allocation.bytes, allocation.alignment, std::move(tag));
   }
   return result;
 }
+ catch (const std::bad_alloc&) {
+  ScopedAllocationResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
+}
 
-ScopedPageBufferResult MemoryManager::AllocateScopedPageBuffer(PageBufferRequest request) {
+ScopedPageBufferResult MemoryManager::AllocateScopedPageBuffer(PageBufferRequest request) try {
   ScopedPageBufferResult result;
   MemoryTag tag = request.tag;
   PageBufferResult page_buffer = AllocatePageBuffer(std::move(request));
   result.status = page_buffer.status;
-  result.diagnostic = page_buffer.diagnostic;
+  result.diagnostic = std::move(page_buffer.diagnostic);
   if (page_buffer.ok()) {
     result.buffer = ScopedPageBuffer(&allocator_, page_buffer.buffer, std::move(tag));
   }
+  return result;
+}
+ catch (const std::bad_alloc&) {
+  ScopedPageBufferResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
   return result;
 }
 
@@ -1898,7 +2299,7 @@ BoundedAllocator* MemoryManager::allocator() {
 DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerInternal(
     AllocationPolicy policy,
     std::string provenance,
-    bool fixture_mode) {
+    bool fixture_mode) try {
   DefaultMemoryManagerConfigurationResult result;
   result.requested_policy = policy;
   result.fixture_mode = fixture_mode;
@@ -1961,14 +2362,30 @@ DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerInternal(
     return result;
   }
 
-  configured_policy = policy;
-  storage = std::make_unique<MemoryManager>(configured_policy);
-  runtime_state.explicitly_configured = true;
-  runtime_state.fixture_mode = fixture_mode;
-  runtime_state.provenance = provenance;
+  // Prepare every allocating owner and response before exposing the manager.
+  // A failed attempt leaves the refusal-only process state safe to retry.
+  auto prepared_policy = policy;
+  DefaultMemoryManagerRuntimeState prepared_state;
+  prepared_state.explicitly_configured = true;
+  prepared_state.fixture_mode = fixture_mode;
+  prepared_state.provenance = std::move(provenance);
+  auto prepared_manager = std::make_unique<MemoryManager>(prepared_policy);
   result.status = OkStatus();
-  result.active_policy = configured_policy;
+  result.active_policy = prepared_policy;
   result.applied = true;
+
+  static_assert(std::is_nothrow_move_assignable_v<AllocationPolicy>);
+  static_assert(std::is_nothrow_move_assignable_v<DefaultMemoryManagerRuntimeState>);
+  static_assert(std::is_nothrow_move_assignable_v<decltype(prepared_manager)>);
+  static_assert(std::is_nothrow_move_constructible_v<DefaultMemoryManagerConfigurationResult>);
+  configured_policy = std::move(prepared_policy);
+  runtime_state = std::move(prepared_state);
+  storage = std::move(prepared_manager);
+  return result;
+} catch (const std::bad_alloc&) {
+  DefaultMemoryManagerConfigurationResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  result.fixture_mode = fixture_mode;
   return result;
 }
 
@@ -1982,7 +2399,7 @@ DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManager(
 
 DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerForFixture(
     AllocationPolicy policy,
-    std::string fixture_name) {
+    std::string fixture_name) try {
   if (fixture_name.empty()) {
     DefaultMemoryManagerConfigurationResult result;
     result.requested_policy = policy;
@@ -1998,6 +2415,12 @@ DefaultMemoryManagerConfigurationResult ConfigureDefaultMemoryManagerForFixture(
   return ConfigureDefaultMemoryManagerInternal(std::move(policy),
                                                "fixture:" + std::move(fixture_name),
                                                true);
+} catch (const std::bad_alloc&) {
+  // Prefixing the fixture provenance and refusal diagnostics can also allocate.
+  DefaultMemoryManagerConfigurationResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  result.fixture_mode = true;
+  return result;
 }
 
 DefaultMemoryManagerStateSnapshot DefaultMemoryManagerState() {

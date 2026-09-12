@@ -128,7 +128,7 @@ bool RevalidatePreparedAggregateValueBindings(
         receipt.encoded_descriptor.empty() ||
         column.descriptor_id != receipt.descriptor_id ||
         column.nullable != receipt.nullable ||
-        column.descriptor.descriptor_uuid.canonical !=
+        column.descriptor.descriptor_uuid !=
             receipt.descriptor_uuid ||
         column.descriptor.descriptor_kind != "scalar" ||
         column.descriptor.canonical_type_name !=
@@ -153,7 +153,7 @@ bool RevalidatePreparedAggregateValueBindings(
           ":column_nullability=" +
           (column.nullable == receipt.nullable ? "1" : "0") +
           ":column_uuid=" +
-          (column.descriptor.descriptor_uuid.canonical ==
+          (column.descriptor.descriptor_uuid ==
                    receipt.descriptor_uuid
                ? "1"
                : "0") +
@@ -262,7 +262,7 @@ bool RevalidatePreparedGroupedKeyBindings(
                 ";nullability=" + std::string(expected_nullability) ||
         column.descriptor_id != receipt.descriptor_id ||
         column.nullable != receipt.nullable ||
-        column.descriptor.descriptor_uuid.canonical !=
+        column.descriptor.descriptor_uuid !=
             receipt.descriptor_uuid ||
         column.descriptor.descriptor_kind != "scalar" ||
         column.descriptor.canonical_type_name !=
@@ -510,11 +510,11 @@ bool BindCanonicalDescriptorEqualityTerm(
     term->text_seed.collation_accent_insensitive = false;
 #else
     api::EngineUuid resource_uuid;
-    resource_uuid.canonical = term->collation_uuid;
+    resource_uuid = term->collation_uuid;
     const auto resolved = api::LookupEngineResourceDescriptorByUuid(
         context, resource_uuid, "collation");
     if (!resolved.ok || !resolved.resource_descriptor.present ||
-        resolved.resource_descriptor.resource_uuid.canonical !=
+        resolved.resource_descriptor.resource_uuid !=
             term->collation_uuid) {
       *term = {};
       *detail =

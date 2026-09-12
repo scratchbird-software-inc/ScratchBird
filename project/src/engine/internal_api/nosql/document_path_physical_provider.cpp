@@ -1034,27 +1034,27 @@ DocumentPathProviderIdentity DocumentPathProviderIdentityForContext(
     std::uint64_t provider_generation,
     const std::string& index_uuid) {
   DocumentPathProviderIdentity identity;
-  const bool database_uuid_valid = IsValidUuid(context.database_uuid.canonical);
+  const bool database_uuid_valid = IsValidUuid(context.database_uuid);
   const bool relation_uuid_valid =
-      IsValidUuid(context.current_schema_uuid.canonical);
+      IsValidUuid(context.current_schema_uuid);
   std::string database_seed;
   if (database_uuid_valid) {
-    database_seed = context.database_uuid.canonical;
+    database_seed = context.database_uuid;
   } else if (!context.database_path.empty()) {
     database_seed = context.database_path;
-  } else if (!context.database_uuid.canonical.empty()) {
-    database_seed = context.database_uuid.canonical;
+  } else if (!context.database_uuid.is_nil()) {
+    database_seed = context.database_uuid;
   } else {
     database_seed = "embedded_transient_database";
   }
   identity.database_uuid = database_uuid_valid
-                               ? context.database_uuid.canonical
+                               ? context.database_uuid
                                : StableProviderUuid(
                                      scratchbird::core::platform::UuidKind::database,
                                      database_seed + "|database");
   identity.relation_uuid =
       relation_uuid_valid
-          ? context.current_schema_uuid.canonical
+          ? context.current_schema_uuid
           : StableProviderUuid(
                 scratchbird::core::platform::UuidKind::object,
                 database_seed + "|document_relation");

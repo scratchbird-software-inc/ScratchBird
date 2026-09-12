@@ -88,6 +88,7 @@ struct OptimizerMetricCostInput {
   bool mga_visibility_recheck_preserved = true;
   bool parser_or_reference_authority = false;
   std::string transaction_finality_authority = "engine_transaction_inventory";
+  std::optional<OptimizerStatisticTarget> statistic_target;
 };
 
 struct AgentCostRecommendation {

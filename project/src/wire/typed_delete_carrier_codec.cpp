@@ -103,7 +103,7 @@ bool DescriptorValid(const TypedDeleteDescriptorCarrier& v, TypedDeleteCarrierEr
       v.constraint_count > kTypedUpdateMaximumFrozenRecords ||
       v.trigger_count > kTypedUpdateMaximumFrozenRecords) return Fail(e, "counts");
   if (v.builtin_operator_snapshot_uuid != kTypedUpdateOperatorSnapshotUuid ||
-      v.builtin_operator_registry_generation != 1) return Fail(e, "operator_snapshot", "DATATYPE.DESCRIPTOR_INVALID");
+      v.builtin_operator_registry_generation != 1) return Fail(e, "operator_snapshot", "DATATYPE.DESCRIPTOR.INVALID");
   return true;
 }
 bool ResultValid(const TypedDeleteResultCarrier& v, TypedDeleteCarrierError* e) {

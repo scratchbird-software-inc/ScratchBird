@@ -6,6 +6,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(NOT TARGET sb_server_legacy_diagnostic_rendering)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../../server/diagnostic_rendering
+                   ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
+endif()
+
 add_library(sb_native_v3_parser_package STATIC
   native_v3_parser_package.cpp
 )
@@ -15,6 +20,7 @@ target_compile_features(sb_native_v3_parser_package PUBLIC cxx_std_23)
 target_link_libraries(sb_native_v3_parser_package
   PUBLIC
     sb_engine_internal_api
+    sb_server_legacy_diagnostic_rendering
     sb_engine_sblr
     sb_native_v3_minimal_parser
     sb_parser_bound_ast_model
@@ -25,4 +31,3 @@ target_include_directories(sb_native_v3_parser_package
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-

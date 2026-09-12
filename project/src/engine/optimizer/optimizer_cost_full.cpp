@@ -12,6 +12,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
@@ -81,12 +82,11 @@ std::uint64_t SortWorkRows(std::uint64_t rows, std::uint64_t keys) {
   return CostUnits(static_cast<double>(rows) * log2_rows * static_cast<double>(std::max<std::uint64_t>(keys, 1)));
 }
 
-std::uint64_t MetricUnsigned(double value) {
-  if (value <= 0.0) return 0;
-  if (value >= static_cast<double>(std::numeric_limits<std::uint64_t>::max())) {
-    return std::numeric_limits<std::uint64_t>::max();
-  }
-  return static_cast<std::uint64_t>(std::llround(value));
+std::optional<std::uint64_t> MetricUnsigned(double value) {
+  if (!std::isfinite(value) || value < 0) return std::nullopt;
+  const long double rounded = std::round(static_cast<long double>(value));
+  if (rounded >= std::ldexp(1.0L, 64)) return std::nullopt;
+  return static_cast<std::uint64_t>(rounded);
 }
 
 bool IsRuntimeFeedbackMetric(const std::string& name) {
@@ -108,6 +108,23 @@ bool IsRuntimeFeedbackMetric(const std::string& name) {
          name == "feedback.actual_resource_units";
 }
 
+bool HasRuntimeMetricPartner(const OptimizerMetricCostInput& metric,
+                             const std::vector<OptimizerMetricCostInput>& metrics) {
+  const std::string_view name = metric.metric_name;
+  const auto contains = [&](std::string_view prefix, std::string_view suffix) {
+    return std::ranges::any_of(metrics, [&](const auto& other) {
+      const std::string_view candidate = other.metric_name;
+      return candidate.starts_with(prefix) && candidate.substr(prefix.size()) == suffix;
+    });
+  };
+  constexpr std::string_view estimated = "feedback.estimated_", actual = "feedback.actual_";
+  if (name.starts_with(estimated)) return contains(actual, name.substr(estimated.size()));
+  if (name.starts_with(actual)) return contains(estimated, name.substr(actual.size()));
+  if (name == "feedback.memory_grant_bytes") return contains("feedback.", "peak_memory_bytes");
+  if (name == "feedback.peak_memory_bytes") return contains("feedback.", "memory_grant_bytes");
+  return false;
+}
+
 void ApplyRuntimeFeedbackMetric(const OptimizerMetricCostInput& metric,
                                 OptimizerRuntimeFeedback* feedback) {
   if (feedback == nullptr) return;
@@ -125,7 +142,8 @@ void ApplyRuntimeFeedbackMetric(const OptimizerMetricCostInput& metric,
     feedback->transaction_finality_authority = metric.transaction_finality_authority;
   }
 
-  const auto value = MetricUnsigned(metric.value);
+  // The complete runtime group was validated before applying any member.
+  const auto value = *MetricUnsigned(metric.value);
   if (metric.metric_name == "feedback.estimated_rows") {
     feedback->estimated_rows = value;
   } else if (metric.metric_name == "feedback.actual_rows") {
@@ -374,24 +392,53 @@ CostVector ApplyMemoryAndSpillCost(CostVector cost,
 
 CostVector ApplyMetricFeedbackCost(CostVector cost, const std::vector<OptimizerMetricCostInput>& metrics) {
   std::optional<OptimizerRuntimeFeedback> runtime_feedback;
+  const OptimizerMetricCostInput* basis = nullptr;
+  bool runtime_usable = true;
+  for (std::size_t index = 0; index < metrics.size(); ++index) {
+    const auto& metric = metrics[index];
+    if (!IsRuntimeFeedbackMetric(metric.metric_name)) continue;
+    if (!basis) basis = &metric;
+    if (!MetricUnsigned(metric.value) || !HasRuntimeMetricPartner(metric, metrics) ||
+        !metric.policy_allowed ||
+        metric.freshness_microseconds > 60000000 || !metric.advisory_only ||
+        !metric.mga_visibility_recheck_preserved || metric.parser_or_reference_authority ||
+        metric.transaction_finality_authority != "engine_transaction_inventory" ||
+        (metric.statistic_target &&
+         (!metric.statistic_target->Valid() ||
+          metric.statistic_target->kind != OptimizerStatisticTargetKind::kObject)) ||
+        metric.statistic_target != basis->statistic_target ||
+        metric.operator_family != basis->operator_family ||
+        metric.plan_shape != basis->plan_shape ||
+        metric.cost_profile_id != basis->cost_profile_id ||
+        std::any_of(metrics.begin(), metrics.begin() + index, [&](const auto& prior) {
+          return prior.metric_name == metric.metric_name;
+        })) runtime_usable = false;
+  }
   for (const auto& metric : metrics) {
     if (IsRuntimeFeedbackMetric(metric.metric_name)) {
-      if (!runtime_feedback) runtime_feedback.emplace();
+      if (!runtime_usable) continue;
+      if (!runtime_feedback) {
+        runtime_feedback.emplace();
+        runtime_feedback->statistic_target = metric.statistic_target;
+      }
       ApplyRuntimeFeedbackMetric(metric, &*runtime_feedback);
       continue;
     }
-    if (!metric.policy_allowed || metric.freshness_microseconds > 60000000) continue;
+    if (!metric.policy_allowed || metric.freshness_microseconds > 60000000 ||
+        !std::isfinite(metric.value) || metric.value < 0 ||
+        (metric.statistic_target && !metric.statistic_target->Valid())) continue;
     if (metric.metric_name == "operator_latency_multiplier") {
       const auto multiplier = std::clamp(metric.value, 0.25, 10.0);
-      cost.row_cost = static_cast<std::uint64_t>(static_cast<double>(cost.row_cost) * multiplier);
+      cost.row_cost = CostUnits(static_cast<double>(cost.row_cost) * multiplier);
     } else if (metric.metric_name == "io_latency_multiplier") {
       const auto multiplier = std::clamp(metric.value, 0.25, 10.0);
-      cost.io_cost = static_cast<std::uint64_t>(static_cast<double>(cost.io_cost) * multiplier);
+      cost.io_cost = CostUnits(static_cast<double>(cost.io_cost) * multiplier);
       cost.sequential_io_units = ScaleCost(cost.sequential_io_units, multiplier);
       cost.random_io_units = ScaleCost(cost.random_io_units, multiplier);
       cost.spill_units = ScaleCost(cost.spill_units, multiplier);
     } else if (metric.metric_name == "estimate_uncertainty") {
-      cost.uncertainty_cost += static_cast<std::uint64_t>(std::clamp(metric.value, 0.0, 1000000.0));
+      cost.uncertainty_cost = SaturatingAdd(cost.uncertainty_cost,
+          static_cast<std::uint64_t>(std::clamp(metric.value, 0.0, 1000000.0)));
     }
   }
   if (runtime_feedback) {

@@ -1303,7 +1303,7 @@
         "UCS2"
       ],
       "max_bytes": 2,
-      "min_bytes": 1,
+      "min_bytes": 2,
       "is_variable_width": false,
       "encoding_type": "unicode",
       "iana_name": "UCS-2",

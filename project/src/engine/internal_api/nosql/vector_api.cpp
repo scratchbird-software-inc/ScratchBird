@@ -587,14 +587,14 @@ bool ExactBoundVectorStorageDescriptorImpl(
     const std::string_view collection_uuid) {
   const auto vector_type_uuid = ExactBoundVectorCoreTypeUuid("dense_vector");
   const auto text_type_uuid = ExactBoundVectorCoreTypeUuid("character");
-  if (descriptor.relation_uuid.canonical != collection_uuid ||
+  if (descriptor.relation_uuid != collection_uuid ||
       vector_type_uuid.empty() || text_type_uuid.empty() ||
-      !CanonicalBoundVectorUuid(descriptor.database_uuid.canonical) ||
-      !CanonicalBoundVectorUuid(descriptor.schema_uuid.canonical) ||
+      !CanonicalBoundVectorUuid(descriptor.database_uuid) ||
+      !CanonicalBoundVectorUuid(descriptor.schema_uuid) ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.descriptor_generation == 0 ||
-      !CanonicalBoundVectorUuid(descriptor.descriptor_uuid.canonical) ||
+      !CanonicalBoundVectorUuid(descriptor.descriptor_uuid) ||
       descriptor.columns.size() != 2) {
     return false;
   }
@@ -629,23 +629,23 @@ bool ExactBoundVectorStorageDescriptorImpl(
          metadata.value_descriptor.descriptor_kind ==
              "canonical_type_descriptor" &&
          metadata.value_descriptor.canonical_type_name == "text" &&
-         CanonicalBoundVectorUuid(embedding.column_uuid.canonical) &&
-         CanonicalBoundVectorUuid(metadata.column_uuid.canonical) &&
+         CanonicalBoundVectorUuid(embedding.column_uuid) &&
+         CanonicalBoundVectorUuid(metadata.column_uuid) &&
          CanonicalBoundVectorUuid(
-             embedding.value_descriptor.descriptor_uuid.canonical) &&
+             embedding.value_descriptor.descriptor_uuid) &&
          CanonicalBoundVectorUuid(
-             metadata.value_descriptor.descriptor_uuid.canonical) &&
-         metadata.value_descriptor.descriptor_uuid.canonical ==
-             metadata.column_uuid.canonical &&
-         embedding.column_uuid.canonical != metadata.column_uuid.canonical &&
-         embedding.value_descriptor.descriptor_uuid.canonical !=
-             metadata.value_descriptor.descriptor_uuid.canonical &&
+             metadata.value_descriptor.descriptor_uuid) &&
+         metadata.value_descriptor.descriptor_uuid ==
+             metadata.column_uuid &&
+         embedding.column_uuid != metadata.column_uuid &&
+         embedding.value_descriptor.descriptor_uuid !=
+             metadata.value_descriptor.descriptor_uuid &&
          ExactBoundVectorDescriptorFields(
              metadata.value_descriptor,
              {{"canonical", "text"},
               {"type_uuid", text_type_uuid},
               {"nullable", "false"},
-              {"column_uuid", metadata.column_uuid.canonical},
+              {"column_uuid", metadata.column_uuid},
               {"datatype_descriptor_uuid",
                "019d0000-0000-7000-8000-00000000d718"},
               {"datatype_descriptor_generation", "1"},
@@ -668,8 +668,8 @@ bool ExactBoundVectorOutputDescriptors(
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     const auto type_uuid = ExactBoundVectorCoreTypeUuid(kTypes[index]);
-    if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid.canonical) ||
-        !descriptor_uuids.insert(descriptor.descriptor_uuid.canonical).second ||
+    if (!CanonicalBoundVectorUuid(descriptor.descriptor_uuid) ||
+        !descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
         descriptor.descriptor_kind != "scalar" || type_uuid.empty() ||
         descriptor.canonical_type_name != kTypes[index] ||
         !ExactBoundVectorDescriptorFields(
@@ -883,25 +883,25 @@ bool BoundVectorCarrierContextMatches(
              request.selected_capability_uuid &&
          carrier.database_identity ==
              EngineNoSqlProviderDatabaseIdentity(context) &&
-         carrier.database_uuid == context.database_uuid.canonical &&
+         carrier.database_uuid == context.database_uuid &&
          carrier.collection_uuid == request.collection_uuid &&
          carrier.vector_ann_base_relation_uuid == request.collection_uuid &&
          carrier.vector_ann_metric_id == BoundVectorMetricName(request.metric) &&
-         carrier.vector_ann_statement_uuid == context.statement_uuid.canonical &&
+         carrier.vector_ann_statement_uuid == context.statement_uuid &&
          carrier.vector_ann_statement_snapshot_uuid ==
-             context.statement_snapshot_uuid.canonical &&
+             context.statement_snapshot_uuid &&
          carrier.vector_ann_statement_metadata_snapshot_uuid ==
-             context.statement_metadata_snapshot_uuid.canonical &&
+             context.statement_metadata_snapshot_uuid &&
          carrier.vector_ann_owning_transaction_uuid ==
-             context.transaction_uuid.canonical &&
+             context.transaction_uuid &&
          carrier.vector_ann_local_transaction_id ==
              context.local_transaction_id &&
          carrier.vector_ann_snapshot_visible_through_local_transaction_id ==
              context.snapshot_visible_through_local_transaction_id &&
          carrier.vector_ann_security_context_uuid ==
-             context.authorization_context.authority_uuid.canonical &&
+             context.authorization_context.authority_uuid &&
          carrier.vector_ann_catalog_epoch_uuid ==
-             context.catalog_epoch_uuid.canonical &&
+             context.catalog_epoch_uuid &&
          carrier.security_epoch == context.security_epoch &&
          carrier.catalog_epoch == context.catalog_generation_id &&
          carrier.vector_ann_exact_fallback_available &&
@@ -927,13 +927,13 @@ bool BoundVectorCarrierDescriptorMatches(
     const MgaRelationStorageDescriptor& descriptor) {
   const auto& embedding = descriptor.columns.front();
   return carrier.vector_ann_relation_descriptor_uuid ==
-             descriptor.descriptor_uuid.canonical &&
+             descriptor.descriptor_uuid &&
          carrier.vector_ann_relation_descriptor_generation ==
              descriptor.descriptor_generation &&
          carrier.vector_ann_embedding_column_uuid ==
-             embedding.column_uuid.canonical &&
+             embedding.column_uuid &&
          carrier.vector_ann_embedding_descriptor_uuid ==
-             embedding.value_descriptor.descriptor_uuid.canonical &&
+             embedding.value_descriptor.descriptor_uuid &&
          carrier.vector_ann_embedding_type_uuid ==
              BoundVectorTypeUuid(embedding.value_descriptor) &&
          carrier.vector_ann_dimension == 3 &&
@@ -1115,9 +1115,9 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
   const auto preflight = LoadMgaRelationStorageDescriptor(
       request.context, request.collection_uuid);
   if (!preflight.ok ||
-      preflight.descriptor.database_uuid.canonical !=
-          request.context.database_uuid.canonical ||
-      preflight.descriptor.descriptor_uuid.canonical !=
+      preflight.descriptor.database_uuid !=
+          request.context.database_uuid ||
+      preflight.descriptor.descriptor_uuid !=
           request.expected_descriptor_uuid ||
       preflight.descriptor.descriptor_generation !=
           request.expected_descriptor_generation ||
@@ -1184,8 +1184,8 @@ EngineBoundVectorReadResultV1 EngineBoundVectorReadV1(
   }
   if (!ExactBoundVectorStorageDescriptorV1(read.descriptor,
                                            request.collection_uuid) ||
-      read.descriptor.descriptor_uuid.canonical !=
-          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_uuid !=
+          preflight.descriptor.descriptor_uuid ||
       read.descriptor.descriptor_generation !=
           preflight.descriptor.descriptor_generation) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",

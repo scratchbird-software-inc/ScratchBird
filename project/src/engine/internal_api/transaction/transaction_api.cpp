@@ -136,8 +136,8 @@ TransactionInventoryGuardRegistry() {
 
 struct StatementSnapshotBinding {
   std::string database_path;
-  std::string statement_uuid;
-  std::string snapshot_uuid;
+  EngineUuid statement_uuid;
+  EngineUuid snapshot_uuid;
   TypedUuid owning_transaction_uuid;
   LocalTransactionId owning_transaction;
 };
@@ -147,21 +147,23 @@ std::mutex& StatementSnapshotBindingRegistryMutex() {
   return mutex;
 }
 
-std::map<std::string, StatementSnapshotBinding>&
+using StatementSnapshotKey = std::pair<std::string, std::array<std::uint8_t, 16>>;
+
+std::map<StatementSnapshotKey, StatementSnapshotBinding>&
 StatementSnapshotBindingRegistry() {
-  static std::map<std::string, StatementSnapshotBinding> registry;
+  static std::map<StatementSnapshotKey, StatementSnapshotBinding> registry;
   return registry;
 }
 
-std::string StatementSnapshotBindingKey(const std::string& database_path,
-                                        const std::string& snapshot_uuid) {
-  return database_path + '\x1f' + snapshot_uuid;
+StatementSnapshotKey StatementSnapshotBindingKey(const std::string& database_path,
+                                                 const EngineUuid& snapshot_uuid) {
+  return {database_path, snapshot_uuid.bytes};
 }
 
 bool RegisterStatementSnapshotBinding(StatementSnapshotBinding binding) {
   std::lock_guard<std::mutex> guard(StatementSnapshotBindingRegistryMutex());
   auto& registry = StatementSnapshotBindingRegistry();
-  const std::string key = StatementSnapshotBindingKey(binding.database_path,
+  const auto key = StatementSnapshotBindingKey(binding.database_path,
                                                       binding.snapshot_uuid);
   if (registry.find(key) != registry.end()) {
     return false;
@@ -178,7 +180,7 @@ bool RegisterStatementSnapshotBinding(StatementSnapshotBinding binding) {
 
 std::optional<StatementSnapshotBinding> FindStatementSnapshotBinding(
     const std::string& database_path,
-    const std::string& snapshot_uuid) {
+    const EngineUuid& snapshot_uuid) {
   std::lock_guard<std::mutex> guard(StatementSnapshotBindingRegistryMutex());
   const auto found = StatementSnapshotBindingRegistry().find(
       StatementSnapshotBindingKey(database_path, snapshot_uuid));
@@ -493,12 +495,12 @@ ExactTransactionIdentityLookup FindExactTransactionIdentity(
     const LocalTransactionInventory& inventory,
     const EngineRequestContext& context) {
   ExactTransactionIdentityLookup result;
-  if (context.transaction_uuid.canonical.empty()) {
+  if (context.transaction_uuid.is_nil()) {
     result.refusal_reason = "transaction_uuid_required";
     return result;
   }
-  const auto parsed = ParseTypedUuid(
-      UuidKind::transaction, context.transaction_uuid.canonical);
+  const auto parsed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::transaction, context.transaction_uuid);
   if (!parsed.ok()) {
     result.refusal_reason = "transaction_uuid_malformed";
     return result;
@@ -525,10 +527,10 @@ void ClassifyCommitRefusalBeforeInventoryMutation(
   result->engine_finality_known = true;
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = 0;
-  result->transaction_uuid.canonical.clear();
+  result->transaction_uuid = {};
   if (exact_entry != nullptr) {
     result->local_transaction_id = exact_entry->identity.local_id.value;
-    result->transaction_uuid.canonical =
+    result->transaction_uuid =
         UuidToString(exact_entry->identity.transaction_uuid.value);
   }
   result->evidence.push_back(
@@ -546,10 +548,10 @@ void ClassifyRollbackRefusalBeforeInventoryMutation(
   result->engine_finality_known = true;
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = 0;
-  result->transaction_uuid.canonical.clear();
+  result->transaction_uuid = {};
   if (exact_entry != nullptr) {
     result->local_transaction_id = exact_entry->identity.local_id.value;
-    result->transaction_uuid.canonical =
+    result->transaction_uuid =
         UuidToString(exact_entry->identity.transaction_uuid.value);
   }
   result->evidence.push_back(
@@ -568,7 +570,7 @@ void ClassifyCommitInventoryPersistenceOutcomeUnknown(
   result->engine_finality_known = false;
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = exact_entry.identity.local_id.value;
-  result->transaction_uuid.canonical =
+  result->transaction_uuid =
       UuidToString(exact_entry.identity.transaction_uuid.value);
   result->evidence.push_back(
       {"mga_finality_state", "inventory_persistence_outcome_unknown"});
@@ -586,7 +588,7 @@ void ClassifyRollbackInventoryPersistenceOutcomeUnknown(
   result->engine_finality_known = false;
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = exact_entry.identity.local_id.value;
-  result->transaction_uuid.canonical =
+  result->transaction_uuid =
       UuidToString(exact_entry.identity.transaction_uuid.value);
   result->evidence.push_back(
       {"mga_finality_state", "inventory_persistence_outcome_unknown"});
@@ -737,7 +739,7 @@ CommitDurabilityBatchDecision EvaluateCommitDurabilityBatching(
           : std::filesystem::path(scratch);
   batch.database_uuid = ParseOrGenerateTypedUuid(
       UuidKind::database,
-      request.context.database_uuid.canonical,
+      request.context.database_uuid,
       request.context.local_transaction_id + 1000);
   batch.filespace_uuid = ParseOrGenerateTypedUuid(
       UuidKind::filespace,
@@ -746,9 +748,9 @@ CommitDurabilityBatchDecision EvaluateCommitDurabilityBatching(
       request.context.local_transaction_id + 2000);
   batch.transaction_uuid = ParseOrGenerateTypedUuid(
       UuidKind::transaction,
-      request.context.transaction_uuid.canonical.empty()
+      request.context.transaction_uuid.is_nil()
           ? UuidToString(committing_entry.identity.transaction_uuid.value)
-          : request.context.transaction_uuid.canonical,
+          : request.context.transaction_uuid,
       request.context.local_transaction_id + 3000);
   batch.local_transaction_id = request.context.local_transaction_id;
   batch.batching_generation = RequestOptionU64(
@@ -1024,9 +1026,9 @@ EngineApiDiagnostic ValidateLockControlContext(const EngineApiRequest& request,
   if (!request.context.security_context_present) {
     return DblcTransactionAdmissionDenied("security_context_required");
   }
-  if (request.context.session_uuid.canonical.empty() ||
-      request.context.principal_uuid.canonical.empty() ||
-      request.context.database_uuid.canonical.empty()) {
+  if (request.context.session_uuid.is_nil() ||
+      request.context.principal_uuid.is_nil() ||
+      request.context.database_uuid.is_nil()) {
     return DblcTransactionAdmissionDenied("session_principal_database_identity_required");
   }
   if (request.context.local_transaction_id == 0) {
@@ -1118,7 +1120,7 @@ std::string NamedLockResourceKey(const EngineApiRequest& request) {
   if (descriptor.empty()) descriptor = RequestOptionValue(request, "lock_name:");
   descriptor = DecodeSbsqlStringLiteral(std::move(descriptor));
   if (descriptor.empty()) return {};
-  std::string database = request.context.database_uuid.canonical;
+  std::string database = request.context.database_uuid;
   if (database.empty()) database = "database:unknown";
   return "named:" + database + ":" + descriptor;
 }
@@ -1209,12 +1211,12 @@ EngineApiDiagnostic ValidateBeginTransactionAdmission(const EngineBeginTransacti
   if (!context.security_context_present) {
     return DblcTransactionAdmissionDenied("security_context_required");
   }
-  if (context.session_uuid.canonical.empty() ||
-      context.principal_uuid.canonical.empty() ||
-      context.database_uuid.canonical.empty()) {
+  if (context.session_uuid.is_nil() ||
+      context.principal_uuid.is_nil() ||
+      context.database_uuid.is_nil()) {
     return DblcTransactionAdmissionDenied("session_principal_database_identity_required");
   }
-  if (context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty()) {
+  if (context.local_transaction_id != 0 || !context.transaction_uuid.is_nil()) {
     return DblcTransactionAdmissionDenied("active_transaction_already_bound");
   }
   if (context.catalog_generation_id == 0 ||
@@ -1278,16 +1280,16 @@ EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
         operation_id,
         DblcTransactionAdmissionDenied("security_context_required"));
   }
-  if (request.context.session_uuid.canonical.empty() ||
-      request.context.principal_uuid.canonical.empty() ||
-      request.context.database_uuid.canonical.empty()) {
+  if (request.context.session_uuid.is_nil() ||
+      request.context.principal_uuid.is_nil() ||
+      request.context.database_uuid.is_nil()) {
     return MakeTxnError<EngineSetTransactionCharacteristicsResult>(
         request.context,
         operation_id,
         DblcTransactionAdmissionDenied("session_principal_database_identity_required"));
   }
   if (request.context.local_transaction_id != 0 ||
-      !request.context.transaction_uuid.canonical.empty()) {
+      !request.context.transaction_uuid.is_nil()) {
     return MakeTxnError<EngineSetTransactionCharacteristicsResult>(
         request.context,
         operation_id,
@@ -1326,7 +1328,7 @@ EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
   result.evidence.push_back({"mga_authority", "session_default_only_no_finality"});
   result.evidence.push_back({"parser_finality", "false"});
   if (request.context.local_transaction_id != 0 ||
-      !request.context.transaction_uuid.canonical.empty()) {
+      !request.context.transaction_uuid.is_nil()) {
     result.evidence.push_back({"active_transaction_context", "preserved"});
   }
   if (const auto surface_id = RequestOptionValue(request, "sbsfc080_surface_id:");
@@ -1454,18 +1456,29 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
                           "mga.transaction_lifecycle.begin_failed"));
   }
 
+  EngineTransactionInventoryObservation observation;
+  observation.transaction_uuid = begun.entry.identity.transaction_uuid.value.bytes;
+  observation.local_transaction_id = begun.entry.identity.local_id.value;
+  observation.snapshot_visible_through_local_transaction_id =
+      MaxCommittedLocalTransactionId(loaded.inventory);
+  observation.transaction_timestamp = transaction_timestamp;
+  observation.state = EngineTransactionInventoryState::unknown;
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory);
   if (!persisted.ok()) {
-    return MakeTxnError<EngineBeginTransactionResult>(
+    auto result = MakeTxnError<EngineBeginTransactionResult>(
         request.context,
         operation_id,
         DiagnosticFromMGA(persisted.diagnostic,
                           "SB-MGA-TXN-INV-PERSIST-FAILED",
                           "mga.transaction_inventory.persist_failed"));
+    result.inventory_observation = std::move(observation);
+    return result;
   }
 
   auto result = MakeTxnOk<EngineBeginTransactionResult>(request.context, operation_id);
-  result.transaction_uuid.canonical = UuidToString(begun.entry.identity.transaction_uuid.value);
+  observation.state = EngineTransactionInventoryState::active;
+  result.inventory_observation = std::move(observation);
+  result.transaction_uuid = begun.entry.identity.transaction_uuid.value;
   result.local_transaction_id = begun.entry.identity.local_id.value;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
@@ -1513,9 +1526,9 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
         request.context, operation_id, path_status);
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty() ||
-      request.context.statement_uuid.canonical.empty() ||
-      !request.context.statement_snapshot_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil() ||
+      request.context.statement_uuid.is_nil() ||
+      !request.context.statement_snapshot_uuid.is_nil()) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
         request.context,
         operation_id,
@@ -1523,8 +1536,8 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
             operation_id,
             "active_transaction_and_unbound_statement_snapshot_required"));
   }
-  const auto statement_uuid = ParseTypedUuid(
-      UuidKind::object, request.context.statement_uuid.canonical);
+  const auto statement_uuid = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, request.context.statement_uuid);
   if (!statement_uuid.ok()) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
         request.context,
@@ -1553,8 +1566,7 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
         MakeInvalidRequestDiagnostic(operation_id,
                                      exact_identity.refusal_reason));
   }
-  const std::string canonical_statement_uuid =
-      UuidToString(statement_uuid.value.value);
+  const auto canonical_statement_uuid = statement_uuid.value.value;
   if (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
       !PrepareDmlDeleteTransactionFinalityV1(request.context)) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(request.context, operation_id,
@@ -1572,8 +1584,7 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
                           "SB-MGA-SNAPSHOT-VECTOR-PUBLISH-FAILED",
                           "mga.snapshot_vector.publish_failed"));
   }
-  const std::string snapshot_uuid =
-      UuidToString(published.descriptor.snapshot_uuid.value);
+  const auto snapshot_uuid = published.descriptor.snapshot_uuid.value;
   if (!RegisterStatementSnapshotBinding(
           {request.context.database_path,
            canonical_statement_uuid,
@@ -1590,8 +1601,8 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
 
   auto result = MakeTxnOk<EnginePublishStatementSnapshotResult>(
       request.context, operation_id);
-  result.statement_uuid.canonical = canonical_statement_uuid;
-  result.statement_snapshot_uuid.canonical = snapshot_uuid;
+  result.statement_uuid = canonical_statement_uuid;
+  result.statement_snapshot_uuid = snapshot_uuid;
   result.snapshot_vector = std::move(published.descriptor);
   result.transaction_uuid = request.context.transaction_uuid;
   result.local_transaction_id = request.context.local_transaction_id;
@@ -1624,9 +1635,9 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
         request.context, operation_id, path_status);
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty() ||
-      request.context.statement_uuid.canonical.empty() ||
-      request.context.statement_snapshot_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil() ||
+      request.context.statement_uuid.is_nil() ||
+      request.context.statement_snapshot_uuid.is_nil()) {
     return MakeTxnError<EngineResolveStatementSnapshotResult>(
         request.context,
         operation_id,
@@ -1634,12 +1645,12 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
             operation_id,
             "complete_statement_snapshot_binding_required"));
   }
-  const auto statement_uuid = ParseTypedUuid(
-      UuidKind::object, request.context.statement_uuid.canonical);
-  const auto snapshot_uuid = ParseTypedUuid(
-      UuidKind::object, request.context.statement_snapshot_uuid.canonical);
-  const auto transaction_uuid = ParseTypedUuid(
-      UuidKind::transaction, request.context.transaction_uuid.canonical);
+  const auto statement_uuid = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, request.context.statement_uuid);
+  const auto snapshot_uuid = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::object, request.context.statement_snapshot_uuid);
+  const auto transaction_uuid = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
+      UuidKind::transaction, request.context.transaction_uuid);
   if (!statement_uuid.ok() || !snapshot_uuid.ok() ||
       !transaction_uuid.ok()) {
     return MakeTxnError<EngineResolveStatementSnapshotResult>(
@@ -1648,10 +1659,8 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
         MakeInvalidRequestDiagnostic(operation_id,
                                      "statement_snapshot_binding_malformed"));
   }
-  const std::string canonical_statement_uuid =
-      UuidToString(statement_uuid.value.value);
-  const std::string canonical_snapshot_uuid =
-      UuidToString(snapshot_uuid.value.value);
+  const auto canonical_statement_uuid = statement_uuid.value.value;
+  const auto canonical_snapshot_uuid = snapshot_uuid.value.value;
   const auto binding = FindStatementSnapshotBinding(
       request.context.database_path, canonical_snapshot_uuid);
   if (!binding.has_value() ||
@@ -1742,8 +1751,8 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
 
   auto result = MakeTxnOk<EngineResolveStatementSnapshotResult>(
       request.context, operation_id);
-  result.statement_uuid.canonical = canonical_statement_uuid;
-  result.statement_snapshot_uuid.canonical = canonical_snapshot_uuid;
+  result.statement_uuid = canonical_statement_uuid;
+  result.statement_snapshot_uuid = canonical_snapshot_uuid;
   result.snapshot_vector = std::move(resolved.descriptor);
   result.transaction_uuid = request.context.transaction_uuid;
   result.local_transaction_id = request.context.local_transaction_id;
@@ -1890,7 +1899,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                             "commit_fence",
                             "phase=before_inventory_commit"));
     result.local_transaction_id = committing_entry->identity.local_id.value;
-    result.transaction_uuid.canonical =
+    result.transaction_uuid =
         UuidToString(committing_entry->identity.transaction_uuid.value);
     static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
     static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
@@ -1971,7 +1980,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       committed.entry.identity.local_id);
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
   result.local_transaction_id = committed.entry.identity.local_id.value;
-  result.transaction_uuid.canonical = UuidToString(committed.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = UuidToString(committed.entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.commit_finality_state = "committed_by_engine_inventory";
@@ -2044,7 +2053,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   EngineBeginTransactionRequest replacement_begin;
   replacement_begin.context = request.context;
   replacement_begin.context.local_transaction_id = 0;
-  replacement_begin.context.transaction_uuid.canonical.clear();
+  replacement_begin.context.transaction_uuid = {};
   replacement_begin.isolation_level = request.replacement_isolation_level;
   replacement_begin.transaction_policy_profile = request.transaction_policy_profile;
   const auto admission_status = ValidateBeginTransactionAdmission(replacement_begin);
@@ -2349,7 +2358,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
 
   auto result = MakeTxnOk<EngineAutocommitBoundaryResult>(request.context, operation_id);
   result.local_transaction_id = finalized_entry.identity.local_id.value;
-  result.transaction_uuid.canonical =
+  result.transaction_uuid =
       UuidToString(finalized_entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id =
       result.local_transaction_id;
@@ -2360,7 +2369,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   result.engine_finality_known = true;
   result.post_inventory_secondary_failure = false;
   result.replacement_local_transaction_id = begun.entry.identity.local_id.value;
-  result.replacement_transaction_uuid.canonical =
+  result.replacement_transaction_uuid =
       UuidToString(begun.entry.identity.transaction_uuid.value);
   result.replacement_snapshot_visible_through_local_transaction_id =
       MaxCommittedLocalTransactionId(finalized_inventory);
@@ -2385,7 +2394,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   result.evidence.push_back({"replacement_snapshot_visible_through_local_transaction_id",
                              std::to_string(result.replacement_snapshot_visible_through_local_transaction_id)});
   result.evidence.push_back({"replacement_transaction_uuid",
-                             result.replacement_transaction_uuid.canonical});
+                             result.replacement_transaction_uuid});
   result.evidence.push_back({"replacement_transaction_timestamp",
                              replacement_timestamp});
   result.evidence.push_back({"replacement_transaction_isolation_level", isolation});
@@ -2514,7 +2523,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
                             "rollback_fence",
                             "phase=before_inventory_rollback"));
     result.local_transaction_id = rollback_entry->identity.local_id.value;
-    result.transaction_uuid.canonical =
+    result.transaction_uuid =
         UuidToString(rollback_entry->identity.transaction_uuid.value);
     static_cast<EngineApiResult&>(result).local_transaction_id =
         result.local_transaction_id;
@@ -2573,7 +2582,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
               "phase=after_inventory_rollback_before_secondary_cleanup"));
       result.local_transaction_id =
           rolled_back.entry.identity.local_id.value;
-      result.transaction_uuid.canonical = UuidToString(
+      result.transaction_uuid = UuidToString(
           rolled_back.entry.identity.transaction_uuid.value);
       static_cast<EngineApiResult&>(result).local_transaction_id =
           result.local_transaction_id;
@@ -2605,7 +2614,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
           rolled_back_deltas);
       result.local_transaction_id =
           rolled_back.entry.identity.local_id.value;
-      result.transaction_uuid.canonical = UuidToString(
+      result.transaction_uuid = UuidToString(
           rolled_back.entry.identity.transaction_uuid.value);
       static_cast<EngineApiResult&>(result).local_transaction_id =
           result.local_transaction_id;
@@ -2626,7 +2635,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   }
   auto result = MakeTxnOk<EngineRollbackTransactionResult>(request.context, operation_id);
   result.local_transaction_id = rolled_back.entry.identity.local_id.value;
-  result.transaction_uuid.canonical = UuidToString(rolled_back.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = UuidToString(rolled_back.entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.rollback_finality_state = "rolled_back_by_engine_inventory";
@@ -2665,14 +2674,14 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
         operation_id,
         path_status);
   }
-  if (request.context.session_uuid.canonical.empty()) {
+  if (request.context.session_uuid.is_nil()) {
     return MakeTxnError<EngineCleanupTemporarySessionResult>(
         request.context,
         operation_id,
         MakeInvalidRequestDiagnostic(operation_id, "session_uuid_required"));
   }
   if (request.context.local_transaction_id != 0 ||
-      !request.context.transaction_uuid.canonical.empty()) {
+      !request.context.transaction_uuid.is_nil()) {
     return MakeTxnError<EngineCleanupTemporarySessionResult>(
         request.context,
         operation_id,
@@ -2683,7 +2692,7 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
   EngineBeginTransactionRequest begin;
   begin.context = request.context;
   begin.context.local_transaction_id = 0;
-  begin.context.transaction_uuid.canonical.clear();
+  begin.context.transaction_uuid = {};
   begin.context.snapshot_visible_through_local_transaction_id = 0;
   begin.context.transaction_timestamp.clear();
   begin.isolation_level = request.context.transaction_isolation_level;
@@ -2694,13 +2703,16 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
       "transaction_read_mode:read_write");
   auto begun = EngineBeginTransaction(begin);
   if (!begun.ok) {
-    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+    auto result = MakeTxnError<EngineCleanupTemporarySessionResult>(
         request.context,
         operation_id,
         begun.diagnostics.empty()
             ? MakeInvalidRequestDiagnostic(operation_id,
                                            "cleanup_transaction_begin_failed")
             : begun.diagnostics.front());
+    result.cleanup_transaction = std::move(begun.inventory_observation);
+    result.cleanup_local_transaction_id = result.cleanup_transaction.local_transaction_id;
+    return result;
   }
 
   auto cleanup_context = request.context;
@@ -2708,7 +2720,19 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
   cleanup_context.transaction_uuid = begun.transaction_uuid;
   cleanup_context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  cleanup_context.transaction_timestamp = CurrentUtcTimestampText();
+  cleanup_context.transaction_timestamp = begun.inventory_observation.transaction_timestamp;
+
+  const auto failure = [&](const EngineApiDiagnostic& diagnostic,
+                           EngineTransactionInventoryState state,
+                           bool secondary_failure = false) {
+    auto result = MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context, operation_id, diagnostic);
+    result.cleanup_transaction = begun.inventory_observation;
+    result.cleanup_transaction.state = state;
+    result.cleanup_transaction.post_inventory_secondary_failure = secondary_failure;
+    result.cleanup_local_transaction_id = result.cleanup_transaction.local_transaction_id;
+    return result;
+  };
 
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
@@ -2722,30 +2746,45 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
   if (cleanup.error) {
     EngineRollbackTransactionRequest rollback;
     rollback.context = cleanup_context;
-    (void)EngineRollbackTransaction(rollback);
-    return MakeTxnError<EngineCleanupTemporarySessionResult>(
-        request.context,
-        operation_id,
-        cleanup);
+    rollback.option_envelopes = request.option_envelopes;
+    const auto rolled_back = EngineRollbackTransaction(rollback);
+    const auto state = !rolled_back.engine_finality_known
+        ? EngineTransactionInventoryState::unknown
+        : (rolled_back.ok || rolled_back.post_inventory_secondary_failure
+               ? EngineTransactionInventoryState::rolled_back
+               : EngineTransactionInventoryState::not_applied);
+    auto result = failure(cleanup, state, rolled_back.post_inventory_secondary_failure);
+    if (!rolled_back.ok) {
+      result.diagnostics.insert(result.diagnostics.end(),
+                                rolled_back.diagnostics.begin(), rolled_back.diagnostics.end());
+    }
+    return result;
   }
 
   EngineCommitTransactionRequest commit;
   commit.context = cleanup_context;
+  commit.option_envelopes = request.option_envelopes;
   const auto committed = EngineCommitTransaction(commit);
   if (!committed.ok) {
-    return MakeTxnError<EngineCleanupTemporarySessionResult>(
-        request.context,
-        operation_id,
+    const auto state = !committed.engine_finality_known
+        ? EngineTransactionInventoryState::unknown
+        : (committed.post_inventory_secondary_failure
+               ? EngineTransactionInventoryState::committed
+               : EngineTransactionInventoryState::not_applied);
+    return failure(
         committed.diagnostics.empty()
             ? MakeInvalidRequestDiagnostic(operation_id,
                                            "cleanup_transaction_commit_failed")
-            : committed.diagnostics.front());
+            : committed.diagnostics.front(),
+        state, committed.post_inventory_secondary_failure);
   }
 
   auto result = MakeTxnOk<EngineCleanupTemporarySessionResult>(
       request.context,
       operation_id);
   result.cleanup_local_transaction_id = cleanup_context.local_transaction_id;
+  result.cleanup_transaction = std::move(begun.inventory_observation);
+  result.cleanup_transaction.state = EngineTransactionInventoryState::committed;
   result.temporary_deleted_rows = temporary_deleted_rows;
   result.temporary_reclaimed_large_values = temporary_reclaimed_large_values;
   result.temporary_retired_private_metadata = temporary_retired_private_metadata;
@@ -2758,7 +2797,7 @@ EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
   result.evidence.push_back({"temporary_session_cleanup_transaction_state",
                              "committed"});
   result.evidence.push_back({"temporary_session_cleanup_session_uuid",
-                             request.context.session_uuid.canonical});
+                             request.context.session_uuid});
   return result;
 }
 
@@ -2838,7 +2877,7 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
   }
   auto result = MakeTxnOk<EnginePrepareTransactionResult>(request.context, operation_id);
   result.local_transaction_id = prepared.entry.identity.local_id.value;
-  result.transaction_uuid.canonical = UuidToString(prepared.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = UuidToString(prepared.entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.evidence.push_back({"transaction_state", "prepared"});

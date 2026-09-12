@@ -539,8 +539,8 @@ bool ValidateFiniteScalarMatrix() {
       const auto short_validation = exec::ValidateDescriptorBatch(short_payload);
       passed &= Require(
           !text_validation.ok && !short_validation.ok &&
-              text_validation.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
-              short_validation.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+              text_validation.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
+              short_validation.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
               text_validation.column_index == index &&
               short_validation.column_index == index,
           "canonical INT128 admitted text or a non-16-byte payload");

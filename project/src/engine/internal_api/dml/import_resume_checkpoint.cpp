@@ -32,7 +32,7 @@ bool OneOf(const std::string& value, std::initializer_list<const char*> allowed)
 }
 
 bool TargetPresent(const EngineObjectReference& target) {
-  return !target.uuid.canonical.empty();
+  return !target.uuid.is_nil();
 }
 
 EngineNormalizeImportCheckpointResult CheckpointFailure(const std::string& detail) {
@@ -61,7 +61,7 @@ EngineNormalizeImportCheckpointResult EngineNormalizeImportCheckpointModel(
   if (!request.localized_names.empty()) {
     return CheckpointFailure("localized_names_not_allowed_engine_boundary");
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return CheckpointFailure("target_table_uuid_required");
   }
   if (!OneOf(policy.checkpoint_mode, {"disabled", "periodic_rows", "periodic_bytes", "periodic_time", "manual"})) {
@@ -130,9 +130,9 @@ EngineNormalizeImportCheckpointResult EngineNormalizeImportCheckpointModel(
   result.evidence.push_back({"import_resume_policy", policy.resume_policy});
   result.evidence.push_back({"import_replay_policy", policy.replay_policy});
   result.evidence.push_back({"import_failure_action", policy.failure_action});
-  result.evidence.push_back({"target_object_uuid", request.target_table.uuid.canonical});
+  result.evidence.push_back({"target_object_uuid", request.target_table.uuid});
   if (target_present) {
-    result.evidence.push_back({"checkpoint_target_uuid", policy.checkpoint_target.uuid.canonical});
+    result.evidence.push_back({"checkpoint_target_uuid", policy.checkpoint_target.uuid});
   }
   if (!request.source_fingerprint.empty()) {
     result.evidence.push_back({"source_fingerprint", request.source_fingerprint});

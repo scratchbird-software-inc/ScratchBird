@@ -33,23 +33,23 @@ struct SbpsClientChannelState;
 
 struct CursorStreamDescriptorV1 {
   bool present{false};
-  std::string stream_descriptor_uuid;
+  scratchbird::core::platform::Uuid stream_descriptor_uuid;
   std::uint16_t descriptor_version{0};
   std::uint64_t descriptor_generation{0};
-  std::string cursor_uuid;
-  std::string execution_uuid;
-  std::string result_set_uuid;
-  std::string row_descriptor_uuid;
-  std::string snapshot_uuid;
+  scratchbird::core::platform::Uuid cursor_uuid;
+  scratchbird::core::platform::Uuid execution_uuid;
+  scratchbird::core::platform::Uuid result_set_uuid;
+  scratchbird::core::platform::Uuid row_descriptor_uuid;
+  scratchbird::core::platform::Uuid snapshot_uuid;
   std::uint64_t max_chunk_rows{0};
   std::uint64_t max_chunk_bytes{0};
 
   [[nodiscard]] bool complete() const {
-    return present && !stream_descriptor_uuid.empty() &&
+    return present && !stream_descriptor_uuid.is_nil() &&
            descriptor_version == 1 && descriptor_generation != 0 &&
-           !cursor_uuid.empty() && !execution_uuid.empty() &&
-           !result_set_uuid.empty() && !row_descriptor_uuid.empty() &&
-           !snapshot_uuid.empty() && max_chunk_rows != 0 &&
+           !cursor_uuid.is_nil() && !execution_uuid.is_nil() &&
+           !result_set_uuid.is_nil() && !row_descriptor_uuid.is_nil() &&
+           !snapshot_uuid.is_nil() && max_chunk_rows != 0 &&
            max_chunk_bytes != 0;
   }
 };
@@ -57,7 +57,7 @@ struct CursorStreamDescriptorV1 {
 struct ServerExecutionResult {
   bool accepted{false};
   std::string operation_id;
-  std::string cursor_uuid;
+  scratchbird::core::platform::Uuid cursor_uuid;
   std::uint64_t row_count{0};
   std::uint64_t affected_rows{0};
   bool affected_rows_present{false};
@@ -66,7 +66,7 @@ struct ServerExecutionResult {
   bool transaction_state_present{false};
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
   // SBPS V2 transaction outcome.  These fields are explicit so a compatibility
   // bridge never infers finality or a retaining replacement from free-form
@@ -97,7 +97,7 @@ struct ServerPrepareSblrResult {
   // retrying or guessing from diagnostics.
   bool outcome_unknown{false};
   bool caller_cleanup_required{false};
-  std::string prepared_statement_uuid;
+  scratchbird::core::platform::Uuid prepared_statement_uuid;
   std::string operation_id;
   std::string detail;
   MessageVectorSet messages;
@@ -105,7 +105,7 @@ struct ServerPrepareSblrResult {
 
 struct ServerFetchResult {
   bool accepted{false};
-  std::string cursor_uuid;
+  scratchbird::core::platform::Uuid cursor_uuid;
   std::uint64_t row_count{0};
   std::string row_packet;
   std::string detail;
@@ -121,7 +121,7 @@ struct ServerCloseCursorResult {
   bool outcome_unknown{false};
   bool caller_cleanup_required{false};
   bool route_fatal{false};
-  std::string cursor_uuid;
+  scratchbird::core::platform::Uuid cursor_uuid;
   std::string detail;
   MessageVectorSet messages;
 };
@@ -131,7 +131,7 @@ struct ServerClosePreparedSblrResult {
   bool outcome_unknown{false};
   bool caller_cleanup_required{false};
   bool route_fatal{false};
-  std::string prepared_statement_uuid;
+  scratchbird::core::platform::Uuid prepared_statement_uuid;
   std::string detail;
   MessageVectorSet messages;
 };
@@ -188,13 +188,13 @@ struct ServerBulkImportSealResult {
 };
 
 struct VariableFrameCoordination {
-  std::string public_coordination_uuid;
-  std::string operation_uuid;
+  scratchbird::core::platform::Uuid public_coordination_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
   std::uint64_t coordinator_generation{0};
   std::uint64_t frame_generation{0};
 
   [[nodiscard]] bool present() const {
-    return !public_coordination_uuid.empty() && !operation_uuid.empty() &&
+    return !public_coordination_uuid.is_nil() && !operation_uuid.is_nil() &&
            coordinator_generation != 0 && frame_generation != 0;
   }
 };
@@ -208,12 +208,12 @@ enum class ParameterExecutionMode : std::uint8_t {
 
 struct ParameterExecutionCoordination {
   ParameterExecutionMode mode{ParameterExecutionMode::kDirect};
-  std::string public_coordination_uuid;
-  std::string operation_uuid;
+  scratchbird::core::platform::Uuid public_coordination_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
   std::uint64_t coordinator_generation{0};
 
   [[nodiscard]] bool present() const {
-    return !public_coordination_uuid.empty() && !operation_uuid.empty() &&
+    return !public_coordination_uuid.is_nil() && !operation_uuid.is_nil() &&
            coordinator_generation != 0;
   }
 };
@@ -235,9 +235,9 @@ struct PreparedParameterSlotReference {
 };
 
 struct PreparedParameterReference {
-  std::string prepared_statement_uuid;
+  scratchbird::core::platform::Uuid prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
-  std::string operation_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
   std::uint64_t coordination_generation{0};
   // Retained only from the authenticated SBPG/SBPA preparation exchange.
   // These values are not encoded into the public 56-byte prepared reference;
@@ -262,8 +262,8 @@ struct PreparedParameterReference {
       return std::any_of(value.begin(), value.end(),
                          [](std::uint8_t byte) { return byte != 0; });
     };
-    return !prepared_statement_uuid.empty() && prepared_generation != 0 &&
-           !operation_uuid.empty() && coordination_generation != 0 &&
+    return !prepared_statement_uuid.is_nil() && prepared_generation != 0 &&
+           !operation_uuid.is_nil() && coordination_generation != 0 &&
            nonzero(parameter_set_uuid) && parameter_set_generation != 0 &&
            nonzero(ordered_slot_table_sha256) && !slots.empty() &&
            !canonical_parameter_admission.empty();
@@ -380,19 +380,19 @@ struct AuthCredentialEnvelope {
 // Compatibility families may render this canonical metadata, but no upstream
 // type ids, catalog ids, grammar policy, or presentation policy crosses SBPS.
 struct PublicRelationColumnDescriptor {
-  std::string column_uuid;
+  scratchbird::core::platform::Uuid column_uuid;
   std::uint32_t ordinal{0};
   std::string canonical_name_key;
-  std::string type_descriptor_uuid;
+  scratchbird::core::platform::Uuid type_descriptor_uuid;
   std::string type_descriptor_kind;
   std::string canonical_type_name;
   std::string encoded_type_descriptor;
   bool nullable{true};
   bool generated{false};
   bool identity_column{false};
-  std::string charset_uuid;
+  scratchbird::core::platform::Uuid charset_uuid;
   std::string charset_canonical_name;
-  std::string collation_uuid;
+  scratchbird::core::platform::Uuid collation_uuid;
   std::string collation_canonical_name;
   std::uint32_t character_length{0};
   std::uint32_t charset_min_bytes{0};
@@ -400,7 +400,7 @@ struct PublicRelationColumnDescriptor {
   bool charset_variable_width{false};
   bool datatype_identity_present{false};
   std::uint64_t datatype_descriptor_generation{0};
-  std::string datatype_type_uuid;
+  scratchbird::core::platform::Uuid datatype_type_uuid;
   std::uint64_t datatype_type_generation{0};
   std::string datatype_codec_id;
   std::uint16_t datatype_codec_version{0};
@@ -411,15 +411,15 @@ struct PublicRelationColumnDescriptor {
 
 struct PublicRelationDescriptor {
   bool present{false};
-  std::string descriptor_uuid;
-  std::string relation_uuid;
-  std::string schema_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
+  scratchbird::core::platform::Uuid schema_uuid;
   std::uint64_t descriptor_generation{0};
   // Exact current resource catalog epoch under which every projected
   // resource UUID was revalidated.  This is not represented as a claim that
   // the MGA relation-storage descriptor persisted this scalar epoch.
   std::uint64_t validated_resource_epoch{0};
-  std::string datatype_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
   std::vector<PublicRelationColumnDescriptor> columns;
@@ -430,9 +430,9 @@ struct PublicNameResolutionResult {
     bool present{false};
     std::string resource_family;
     std::string canonical_name;
-    std::string parent_resource_uuid;
+    scratchbird::core::platform::Uuid parent_resource_uuid;
     std::string parent_canonical_name;
-    std::string default_collation_uuid;
+    scratchbird::core::platform::Uuid default_collation_uuid;
     std::string default_collation_name;
     std::uint64_t resource_epoch{0};
     std::uint64_t family_epoch{0};
@@ -446,7 +446,7 @@ struct PublicNameResolutionResult {
   };
 
   bool resolved{false};
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::string canonical_name;
   std::string object_class;
   // Neutral engine-owned semantic detail returned by public name resolution.
@@ -572,7 +572,7 @@ class SbpsClient {
       const ParserClientConfig& config,
       const ParserTransactionSelector& transaction) const;
   PublicNameResolutionResult RenderUuidPublic(const ParserSessionContext& session,
-                                              std::string_view object_uuid) const;
+                                              const scratchbird::core::platform::Uuid& object_uuid) const;
   ServerStatementContextResult AcquireStatementContext(
       const ParserSessionContext& session,
       const ParserTransactionSelector& transaction) const;
@@ -582,9 +582,9 @@ class SbpsClient {
   ServerParameterCoordinationResult BeginParameterExecutionCoordination(
       const ParserSessionContext& session,
       ParameterExecutionMode mode,
-      std::string_view operation_uuid,
-      std::string_view public_prepared_uuid = {},
-      std::string_view public_dynamic_package_uuid = {}) const;
+      const scratchbird::core::platform::Uuid& operation_uuid,
+      const scratchbird::core::platform::Uuid& public_prepared_uuid = {},
+      const scratchbird::core::platform::Uuid& public_dynamic_package_uuid = {}) const;
   ServerStatementContextResult AcquireParameterStatementContext(
       const ParserSessionContext& session,
       const ParserTransactionSelector& transaction,
@@ -970,33 +970,33 @@ class SbpsClient {
       std::string_view encoded_sblr_envelope,
       const ParserTransactionSelector& transaction) const;
   ServerExecutionResult ExecutePreparedSblr(const ParserSessionContext& session,
-                                            std::string_view prepared_statement_uuid,
+                                            const scratchbird::core::platform::Uuid& prepared_statement_uuid,
                                             std::string_view encoded_sblr_envelope = {},
                                             const std::vector<std::uint8_t>& data_packet = {},
                                             bool cursor_requested = false) const;
   ServerExecutionResult ExecutePreparedSblrRouted(
       const ParserSessionContext& session,
-      std::string_view prepared_statement_uuid,
+      const scratchbird::core::platform::Uuid& prepared_statement_uuid,
       const ParserTransactionSelector& transaction,
       std::string_view encoded_sblr_envelope = {},
       const std::vector<std::uint8_t>& data_packet = {},
       bool cursor_requested = false) const;
   ServerClosePreparedSblrResult ClosePreparedSblr(
       const ParserSessionContext& session,
-      std::string_view prepared_statement_uuid) const;
+      const scratchbird::core::platform::Uuid& prepared_statement_uuid) const;
   ServerFetchResult FetchCursor(const ParserSessionContext& session,
-                                std::string_view cursor_uuid,
+                                const scratchbird::core::platform::Uuid& cursor_uuid,
                                 const CursorStreamDescriptorV1& stream_descriptor,
                                 std::uint64_t max_rows = 1,
                                 std::uint64_t max_bytes = 0,
                                 std::uint32_t fetch_flags = 0) const;
   ServerCloseCursorResult CloseCursor(const ParserSessionContext& session,
-                                      std::string_view cursor_uuid) const;
+                                      const scratchbird::core::platform::Uuid& cursor_uuid) const;
   ServerCloseCursorResult CancelCursor(const ParserSessionContext& session,
-                                       std::string_view cursor_uuid) const;
+                                       const scratchbird::core::platform::Uuid& cursor_uuid) const;
   ServerManagementResult Manage(const ParserSessionContext& session,
                                 std::string_view operation_key,
-                                std::string_view target_uuid = {},
+                                const scratchbird::core::platform::Uuid& target_uuid = {},
                                 std::string_view mode = {},
                                 std::string_view audit_reason = {},
                                 std::uint64_t timeout_ms = 30000,

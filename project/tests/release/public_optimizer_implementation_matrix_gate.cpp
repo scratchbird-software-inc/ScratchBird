@@ -970,13 +970,12 @@ void ApplyModelFamilyProof(
   row->executor_validation = planned.data_access_allowed &&
                              planned.physical_dag.optimizer_published;
   row->explain_emitted =
-      !planned.selected_candidate.cost.cost_vector_uuid.empty() &&
-      !planned.candidate_inventory_receipt_uuid.empty() &&
-      planned.selected_cost_explain_json.find(
-          "\"scalarization_policy_id\":\"model-family.complete-unit-sum-minus-cache-benefit.v1\"") !=
-          std::string::npos &&
-      planned.selected_cost_explain_json.find(
-          "\"memory_grant_units\":512") != std::string::npos;
+      !planned.selected_candidate.cost.cost_vector_uuid.is_nil() &&
+      !planned.candidate_inventory_receipt_uuid.is_nil() &&
+      planned.selected_cost_explain == planned.selected_candidate.cost &&
+      planned.selected_cost_explain.scalarization_policy_id ==
+          "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
+      planned.selected_cost_explain.memory_grant_units == 512;
   row->plan_cache_dependency_bound =
       capability.metrics.statistics_snapshot_uuid ==
           logical.statistics_snapshot_uuid &&

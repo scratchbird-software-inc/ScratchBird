@@ -79,16 +79,16 @@ std::string UuidText(const Uuid& value) {
 bool SameContext(const EngineRequestContext& left,
                  const EngineRequestContext& right) {
   return left.security_context_present && right.security_context_present &&
-         left.database_uuid.canonical == right.database_uuid.canonical &&
-         left.session_uuid.canonical == right.session_uuid.canonical &&
-         left.transaction_uuid.canonical == right.transaction_uuid.canonical &&
-         left.statement_uuid.canonical == right.statement_uuid.canonical &&
-         left.statement_receipt_uuid.canonical ==
-             right.statement_receipt_uuid.canonical &&
-         left.statement_snapshot_uuid.canonical ==
-             right.statement_snapshot_uuid.canonical &&
-         left.datatype_catalog_snapshot_uuid.canonical ==
-             right.datatype_catalog_snapshot_uuid.canonical &&
+         left.database_uuid == right.database_uuid &&
+         left.session_uuid == right.session_uuid &&
+         left.transaction_uuid == right.transaction_uuid &&
+         left.statement_uuid == right.statement_uuid &&
+         left.statement_receipt_uuid ==
+             right.statement_receipt_uuid &&
+         left.statement_snapshot_uuid ==
+             right.statement_snapshot_uuid &&
+         left.datatype_catalog_snapshot_uuid ==
+             right.datatype_catalog_snapshot_uuid &&
          left.datatype_catalog_generation == right.datatype_catalog_generation &&
          left.datatype_registry_generation ==
              right.datatype_registry_generation &&
@@ -499,8 +499,8 @@ bool DescriptorIsLiveText(
                      &catalog_generation) ||
       !ParseUnsigned(fields[16], std::numeric_limits<std::uint64_t>::max(),
                      &registry_generation) ||
-      fields[13] != context.statement_receipt_uuid.canonical ||
-      fields[14] != context.datatype_catalog_snapshot_uuid.canonical ||
+      fields[13] != context.statement_receipt_uuid ||
+      fields[14] != context.datatype_catalog_snapshot_uuid ||
       catalog_generation != context.datatype_catalog_generation ||
       registry_generation != context.datatype_registry_generation) {
     return false;

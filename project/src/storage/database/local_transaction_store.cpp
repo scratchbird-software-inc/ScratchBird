@@ -380,32 +380,7 @@ void WriteLocalTransactionStorePhaseTrace(
   out << '\n';
 }
 
-std::vector<std::string> SplitTabs(const std::string& line) {
-  std::vector<std::string> parts;
-  std::size_t start = 0;
-  while (start <= line.size()) {
-    const std::size_t tab = line.find('\t', start);
-    if (tab == std::string::npos) {
-      parts.push_back(line.substr(start));
-      break;
-    }
-    parts.push_back(line.substr(start, tab - start));
-    start = tab + 1;
-  }
-  return parts;
-}
 
-u64 ParseU64Field(const std::string& value) {
-  try {
-    return static_cast<u64>(std::stoull(value));
-  } catch (...) {
-    return 0;
-  }
-}
-
-bool ParseBoolField(const std::string& value) {
-  return value == "1" || value == "true";
-}
 
 TypedUuid MakeTyped(UuidKind kind, scratchbird::core::platform::Uuid value) {
   TypedUuid typed;
@@ -414,9 +389,7 @@ TypedUuid MakeTyped(UuidKind kind, scratchbird::core::platform::Uuid value) {
   return typed;
 }
 
-std::string Sha256Hex(std::string_view payload) {
-  return Sha256BytesHex(reinterpret_cast<const byte*>(payload.data()), payload.size());
-}
+
 
 std::filesystem::path PublishJournalPathForDevice(const FileDevice* device) {
   if (device == nullptr || device->path().empty()) {
@@ -455,56 +428,100 @@ bool ReplacePublishJournalAtomically(const std::filesystem::path& temp_path,
 #endif
 }
 
-std::string SerializeInventorySnapshot(std::string_view label,
-                                       const LocalTransactionInventory& inventory) {
-  std::ostringstream out;
-  out << "snapshot\t" << label << '\t'
-      << inventory.next_local_transaction_id << '\t'
-      << inventory.entries.size() << '\n';
-  for (const TransactionInventoryEntry& entry : inventory.entries) {
-    out << "entry\t"
-        << entry.identity.local_id.value << '\t'
-        << scratchbird::core::uuid::UuidToString(entry.identity.transaction_uuid.value) << '\t'
-        << static_cast<u16>(entry.identity.scope) << '\t'
-        << static_cast<u16>(entry.state) << '\t'
-        << entry.begin_unix_epoch_millis << '\t'
-        << entry.final_unix_epoch_millis << '\t'
-        << entry.begin_visible_through_local_transaction_id << '\t'
-        << (entry.evidence_record_required ? "1" : "0") << '\t'
-        << (entry.evidence_record_written ? "1" : "0") << '\t'
-        << (entry.rollback_only ? "1" : "0") << '\n';
+// TRANSACTION_INVENTORY_BINARY_PUBLICATION_V3: exact Core durable-format carrier.
+constexpr std::size_t kPublishHeaderBytes = 80;
+constexpr std::size_t kPublishEntryBytes = 64;
+constexpr std::size_t kPublishDigestBytes = 32;
+constexpr std::size_t kPublishMaxBytes = 64 * 1024 * 1024;
+using scratchbird::core::platform::LoadLittle16;
+using scratchbird::core::platform::LoadLittle32;
+using scratchbird::core::platform::LoadLittle64;
+using scratchbird::core::platform::StoreLittle16;
+using scratchbird::core::platform::StoreLittle32;
+using scratchbird::core::platform::StoreLittle64;
+
+std::optional<scratchbird::core::platform::Uuid> PublicationDatabaseIdentity(FileDevice* device) {
+  if (device == nullptr) { return {}; }
+  SerializedDatabaseHeader bytes{};
+  if (!device->ReadAt(0, bytes.data(), bytes.size()).ok()) { return {}; }
+  const auto parsed = ParseDatabaseHeader(bytes);
+  if (!parsed.ok() || !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.header.database_uuid)) {
+    return {};
   }
-  out << "endsnapshot\t" << label << '\n';
-  return out.str();
+  return parsed.header.database_uuid;
 }
 
-std::string BuildPublishJournalBody(std::string_view phase,
-                                    u64 generation,
-                                    const LocalTransactionInventory& old_inventory,
-                                    const LocalTransactionInventory& new_inventory) {
-  std::ostringstream out;
-  out << "SBTXPUB002\n"
-      << "phase\t" << phase << '\n'
-      << "generation\t" << generation << '\n'
-      << "authority\tdurable_transaction_inventory\n"
-      << "checksum_algorithm\tsha256\n";
-  out << SerializeInventorySnapshot("old", old_inventory);
-  out << SerializeInventorySnapshot("new", new_inventory);
-  out << "end\n";
-  return out.str();
+bool ValidPublicationInventory(const LocalTransactionInventory& inventory) {
+  if (inventory.next_local_transaction_id == 0) { return false; }
+  std::set<u64> numbers;
+  std::set<std::array<byte, 16>> identities;
+  for (const auto& entry : inventory.entries) {
+    const auto& identity = entry.identity;
+    if (!identity.valid() ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(identity.transaction_uuid.value) ||
+        identity.local_id.value >= inventory.next_local_transaction_id ||
+        static_cast<u16>(identity.scope) > 1 ||
+        static_cast<u16>(entry.state) < 1 || static_cast<u16>(entry.state) > 13 ||
+        !numbers.insert(identity.local_id.value).second ||
+        !identities.insert(identity.transaction_uuid.value.bytes).second) {
+      return false;
+    }
+  }
+  return true;
 }
 
-std::string BuildPublishJournal(std::string_view phase,
+std::string BuildPublishJournal(FileDevice* device,
+                                std::string_view phase,
                                 u64 generation,
                                 const LocalTransactionInventory& old_inventory,
                                 const LocalTransactionInventory& new_inventory) {
-  const std::string body =
-      BuildPublishJournalBody(phase, generation, old_inventory, new_inventory);
-  const std::string checksum = Sha256Hex(body);
-  if (checksum.empty()) {
+  constexpr auto capacity = (kPublishMaxBytes - kPublishHeaderBytes - kPublishDigestBytes) /
+                             kPublishEntryBytes;
+  if ((phase != "publishing" && phase != "committed") ||
+      old_inventory.entries.size() > capacity ||
+      new_inventory.entries.size() > capacity - old_inventory.entries.size() ||
+      !ValidPublicationInventory(old_inventory) || !ValidPublicationInventory(new_inventory) ||
+      generation != std::max<u64>(1, new_inventory.next_local_transaction_id - 1)) {
     return {};
   }
-  return body + "checksum_sha256\t" + checksum + '\n';
+  const auto database = PublicationDatabaseIdentity(device);
+  if (!database) { return {}; }
+  const auto count = old_inventory.entries.size() + new_inventory.entries.size();
+  std::string bytes(kPublishHeaderBytes + count * kPublishEntryBytes + kPublishDigestBytes, '\0');
+  auto* out = reinterpret_cast<byte*>(bytes.data());
+  std::memcpy(out, "SBTXP003", 8);
+  StoreLittle16(out + 8, 3);
+  StoreLittle16(out + 10, kPublishHeaderBytes);
+  StoreLittle32(out + 12, phase == "publishing" ? 1 : 2);
+  StoreLittle64(out + 16, generation);
+  StoreLittle64(out + 24, bytes.size());
+  StoreLittle64(out + 32, old_inventory.next_local_transaction_id);
+  StoreLittle64(out + 40, new_inventory.next_local_transaction_id);
+  StoreLittle64(out + 48, old_inventory.entries.size());
+  StoreLittle64(out + 56, new_inventory.entries.size());
+  std::copy(database->bytes.begin(), database->bytes.end(), out + 64);
+  std::size_t offset = kPublishHeaderBytes;
+  for (const auto* inventory : {&old_inventory, &new_inventory}) {
+    for (const auto& entry : inventory->entries) {
+      auto* row = out + offset;
+      StoreLittle64(row, entry.identity.local_id.value);
+      const auto& id = entry.identity.transaction_uuid.value.bytes;
+      std::copy(id.begin(), id.end(), row + 8);
+      StoreLittle16(row + 24, static_cast<u16>(entry.identity.scope));
+      StoreLittle16(row + 26, static_cast<u16>(entry.state));
+      StoreLittle32(row + 28, (entry.evidence_record_required ? 1u : 0u) |
+                              (entry.evidence_record_written ? 2u : 0u) |
+                              (entry.rollback_only ? 4u : 0u));
+      StoreLittle64(row + 32, entry.begin_unix_epoch_millis);
+      StoreLittle64(row + 40, entry.final_unix_epoch_millis);
+      StoreLittle64(row + 48, entry.begin_visible_through_local_transaction_id);
+      offset += kPublishEntryBytes;
+    }
+  }
+  const auto digest = core_hash::ComputeSha256Digest(out, offset);
+  if (!digest.ok()) { return {}; }
+  std::copy(digest.digest.begin(), digest.digest.end(), out + offset);
+  return bytes;
 }
 
 LocalTransactionStoreResult PersistPublishJournal(FileDevice* device,
@@ -518,7 +535,7 @@ LocalTransactionStoreResult PersistPublishJournal(FileDevice* device,
                           "transaction_inventory_publish_journal.path_missing");
   }
   const std::string serialized =
-      BuildPublishJournal(phase, generation, old_inventory, new_inventory);
+      BuildPublishJournal(device, phase, generation, old_inventory, new_inventory);
   if (serialized.empty()) {
     return StorePageError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-CHECKSUM-FAILED",
                           "transaction_inventory_publish_journal.checksum_failed");
@@ -611,135 +628,87 @@ PublishJournalLoadResult PublishJournalError(std::string diagnostic_code,
   return result;
 }
 
-bool ParseSnapshot(const std::vector<std::string>& lines,
-                   std::size_t* index,
-                   std::string_view expected_label,
-                   LocalTransactionInventory* inventory) {
-  if (index == nullptr || inventory == nullptr || *index >= lines.size()) {
-    return false;
-  }
-  const auto header = SplitTabs(lines[*index]);
-  if (header.size() != 4 || header[0] != "snapshot" ||
-      header[1] != expected_label) {
-    return false;
-  }
-  inventory->next_local_transaction_id = ParseU64Field(header[2]);
-  const u64 expected_entries = ParseU64Field(header[3]);
-  inventory->entries.clear();
-  ++(*index);
-  while (*index < lines.size()) {
-    const auto parts = SplitTabs(lines[*index]);
-    if (parts.size() == 2 && parts[0] == "endsnapshot" &&
-        parts[1] == expected_label) {
-      ++(*index);
-      return inventory->entries.size() == expected_entries &&
-             inventory->next_local_transaction_id != 0;
-    }
-    if (parts.size() != 11 || parts[0] != "entry") {
-      return false;
-    }
-    TransactionInventoryEntry entry;
-    entry.identity.local_id = scratchbird::transaction::mga::MakeLocalTransactionId(
-        ParseU64Field(parts[1]));
-    const auto parsed_uuid =
-        scratchbird::core::uuid::ParseTypedUuid(UuidKind::transaction, parts[2]);
-    if (!parsed_uuid.ok()) {
-      return false;
-    }
-    entry.identity.transaction_uuid = parsed_uuid.value;
-    entry.identity.scope = static_cast<TransactionScope>(ParseU64Field(parts[3]));
-    entry.state = static_cast<TransactionState>(ParseU64Field(parts[4]));
-    entry.begin_unix_epoch_millis = ParseU64Field(parts[5]);
-    entry.final_unix_epoch_millis = ParseU64Field(parts[6]);
-    entry.begin_visible_through_local_transaction_id = ParseU64Field(parts[7]);
-    entry.evidence_record_required = ParseBoolField(parts[8]);
-    entry.evidence_record_written = ParseBoolField(parts[9]);
-    entry.rollback_only = ParseBoolField(parts[10]);
-    if (!entry.identity.valid()) {
-      return false;
-    }
-    inventory->entries.push_back(entry);
-    ++(*index);
-  }
-  return false;
-}
-
-PublishJournalLoadResult ParsePublishJournal(std::string content) {
-  const std::string checksum_marker = "\nchecksum_sha256\t";
-  const std::size_t checksum_marker_pos = content.find(checksum_marker);
-  if (checksum_marker_pos == std::string::npos) {
+PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::string& content) {
+  const auto invalid = [](const char* detail) {
+    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
+                               "transaction_inventory_publish_journal.invalid_header", detail);
+  };
+  if (content.size() < kPublishHeaderBytes + kPublishDigestBytes) {
     return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-RECOVERY-REQUIRED",
                                "transaction_inventory_publish_journal.recovery_required",
-                               "partial_journal_write");
+                               "partial_binary_journal");
   }
-  const std::size_t checksum_begin = checksum_marker_pos + checksum_marker.size();
-  const std::size_t checksum_end = content.find('\n', checksum_begin);
-  if (checksum_end == std::string::npos) {
+  if (content.size() > kPublishMaxBytes) { return invalid("size_limit"); }
+  const auto* bytes = reinterpret_cast<const byte*>(content.data());
+  if (std::memcmp(bytes, "SBTXP003", 8) != 0 || LoadLittle16(bytes + 8) != 3 ||
+      LoadLittle16(bytes + 10) != kPublishHeaderBytes) { return invalid("unsupported_format"); }
+  const auto total = LoadLittle64(bytes + 24);
+  if (total > content.size()) {
     return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-RECOVERY-REQUIRED",
                                "transaction_inventory_publish_journal.recovery_required",
-                               "partial_journal_checksum");
+                               "partial_binary_journal");
   }
-  const std::string body = content.substr(0, checksum_marker_pos + 1);
-  const std::string expected_checksum = content.substr(checksum_begin,
-                                                       checksum_end - checksum_begin);
-  const std::string actual_checksum = Sha256Hex(body);
-  if (actual_checksum.empty() ||
-      expected_checksum.size() != 64 ||
-      !core_hash::ConstantTimeEqual(expected_checksum, actual_checksum)) {
+  if (total != content.size()) { return invalid("exact_length_required"); }
+  const auto digest_offset = content.size() - kPublishDigestBytes;
+  const auto digest = core_hash::ComputeSha256Digest(bytes, digest_offset);
+  byte difference = 0;
+  if (digest.ok()) {
+    for (std::size_t i = 0; i < kPublishDigestBytes; ++i) {
+      difference |= digest.digest[i] ^ bytes[digest_offset + i];
+    }
+  }
+  if (!digest.ok() || difference != 0) {
     return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-CHECKSUM-MISMATCH",
                                "transaction_inventory_publish_journal.checksum_mismatch");
   }
-
-  std::vector<std::string> lines;
-  std::stringstream stream(body);
-  std::string line;
-  while (std::getline(stream, line)) {
-    if (!line.empty()) {
-      lines.push_back(line);
-    }
+  const auto database = PublicationDatabaseIdentity(device);
+  if (!database || !std::equal(database->bytes.begin(), database->bytes.end(), bytes + 64)) {
+    return invalid("database_identity_mismatch");
   }
-  if (lines.size() < 8 || lines[0] != "SBTXPUB002") {
-    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                               "transaction_inventory_publish_journal.invalid_header");
-  }
-
+  const auto old_count = LoadLittle64(bytes + 48);
+  const auto new_count = LoadLittle64(bytes + 56);
+  const auto available = digest_offset - kPublishHeaderBytes;
+  const auto capacity = available / kPublishEntryBytes;
+  if (available % kPublishEntryBytes != 0 || old_count > capacity ||
+      new_count != capacity - old_count) { return invalid("entry_count_mismatch"); }
   PublishJournal journal;
-  std::size_t index = 1;
-  for (; index < lines.size(); ++index) {
-    const auto parts = SplitTabs(lines[index]);
-    if (parts.empty()) {
-      continue;
-    }
-    if (parts[0] == "snapshot") {
-      break;
-    }
-    if (parts.size() != 2) {
-      return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                                 "transaction_inventory_publish_journal.invalid_field");
-    }
-    if (parts[0] == "phase") {
-      journal.phase = parts[1];
-    } else if (parts[0] == "generation") {
-      journal.generation = ParseU64Field(parts[1]);
-    } else if (parts[0] == "authority" &&
-               parts[1] != "durable_transaction_inventory") {
-      return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                                 "transaction_inventory_publish_journal.authority_invalid");
-    } else if (parts[0] == "checksum_algorithm" && parts[1] != "sha256") {
-      return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                                 "transaction_inventory_publish_journal.checksum_algorithm_invalid");
-    }
+  const auto phase = LoadLittle32(bytes + 12);
+  if (phase != 1 && phase != 2) { return invalid("phase_invalid"); }
+  journal.phase = phase == 1 ? "publishing" : "committed";
+  journal.generation = LoadLittle64(bytes + 16);
+  journal.old_inventory.next_local_transaction_id = LoadLittle64(bytes + 32);
+  journal.new_inventory.next_local_transaction_id = LoadLittle64(bytes + 40);
+  if (journal.new_inventory.next_local_transaction_id == 0 ||
+      journal.generation != std::max<u64>(1, journal.new_inventory.next_local_transaction_id - 1)) {
+    return invalid("generation_invalid");
   }
-  if ((journal.phase != "publishing" && journal.phase != "committed") ||
-      journal.generation == 0) {
-    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                               "transaction_inventory_publish_journal.phase_or_generation_invalid");
-  }
-  if (!ParseSnapshot(lines, &index, "old", &journal.old_inventory) ||
-      !ParseSnapshot(lines, &index, "new", &journal.new_inventory) ||
-      index >= lines.size() || lines[index] != "end") {
-    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
-                               "transaction_inventory_publish_journal.snapshot_invalid");
+  std::size_t offset = kPublishHeaderBytes;
+  const auto decode = [&](u64 count, LocalTransactionInventory& inventory) {
+    inventory.entries.reserve(static_cast<std::size_t>(count));
+    for (u64 i = 0; i < count; ++i) {
+      const auto* row = bytes + offset;
+      TransactionInventoryEntry entry;
+      entry.identity.local_id = scratchbird::transaction::mga::MakeLocalTransactionId(LoadLittle64(row));
+      entry.identity.transaction_uuid.kind = UuidKind::transaction;
+      std::copy(row + 8, row + 24, entry.identity.transaction_uuid.value.bytes.begin());
+      entry.identity.scope = static_cast<TransactionScope>(LoadLittle16(row + 24));
+      entry.state = static_cast<TransactionState>(LoadLittle16(row + 26));
+      const auto flags = LoadLittle32(row + 28);
+      if ((flags & ~7u) != 0 || LoadLittle64(row + 56) != 0) { return false; }
+      entry.evidence_record_required = (flags & 1u) != 0;
+      entry.evidence_record_written = (flags & 2u) != 0;
+      entry.rollback_only = (flags & 4u) != 0;
+      entry.begin_unix_epoch_millis = LoadLittle64(row + 32);
+      entry.final_unix_epoch_millis = LoadLittle64(row + 40);
+      entry.begin_visible_through_local_transaction_id = LoadLittle64(row + 48);
+      inventory.entries.push_back(entry);
+      offset += kPublishEntryBytes;
+    }
+    return ValidPublicationInventory(inventory);
+  };
+  // Even the non-selected snapshot must be valid; never publish partial authority.
+  if (!decode(old_count, journal.old_inventory) || !decode(new_count, journal.new_inventory)) {
+    return invalid("snapshot_invalid");
   }
   PublishJournalLoadResult result;
   result.store.status = StoreOkStatus();
@@ -754,10 +723,12 @@ PublishJournalLoadResult LoadPublishJournal(FileDevice* device) {
     return PublishJournalAbsent();
   }
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) {
+  const auto entry = std::filesystem::symlink_status(path, ec);
+  if (entry.type() == std::filesystem::file_type::not_found &&
+      (!ec || ec == std::errc::no_such_file_or_directory)) {
     return PublishJournalAbsent();
   }
-  if (ec || !std::filesystem::is_regular_file(path, ec)) {
+  if (ec || !std::filesystem::is_regular_file(path, ec) || ec) {
     return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-UNREADABLE",
                                "transaction_inventory_publish_journal.unreadable",
                                path.string());
@@ -768,9 +739,19 @@ PublishJournalLoadResult LoadPublishJournal(FileDevice* device) {
                                "transaction_inventory_publish_journal.open_failed",
                                path.string());
   }
-  return ParsePublishJournal(
-      std::string((std::istreambuf_iterator<char>(input)),
-                  std::istreambuf_iterator<char>()));
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec || size > kPublishMaxBytes) {
+    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-INVALID",
+                               "transaction_inventory_publish_journal.invalid_header", "size_limit");
+  }
+  std::string content(static_cast<std::size_t>(size), '\0');
+  input.read(content.data(), static_cast<std::streamsize>(content.size()));
+  if (input.bad() || static_cast<std::size_t>(input.gcount()) != content.size() ||
+      input.peek() != std::char_traits<char>::eof() || input.bad()) {
+    return PublishJournalError("SB-TXN-INVENTORY-PUBLISH-JOURNAL-UNREADABLE",
+                               "transaction_inventory_publish_journal.unreadable", "read_failed_or_changed");
+  }
+  return ParsePublishJournal(device, content);
 }
 
 LocalTransactionStoreResult ResultFromRecoveredInventory(
@@ -1211,23 +1192,23 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   const auto existing_chain =
       CollectExistingChainOrInitial(device, page_size, inventory, &old_inventory, &page_chain);
   mark_phase("collect_existing_chain");
-  bool old_inventory_loaded_from_journal = false;
+  // Validate existing publication authority even with a readable page chain.
+  // Never overwrite an unsupported/corrupt journal or use a post-crash page
+  // generation in place of the selected old whole-inventory snapshot.
+  const auto journal = LoadPublishJournal(device);
+  if (journal.present && !journal.ok()) {
+    return trace_and_return(journal.store);
+  }
   if (!existing_chain.ok()) {
-    const auto journal = LoadPublishJournal(device);
-    if (!journal.present) {
-      return trace_and_return(existing_chain);
-    }
-    if (!journal.ok()) {
-      return trace_and_return(journal.store);
-    }
+    if (!journal.present) { return trace_and_return(existing_chain); }
+    page_chain.clear();
+    page_chain.push_back(kTransactionInventoryPageNumber);
+  }
+  if (journal.present) {
     old_inventory = journal.journal.phase == "committed"
                         ? journal.journal.new_inventory
                         : journal.journal.old_inventory;
-    page_chain.clear();
-    page_chain.push_back(kTransactionInventoryPageNumber);
-    old_inventory_loaded_from_journal = true;
   }
-  (void)old_inventory_loaded_from_journal;
 
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);

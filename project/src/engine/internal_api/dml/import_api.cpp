@@ -185,7 +185,7 @@ bool BinderContextAdmitted(const EngineRequestContext& context) {
          context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          context.authorization_context.present &&
-         !context.authorization_context.authority_uuid.canonical.empty() &&
+         !context.authorization_context.authority_uuid.is_nil() &&
          context.authorization_context.security_context_generation != 0;
 }
 
@@ -195,7 +195,7 @@ bool ConsumerContextAdmitted(const EngineRequestContext& context) {
          context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          context.authorization_context.present &&
-         !context.authorization_context.authority_uuid.canonical.empty() &&
+         !context.authorization_context.authority_uuid.is_nil() &&
          context.authorization_context.security_context_generation != 0;
 }
 
@@ -245,11 +245,11 @@ bool ActiveTransactionIdentity(const EngineRequestContext& context) {
   using scratchbird::transaction::mga::MakeLocalTransactionId;
   using scratchbird::transaction::mga::TransactionState;
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return false;
   }
   const auto transaction_uuid = scratchbird::core::uuid::ParseTypedUuid(
-      UuidKind::transaction, context.transaction_uuid.canonical);
+      UuidKind::transaction, context.transaction_uuid);
   if (!transaction_uuid.ok()) return false;
   const auto loaded = scratchbird::storage::database::
       LoadLocalTransactionInventoryFromDatabase(context.database_path);
@@ -320,17 +320,17 @@ LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
       authorization.policy_epoch == 0 ||
       authorization.catalog_generation_id == 0 ||
       authorization.catalog_generation_id != context.catalog_generation_id ||
-      !CanonicalUuidBytes(context.statement_receipt_uuid.canonical,
+      !CanonicalUuidBytes(context.statement_receipt_uuid,
                           &live.authenticated_statement_receipt_uuid) ||
-      !CanonicalUuidBytes(context.transaction_uuid.canonical,
+      !CanonicalUuidBytes(context.transaction_uuid,
                           &live.transaction_uuid) ||
-      !CanonicalUuidBytes(context.statement_snapshot_uuid.canonical,
+      !CanonicalUuidBytes(context.statement_snapshot_uuid,
                           &live.mga_snapshot_uuid) ||
-      !CanonicalUuidBytes(authorization.authority_uuid.canonical,
+      !CanonicalUuidBytes(authorization.authority_uuid,
                           &live.security_snapshot_uuid) ||
-      !CanonicalUuidBytes(context.transaction_policy_snapshot_uuid.canonical,
+      !CanonicalUuidBytes(context.transaction_policy_snapshot_uuid,
                           &live.policy_snapshot_uuid) ||
-      !CanonicalUuidBytes(context.resource_admission_uuid.canonical,
+      !CanonicalUuidBytes(context.resource_admission_uuid,
                           &live.resource_admission_uuid) ||
       !CanonicalUuidBytes(target_table_uuid, &live.target_table_uuid)) {
     result.detail = "complete_engine_live_authority_required";
@@ -341,8 +341,8 @@ LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
   snapshot_request.context = context;
   const auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
   if (!snapshot.ok ||
-      snapshot.statement_snapshot_uuid.canonical !=
-          context.statement_snapshot_uuid.canonical ||
+      snapshot.statement_snapshot_uuid !=
+          context.statement_snapshot_uuid ||
       !snapshot.snapshot_vector.inventory_authoritative ||
       !snapshot.snapshot_vector.complete ||
       snapshot.snapshot_vector
@@ -356,9 +356,9 @@ LiveAuthorityResolutionV1 ResolveLiveImportRowsAuthority(
       std::string(target_table_uuid));
   if (!relation.ok ||
       ValidateMgaRelationStorageDescriptor(relation.descriptor).error ||
-      !UuidTextEquals(relation.descriptor.relation_uuid.canonical,
+      !UuidTextEquals(relation.descriptor.relation_uuid,
                       live.target_table_uuid) ||
-      !CanonicalUuidBytes(relation.descriptor.descriptor_uuid.canonical,
+      !CanonicalUuidBytes(relation.descriptor.descriptor_uuid,
                           &live.target_relation_descriptor_uuid) ||
       relation.descriptor.descriptor_generation == 0) {
     result.detail = "current_target_relation_descriptor_required";
@@ -392,7 +392,7 @@ bool MappingDemandShapeValid(
     if ((index == 0 && demands[index].source_field_ordinal != 0) ||
         (index != 0 &&
          demands[index].source_field_ordinal <= previous_source_ordinal) ||
-        !CanonicalUuidBytes(demands[index].target_column_uuid.canonical,
+        !CanonicalUuidBytes(demands[index].target_column_uuid,
                             &target_column) ||
         !target_columns.insert(target_column).second) {
       return false;
@@ -410,14 +410,14 @@ bool LegacyPlanningAuthorityPresent(const EnginePlanImportRowsRequest& request) 
   return !request.localized_names.empty() ||
          !request.option_envelopes.empty() ||
          !request.diagnostic_options.empty() ||
-         !request.target_table.uuid.canonical.empty() ||
+         !request.target_table.uuid.is_nil() ||
          !request.target_table.object_kind.empty() ||
-         !request.target_object.uuid.canonical.empty() ||
+         !request.target_object.uuid.is_nil() ||
          !request.target_object.object_kind.empty() ||
          !request.related_objects.empty() || !request.descriptors.empty() ||
          !request.rows.empty() || !request.assignments.empty() ||
          !request.column_mappings.empty() || !source.source_kind.empty() ||
-         !source.source_uuid.canonical.empty() ||
+         !source.source_uuid.is_nil() ||
          !source.source_fingerprint.empty() || !source.source_position.empty() ||
          !source.redacted_source_handle.empty() ||
          !format.format_family.empty() || !format.encoding.empty() ||
@@ -428,7 +428,7 @@ bool LegacyPlanningAuthorityPresent(const EnginePlanImportRowsRequest& request) 
          !format.format_options.empty() ||
          policy.reject_mode != "fail_fast" || policy.reject_limit_rows != 0 ||
          policy.reject_limit_percent != 0.0 ||
-         !policy.reject_target.uuid.canonical.empty() ||
+         !policy.reject_target.uuid.is_nil() ||
          policy.reject_payload_policy != "diagnostic_only" ||
          policy.resume_policy != "fail_closed" ||
          policy.strict_bulk_load_requested ||
@@ -528,7 +528,7 @@ const char* InsertModeText(codec::PlanImportRowsInsertModeV1 value) {
 }
 
 bool ClusterPredicate(const EngineRequestContext& context) {
-  return !context.cluster_uuid.canonical.empty() ||
+  return !context.cluster_uuid.is_nil() ||
          context.cluster_transaction_active || context.route_fence_present;
 }
 
@@ -814,7 +814,7 @@ CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
 
   codec::PlanImportRowsUuidV1 target_table_uuid{};
   if (request.structural_occurrence_id == 0 ||
-      !CanonicalUuidBytes(request.target_table_uuid.canonical,
+      !CanonicalUuidBytes(request.target_table_uuid,
                           &target_table_uuid) ||
       !MappingDemandShapeValid(request.mappings)) {
     failure.diagnostic = Diagnostic(
@@ -846,7 +846,7 @@ CreateAndPublishEngineBoundImportRowsPlanDescriptorV1(
   }
   auto derived = ResolveLiveImportRowsAuthority(
       request.context, request.structural_occurrence_id,
-      request.target_table_uuid.canonical, 1);
+      request.target_table_uuid, 1);
   if (!derived.ok) {
     failure.diagnostic = Diagnostic(
         kAuthorityMismatch,
@@ -1007,7 +1007,7 @@ ReleaseEngineBoundImportRowsPlanDescriptorsV1(
     return result;
   }
   codec::PlanImportRowsUuidV1 receipt_uuid{};
-  if (!CanonicalUuidBytes(context.statement_receipt_uuid.canonical,
+  if (!CanonicalUuidBytes(context.statement_receipt_uuid,
                           &receipt_uuid)) {
     result.diagnostic = Diagnostic(
         kAuthorityMismatch,
@@ -1168,7 +1168,7 @@ EnginePlanImportRowsResult EnginePlanImportRows(
   }
 
   codec::PlanImportRowsUuidV1 receipt_uuid{};
-  if (!CanonicalUuidBytes(request.context.statement_receipt_uuid.canonical,
+  if (!CanonicalUuidBytes(request.context.statement_receipt_uuid,
                           &receipt_uuid) ||
       receipt_uuid != bound_receipt_uuid) {
     return ImportFailure(kAuthorityMismatch,
@@ -1306,14 +1306,14 @@ EnginePlanImportRowsResult EnginePlanImportRows(
       FormatFamilyText(carriers.format.format_family);
   result.mapped_column_count =
       static_cast<EngineApiU64>(carriers.mapping.mappings.size());
-  result.validated_request_descriptor_uuid.canonical =
+  result.validated_request_descriptor_uuid =
       UuidText(carriers.descriptor.descriptor_uuid);
   result.validated_request_descriptor_generation =
       carriers.descriptor.descriptor_generation;
   result.validated_request_projection_sha256 =
       carriers.descriptor.descriptor_evidence_sha256;
   result.accepted_executor_evidence = std::move(accepted_evidence);
-  result.transaction_uuid.canonical =
+  result.transaction_uuid =
       UuidText(carriers.descriptor.transaction_uuid);
   result.local_transaction_id = carriers.descriptor.local_transaction_id;
   result.evidence.push_back(

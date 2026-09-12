@@ -93,8 +93,8 @@ std::string SchemaEpochFor(const EngineApiRequest& request) {
 std::string SnapshotCapsuleFor(const EngineApiRequest& request) {
   const auto explicit_capsule = SecurityOptionValue(request, "snapshot_capsule:");
   if (!explicit_capsule.empty()) { return explicit_capsule; }
-  if (!request.context.transaction_uuid.canonical.empty()) {
-    return "transaction:" + request.context.transaction_uuid.canonical;
+  if (!request.context.transaction_uuid.is_nil()) {
+    return "transaction:" + request.context.transaction_uuid;
   }
   if (request.context.local_transaction_id != 0) {
     return "local_transaction:" + std::to_string(request.context.local_transaction_id);
@@ -141,8 +141,8 @@ std::uint64_t EffectiveTargetLocalTransactionId(const EngineLocateTransactionReq
 }
 
 std::string EffectiveTargetTransactionUuid(const EngineLocateTransactionRequest& request) {
-  if (!request.target_transaction_uuid.canonical.empty()) {
-    return request.target_transaction_uuid.canonical;
+  if (!request.target_transaction_uuid.is_nil()) {
+    return request.target_transaction_uuid;
   }
   return SecurityOptionValue(request, "target_transaction_uuid:");
 }
@@ -317,7 +317,7 @@ TransactionLocationResolution ResolveTransactionLocation(
 void PopulateLocationResult(EngineLocateTransactionResult* result,
                             const TransactionLocationResolution& resolved) {
   result->target_local_transaction_id = resolved.target_local_transaction_id;
-  result->target_transaction_uuid.canonical = resolved.target_transaction_uuid;
+  result->target_transaction_uuid = resolved.target_transaction_uuid;
   result->location_class = resolved.location_class;
   result->transaction_state = resolved.transaction_state;
   result->queryable = resolved.queryable;
@@ -395,7 +395,7 @@ EngineApiDiagnostic ValidateAuditAdmissionContext(
                                         "database_path_required");
   }
   if (request.context.local_transaction_id != 0 ||
-      !request.context.transaction_uuid.canonical.empty()) {
+      !request.context.transaction_uuid.is_nil()) {
     return AuditLocationDiagnostic(
         "ENGINE.MGA_AUDIT_ACTIVE_TRANSACTION_ALREADY_BOUND",
         "audit_read_requires_unbound_request_context",
@@ -641,14 +641,14 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
       request.context,
       operation_id);
   PopulateLocationResult(&result, location);
-  result.audit_transaction_uuid.canonical =
+  result.audit_transaction_uuid =
       UuidToString(begun.entry.identity.transaction_uuid.value);
   result.audit_local_transaction_id = begun.entry.identity.local_id.value;
   result.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
   result.audit_transaction_distinct =
       result.audit_local_transaction_id != location.target_local_transaction_id &&
-      result.audit_transaction_uuid.canonical != location.target_transaction_uuid;
+      result.audit_transaction_uuid != location.target_transaction_uuid;
   result.read_only = true;
   result.writes_refused = true;
   result.fail_closed = false;
@@ -658,7 +658,7 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
                     {{"audit_local_transaction_id",
                       std::to_string(result.audit_local_transaction_id)},
                      {"audit_transaction_uuid",
-                      result.audit_transaction_uuid.canonical},
+                      result.audit_transaction_uuid},
                      {"audit_transaction_state",
                       TransactionStateName(begun.entry.state)},
                      {"audit_transaction_distinct",

@@ -32,6 +32,19 @@
 #include <string_view>
 #include <vector>
 
+#include <stdexcept>
+#include <utility>
+
+namespace scratchbird::engine::internal_api {
+template <typename... Args>
+auto CheckedSchemaTreeRecords(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = VisibleSchemaTreeRecords(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+}  // namespace scratchbird::engine::internal_api
+
 namespace {
 
 using namespace scratchbird::parser::sbsql;
@@ -184,12 +197,12 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   return column;
 }
 
-api::EngineRequestContext BaseEngineContext() {
+api::EngineRequestContext BaseEngineContext(const std::string& database_uuid) {
   api::EngineRequestContext context;
   context.request_id = "sbsql-show-create-exact-route";
   context.database_path = std::string(kDatabasePath);
   context.security_context_present = true;
-  context.database_uuid.canonical = "019f0000-0000-7000-8000-000000000801";
+  context.database_uuid.canonical = database_uuid;
   context.session_uuid.canonical = "019f0000-0000-7000-8000-000000000802";
   context.principal_uuid.canonical = "019f0000-0000-7000-8000-000000000803";
   context.node_uuid.canonical = "019f0000-0000-7000-8000-000000000804";
@@ -226,23 +239,24 @@ void RemoveEngineFiles() {
   }
 }
 
-void CreateAndOpenEngineDatabase() {
+api::EngineRequestContext CreateAndOpenEngineDatabase() {
   const auto created =
       scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
           std::filesystem::path(kDatabasePath), SB_SBSFC021_SEED_PACK_ROOT);
   Require(created.ok(), "credentialed fixture create failed while seeding SHOW CREATE");
 
   api::EngineOpenLifecycleRequest open;
-  open.context = BaseEngineContext();
+  open.context = BaseEngineContext(
+      scratchbird::core::uuid::UuidToString(created.state.database_uuid.value));
   const auto opened = api::EngineOpenLifecycle(open);
   if (!opened.ok) PrintApiDiagnostics(opened, "lifecycle.open_database");
   Require(opened.ok, "lifecycle.open_database failed while seeding SHOW CREATE fixture");
+  return open.context;
 }
 
 api::EngineRequestContext SeedEngineTable() {
   RemoveEngineFiles();
-  CreateAndOpenEngineDatabase();
-  auto context = BaseEngineContext();
+  auto context = CreateAndOpenEngineDatabase();
   api::EngineBeginTransactionRequest begin;
   begin.context = context;
   begin.isolation_level = "read_committed";
@@ -256,7 +270,7 @@ api::EngineRequestContext SeedEngineTable() {
   api::EngineCreateTableRequest table;
   table.context = context;
   table.requested_table_uuid.canonical = std::string(kTargetUuid);
-  const auto visible_schemas = api::VisibleSchemaTreeRecords(
+  const auto visible_schemas = api::CheckedSchemaTreeRecords(
       context, context.local_transaction_id);
   Require(!visible_schemas.empty(),
           "credentialed SHOW CREATE fixture exposed no writable schema");

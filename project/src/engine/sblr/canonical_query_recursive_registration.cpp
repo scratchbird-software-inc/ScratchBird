@@ -783,8 +783,8 @@ LiveRecursiveCteTermExecution ExecutePreparedRecursiveCteTerm(
     const auto& actual = current.columns[column];
     if (actual.descriptor_id != expected.descriptor_id ||
         actual.nullable != expected.nullable ||
-        actual.descriptor.descriptor_uuid.canonical !=
-            expected.descriptor.descriptor_uuid.canonical ||
+        actual.descriptor.descriptor_uuid !=
+            expected.descriptor.descriptor_uuid ||
         actual.descriptor.descriptor_kind !=
             expected.descriptor.descriptor_kind ||
         actual.descriptor.canonical_type_name !=

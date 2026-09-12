@@ -516,7 +516,7 @@ void TestClusterUnsupportedDiagnosticIsExact() {
   const auto result = api::EngineClusterSysAgents(request);
   if (!cluster_provider::ClusterProviderSupportsExecution()) {
     Require(!result.ok, "no-cluster provider accepted cluster sys agents");
-    Require(HasDiagnostic(result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDiagnostic(result, "PROCESS.CLUSTER_PATH_ABSENT"),
             "cluster-not-enabled diagnostic was not exact");
     Require(api::EngineAgentZeroGreyResultStateAllowed("cluster_not_enabled"),
             "cluster_not_enabled was not in zero-grey allowlist");

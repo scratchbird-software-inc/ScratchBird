@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sbps_narrow_statement_context_alias_codec.hpp"
+#include "../diagnostic_identity_projection_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -518,7 +519,8 @@ PsStatementContextAliasDiagnosticV1 ValidateSchema7032ExtensionV71(
       !ExactPair(variable_scope_uuid, variable_scope_generation) ||
       !ExactPair(variable_frame_uuid, variable_frame_generation) ||
       !ExactPair(variable_registry_uuid, variable_executor_generation) ||
-      !UuidPresent(diagnostic_registry_uuid) || diagnostic_generation == 0 ||
+      (diagnostic_registry_uuid[6] & 0xf0) != 0x70 ||
+      (diagnostic_registry_uuid[8] & 0xc0) != 0x80 || diagnostic_generation == 0 ||
       diagnostic_count == 0 || diagnostic_count > 4096 ||
       diagnostic_row_bytes != kPsStatementContextDiagnosticRowBytesV71) {
     return Invalid("extension_prefix",
@@ -543,16 +545,21 @@ PsStatementContextAliasDiagnosticV1 ValidateSchema7032ExtensionV71(
     return Invalid("schema7032_extent",
                    "v71_diagnostic_or_trailer_extent_invalid");
   }
+  std::vector<wire::DiagnosticIdentityProjectionV1> diagnostic_cohort;
+  diagnostic_cohort.reserve(diagnostic_count);
   for (std::uint32_t index = 0; index < diagnostic_count; ++index) {
     const auto at = extension + kPsStatementContextExtensionPrefixBytesV71 +
                     static_cast<std::size_t>(index) *
                         kPsStatementContextDiagnosticRowBytesV71;
-    if (!UuidPresent(LoadUuid(payload, at)) || LoadU64(payload, at + 16) == 0 ||
-        LoadU16(payload, at + 30) != 0 || LoadU32(payload, at + 36) != 0) {
+    wire::DiagnosticIdentityProjectionV1 row;
+    if (!wire::DecodeDiagnosticIdentityProjectionV1(payload.data() + at, 72, &row)) {
       return Invalid("diagnostic_identity_rows",
                      "diagnostic_identity_record_invalid");
     }
+    diagnostic_cohort.push_back(row);
   }
+  if (!wire::ValidateDiagnosticIdentityCohortV1(diagnostic_cohort))
+    return Invalid("diagnostic_identity_rows", "diagnostic_cohort_invalid");
 
   const auto isolation_uuid = LoadUuid(payload, trailer);
   const auto isolation_generation = LoadU64(payload, trailer + 16);

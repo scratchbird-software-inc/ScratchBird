@@ -207,9 +207,9 @@ bool DemandHintsEnabled(const std::vector<std::string>& option_envelopes) {
 }
 
 std::string LedgerKey(const EngineRequestContext& context) {
-  const std::string identity = context.database_uuid.canonical.empty()
+  const std::string identity = context.database_uuid.is_nil()
                                    ? std::string("database_uuid_absent")
-                                   : context.database_uuid.canonical;
+                                   : context.database_uuid;
   if (!context.database_path.empty()) {
     return context.database_path + "|" + identity;
   }
@@ -259,9 +259,9 @@ bool RuntimeCanActivate(const EngineRequestContext& context,
     return false;
   }
   *database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                       context.database_uuid.canonical);
+                                       context.database_uuid);
   *transaction_uuid = ParseEngineIdentity(platform::UuidKind::transaction,
-                                          context.transaction_uuid.canonical);
+                                          context.transaction_uuid);
   *owner_uuid = ParseEngineIdentity(platform::UuidKind::object, owner_object_uuid);
   return IsEngineIdentity(*database_uuid, platform::UuidKind::database) &&
          IsEngineIdentity(*transaction_uuid, platform::UuidKind::transaction) &&
@@ -403,8 +403,8 @@ agent_runtime::AgentRuntimeContext WorkerCapacityContext(
   runtime_context.private_features_available = true;
   runtime_context.standalone_edition = true;
   runtime_context.cluster_authority_available = false;
-  runtime_context.database_uuid = context.database_uuid.canonical;
-  runtime_context.principal_uuid = context.principal_uuid.canonical;
+  runtime_context.database_uuid = context.database_uuid;
+  runtime_context.principal_uuid = context.principal_uuid;
   runtime_context.rights = {
       "OBS_AGENT_STATE_READ",
       "OBS_AGENT_CONTROL",

@@ -42,7 +42,7 @@ agents::DurableAgentResourceReservationRequest ResourceReservationForDecision(
           "agent_enterprise_decision_resource_reservation|" +
           reservation.reservation_key);
   reservation.owner_scope = request.decision.principal_uuid.empty()
-                                ? request.context.principal_uuid.canonical
+                                ? request.context.principal_uuid
                                 : request.decision.principal_uuid;
   reservation.agent_type_id = request.decision.agent_type_id;
   reservation.operation_id = request.decision.operation_id;

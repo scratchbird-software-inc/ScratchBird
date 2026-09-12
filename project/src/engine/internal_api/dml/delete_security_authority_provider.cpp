@@ -45,20 +45,20 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c, std::string_v
     if (!ExactUuid(id->canonical)) return Refuse("owner_identity");
   if (!c.local_transaction_id || !c.catalog_generation_id || !c.security_epoch ||
       !c.authorization_context.security_context_generation ||
-      c.authorization_context.principal_uuid.canonical != c.principal_uuid.canonical ||
+      c.authorization_context.principal_uuid != c.principal_uuid ||
       c.read_only_mode || c.cluster_transaction_active || c.route_fence_present)
     return Refuse("owner_generation_or_write_fence");
   return Ok();
 }
 auto OwnerKey(const EngineRequestContext& c) {
-  return std::tie(c.database_path, c.database_uuid.canonical, c.session_uuid.canonical,
-      c.principal_uuid.canonical, c.current_role_uuid.canonical, c.transaction_uuid.canonical,
-      c.local_transaction_id, c.statement_receipt_uuid.canonical,
-      c.statement_snapshot_uuid.canonical, c.statement_snapshot_generation,
+  return std::tie(c.database_path, c.database_uuid, c.session_uuid,
+      c.principal_uuid, c.current_role_uuid, c.transaction_uuid,
+      c.local_transaction_id, c.statement_receipt_uuid,
+      c.statement_snapshot_uuid, c.statement_snapshot_generation,
       c.snapshot_visible_through_local_transaction_id,
-      c.statement_metadata_snapshot_uuid.canonical,
+      c.statement_metadata_snapshot_uuid,
       c.statement_metadata_snapshot_visible_through_local_transaction_id,
-      c.catalog_generation_id, c.security_epoch, c.authorization_context.authority_uuid.canonical,
+      c.catalog_generation_id, c.security_epoch, c.authorization_context.authority_uuid,
       c.authorization_context.security_context_generation, c.authorization_context.policy_epoch);
 }
 EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& target,
@@ -66,7 +66,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
   if (!ExactUuid(target)) return Refuse("target_identity");
   EngineAuthorizeRequest materialized;
   materialized.context = c;
-  materialized.target_object.uuid.canonical = target;
+  materialized.target_object.uuid = target;
   materialized.required_right = "DELETE";
   const auto admitted = EngineAuthorize(materialized);
   if (!admitted.ok || !admitted.authorized || admitted.policy_recheck_required)
@@ -74,7 +74,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
 
   EngineSecurityEvaluatePrivilegeRequest durable;
   durable.context = c;
-  durable.principal_uuid = c.principal_uuid.canonical;
+  durable.principal_uuid = c.principal_uuid;
   durable.target_object_uuid = target;
   durable.privilege = "DELETE";
   const auto authorized = EngineSecurityEvaluatePrivilege(durable);
@@ -92,7 +92,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
         authorized.diagnostics.front().code != kSecurityPrincipalDiagnosticDefaultDeny)
       return Refuse("durable_DELETE_privilege_required");
     const auto bootstrap = ResolveEngineOwnedSysarchRoleIdentity(c);
-    if (!bootstrap.ok || !bootstrap.present || bootstrap.principal_uuid != c.principal_uuid.canonical)
+    if (!bootstrap.ok || !bootstrap.present || bootstrap.principal_uuid != c.principal_uuid)
       return Refuse("durable_DELETE_privilege_required");
     for (const auto& membership : state.state.memberships) {
       if (!membership.revoked && membership.member_principal_uuid == bootstrap.principal_uuid &&
@@ -108,7 +108,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
     if (!policy.deleted && (policy.target_object_uuid.empty() || policy.target_object_uuid == target))
       return Refuse("DELETE_USING_provider_required", "SBLR.OPERATION_UNSUPPORTED");
   for (const auto& policy : c.authorization_context.policies)
-    if (policy.target_uuid.canonical.empty() || policy.target_uuid.canonical == target)
+    if (policy.target_uuid.is_nil() || policy.target_uuid == target)
       return Refuse("DELETE_USING_provider_required", "SBLR.OPERATION_UNSUPPORTED");
   *grants = std::move(privilege_sources);
   for (const auto& grant : *grants)
@@ -169,8 +169,8 @@ EngineApiDiagnostic RevalidateRecoveredDmlDeleteSecurityProjectionV1(
   const auto valid = ValidateContext(c, "private_dml_delete_rows_recovery");
   if (valid.error) return valid;
   if (!ExactUuid(s.snapshot_uuid) || s.snapshot_generation != 1 ||
-      s.authenticated_statement_receipt_uuid != c.statement_receipt_uuid.canonical ||
-      s.security_context_uuid != c.authorization_context.authority_uuid.canonical ||
+      s.authenticated_statement_receipt_uuid != c.statement_receipt_uuid ||
+      s.security_context_uuid != c.authorization_context.authority_uuid ||
       s.security_context_generation != c.authorization_context.security_context_generation ||
       !s.admitted_policy_rows.empty() ||
       c.authorization_context.security_epoch != c.security_epoch ||

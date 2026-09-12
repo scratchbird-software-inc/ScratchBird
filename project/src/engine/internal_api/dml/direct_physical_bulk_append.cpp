@@ -348,8 +348,8 @@ bool DirectRuntimeInsertPolicyApplies(
   if (!policy.right.empty() && policy.right != "INSERT") {
     return false;
   }
-  return policy.target_uuid.canonical.empty() ||
-         policy.target_uuid.canonical == table_uuid;
+  return policy.target_uuid.is_nil() ||
+         policy.target_uuid == table_uuid;
 }
 
 struct DirectRuntimeSecurityPolicyDecision {
@@ -416,7 +416,7 @@ EngineEvaluateDeepSecurityResult EvaluateDirectRuntimeInsertSecurityRecheck(
         values);
     if (evidence != nullptr) {
       evidence->push_back({"direct_physical_runtime_security_policy_evaluated",
-                           policy.policy_uuid.canonical});
+                           policy.policy_uuid});
       evidence->push_back({"direct_physical_runtime_security_policy_result",
                            decision.reason + ":" +
                                (decision.denied ? "deny" : "allow")});
@@ -492,12 +492,12 @@ std::string DirectPageExtentPreallocationPrecheckFailure(
     return "page_extent_preallocation_disabled";
   }
   const TypedUuid database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   const TypedUuid transaction_uuid =
       ParseDirectTypedUuid(UuidKind::transaction,
-                           request.context.transaction_uuid.canonical);
+                           request.context.transaction_uuid);
   const TypedUuid object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   if (!database_uuid.valid() || !transaction_uuid.valid() ||
       !object_uuid.valid() || request.context.local_transaction_id == 0) {
     return "page_extent_preallocation_authority_missing";
@@ -1770,12 +1770,12 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
   DirectBulkConstraintProofSelection selection;
   scratchbird::core::bulk_load::BulkConstraintProofRequest proof_request;
   proof_request.database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   proof_request.object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   proof_request.transaction_uuid =
       ParseDirectTypedUuid(UuidKind::transaction,
-                           request.context.transaction_uuid.canonical);
+                           request.context.transaction_uuid);
   proof_request.local_transaction_id = request.context.local_transaction_id;
   proof_request.route = "direct_physical_bulk";
   proof_request.direct_physical_bulk = true;
@@ -4037,7 +4037,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
   }
 
   const TypedUuid table_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   if (!table_uuid.valid()) {
     selection.ok = false;
     selection.failure_reason = "sorted_bulk_index_table_uuid_invalid";
@@ -4126,7 +4126,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
       build.unique_constraint_uuid = index_uuid;
       build.transaction_uuid =
           ParseDirectTypedUuid(UuidKind::transaction,
-                               request.context.transaction_uuid.canonical);
+                               request.context.transaction_uuid);
       build.local_transaction_id = request.context.local_transaction_id;
       build.unique_reservation_validation_evidence_token =
           "direct_sorted_bulk_unique_reservation_validation";
@@ -4193,7 +4193,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
 
     MgaExactIndexEntryAppendBatch batch;
     batch.index = index;
-    batch.table_uuid = request.target_table.uuid.canonical;
+    batch.table_uuid = request.target_table.uuid;
     batch.entry_kind = "insert";
     batch.entries.reserve(built.entries.size());
     for (const auto& entry : built.entries) {
@@ -4486,10 +4486,10 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
   }
 
   const TypedUuid relation_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   const TypedUuid transaction_uuid =
       ParseDirectTypedUuid(UuidKind::transaction,
-                           request.context.transaction_uuid.canonical);
+                           request.context.transaction_uuid);
   if (!relation_uuid.valid() || !transaction_uuid.valid() ||
       request.context.local_transaction_id == 0) {
     result.ok = false;
@@ -4576,15 +4576,15 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
           std::move(batch));
   if (!written.ok()) {
     result.ok = false;
-    result.diagnostic = MakeEngineApiDiagnostic(
+    result.diagnostic = MakeEngineApiDiagnosticFromNative(
+        written.diagnostic,
         written.diagnostic.diagnostic_code.empty()
             ? "SB-IPAR-PHYSICAL-MGA-COW-WRITE-FAILED"
             : written.diagnostic.diagnostic_code,
         written.diagnostic.message_key.empty()
             ? "dml.direct_physical_bulk.physical_mga_cow_failed"
             : written.diagnostic.message_key,
-        "batch_rows=" + std::to_string(staged_rows.size()),
-        true);
+        "batch_rows=" + std::to_string(staged_rows.size()));
     return result;
   }
   result.written_rows = written.written_rows;
@@ -4688,7 +4688,7 @@ DirectPhysicalBulkAppendResult DirectBulkFailure(
       trace_path != nullptr && *trace_path != '\0') {
     if (std::ofstream out(trace_path, std::ios::app | std::ios::binary); out) {
       out << "operation=dml.direct_physical_bulk_append"
-          << "\ttable=" << request.target_table.uuid.canonical
+          << "\ttable=" << request.target_table.uuid
           << "\trows=0"
           << "\taccepted=0"
           << "\ttx=" << request.context.local_transaction_id
@@ -4899,7 +4899,7 @@ void WriteDirectBulkPhaseTrace(
     return;
   }
   out << "operation=dml.direct_physical_bulk_append"
-      << "\ttable=" << request.target_table.uuid.canonical
+      << "\ttable=" << request.target_table.uuid
       << "\trows=" << result.inserted_rows
       << "\taccepted=" << result.accepted_rows
       << "\ttx=" << request.context.local_transaction_id;
@@ -5298,11 +5298,11 @@ DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
   };
 
   const TypedUuid database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   const TypedUuid object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   const TypedUuid transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
   if (!database_uuid.valid() || !object_uuid.valid() || !transaction_uuid.valid()) {
     return fail_before_begin("strict_bulk_load_invalid_identity");
   }
@@ -5504,7 +5504,7 @@ DirectPhysicalBulkAppendResult PublishDirectStrictBulkAfterPhysicalSuccess(
   result.evidence.push_back({"strict_bulk_load_physical_publication_succeeded",
                              "row_index_append_flush"});
   const auto transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid.canonical);
+      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
   const auto published = scratchbird::core::bulk_load::PublishStrictBulkLoadVisible(
       &lifecycle->ledger,
       scratchbird::core::bulk_load::StrictBulkLoadPublishRequest{
@@ -5543,7 +5543,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool use_append_caches = test_profile != TestOptimizationProfile::uncached &&
                                 test_profile != TestOptimizationProfile::relation_rows;
   const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
-      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::insert);
+      request.context, request.target_table.uuid, MgaDmlMutationKind::insert);
   if (savepoint_admission.error) {
     return DirectBulkFailure(request, savepoint_admission, "savepoint_mutation_provider_not_admitted");
   }
@@ -5572,7 +5572,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "local_transaction_id_required"),
         "local_transaction_id_required");
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return DirectBulkFailure(
         request,
         MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
@@ -5638,7 +5638,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto index_only_eligibility =
       CanUseMgaRelationIndexOnlyProofForInsertTarget(
           request.context,
-          request.target_table.uuid.canonical);
+          request.target_table.uuid);
   mark_descriptor_step("index_only_eligibility",
                        index_only_start,
                        DirectSteadyClock::now());
@@ -5650,7 +5650,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   bool index_entries_authoritative = index_only_eligibility.eligible &&
       test_profile != TestOptimizationProfile::relation_rows;
   if (test_profile == TestOptimizationProfile::cold) {
-    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid);
     RecordTestOptimizationBranch("cache_cold");
   }
   const bool bypass_single_window_native_bulk_cache =
@@ -5666,7 +5666,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (use_append_caches && index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
     append_index_cache_hit = DirectAppendIndexEntryCacheAvailable(
         request.context,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         index_only_eligibility.row_version_count,
         sorted_bulk_index_requested);
   }
@@ -5674,7 +5674,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   std::string append_index_cache_context_note;
   bool bulk_context_cache_hit = use_append_caches && DirectLookupBulkAppendContextCache(
       request.context,
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       index_only_eligibility.row_version_count,
       &bulk_context_cache);
   if (bulk_context_cache_hit) {
@@ -5711,11 +5711,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         index_entries_authoritative
             ? (append_index_cache_hit
                    ? relation_store.LoadInsertTargetMetadata(
-                         request.target_table.uuid.canonical)
+                         request.target_table.uuid)
                    : relation_store.LoadInsertTargetIndexes(
-                         request.target_table.uuid.canonical))
+                         request.target_table.uuid))
             : relation_store.LoadInsertTarget(
-                  request.target_table.uuid.canonical);
+                  request.target_table.uuid);
     mark_descriptor_step("relation_state_load",
                          relation_load_start,
                          DirectSteadyClock::now());
@@ -5751,7 +5751,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (use_append_caches && !bulk_context_cache_hit && index_entries_authoritative && !append_index_cache_hit) {
     DirectStoreAppendIndexEntryCache(
         request.context,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         index_only_eligibility.row_version_count,
         *state,
         state->index_entries);
@@ -5759,7 +5759,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   }
   const auto find_table_start = DirectSteadyClock::now();
   auto table = FindVisibleMgaTable(*state,
-                                    request.target_table.uuid.canonical,
+                                    request.target_table.uuid,
                                     request.context.local_transaction_id);
   mark_descriptor_step("find_visible_table",
                        find_table_start,
@@ -5775,12 +5775,12 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       table->temporary || DirectTableRequiresLiveRowVisibility(*table) ||
       DirectStateHasVisibleInboundForeignKey(
           *state,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           request.context.local_transaction_id);
   if (index_entries_authoritative &&
       relation_state_requires_live_rows) {
     auto reloaded = relation_store.LoadInsertTarget(
-        request.target_table.uuid.canonical);
+        request.target_table.uuid);
     if (!reloaded.ok) {
       return DirectBulkFailure(request,
                                reloaded.diagnostic,
@@ -5790,7 +5790,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     state_storage = relation_store.BuildReadView(&loaded);
     state = &state_storage;
     table = FindVisibleMgaTable(*state,
-                                 request.target_table.uuid.canonical,
+                                 request.target_table.uuid,
                                  request.context.local_transaction_id);
     if (!table) {
       return DirectBulkFailure(
@@ -5803,14 +5803,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     append_index_cache_hit = false;
   }
   (void)scratchbird::core::metrics::RecordInsertRelationStateLoad(
-      request.target_table.uuid.canonical,
+      request.target_table.uuid,
       "copy_import",
       loaded.full_state_load,
       loaded.scoped_state_load,
       index_entries_authoritative
           ? "direct_physical_bulk_insert_target_index_only_scoped"
           : "direct_physical_bulk_insert_target_scoped");
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return DirectBulkFailure(
         request,
         MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
@@ -5852,7 +5852,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     const auto descriptor_start = DirectSteadyClock::now();
     visible_indexes = VisibleMgaIndexesForTable(
         *state,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         request.context.local_transaction_id);
     const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(
         request.context,
@@ -5868,7 +5868,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         !bypass_single_window_native_bulk_cache &&
         !relation_state_requires_live_rows) {
       DirectStoreBulkAppendContextCache(request.context,
-                                        request.target_table.uuid.canonical,
+                                        request.target_table.uuid,
                                         index_only_eligibility.row_version_count,
                                         *state,
                                         visible_indexes,
@@ -5981,7 +5981,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  ? "direct_physical_bulk_append_context_reuse"
                                  : "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
-                             relation_descriptor.descriptor_uuid.canonical});
+                             relation_descriptor.descriptor_uuid});
   DirectBulkUuidBatch uuid_batch =
       BuildDirectBulkUuidBatch(request, direct_row_count);
   AddDirectBulkUuidBatchEvidence(uuid_batch, &result);
@@ -6023,7 +6023,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   ingestion_config.state = state;
   ingestion_config.operation_id = "dml.direct_physical_bulk_append";
   ingestion_config.lane_operation = request.lane_operation;
-  ingestion_config.target_table_uuid = request.target_table.uuid.canonical;
+  ingestion_config.target_table_uuid = request.target_table.uuid;
   ingestion_config.input_row_count =
       static_cast<EngineApiU64>(direct_row_count);
   ingestion_config.enable_preallocator = page_allocation_runtime_requested;
@@ -6482,11 +6482,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       const auto convert_start = row_stage_timer_start();
       CrudRowVersionRecord row_record;
       row_record.creator_tx = request.context.local_transaction_id;
-      row_record.table_uuid = request.target_table.uuid.canonical;
+      row_record.table_uuid = request.target_table.uuid;
       row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
       row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
 	      row_record.temporary_session_uuid =
-	          table->temporary ? request.context.session_uuid.canonical : "";
+	          table->temporary ? request.context.session_uuid : "";
 	      row_record.deleted = false;
 	      std::vector<std::pair<std::string, std::string>> row_values;
 	      row_values.reserve(generated_counter_plan.projections.size());
@@ -6550,7 +6550,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	        const auto security_recheck =
 	            EvaluateDirectRuntimeInsertSecurityRecheck(
 	                request,
-	                request.target_table.uuid.canonical,
+	                request.target_table.uuid,
 	                row_values,
 	                &security_recheck_evidence);
         if (!security_recheck.ok || !security_recheck.admitted) {
@@ -6622,7 +6622,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
       CrudRowVersionRecord row_record;
       row_record.creator_tx = request.context.local_transaction_id;
-      row_record.table_uuid = request.target_table.uuid.canonical;
+      row_record.table_uuid = request.target_table.uuid;
       if (async_native_packet_index_precompute) {
         row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
         row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
@@ -6631,7 +6631,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         row_record.version_uuid = std::move(uuid_batch.version_uuids[row_ordinal]);
       }
       row_record.temporary_session_uuid =
-          table->temporary ? request.context.session_uuid.canonical : "";
+          table->temporary ? request.context.session_uuid : "";
       row_record.deleted = false;
 
       std::string not_null_failure;
@@ -6870,7 +6870,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	        const auto security_recheck =
 	            EvaluateDirectRuntimeInsertSecurityRecheck(
 	                request,
-	                request.target_table.uuid.canonical,
+	                request.target_table.uuid,
 	                values,
 	                &security_recheck_evidence);
 	        if (!security_recheck.ok || !security_recheck.admitted) {
@@ -6939,11 +6939,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
 	      CrudRowVersionRecord row_record;
 	      row_record.creator_tx = request.context.local_transaction_id;
-	      row_record.table_uuid = request.target_table.uuid.canonical;
+	      row_record.table_uuid = request.target_table.uuid;
 	      row_record.row_uuid = prepared.row_uuid;
 	      row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
 	      row_record.temporary_session_uuid =
-	          table->temporary ? request.context.session_uuid.canonical : "";
+	          table->temporary ? request.context.session_uuid : "";
 	      row_record.deleted = false;
 	      const auto value_copy_start = row_stage_timer_start();
 	      row_record.values = prepared.values;
@@ -7109,11 +7109,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
             std::move(uuid_batch.version_uuids[row_ordinal]);
       } else {
         row_record.creator_tx = request.context.local_transaction_id;
-        row_record.table_uuid = request.target_table.uuid.canonical;
+        row_record.table_uuid = request.target_table.uuid;
         row_record.row_uuid = uuid_batch.row_uuids[row_ordinal];
         row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
         row_record.temporary_session_uuid =
-            table->temporary ? request.context.session_uuid.canonical : "";
+            table->temporary ? request.context.session_uuid : "";
         row_record.deleted = false;
       }
       std::vector<std::pair<std::string, std::string>> external_row_values;
@@ -7231,7 +7231,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           const auto security_recheck =
               EvaluateDirectRuntimeInsertSecurityRecheck(
                   request,
-                  request.target_table.uuid.canonical,
+                  request.target_table.uuid,
                   staged_value_target,
                   &security_recheck_evidence);
           if (!security_recheck.ok || !security_recheck.admitted) {
@@ -7432,7 +7432,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       const auto security_recheck =
           EvaluateDirectRuntimeInsertSecurityRecheck(
               request,
-              request.target_table.uuid.canonical,
+              request.target_table.uuid,
               values,
               &security_recheck_evidence);
       if (!security_recheck.ok || !security_recheck.admitted) {
@@ -7494,11 +7494,11 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
-    row_record.table_uuid = request.target_table.uuid.canonical;
+    row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid.canonical : "";
+        table->temporary ? request.context.session_uuid : "";
     row_record.deleted = false;
     const auto value_copy_start = row_stage_timer_start();
     row_record.values = prepared.values;
@@ -7722,14 +7722,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       append_index_entry_key_cache;
 
   if (test_profile == TestOptimizationProfile::evicted && append_index_cache_hit) {
-    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+    detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid);
     RecordTestOptimizationBranch("cache_evicted_before_proof");
   }
   if (index_entries_authoritative &&
       append_index_cache_hit &&
       index_only_eligibility.row_version_count != 0) {
     if (!DirectBuildAppendIndexConflictCaches(request.context,
-                                         request.target_table.uuid.canonical,
+                                         request.target_table.uuid,
                                          index_only_eligibility.row_version_count,
                                          visible_indexes,
                                          logical_value_batch,
@@ -7740,7 +7740,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       // Cache eviction is not a constraint failure. Reacquire the canonical
       // table-scoped index view under the SAME MGA request snapshot. Do not
       // accept a partial cache proof or restart the transaction.
-      auto reloaded = relation_store.LoadInsertTargetIndexes(request.target_table.uuid.canonical);
+      auto reloaded = relation_store.LoadInsertTargetIndexes(request.target_table.uuid);
       if (!reloaded.ok) {
         return DirectBulkFailure(request, reloaded.diagnostic,
                                  "append_index_cache_reload_failed");
@@ -7750,7 +7750,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       state_storage.index_entries = std::move(refreshed.index_entries);
       state = &state_storage;
       DirectStoreAppendIndexEntryCache(
-          request.context, request.target_table.uuid.canonical,
+          request.context, request.target_table.uuid,
           index_only_eligibility.row_version_count, *state, state->index_entries);
       append_index_key_cache.clear();
       append_index_entry_key_cache.clear();
@@ -7875,7 +7875,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         continue;
       }
       const std::string proof_id =
-          "not_null_descriptor:" + request.target_table.uuid.canonical + ":" +
+          "not_null_descriptor:" + request.target_table.uuid + ":" +
           column.column_name;
       result.evidence.push_back({"constraint_proof_store", proof_id});
       result.evidence.push_back({"constraint_proof_hit", proof_id});
@@ -7981,7 +7981,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     row_allocation = ReserveDmlPageAllocationRuntime(
         request.context,
         request.option_envelopes,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         DmlPageAllocationRuntimeFamily::row_data,
         static_cast<std::uint64_t>(staged_rows.size()),
         "direct_physical_bulk.row_data");
@@ -8068,7 +8068,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         request.context,
         request.option_envelopes,
         *state,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         logical_value_batch,
         "direct_physical_bulk.index");
     index_allocation_elapsed =
@@ -8166,7 +8166,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     large_value_rows.reserve(staged_rows.size());
     for (std::size_t index = 0; index < staged_rows.size(); ++index) {
       large_value_rows.push_back(
-          {request.target_table.uuid.canonical,
+          {request.target_table.uuid,
            staged_rows[index].row_uuid,
            staged_rows[index].version_uuid,
            force_large_values_for_insert ||
@@ -8274,7 +8274,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
        native_bulk_native_packet_scoped_row_stream) &&
       !request.shared_row_field_order.empty();
   std::string native_bulk_typed_scoped_table_uuid =
-      request.target_table.uuid.canonical;
+      request.target_table.uuid;
   if ((native_bulk_typed_scoped_table_uuid.empty() ||
        native_bulk_typed_scoped_table_uuid == "unknown") &&
       !staged_rows.empty()) {
@@ -8337,7 +8337,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                    staged_rows,
 	                                    native_bulk_typed_scoped_table_uuid,
 	                                    table->temporary
-	                                        ? request.context.session_uuid.canonical
+	                                        ? request.context.session_uuid
 	                                        : "",
 	                                    *request.native_row_packet)
 	                          : native_bulk_typed_logical_batch_bypass
@@ -8346,7 +8346,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
 	                                    staged_rows,
 	                                    native_bulk_typed_scoped_table_uuid,
 	                                    table->temporary
-	                                        ? request.context.session_uuid.canonical
+	                                        ? request.context.session_uuid
 	                                        : "",
 	                                    request.borrowed_input_rows,
 	                                    request.shared_row_field_order)
@@ -8653,7 +8653,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       }
       retail_exact_append_batches = DirectMoveExactIndexAppendBatches(
           sorted_index_build.retail_indexes,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           &direct_precomputed_index_entries);
       result.evidence.push_back(
           {"index_apply_planner",
@@ -8679,7 +8679,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     } else {
       auto candidate_batches = DirectIndexAppendBatches(
           sorted_index_build.retail_indexes,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           index_rows);
       if (DirectAllIndexesUnique(sorted_index_build.retail_indexes)) {
         index_apply_batches = std::move(candidate_batches);
@@ -8780,13 +8780,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   if (use_append_caches && index_entries_authoritative && !bypass_single_window_native_bulk_cache) {
     RecordTestOptimizationBranch("cache_publish");
     if (test_profile == TestOptimizationProfile::publication_evicted) {
-      detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid.canonical);
+      detail::DirectEvictAppendIndexEntryCache(request.context, request.target_table.uuid);
       RecordTestOptimizationBranch("cache_evicted_before_publication");
     }
     if (retail_exact_append_batches.empty()) {
       DirectAppendIndexBatchesToCache(
           request.context,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           index_only_eligibility.row_version_count,
           static_cast<std::uint64_t>(staged_rows.size()),
           sorted_index_build.exact_batches,
@@ -8800,7 +8800,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  retail_exact_append_batches.end());
       DirectAppendIndexBatchesToCache(
           request.context,
-          request.target_table.uuid.canonical,
+          request.target_table.uuid,
           index_only_eligibility.row_version_count,
           static_cast<std::uint64_t>(staged_rows.size()),
           cache_exact_batches,
@@ -8827,14 +8827,14 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
         static_cast<std::uint64_t>(staged_rows.size());
     const bool advanced_context_cache =
         DirectAdvanceBulkAppendContextCache(request.context,
-                                            request.target_table.uuid.canonical,
+                                            request.target_table.uuid,
                                             index_only_eligibility.row_version_count,
                                             next_row_version_count,
                                             index_entries_authoritative,
                                             true);
     if (!advanced_context_cache) {
       DirectStoreBulkAppendContextCache(request.context,
-                                        request.target_table.uuid.canonical,
+                                        request.target_table.uuid,
                                         next_row_version_count,
                                         *state,
                                         visible_indexes,
@@ -8877,7 +8877,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       returning_row.creator_tx = request.context.local_transaction_id;
       returning_row.event_sequence = row.event_sequence;
       returning_row.sequence = row.sequence;
-      returning_row.table_uuid = request.target_table.uuid.canonical;
+      returning_row.table_uuid = request.target_table.uuid;
       returning_row.row_uuid = row.row_uuid;
       returning_row.version_uuid = row.version_uuid;
       returning_row.deleted = false;

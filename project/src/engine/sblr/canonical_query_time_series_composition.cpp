@@ -161,14 +161,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   // boundary.  Check that boundary before generic graph validation so a
   // substituted snapshot can never be reported as an ordinary graph-shape
   // failure (and, more importantly, can never reach planning or access).
-  if (dag.statement_uuid != input.context.statement_uuid.canonical ||
+  if (dag.statement_uuid != input.context.statement_uuid ||
       dag.statement_timestamp != input.context.statement_timestamp ||
       dag.owning_transaction_uuid !=
-          input.context.transaction_uuid.canonical ||
+          input.context.transaction_uuid ||
       dag.statement_snapshot_uuid !=
-          input.context.statement_snapshot_uuid.canonical ||
+          input.context.statement_snapshot_uuid ||
       dag.statement_metadata_snapshot_uuid !=
-          input.context.statement_metadata_snapshot_uuid.canonical ||
+          input.context.statement_metadata_snapshot_uuid ||
       dag.local_transaction_id != input.context.local_transaction_id ||
       dag.snapshot_visible_through_local_transaction_id !=
           input.context.snapshot_visible_through_local_transaction_id) {
@@ -176,12 +176,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series typed DAG statement/MGA boundary changed");
   }
   if (dag.bound_catalog_epoch_uuid !=
-      input.context.catalog_epoch_uuid.canonical) {
+      input.context.catalog_epoch_uuid) {
     return refuse("SB_MODEL_CATALOG_GENERATION_STALE_V1",
                   "time-series typed DAG bound catalog epoch changed");
   }
   if (dag.bound_security_context_uuid !=
-      input.context.authorization_context.authority_uuid.canonical) {
+      input.context.authorization_context.authority_uuid) {
     return refuse("SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
                   "time-series typed DAG bound security context changed");
   }
@@ -431,7 +431,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   "time-series range descriptor is absent");
   }
   api::EngineTypedValue range_start;
-  range_start.descriptor.descriptor_uuid.canonical =
+  range_start.descriptor.descriptor_uuid =
       start_descriptor->descriptor_uuid;
   range_start.descriptor.descriptor_kind = "scalar";
   range_start.descriptor.canonical_type_name = "timestamp_tz";
@@ -439,7 +439,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   range_start.encoded_value = *start_expression->literal_or_parameter_ref;
   range_start.setState(api::EngineValueState::value);
   auto range_end = range_start;
-  range_end.descriptor.descriptor_uuid.canonical =
+  range_end.descriptor.descriptor_uuid =
       end_descriptor->descriptor_uuid;
   range_end.encoded_value = *end_expression->literal_or_parameter_ref;
   std::int64_t canonical_range_start_ns = 0;
@@ -663,11 +663,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                     "time-series public output descriptor was substituted");
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+    engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
+    engine_descriptor.type_uuid = descriptor->type_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name = std::string(expected_type);
     engine_descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+        "nullability=non_null";
     if (descriptor->timezone_profile_id.has_value()) {
       engine_descriptor.encoded_descriptor +=
           ";timezone_profile_id=" + *descriptor->timezone_profile_id;
@@ -709,12 +710,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted = loaded_relation.descriptor;
-  if (persisted.relation_uuid.canonical != object_uuid ||
-      persisted.database_uuid.canonical != input.context.database_uuid.canonical ||
-      persisted.schema_uuid.canonical.empty() ||
+  if (persisted.relation_uuid != object_uuid ||
+      persisted.database_uuid != input.context.database_uuid ||
+      persisted.schema_uuid.is_nil() ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
-      persisted.descriptor_uuid.canonical.empty() ||
+      persisted.descriptor_uuid.is_nil() ||
       persisted.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent time-series descriptor is invalid");
@@ -730,7 +731,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   const auto exact_range_descriptor = [&](const auto descriptor) {
     return descriptor != dag.descriptors.end() &&
            descriptor->descriptor_uuid ==
-               persisted.columns[1].value_descriptor.descriptor_uuid.canonical &&
+               persisted.columns[1].value_descriptor.descriptor_uuid &&
            descriptor->type_uuid == core_type_uuid("timestamp") &&
            descriptor->nullability == api::RelationalNullability::kNonNull &&
            descriptor->timezone_profile_id == std::optional<std::string>("UTC");
@@ -802,7 +803,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     if (aggregate_expression == dag.expressions.end() ||
         aggregate_descriptor == dag.descriptors.end() ||
         aggregate_descriptor->descriptor_uuid !=
-            persisted.columns[2].value_descriptor.descriptor_uuid.canonical ||
+            persisted.columns[2].value_descriptor.descriptor_uuid ||
         aggregate_descriptor->type_uuid != core_type_uuid("character")) {
       return refuse("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
                     "time-series aggregate ID descriptor was substituted");
@@ -826,20 +827,20 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "time-series range truth descriptor is not exact");
   }
-  append_source_descriptor(persisted.descriptor_uuid.canonical, "uuid");
-  append_source_descriptor(persisted.schema_uuid.canonical, "uuid");
+  append_source_descriptor(persisted.descriptor_uuid, "uuid");
+  append_source_descriptor(persisted.schema_uuid, "uuid");
   append_source_descriptor(
-      persisted.columns[0].value_descriptor.descriptor_uuid.canonical,
+      persisted.columns[0].value_descriptor.descriptor_uuid,
       "uuid");
   append_source_descriptor(
-      persisted.columns[1].value_descriptor.descriptor_uuid.canonical,
+      persisted.columns[1].value_descriptor.descriptor_uuid,
       "timestamp");
   if (downsample_operation) {
-    append_source_descriptor(persisted.columns[1].column_uuid.canonical,
+    append_source_descriptor(persisted.columns[1].column_uuid,
                              "timestamp");
   }
   append_source_descriptor(
-      persisted.columns[2].value_descriptor.descriptor_uuid.canonical,
+      persisted.columns[2].value_descriptor.descriptor_uuid,
       "character");
   if (downsample_operation) {
     append_source_descriptor(sample_count_descriptor->descriptor_uuid,
@@ -852,11 +853,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   append_source_descriptor(range_result_descriptor->descriptor_uuid,
                            "boolean");
   append_source_descriptor(
-      persisted.columns[3].value_descriptor.descriptor_uuid.canonical,
+      persisted.columns[3].value_descriptor.descriptor_uuid,
       "real64");
   if (downsample_operation &&
       aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount) {
-    append_source_descriptor(persisted.columns[3].column_uuid.canonical,
+    append_source_descriptor(persisted.columns[3].column_uuid,
                              "int64");
   }
   std::unordered_set<std::uint32_t> source_expression_closure;
@@ -912,7 +913,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         });
     const bool hidden_row_identity =
         hidden_descriptor_count == 1 &&
-        expected.first == persisted.descriptor_uuid.canonical;
+        expected.first == persisted.descriptor_uuid;
     exact_source_descriptor_cohort =
         exact_source_descriptor_cohort && descriptor != dag.descriptors.end() &&
         (source_descriptor_ids.contains(descriptor->descriptor_id) !=
@@ -926,15 +927,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   std::vector<std::string_view> expected_public_core_types;
   if (downsample_operation) {
     expected_public_descriptor_uuids = {
-        persisted.schema_uuid.canonical,
-        persisted.columns[0].value_descriptor.descriptor_uuid.canonical,
-        persisted.columns[1].value_descriptor.descriptor_uuid.canonical,
-        persisted.columns[1].column_uuid.canonical,
-        persisted.columns[2].value_descriptor.descriptor_uuid.canonical,
+        persisted.schema_uuid,
+        persisted.columns[0].value_descriptor.descriptor_uuid,
+        persisted.columns[1].value_descriptor.descriptor_uuid,
+        persisted.columns[1].column_uuid,
+        persisted.columns[2].value_descriptor.descriptor_uuid,
         sample_count_descriptor->descriptor_uuid,
         aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
-            ? persisted.columns[3].column_uuid.canonical
-            : persisted.columns[3].value_descriptor.descriptor_uuid.canonical};
+            ? persisted.columns[3].column_uuid
+            : persisted.columns[3].value_descriptor.descriptor_uuid};
     expected_public_core_types = {
         "uuid", "uuid", "timestamp", "timestamp", "character", "int64",
         aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
@@ -942,16 +943,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             : std::string_view("real64")};
   } else if (bucket_operation) {
     expected_public_descriptor_uuids = {
-        persisted.columns[1].value_descriptor.descriptor_uuid.canonical};
+        persisted.columns[1].value_descriptor.descriptor_uuid};
     expected_public_core_types = {"timestamp"};
   } else {
     expected_public_descriptor_uuids = {
-        persisted.descriptor_uuid.canonical,
-        persisted.schema_uuid.canonical,
-        persisted.columns[0].value_descriptor.descriptor_uuid.canonical,
-        persisted.columns[1].value_descriptor.descriptor_uuid.canonical,
-        persisted.columns[2].value_descriptor.descriptor_uuid.canonical,
-        persisted.columns[3].value_descriptor.descriptor_uuid.canonical};
+        persisted.descriptor_uuid,
+        persisted.schema_uuid,
+        persisted.columns[0].value_descriptor.descriptor_uuid,
+        persisted.columns[1].value_descriptor.descriptor_uuid,
+        persisted.columns[2].value_descriptor.descriptor_uuid,
+        persisted.columns[3].value_descriptor.descriptor_uuid};
     expected_public_core_types = {
         "uuid", "uuid", "uuid", "timestamp", "character", "real64"};
   }
@@ -983,12 +984,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
   if (!downsample_operation && !bucket_operation) {
     const std::array<std::string, 6> expected_bound_names{
-        persisted.descriptor_uuid.canonical,
-        persisted.schema_uuid.canonical,
-        persisted.columns[0].column_uuid.canonical,
-        persisted.columns[1].column_uuid.canonical,
-        persisted.columns[2].column_uuid.canonical,
-        persisted.columns[3].column_uuid.canonical};
+        persisted.descriptor_uuid,
+        persisted.schema_uuid,
+        persisted.columns[0].column_uuid,
+        persisted.columns[1].column_uuid,
+        persisted.columns[2].column_uuid,
+        persisted.columns[3].column_uuid};
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
       const auto expression = expression_for(outputs[ordinal]->expression_id);
       if (expression == dag.expressions.end() ||
@@ -1016,9 +1017,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         timestamp_expression->expression_kind !=
             api::RelationalExpressionKind::kIdentifier ||
         timestamp_expression->bound_name_uuid !=
-            persisted.columns[1].column_uuid.canonical ||
+            persisted.columns[1].column_uuid ||
         timestamp_descriptor->descriptor_uuid !=
-            persisted.columns[1].value_descriptor.descriptor_uuid.canonical ||
+            persisted.columns[1].value_descriptor.descriptor_uuid ||
         timestamp_descriptor->type_uuid != core_type_uuid("timestamp")) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "TIME_BUCKET point timestamp binding was substituted");
@@ -1026,15 +1027,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
   if (downsample_operation) {
     const std::array<std::string, 7> expected_bound_names{
-        persisted.schema_uuid.canonical,
-        persisted.columns[0].column_uuid.canonical,
-        persisted.columns[1].column_uuid.canonical,
-        persisted.columns[1].column_uuid.canonical,
-        persisted.columns[2].column_uuid.canonical,
-        persisted.relation_uuid.canonical,
+        persisted.schema_uuid,
+        persisted.columns[0].column_uuid,
+        persisted.columns[1].column_uuid,
+        persisted.columns[1].column_uuid,
+        persisted.columns[2].column_uuid,
+        persisted.relation_uuid,
         aggregate == api::EngineBoundTimeSeriesAggregateV1::kCount
-            ? persisted.relation_uuid.canonical
-            : persisted.columns[3].column_uuid.canonical};
+            ? persisted.relation_uuid
+            : persisted.columns[3].column_uuid};
     for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
       const auto expression = expression_for(outputs[ordinal]->expression_id);
       if (expression == dag.expressions.end() ||
@@ -1061,9 +1062,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         value_expression->expression_kind !=
             api::RelationalExpressionKind::kIdentifier ||
         value_expression->bound_name_uuid !=
-            persisted.columns[3].column_uuid.canonical ||
+            persisted.columns[3].column_uuid ||
         value_descriptor->descriptor_uuid !=
-            persisted.columns[3].value_descriptor.descriptor_uuid.canonical ||
+            persisted.columns[3].value_descriptor.descriptor_uuid ||
         value_descriptor->type_uuid != core_type_uuid("real64")) {
       return refuse("SB_MODEL_TIME_SERIES_AGGREGATE_REFUSED_V1",
                     "TIME_DOWNSAMPLE value binding was substituted");
@@ -1084,11 +1085,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         relational_authorization.policy_recheck_required ||
         !relational_authorization.diagnostics.empty() ||
         !relational_relation.ok ||
-        relational_relation.descriptor.relation_uuid.canonical !=
+        relational_relation.descriptor.relation_uuid !=
             relational_object_uuid ||
-        relational_relation.descriptor.database_uuid.canonical !=
-            input.context.database_uuid.canonical ||
-        relational_relation.descriptor.descriptor_uuid.canonical.empty() ||
+        relational_relation.descriptor.database_uuid !=
+            input.context.database_uuid ||
+        relational_relation.descriptor.descriptor_uuid.is_nil() ||
         relational_relation.descriptor.descriptor_generation == 0) {
       return refuse(
           "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
@@ -1098,17 +1099,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
   planning_scope.owning_transaction_uuid =
-      input.context.transaction_uuid.canonical;
+      input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -1134,7 +1135,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   }
 
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto provider_generations =
       api::ListNoSqlProviderGenerations(input.context);
   std::vector<const api::EngineNoSqlProviderGenerationMetadata*>
@@ -1149,7 +1150,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         metadata.collection_uuid == object_uuid &&
         metadata.database_identity ==
             api::EngineNoSqlProviderDatabaseIdentity(input.context) &&
-        metadata.database_uuid == input.context.database_uuid.canonical;
+        metadata.database_uuid == input.context.database_uuid;
     if (!same_time_series_collection) {
       return refuse("SB_MODEL_PROVIDER_GENERATION_STALE_V1",
                     "time-series persisted rollup binding was substituted");
@@ -1161,7 +1162,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         metadata.collection_uuid == object_uuid &&
         metadata.database_identity ==
             api::EngineNoSqlProviderDatabaseIdentity(input.context) &&
-        metadata.database_uuid == input.context.database_uuid.canonical;
+        metadata.database_uuid == input.context.database_uuid;
     if (!same_time_series_collection) continue;
 
     const bool default_rollup_carrier =
@@ -1209,11 +1210,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       "time-series persisted rollup interval was substituted");
       }
       if (metadata.time_series_rollup_statement_snapshot_uuid !=
-              input.context.statement_snapshot_uuid.canonical ||
+              input.context.statement_snapshot_uuid ||
           metadata.time_series_rollup_statement_metadata_snapshot_uuid !=
-              input.context.statement_metadata_snapshot_uuid.canonical ||
+              input.context.statement_metadata_snapshot_uuid ||
           metadata.time_series_rollup_owning_transaction_uuid !=
-              input.context.transaction_uuid.canonical ||
+              input.context.transaction_uuid ||
           metadata.time_series_rollup_local_transaction_id !=
               input.context.local_transaction_id ||
           metadata
@@ -1224,7 +1225,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       }
       if (!metadata.time_series_rollup_security_recheck_required ||
           metadata.time_series_rollup_security_context_uuid !=
-              input.context.authorization_context.authority_uuid.canonical ||
+              input.context.authorization_context.authority_uuid ||
           metadata.security_epoch !=
               std::max<std::uint64_t>(1, input.context.security_epoch) ||
           metadata.redaction_epoch !=
@@ -1233,7 +1234,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                       "time-series persisted rollup security cohort changed");
       }
       if (metadata.time_series_rollup_catalog_epoch_uuid !=
-              input.context.catalog_epoch_uuid.canonical ||
+              input.context.catalog_epoch_uuid ||
           metadata.catalog_epoch !=
               std::max<std::uint64_t>(
                   1, input.context.catalog_generation_id) ||
@@ -1303,17 +1304,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   planning.output_descriptor_ids = source->output_descriptor_ids;
   planning.mga_statement_context = mga;
   planning.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
-  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   planning.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   planning.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   planning.statistics_snapshot_uuid =
       DerivedCanonicalUuid(identity_scope, "time-series.statistics-snapshot");
   planning.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   planning.catalog_generation = generation;
   planning.current_catalog_generation = generation;
   planning.security_epoch = std::max<std::uint64_t>(1, input.context.security_epoch);
@@ -1398,7 +1399,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
   provider_request.bucket_interval_ns =
       downsample_operation ? bucket_interval_ns : 0;
   provider_request.expected_descriptor_uuid =
-      persisted.descriptor_uuid.canonical;
+      persisted.descriptor_uuid;
   provider_request.expected_descriptor_generation =
       persisted.descriptor_generation;
   provider_request.selected_alternative_uuid =
@@ -1493,9 +1494,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       planned.physical_dag.nodes.front().causal_counter_id;
   source_input.output_descriptor_ids = source->output_descriptor_ids;
   source_input.mga_statement_context = mga;
-  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   source_input.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   source_input.policy_snapshot_uuid =
       DerivedCanonicalUuid(identity_scope, "time-series.policy-snapshot");
   source_input.resource_contract_uuid =
@@ -1637,11 +1638,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
 
     opt::CanonicalNativeObjectAdmissionContext admission_context;
     admission_context.statement_uuid =
-        input.context.statement_uuid.canonical;
+        input.context.statement_uuid;
     admission_context.catalog_snapshot_uuid =
-        input.context.statement_metadata_snapshot_uuid.canonical;
+        input.context.statement_metadata_snapshot_uuid;
     admission_context.security_context_uuid =
-        input.context.authorization_context.authority_uuid.canonical;
+        input.context.authorization_context.authority_uuid;
     admission_context.catalog_generation =
         input.context.catalog_generation_id;
     admission_context.authorization_catalog_generation =
@@ -1652,11 +1653,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         input.context.authorization_context.policy_epoch;
     admission_context.resource_epoch = input.context.resource_epoch;
     admission_context.capability_snapshot_uuid =
-        input.context.optimizer_capability_snapshot_uuid.canonical;
+        input.context.optimizer_capability_snapshot_uuid;
     admission_context.resource_snapshot_uuid =
-        input.context.optimizer_resource_snapshot_uuid.canonical;
+        input.context.optimizer_resource_snapshot_uuid;
     admission_context.route_snapshot_uuid =
-        input.context.optimizer_route_snapshot_uuid.canonical;
+        input.context.optimizer_route_snapshot_uuid;
     admission_context.route_epoch = input.context.optimizer_route_epoch;
     admission_context.route_generation =
         input.context.optimizer_route_generation;
@@ -1972,13 +1973,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         const auto* output_descriptor = row_number.result_descriptor;
         const auto& window_outputs = row_number.outputs;
         api::EngineDescriptor descriptor;
-        descriptor.descriptor_uuid.canonical =
+        descriptor.descriptor_uuid =
             output_descriptor->descriptor_uuid;
+        descriptor.type_uuid = output_descriptor->type_uuid;
         descriptor.descriptor_kind = "scalar";
         descriptor.canonical_type_name = "int64";
-        descriptor.encoded_descriptor =
-            "type_uuid=" + output_descriptor->type_uuid +
-            ";nullability=non_null";
+        descriptor.encoded_descriptor = "nullability=non_null";
         exec::ExecutorColumnDescriptor row_number_column{
             window_outputs.back()->output_name_utf8, descriptor, false,
             output_descriptor->descriptor_id};
@@ -3119,7 +3119,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
         };
         const auto account_descriptor =
             [&](const api::EngineDescriptor& descriptor) {
-              return account_string(descriptor.descriptor_uuid.canonical) &&
+              return account_string(descriptor.descriptor_uuid) &&
                      account_string(descriptor.descriptor_kind) &&
                      account_string(descriptor.canonical_type_name) &&
                      account_string(descriptor.encoded_descriptor);
@@ -3453,7 +3453,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
       leg_capture, source->node_id, "time_series",
       "physical_time_series_range_scan_v1",
       "canonical.time-series.scan.v1", "time_series.local.v1",
-      persisted.descriptor_uuid.canonical, persisted.descriptor_generation,
+      persisted.descriptor_uuid, persisted.descriptor_generation,
       downsample_operation
           ? plan::CanonicalLogicalRelationalNodeKind::kAggregate
           : plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
@@ -3491,7 +3491,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     source_registration.publishes_runtime_observation_v1 = true;
     source_registration.execute =
         [execution_request, source_execution_receipt,
-         persisted_descriptor_uuid = persisted.descriptor_uuid.canonical,
+         persisted_descriptor_uuid = persisted.descriptor_uuid,
          public_columns, property_uuid, security_receipt_uuid,
          time_series_runtime_memory_receipt,
          time_series_cancellation_probe_failed,
@@ -4137,7 +4137,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
             const auto account_descriptor =
                 [&](const api::EngineDescriptor& descriptor) {
                   return account_string(
-                             descriptor.descriptor_uuid.canonical) &&
+                             descriptor.descriptor_uuid) &&
                          account_string(descriptor.descriptor_kind) &&
                          account_string(descriptor.canonical_type_name) &&
                          account_string(descriptor.encoded_descriptor);
@@ -4351,7 +4351,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
                   [&](const api::EngineDescriptor& descriptor,
                       std::uint64_t* measured) {
                     return measured_string(
-                               descriptor.descriptor_uuid.canonical,
+                               descriptor.descriptor_uuid,
                                measured) &&
                            measured_string(descriptor.descriptor_kind,
                                            measured) &&
@@ -4654,7 +4654,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalTimeSeriesFamilyQuery(
     }
     selected.engine_execution_authorized = true;
     selected.result_publication_request.statement_uuid =
-        input.context.statement_uuid.canonical;
+        input.context.statement_uuid;
     selected.result_publication_request.invocation_mode =
         exec::CanonicalResultInvocationMode::kDirect;
     selected.result_publication_request.execution_attempt_uuid =

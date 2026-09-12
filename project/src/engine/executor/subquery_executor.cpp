@@ -6,12 +6,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//
-// SBSQL bounded source-layout anchor. Runtime behavior for this family is
-// implemented by the active dispatcher, executor, planner, or function modules
-// linked beside this translation unit and covered by the corresponding proof
-// gates. Keep family-specific growth in this bounded area or in the named
-// shared runtime module, not in broad catch-all files.
+// Typed table/scalar/row/quantified/correlated/LATERAL execution. The caller's
+// verified physical DAG and engine MGA authority govern execution; this file
+// neither parses client language nor creates transaction authority.
 
 #include "descriptor_value_runtime.hpp"
 
@@ -19,7 +16,6 @@
 #include "uuid.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -30,18 +26,8 @@
 namespace scratchbird::engine::executor {
 namespace {
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const internal_api::EngineUuid& value) noexcept {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 DescriptorRuntimeDiagnostic TableSubqueryRefusal(std::string detail) {
@@ -60,7 +46,8 @@ bool DescriptorBatchCarrierIsExactDefault(const DescriptorBatch& batch) {
          batch.rows.empty() && batch.rows.capacity() == empty.rows.capacity();
 }
 
-std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+internal_api::EngineUuid CanonicalCoreDatatypeUuid(
+    const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -71,30 +58,11 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
   return count == 1 && found != manifest.manifest.descriptor_rows.end() &&
-                 found->descriptor_uuid.valid()
-             ? scratchbird::core::uuid::UuidToString(
-                   found->descriptor_uuid.value)
-             : std::string{};
-}
-
-std::optional<std::string_view> CanonicalDescriptorField(
-    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
-    const std::string_view key) {
-  const auto prefix = std::string(key) + "=";
-  std::optional<std::string_view> result;
-  std::size_t begin = 0;
-  while (begin <= descriptor.encoded_descriptor.size()) {
-    const auto end = descriptor.encoded_descriptor.find(';', begin);
-    const auto field = std::string_view(descriptor.encoded_descriptor).substr(
-        begin, end == std::string::npos ? std::string::npos : end - begin);
-    if (field.starts_with(prefix)) {
-      if (result.has_value()) return std::nullopt;
-      result = field.substr(prefix.size());
-    }
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  return result;
+                 found->descriptor_uuid.kind ==
+                     scratchbird::core::platform::UuidKind::object &&
+                 IsCanonicalUuid(found->descriptor_uuid.value)
+             ? found->descriptor_uuid.value
+             : internal_api::EngineUuid{};
 }
 
 bool CanonicalSubqueryBatchMemoryBytes(const DescriptorBatch& batch,
@@ -154,15 +122,15 @@ CorrelatedCancellationPoll PollCorrelatedCancellation(
 bool CorrelatedCancellationEvidenceBound(
     const TypedPhysicalNodeDag& dag,
     const std::function<bool()>& probe,
-    const std::string& evidence_uuid) {
-  if (!probe) return evidence_uuid.empty();
+    const internal_api::EngineUuid& evidence_uuid) {
+  if (!probe) return evidence_uuid.is_nil();
   const PhysicalAdmissionEvidence* policy = nullptr;
   for (const auto& evidence : dag.admission_evidence) {
     if (evidence.stage != PhysicalAdmissionStage::kPolicyCapability) continue;
     if (policy != nullptr) return false;
     policy = &evidence;
   }
-  return policy != nullptr && !evidence_uuid.empty() &&
+  return policy != nullptr && IsCanonicalUuid(evidence_uuid) &&
          policy->evidence_uuid == evidence_uuid;
 }
 
@@ -252,7 +220,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
     result.diagnostic = TableSubqueryRefusal(std::move(detail));
     result.output_batch = {};
     result.materialized_row_count = 0;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -381,10 +349,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubqueryBound(
 bool SubqueryEngineDescriptorExactlyEqual(
     const scratchbird::engine::internal_api::EngineDescriptor& left,
     const scratchbird::engine::internal_api::EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool SubqueryDescriptorBatchesExactlyEqual(
@@ -511,7 +476,7 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
     result.diagnostic.detail = std::move(detail);
     result.output_batch = {};
     result.source_row_count = 0;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -549,23 +514,22 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubqueryBound(
   const auto& source_descriptor = source_column.descriptor;
   const auto& result_descriptor = request.result_column.descriptor;
   const auto source_type_uuid =
-      CanonicalDescriptorField(source_descriptor, "type_uuid");
+      source_descriptor.type_uuid;
   const auto result_type_uuid =
-      CanonicalDescriptorField(result_descriptor, "type_uuid");
+      result_descriptor.type_uuid;
   if (request.value_expression_descriptor_id == 0 ||
       request.value_expression_descriptor_id != source_column.descriptor_id ||
       request.result_column.descriptor_id != source_column.descriptor_id ||
       request.result_column.stable_name.empty() ||
       !request.result_column.nullable ||
-      !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
-      !IsCanonicalUuid(*source_type_uuid) ||
-      !IsCanonicalUuid(*result_type_uuid) ||
-      *source_type_uuid != *result_type_uuid ||
-      !IsCanonicalUuid(result_descriptor.descriptor_uuid.canonical) ||
-      result_descriptor.descriptor_uuid.canonical ==
-          source_descriptor.descriptor_uuid.canonical ||
-      result_descriptor.descriptor_uuid.canonical == *source_type_uuid ||
-      result_descriptor.descriptor_uuid.canonical ==
+      !IsCanonicalUuid(source_type_uuid) ||
+      !IsCanonicalUuid(result_type_uuid) ||
+      source_type_uuid != result_type_uuid ||
+      !IsCanonicalUuid(result_descriptor.descriptor_uuid) ||
+      result_descriptor.descriptor_uuid ==
+          source_descriptor.descriptor_uuid ||
+      result_descriptor.descriptor_uuid == source_type_uuid ||
+      result_descriptor.descriptor_uuid ==
           selected_node->executor_capability_uuid ||
       !CanonicalDerivedDescriptorTypeMatches(
           source_descriptor, source_column.nullable, result_descriptor,
@@ -640,7 +604,7 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     result.diagnostic.detail = std::move(detail);
     result.output_batch = {};
     result.source_row_count = 0;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -676,21 +640,21 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
       !IsCanonicalUuid(selected_node->executor_capability_uuid)) {
     return refuse("row subquery capability identity is unresolved");
   }
-  std::unordered_set<std::string_view> source_identity_domain;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash>
+      source_identity_domain;
   source_identity_domain.insert(selected_node->executor_capability_uuid);
   for (const auto& source : table.output_batch.columns) {
-    const auto source_type_uuid =
-        CanonicalDescriptorField(source.descriptor, "type_uuid");
-    if (!IsCanonicalUuid(source.descriptor.descriptor_uuid.canonical) ||
-        !source_type_uuid.has_value() ||
-        !IsCanonicalUuid(*source_type_uuid)) {
+    const auto source_type_uuid = source.descriptor.type_uuid;
+    if (!IsCanonicalUuid(source.descriptor.descriptor_uuid) ||
+        !IsCanonicalUuid(source_type_uuid)) {
       return refuse("row subquery source identity domain is unresolved");
     }
     source_identity_domain.insert(
-        source.descriptor.descriptor_uuid.canonical);
-    source_identity_domain.insert(*source_type_uuid);
+        source.descriptor.descriptor_uuid);
+    source_identity_domain.insert(source_type_uuid);
   }
-  std::unordered_set<std::string_view> result_descriptor_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash>
+      result_descriptor_uuids;
   std::vector<std::uint32_t> result_descriptor_ids;
   result_descriptor_ids.reserve(width);
   for (std::size_t column = 0; column < width; ++column) {
@@ -699,23 +663,22 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubqueryBound(
     const auto& source_descriptor = source.descriptor;
     const auto& bound_descriptor = bound.descriptor;
     const auto source_type_uuid =
-        CanonicalDescriptorField(source_descriptor, "type_uuid");
+        source_descriptor.type_uuid;
     const auto result_type_uuid =
-        CanonicalDescriptorField(bound_descriptor, "type_uuid");
+        bound_descriptor.type_uuid;
     if (request.row_expression_descriptor_ids[column] == 0 ||
         request.row_expression_descriptor_ids[column] !=
             source.descriptor_id ||
         bound.descriptor_id != source.descriptor_id ||
         bound.stable_name.empty() || !bound.nullable ||
-        !source_type_uuid.has_value() || !result_type_uuid.has_value() ||
-        !IsCanonicalUuid(*source_type_uuid) ||
-        !IsCanonicalUuid(*result_type_uuid) ||
-        *source_type_uuid != *result_type_uuid ||
-        !IsCanonicalUuid(bound_descriptor.descriptor_uuid.canonical) ||
+        !IsCanonicalUuid(source_type_uuid) ||
+        !IsCanonicalUuid(result_type_uuid) ||
+        source_type_uuid != result_type_uuid ||
+        !IsCanonicalUuid(bound_descriptor.descriptor_uuid) ||
         source_identity_domain.contains(
-            bound_descriptor.descriptor_uuid.canonical) ||
+            bound_descriptor.descriptor_uuid) ||
         !result_descriptor_uuids
-             .insert(bound_descriptor.descriptor_uuid.canonical)
+             .insert(bound_descriptor.descriptor_uuid)
              .second ||
         !CanonicalDerivedDescriptorTypeMatches(
             source_descriptor, source.nullable, bound_descriptor, true)) {
@@ -838,7 +801,7 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
     result.output_batch = {};
     result.source_row_count = 0;
     result.exists = false;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -862,8 +825,7 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
           request.table_request.mga_authority.statement_context)) {
     return refuse("EXISTS table subquery returned a different MGA statement context");
   }
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.result_column.descriptor, "type_uuid");
+  const auto result_type_uuid = request.result_column.descriptor.type_uuid;
   const auto canonical_boolean_type_uuid =
       CanonicalCoreDatatypeUuid("boolean");
   if (request.exists_expression_descriptor_id == 0 ||
@@ -873,10 +835,12 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubqueryBound(
       request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
       request.result_column.descriptor.canonical_type_name != "boolean" ||
-      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
-      *result_type_uuid != canonical_boolean_type_uuid ||
-      request.result_column.descriptor.descriptor_uuid.canonical ==
-          *result_type_uuid) {
+      !IsCanonicalUuid(result_type_uuid) || canonical_boolean_type_uuid.is_nil() ||
+      !internal_api::QowCanonicalDescriptorIdentityV1(request.result_column.descriptor) ||
+      !request.result_column.descriptor.collation_uuid.is_nil() ||
+      result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid ==
+          result_type_uuid) {
     return refuse("EXISTS result is not a bound non-null boolean");
   }
 
@@ -964,7 +928,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
     result.output_batch = {};
     result.truth_value = api::EngineSqlTruthValue::unspecified;
     result.comparison_count = 0;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -1059,8 +1023,7 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
     return refuse(
         "quantified comparison authority carrier is not exact");
   }
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.result_column.descriptor, "type_uuid");
+  const auto result_type_uuid = request.result_column.descriptor.type_uuid;
   const auto canonical_boolean_type_uuid =
       CanonicalCoreDatatypeUuid("boolean");
   if (request.result_expression_descriptor_id == 0 ||
@@ -1070,10 +1033,12 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubqueryBound(
       !request.result_column.nullable ||
       request.result_column.descriptor.descriptor_kind != "scalar" ||
       request.result_column.descriptor.canonical_type_name != "boolean" ||
-      !result_type_uuid.has_value() || canonical_boolean_type_uuid.empty() ||
-      *result_type_uuid != canonical_boolean_type_uuid ||
-      request.result_column.descriptor.descriptor_uuid.canonical ==
-          *result_type_uuid) {
+      !IsCanonicalUuid(result_type_uuid) || canonical_boolean_type_uuid.is_nil() ||
+      !internal_api::QowCanonicalDescriptorIdentityV1(request.result_column.descriptor) ||
+      !request.result_column.descriptor.collation_uuid.is_nil() ||
+      result_type_uuid != canonical_boolean_type_uuid ||
+      request.result_column.descriptor.descriptor_uuid ==
+          result_type_uuid) {
     return refuse("quantified result is not a bound nullable boolean");
   }
 
@@ -1240,8 +1205,8 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubqueryBound(
     result.result_row_count = 0;
     result.cancellation_observed = false;
     result.transient_state_cleanup_proven = true;
-    result.cancellation_evidence_uuid.clear();
-    result.selected_plan_uuid.clear();
+    result.cancellation_evidence_uuid = {};
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -1610,9 +1575,9 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     result.output_row_count = 0;
     result.cancellation_observed = false;
     result.transient_state_cleanup_proven = true;
-    result.cancellation_evidence_uuid.clear();
-    result.correlated_plan_uuid.clear();
-    result.selected_plan_uuid.clear();
+    result.cancellation_evidence_uuid = {};
+    result.correlated_plan_uuid = {};
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;

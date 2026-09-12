@@ -2,10 +2,16 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 namespace scratchbird::engine::sblr {
 using SblrErrorUuidV1=std::array<std::uint8_t,16>;using SblrErrorSha256V1=std::array<std::uint8_t,32>;
+// Exact metadata digest; structural validation does not grant visibility or
+// validate opaque typed bytes against their live datatype descriptor.
+const SblrErrorSha256V1& SblrErrorVectorEmptySafeFieldsHashV1() noexcept;
+bool ComputeSblrErrorVectorSafeFieldsHashV1(std::span<const std::uint8_t> canonical_tlvs,
+    std::uint32_t field_count,SblrErrorSha256V1* output) noexcept;
 struct SblrErrorVectorEntryV1{std::uint64_t occurrence_ordinal=0;SblrErrorUuidV1 diagnostic_uuid{};std::uint64_t diagnostic_generation=0;std::uint32_t precedence_ordinal=0;std::uint8_t severity_code=0,redaction_class=0;std::uint32_t safe_field_count=0;SblrErrorSha256V1 safe_fields_sha256{},entry_sha256{};};
 struct SblrErrorVectorDescriptorV1{SblrErrorUuidV1 descriptor_uuid{},registry_snapshot_uuid{},statement_receipt_uuid{},diagnostic_registry_snapshot_uuid{};std::uint64_t descriptor_generation=0,registry_generation=0,diagnostic_registry_generation=0;SblrErrorSha256V1 vector_sha256{};std::vector<SblrErrorVectorEntryV1> entries;};
 struct SblrErrorVectorIssueRequestV1{SblrErrorUuidV1 statement_receipt_uuid{},registry_snapshot_uuid{},diagnostic_registry_snapshot_uuid{};std::uint64_t registry_generation=0,diagnostic_registry_generation=0;SblrErrorSha256V1 entries_sha256{};std::vector<SblrErrorVectorEntryV1> entries;};

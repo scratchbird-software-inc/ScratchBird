@@ -33,8 +33,12 @@ inline constexpr std::string_view kClusterProviderCatalogManifestId =
     "sb.cluster_catalog.public_source.v1";
 inline constexpr std::string_view kClusterProviderCatalogCompatibilityDigest =
     "sha256:cd1bce3b9693404108dbb321725402eefdc7b6d98a424b8db5b0c05512c8ab29";
+inline constexpr std::string_view kClusterPathAbsentCode =
+    "PROCESS.CLUSTER_PATH_ABSENT";
+// Existing source callers use this name for the standalone provider refusal.
+// It is not an alias accepting the obsolete diagnostic on the wire.
 inline constexpr std::string_view kClusterSupportNotEnabledCode =
-    "SBLR.CLUSTER.SUPPORT_NOT_ENABLED";
+    kClusterPathAbsentCode;
 inline constexpr std::string_view kClusterHandshakeAcceptedCode =
     "SBLR.CLUSTER.HANDSHAKE.ACCEPTED";
 inline constexpr std::string_view kClusterHandshakeExternalProviderRequiredCode =

@@ -55,11 +55,7 @@ EngineApiDiagnostic ViewDiagnostic(std::string detail) {
 
 bool DescriptorExactlyMatches(const EngineDescriptor& left,
                               const EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical ==
-             right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool DescriptorTypeShapeMatches(
@@ -73,8 +69,8 @@ bool DescriptorTypeShapeMatches(
 bool TypeDescriptorExactlyMatches(
     const EngineRelationProjectionTypeDescriptor& left,
     const EngineRelationProjectionTypeDescriptor& right) {
-  return left.type_descriptor_uuid.canonical ==
-             right.type_descriptor_uuid.canonical &&
+  return left.type_descriptor_uuid ==
+             right.type_descriptor_uuid &&
          left.descriptor_kind == right.descriptor_kind &&
          left.canonical_type_name == right.canonical_type_name &&
          left.encoded_descriptor == right.encoded_descriptor;
@@ -200,7 +196,7 @@ bool HasForbiddenRequestData(const EngineApiRequest& request) {
       !request.diagnostic_options.empty() ||
       !request.sql_object_reference.path_components.empty() ||
       !request.sql_object_reference.object_name.raw_text.empty() ||
-      !request.bound_object_identity.object_uuid.canonical.empty()) {
+      !request.bound_object_identity.object_uuid.is_nil()) {
     return true;
   }
   for (const auto& option : request.option_envelopes) {
@@ -222,12 +218,12 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
     const EngineRequestContext& context,
     bool require_write) {
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return ViewDiagnostic("exact_active_transaction_identity_required");
   }
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return ViewDiagnostic("transaction_uuid_invalid");
   }
@@ -403,10 +399,10 @@ std::optional<EngineRelationProjectionViewOutput> ParseCommonOutput(
 
   EngineRelationProjectionViewOutput output;
   output.ordinal = ordinal;
-  output.output_column_uuid.canonical = *column_uuid;
-  output.expression_uuid.canonical = *expression_uuid;
+  output.output_column_uuid = *column_uuid;
+  output.expression_uuid = *expression_uuid;
   output.output_name = *name;
-  output.output_type.type_descriptor_uuid.canonical = *type_uuid;
+  output.output_type.type_descriptor_uuid = *type_uuid;
   output.output_type.descriptor_kind = *type_kind;
   output.output_type.canonical_type_name = *type_name;
   output.output_type.encoded_descriptor = *type_encoded;
@@ -452,15 +448,15 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
   EngineRelationProjectionViewDescriptor descriptor;
   descriptor.marker = v1 ? kEngineRelationProjectionViewMarkerV1
                          : kEngineRelationProjectionViewMarkerV2;
-  descriptor.view_uuid.canonical = record.object_uuid;
-  descriptor.view_descriptor_uuid.canonical =
+  descriptor.view_uuid = record.object_uuid;
+  descriptor.view_descriptor_uuid =
       options[1].substr(std::string("view_descriptor_uuid:").size());
   const auto view_generation = ParseCanonicalU64(
       options[2].substr(
           std::string("view_descriptor_generation:").size()));
-  descriptor.source_relation_uuid.canonical =
+  descriptor.source_relation_uuid =
       options[3].substr(std::string("source_relation_uuid:").size());
-  descriptor.source_relation_descriptor_uuid.canonical =
+  descriptor.source_relation_descriptor_uuid =
       options[4].substr(
           std::string("source_relation_descriptor_uuid:").size());
   const auto source_generation = ParseCanonicalU64(
@@ -480,8 +476,8 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
   const auto source_type_uuid = OptionSuffix(
       options[18], "output_0_source_column_type_descriptor_uuid:");
   if (!source_column_uuid || !source_type_uuid) return std::nullopt;
-  source_output->source_column_uuid.canonical = *source_column_uuid;
-  source_output->source_column_type_descriptor_uuid.canonical =
+  source_output->source_column_uuid = *source_column_uuid;
+  source_output->source_column_type_descriptor_uuid =
       *source_type_uuid;
 
   std::optional<EngineRelationProjectionViewOutput> literal_output;
@@ -536,26 +532,26 @@ ParsePersistedDescriptor(const ApiBehaviorRecord& record) {
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
                           record.object_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          descriptor.view_descriptor_uuid.canonical)) {
+                          descriptor.view_descriptor_uuid)) {
     return std::nullopt;
   }
 
   std::set<std::string> identities = {
       record.object_uuid,
-      descriptor.view_descriptor_uuid.canonical,
-      descriptor.source_relation_uuid.canonical,
-      descriptor.source_relation_descriptor_uuid.canonical};
+      descriptor.view_descriptor_uuid,
+      descriptor.source_relation_uuid,
+      descriptor.source_relation_descriptor_uuid};
   for (const auto& output : descriptor.outputs) {
-    identities.insert(output.output_column_uuid.canonical);
-    identities.insert(output.output_type.type_descriptor_uuid.canonical);
-    identities.insert(output.expression_uuid.canonical);
+    identities.insert(output.output_column_uuid);
+    identities.insert(output.output_type.type_descriptor_uuid);
+    identities.insert(output.expression_uuid);
   }
-  identities.insert(descriptor.outputs[0].source_column_uuid.canonical);
+  identities.insert(descriptor.outputs[0].source_column_uuid);
   const bool source_type_identity_conflicts =
-      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical !=
-          descriptor.outputs[0].source_column_uuid.canonical &&
+      descriptor.outputs[0].source_column_type_descriptor_uuid !=
+          descriptor.outputs[0].source_column_uuid &&
       identities.contains(
-          descriptor.outputs[0].source_column_type_descriptor_uuid.canonical);
+          descriptor.outputs[0].source_column_type_descriptor_uuid);
   if (source_type_identity_conflicts ||
       identities.size() != (v1 ? 11u : 8u)) {
     return std::nullopt;
@@ -573,7 +569,7 @@ const MgaRelationColumnStorageDescriptor* FindExactColumn(
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
   for (const auto& column : relation.columns) {
-    if (column.column_uuid.canonical != column_uuid) continue;
+    if (column.column_uuid != column_uuid) continue;
     if (found != nullptr) {
       if (duplicate != nullptr) *duplicate = true;
       return nullptr;
@@ -695,19 +691,19 @@ VisibleIdentityInventory LoadVisibleIdentityInventory(
       return inventory;
     }
     const auto& descriptor = relation.descriptor;
-    remember(descriptor.descriptor_uuid.canonical);
-    remember(descriptor.database_uuid.canonical);
-    remember(descriptor.schema_uuid.canonical);
-    remember(descriptor.relation_uuid.canonical);
-    remember(descriptor.primary_filespace_uuid.canonical);
+    remember(descriptor.descriptor_uuid);
+    remember(descriptor.database_uuid);
+    remember(descriptor.schema_uuid);
+    remember(descriptor.relation_uuid);
+    remember(descriptor.primary_filespace_uuid);
     for (const auto& column : descriptor.columns) {
-      remember(column.column_uuid.canonical);
-      remember(column.value_descriptor.descriptor_uuid.canonical);
+      remember(column.column_uuid);
+      remember(column.value_descriptor.descriptor_uuid);
       remember(column.charset_uuid);
       remember(column.collation_uuid);
     }
     for (const auto& index : descriptor.indexes) {
-      remember(index.index_uuid.canonical);
+      remember(index.index_uuid);
     }
   }
   for (const auto& index : visible_crud.indexes) {
@@ -780,7 +776,7 @@ EngineRelationProjectionTypeDescriptor AllocateOutputType(
   const auto uuid =
       AllocateDistinctObjectUuid(visible_inventory, identities);
   if (!uuid) return type;
-  type.type_descriptor_uuid.canonical = *uuid;
+  type.type_descriptor_uuid = *uuid;
   type.descriptor_kind = source.descriptor_kind;
   type.canonical_type_name = source.canonical_type_name;
   type.encoded_descriptor = source.encoded_descriptor;
@@ -798,11 +794,11 @@ std::vector<std::string> PersistedOptions(
             ? kEngineRelationProjectionSourceColumnV1
             : kEngineRelationProjectionTypedInt32LiteralV1;
     return std::vector<std::string>{
-        prefix + "column_uuid:" + output.output_column_uuid.canonical,
-        prefix + "expression_uuid:" + output.expression_uuid.canonical,
+        prefix + "column_uuid:" + output.output_column_uuid,
+        prefix + "expression_uuid:" + output.expression_uuid,
         prefix + "name_hex:" + HexEncode(output.output_name),
         prefix + "type_descriptor_uuid:" +
-            output.output_type.type_descriptor_uuid.canonical,
+            output.output_type.type_descriptor_uuid,
         prefix + "type_descriptor_kind_hex:" +
             HexEncode(output.output_type.descriptor_kind),
         prefix + "type_canonical_name_hex:" +
@@ -822,13 +818,13 @@ std::vector<std::string> PersistedOptions(
   std::vector<std::string> options = {
       std::string("view_query_shape:") + descriptor.marker,
       "view_descriptor_uuid:" +
-          descriptor.view_descriptor_uuid.canonical,
+          descriptor.view_descriptor_uuid,
       "view_descriptor_generation:" +
           std::to_string(descriptor.view_descriptor_generation),
       "source_relation_uuid:" +
-          descriptor.source_relation_uuid.canonical,
+          descriptor.source_relation_uuid,
       "source_relation_descriptor_uuid:" +
-          descriptor.source_relation_descriptor_uuid.canonical,
+          descriptor.source_relation_descriptor_uuid,
       "source_relation_descriptor_generation:" +
           std::to_string(
               descriptor.source_relation_descriptor_generation),
@@ -839,10 +835,10 @@ std::vector<std::string> PersistedOptions(
   options.insert(options.end(), source.begin(), source.end());
   options.push_back(
       "output_0_source_column_uuid:" +
-      descriptor.outputs[0].source_column_uuid.canonical);
+      descriptor.outputs[0].source_column_uuid);
   options.push_back(
       "output_0_source_column_type_descriptor_uuid:" +
-      descriptor.outputs[0].source_column_type_descriptor_uuid.canonical);
+      descriptor.outputs[0].source_column_type_descriptor_uuid);
   if (v2) return options;
   auto literal = common(descriptor.outputs[1]);
   options.insert(options.end(), literal.begin(), literal.end());
@@ -856,8 +852,8 @@ bool SemanticOutputExactlyMatches(
     const EngineRelationProjectionViewSemanticOutput& semantic,
     const EngineRelationProjectionViewOutput& persisted) {
   return semantic.ordinal == persisted.ordinal &&
-         semantic.output_column_uuid.canonical ==
-             persisted.output_column_uuid.canonical &&
+         semantic.output_column_uuid ==
+             persisted.output_column_uuid &&
          semantic.output_name == persisted.output_name &&
          TypeDescriptorExactlyMatches(semantic.output_type,
                                       persisted.output_type) &&
@@ -961,15 +957,15 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
       HasForbiddenRequestData(request) ||
       (!request.operation_id.empty() &&
        request.operation_id != "ddl.create_view") ||
-      !request.target_object.uuid.canonical.empty() ||
+      !request.target_object.uuid.is_nil() ||
       (request.target_object.object_kind != "view" &&
        !request.target_object.object_kind.empty()) ||
-      request.target_schema.uuid.canonical.empty() ||
+      request.target_schema.uuid.is_nil() ||
       (request.target_schema.object_kind != "schema" &&
        !request.target_schema.object_kind.empty()) ||
       request.related_objects.size() != 1 ||
       request.related_objects.front().object_kind != "table" ||
-      request.related_objects.front().uuid.canonical.empty() ||
+      request.related_objects.front().uuid.is_nil() ||
       request.descriptors.size() != 0 ||
       (v1 &&
        (request.columns.size() != 2 || request.assignments.size() != 1 ||
@@ -987,12 +983,12 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
         ViewDiagnostic("relation_projection_view_request_shape_invalid");
     return result;
   }
+  EngineApiDiagnostic schema_diagnostic;
+  const auto target_schema = FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) { result.diagnostic = schema_diagnostic; return result; }
   if (!CanonicalTypedUuid(scratchbird::core::platform::UuidKind::schema,
-                          request.target_schema.uuid.canonical) ||
-      !FindVisibleSchemaTreeRecord(
-          request.context,
-          request.target_schema.uuid.canonical,
-          request.context.local_transaction_id)) {
+                          request.target_schema.uuid) || !target_schema) {
     result.diagnostic =
         ViewDiagnostic("relation_projection_view_schema_not_visible");
     return result;
@@ -1018,7 +1014,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
 
   const auto& source_request = request.columns[0];
   if (source_request.ordinal != 0 ||
-      source_request.requested_column_uuid.canonical.empty() ||
+      source_request.requested_column_uuid.is_nil() ||
       !source_request.default_expression_envelope.empty()) {
     result.diagnostic =
         ViewDiagnostic("relation_projection_view_output_contract_invalid");
@@ -1029,7 +1025,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
     const auto& literal_request = request.columns[1];
     const auto& literal_value = request.assignments.front().second;
     if (literal_request.ordinal != 1 ||
-        !literal_request.requested_column_uuid.canonical.empty() ||
+        !literal_request.requested_column_uuid.is_nil() ||
         literal_request.nullable ||
         !literal_request.default_expression_envelope.empty() ||
         !DescriptorExactlyMatches(
@@ -1053,7 +1049,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   }
 
   const std::string source_uuid =
-      request.related_objects.front().uuid.canonical;
+      request.related_objects.front().uuid;
   const auto source =
       LoadMgaRelationStorageDescriptor(request.context, source_uuid);
   if (!source.ok) {
@@ -1066,9 +1062,9 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
                         "source_relation_descriptor_generation:"));
   const auto expected_source_resource_epoch = ParseCanonicalU64(
       SingleOptionValue(request, "source_resource_epoch:"));
-  if (relation.relation_uuid.canonical != source_uuid ||
+  if (relation.relation_uuid != source_uuid ||
       relation.relation_kind != "table" ||
-      relation.descriptor_uuid.canonical !=
+      relation.descriptor_uuid !=
           SingleOptionValue(request,
                             "source_relation_descriptor_uuid:") ||
       !expected_source_generation || *expected_source_generation == 0 ||
@@ -1083,13 +1079,13 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   bool duplicate_column = false;
   const auto* source_column = FindExactColumn(
       relation,
-      source_request.requested_column_uuid.canonical,
+      source_request.requested_column_uuid,
       &duplicate_column);
   if (duplicate_column || source_column == nullptr ||
       dt::CanonicalTypeIdFromStableName(
           source_column->value_descriptor.canonical_type_name) !=
           dt::CanonicalTypeId::int32 ||
-      source_column->value_descriptor.descriptor_uuid.canonical.empty() ||
+      source_column->value_descriptor.descriptor_uuid.is_nil() ||
       !DescriptorExactlyMatches(source_request.descriptor,
                                 source_column->value_descriptor) ||
       source_request.nullable != source_column->nullable) {
@@ -1101,7 +1097,7 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   }
 
   EngineApiRequest resolve = request;
-  resolve.target_object.uuid.canonical.clear();
+  resolve.target_object.uuid = {};
   resolve.option_envelopes.clear();
   resolve.sql_object_reference.expected_object_type = "view";
   resolve.sql_object_reference.object_name.raw_text = view_name;
@@ -1119,10 +1115,10 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   }
 
   std::set<std::string> identities = {
-      relation.relation_uuid.canonical,
-      relation.descriptor_uuid.canonical,
-      source_column->column_uuid.canonical,
-      source_column->value_descriptor.descriptor_uuid.canonical};
+      relation.relation_uuid,
+      relation.descriptor_uuid,
+      source_column->column_uuid,
+      source_column->value_descriptor.descriptor_uuid};
   const auto visible_inventory =
       LoadVisibleIdentityInventory(request.context);
   if (!visible_inventory.ok) {
@@ -1142,8 +1138,8 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
   EngineRelationProjectionViewDescriptor descriptor;
   descriptor.present = true;
   descriptor.marker = marker;
-  descriptor.view_uuid.canonical = *view_uuid;
-  descriptor.view_descriptor_uuid.canonical = *view_descriptor_uuid;
+  descriptor.view_uuid = *view_uuid;
+  descriptor.view_descriptor_uuid = *view_descriptor_uuid;
   descriptor.view_descriptor_generation = 1;
   descriptor.source_relation_uuid = relation.relation_uuid;
   descriptor.source_relation_descriptor_uuid = relation.descriptor_uuid;
@@ -1162,13 +1158,13 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
                          visible_inventory,
                          &identities);
   if (!source_output_uuid || !source_expression_uuid ||
-      source_output.output_type.type_descriptor_uuid.canonical.empty()) {
+      source_output.output_type.type_descriptor_uuid.is_nil()) {
     result.diagnostic =
         ViewDiagnostic("relation_projection_view_output_uuid_allocation_failed");
     return result;
   }
-  source_output.output_column_uuid.canonical = *source_output_uuid;
-  source_output.expression_uuid.canonical = *source_expression_uuid;
+  source_output.output_column_uuid = *source_output_uuid;
+  source_output.expression_uuid = *source_expression_uuid;
   source_output.output_name = source_output_name;
   source_output.nullable = source_column->nullable;
   source_output.expression_kind =
@@ -1190,13 +1186,13 @@ PrepareEngineRelationProjectionViewCreate(const EngineApiRequest& request) {
         visible_inventory,
         &identities);
     if (!literal_output_uuid || !literal_expression_uuid ||
-        literal_output.output_type.type_descriptor_uuid.canonical.empty()) {
+        literal_output.output_type.type_descriptor_uuid.is_nil()) {
       result.diagnostic = ViewDiagnostic(
           "relation_projection_view_output_uuid_allocation_failed");
       return result;
     }
-    literal_output.output_column_uuid.canonical = *literal_output_uuid;
-    literal_output.expression_uuid.canonical = *literal_expression_uuid;
+    literal_output.output_column_uuid = *literal_output_uuid;
+    literal_output.expression_uuid = *literal_expression_uuid;
     literal_output.output_name = literal_output_name;
     literal_output.nullable = false;
     literal_output.expression_kind =
@@ -1296,8 +1292,8 @@ EngineDescriptor EngineRelationProjectionViewSemanticDescriptor(
   const bool v1 = descriptor.marker == kEngineRelationProjectionViewMarkerV1;
   const bool v2 = descriptor.marker == kEngineRelationProjectionViewMarkerV2;
   const std::size_t expected_output_count = v1 ? 2u : 1u;
-  if (!descriptor.present || descriptor.view_uuid.canonical.empty() ||
-      descriptor.view_descriptor_uuid.canonical.empty() ||
+  if (!descriptor.present || descriptor.view_uuid.is_nil() ||
+      descriptor.view_descriptor_uuid.is_nil() ||
       descriptor.view_descriptor_generation == 0 ||
       (!v1 && !v2) ||
       descriptor.outputs.size() != expected_output_count) {
@@ -1308,7 +1304,7 @@ EngineDescriptor EngineRelationProjectionViewSemanticDescriptor(
   semantic.canonical_type_name = descriptor.marker;
   semantic.encoded_descriptor =
       std::string("marker=") + descriptor.marker +
-      ";view_uuid=" + descriptor.view_uuid.canonical +
+      ";view_uuid=" + descriptor.view_uuid +
       ";view_descriptor_generation=" +
       std::to_string(descriptor.view_descriptor_generation) +
       ";output_count=" + std::to_string(expected_output_count);
@@ -1356,8 +1352,8 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewSelect(
   const auto& semantic = request.relation_projection_view;
   if (!semantic.present ||
       semantic.marker != kEngineRelationProjectionViewMarkerV1 ||
-      semantic.view_uuid.canonical != request.source_object.uuid.canonical ||
-      semantic.view_descriptor_uuid.canonical.empty() ||
+      semantic.view_uuid != request.source_object.uuid ||
+      semantic.view_descriptor_uuid.is_nil() ||
       semantic.view_descriptor_generation == 0 ||
       semantic.outputs.size() != 2 ||
       !request.relation_projection.outputs.empty() ||
@@ -1377,14 +1373,14 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewSelect(
   }
 
   auto descriptor = DescribeEngineRelationProjectionView(
-      request.context, request.source_object.uuid.canonical);
+      request.context, request.source_object.uuid);
   if (descriptor.diagnostic.error) return descriptor.diagnostic;
   if (!descriptor.present) {
     return ViewDiagnostic(
         "relation_projection_view_descriptor_required");
   }
-  if (semantic.view_descriptor_uuid.canonical !=
-          descriptor.view_descriptor_uuid.canonical ||
+  if (semantic.view_descriptor_uuid !=
+          descriptor.view_descriptor_uuid ||
       semantic.view_descriptor_generation !=
           descriptor.view_descriptor_generation ||
       semantic.outputs.size() != descriptor.outputs.size()) {
@@ -1400,13 +1396,13 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewSelect(
   }
 
   const auto source = LoadMgaRelationStorageDescriptor(
-      request.context, descriptor.source_relation_uuid.canonical);
+      request.context, descriptor.source_relation_uuid);
   if (!source.ok) return source.diagnostic;
   const auto& relation = source.descriptor;
-  if (relation.relation_uuid.canonical !=
-          descriptor.source_relation_uuid.canonical ||
-      relation.descriptor_uuid.canonical !=
-          descriptor.source_relation_descriptor_uuid.canonical ||
+  if (relation.relation_uuid !=
+          descriptor.source_relation_uuid ||
+      relation.descriptor_uuid !=
+          descriptor.source_relation_descriptor_uuid ||
       relation.descriptor_generation !=
           descriptor.source_relation_descriptor_generation ||
       request.context.resource_epoch == 0 ||
@@ -1454,11 +1450,11 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   if (exact_transaction.error) return exact_transaction;
   const auto& semantic = request.relation_projection_view;
   const bool target_object_empty =
-      request.target_object.uuid.canonical.empty() &&
+      request.target_object.uuid.is_nil() &&
       request.target_object.object_kind.empty();
   const bool target_object_matches =
-      request.target_object.uuid.canonical ==
-          request.target_table.uuid.canonical &&
+      request.target_object.uuid ==
+          request.target_table.uuid &&
       request.target_object.object_kind == "view";
   const std::vector<std::string> default_write_options = {
       "result_payload_policy:summary_only",
@@ -1467,9 +1463,9 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
                              request.option_envelopes ==
                                  default_write_options;
   const bool base_shape_exact =
-      request.target_database.uuid.canonical.empty() &&
+      request.target_database.uuid.is_nil() &&
       request.target_database.object_kind.empty() &&
-      request.target_schema.uuid.canonical.empty() &&
+      request.target_schema.uuid.is_nil() &&
       request.target_schema.object_kind.empty() &&
       (target_object_empty || target_object_matches) &&
       request.related_objects.empty() && request.localized_names.empty() &&
@@ -1485,10 +1481,10 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
       request.sql_object_reference.object_name.exact_lookup_key.empty() &&
       !request.sql_object_reference.object_name.requires_exact_match &&
       request.sql_object_reference.object_name.source_span.empty() &&
-      request.bound_object_identity.object_uuid.canonical.empty() &&
+      request.bound_object_identity.object_uuid.is_nil() &&
       request.bound_object_identity.resolved_object_type.empty() &&
-      request.bound_object_identity.resolved_schema_uuid.canonical.empty() &&
-      request.bound_object_identity.parent_object_uuid.canonical.empty() &&
+      request.bound_object_identity.resolved_schema_uuid.is_nil() &&
+      request.bound_object_identity.parent_object_uuid.is_nil() &&
       request.bound_object_identity.catalog_generation_id == 0 &&
       request.bound_object_identity.security_epoch == 0 &&
       request.bound_object_identity.resource_epoch == 0 &&
@@ -1518,12 +1514,12 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
       request.diagnostic_options.empty() && options_exact;
   if (!semantic.present ||
       semantic.marker != kEngineRelationProjectionViewMarkerV2 ||
-      semantic.view_descriptor_uuid.canonical.empty() ||
+      semantic.view_descriptor_uuid.is_nil() ||
       semantic.view_descriptor_generation == 0 ||
       semantic.outputs.size() != 1 ||
       request.target_table.object_kind != "view" ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          request.target_table.uuid.canonical) ||
+                          request.target_table.uuid) ||
       (!request.operation_id.empty() &&
        request.operation_id != "dml.delete_rows") ||
       !base_shape_exact ||
@@ -1542,7 +1538,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   std::int32_t canonical_predicate = 0;
   const auto parsed_predicate =
       ParseCanonicalI32(predicate_value.encoded_value);
-  if (!predicate_value.descriptor.descriptor_uuid.canonical.empty() ||
+  if (!predicate_value.descriptor.descriptor_uuid.is_nil() ||
       predicate_value.descriptor.descriptor_kind != "scalar" ||
       dt::CanonicalTypeIdFromStableName(
           predicate_value.descriptor.canonical_type_name) !=
@@ -1557,7 +1553,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   canonical_predicate = *parsed_predicate;
 
   auto descriptor = DescribeEngineRelationProjectionView(
-      request.context, request.target_table.uuid.canonical);
+      request.context, request.target_table.uuid);
   if (descriptor.diagnostic.error) return descriptor.diagnostic;
   if (!descriptor.present ||
       descriptor.marker != kEngineRelationProjectionViewMarkerV2 ||
@@ -1565,8 +1561,8 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
     return ViewDiagnostic(
         "relation_projection_view_delete_descriptor_required");
   }
-  if (semantic.view_descriptor_uuid.canonical !=
-          descriptor.view_descriptor_uuid.canonical ||
+  if (semantic.view_descriptor_uuid !=
+          descriptor.view_descriptor_uuid ||
       semantic.view_descriptor_generation !=
           descriptor.view_descriptor_generation ||
       !SemanticOutputExactlyMatches(semantic.outputs.front(),
@@ -1578,14 +1574,14 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   }
 
   const auto source = LoadMgaRelationStorageDescriptor(
-      request.context, descriptor.source_relation_uuid.canonical);
+      request.context, descriptor.source_relation_uuid);
   if (!source.ok) return source.diagnostic;
   const auto& relation = source.descriptor;
   if (relation.relation_kind != "table" ||
-      relation.relation_uuid.canonical !=
-          descriptor.source_relation_uuid.canonical ||
-      relation.descriptor_uuid.canonical !=
-          descriptor.source_relation_descriptor_uuid.canonical ||
+      relation.relation_uuid !=
+          descriptor.source_relation_uuid ||
+      relation.descriptor_uuid !=
+          descriptor.source_relation_descriptor_uuid ||
       relation.descriptor_generation !=
           descriptor.source_relation_descriptor_generation ||
       request.context.resource_epoch == 0 ||
@@ -1613,7 +1609,7 @@ EngineApiDiagnostic ExpandEngineRelationProjectionViewDelete(
   bool duplicate_source_column = false;
   const auto* source_column = FindExactColumn(
       relation,
-      descriptor.outputs.front().source_column_uuid.canonical,
+      descriptor.outputs.front().source_column_uuid,
       &duplicate_source_column);
   if (duplicate_source_column || source_column == nullptr) {
     return ViewDiagnostic(
@@ -1647,9 +1643,9 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
   const bool v2 = envelope.marker == kEngineRelationProjectionViewMarkerV2;
   const std::size_t expected_output_count = v1 ? 2u : 1u;
   if (!CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          envelope.relation_uuid.canonical) ||
+                          envelope.relation_uuid) ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          envelope.relation_descriptor_uuid.canonical) ||
+                          envelope.relation_descriptor_uuid) ||
       envelope.relation_descriptor_generation == 0 ||
       envelope.source_resource_epoch == 0 ||
       (!v1 && !v2) ||
@@ -1663,13 +1659,13 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
     return output.ordinal == ordinal &&
            CanonicalTypedUuid(
                scratchbird::core::platform::UuidKind::object,
-               output.output_column_uuid.canonical) &&
+               output.output_column_uuid) &&
            CanonicalTypedUuid(
                scratchbird::core::platform::UuidKind::object,
-               output.expression_uuid.canonical) &&
+               output.expression_uuid) &&
            CanonicalTypedUuid(
                scratchbird::core::platform::UuidKind::object,
-               output.output_type.type_descriptor_uuid.canonical) &&
+               output.output_type.type_descriptor_uuid) &&
            SafeUnquotedIdentifier(output.output_name) &&
            !output.output_type.descriptor_kind.empty() &&
            !output.output_type.canonical_type_name.empty() &&
@@ -1682,10 +1678,10 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
       source.expression_kind !=
           EngineRelationProjectionExpressionKind::source_column ||
       !CanonicalTypedUuid(scratchbird::core::platform::UuidKind::object,
-                          source.source_column_uuid.canonical) ||
+                          source.source_column_uuid) ||
       !CanonicalTypedUuid(
           scratchbird::core::platform::UuidKind::object,
-          source.source_column_type_descriptor_uuid.canonical)) {
+          source.source_column_type_descriptor_uuid)) {
     return ViewDiagnostic(
         "relation_projection_output_contract_invalid");
   }
@@ -1695,8 +1691,8 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
         LowerAscii(source.output_name) == LowerAscii(literal.output_name) ||
         literal.expression_kind !=
             EngineRelationProjectionExpressionKind::typed_int32_literal ||
-        !literal.source_column_uuid.canonical.empty() ||
-        !literal.source_column_type_descriptor_uuid.canonical.empty() ||
+        !literal.source_column_uuid.is_nil() ||
+        !literal.source_column_type_descriptor_uuid.is_nil() ||
         literal.nullable ||
         !DescriptorTypeShapeMatches(
             literal.output_type,
@@ -1707,23 +1703,23 @@ EngineApiDiagnostic ValidateEngineRelationProjectionEnvelope(
   }
 
   std::set<std::string> identities = {
-      envelope.relation_uuid.canonical,
-      envelope.relation_descriptor_uuid.canonical,
-      source.output_column_uuid.canonical,
-      source.expression_uuid.canonical,
-      source.output_type.type_descriptor_uuid.canonical,
-      source.source_column_uuid.canonical};
+      envelope.relation_uuid,
+      envelope.relation_descriptor_uuid,
+      source.output_column_uuid,
+      source.expression_uuid,
+      source.output_type.type_descriptor_uuid,
+      source.source_column_uuid};
   if (v1) {
     const auto& literal = envelope.outputs[1];
-    identities.insert(literal.output_column_uuid.canonical);
-    identities.insert(literal.expression_uuid.canonical);
-    identities.insert(literal.output_type.type_descriptor_uuid.canonical);
+    identities.insert(literal.output_column_uuid);
+    identities.insert(literal.expression_uuid);
+    identities.insert(literal.output_type.type_descriptor_uuid);
   }
   const bool source_type_identity_conflicts =
-      source.source_column_type_descriptor_uuid.canonical !=
-          source.source_column_uuid.canonical &&
+      source.source_column_type_descriptor_uuid !=
+          source.source_column_uuid &&
       identities.contains(
-          source.source_column_type_descriptor_uuid.canonical);
+          source.source_column_type_descriptor_uuid);
   if (source_type_identity_conflicts ||
       identities.size() != (v1 ? 9u : 6u)) {
     return ViewDiagnostic(
@@ -1743,10 +1739,10 @@ EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
     return result;
   }
   if (relation_descriptor.relation_kind != "table" ||
-      relation_descriptor.relation_uuid.canonical !=
-          envelope.relation_uuid.canonical ||
-      relation_descriptor.descriptor_uuid.canonical !=
-          envelope.relation_descriptor_uuid.canonical ||
+      relation_descriptor.relation_uuid !=
+          envelope.relation_uuid ||
+      relation_descriptor.descriptor_uuid !=
+          envelope.relation_descriptor_uuid ||
       relation_descriptor.descriptor_generation !=
           envelope.relation_descriptor_generation) {
     result.diagnostic =
@@ -1757,16 +1753,16 @@ EngineRelationProjectionBindingResult BindEngineRelationProjectionEnvelope(
   bool duplicate_column = false;
   const auto* source_column = FindExactColumn(
       relation_descriptor,
-      envelope.outputs[0].source_column_uuid.canonical,
+      envelope.outputs[0].source_column_uuid,
       &duplicate_column);
   if (duplicate_column || source_column == nullptr ||
       source_column->canonical_name_key.empty() ||
       dt::CanonicalTypeIdFromStableName(
           source_column->value_descriptor.canonical_type_name) !=
           dt::CanonicalTypeId::int32 ||
-      source_column->value_descriptor.descriptor_uuid.canonical !=
+      source_column->value_descriptor.descriptor_uuid !=
           envelope.outputs[0]
-              .source_column_type_descriptor_uuid.canonical ||
+              .source_column_type_descriptor_uuid ||
       !DescriptorTypeShapeMatches(envelope.outputs[0].output_type,
                                   source_column->value_descriptor) ||
       envelope.outputs[0].nullable != source_column->nullable) {
@@ -1853,7 +1849,7 @@ EngineRelationProjectionExecutionResult ExecuteEngineRelationProjection(
     }
 
     EngineRowValue projected;
-    projected.requested_row_uuid.canonical = row.row_uuid;
+    projected.requested_row_uuid = row.row_uuid;
     EngineTypedValue source_value;
     source_value.descriptor = source_type;
     if (stored.value == "<NULL>") {

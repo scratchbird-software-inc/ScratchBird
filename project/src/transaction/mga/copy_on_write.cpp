@@ -8,6 +8,7 @@
 
 #include "copy_on_write.hpp"
 
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -24,12 +25,62 @@ Status CopyOnWriteOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::transaction_mga};
 }
 
-Status CopyOnWriteWarningStatus() {
-  return {StatusCode::platform_required_feature_missing, Severity::warning, Subsystem::transaction_mga};
-}
+enum class CowCondition {
+  invalid_kind,
+  invalid_transaction_identity,
+  invalid_row_identity,
+  insert_has_base,
+  base_required,
+  invalid_base_sequence,
+  invalid_new_sequence,
+  nonincreasing_sequence,
+  invalid_phase,
+  invalid_row_state,
+  evidence_required,
+  illegal_transition,
+  transaction_not_writable,
+  invalid_row_metadata,
+  read_only_transaction,
+  cleanup_held,
+  cleanup_authority_required,
+};
 
-Status CopyOnWriteErrorStatus() {
-  return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::transaction_mga};
+struct CowDiagnosticDefinition {
+  StatusCode status;
+  const char* code;
+  const char* message;
+};
+constexpr std::array<CowDiagnosticDefinition, 17> kCowDiagnostics{{
+  {StatusCode::mga_cow_invalid_kind, "MGA.COW.INVALID_KIND", "copy_on_write.invalid_kind"},
+  {StatusCode::mga_cow_invalid_transaction_identity, "MGA.COW.INVALID_TRANSACTION_IDENTITY", "copy_on_write.invalid_transaction_identity"},
+  {StatusCode::mga_cow_invalid_row_identity, "MGA.COW.INVALID_ROW_IDENTITY", "copy_on_write.invalid_row_identity"},
+  {StatusCode::mga_cow_insert_has_base, "MGA.COW.INSERT_HAS_BASE", "copy_on_write.insert_has_base"},
+  {StatusCode::mga_cow_base_required, "MGA.COW.BASE_REQUIRED", "copy_on_write.base_required"},
+  {StatusCode::mga_cow_invalid_base_sequence, "MGA.COW.INVALID_BASE_SEQUENCE", "copy_on_write.invalid_base_sequence"},
+  {StatusCode::mga_cow_invalid_new_sequence, "MGA.COW.INVALID_NEW_SEQUENCE", "copy_on_write.invalid_new_sequence"},
+  {StatusCode::mga_cow_nonincreasing_sequence, "MGA.COW.NONINCREASING_SEQUENCE", "copy_on_write.nonincreasing_sequence"},
+  {StatusCode::mga_cow_invalid_phase, "MGA.COW.INVALID_PHASE", "copy_on_write.invalid_phase"},
+  {StatusCode::mga_cow_invalid_row_state, "MGA.COW.INVALID_ROW_STATE", "copy_on_write.invalid_row_state"},
+  {StatusCode::mga_cow_evidence_required, "MGA.COW.EVIDENCE_REQUIRED", "copy_on_write.evidence_required"},
+  {StatusCode::mga_cow_illegal_transition, "MGA.COW.ILLEGAL_TRANSITION", "copy_on_write.illegal_transition"},
+  {StatusCode::mga_cow_transaction_not_writable, "MGA.COW.TRANSACTION_NOT_WRITABLE", "copy_on_write.transaction_not_writable"},
+  {StatusCode::mga_cow_invalid_row_metadata, "MGA.COW.INVALID_ROW_METADATA", "copy_on_write.invalid_row_metadata"},
+  {StatusCode::mga_cow_read_only_transaction, "MGA.COW.READ_ONLY_TRANSACTION", "copy_on_write.read_only_transaction"},
+  {StatusCode::ok, "MGA.COW.CLEANUP_HELD", "copy_on_write.cleanup_held"},
+  {StatusCode::ok, "MGA.COW.CLEANUP_AUTHORITY_REQUIRED", "copy_on_write.cleanup_authority_required"},
+}};
+
+template <typename Result>
+void SetCowDiagnostic(Result& result, CowCondition condition, std::string detail = {}) {
+  const auto& definition = kCowDiagnostics.at(static_cast<std::size_t>(condition));
+  std::vector<DiagnosticArgument> arguments;
+  if (!detail.empty()) arguments.push_back({"detail", std::move(detail)});
+  const Status status{definition.status, definition.status == StatusCode::ok ? Severity::info : Severity::error,
+                      Subsystem::transaction_mga};
+  auto diagnostic = MakeDiagnostic(status.code, status.severity, status.subsystem,
+      definition.code, definition.message, std::move(arguments), {}, "transaction.mga.copy_on_write");
+  result.diagnostic = std::move(diagnostic);
+  result.status = status;
 }
 
 bool IsLegalPhaseTransition(CopyOnWriteMutationPhase from, CopyOnWriteMutationPhase to) {
@@ -84,12 +135,9 @@ CleanupEligibilityResult BlockedCleanup(CleanupEligibilityDecision decision,
                                         CleanupHoldKind hold_kind,
                                         std::string detail) {
   CleanupEligibilityResult result;
-  result.status = CopyOnWriteWarningStatus();
   result.decision = decision;
   result.blocking_hold = hold_kind;
-  result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                "SB-COW-CLEANUP-BLOCKED",
-                                                "copy_on_write.cleanup_blocked",
+  SetCowDiagnostic(result, CowCondition::cleanup_held,
                                                 std::move(detail));
   return result;
 }
@@ -164,19 +212,31 @@ CopyOnWriteMutationResult PlanCopyOnWriteMutation(const CopyOnWriteMutationInten
   return ValidateCopyOnWriteMutationState(state);
 }
 
+CopyOnWriteTransactionStateResult ValidateCopyOnWriteTransactionState(const TransactionInventoryEntry& entry) {
+  CopyOnWriteTransactionStateResult result;
+  if (entry.state == TransactionState::read_only_active) {
+    SetCowDiagnostic(result, CowCondition::read_only_transaction);
+    return result;
+  }
+  if (entry.state != TransactionState::active || entry.rollback_only) {
+    SetCowDiagnostic(result, CowCondition::transaction_not_writable,
+                     TransactionStateName(entry.state));
+    return result;
+  }
+  result.status = CopyOnWriteOkStatus();
+  return result;
+}
+
 CopyOnWriteMutationResult PlanLocalCopyOnWriteMutationForTransaction(const TransactionInventoryEntry& entry,
                                                                      RowIdentity row,
                                                                      CopyOnWriteMutationKind kind,
                                                                      u64 base_version_sequence,
                                                                      u64 new_version_sequence) {
-  if (entry.state != TransactionState::active && entry.state != TransactionState::preparing &&
-      entry.state != TransactionState::prepared) {
+  const auto admission = ValidateCopyOnWriteTransactionState(entry);
+  if (!admission.ok()) {
     CopyOnWriteMutationResult result;
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-TXN-COW-UNSUPPORTED-TRANSACTION-STATE",
-                                                  "copy_on_write.unsupported_transaction_state",
-                                                  TransactionStateName(entry.state));
+    result.status = admission.status;
+    result.diagnostic = admission.diagnostic;
     return result;
   }
   CopyOnWriteMutationIntent intent;
@@ -196,93 +256,67 @@ CopyOnWriteMutationResult ValidateCopyOnWriteMutationState(const CopyOnWriteMuta
   result.status = CopyOnWriteOkStatus();
   result.mutation = mutation;
 
-  if (mutation.intent.kind == CopyOnWriteMutationKind::unknown) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-UNKNOWN-MUTATION-KIND",
-                                                  "copy_on_write.unknown_mutation_kind");
+  if (mutation.intent.kind >= CopyOnWriteMutationKind::unknown) {
+    SetCowDiagnostic(result, CowCondition::invalid_kind);
     return result;
   }
 
   TransactionIdentityResult transaction_result = ValidateTransactionIdentity(mutation.intent.transaction);
-  if (!transaction_result.ok()) {
-    result.status = transaction_result.status;
-    result.diagnostic = transaction_result.diagnostic;
+  if (!transaction_result.ok() ||
+      (mutation.intent.transaction.scope != TransactionScope::local_node &&
+       mutation.intent.transaction.scope != TransactionScope::cluster_global)) {
+    SetCowDiagnostic(result, CowCondition::invalid_transaction_identity);
     return result;
   }
 
   RowIdentityResult row_result = ValidateRowIdentity(mutation.intent.row);
   if (!row_result.ok()) {
-    result.status = row_result.status;
-    result.diagnostic = row_result.diagnostic;
+    SetCowDiagnostic(result, CowCondition::invalid_row_identity);
     return result;
   }
 
   if (mutation.intent.kind == CopyOnWriteMutationKind::insert && mutation.intent.has_base_version) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-INSERT-MUST-NOT-HAVE-BASE-VERSION",
-                                                  "copy_on_write.insert_must_not_have_base_version");
+    SetCowDiagnostic(result, CowCondition::insert_has_base);
     return result;
   }
 
   if (mutation.intent.kind != CopyOnWriteMutationKind::insert && !mutation.intent.has_base_version) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-MUTATION-REQUIRES-BASE-VERSION",
-                                                  "copy_on_write.mutation_requires_base_version",
-                                                  CopyOnWriteMutationKindName(mutation.intent.kind));
+    SetCowDiagnostic(result, CowCondition::base_required,
+                     CopyOnWriteMutationKindName(mutation.intent.kind));
     return result;
   }
 
   if (mutation.intent.has_base_version &&
       mutation.intent.base_version_sequence == kInvalidRowVersionSequence) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-INVALID-BASE-VERSION-SEQUENCE",
-                                                  "copy_on_write.invalid_base_version_sequence");
+    SetCowDiagnostic(result, CowCondition::invalid_base_sequence);
     return result;
   }
 
   if (mutation.intent.new_version_sequence == kInvalidRowVersionSequence) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-INVALID-NEW-VERSION-SEQUENCE",
-                                                  "copy_on_write.invalid_new_version_sequence");
+    SetCowDiagnostic(result, CowCondition::invalid_new_sequence);
     return result;
   }
 
   if (mutation.intent.has_base_version &&
       mutation.intent.new_version_sequence <= mutation.intent.base_version_sequence) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-NEW-VERSION-NOT-AFTER-BASE",
-                                                  "copy_on_write.new_version_not_after_base");
+    SetCowDiagnostic(result, CowCondition::nonincreasing_sequence);
     return result;
   }
 
-  if (mutation.phase == CopyOnWriteMutationPhase::unknown) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-UNKNOWN-MUTATION-PHASE",
-                                                  "copy_on_write.unknown_mutation_phase");
+  if (mutation.phase >= CopyOnWriteMutationPhase::unknown) {
+    SetCowDiagnostic(result, CowCondition::invalid_phase);
     return result;
   }
 
-  if (mutation.resulting_row_state == RowVersionState::unknown) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-UNKNOWN-RESULTING-ROW-STATE",
-                                                  "copy_on_write.unknown_resulting_row_state");
+  if (mutation.resulting_row_state == RowVersionState::unknown ||
+      mutation.resulting_row_state > RowVersionState::recovery_required) {
+    SetCowDiagnostic(result, CowCondition::invalid_row_state);
     return result;
   }
 
   if (mutation.evidence_record_required && mutation.phase == CopyOnWriteMutationPhase::published &&
       !mutation.evidence_record_written) {
-    result.status = CopyOnWriteErrorStatus();
-    result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                  "SB-COW-EVIDENCE-REQUIRED-BEFORE-PUBLISH",
-                                                  "copy_on_write.evidence_required_before_publish");
+    SetCowDiagnostic(result, CowCondition::evidence_required);
     return result;
   }
 
@@ -297,29 +331,37 @@ CopyOnWriteMutationResult AdvanceCopyOnWriteMutationPhase(const CopyOnWriteMutat
   }
 
   if (!IsLegalPhaseTransition(mutation.phase, next_phase)) {
-    validation.status = CopyOnWriteErrorStatus();
-    validation.diagnostic = MakeCopyOnWriteDiagnostic(validation.status,
-                                                      "SB-COW-ILLEGAL-PHASE-TRANSITION",
-                                                      "copy_on_write.illegal_phase_transition",
+    SetCowDiagnostic(validation, CowCondition::illegal_transition,
                                                       std::string(CopyOnWriteMutationPhaseName(mutation.phase)) +
                                                           "->" + CopyOnWriteMutationPhaseName(next_phase));
     return validation;
   }
 
-  validation.status = CopyOnWriteOkStatus();
-  validation.mutation.phase = next_phase;
-  return validation;
+  // Edge legality does not imply candidate validity: publication has an
+  // evidence prerequisite that is not required of the pending state. Validate
+  // before returning the advanced state, and preserve the original on refusal.
+  CopyOnWriteMutationState candidate = mutation;
+  candidate.phase = next_phase;
+  auto advanced = ValidateCopyOnWriteMutationState(candidate);
+  if (!advanced.ok()) {
+    validation.status = advanced.status;
+    validation.diagnostic = std::move(advanced.diagnostic);
+    return validation;
+  }
+  return advanced;
 }
 
 CleanupEligibilityResult EvaluateCleanupEligibility(
     const RowVersionMetadata& metadata,
     const CleanupHorizonVector& horizons) {
   RowVersionMetadataResult metadata_result = ValidateRowVersionMetadata(metadata);
-  if (!metadata_result.ok()) {
+  if (!metadata_result.ok() || metadata.state > RowVersionState::recovery_required ||
+      metadata.creator_transaction_state > TransactionState::read_only_active ||
+      (metadata.identity.creator_transaction.scope != TransactionScope::local_node &&
+       metadata.identity.creator_transaction.scope != TransactionScope::cluster_global)) {
     CleanupEligibilityResult result;
-    result.status = metadata_result.status;
     result.decision = CleanupEligibilityDecision::unknown;
-    result.diagnostic = metadata_result.diagnostic;
+    SetCowDiagnostic(result, CowCondition::invalid_row_metadata);
     return result;
   }
 
@@ -336,16 +378,20 @@ CleanupEligibilityResult EvaluateCleanupEligibility(
   }
 
   for (const CleanupHorizon& horizon : horizons.horizons) {
+    if (horizon.hold_kind >= CleanupHoldKind::unknown) {
+      return BlockedCleanup(CleanupEligibilityDecision::blocked_by_horizon,
+                            CleanupHoldKind::unknown, "unknown_hold_kind");
+    }
     if (!horizon.authoritative) {
       return BlockedCleanup(CleanupEligibilityDecision::blocked_by_horizon,
                             horizon.hold_kind,
-                            "non_authoritative_horizon:" + horizon.stable_name);
+                            "non_authoritative_horizon");
     }
 
     if (!horizon.horizon_transaction.valid()) {
       return BlockedCleanup(CleanupEligibilityDecision::blocked_by_horizon,
                             horizon.hold_kind,
-                            "invalid_horizon:" + horizon.stable_name);
+                            "invalid_horizon");
     }
 
     if (horizon.horizon_transaction.value <= metadata.identity.creator_transaction.local_id.value) {
@@ -353,16 +399,16 @@ CleanupEligibilityResult EvaluateCleanupEligibility(
         case CleanupHoldKind::limbo_transaction:
           return BlockedCleanup(CleanupEligibilityDecision::blocked_by_limbo,
                                 horizon.hold_kind,
-                                horizon.stable_name);
+                                CleanupHoldKindName(horizon.hold_kind));
         case CleanupHoldKind::recovery_required:
           return BlockedCleanup(CleanupEligibilityDecision::blocked_by_recovery,
                                 horizon.hold_kind,
-                                horizon.stable_name);
+                                CleanupHoldKindName(horizon.hold_kind));
         case CleanupHoldKind::archive_required:
         case CleanupHoldKind::backup_required:
           return BlockedCleanup(CleanupEligibilityDecision::blocked_by_archive_or_backup,
                                 horizon.hold_kind,
-                                horizon.stable_name);
+                                CleanupHoldKindName(horizon.hold_kind));
         case CleanupHoldKind::legal_hold:
         case CleanupHoldKind::admin_hold:
         case CleanupHoldKind::none:
@@ -373,38 +419,16 @@ CleanupEligibilityResult EvaluateCleanupEligibility(
         case CleanupHoldKind::unknown:
           return BlockedCleanup(CleanupEligibilityDecision::blocked_by_horizon,
                                 horizon.hold_kind,
-                                horizon.stable_name);
+                                CleanupHoldKindName(horizon.hold_kind));
       }
     }
   }
 
   CleanupEligibilityResult result;
-  result.status = CopyOnWriteWarningStatus();
   result.decision = CleanupEligibilityDecision::eligible_requires_authority;
   result.blocking_hold = CleanupHoldKind::none;
-  result.diagnostic = MakeCopyOnWriteDiagnostic(result.status,
-                                                "SB-COW-CLEANUP-ELIGIBLE-REQUIRES-AUTHORITY",
-                                                "copy_on_write.cleanup_eligible_requires_authority");
+  SetCowDiagnostic(result, CowCondition::cleanup_authority_required);
   return result;
-}
-
-DiagnosticRecord MakeCopyOnWriteDiagnostic(Status status,
-                                           std::string diagnostic_code,
-                                           std::string message_key,
-                                           std::string detail) {
-  std::vector<DiagnosticArgument> arguments;
-  if (!detail.empty()) {
-    arguments.push_back({"detail", detail});
-  }
-
-  return MakeDiagnostic(status.code,
-                        status.severity,
-                        status.subsystem,
-                        std::move(diagnostic_code),
-                        std::move(message_key),
-                        std::move(arguments),
-                        {},
-                        "transaction.mga.copy_on_write");
 }
 
 }  // namespace scratchbird::transaction::mga

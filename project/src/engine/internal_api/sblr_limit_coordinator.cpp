@@ -17,7 +17,7 @@ EngineApiDiagnostic diag(std::string c, std::string x) { return MakeEngineApiDia
 
 SblrLimitCoordinationResult CompileSblrLimitDescriptor(const EngineRequestContext& c, const std::string& r, uint64_t o, uint32_t u, uint64_t a) {
   std::lock_guard l(m); SblrLimitCoordinationResult x;
-  if (!tag(c, "private_limit_binder") || !c.statement_metadata_snapshot_engine_owned || r != c.statement_uuid.canonical || !o || !u || !a) { x.diagnostic = diag("SBLR.OPERAND_INVALID", "sblr.limit.coordination_invalid"); return x; }
+  if (!tag(c, "private_limit_binder") || !c.statement_metadata_snapshot_engine_owned || r != c.statement_uuid || !o || !u || !a) { x.diagnostic = diag("SBLR.OPERAND_INVALID", "sblr.limit.coordination_invalid"); return x; }
   x.descriptor.body[0] = 1; x.descriptor.body[1] = uint8_t(o); x.descriptor.body[2] = uint8_t(u); x.descriptor.availability = a;
   auto b = scratchbird::engine::sblr::EncodeSblrLimitDescriptorV1(x.descriptor, false);
   if (!scratchbird::engine::sblr::DecodeSblrLimitDescriptorV1(b.data(), b.size(), &x.descriptor, nullptr, false)) { x.diagnostic = diag("SBLR.OPERAND_INVALID", "sblr.limit.descriptor_invalid"); return x; }

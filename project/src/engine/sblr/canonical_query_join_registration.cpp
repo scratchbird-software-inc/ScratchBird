@@ -368,7 +368,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                      column < batch.rows[row].values.size(); ++column) {
                   const auto& value = batch.rows[row].values[column];
                   if (!add_row_string(
-                          value.descriptor.descriptor_uuid.canonical) ||
+                          value.descriptor.descriptor_uuid) ||
                       !add_row_string(value.descriptor.descriptor_kind) ||
                       !add_row_string(
                           value.descriptor.canonical_type_name) ||
@@ -562,7 +562,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
                              static_cast<std::uint64_t>(value.capacity()) + 1,
                              &descriptor_bytes);
                 };
-                return account_string(descriptor.descriptor_uuid.canonical) &&
+                return account_string(descriptor.descriptor_uuid) &&
                        account_string(descriptor.descriptor_kind) &&
                        account_string(descriptor.canonical_type_name) &&
                        account_string(descriptor.encoded_descriptor) &&

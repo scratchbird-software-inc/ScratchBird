@@ -13,19 +13,19 @@ bool MatchesDmlDeleteDurableAuthorityOwnerV1(const EngineRequestContext& c,
   return c.security_context_present && c.authorization_context.present &&
       c.statement_metadata_snapshot_engine_owned && c.statement_snapshot_generation &&
       !c.read_only_mode && !c.cluster_transaction_active && !c.route_fence_present &&
-      c.principal_uuid.canonical == c.authorization_context.principal_uuid.canonical &&
-      p::UuidText(b.database_uuid) == c.database_uuid.canonical &&
-      p::UuidText(b.session_uuid) == c.session_uuid.canonical &&
-      p::UuidText(b.principal_uuid) == c.principal_uuid.canonical &&
-      p::UuidText(d.owning_transaction_uuid) == c.transaction_uuid.canonical &&
+      c.principal_uuid == c.authorization_context.principal_uuid &&
+      p::UuidText(b.database_uuid) == c.database_uuid &&
+      p::UuidText(b.session_uuid) == c.session_uuid &&
+      p::UuidText(b.principal_uuid) == c.principal_uuid &&
+      p::UuidText(d.owning_transaction_uuid) == c.transaction_uuid &&
       d.owning_local_transaction_id == c.local_transaction_id &&
-      p::UuidText(d.authenticated_statement_receipt_uuid) == c.statement_receipt_uuid.canonical &&
-      p::UuidText(d.statement_snapshot_uuid) == c.statement_snapshot_uuid.canonical &&
-      p::UuidText(d.catalog_snapshot_uuid) == c.statement_metadata_snapshot_uuid.canonical &&
+      p::UuidText(d.authenticated_statement_receipt_uuid) == c.statement_receipt_uuid &&
+      p::UuidText(d.statement_snapshot_uuid) == c.statement_snapshot_uuid &&
+      p::UuidText(d.catalog_snapshot_uuid) == c.statement_metadata_snapshot_uuid &&
       d.catalog_generation == c.catalog_generation_id &&
       d.datatype_registry_generation == c.datatype_registry_generation &&
-      p::UuidText(b.datatypes.identity.vector_uuid) == c.datatype_catalog_snapshot_uuid.canonical &&
-      b.security.security_context_uuid == c.authorization_context.authority_uuid.canonical &&
+      p::UuidText(b.datatypes.identity.vector_uuid) == c.datatype_catalog_snapshot_uuid &&
+      b.security.security_context_uuid == c.authorization_context.authority_uuid &&
       b.security.security_context_generation == c.authorization_context.security_context_generation &&
       ComputeDmlDeleteOwnerContextHashV1(c, &owner) && owner == b.owner_context_sha256;
 }
@@ -42,7 +42,7 @@ bool ComputeDmlDeleteOwnerContextHashV1(const EngineRequestContext& c, wire::Typ
   };
   const auto uuid = [&](const EngineUuid& value, bool optional = false) {
     wire::TypedUpdateUuid binary{};
-    if (!(optional && value.canonical.empty()) && !datatype_operator_projection::TypedUuid(value.canonical, &binary))
+    if (!(optional && value.is_nil()) && !datatype_operator_projection::TypedUuid(value, &binary))
       return false;
     bytes.insert(bytes.end(), binary.begin(), binary.end()); return true;
   };

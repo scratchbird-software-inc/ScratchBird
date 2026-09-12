@@ -10,6 +10,11 @@
 
 #include "bootstrap_schema_roots.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_database_record_codec.hpp"
+#include "catalog_schema_record_codec.hpp"
+#include "catalog_filespace_record_codec.hpp"
+#include "catalog_localized_record_codec.hpp"
+#include "catalog_resource_record_codec.hpp"
 #include "cluster_catalog_schema_versioning.hpp"
 #include "agent_engine_lifecycle.hpp"
 #include "catalog_page.hpp"
@@ -441,118 +446,100 @@ DatabaseLifecycleResult ValidateFilespaceCatalogManifest(const std::vector<Catal
                                                          const TypedUuid& first_filespace_uuid,
                                                          const std::string& path) {
   u32 active_primary_count = 0;
-  bool first_filespace_found = false;
-  const std::string expected_database_uuid =
-      scratchbird::core::uuid::UuidToString(database_uuid.value);
-  const std::string expected_filespace_uuid =
-      scratchbird::core::uuid::UuidToString(first_filespace_uuid.value);
-
-  const auto require_field = [&](const std::map<std::string, std::string>& fields,
-                                 const char* key,
-                                 const char* expected) -> DatabaseLifecycleResult {
-    const auto found = fields.find(key);
-    if (found == fields.end()) {
+  u32 first_filespace_count = 0;
+  for (const CatalogPageRow& row : rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded = DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) return PropagateDiagnostic(decoded.status, decoded.diagnostic);
+    if (decoded.record.header.kind != CatalogRecordKind::filespace) continue;
+    const auto payload = scratchbird::core::catalog::DecodeCatalogFilespaceRecord(decoded.record.payload);
+    if (!payload.ok()) {
       return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISSING",
                             "storage.database_lifecycle.filespace_manifest_field_missing",
-                            path,
-                            key);
+                            path, "filespace_binary_payload_invalid");
     }
-    if (found->second != expected) {
+    const auto& m = *payload.record;
+    if (m.database_uuid.kind != database_uuid.kind || m.database_uuid.value != database_uuid.value) {
       return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
                             "storage.database_lifecycle.filespace_manifest_field_mismatch",
-                            path,
-                            std::string(key) + "=" + found->second);
+                            path, "database_uuid");
     }
-    DatabaseLifecycleResult ok;
-    ok.status = DatabaseLifecycleOkStatus();
-    return ok;
-  };
-
-  for (const CatalogPageRow& row : rows) {
-    if (row.kind != CatalogPageRowKind::typed_catalog_record) {
-      continue;
-    }
-    const auto decoded = DecodeCatalogTypedRecord(row);
-    if (!decoded.ok()) {
-      return PropagateDiagnostic(decoded.status, decoded.diagnostic);
-    }
-    if (decoded.record.header.kind != CatalogRecordKind::filespace) {
-      continue;
-    }
-
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
-    const auto role = fields.find("filespace_role");
-    if (role != fields.end() && role->second == "active_primary") {
-      ++active_primary_count;
-    }
-
-    const auto filespace_uuid = fields.find("filespace_uuid");
-    if (filespace_uuid == fields.end() || filespace_uuid->second != expected_filespace_uuid) {
-      continue;
-    }
-    first_filespace_found = true;
-
-    for (const auto& required : {
-             std::pair<const char*, const char*>{"database_uuid", expected_database_uuid.c_str()},
-             {"filespace_uuid", expected_filespace_uuid.c_str()},
-             {"filespace_role", "active_primary"},
-             {"first_filespace", "1"},
-             {"startup_authority", "1"},
-             {"catalog_persistence_owner", "1"},
-             {"filespace_manifest_owner", "1"},
-             {"recovery_evidence_owner", "1"},
-             {"read_only", "0"},
-             {"state", "online"},
-             {"physical_filespace_id", "0"},
-             {"lifecycle_generation", "1"},
-             {"filespace_manifest_generation", "1"},
-             {"catalog_manifest_format_version", "1"},
-             {"resource_seed_manifest_format_version", "1"},
-             {"registered_txn", "1"},
-             {"last_lifecycle_transaction", "1"},
-             {"uuid_source", "fresh_uuidv7"},
-             {"header_database_uuid_match_required", "1"},
-             {"header_filespace_uuid_match_required", "1"},
-             {"startup_state_coupled", "1"},
-             {"page_header_coupled", "1"},
-             {"open_validate_header", "1"},
-             {"attach_admission_validate_header", "1"},
-             {"transaction_admission_validate_filespace", "1"},
-             {"maintenance_validate_header", "1"},
-             {"verify_repair_validate_header", "1"},
-             {"shutdown_validate_header", "1"},
-             {"recovery_validate_header", "1"},
-             {"drop_requires_database_lifecycle", "1"},
-             {"quarantine_on_ambiguous", "1"},
-             {"state_change_evidence_before_success", "1"},
-             {"mga_visibility_required", "1"},
-             {"path_is_locator_not_identity", "1"},
-             {"duplicate_identity_refusal", "1"},
-             {"stale_identity_refusal", "1"},
-         }) {
-      const auto required_result = require_field(fields, required.first, required.second);
-      if (!required_result.ok()) {
-        return required_result;
-      }
+    if (m.filespace_role == 1) ++active_primary_count;
+    if (m.filespace_uuid.kind != first_filespace_uuid.kind ||
+        m.filespace_uuid.value != first_filespace_uuid.value) continue;
+    ++first_filespace_count;
+    // Preserve the bootstrap manifest contract without text conversion.
+    // These declarations do not substitute for actual lifecycle execution.
+    const bool primary_manifest =
+        m.filespace_role == 1 &&
+        m.first_filespace &&
+        m.startup_authority &&
+        m.catalog_persistence_owner &&
+        m.filespace_manifest_owner &&
+        m.recovery_evidence_owner &&
+        !m.read_only &&
+        m.state == 1 &&
+        m.physical_filespace_id == 0 &&
+        m.lifecycle_generation == 1 &&
+        m.filespace_manifest_generation == 1 &&
+        m.catalog_manifest_format_version == 1 &&
+        m.resource_seed_manifest_format_version == 1 &&
+        m.registered_txn == 1 &&
+        m.last_lifecycle_transaction == 1 &&
+        m.uuid_source == 1 &&
+        m.header_database_uuid_match_required &&
+        m.header_filespace_uuid_match_required &&
+        m.startup_state_coupled &&
+        m.page_header_coupled &&
+        m.open_validate_header &&
+        m.attach_admission_validate_header &&
+        m.transaction_admission_validate_filespace &&
+        m.maintenance_validate_header &&
+        m.verify_repair_validate_header &&
+        m.shutdown_validate_header &&
+        m.recovery_validate_header &&
+        m.drop_requires_database_lifecycle &&
+        m.quarantine_on_ambiguous &&
+        m.state_change_evidence_before_success &&
+        m.mga_visibility_required &&
+        m.path_is_locator_not_identity &&
+        m.duplicate_identity_refusal &&
+        m.stale_identity_refusal &&
+        m.creator_transaction_number == 1;
+    if (!primary_manifest) {
+      return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-MANIFEST-FIELD-MISMATCH",
+                            "storage.database_lifecycle.filespace_manifest_field_mismatch",
+                            path, "primary_manifest");
     }
   }
-
   if (active_primary_count != 1) {
     return LifecycleError("SB-DB-LIFECYCLE-FILESPACE-ACTIVE-PRIMARY-COUNT-INVALID",
                           "storage.database_lifecycle.filespace_active_primary_count_invalid",
-                          path,
-                          std::to_string(active_primary_count));
+                          path, std::to_string(active_primary_count));
   }
-  if (!first_filespace_found) {
+  if (first_filespace_count != 1) {
     return LifecycleError("SB-DB-LIFECYCLE-FIRST-FILESPACE-MANIFEST-MISSING",
                           "storage.database_lifecycle.first_filespace_manifest_missing",
-                          path,
-                          expected_filespace_uuid);
+                          path, "first_filespace_identity_count");
   }
-
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
   return result;
+}
+
+bool LocalizedPayloadMatchesParent(const CatalogTypedRecord& record) {
+  const auto& parent = record.header.parent_uuid;
+  if (record.header.kind == CatalogRecordKind::localized_name) {
+    const auto decoded = scratchbird::core::catalog::DecodeCatalogLocalizedName(record.payload);
+    return decoded.ok() && decoded.record->target_object_uuid.kind == parent.kind &&
+        decoded.record->target_object_uuid.value == parent.value;
+  }
+  if (record.header.kind == CatalogRecordKind::localized_comment) {
+    const auto decoded = scratchbird::core::catalog::DecodeCatalogLocalizedComment(record.payload);
+    return decoded.ok() && decoded.record->target_object_uuid.kind == parent.kind &&
+        decoded.record->target_object_uuid.value == parent.value;
+  }
+  return false;
 }
 
 DatabaseLifecycleResult ValidateCatalogMigrationEvidence(const std::vector<CatalogPageRow>& rows,
@@ -561,15 +548,13 @@ DatabaseLifecycleResult ValidateCatalogMigrationEvidence(const std::vector<Catal
                                                          const std::string& migration_plan_id,
                                                          const std::string& path) {
   DatabaseCatalogMigrationEvidence evidence;
+  std::vector<CatalogTypedRecord> graph_records;
   evidence.database_catalog_record_count = 0;
   evidence.active_primary_filespace_record_count = 0;
   evidence.database_uuid_matches_header = false;
   evidence.filespace_uuid_matches_startup = false;
   evidence.migration_plan_id = migration_plan_id;
-  const std::string expected_database_uuid =
-      scratchbird::core::uuid::UuidToString(database_uuid.value);
-  const std::string expected_filespace_uuid =
-      scratchbird::core::uuid::UuidToString(first_filespace_uuid.value);
+
   bool saw_resource_seed_manifest = false;
 
   for (const CatalogPageRow& row : rows) {
@@ -587,31 +572,51 @@ DatabaseLifecycleResult ValidateCatalogMigrationEvidence(const std::vector<Catal
     if (!decoded.ok()) {
       return PropagateDiagnostic(decoded.status, decoded.diagnostic);
     }
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
-    if (decoded.record.header.kind == CatalogRecordKind::database) {
-      ++evidence.database_catalog_record_count;
-      const auto catalog_database_uuid = fields.find("database_uuid");
-      evidence.database_uuid_matches_header =
-          catalog_database_uuid != fields.end() &&
-          catalog_database_uuid->second == expected_database_uuid;
-      evidence.database_catalog_manifest_format_version =
-          ParseU32Field(fields, "catalog_manifest_format_version");
-    } else if (decoded.record.header.kind == CatalogRecordKind::filespace) {
-      const auto role = fields.find("filespace_role");
-      if (role != fields.end() && role->second == "active_primary") {
-        ++evidence.active_primary_filespace_record_count;
+    graph_records.push_back(decoded.record);
+    if (decoded.record.header.kind == CatalogRecordKind::schema &&
+        !scratchbird::core::catalog::CatalogSchemaPayloadMatchesHeader(decoded.record)) {
+      return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing", path, "schema_binary_payload_or_header_invalid");
+    }
+    if (decoded.record.header.kind == CatalogRecordKind::localized_name ||
+        decoded.record.header.kind == CatalogRecordKind::localized_comment) {
+      if (!LocalizedPayloadMatchesParent(decoded.record)) {
+        return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+                              "catalog.record_codec.fields_missing", path,
+                              "localized_binary_payload_or_parent_invalid");
       }
-      const auto catalog_database_uuid = fields.find("database_uuid");
-      const auto catalog_filespace_uuid = fields.find("filespace_uuid");
-      if (catalog_database_uuid != fields.end() &&
-          catalog_database_uuid->second == expected_database_uuid &&
-          catalog_filespace_uuid != fields.end() &&
-          catalog_filespace_uuid->second == expected_filespace_uuid) {
+      continue;
+    }
+    if (decoded.record.header.kind == CatalogRecordKind::database) {
+      const auto payload = scratchbird::core::catalog::DecodeCatalogDatabaseRecord(decoded.record.payload);
+      if (!payload.ok()) {
+        return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+                              "catalog.record_codec.fields_missing", path,
+                              "database_binary_payload_invalid");
+      }
+      ++evidence.database_catalog_record_count;
+      evidence.database_uuid_matches_header = payload.record->database_uuid.kind == database_uuid.kind &&
+          payload.record->database_uuid.value == database_uuid.value;
+      evidence.database_catalog_manifest_format_version =
+          static_cast<u32>(payload.record->catalog_manifest_format_version);
+    } else if (decoded.record.header.kind == CatalogRecordKind::filespace) {
+      const auto payload = scratchbird::core::catalog::DecodeCatalogFilespaceRecord(decoded.record.payload);
+      if (!payload.ok()) {
+        return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+                              "catalog.record_codec.fields_missing", path,
+                              "filespace_binary_payload_invalid");
+      }
+      const auto& manifest = *payload.record;
+      if (manifest.filespace_role == 1) ++evidence.active_primary_filespace_record_count;
+      if (manifest.database_uuid.kind == database_uuid.kind &&
+          manifest.database_uuid.value == database_uuid.value &&
+          manifest.filespace_uuid.kind == first_filespace_uuid.kind &&
+          manifest.filespace_uuid.value == first_filespace_uuid.value) {
         evidence.filespace_uuid_matches_startup = true;
         evidence.filespace_catalog_manifest_format_version =
-            ParseU32Field(fields, "catalog_manifest_format_version");
+            static_cast<u32>(manifest.catalog_manifest_format_version);
         evidence.filespace_resource_seed_manifest_format_version =
-            ParseU32Field(fields, "resource_seed_manifest_format_version");
+            static_cast<u32>(manifest.resource_seed_manifest_format_version);
       }
     }
   }
@@ -620,6 +625,14 @@ DatabaseLifecycleResult ValidateCatalogMigrationEvidence(const std::vector<Catal
     evidence.resource_seed_manifest_format_version = 0;
   }
 
+  if (!scratchbird::core::catalog::ValidateCatalogSchemaGraph(graph_records)) {
+    return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", path, "schema_binary_parent_graph_invalid");
+  }
+  if (!scratchbird::core::catalog::ValidateCatalogResourceGraph(graph_records)) {
+    return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", path, "resource_binary_payload_or_graph_invalid");
+  }
   const auto classified = ClassifyDatabaseCatalogMigrationEvidence(evidence);
   if (!classified.ok()) {
     DatabaseLifecycleResult result;
@@ -2236,10 +2249,47 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
     }
   }
   record.header.parent_uuid = parent_object_uuid;
-  if (payload.find("creator_tx=") == std::string::npos) {
+  if (kind == CatalogRecordKind::database) {
+    // Its complete binary schema includes creator ordering metadata; never
+    // prepend text to the value block or parse its UUID into a text field map.
+    if (!scratchbird::core::catalog::DecodeCatalogDatabaseRecord(payload).ok()) {
+      const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing", {}, "database_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+  } else if (kind == CatalogRecordKind::filespace) {
+    if (!scratchbird::core::catalog::DecodeCatalogFilespaceRecord(payload).ok()) {
+      const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing", {}, "filespace_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+  } else if (kind != CatalogRecordKind::schema &&
+             kind != CatalogRecordKind::localized_name &&
+             kind != CatalogRecordKind::localized_comment &&
+             kind != CatalogRecordKind::charset &&
+             kind != CatalogRecordKind::collation &&
+             payload.find("creator_tx=") == std::string::npos) {
     payload = std::string("creator_tx=") + std::to_string(kBootstrapCatalogTransactionId) + "\n" + payload;
   }
   record.payload = std::move(payload);
+  if ((kind == CatalogRecordKind::charset || kind == CatalogRecordKind::collation) &&
+      !scratchbird::core::catalog::CatalogResourcePayloadMatchesHeader(record)) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", {}, "resource_binary_payload_or_header_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
+  if (kind == CatalogRecordKind::schema &&
+      !scratchbird::core::catalog::CatalogSchemaPayloadMatchesHeader(record)) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", {}, "schema_binary_payload_or_header_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
+  if ((kind == CatalogRecordKind::localized_name || kind == CatalogRecordKind::localized_comment) &&
+      !LocalizedPayloadMatchesParent(record)) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", {}, "localized_binary_payload_or_parent_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
 
   const auto encoded = EncodeCatalogTypedRecord(record, (*ordinal)++);
   if (!encoded.ok()) {
@@ -2371,30 +2421,33 @@ CatalogRowsBuildResult AddLocalizedRecordPair(std::vector<CatalogPageRow>* rows,
                                               std::string path,
                                               std::string name,
                                               std::string comment) {
-  const std::string name_payload = KeyValuePayload({{"target_object_uuid", scratchbird::core::uuid::UuidToString(target_object_uuid.value)},
-                                                    {"language", language_tag},
-                                                    {"path", path},
-                                                    {"name", name},
-                                                    {"name_class", "default_name"}});
-  const auto name_record = AddTypedCatalogRecord(rows,
-                                                 CatalogRecordKind::localized_name,
-                                                 ordinal,
-                                                 identity_seed,
-                                                 name_payload,
-                                                 target_object_uuid);
-  if (!name_record.ok()) {
-    return name_record;
+  scratchbird::core::catalog::CatalogLocalizedNameRecord name_record;
+  name_record.target_object_uuid = target_object_uuid;
+  name_record.language = language_tag;
+  name_record.path = std::move(path);
+  name_record.name = std::move(name);
+  name_record.name_class = 1;
+  name_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  scratchbird::core::catalog::CatalogLocalizedCommentRecord comment_record;
+  comment_record.target_object_uuid = target_object_uuid;
+  comment_record.language = std::move(language_tag);
+  comment_record.comment = std::move(comment);
+  comment_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  // Encode both complete values before adding either catalog row.
+  const auto name_binary = scratchbird::core::catalog::EncodeCatalogLocalizedName(name_record);
+  const auto comment_binary = scratchbird::core::catalog::EncodeCatalogLocalizedComment(comment_record);
+  if (!name_binary.ok() || !comment_binary.ok()) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", {}, "localized_binary_payload_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
   }
-
-  const std::string comment_payload = KeyValuePayload({{"target_object_uuid", scratchbird::core::uuid::UuidToString(target_object_uuid.value)},
-                                                       {"language", std::move(language_tag)},
-                                                       {"comment", std::move(comment)}});
-  return AddTypedCatalogRecord(rows,
-                               CatalogRecordKind::localized_comment,
-                               ordinal,
-                               identity_seed + 2,
-                               comment_payload,
-                               target_object_uuid);
+  const auto added = AddTypedCatalogRecord(rows, CatalogRecordKind::localized_name,
+      ordinal, identity_seed, std::string(name_binary.bytes.begin(), name_binary.bytes.end()),
+      target_object_uuid);
+  if (!added.ok()) return added;
+  return AddTypedCatalogRecord(rows, CatalogRecordKind::localized_comment,
+      ordinal, identity_seed + 2, std::string(comment_binary.bytes.begin(), comment_binary.bytes.end()),
+      target_object_uuid);
 }
 
 const char* BoolText(bool value) {
@@ -3000,14 +3053,24 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   if (!emulated_object.ok()) { return CatalogRowsBuildError(emulated_object.status, emulated_object.diagnostic); }
   if (!app_object.ok()) { return CatalogRowsBuildError(app_object.status, app_object.diagnostic); }
 
-  const std::string database_payload = KeyValuePayload({{"database_uuid", scratchbird::core::uuid::UuidToString(config.database_uuid.value)},
-                                                        {"database_header_format_major", std::to_string(scratchbird::storage::disk::kScratchBirdDatabaseFormatMajor)},
-                                                        {"database_header_format_minor", std::to_string(scratchbird::storage::disk::kScratchBirdDatabaseFormatMinor)},
-                                                        {"catalog_manifest_format_version", std::to_string(kDatabaseCatalogManifestFormatCurrent)},
-                                                        {"page_size", std::to_string(config.page_size)},
-                                                        {"creation_unix_epoch_millis", std::to_string(config.creation_unix_epoch_millis)},
-                                                        {"feature_flags", std::to_string(config.feature_flags)},
-                                                        {"compatibility_flags", std::to_string(config.compatibility_flags)}});
+  // Persist all database identity fields under the admitted binary schema.
+  scratchbird::core::catalog::CatalogDatabaseRecord database_record;
+  database_record.database_uuid = config.database_uuid;
+  database_record.database_header_format_major = scratchbird::storage::disk::kScratchBirdDatabaseFormatMajor;
+  database_record.database_header_format_minor = scratchbird::storage::disk::kScratchBirdDatabaseFormatMinor;
+  database_record.catalog_manifest_format_version = kDatabaseCatalogManifestFormatCurrent;
+  database_record.page_size = config.page_size;
+  database_record.creation_unix_epoch_millis = config.creation_unix_epoch_millis;
+  database_record.feature_flags = config.feature_flags;
+  database_record.compatibility_flags = config.compatibility_flags;
+  database_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  const auto database_binary = scratchbird::core::catalog::EncodeCatalogDatabaseRecord(database_record);
+  if (!database_binary.ok()) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", config.path, "database_binary_payload_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
+  const std::string database_payload(database_binary.bytes.begin(), database_binary.bytes.end());
   auto typed = AddTypedCatalogRecord(&result.rows,
                                      CatalogRecordKind::database,
                                      &ordinal,
@@ -3017,42 +3080,51 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                                      database_object.value);
   if (!typed.ok()) { return typed; }
 
-  const std::string filespace_payload = KeyValuePayload({{"filespace_uuid", scratchbird::core::uuid::UuidToString(config.filespace_uuid.value)},
-                                                         {"database_uuid", scratchbird::core::uuid::UuidToString(config.database_uuid.value)},
-                                                         {"filespace_role", "active_primary"},
-                                                         {"first_filespace", "1"},
-                                                         {"startup_authority", "1"},
-                                                         {"catalog_persistence_owner", "1"},
-                                                         {"filespace_manifest_owner", "1"},
-                                                         {"recovery_evidence_owner", "1"},
-                                                         {"read_only", "0"},
-                                                         {"state", "online"},
-                                                         {"physical_filespace_id", "0"},
-                                                         {"lifecycle_generation", "1"},
-                                                         {"filespace_manifest_generation", "1"},
-                                                         {"catalog_manifest_format_version", std::to_string(kDatabaseCatalogManifestFormatCurrent)},
-                                                         {"resource_seed_manifest_format_version", std::to_string(kResourceSeedManifestFormatCurrent)},
-                                                         {"registered_txn", std::to_string(kBootstrapCatalogTransactionId)},
-                                                         {"last_lifecycle_transaction", std::to_string(kBootstrapCatalogTransactionId)},
-                                                         {"uuid_source", "fresh_uuidv7"},
-                                                         {"header_database_uuid_match_required", "1"},
-                                                         {"header_filespace_uuid_match_required", "1"},
-                                                         {"startup_state_coupled", "1"},
-                                                         {"page_header_coupled", "1"},
-                                                         {"open_validate_header", "1"},
-                                                         {"attach_admission_validate_header", "1"},
-                                                         {"transaction_admission_validate_filespace", "1"},
-                                                         {"maintenance_validate_header", "1"},
-                                                         {"verify_repair_validate_header", "1"},
-                                                         {"shutdown_validate_header", "1"},
-                                                         {"recovery_validate_header", "1"},
-                                                         {"drop_requires_database_lifecycle", "1"},
-                                                         {"quarantine_on_ambiguous", "1"},
-                                                         {"state_change_evidence_before_success", "1"},
-                                                         {"mga_visibility_required", "1"},
-                                                         {"path_is_locator_not_identity", "1"},
-                                                         {"duplicate_identity_refusal", "1"},
-                                                         {"stale_identity_refusal", "1"}});
+  scratchbird::core::catalog::CatalogFilespaceRecord filespace_record;
+  filespace_record.filespace_uuid = config.filespace_uuid;
+  filespace_record.database_uuid = config.database_uuid;
+  filespace_record.filespace_role = 1;
+  filespace_record.first_filespace = true;
+  filespace_record.startup_authority = true;
+  filespace_record.catalog_persistence_owner = true;
+  filespace_record.filespace_manifest_owner = true;
+  filespace_record.recovery_evidence_owner = true;
+  filespace_record.read_only = false;
+  filespace_record.state = 1;
+  filespace_record.physical_filespace_id = 0;
+  filespace_record.lifecycle_generation = 1;
+  filespace_record.filespace_manifest_generation = 1;
+  filespace_record.catalog_manifest_format_version = kDatabaseCatalogManifestFormatCurrent;
+  filespace_record.resource_seed_manifest_format_version = kResourceSeedManifestFormatCurrent;
+  filespace_record.registered_txn = kBootstrapCatalogTransactionId;
+  filespace_record.last_lifecycle_transaction = kBootstrapCatalogTransactionId;
+  filespace_record.uuid_source = 1;
+  filespace_record.header_database_uuid_match_required = true;
+  filespace_record.header_filespace_uuid_match_required = true;
+  filespace_record.startup_state_coupled = true;
+  filespace_record.page_header_coupled = true;
+  filespace_record.open_validate_header = true;
+  filespace_record.attach_admission_validate_header = true;
+  filespace_record.transaction_admission_validate_filespace = true;
+  filespace_record.maintenance_validate_header = true;
+  filespace_record.verify_repair_validate_header = true;
+  filespace_record.shutdown_validate_header = true;
+  filespace_record.recovery_validate_header = true;
+  filespace_record.drop_requires_database_lifecycle = true;
+  filespace_record.quarantine_on_ambiguous = true;
+  filespace_record.state_change_evidence_before_success = true;
+  filespace_record.mga_visibility_required = true;
+  filespace_record.path_is_locator_not_identity = true;
+  filespace_record.duplicate_identity_refusal = true;
+  filespace_record.stale_identity_refusal = true;
+  filespace_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  const auto filespace_binary = scratchbird::core::catalog::EncodeCatalogFilespaceRecord(filespace_record);
+  if (!filespace_binary.ok()) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", config.path, "filespace_binary_payload_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
+  const std::string filespace_payload(filespace_binary.bytes.begin(), filespace_binary.bytes.end());
   typed = AddTypedCatalogRecord(&result.rows,
                                 CatalogRecordKind::filespace,
                                 &ordinal,
@@ -3096,13 +3168,19 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   }};
   u64 schema_seed = config.creation_unix_epoch_millis + 11100;
   for (const auto& schema : schemas) {
-    const std::string schema_payload = KeyValuePayload({{"schema_object_uuid", scratchbird::core::uuid::UuidToString(schema.object_uuid.value)},
-                                                        {"parent_object_uuid", scratchbird::core::uuid::UuidToString(schema.parent_uuid.value)},
-                                                        {"path", schema.path},
-                                                        {"name", schema.name},
-                                                        {"root_schema", schema.root_schema ? "1" : "0"},
-                                                        {"local_single_node_scope", "1"},
-                                                        {"recursive_schema_tree", "1"}});
+    scratchbird::core::catalog::CatalogSchemaRecord schema_record;
+    schema_record.schema_object_uuid = schema.object_uuid;
+    schema_record.parent_object_uuid = schema.parent_uuid;
+    schema_record.path_cache = schema.path;
+    schema_record.name_cache = schema.name;
+    schema_record.root_schema = schema.root_schema;
+    const auto schema_binary = scratchbird::core::catalog::EncodeCatalogSchemaRecord(schema_record);
+    if (!schema_binary.ok()) {
+      const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing", config.path, "schema_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+    const std::string schema_payload(schema_binary.bytes.begin(), schema_binary.bytes.end());
     typed = AddTypedCatalogRecord(&result.rows,
                                   CatalogRecordKind::schema,
                                   &ordinal,
@@ -3606,28 +3684,31 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     if (!object_uuid.ok()) {
       return CatalogRowsBuildError(object_uuid.status, object_uuid.diagnostic);
     }
-    const std::string resource_payload =
-        KeyValuePayload({{"family", "charset"},
-                         {"canonical_name", charset.canonical_name},
-                         {"resource_uuid", charset.resource_uuid},
-                         {"aliases", JoinStrings(charset.aliases)},
-                         {"description_hex", HexEncodeCatalogText(charset.description)},
-                         {"min_bytes", std::to_string(charset.min_bytes)},
-                         {"max_bytes", std::to_string(charset.max_bytes)},
-                         {"variable_width", BoolText(charset.variable_width)},
-                         {"encoding_type", charset.encoding_type},
-                         {"iana_name", charset.iana_name},
-                         {"supported_by_hex", JoinHexEncodedCatalogStrings(charset.supported_by)},
-                         {"default_collation_name", charset.default_collation_name},
-                         {"default_collation_uuid", charset.default_collation_uuid},
-                         {"source_path", charset.source_path},
-                         {"resource_epoch", std::to_string(charset.resource_epoch)},
-                         {"family_epoch", std::to_string(charset.family_epoch)},
-                         {"family_version", charset.family_version},
-                         {"resource_seed_pack", image.seed_pack_name},
-                         {"resource_seed_version", image.seed_pack_version},
-                         {"loaded_at_database_create", "1"},
-                         {"engine_owned", "1"}});
+    scratchbird::core::catalog::CatalogCharsetRecord record;
+    record.canonical_name=charset.canonical_name;
+    record.resource_uuid=object_uuid.value;
+    record.aliases=charset.aliases; record.description=charset.description;
+    record.min_bytes=charset.min_bytes; record.max_bytes=charset.max_bytes;
+    record.variable_width=charset.variable_width; record.encoding_type=charset.encoding_type;
+    record.iana_name=charset.iana_name; record.supported_by=charset.supported_by;
+    record.default_collation_name=charset.default_collation_name;
+    if (!charset.default_collation_uuid.empty()) {
+      const auto identity=ParseTypedUuid(UuidKind::object,charset.default_collation_uuid);
+      if (!identity.ok()) return CatalogRowsBuildError(identity.status,identity.diagnostic);
+      record.default_collation_uuid=identity.value;
+    }
+    record.source_path=charset.source_path; record.resource_epoch=charset.resource_epoch;
+    record.family_epoch=charset.family_epoch; record.family_version=charset.family_version;
+    record.resource_seed_pack=image.seed_pack_name; record.resource_seed_version=image.seed_pack_version;
+    record.loaded_at_database_create=true; record.engine_owned=true;
+    record.creator_transaction_number=kBootstrapCatalogTransactionId;
+    const auto encoded_resource=scratchbird::core::catalog::EncodeCatalogCharsetRecord(record);
+    if (!encoded_resource.ok()) {
+      const auto refused=LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing",config.path,"charset_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status,refused.diagnostic);
+    }
+    const std::string resource_payload(encoded_resource.bytes.begin(),encoded_resource.bytes.end());
     typed = AddTypedCatalogRecord(&result.rows,
                                   CatalogRecordKind::charset,
                                   &ordinal,
@@ -3648,27 +3729,25 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     if (!parent_uuid.ok()) {
       return CatalogRowsBuildError(parent_uuid.status, parent_uuid.diagnostic);
     }
-    const std::string resource_payload =
-        KeyValuePayload({{"family", "collation"},
-                         {"canonical_name", collation.canonical_name},
-                         {"resource_uuid", collation.resource_uuid},
-                         {"charset_name", collation.charset_name},
-                         {"charset_uuid", collation.charset_uuid},
-                         {"default_for_charset", BoolText(collation.default_for_charset)},
-                         {"default_authority", collation.default_authority},
-                         {"case_insensitive", BoolText(collation.case_insensitive)},
-                         {"accent_insensitive", BoolText(collation.accent_insensitive)},
-                         {"language", collation.language},
-                         {"description_hex", HexEncodeCatalogText(collation.description)},
-                         {"supported_by_hex", JoinHexEncodedCatalogStrings(collation.supported_by)},
-                         {"source_path", collation.source_path},
-                         {"resource_epoch", std::to_string(collation.resource_epoch)},
-                         {"family_epoch", std::to_string(collation.family_epoch)},
-                         {"family_version", collation.family_version},
-                         {"resource_seed_pack", image.seed_pack_name},
-                         {"resource_seed_version", image.seed_pack_version},
-                         {"loaded_at_database_create", "1"},
-                         {"engine_owned", "1"}});
+    scratchbird::core::catalog::CatalogCollationRecord record;
+    record.canonical_name=collation.canonical_name; record.resource_uuid=object_uuid.value;
+    record.charset_name=collation.charset_name; record.charset_uuid=parent_uuid.value;
+    record.default_for_charset=collation.default_for_charset;
+    record.default_authority=collation.default_authority;
+    record.case_insensitive=collation.case_insensitive; record.accent_insensitive=collation.accent_insensitive;
+    record.language=collation.language; record.description=collation.description;
+    record.supported_by=collation.supported_by; record.source_path=collation.source_path;
+    record.resource_epoch=collation.resource_epoch; record.family_epoch=collation.family_epoch;
+    record.family_version=collation.family_version; record.resource_seed_pack=image.seed_pack_name;
+    record.resource_seed_version=image.seed_pack_version; record.loaded_at_database_create=true;
+    record.engine_owned=true; record.creator_transaction_number=kBootstrapCatalogTransactionId;
+    const auto encoded_resource=scratchbird::core::catalog::EncodeCatalogCollationRecord(record);
+    if (!encoded_resource.ok()) {
+      const auto refused=LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing",config.path,"collation_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status,refused.diagnostic);
+    }
+    const std::string resource_payload(encoded_resource.bytes.begin(),encoded_resource.bytes.end());
     typed = AddTypedCatalogRecord(&result.rows,
                                   CatalogRecordKind::collation,
                                   &ordinal,
@@ -3834,6 +3913,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
       {CatalogPageRowKind::timezone_leap_second_record, {CatalogRecordKind::timezone_leap_second, image.timezone_leap_second_records}},
   }};
   for (const auto& summary : summaries) {
+    if (summary.second.first == CatalogRecordKind::charset ||
+        summary.second.first == CatalogRecordKind::collation) continue;
     const std::string payload = KeyValuePayload({{"record_count", std::to_string(summary.second.second)}});
     result.rows.push_back(Row(summary.first, ordinal++, payload));
     const auto typed_summary = AddTypedCatalogRecord(&result.rows,
@@ -3846,13 +3927,29 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
       return typed_summary;
     }
   }
+  std::vector<CatalogTypedRecord> resource_graph;
+  for (const auto& row : result.rows) {
+    if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded=DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) return CatalogRowsBuildError(decoded.status,decoded.diagnostic);
+    resource_graph.push_back(decoded.record);
+  }
+  if (image.charset_records != image.charsets.size() || image.collation_records != image.collations.size() ||
+      !scratchbird::core::catalog::ValidateCatalogResourceGraph(resource_graph)) {
+    const auto refused=LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing",config.path,"resource_binary_payload_or_graph_invalid");
+    return CatalogRowsBuildError(refused.status,refused.diagnostic);
+  }
   return result;
 }
 
-ResourceSeedCatalogImage BuildResourceImageFromCatalogRows(const std::vector<CatalogPageRow>& rows) {
+std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const std::vector<CatalogPageRow>& rows) {
   ResourceSeedCatalogImage image;
+  std::vector<scratchbird::core::catalog::CatalogCharsetRecord> charsets;
+  std::vector<scratchbird::core::catalog::CatalogCollationRecord> collations;
   for (const CatalogPageRow& row : rows) {
-    const auto fields = ParseKeyValuePayload(row.payload);
+    const auto fields = row.kind == CatalogPageRowKind::typed_catalog_record
+        ? std::map<std::string,std::string>{} : ParseKeyValuePayload(row.payload);
     if (row.kind == CatalogPageRowKind::resource_seed_pack) {
       image.seed_pack_name = fields.count("seed_pack_name") == 0 ? "" : fields.at("seed_pack_name");
       image.seed_pack_version = fields.count("seed_pack_version") == 0 ? "" : fields.at("seed_pack_version");
@@ -3953,101 +4050,22 @@ ResourceSeedCatalogImage BuildResourceImageFromCatalogRows(const std::vector<Cat
     } else if (row.kind == CatalogPageRowKind::typed_catalog_record) {
       const auto decoded = DecodeCatalogTypedRecord(row);
       if (!decoded.ok()) {
+        return std::nullopt;
+      }
+      if (decoded.record.header.kind == CatalogRecordKind::charset) {
+        auto payload=scratchbird::core::catalog::DecodeCatalogCharsetRecord(decoded.record.payload);
+        if (!payload.ok()) return std::nullopt;
+        charsets.push_back(std::move(*payload.record));
         continue;
       }
-      const auto typed_fields = ParseKeyValuePayload(decoded.record.payload);
-      if (decoded.record.header.kind == CatalogRecordKind::charset &&
-          typed_fields.count("canonical_name") != 0) {
-        ResourceSeedCharsetDescriptor charset;
-        charset.resource_uuid =
-            scratchbird::core::uuid::UuidToString(decoded.record.header.object_uuid.value);
-        charset.canonical_name = typed_fields.at("canonical_name");
-        charset.description = typed_fields.count("description_hex") == 0
-                                  ? ""
-                                  : HexDecodeCatalogText(typed_fields.at("description_hex"));
-        charset.aliases = typed_fields.count("aliases") == 0
-                              ? std::vector<std::string>{}
-                              : SplitStrings(typed_fields.at("aliases"));
-        charset.min_bytes = ParseU32Field(typed_fields, "min_bytes");
-        charset.max_bytes = ParseU32Field(typed_fields, "max_bytes");
-        charset.variable_width = ParseU32Field(typed_fields, "variable_width") != 0;
-        charset.encoding_type = typed_fields.count("encoding_type") == 0
-                                    ? ""
-                                    : typed_fields.at("encoding_type");
-        charset.iana_name = typed_fields.count("iana_name") == 0
-                                ? ""
-                                : typed_fields.at("iana_name");
-        charset.supported_by = typed_fields.count("supported_by_hex") == 0
-                                   ? std::vector<std::string>{}
-                                   : SplitHexEncodedCatalogStrings(
-                                         typed_fields.at("supported_by_hex"));
-        charset.default_collation_name =
-            typed_fields.count("default_collation_name") == 0
-                ? ""
-                : typed_fields.at("default_collation_name");
-        charset.default_collation_uuid =
-            typed_fields.count("default_collation_uuid") == 0
-                ? ""
-                : typed_fields.at("default_collation_uuid");
-        charset.source_path = typed_fields.count("source_path") == 0
-                                  ? ""
-                                  : typed_fields.at("source_path");
-        charset.resource_epoch = ParseU64Field(typed_fields, "resource_epoch");
-        charset.family_epoch = ParseU64Field(typed_fields, "family_epoch");
-        charset.family_version = typed_fields.count("family_version") == 0
-                                     ? ""
-                                     : typed_fields.at("family_version");
-        image.charsets.push_back(std::move(charset));
+      if (decoded.record.header.kind == CatalogRecordKind::collation) {
+        auto payload=scratchbird::core::catalog::DecodeCatalogCollationRecord(decoded.record.payload);
+        if (!payload.ok()) return std::nullopt;
+        collations.push_back(std::move(*payload.record));
         continue;
       }
-      if (decoded.record.header.kind == CatalogRecordKind::collation &&
-          typed_fields.count("canonical_name") != 0) {
-        ResourceSeedCollationDescriptor collation;
-        collation.resource_uuid =
-            scratchbird::core::uuid::UuidToString(decoded.record.header.object_uuid.value);
-        collation.canonical_name = typed_fields.at("canonical_name");
-        collation.charset_name = typed_fields.count("charset_name") == 0
-                                     ? ""
-                                     : typed_fields.at("charset_name");
-        collation.charset_uuid = typed_fields.count("charset_uuid") == 0
-                                     ? scratchbird::core::uuid::UuidToString(
-                                           decoded.record.header.parent_uuid.value)
-                                     : typed_fields.at("charset_uuid");
-        collation.default_for_charset =
-            ParseU32Field(typed_fields, "default_for_charset") != 0;
-        collation.default_authority =
-            typed_fields.count("default_authority") == 0
-                ? ""
-                : typed_fields.at("default_authority");
-        collation.case_insensitive =
-            ParseU32Field(typed_fields, "case_insensitive") != 0;
-        collation.accent_insensitive =
-            ParseU32Field(typed_fields, "accent_insensitive") != 0;
-        collation.language = typed_fields.count("language") == 0
-                                 ? ""
-                                 : typed_fields.at("language");
-        collation.description = typed_fields.count("description_hex") == 0
-                                    ? ""
-                                    : HexDecodeCatalogText(
-                                          typed_fields.at("description_hex"));
-        collation.supported_by = typed_fields.count("supported_by_hex") == 0
-                                     ? std::vector<std::string>{}
-                                     : SplitHexEncodedCatalogStrings(
-                                           typed_fields.at("supported_by_hex"));
-        collation.source_path = typed_fields.count("source_path") == 0
-                                    ? ""
-                                    : typed_fields.at("source_path");
-        collation.resource_epoch = ParseU64Field(typed_fields, "resource_epoch");
-        collation.family_epoch = ParseU64Field(typed_fields, "family_epoch");
-        collation.family_version = typed_fields.count("family_version") == 0
-                                       ? ""
-                                       : typed_fields.at("family_version");
-        image.collations.push_back(std::move(collation));
-        continue;
-      }
-      if (decoded.record.header.kind != CatalogRecordKind::index_descriptor) {
-        continue;
-      }
+      if (decoded.record.header.kind != CatalogRecordKind::index_descriptor) continue;
+      const auto typed_fields=ParseKeyValuePayload(decoded.record.payload);
       if (typed_fields.count("resource_dependency_evidence") == 0 ||
           typed_fields.count("index_name") == 0 ||
           typed_fields.count("resource_family") == 0) {
@@ -4076,6 +4094,45 @@ ResourceSeedCatalogImage BuildResourceImageFromCatalogRows(const std::vector<Cat
   }
   if (image.resource_artifact_records == 0) {
     image.resource_artifact_records = static_cast<u32>(image.artifacts.size());
+  }
+  if (image.charset_records != charsets.size() || image.collation_records != collations.size())
+    return std::nullopt;
+  for (const auto& r:charsets) {
+    if (!r.loaded_at_database_create || !r.engine_owned ||
+        r.creator_transaction_number!=kBootstrapCatalogTransactionId) return std::nullopt;
+    if (r.resource_seed_pack!=image.seed_pack_name || r.resource_seed_version!=image.seed_pack_version ||
+        r.resource_epoch!=image.resource_epoch || r.family_epoch!=image.charset_epoch ||
+        r.family_version!=image.charset_version) return std::nullopt;
+    ResourceSeedCharsetDescriptor charset;
+    // The legacy resource API is still text-shaped. This explicit projection
+    // does not change the binary identity authority of the persisted record.
+    charset.resource_uuid=scratchbird::core::uuid::UuidToString(r.resource_uuid.value);
+    charset.canonical_name=r.canonical_name; charset.description=r.description; charset.aliases=r.aliases;
+    charset.min_bytes=static_cast<u32>(r.min_bytes); charset.max_bytes=static_cast<u32>(r.max_bytes);
+    charset.variable_width=r.variable_width; charset.encoding_type=r.encoding_type; charset.iana_name=r.iana_name;
+    charset.supported_by=r.supported_by; charset.default_collation_name=r.default_collation_name;
+    if (r.default_collation_uuid)
+      charset.default_collation_uuid=scratchbird::core::uuid::UuidToString(r.default_collation_uuid->value);
+    charset.source_path=r.source_path; charset.resource_epoch=r.resource_epoch;
+    charset.family_epoch=r.family_epoch; charset.family_version=r.family_version;
+    image.charsets.push_back(std::move(charset));
+  }
+  for (const auto& r:collations) {
+    if (!r.loaded_at_database_create || !r.engine_owned ||
+        r.creator_transaction_number!=kBootstrapCatalogTransactionId) return std::nullopt;
+    if (r.resource_seed_pack!=image.seed_pack_name || r.resource_seed_version!=image.seed_pack_version ||
+        r.resource_epoch!=image.resource_epoch || r.family_epoch!=image.collation_epoch ||
+        r.family_version!=image.collation_version) return std::nullopt;
+    ResourceSeedCollationDescriptor collation;
+    collation.resource_uuid=scratchbird::core::uuid::UuidToString(r.resource_uuid.value);
+    collation.canonical_name=r.canonical_name; collation.charset_name=r.charset_name;
+    collation.charset_uuid=scratchbird::core::uuid::UuidToString(r.charset_uuid.value);
+    collation.default_for_charset=r.default_for_charset; collation.default_authority=r.default_authority;
+    collation.case_insensitive=r.case_insensitive; collation.accent_insensitive=r.accent_insensitive;
+    collation.language=r.language; collation.description=r.description; collation.supported_by=r.supported_by;
+    collation.source_path=r.source_path; collation.resource_epoch=r.resource_epoch;
+    collation.family_epoch=r.family_epoch; collation.family_version=r.family_version;
+    image.collations.push_back(std::move(collation));
   }
   for (auto& alias : image.aliases) {
     if (!alias.canonical_resource_uuid.empty()) {
@@ -4143,7 +4200,13 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
     if (!decoded.ok()) {
       continue;
     }
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
+        || decoded.record.header.kind == CatalogRecordKind::filespace
+        || decoded.record.header.kind == CatalogRecordKind::schema
+        || decoded.record.header.kind == CatalogRecordKind::localized_name
+        || decoded.record.header.kind == CatalogRecordKind::localized_comment
+        ? std::map<std::string, std::string>{}
+        : ParseKeyValuePayload(decoded.record.payload);
     if (decoded.record.header.kind == CatalogRecordKind::policy) {
       const auto policy_class = fields.find("policy_class");
       if (policy_class == fields.end()) {
@@ -5286,7 +5349,13 @@ BootstrapSecurityContextAuthorityClass InspectBootstrapSecurityContextAuthority(
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok() || decoded.record.header.deleted) continue;
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
+        || decoded.record.header.kind == CatalogRecordKind::filespace
+        || decoded.record.header.kind == CatalogRecordKind::schema
+        || decoded.record.header.kind == CatalogRecordKind::localized_name
+        || decoded.record.header.kind == CatalogRecordKind::localized_comment
+        ? std::map<std::string, std::string>{}
+        : ParseKeyValuePayload(decoded.record.payload);
     const bool relevant_role =
         decoded.record.header.kind == CatalogRecordKind::role_account &&
         fields.contains("role_uuid") &&
@@ -5345,7 +5414,13 @@ bool AddBootstrapSecurityContextAuthorityToRows(
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto decoded = DecodeCatalogTypedRecord(row);
     if (!decoded.ok() || decoded.record.header.deleted) continue;
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
+        || decoded.record.header.kind == CatalogRecordKind::filespace
+        || decoded.record.header.kind == CatalogRecordKind::schema
+        || decoded.record.header.kind == CatalogRecordKind::localized_name
+        || decoded.record.header.kind == CatalogRecordKind::localized_comment
+        ? std::map<std::string, std::string>{}
+        : ParseKeyValuePayload(decoded.record.payload);
     const bool relevant_role =
         decoded.record.header.kind == CatalogRecordKind::role_account &&
         fields.contains("role_uuid") &&
@@ -7140,7 +7215,13 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     if (decoded.record.header.deleted) {
       continue;
     }
-    const auto fields = ParseKeyValuePayload(decoded.record.payload);
+    const auto fields = decoded.record.header.kind == CatalogRecordKind::database
+        || decoded.record.header.kind == CatalogRecordKind::filespace
+        || decoded.record.header.kind == CatalogRecordKind::schema
+        || decoded.record.header.kind == CatalogRecordKind::localized_name
+        || decoded.record.header.kind == CatalogRecordKind::localized_comment
+        ? std::map<std::string, std::string>{}
+        : ParseKeyValuePayload(decoded.record.payload);
 
     if (decoded.record.header.kind == CatalogRecordKind::role_account) {
       const std::string role_code = fields.count("role_code") == 0
@@ -7572,7 +7653,12 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
     if (!catalog_migration.ok()) {
       return catalog_migration;
     }
-    resource_seed_catalog = BuildResourceImageFromCatalogRows(catalog_rows);
+    auto resources = BuildResourceImageFromCatalogRows(catalog_rows);
+    if (!resources) {
+      return LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing",config.path,"resource_binary_catalog_image_invalid");
+    }
+    resource_seed_catalog = std::move(*resources);
     policy_seed_catalog = BuildPolicyImageFromCatalogRows(catalog_rows);
   } else {
     return read_catalog_rows;

@@ -426,9 +426,9 @@ AgentRuntimeContext AgentContextFromRequest(const EngineApiRequest& request) {
   context.backup_hold_mode = SecurityOptionPresent(request, "lifecycle:backup") ||
                              SecurityOptionPresent(request, "lifecycle:restore");
   context.archive_hold_mode = SecurityOptionPresent(request, "lifecycle:archive_hold");
-  context.principal_uuid = request.context.principal_uuid.canonical;
-  context.database_uuid = request.context.database_uuid.canonical;
-  context.cluster_uuid = request.context.cluster_uuid.canonical;
+  context.principal_uuid = request.context.principal_uuid;
+  context.database_uuid = request.context.database_uuid;
+  context.cluster_uuid = request.context.cluster_uuid;
   agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
                                                             &context);
   context.wall_now_microseconds = 1;
@@ -459,7 +459,7 @@ DurableAgentResourceReservationRequest DurableResourceReservationForManagement(
           "agent_management_resource_reservation|" +
           reservation.reservation_key);
   reservation.owner_scope = context.principal_uuid.empty()
-                                ? request.context.principal_uuid.canonical
+                                ? request.context.principal_uuid
                                 : context.principal_uuid;
   reservation.agent_type_id = descriptor.type_id;
   reservation.operation_id = std::string(operation_id);
@@ -538,7 +538,7 @@ bool DurableRuntimeRequired(const EngineApiRequest& request,
 
 bool DurableCatalogStoreContextAvailable(const EngineApiRequest& request) {
   return !request.context.database_path.empty() &&
-         !request.context.transaction_uuid.canonical.empty() &&
+         !request.context.transaction_uuid.is_nil() &&
          request.context.local_transaction_id != 0;
 }
 
@@ -2347,7 +2347,7 @@ EngineThirdPartyAgentManagementResult EngineSubmitThirdPartyAgentManagementReque
     AddThirdPartyRequestEvidenceIfTyped(&result, record);
     return result;
   }
-  if (effective_request.context.principal_uuid.canonical != record.requester_principal_uuid) {
+  if (effective_request.context.principal_uuid != record.requester_principal_uuid) {
     auto result = ThirdPartyFailure(effective_request,
                                     "AGENT.THIRD_PARTY.REQUESTER_PRINCIPAL_MISMATCH",
                                     "requester_principal_uuid_mismatch");

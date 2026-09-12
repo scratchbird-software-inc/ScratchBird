@@ -7,10 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_binary.hpp"
+#include "datatype_binary_view.hpp"
+#include "canonical_utf8.hpp"
+#include "sbl_numeric.hpp"
 
 #include "hash_digest.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -83,6 +87,13 @@ DatatypeBinaryResult BinaryError(std::string diagnostic_code,
   return result;
 }
 
+DatatypeBinaryViewResult BinaryViewError(std::string diagnostic_code,
+                                        std::string message_key,
+                                        std::string detail = {}) {
+  auto error = BinaryError(std::move(diagnostic_code), std::move(message_key), std::move(detail));
+  return {error.status, std::move(error.diagnostic), 0};
+}
+
 DatatypeDescriptorEnvelopeResult DescriptorError(std::string diagnostic_code,
                                                  std::string message_key,
                                                  std::string detail = {}) {
@@ -108,15 +119,36 @@ bool IsValidFixedPayloadSize(const DatatypeStorageLayout& layout, u32 payload_si
   return true;
 }
 
-u16 FlagsFor(const DatatypeBinaryValue& value) {
-  u16 flags = 0;
-  if (value.is_null) {
-    flags |= BinaryFlag::is_null;
+u64 PayloadChecksum(const byte* bytes, std::size_t size) {
+  u64 hash = kFnvOffsetBasis64;
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= static_cast<u64>(bytes[i]);
+    hash *= kFnvPrime64;
   }
-  if (value.payload_is_toast_reference) {
-    flags |= BinaryFlag::payload_is_toast_reference;
-  }
-  return flags;
+  return hash;
+}
+
+void WriteBinaryValueHeader(const DatatypeBinaryValueView& value, u64 checksum,
+                            byte* destination) noexcept {
+  std::memset(destination, 0, kDatatypeBinaryEnvelopeHeaderBytes);
+  std::memcpy(destination, kDatatypeBinaryMagic, sizeof(kDatatypeBinaryMagic));
+  StoreLittle32(destination + kOffsetTypeId, static_cast<u32>(value.type_id));
+  const u16 flags = (value.is_null ? BinaryFlag::is_null : 0) |
+                   (value.payload_is_toast_reference ? BinaryFlag::payload_is_toast_reference : 0);
+  StoreLittle16(destination + kOffsetFlags, flags);
+  StoreLittle16(destination + kOffsetHeaderBytes, kDatatypeBinaryEnvelopeHeaderBytes);
+  StoreLittle32(destination + kOffsetPayloadBytes, static_cast<u32>(value.payload_bytes));
+  StoreLittle64(destination + kOffsetPayloadChecksum, checksum);
+}
+
+void WriteValidatedBinaryValue(const DatatypeBinaryValueView& value, byte* destination) noexcept {
+  const auto checksum = PayloadChecksum(value.payload_data, value.payload_bytes);
+  // Move before touching the header: the payload may alias any part of the
+  // destination. All fallible validation and capacity work is already done.
+  if (value.payload_bytes != 0)
+    std::memmove(destination + kDatatypeBinaryEnvelopeHeaderBytes,
+                 value.payload_data, value.payload_bytes);
+  WriteBinaryValueHeader(value, checksum, destination);
 }
 
 void AppendU16(std::vector<byte>* out, u16 value) {
@@ -326,12 +358,7 @@ DatatypeDescriptorEnvelopeResult ValidateDescriptorEnvelope(
 }  // namespace
 
 u64 ComputeDatatypeBinaryChecksum(const std::vector<byte>& bytes) {
-  u64 hash = kFnvOffsetBasis64;
-  for (byte value : bytes) {
-    hash ^= static_cast<u64>(value);
-    hash *= kFnvPrime64;
-  }
-  return hash;
+  return PayloadChecksum(bytes.data(), bytes.size());
 }
 
 const char* DatatypeDescriptorEnvelopeKindName(DatatypeDescriptorEnvelopeKind kind) {
@@ -532,114 +559,189 @@ DatatypeDescriptorEnvelopeResult DecodeDatatypeDescriptorEnvelope(
   return result;
 }
 
-DatatypeBinaryResult ValidateDatatypeBinaryValue(const DatatypeBinaryValue& value) {
+DatatypeBinaryViewResult ValidateDatatypeBinaryValueView(const DatatypeBinaryValueView& value) {
+  if ((value.payload_bytes != 0 && value.payload_data == nullptr) ||
+      value.payload_bytes > std::numeric_limits<u32>::max() ||
+      value.payload_bytes > std::numeric_limits<std::size_t>::max() -
+                                kDatatypeBinaryEnvelopeHeaderBytes)
+    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
+                           "datatype.binary.borrowed_payload_bounds_invalid");
   const auto layout = LookupDatatypeStorageLayout(value.type_id);
   if (!layout.ok()) {
-    DatatypeBinaryResult result;
+    DatatypeBinaryViewResult result;
     result.status = layout.status;
     result.diagnostic = layout.diagnostic;
     return result;
   }
 
   if (value.is_null) {
-    if (!value.payload.empty()) {
-      return BinaryError("SB-DATATYPE-BINARY-NULL-HAS-PAYLOAD",
+    if (value.payload_bytes != 0) {
+      return BinaryViewError("SB-DATATYPE-BINARY-NULL-HAS-PAYLOAD",
                          "datatype.binary.null_has_payload",
                          CanonicalTypeName(value.type_id));
     }
-    DatatypeBinaryResult result;
+    DatatypeBinaryViewResult result;
     result.status = BinaryOkStatus();
-    result.value = value;
     return result;
   }
 
   if (value.type_id == CanonicalTypeId::null_type) {
-    return BinaryError("SB-DATATYPE-BINARY-NULL-TYPE-MUST-BE-NULL",
+    return BinaryViewError("SB-DATATYPE-BINARY-NULL-TYPE-MUST-BE-NULL",
                        "datatype.binary.null_type_must_be_null");
   }
 
-  if (!IsValidFixedPayloadSize(layout.layout, static_cast<u32>(value.payload.size()))) {
-    return BinaryError("SB-DATATYPE-BINARY-PAYLOAD-SIZE-INVALID",
+  // The storage descriptor/TOAST locator is not the canonical decimal VALUE.
+  // Current exact decimal values use the shared24-byte coefficient codec.
+  const bool decimal_value = value.type_id == CanonicalTypeId::decimal &&
+                             !value.payload_is_toast_reference;
+  if (decimal_value &&
+      !scratchbird::libraries::sbl_numeric::DecodeExactDecimalLittleEndian(
+           value.payload_data, value.payload_bytes).ok) {
+    return BinaryViewError("DATATYPE.DESCRIPTOR.INVALID",
+                       "datatype.binary.decimal_payload_noncanonical");
+  }
+  if (!decimal_value &&
+      !IsValidFixedPayloadSize(layout.layout, static_cast<u32>(value.payload_bytes))) {
+    return BinaryViewError("SB-DATATYPE-BINARY-PAYLOAD-SIZE-INVALID",
                        "datatype.binary.payload_size_invalid",
                        CanonicalTypeName(value.type_id));
   }
 
-  if (value.type_id == CanonicalTypeId::boolean && value.payload.size() == 1 &&
-      value.payload[0] != 0 && value.payload[0] != 1) {
-    return BinaryError("SB-DATATYPE-BINARY-BOOLEAN-PAYLOAD-INVALID",
+  if (value.type_id == CanonicalTypeId::boolean && value.payload_bytes == 1 &&
+      value.payload_data[0] != 0 && value.payload_data[0] != 1) {
+    return BinaryViewError("SB-DATATYPE-BINARY-BOOLEAN-PAYLOAD-INVALID",
                        "datatype.binary.boolean_payload_invalid");
   }
 
+  if (value.type_id == CanonicalTypeId::character &&
+      !value.payload_is_toast_reference &&
+      !ValidateCanonicalUtf8(value.payload_data, value.payload_bytes)) {
+    return BinaryViewError("CTB.TEXT.INVALID_ENCODING",
+                       "datatype.binary.text_payload_noncanonical");
+  }
+
   if (value.payload_is_toast_reference && !layout.layout.may_overflow_to_toast) {
-    return BinaryError("SB-DATATYPE-BINARY-TOAST-NOT-ALLOWED",
+    return BinaryViewError("SB-DATATYPE-BINARY-TOAST-NOT-ALLOWED",
                        "datatype.binary.toast_not_allowed",
                        CanonicalTypeName(value.type_id));
   }
 
-  DatatypeBinaryResult result;
+  DatatypeBinaryViewResult result;
   result.status = BinaryOkStatus();
-  result.value = value;
   return result;
+}
+
+DatatypeBinaryResult ValidateDatatypeBinaryValue(const DatatypeBinaryValue& value) {
+  auto validated = ValidateDatatypeBinaryValueView(
+      {value.type_id, value.is_null, value.payload_is_toast_reference,
+       value.payload.data(), value.payload.size()});
+  DatatypeBinaryResult result;
+  result.status = validated.status;
+  result.diagnostic = std::move(validated.diagnostic);
+  if (validated.ok()) result.value = value;
+  return result;
+}
+
+DatatypeBinaryViewResult EncodeDatatypeBinaryValueInto(
+    const DatatypeBinaryValueView& value, byte* destination,
+    std::size_t destination_bytes) {
+  auto validated = ValidateDatatypeBinaryValueView(value);
+  if (!validated.ok()) return validated;
+  if (value.payload_bytes > std::numeric_limits<std::size_t>::max() -
+                                kDatatypeBinaryEnvelopeHeaderBytes ||
+      destination == nullptr || destination_bytes < kDatatypeBinaryEnvelopeHeaderBytes ||
+      value.payload_bytes > destination_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
+    auto failure = BinaryViewError("RESOURCE.BUDGET_EXCEEDED",
+                                   "datatype.binary.destination_capacity_insufficient");
+    failure.status = {StatusCode::memory_limit_exceeded, Severity::error, Subsystem::datatypes};
+    failure.diagnostic.status = failure.status;
+    return failure;
+  }
+  WriteValidatedBinaryValue(value, destination);
+  validated.bytes_written = kDatatypeBinaryEnvelopeHeaderBytes + value.payload_bytes;
+  return validated;
 }
 
 DatatypeBinaryResult EncodeDatatypeBinaryValue(const DatatypeBinaryValue& value) {
-  const auto validation = ValidateDatatypeBinaryValue(value);
-  if (!validation.ok()) {
-    return validation;
-  }
-
+  const DatatypeBinaryValueView view{value.type_id, value.is_null, value.payload_is_toast_reference,
+                                   value.payload.data(), value.payload.size()};
+  auto validation = ValidateDatatypeBinaryValueView(view);
   DatatypeBinaryResult result;
-  result.status = BinaryOkStatus();
+  result.status = validation.status;
+  result.diagnostic = std::move(validation.diagnostic);
+  if (!validation.ok()) return result;
   result.value = value;
   result.encoded.assign(kDatatypeBinaryEnvelopeHeaderBytes + value.payload.size(), 0);
-  std::memcpy(result.encoded.data() + kOffsetMagic, kDatatypeBinaryMagic, sizeof(kDatatypeBinaryMagic));
-  StoreLittle32(result.encoded.data() + kOffsetTypeId, static_cast<u32>(value.type_id));
-  StoreLittle16(result.encoded.data() + kOffsetFlags, FlagsFor(value));
-  StoreLittle16(result.encoded.data() + kOffsetHeaderBytes, kDatatypeBinaryEnvelopeHeaderBytes);
-  StoreLittle32(result.encoded.data() + kOffsetPayloadBytes, static_cast<u32>(value.payload.size()));
-  StoreLittle64(result.encoded.data() + kOffsetPayloadChecksum, ComputeDatatypeBinaryChecksum(value.payload));
-  if (!value.payload.empty()) {
-    std::copy(value.payload.begin(), value.payload.end(), result.encoded.begin() + kDatatypeBinaryEnvelopeHeaderBytes);
-  }
+  WriteValidatedBinaryValue(view, result.encoded.data());
   return result;
 }
 
-DatatypeBinaryResult DecodeDatatypeBinaryValue(const std::vector<byte>& encoded) {
-  if (encoded.size() < kDatatypeBinaryEnvelopeHeaderBytes) {
-    return BinaryError("SB-DATATYPE-BINARY-ENVELOPE-SHORT",
+DatatypeBinaryDecodedViewResult DecodeDatatypeBinaryValueView(
+    const byte* encoded, std::size_t encoded_bytes) {
+  const auto error = [](std::string code, std::string key, std::string detail = {}) {
+    auto failure = BinaryViewError(std::move(code), std::move(key), std::move(detail));
+    return DatatypeBinaryDecodedViewResult{failure.status, std::move(failure.diagnostic), {}};
+  };
+  if (encoded == nullptr || encoded_bytes < kDatatypeBinaryEnvelopeHeaderBytes) {
+    return error("SB-DATATYPE-BINARY-ENVELOPE-SHORT",
                        "datatype.binary.envelope_short");
   }
-  if (std::memcmp(encoded.data() + kOffsetMagic, kDatatypeBinaryMagic, sizeof(kDatatypeBinaryMagic)) != 0) {
-    return BinaryError("SB-DATATYPE-BINARY-MAGIC-INVALID",
+  if (encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes > std::numeric_limits<u32>::max())
+    return error("SB-DATATYPE-BINARY-ENVELOPE-SIZE-INVALID",
+                 "datatype.binary.envelope_size_invalid");
+  if (std::memcmp(encoded + kOffsetMagic, kDatatypeBinaryMagic, sizeof(kDatatypeBinaryMagic)) != 0) {
+    return error("SB-DATATYPE-BINARY-MAGIC-INVALID",
                        "datatype.binary.magic_invalid");
   }
-  const u16 header_bytes = LoadLittle16(encoded.data() + kOffsetHeaderBytes);
-  const u32 payload_bytes = LoadLittle32(encoded.data() + kOffsetPayloadBytes);
+  const u16 header_bytes = LoadLittle16(encoded + kOffsetHeaderBytes);
+  const u32 payload_bytes = LoadLittle32(encoded + kOffsetPayloadBytes);
   if (header_bytes != kDatatypeBinaryEnvelopeHeaderBytes ||
-      encoded.size() != static_cast<std::size_t>(header_bytes) + payload_bytes) {
-    return BinaryError("SB-DATATYPE-BINARY-ENVELOPE-SIZE-INVALID",
+      payload_bytes != encoded_bytes - kDatatypeBinaryEnvelopeHeaderBytes) {
+    return error("SB-DATATYPE-BINARY-ENVELOPE-SIZE-INVALID",
                        "datatype.binary.envelope_size_invalid");
   }
 
-  DatatypeBinaryValue value;
-  value.type_id = static_cast<CanonicalTypeId>(LoadLittle32(encoded.data() + kOffsetTypeId));
-  const u16 flags = LoadLittle16(encoded.data() + kOffsetFlags);
+  DatatypeBinaryValueView value;
+  value.type_id = static_cast<CanonicalTypeId>(LoadLittle32(encoded + kOffsetTypeId));
+  const u16 flags = LoadLittle16(encoded + kOffsetFlags);
   value.is_null = (flags & BinaryFlag::is_null) != 0;
   value.payload_is_toast_reference = (flags & BinaryFlag::payload_is_toast_reference) != 0;
-  value.payload.assign(encoded.begin() + header_bytes, encoded.end());
-  const u64 expected_checksum = LoadLittle64(encoded.data() + kOffsetPayloadChecksum);
-  if (expected_checksum != ComputeDatatypeBinaryChecksum(value.payload)) {
-    return BinaryError("SB-DATATYPE-BINARY-PAYLOAD-CHECKSUM-MISMATCH",
+  value.payload_data = encoded + kDatatypeBinaryEnvelopeHeaderBytes;
+  value.payload_bytes = payload_bytes;
+  const u64 expected_checksum = LoadLittle64(encoded + kOffsetPayloadChecksum);
+  std::array<byte, kDatatypeBinaryEnvelopeHeaderBytes> canonical_header{};
+  WriteBinaryValueHeader(value, expected_checksum, canonical_header.data());
+  if (std::memcmp(canonical_header.data(), encoded, canonical_header.size()) != 0)
+    return error("DATATYPE.DESCRIPTOR.INVALID", "datatype.descriptor_invalid",
+                 "datatype_binary_header_noncanonical");
+  // The shared encoder copies the payload verbatim. Comparing its canonical
+  // header plus validating these exact borrowed bytes proves the complete
+  // re-encoding without materializing another copy of the same payload.
+  if (expected_checksum != PayloadChecksum(value.payload_data, value.payload_bytes)) {
+    return error("SB-DATATYPE-BINARY-PAYLOAD-CHECKSUM-MISMATCH",
                        "datatype.binary.payload_checksum_mismatch",
                        CanonicalTypeName(value.type_id));
   }
 
-  DatatypeBinaryResult validation = ValidateDatatypeBinaryValue(value);
-  if (!validation.ok()) {
-    return validation;
-  }
-  validation.encoded = encoded;
-  return validation;
+  auto validation = ValidateDatatypeBinaryValueView(value);
+  DatatypeBinaryDecodedViewResult result{validation.status, std::move(validation.diagnostic), {}};
+  if (validation.ok()) result.value = value;
+  return result;
+}
+
+DatatypeBinaryResult DecodeDatatypeBinaryValue(const std::vector<byte>& encoded) {
+  auto decoded = DecodeDatatypeBinaryValueView(encoded.data(), encoded.size());
+  DatatypeBinaryResult result;
+  result.status = decoded.status;
+  result.diagnostic = std::move(decoded.diagnostic);
+  if (!decoded.ok()) return result;
+  result.value.type_id = decoded.value.type_id;
+  result.value.is_null = decoded.value.is_null;
+  result.value.payload_is_toast_reference = decoded.value.payload_is_toast_reference;
+  result.value.payload.assign(decoded.value.payload_data,
+                             decoded.value.payload_data + decoded.value.payload_bytes);
+  result.encoded = encoded;
+  return result;
 }
 
 DiagnosticRecord MakeDatatypeBinaryDiagnostic(Status status,

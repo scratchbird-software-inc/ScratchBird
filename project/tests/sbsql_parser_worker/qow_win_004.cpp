@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -21,8 +22,8 @@ namespace dt = scratchbird::core::datatypes;
 
 namespace {
 
-constexpr std::string_view kWindowCollationUuid =
-    "019f0000-0000-7400-8000-000000004001";
+const auto kWindowCollationUuid = scratchbird::tests::BinaryUuid(
+    "019f0000-0000-7400-8000-000000004001");
 constexpr std::uint64_t kWindowOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
 constexpr std::uint64_t kWindowOldestActiveLocalTransactionId =
@@ -53,21 +54,24 @@ exec::CanonicalExecutionMgaAuthority WindowClosureAuthority(
   return authority;
 }
 
-std::string WindowUuid(const unsigned value) {
+api::EngineUuid WindowUuid(const unsigned value) {
   char buffer[37]{};
   std::snprintf(buffer, sizeof(buffer),
                 "019f0000-0000-7400-8000-%012u", value);
-  return buffer;
+  return scratchbird::tests::BinaryUuid(buffer);
 }
 
 api::EngineDescriptor WindowDescriptor(
     const unsigned descriptor_uuid, const std::string& canonical_type,
-    const std::string& encoded_descriptor) {
+    const api::EngineUuid& type_uuid, const std::string& encoded_descriptor,
+    const api::EngineUuid& collation_uuid = {}) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = WindowUuid(descriptor_uuid);
+  descriptor.descriptor_uuid = WindowUuid(descriptor_uuid);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = canonical_type;
   descriptor.encoded_descriptor = encoded_descriptor;
+  descriptor.type_uuid = type_uuid;
+  descriptor.collation_uuid = collation_uuid;
   return descriptor;
 }
 
@@ -117,22 +121,18 @@ exec::CanonicalDescriptorOrderTerm WindowTextOrderTerm(
 
 exec::CanonicalWindowPartitionOrderRequest Window401Request() {
   const auto text_descriptor = WindowDescriptor(
-      4101, "text", "type_uuid=" + WindowUuid(4201) +
-                        ";nullability=nullable;collation_uuid=" +
-                        std::string(kWindowCollationUuid));
+      4101, "text", WindowUuid(4201), "nullability=nullable", kWindowCollationUuid);
   const auto part_descriptor = WindowDescriptor(
       4102, "int64",
-      "type_uuid=" + WindowUuid(4202) + ";nullability=non_null");
+      WindowUuid(4202), "nullability=non_null");
   const auto order_descriptor = WindowDescriptor(
       4103, "int64",
-      "type_uuid=" + WindowUuid(4203) + ";nullability=nullable");
+      WindowUuid(4203), "nullability=nullable");
   const auto tie_descriptor = WindowDescriptor(
-      4104, "text", "type_uuid=" + WindowUuid(4204) +
-                        ";nullability=non_null;collation_uuid=" +
-                        std::string(kWindowCollationUuid));
+      4104, "text", WindowUuid(4204), "nullability=non_null", kWindowCollationUuid);
   const auto payload_descriptor = WindowDescriptor(
       4105, "int64",
-      "type_uuid=" + WindowUuid(4205) + ";nullability=non_null");
+      WindowUuid(4205), "nullability=non_null");
 
   exec::CanonicalWindowPartitionOrderRequest request;
   auto& dag = request.physical_dag;
@@ -344,7 +344,7 @@ bool ValidateTypedCompositePartitions() {
 
   auto request = Window401Request();
   request.partition_terms.clear();
-  request.partition_property_uuid.clear();
+  request.partition_property_uuid = {};
   request.physical_dag.nodes[1].required_property_uuids.erase(
       request.physical_dag.nodes[1].required_property_uuids.begin());
   auto mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
@@ -397,7 +397,7 @@ bool ValidateTypedCompositePartitions() {
   mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
   passed &= Require401(
       !mutated.diagnostic.ok && mutated.ordered_batch.rows.empty() &&
-          mutated.row_metadata.empty() && mutated.selected_plan_uuid.empty() &&
+          mutated.row_metadata.empty() && mutated.selected_plan_uuid.is_nil() &&
           mutated.executed_physical_node_id == 0 &&
           !exec::PhysicalMgaStatementContextValid(
               mutated.mga_statement_context),

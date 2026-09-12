@@ -24,7 +24,7 @@ inline constexpr const char* kModelMgaContextMismatch =
 struct ModelPropertyDescriptorV1 {
   std::uint16_t abi_version{1};
   std::string property_descriptor_id{"SB_MODEL_PROPERTY_DESCRIPTOR_V1"};
-  std::string property_uuid;
+  internal_api::EngineUuid property_uuid;
   std::string ordering_id{"fixture_order"};
   std::string partitioning_id{"single_local_partition"};
   std::string uniqueness_id{"document_uuid"};
@@ -35,15 +35,15 @@ struct ModelPropertyDescriptorV1 {
 };
 
 struct ModelProviderRowIdentityV1 {
-  std::string document_uuid;
-  std::string row_uuid;
-  std::string vertex_uuid;
-  std::string edge_uuid;
-  std::string path_uuid;
+  internal_api::EngineUuid document_uuid;
+  internal_api::EngineUuid row_uuid;
+  internal_api::EngineUuid vertex_uuid;
+  internal_api::EngineUuid edge_uuid;
+  internal_api::EngineUuid path_uuid;
   std::uint64_t graph_depth{0};
   std::string key;
-  std::string series_uuid;
-  std::string metric_uuid;
+  internal_api::EngineUuid series_uuid;
+  internal_api::EngineUuid metric_uuid;
   std::string tags;
   std::int64_t point_timestamp_ns{0};
   std::int64_t bucket_start_ns{0};
@@ -62,7 +62,7 @@ struct ModelProviderRowIdentityV1 {
   // RCP-078 exact public search result identity. The relation UUID lives in
   // document_uuid; analyzer identity, score, and gap-free rank are carried
   // independently so the typed exchange can reject cell substitution.
-  std::string search_analyzer_uuid;
+  internal_api::EngineUuid search_analyzer_uuid;
   std::uint64_t search_analyzer_generation{0};
   std::string search_score;
   std::uint64_t search_rank{0};
@@ -74,7 +74,7 @@ struct ModelSourceInputDescriptorV1 {
   std::string family_id;
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string object_uuid;
+  internal_api::EngineUuid object_uuid;
   // KEY_VALUE_MULTI_GET binds the first-distinct request sequence here so
   // the typed exchange can prove that the provider result is its ordered
   // subsequence. This remains empty for every other operation and family.
@@ -83,23 +83,23 @@ struct ModelSourceInputDescriptorV1 {
   std::uint64_t maximum_key_value_request_bytes{0};
   // RCP-079 spatial bindings are engine-resolved before provider access.
   // These remain empty for every non-spatial family.
-  std::string spatial_geometry_descriptor_uuid;
-  std::string spatial_geometry_type_uuid;
-  std::string spatial_crs_uuid;
+  internal_api::EngineUuid spatial_geometry_descriptor_uuid;
+  internal_api::EngineUuid spatial_geometry_type_uuid;
+  internal_api::EngineUuid spatial_crs_uuid;
   std::uint64_t spatial_crs_generation{0};
   std::uint64_t physical_node_id{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid capability_uuid;
+  internal_api::EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
-  std::string result_handle_uuid;
+  internal_api::EngineUuid result_handle_uuid;
   std::uint64_t causal_counter_id{0};
   std::vector<std::uint32_t> output_descriptor_ids;
   PhysicalMgaStatementContext mga_statement_context;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string policy_snapshot_uuid;
-  std::string resource_contract_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  internal_api::EngineUuid security_context_uuid;
+  internal_api::EngineUuid policy_snapshot_uuid;
+  internal_api::EngineUuid resource_contract_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t descriptor_generation{0};
   std::uint64_t security_generation{0};
@@ -112,7 +112,7 @@ struct ModelSourceInputDescriptorV1 {
   // immutable timestamp required by a timestamp-carrying sibling only inside
   // an admitted 3--9-leg composition. Single-family validation remains
   // unchanged and cannot mint or remove the timestamp.
-  std::string multimodel_composition_receipt_uuid;
+  internal_api::EngineUuid multimodel_composition_receipt_uuid;
   std::uint16_t multimodel_lexical_source_ordinal{0};
   std::uint16_t multimodel_composition_arity{0};
   bool multimodel_common_statement_context{false};
@@ -123,20 +123,20 @@ struct ModelSourceInputDescriptorV1 {
 
 struct ModelProviderBatchV1 {
   std::uint16_t abi_version{1};
-  std::string provider_uuid;
+  internal_api::EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid capability_uuid;
   bool exact_fallback_selected{false};
-  std::string result_handle_uuid;
+  internal_api::EngineUuid result_handle_uuid;
   std::uint64_t causal_counter_id{0};
   std::vector<std::uint32_t> output_descriptor_ids;
   std::vector<ModelProviderRowIdentityV1> ordered_row_identities;
   DescriptorBatch batch;
   ModelPropertyDescriptorV1 properties;
   PhysicalMgaStatementContext mga_statement_context;
-  std::string security_receipt_uuid;
-  std::string multimodel_composition_receipt_uuid;
+  internal_api::EngineUuid security_receipt_uuid;
+  internal_api::EngineUuid multimodel_composition_receipt_uuid;
   std::uint16_t multimodel_lexical_source_ordinal{0};
   std::uint16_t multimodel_composition_arity{0};
   bool multimodel_common_statement_context{false};
@@ -153,25 +153,25 @@ struct ModelSourceOutputDescriptorV1 {
   std::string family_id;
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string object_uuid;
-  std::string spatial_geometry_descriptor_uuid;
-  std::string spatial_geometry_type_uuid;
-  std::string spatial_crs_uuid;
+  internal_api::EngineUuid object_uuid;
+  internal_api::EngineUuid spatial_geometry_descriptor_uuid;
+  internal_api::EngineUuid spatial_geometry_type_uuid;
+  internal_api::EngineUuid spatial_crs_uuid;
   std::uint64_t spatial_crs_generation{0};
   std::uint64_t physical_node_id{0};
-  std::string selected_alternative_uuid;
-  std::string capability_uuid;
-  std::string provider_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid capability_uuid;
+  internal_api::EngineUuid provider_uuid;
   std::uint64_t provider_generation{0};
-  std::string result_handle_uuid;
+  internal_api::EngineUuid result_handle_uuid;
   std::uint64_t causal_counter_id{0};
   std::vector<std::uint32_t> output_descriptor_ids;
   std::vector<ModelProviderRowIdentityV1> ordered_row_identities;
   DescriptorBatch batch;
   ModelPropertyDescriptorV1 properties;
   PhysicalMgaStatementContext mga_statement_context;
-  std::string security_receipt_uuid;
-  std::string multimodel_composition_receipt_uuid;
+  internal_api::EngineUuid security_receipt_uuid;
+  internal_api::EngineUuid multimodel_composition_receipt_uuid;
   std::uint16_t multimodel_lexical_source_ordinal{0};
   std::uint16_t multimodel_composition_arity{0};
   bool multimodel_common_statement_context{false};
@@ -213,7 +213,7 @@ bool ParseCanonicalTimeSeriesTimestampNsV1(std::string_view timestamp,
 // engine-owned descriptor batches; the temporal key carrier only binds the
 // exact metric/tag/timestamp semantics used by the selected two-input JOIN.
 struct CanonicalTimeSeriesAsofKeyV1 {
-  std::string metric_uuid;
+  internal_api::EngineUuid metric_uuid;
   std::string canonical_tags;
   std::int64_t timestamp_ns{0};
 };
@@ -242,7 +242,7 @@ struct CanonicalTimeSeriesAsofJoinRequestV1 {
   DescriptorBatch right_batch;
   std::vector<CanonicalTimeSeriesAsofKeyV1> left_keys;
   std::vector<CanonicalTimeSeriesAsofKeyV1> right_keys;
-  std::vector<std::string> right_tie_break_row_uuids;
+  std::vector<internal_api::EngineUuid> right_tie_break_row_uuids;
   CanonicalTimeSeriesAsofInputBindingV1 left_binding;
   CanonicalTimeSeriesAsofInputBindingV1 right_binding;
   // The optimizer owns the physical transformation rule. Specialized
@@ -263,7 +263,7 @@ struct CanonicalTimeSeriesAsofJoinResultV1 {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
   std::vector<std::int64_t> matched_right_ordinals;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id{0};
   std::uint64_t causal_counter_id{0};
   PhysicalMgaStatementContext mga_statement_context;

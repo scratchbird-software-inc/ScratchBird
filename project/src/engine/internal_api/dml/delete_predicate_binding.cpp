@@ -46,8 +46,8 @@ bool Output(const dt::DatatypeTypeCodecIdentityRowV1& row,
 bool ColumnType(const EngineRequestContext& context,
                 const MgaRelationColumnStorageDescriptor& column,
                 dt::DatatypeTypeCodecIdentityRowV1* row) {
-  if (column.column_uuid.canonical.empty() || !column.column_generation ||
-      column.value_descriptor.descriptor_uuid.canonical.empty()) return false;
+  if (column.column_uuid.is_nil() || !column.column_generation ||
+      column.value_descriptor.descriptor_uuid.is_nil()) return false;
   std::map<std::string, std::string> fields;
   std::string_view remaining(column.value_descriptor.encoded_descriptor);
   while (!remaining.empty()) {
@@ -74,7 +74,7 @@ bool ColumnType(const EngineRequestContext& context,
   // generation is a new profile, not permission to infer registry identity.
   if (!number("datatype_descriptor_generation", 1)) return false;
   const auto current = dt::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid.canonical, context.datatype_catalog_generation,
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, descriptor->second, 1);
   if (!current.ok) return false;
   *row = current.row;
@@ -112,8 +112,8 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
   wire::TypedUpdateUuid target{};
   if (!Nonzero(descriptor_uuid) || !descriptor_generation || !Nonzero(occurrence_uuid) ||
       !occurrence_generation || !demand.structural_occurrence_id ||
-      context.statement_receipt_uuid.canonical.empty() ||
-      demand.authenticated_statement_receipt_uuid != context.statement_receipt_uuid.canonical ||
+      context.statement_receipt_uuid.is_nil() ||
+      demand.authenticated_statement_receipt_uuid != context.statement_receipt_uuid ||
       !projection::TypedUuid(demand.target_relation_uuid_hint, &target))
     return refuse("owner_or_demand_identity");
   if (context.read_only_mode || context.cluster_transaction_active || context.route_fence_present ||
@@ -129,14 +129,14 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
   auto loaded = TransactionalRelationStore(context).LoadRelationDescriptor(demand.target_relation_uuid_hint);
   if (!loaded.ok) { result.diagnostic = loaded.diagnostic; return result; }
   result.relation = std::move(loaded.descriptor);
-  if (result.relation.relation_uuid.canonical != demand.target_relation_uuid_hint ||
+  if (result.relation.relation_uuid != demand.target_relation_uuid_hint ||
       ValidateMgaRelationStorageDescriptor(result.relation).error)
-    return refuse("live_relation_descriptor", "DATATYPE.DESCRIPTOR_INVALID");
+    return refuse("live_relation_descriptor", "DATATYPE.DESCRIPTOR.INVALID");
   const auto boolean = dt::LookupCanonicalBooleanTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid.canonical, context.datatype_catalog_generation,
+      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation);
   const auto operators = dt::LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
-  if (!boolean.ok || !operators.ok) return refuse("live_registry", "DATATYPE.DESCRIPTOR_INVALID");
+  if (!boolean.ok || !operators.ok) return refuse("live_registry", "DATATYPE.DESCRIPTOR.INVALID");
   auto& predicate = result.predicate;
   if (!Issue(&predicate.identity.vector_uuid)) return refuse("expression_identity");
   predicate.identity.vector_generation = 1;
@@ -144,7 +144,7 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
   predicate.identity.owner_descriptor_generation = descriptor_generation;
   wire::TypedUpdatePredicateRecord root;
   if (!Issue(&root.node_occurrence_uuid) || !Output(boolean.row, &root))
-    return refuse("boolean_identity", "DATATYPE.DESCRIPTOR_INVALID");
+    return refuse("boolean_identity", "DATATYPE.DESCRIPTOR.INVALID");
   root.node_occurrence_generation = 1;
   if (demand.predicate_kind.empty()) {
     root.node_id = 1;
@@ -162,7 +162,7 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
     if (!selected) return refuse("column_not_found");
     dt::DatatypeTypeCodecIdentityRowV1 type;
     if (!ColumnType(context, *selected, &type))
-      return refuse("persisted_column_type", "DATATYPE.DESCRIPTOR_INVALID");
+      return refuse("persisted_column_type", "DATATYPE.DESCRIPTOR.INVALID");
     const bool int32 = type.codec_id == "datatype.int32.le.v1" && type.canonical_value_bytes == 4;
     const bool int64 = type.codec_id == "datatype.int64.le.v1" && type.canonical_value_bytes == 8;
     if (!int32 && !int64) return refuse("fixed_width_integer_equality_required", "SBLR.OPERATION_UNSUPPORTED");
@@ -173,7 +173,7 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
         (int32 && (value < std::numeric_limits<std::int32_t>::min() || value > std::numeric_limits<std::int32_t>::max())))
-      return refuse("integer_literal_range", "DATATYPE.DESCRIPTOR_INVALID");
+      return refuse("integer_literal_range", "DATATYPE.DESCRIPTOR.INVALID");
     const auto equality = dt::LookupBuiltinOperatorTypeCodecIdentityV1(
         operators.snapshot_uuid, operators.registry_generation, operators.equality_operator_uuid,
         operators.equality_operator_generation, type.descriptor_uuid, type.descriptor_generation,
@@ -184,11 +184,11 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
         equality.row.result_type_uuid != boolean.row.type_uuid || equality.row.result_type_generation != boolean.row.type_generation ||
         equality.row.result_codec_id != boolean.row.codec_id || equality.row.result_codec_version != boolean.row.codec_version ||
         equality.row.result_codec_generation != boolean.row.codec_generation)
-      return refuse("equality_registry", "DATATYPE.DESCRIPTOR_INVALID");
+      return refuse("equality_registry", "DATATYPE.DESCRIPTOR.INVALID");
     wire::TypedUpdatePredicateRecord column, literal;
     if (!Issue(&column.node_occurrence_uuid) || !Issue(&literal.node_occurrence_uuid) ||
         !Issue(&column.referenced_column_occurrence_uuid) || !Output(type, &column) || !Output(type, &literal) ||
-        !projection::TypedUuid(selected->column_uuid.canonical, &column.referenced_column_uuid) ||
+        !projection::TypedUuid(selected->column_uuid, &column.referenced_column_uuid) ||
         !projection::TypedUuid(equality.row.operator_uuid, &root.operator_uuid)) return refuse("predicate_identity");
     column.node_id = 1; literal.node_id = 2; root.node_id = 3;
     column.node_occurrence_generation = literal.node_occurrence_generation = 1;
@@ -222,7 +222,7 @@ EngineDmlDeletePredicateBindingResultV1 BindDmlDeletePredicateV1(
   std::vector<std::uint8_t> bytes;
   if (!wire::EncodeTypedUpdatePredicateVector(predicate, &bytes, &error) ||
       !wire::DecodeAndValidateTypedUpdatePredicateVector(bytes, &predicate, &error))
-    return refuse(error.field, "DATATYPE.DESCRIPTOR_INVALID");
+    return refuse(error.field, "DATATYPE.DESCRIPTOR.INVALID");
   result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   return result;

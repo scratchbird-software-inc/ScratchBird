@@ -357,14 +357,14 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
 
   if (!charset_uuid.empty()) {
     EngineUuid requested_charset;
-    requested_charset.canonical = charset_uuid;
+    requested_charset = charset_uuid;
     const auto charset = LookupEngineResourceDescriptorByUuid(
         context, requested_charset, "charset");
     if (!charset.ok) return charset.diagnostic;
 
     if (collation_uuid.empty()) {
       collation_uuid =
-          charset.resource_descriptor.default_collation_uuid.canonical;
+          charset.resource_descriptor.default_collation_uuid;
       if (collation_uuid.empty()) {
         return MakeInvalidRequestDiagnostic(
             "ddl.create_table", "charset_default_collation_uuid_required");
@@ -372,12 +372,12 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
     }
 
     EngineUuid requested_collation;
-    requested_collation.canonical = collation_uuid;
+    requested_collation = collation_uuid;
     const auto collation = LookupEngineResourceDescriptorByUuid(
         context, requested_collation, "collation");
     if (!collation.ok) return collation.diagnostic;
-    if (collation.resource_descriptor.parent_resource_uuid.canonical !=
-        charset.resource_descriptor.resource_uuid.canonical) {
+    if (collation.resource_descriptor.parent_resource_uuid !=
+        charset.resource_descriptor.resource_uuid) {
       return MakeInvalidRequestDiagnostic(
           "ddl.create_table", "collation_charset_relationship_mismatch");
     }
@@ -414,10 +414,10 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
 
     *column_descriptor = SetDescriptorFieldLocal(
         std::move(*column_descriptor), "charset_uuid",
-        charset.resource_descriptor.resource_uuid.canonical);
+        charset.resource_descriptor.resource_uuid);
     *column_descriptor = SetDescriptorFieldLocal(
         std::move(*column_descriptor), "collation_uuid",
-        collation.resource_descriptor.resource_uuid.canonical);
+        collation.resource_descriptor.resource_uuid);
   }
   if (character_length != 0) {
     *column_descriptor = SetDescriptorFieldLocal(
@@ -492,9 +492,11 @@ bool SchemaRecordMatchesSegmentLocal(const EngineRequestContext& context,
 std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
     const EngineRequestContext& context,
     const std::vector<std::string>& schema_parts,
-    std::uint64_t observer_tx) {
+    std::uint64_t observer_tx, EngineApiDiagnostic& diagnostic) {
+  diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   if (schema_parts.empty()) { return std::nullopt; }
-  const auto schemas = VisibleSchemaTreeRecords(context, observer_tx);
+  const auto schemas = VisibleSchemaTreeRecords(context, observer_tx, diagnostic);
+  if (diagnostic.error) return {};
   std::vector<std::string> current_matches;
   auto push_unique = [](std::vector<std::string>* values, const std::string& value) {
     if (value.empty()) { return; }
@@ -527,19 +529,20 @@ std::optional<std::string> ResolveVisibleSchemaPathUuidLocal(
 
 std::string ResolveDomainTypeUuidWithSchemaTreeFallback(
     const EngineApiRequest& request,
-    const std::vector<std::string>& parts) {
+    const std::vector<std::string>& parts, EngineApiDiagnostic& diagnostic) {
   if (parts.size() < 2) { return {}; }
   std::vector<std::string> schema_parts(parts.begin(), parts.end() - 1);
   const auto schema_uuid =
       ResolveVisibleSchemaPathUuidLocal(request.context,
                                         schema_parts,
-                                        request.context.local_transaction_id);
+                                        request.context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
   if (!schema_uuid) { return {}; }
 
   EngineApiRequest scoped_request = request;
   scoped_request.localized_names.clear();
   scoped_request.option_envelopes.clear();
-  scoped_request.target_schema.uuid.canonical = *schema_uuid;
+  scoped_request.target_schema.uuid = *schema_uuid;
   scoped_request.sql_object_reference = {};
   scoped_request.sql_object_reference.expected_object_type = "domain";
   scoped_request.sql_object_reference.path_type = "unqualified";
@@ -553,13 +556,14 @@ std::string ResolveDomainTypeUuidWithSchemaTreeFallback(
 
 std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
     const EngineApiRequest& request,
-    const std::vector<std::string>& parts) {
+    const std::vector<std::string>& parts, EngineApiDiagnostic& diagnostic) {
   if (parts.size() < 2) { return {}; }
   std::vector<std::string> schema_parts(parts.begin(), parts.end() - 1);
   const auto schema_uuid =
       ResolveVisibleSchemaPathUuidLocal(request.context,
                                         schema_parts,
-                                        request.context.local_transaction_id);
+                                        request.context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
   if (!schema_uuid) { return {}; }
 
   const auto domains = LoadDomainState(request.context);
@@ -586,7 +590,9 @@ std::string ResolveDomainTypeUuidWithVisibleDomainFallback(
 std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& request,
                                                       const std::string& column_descriptor,
                                                       bool* lookup_required,
-                                                      std::string* requested_type_name) {
+                                                      std::string* requested_type_name,
+                                                      EngineApiDiagnostic& diagnostic) {
+  diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   if (lookup_required != nullptr) { *lookup_required = false; }
   if (requested_type_name != nullptr) { requested_type_name->clear(); }
   const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
@@ -619,9 +625,11 @@ std::string ResolveDomainTypeUuidFromColumnDescriptor(const EngineApiRequest& re
 
   const auto resolved = ResolveNameRegistryPublic(resolve_request, "domain");
   if (!resolved.ok || resolved.matches.size() != 1) {
-    std::string domain_uuid = ResolveDomainTypeUuidWithSchemaTreeFallback(request, parts);
+    std::string domain_uuid = ResolveDomainTypeUuidWithSchemaTreeFallback(request, parts, diagnostic);
+    if (diagnostic.error) return {};
     if (domain_uuid.empty()) {
-      domain_uuid = ResolveDomainTypeUuidWithVisibleDomainFallback(request, parts);
+      domain_uuid = ResolveDomainTypeUuidWithVisibleDomainFallback(request, parts, diagnostic);
+      if (diagnostic.error) return {};
     }
     return domain_uuid;
   }
@@ -884,7 +892,7 @@ TemporaryTableOptions ResolveTemporaryTableOptions(const EngineCreateTableReques
     }
   }
   if (options.temporary && options.scope != "global" &&
-      request.context.session_uuid.canonical.empty()) {
+      request.context.session_uuid.is_nil()) {
     options.diagnostic = MakeInvalidRequestDiagnostic("ddl.create_table", "temporary_table_requires_session_uuid");
   }
   return options;

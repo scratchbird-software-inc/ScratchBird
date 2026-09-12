@@ -30,9 +30,12 @@ std::string PathParent(const std::string& path) {
   return pos == std::string::npos ? std::string{} : path.substr(0, pos);
 }
 
-std::string SchemaUuidForPath(const EngineRequestContext& context, const std::string& path) {
+std::string SchemaUuidForPath(const EngineRequestContext& context, const std::string& path,
+                              EngineApiDiagnostic& diagnostic) {
   if (path.empty()) { return {}; }
-  for (const auto& schema : VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+  const auto schemas = VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
+  for (const auto& schema : schemas) {
     for (const auto& name : schema.localized_names) {
       if (name.path == path) { return schema.schema_uuid; }
     }
@@ -111,18 +114,21 @@ EngineApiDiagnostic ResolveHomeSchemaPolicy(const EngineCreateIdentityRequest& r
                    "." + principal_name;
   }
 
+  EngineApiDiagnostic schema_diagnostic;
   policy->parent_schema_uuid = SecurityOptionValue(request, "home_schema_parent_uuid:");
   if (policy->parent_schema_uuid.empty()) {
     const std::string parent_path = PathParent(policy->path);
     if (!parent_path.empty()) {
-      policy->parent_schema_uuid = SchemaUuidForPath(request.context, parent_path);
+      policy->parent_schema_uuid = SchemaUuidForPath(request.context, parent_path, schema_diagnostic);
+      if (schema_diagnostic.error) return schema_diagnostic;
       if (policy->parent_schema_uuid.empty()) {
         return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_PARENT_MISSING",
                                       "home_schema_parent_path_not_visible:" + parent_path);
       }
     } else if (!policy->cluster_user &&
                StartsWith(policy->path, std::string(scratchbird::core::catalog::kLocalUserHomePolicyRoot) + ".")) {
-      policy->parent_schema_uuid = SchemaUuidForPath(request.context, scratchbird::core::catalog::kLocalUserHomePolicyRoot);
+      policy->parent_schema_uuid = SchemaUuidForPath(request.context, scratchbird::core::catalog::kLocalUserHomePolicyRoot, schema_diagnostic);
+      if (schema_diagnostic.error) return schema_diagnostic;
       if (policy->parent_schema_uuid.empty()) {
         return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_PARENT_MISSING",
                                       "local_user_home_root_not_visible");
@@ -137,11 +143,11 @@ EngineApiDiagnostic CreateIdentityHomeSchema(const EngineCreateIdentityRequest& 
                                              const std::string& principal_name,
                                              const HomeSchemaPolicy& policy) {
   std::vector<EngineLocalizedName> names{HomeSchemaName(policy.path, principal_name)};
-  if (const auto conflict = SchemaTreePathConflict(request.context,
-                                                  policy.schema_uuid,
-                                                  policy.parent_schema_uuid,
-                                                  names,
-                                                  request.context.local_transaction_id)) {
+  EngineApiDiagnostic schema_diagnostic;
+  const auto conflict = SchemaTreePathConflict(request.context, policy.schema_uuid, policy.parent_schema_uuid,
+      names, request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return schema_diagnostic;
+  if (conflict) {
     return MakeSecurityDiagnostic("SECURITY.IDENTITY.HOME_SCHEMA_CONFLICT", *conflict);
   }
 
@@ -209,7 +215,7 @@ EngineCreateIdentityResult EngineCreateIdentity(const EngineCreateIdentityReques
       }
       if (policy.create_home_schema) {
         const auto home_schema = CreateIdentityHomeSchema(request,
-                                                         result.primary_object.uuid.canonical,
+                                                         result.primary_object.uuid,
                                                          principal_name,
                                                          policy);
         if (home_schema.error) {

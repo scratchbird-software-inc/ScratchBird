@@ -14,8 +14,13 @@ add_library(sb_storage_disk
   disk_device.cpp
   database_format.cpp
   page_header.cpp
+  native_common_page_header.cpp
+  filespace_bootstrap.cpp
+  filespace_page_zero.cpp
 )
 
 target_compile_features(sb_storage_disk PUBLIC cxx_std_17)
 target_include_directories(sb_storage_disk PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(sb_storage_disk PUBLIC sb_core_platform sb_core_metrics)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(sb_storage_disk PRIVATE OpenSSL::Crypto)

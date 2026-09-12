@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agents/agent_durable_catalog_store_api.hpp"
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 #include "management/support_bundle_api.hpp"
 #include "manager_runtime.hpp"
 #include "manager_support_bundle.hpp"
@@ -37,6 +37,7 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace rendering = scratchbird::server::legacy_rendering;
 namespace agents = scratchbird::core::agents;
 namespace db = scratchbird::storage::database;
 namespace listener = scratchbird::listener;
@@ -417,7 +418,7 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
           "agent page allocation metric was not recorded");
   RequireNoUnsafeResultPayload(current);
 
-  api::EngineParserPackageRenderOptions render;
+  rendering::EngineParserPackageRenderOptions render;
   render.parser_package_uuid = Id(platform::UuidKind::object, 20);
   render.parser_package_version = "sbsql.v3";
   render.client_dialect = "sbsql";
@@ -426,9 +427,9 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
   render.session_uuid = request.context.session_uuid.canonical;
   render.database_uuid = request.context.database_uuid.canonical;
   render.transaction_uuid = request.context.transaction_uuid.canonical;
-  const auto envelope = api::RenderEngineApiResultForParserPackage(result, std::move(render));
+  const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, std::move(render));
   std::vector<std::string> errors;
-  Require(api::ValidateEngineRenderedResultEnvelope(envelope, &errors),
+  Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
           "parser/client rendered envelope failed validation");
   Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser/client envelope claimed finality authority");

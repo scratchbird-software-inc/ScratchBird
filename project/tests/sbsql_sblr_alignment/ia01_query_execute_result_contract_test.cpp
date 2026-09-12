@@ -30,7 +30,7 @@ bool Refused(std::string_view shape, std::uint32_t version,
              const std::vector<Field>& fields, std::string_view detail) {
   const auto result =
       sblr::ValidateQueryExecuteResultHandleV1(shape, version, fields);
-  return !result.ok && result.diagnostic_id == "DATATYPE.DESCRIPTOR_INVALID" &&
+  return !result.ok && result.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID" &&
          result.detail == detail;
 }
 

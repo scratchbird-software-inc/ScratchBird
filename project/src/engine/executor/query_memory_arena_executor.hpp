@@ -56,7 +56,7 @@ ExecutorQueryMemoryResult RequestExecutorQueryMemory(
 
 scratchbird::core::memory::QueryMemoryArenaReleaseResult ReleaseExecutorQueryMemory(
     scratchbird::core::memory::QueryMemoryArena* arena,
-    const std::string& grant_id);
+    const scratchbird::core::memory::QueryMemoryUuid& grant_id);
 
 scratchbird::core::memory::QueryMemoryArenaReleaseResult CancelExecutorQueryMemory(
     scratchbird::core::memory::QueryMemoryArena* arena,

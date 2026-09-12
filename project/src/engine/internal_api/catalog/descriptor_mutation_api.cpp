@@ -36,13 +36,13 @@ bool DescriptorUsesRootNameScope(const std::string& object_kind) {
 
 std::string DescriptorNameScopeUuid(const EngineCatalogDescriptorMutationRequest& request,
                                     const std::string& object_kind) {
-  if (!request.target_schema.uuid.canonical.empty()) {
-    return request.target_schema.uuid.canonical;
+  if (!request.target_schema.uuid.is_nil()) {
+    return request.target_schema.uuid;
   }
   if (DescriptorUsesRootNameScope(object_kind)) {
     return {};
   }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 }  // namespace
@@ -63,7 +63,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
   }
 
   if (operation_id == "catalog.mutation.refresh_materialized_view") {
-    if (request.target_object.uuid.canonical.empty()) {
+    if (request.target_object.uuid.is_nil()) {
       return MakeApiBehaviorDiagnostic<EngineCatalogDescriptorMutationResult>(
           request.context,
           operation_id,
@@ -71,19 +71,19 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
     }
     auto result = MakeApiBehaviorSuccess<EngineCatalogDescriptorMutationResult>(
         request.context, operation_id);
-    result.primary_object.uuid.canonical = request.target_object.uuid.canonical;
+    result.primary_object.uuid = request.target_object.uuid;
     result.primary_object.object_kind =
         request.target_object.object_kind.empty() ? "materialized_view"
                                                   : request.target_object.object_kind;
     AddApiBehaviorEvidence(&result, "catalog_descriptor_mutation", operation_id);
-    AddApiBehaviorEvidence(&result, "materialized_view_refresh", result.primary_object.uuid.canonical);
+    AddApiBehaviorEvidence(&result, "materialized_view_refresh", result.primary_object.uuid);
     AddApiBehaviorEvidence(&result, "mga_catalog_commit",
                            std::to_string(request.context.local_transaction_id));
     AddApiBehaviorEvidence(&result, "security_context",
                            request.context.security_context_present ? "present" : "missing");
     auto invalidation = CatalogPinnedDescriptorInvalidationEventForMutation(
         "ddl_catalog_mutation",
-        result.primary_object.uuid.canonical,
+        result.primary_object.uuid,
         request.context.catalog_generation_id);
     invalidation.reason = "materialized_view_refresh";
     const auto invalidated = GlobalCatalogPinnedDescriptorCache().Invalidate(invalidation);
@@ -92,7 +92,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
                            std::to_string(invalidated.invalidated_entries.size()));
     AddApiBehaviorRow(&result,
                       {{"operation_id", operation_id},
-                       {"object_uuid", result.primary_object.uuid.canonical},
+                       {"object_uuid", result.primary_object.uuid},
                        {"object_kind", result.primary_object.object_kind},
                        {"catalog_authority", OptionValue(request, "catalog_authority:")},
                        {"descriptor_ref", OptionValue(request, "descriptor_ref:")},
@@ -103,7 +103,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
     AddDdlPublicationResult(&result,
                             operation_id,
                             result.primary_object.object_kind,
-                            result.primary_object.uuid.canonical);
+                            result.primary_object.uuid);
     return result;
   }
 
@@ -120,7 +120,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
   const std::string scope_uuid = DescriptorNameScopeUuid(request, object_kind);
   const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
                                                                 operation_id,
-                                                                result.primary_object.uuid.canonical,
+                                                                result.primary_object.uuid,
                                                                 result.primary_object.object_kind,
                                                                 scope_uuid,
                                                                 request.localized_names,
@@ -131,12 +131,12 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
   }
 
   AddApiBehaviorEvidence(&result, "catalog_descriptor_mutation", operation_id);
-  AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid);
   AddApiBehaviorEvidence(&result, "mga_catalog_commit", std::to_string(request.context.local_transaction_id));
   AddApiBehaviorEvidence(&result, "security_context", request.context.security_context_present ? "present" : "missing");
   auto invalidation = CatalogPinnedDescriptorInvalidationEventForMutation(
       "ddl_catalog_mutation",
-      result.primary_object.uuid.canonical,
+      result.primary_object.uuid,
       request.context.catalog_generation_id);
   invalidation.reason = "ddl_catalog_mutation";
   const auto invalidated = GlobalCatalogPinnedDescriptorCache().Invalidate(invalidation);
@@ -145,7 +145,7 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
                          std::to_string(invalidated.invalidated_entries.size()));
   AddApiBehaviorRow(&result,
                     {{"operation_id", operation_id},
-                     {"object_uuid", result.primary_object.uuid.canonical},
+                     {"object_uuid", result.primary_object.uuid},
                      {"object_kind", result.primary_object.object_kind},
                      {"catalog_authority", OptionValue(request, "catalog_authority:")},
                      {"descriptor_ref", OptionValue(request, "descriptor_ref:")},

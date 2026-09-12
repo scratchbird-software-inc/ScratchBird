@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_local_security_event_store.hpp"
+#include "api_diagnostics.hpp"
 
 #include "database_format.hpp"
 #include "database_local_private_relation_locator.hpp"
@@ -108,18 +109,11 @@ EngineApiDiagnostic StorageDiagnostic(
     const scratchbird::core::platform::DiagnosticRecord& source,
     const char* fallback_code,
     std::string detail) {
-  EngineApiDiagnostic diagnostic;
-  diagnostic.code = fallback_code;
-  diagnostic.message_key = source.message_key.empty()
-                               ? "security.catalog.private_lifecycle.storage"
-                               : source.message_key;
-  if (!source.diagnostic_code.empty()) {
-    if (!detail.empty()) detail.push_back(':');
-    detail += source.diagnostic_code;
-  }
-  diagnostic.detail = std::move(detail);
-  diagnostic.error = true;
-  return diagnostic;
+  return MakeEngineApiDiagnosticFromNative(
+      source, fallback_code,
+      source.message_key.empty() ? "security.catalog.private_lifecycle.storage"
+                                 : source.message_key,
+      std::move(detail));
 }
 
 bool SameUuid(const Uuid& left, const Uuid& right) {
@@ -333,7 +327,7 @@ bool ExactTransactionIdentity(const EngineRequestContext& context,
                               mga::TransactionInventoryEntry* entry,
                               EngineApiDiagnostic* diagnostic) {
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     if (diagnostic != nullptr) {
       *diagnostic = ErrorDiagnostic(
           kDatabaseLocalSecurityDiagnosticTransactionRequired,
@@ -342,7 +336,7 @@ bool ExactTransactionIdentity(const EngineRequestContext& context,
     return false;
   }
   const auto transaction_uuid = core_uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::transaction, context.transaction_uuid.canonical);
+      UuidKind::transaction, context.transaction_uuid);
   const auto found = mga::LookupLocalTransaction(
       inventory, mga::MakeLocalTransactionId(context.local_transaction_id));
   if (!transaction_uuid.ok() || !found.ok() ||
@@ -416,7 +410,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     return result;
   }
   const auto expected_database = core_uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::database, context.database_uuid.canonical);
+      UuidKind::database, context.database_uuid);
   if (!expected_database.ok()) {
     result.diagnostic = ErrorDiagnostic(
         kDatabaseLocalSecurityDiagnosticAuthorityRequired,
@@ -685,7 +679,9 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     if (!request.use_latest_committed_snapshot) {
       request.visibility_snapshot = reader_visibility;
     }
-    const auto read = storage::ReadPhysicalMgaCowRows(request);
+    const auto read = storage::ReadPhysicalMgaCowRowsFromOpenDevice(
+        device, request.relation_uuid, request.page_number,
+        request.visibility_snapshot, request.use_latest_committed_snapshot);
     if (!read.ok() || read.recovery_required_count != 0) {
       result.diagnostic = read.ok()
                               ? ErrorDiagnostic(
@@ -907,7 +903,7 @@ AppendDatabaseLocalSecurityEventBatchV1(
     return result;
   }
   const auto actor = core_uuid::ParseDurableEngineIdentityUuid(
-      UuidKind::principal, context.principal_uuid.canonical);
+      UuidKind::principal, context.principal_uuid);
   if (!actor.ok()) {
     result.diagnostic = ErrorDiagnostic(
         kDatabaseLocalSecurityDiagnosticAuthorityRequired,
@@ -953,8 +949,8 @@ AppendDatabaseLocalSecurityEventBatchV1(
     return result;
   }
   if (context.authorization_context.present &&
-      (context.authorization_context.principal_uuid.canonical !=
-           context.principal_uuid.canonical ||
+      (context.authorization_context.principal_uuid !=
+           context.principal_uuid ||
        context.authorization_context.security_context_generation !=
            loaded.state.security_context_generation)) {
     result.diagnostic = ErrorDiagnostic(
@@ -969,7 +965,7 @@ AppendDatabaseLocalSecurityEventBatchV1(
       loaded.state.security_context_generation + 1;
   std::string refusal;
   if (!ValidateUnsealedEvents(events, context.local_transaction_id,
-                              context.principal_uuid.canonical,
+                              context.principal_uuid,
                               successor_generation, &refusal)) {
     result.diagnostic = ErrorDiagnostic(
         kDatabaseLocalSecurityDiagnosticBatchInvalid, std::move(refusal));

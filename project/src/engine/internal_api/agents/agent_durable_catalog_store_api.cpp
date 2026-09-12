@@ -187,7 +187,7 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
     return ErrorResult("evidence_uuid_required");
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return ErrorResult("mga_transaction_context_required");
   }
 
@@ -218,8 +218,8 @@ AgentDurableCatalogStoreResult PersistAgentDurableCatalogImage(
   image.source = agents::AgentCatalogStateSource::durable_catalog_image;
   image.authority.durable_catalog_authority = true;
   image.authority.mga_transaction_evidence = true;
-  image.authority.mga_transaction_uuid = request.context.transaction_uuid.canonical;
-  image.authority.database_uuid = request.context.database_uuid.canonical;
+  image.authority.mga_transaction_uuid = request.context.transaction_uuid;
+  image.authority.database_uuid = request.context.database_uuid;
   image.authority.catalog_storage_uuid = table.table_uuid;
   image.authority.local_transaction_id = request.context.local_transaction_id;
   image.authority.storage_catalog_record_evidence = true;

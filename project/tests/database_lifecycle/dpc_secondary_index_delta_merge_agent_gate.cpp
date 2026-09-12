@@ -10,6 +10,7 @@
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "memory.hpp"
 #include "secondary_index_delta_ledger.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -498,6 +499,11 @@ void ValidateRefusalDiagnostics() {
 }  // namespace
 
 int main() {
+  auto policy=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name="secondary_index_merge_admission_fixture";
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              policy,"secondary_index_merge_admission_fixture").ok(),
+          "secondary index fixture memory policy failed");
   Require(kMergeSearchKey == "DPC_SECONDARY_INDEX_DELTA_MERGE_AGENT_GATE",
           "DPC-024 gate search key drifted");
   ValidateAuthoritativeMergeDrainsIntoBase();

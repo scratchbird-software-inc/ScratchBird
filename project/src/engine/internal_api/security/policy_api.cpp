@@ -72,11 +72,11 @@ constexpr std::string_view kPolicyBlockedDiagnosticUuid =
     "cd16f861-90a2-520e-97a7-79d2f28cc355";
 
 bool UuidPresent(const EngineUuid& value) {
-  return !value.canonical.empty();
+  return !value.is_nil();
 }
 
 bool ObjectReferenceEmpty(const EngineObjectReference& value) {
-  return value.uuid.canonical.empty() && value.object_kind.empty();
+  return value.uuid.is_nil() && value.object_kind.empty();
 }
 
 bool SqlObjectReferenceEmpty(const EngineSqlObjectReference& value) {
@@ -93,10 +93,10 @@ bool SqlObjectReferenceEmpty(const EngineSqlObjectReference& value) {
 }
 
 bool BoundObjectIdentityEmpty(const EngineBoundObjectIdentity& value) {
-  return value.object_uuid.canonical.empty() &&
+  return value.object_uuid.is_nil() &&
          value.resolved_object_type.empty() &&
-         value.resolved_schema_uuid.canonical.empty() &&
-         value.parent_object_uuid.canonical.empty() &&
+         value.resolved_schema_uuid.is_nil() &&
+         value.parent_object_uuid.is_nil() &&
          value.object_descriptor_generation == 0 &&
          value.catalog_generation_id == 0 && value.security_epoch == 0 &&
          value.resource_epoch == 0;
@@ -162,7 +162,7 @@ bool PolicyObservationCohortMatches(const EngineRequestContext& context) {
          context.security_context_present && authorization.present &&
          UuidPresent(authorization.authority_uuid) &&
          authorization.security_context_generation != 0 &&
-         authorization.principal_uuid.canonical == context.principal_uuid.canonical &&
+         authorization.principal_uuid == context.principal_uuid &&
          authorization.security_epoch != 0 &&
          authorization.security_epoch == context.security_epoch &&
          authorization.policy_epoch != 0 &&
@@ -171,16 +171,16 @@ bool PolicyObservationCohortMatches(const EngineRequestContext& context) {
          context.resource_epoch != 0 &&
          UuidPresent(context.transaction_policy_snapshot_uuid) &&
          context.transaction_policy_snapshot_generation != 0 &&
-         observation.statement_uuid.canonical == context.statement_uuid.canonical &&
-         observation.transaction_uuid.canonical ==
-             context.transaction_uuid.canonical &&
+         observation.statement_uuid == context.statement_uuid &&
+         observation.transaction_uuid ==
+             context.transaction_uuid &&
          observation.local_transaction_id == context.local_transaction_id &&
-         observation.authorization_context_uuid.canonical ==
-             authorization.authority_uuid.canonical &&
+         observation.authorization_context_uuid ==
+             authorization.authority_uuid &&
          observation.authorization_context_generation ==
              authorization.security_context_generation &&
-         observation.policy_snapshot_uuid.canonical ==
-             context.transaction_policy_snapshot_uuid.canonical &&
+         observation.policy_snapshot_uuid ==
+             context.transaction_policy_snapshot_uuid &&
          observation.policy_snapshot_generation ==
              context.transaction_policy_snapshot_generation &&
          observation.security_epoch == context.security_epoch &&
@@ -238,7 +238,7 @@ EngineEvaluatePolicyResult EngineEvaluatePolicy(const EngineEvaluatePolicyReques
       request.observation_kind ==
               EnginePolicyObservationKind::current_statement_gate
           ? request.context.current_policy_gate.blocked
-          : request.context.current_diagnostic_uuid.canonical ==
+          : request.context.current_diagnostic_uuid ==
                 kPolicyBlockedDiagnosticUuid;
   AddApiBehaviorEvidence(&result, "policy_gate_observation",
                          result.policy_blocked ? "blocked" : "not_blocked");
@@ -250,9 +250,9 @@ EngineEvaluatePolicyResult EngineEvaluatePolicy(const EngineEvaluatePolicyReques
                 EnginePolicyObservationKind::current_statement_gate
             ? "current_statement_gate"
             : "current_diagnostic_policy_refusal"},
-       {"statement_uuid", request.context.statement_uuid.canonical},
+       {"statement_uuid", request.context.statement_uuid},
        {"policy_snapshot_uuid",
-        request.context.transaction_policy_snapshot_uuid.canonical},
+        request.context.transaction_policy_snapshot_uuid},
        {"policy_snapshot_generation",
         std::to_string(
             request.context.transaction_policy_snapshot_generation)}});
@@ -283,7 +283,7 @@ EnginePolicyMutationResult EngineMutatePolicy(const EnginePolicyMutationRequest&
     return PolicyMutationFailure(request, "security_context_required");
   }
   if (!SecurityContextHasRight(request.context, "POLICY_ADMIN",
-                               request.target_object.uuid.canonical)) {
+                               request.target_object.uuid)) {
     return PolicyMutationFailure(request, "POLICY_ADMIN");
   }
   if (request.context.catalog_generation_id == 0 ||
@@ -309,7 +309,7 @@ EnginePolicyMutationResult EngineMutatePolicy(const EnginePolicyMutationRequest&
       request.context.security_epoch >= request.context.catalog_generation_id
           ? request.context.security_epoch + 1
           : request.context.catalog_generation_id + 1;
-  const std::string target_uuid = request.target_object.uuid.canonical;
+  const std::string target_uuid = request.target_object.uuid;
   const std::string payload =
       "mutation_kind=" + mutation_kind +
       ";policy_area=" + policy_area +
@@ -347,7 +347,7 @@ EnginePolicyMutationResult EngineMutatePolicy(const EnginePolicyMutationRequest&
 
   auto invalidation = CatalogPinnedDescriptorInvalidationEventForMutation(
       "policy_catalog_mutation",
-      result.primary_object.uuid.canonical.empty() ? target_uuid : result.primary_object.uuid.canonical,
+      result.primary_object.uuid.is_nil() ? target_uuid : result.primary_object.uuid,
       request.context.catalog_generation_id);
   invalidation.reason = "policy_generation_invalidated";
   const auto invalidated = GlobalCatalogPinnedDescriptorCache().Invalidate(invalidation);
@@ -372,7 +372,7 @@ EnginePolicyMutationResult EngineMutatePolicy(const EnginePolicyMutationRequest&
                   {"mutation_kind", mutation_kind},
                   {"policy_area", policy_area},
                   {"policy_mode", policy_mode},
-                  {"object_uuid", result.primary_object.uuid.canonical},
+                  {"object_uuid", result.primary_object.uuid},
                   {"mga_catalog_commit_required", "true"},
                   {"audit_evidence_recorded", "true"},
                   {"generation_invalidated", "true"},

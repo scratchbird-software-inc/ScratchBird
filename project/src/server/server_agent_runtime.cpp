@@ -441,11 +441,11 @@ engine_api::EngineRequestContext ServerAgentBaseContext(
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = database_path;
-  context.database_uuid.canonical = database_uuid;
-  context.principal_uuid.canonical =
+  context.database_uuid = database_uuid;
+  context.principal_uuid =
       agents::DeterministicAgentRuntimePrincipalUuidFromKey(
           database_uuid + "|server_agent_runtime");
-  context.session_uuid.canonical =
+  context.session_uuid =
       ServerAgentRuntimeUuid(database_uuid,
                              "session|" + std::to_string(generation),
                              102 + generation);
@@ -471,7 +471,7 @@ engine_api::EngineRequestContext ServerAgentBaseContext(
            "OBS_AGENT_CONTROL",
        }) {
     engine_api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid.canonical = "server-agent-engine-grant:" + std::string(right);
+    grant.grant_uuid = "server-agent-engine-grant:" + std::string(right);
     grant.subject_uuid = context.principal_uuid;
     grant.subject_kind = "principal";
     grant.right = right;
@@ -503,7 +503,7 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
       generation,
       "server-agent-" + purpose + "-" + std::to_string(generation));
   begin.context.local_transaction_id = 0;
-  begin.context.transaction_uuid.canonical.clear();
+  begin.context.transaction_uuid = {};
   begin.context.snapshot_visible_through_local_transaction_id = 0;
   begin.context.read_only_mode = false;
   begin.isolation_level = "read_committed";
@@ -514,7 +514,7 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
       "transaction_read_mode:read_write");
   const auto begun = engine_api::EngineBeginTransaction(begin);
   if (!begun.ok || begun.local_transaction_id == 0 ||
-      begun.transaction_uuid.canonical.empty()) {
+      begun.transaction_uuid.is_nil()) {
     out.diagnostic_code =
         FirstDiagnosticCode(begun, "SERVER.AGENT_RUNTIME.MGA_BEGIN_FAILED");
     out.diagnostic_detail =
@@ -583,11 +583,11 @@ void AddCommonActionFields(engine_api::EngineAgentActionHookRequest* request,
                            const std::string& action_class) {
   request->agent_type = agent_type;
   request->action_class = action_class;
-  request->agent_uuid.canonical = NewTypedUuidText(
+  request->agent_uuid = NewTypedUuidText(
       platform::UuidKind::object, database_uuid + "|" + agent_type + "|instance", 201 + generation);
-  request->policy_snapshot_uuid.canonical = NewTypedUuidText(
+  request->policy_snapshot_uuid = NewTypedUuidText(
       platform::UuidKind::object, database_uuid + "|" + agent_type + "|policy", 301 + generation);
-  request->target_filespace.uuid.canonical = filespace_uuid;
+  request->target_filespace.uuid = filespace_uuid;
   request->target_filespace.object_kind = "filespace";
   request->safety_fence_result = "passed";
   request->policy_authorized = true;

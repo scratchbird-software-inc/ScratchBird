@@ -56,7 +56,7 @@ EngineApiDiagnostic ValidateOpenRequest(
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
       !context.authorization_context.present ||
-      context.authorization_context.authority_uuid.canonical.empty() ||
+      context.authorization_context.authority_uuid.is_nil() ||
       context.authorization_context.security_context_generation == 0 ||
       (recovery ? (!recovery_tag || binder || consumer)
                 : (!consumer || binder || recovery_tag))) {
@@ -66,12 +66,12 @@ EngineApiDiagnostic ValidateOpenRequest(
   if (context.read_only_mode || context.cluster_transaction_active ||
       context.route_fence_present || context.database_path.empty() ||
       context.local_transaction_id == 0 ||
-      !ExactUuid(context.database_uuid.canonical) ||
-      !ExactUuid(context.transaction_uuid.canonical) ||
-      !ExactUuid(context.statement_receipt_uuid.canonical) ||
+      !ExactUuid(context.database_uuid) ||
+      !ExactUuid(context.transaction_uuid) ||
+      !ExactUuid(context.statement_receipt_uuid) ||
       !ExactUuid(request.authenticated_statement_receipt_uuid) ||
       request.authenticated_statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       !ExactUuid(request.operation_uuid) ||
       !ExactUuid(request.descriptor_uuid) ||
       request.descriptor_generation == 0 ||
@@ -95,9 +95,9 @@ EngineApiDiagnostic ValidateOpenRequest(
 MgaDmlUpdateStatementSavepointBindingV1 Binding(
     const EngineDmlUpdateStatementMgaAuthorityOpenRequestV1& request) {
   MgaDmlUpdateStatementSavepointBindingV1 binding;
-  binding.database_uuid = request.context.database_uuid.canonical;
+  binding.database_uuid = request.context.database_uuid;
   binding.owning_transaction_uuid =
-      request.context.transaction_uuid.canonical;
+      request.context.transaction_uuid;
   binding.owning_local_transaction_id = request.context.local_transaction_id;
   binding.authenticated_statement_receipt_uuid =
       request.authenticated_statement_receipt_uuid;

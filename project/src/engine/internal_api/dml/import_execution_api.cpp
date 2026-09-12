@@ -699,10 +699,10 @@ EngineRowValue MakeRejectDiagnosticRow(const EngineExecuteImportRowsRequest& req
                                        bool include_payload_reference_columns) {
   const EngineApiDiagnostic stable_diagnostic = NormalizeImportRejectDiagnostic(diagnostic);
   EngineRowValue row;
-  row.requested_row_uuid.canonical = "import-reject-" + std::to_string(source_row_number);
+  row.requested_row_uuid = "import-reject-" + std::to_string(source_row_number);
   row.fields.push_back({"source_row_number", RejectU64Value(source_row_number)});
   row.fields.push_back({"source_position", RejectTextValue(request.source.source_position, request.source.source_position.empty())});
-  row.fields.push_back({"target_table_uuid", RejectTextValue(request.target_table.uuid.canonical)});
+  row.fields.push_back({"target_table_uuid", RejectTextValue(request.target_table.uuid)});
   row.fields.push_back({"target_column", RejectTextValue({}, true)});
   row.fields.push_back({"diagnostic_code", RejectTextValue(stable_diagnostic.code)});
   row.fields.push_back({"message_key", RejectTextValue(stable_diagnostic.message_key)});
@@ -712,7 +712,7 @@ EngineRowValue MakeRejectDiagnosticRow(const EngineExecuteImportRowsRequest& req
   row.fields.push_back({"policy_name", RejectTextValue(request.import_policy.reject_mode)});
   row.fields.push_back({"audit_evidence_id", RejectTextValue("import_reject:" + std::to_string(source_row_number))});
   if (include_payload_reference_columns) {
-    row.fields.push_back({"payload_reference_uuid", RejectTextValue(row.requested_row_uuid.canonical)});
+    row.fields.push_back({"payload_reference_uuid", RejectTextValue(row.requested_row_uuid)});
     row.fields.push_back({"payload_encryption_profile", RejectTextValue(request.import_policy.reject_payload_policy)});
   }
   return row;
@@ -753,7 +753,7 @@ EngineApiU64 EffectiveRejectLimit(const EngineExecuteImportRowsRequest& request,
 bool RejectTargetMaterializationRequired(const EngineExecuteImportRowsRequest& request) {
   return request.import_policy.reject_mode == "reject_table" ||
          request.import_policy.reject_mode == "quarantine" ||
-         !request.import_policy.reject_target.uuid.canonical.empty();
+         !request.import_policy.reject_target.uuid.is_nil();
 }
 
 bool ContainsText(const std::string& value, const std::string& needle) {
@@ -1145,7 +1145,7 @@ EngineExecuteImportRowsResult EngineExecuteImportRows(const EngineExecuteImportR
   if (!request.localized_names.empty()) {
     return ImportExecutionFailure("localized_names_not_allowed_engine_boundary");
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return ImportExecutionFailure("target_table_uuid_required");
   }
   if (request.canonical_rows.empty()) {

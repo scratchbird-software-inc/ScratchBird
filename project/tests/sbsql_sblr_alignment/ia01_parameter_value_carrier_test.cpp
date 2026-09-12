@@ -65,7 +65,7 @@ int main() {
   value = CanonicalizePreparedParameterWireValue(
       binary, "019d0000-0000-7000-8000-00000000d799", kType, false);
   Require(!value.accepted &&
-              value.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID",
+              value.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID",
           "unnegotiated datatype identity was not refused");
   return EXIT_SUCCESS;
 }

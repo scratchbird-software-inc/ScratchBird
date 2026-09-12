@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -183,7 +184,23 @@ enum class StatusCode : u32 {
   memory_invalid_request = 100400,
   memory_allocation_failed = 100401,
   memory_limit_exceeded = 100402,
-  memory_unknown_pointer = 100403
+  memory_unknown_pointer = 100403,
+  // MGA-COW-DIAGNOSTIC-CONTRACT-V1 native failure bindings.
+  mga_cow_invalid_kind = 101000,
+  mga_cow_invalid_transaction_identity = 101001,
+  mga_cow_invalid_row_identity = 101002,
+  mga_cow_insert_has_base = 101003,
+  mga_cow_base_required = 101004,
+  mga_cow_invalid_base_sequence = 101005,
+  mga_cow_invalid_new_sequence = 101006,
+  mga_cow_nonincreasing_sequence = 101007,
+  mga_cow_invalid_phase = 101008,
+  mga_cow_invalid_row_state = 101009,
+  mga_cow_evidence_required = 101010,
+  mga_cow_illegal_transition = 101011,
+  mga_cow_transaction_not_writable = 101012,
+  mga_cow_invalid_row_metadata = 101013,
+  mga_cow_read_only_transaction = 101014,
 };
 
 struct Status {
@@ -238,7 +255,7 @@ enum class UuidKind : u8 {
 struct Uuid {
   std::array<byte, 16> bytes{};
 
-  constexpr bool is_nil() const {
+  constexpr bool is_nil() const noexcept {
     for (byte value : bytes) {
       if (value != 0) {
         return false;
@@ -247,12 +264,19 @@ struct Uuid {
     return true;
   }
 
-  friend constexpr bool operator==(const Uuid& left, const Uuid& right) {
+  friend constexpr bool operator==(const Uuid& left, const Uuid& right) noexcept {
     return left.bytes == right.bytes;
   }
 
-  friend constexpr bool operator!=(const Uuid& left, const Uuid& right) {
+  friend constexpr bool operator!=(const Uuid& left, const Uuid& right) noexcept {
     return !(left == right);
+  }
+
+  // Canonical byte order, independent of native integer alignment/endian.
+  // Ordered identity containers must not format UUID text to obtain a key.
+  friend constexpr std::strong_ordering operator<=>(
+      const Uuid& left, const Uuid& right) noexcept {
+    return left.bytes <=> right.bytes;
   }
 };
 

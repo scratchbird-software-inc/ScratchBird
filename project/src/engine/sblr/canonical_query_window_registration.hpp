@@ -210,7 +210,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
     exec::CanonicalDescriptorOrderTerm order_term,
     scratchbird::engine::internal_api::EngineTypedValue bucket_count_operand,
     std::string function_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string capability_uuid,
     std::size_t maximum_input_row_count,
@@ -222,7 +221,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNtileRegistration(
 exec::CanonicalPhysicalExecutorRegistration MakeLivePeerRankingRegistration(
     exec::ExecutorColumnDescriptor ranking_column,
     exec::CanonicalDescriptorOrderTerm order_term,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string capability_uuid,
     std::size_t maximum_input_row_count,
@@ -241,7 +239,6 @@ MakeLiveNavigationWindowRegistration(
     std::optional<scratchbird::engine::internal_api::EngineTypedValue>
         nth_value_position_operand,
     std::string window_frame_descriptor_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string frame_property_binding_evidence_uuid,
     std::string capability_uuid,
@@ -261,7 +258,6 @@ MakeLiveAggregateWindowRegistration(
     std::optional<std::size_t> value_column,
     exec::CanonicalAggregateDescriptor aggregate_descriptor,
     std::string window_frame_descriptor_uuid,
-    std::string order_term_binding_evidence_uuid,
     std::string deterministic_order_evidence_uuid,
     std::string frame_property_binding_evidence_uuid,
     std::string capability_uuid,

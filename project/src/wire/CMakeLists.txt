@@ -8,6 +8,15 @@
 
 find_package(OpenSSL REQUIRED)
 
+include(${CMAKE_CURRENT_LIST_DIR}/message_vector_value_codec.cmake)
+
+if(NOT TARGET sb_wire_message_vector_set_codec)
+  add_library(sb_wire_message_vector_set_codec STATIC message_vector_set_codec.cpp)
+  target_compile_features(sb_wire_message_vector_set_codec PUBLIC cxx_std_20)
+  target_include_directories(sb_wire_message_vector_set_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(sb_wire_message_vector_set_codec PUBLIC sb_wire_message_vector_value_codec)
+endif()
+
 if(NOT TARGET sb_core_index)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../core/index ${CMAKE_CURRENT_BINARY_DIR}/core_index)
 endif()

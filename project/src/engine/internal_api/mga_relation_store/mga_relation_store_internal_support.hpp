@@ -39,9 +39,6 @@ EngineApiDiagnostic ValidateMgaMutatingTransactionAuthorityForStoreModule(
     const EngineRequestContext& context,
     const std::string& operation_id);
 
-std::function<bool(std::uint64_t, std::uint64_t)>
-MakeMgaMetadataRollbackPredicateForStoreModule(
-    const EngineRequestContext& context);
 bool ExactTextMigrationCreatorTransactionForStoreModule(
     const EngineRequestContext& context,
     std::uint64_t creator_tx,

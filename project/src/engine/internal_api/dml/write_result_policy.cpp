@@ -143,8 +143,8 @@ EngineResultShape IdsOnlyShape(const EngineResultShape& original) {
   for (const auto& row : original.rows) {
     EngineRowValue out;
     out.requested_row_uuid = row.requested_row_uuid;
-    if (!row.requested_row_uuid.canonical.empty()) {
-      AddTextField(&out, "row_uuid", row.requested_row_uuid.canonical);
+    if (!row.requested_row_uuid.is_nil()) {
+      AddTextField(&out, "row_uuid", row.requested_row_uuid);
     }
     for (const auto& [name, value] : row.fields) {
       if (IdentifierFieldName(name) && !HasField(out, name)) {
@@ -198,8 +198,8 @@ EngineResultShape ChangedFieldsShape(const EngineResultShape& original) {
   for (const auto& row : original.rows) {
     EngineRowValue out;
     out.requested_row_uuid = row.requested_row_uuid;
-    if (!row.requested_row_uuid.canonical.empty()) {
-      AddTextField(&out, "row_uuid", row.requested_row_uuid.canonical);
+    if (!row.requested_row_uuid.is_nil()) {
+      AddTextField(&out, "row_uuid", row.requested_row_uuid);
     }
     std::vector<std::string> names;
     names.reserve(row.fields.size());

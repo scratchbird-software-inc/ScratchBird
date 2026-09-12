@@ -6,7 +6,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-add_executable(sb_sbsql_v3_diagnostic_rendering_probe main.cpp)
-target_link_libraries(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE sb_engine_internal_api)
-target_compile_features(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE cxx_std_20)
+if(NOT TARGET sb_server_legacy_diagnostic_rendering)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
+                   ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
+endif()
 
+add_executable(sb_sbsql_v3_diagnostic_rendering_probe main.cpp)
+target_link_libraries(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE sb_server_legacy_diagnostic_rendering)
+target_compile_features(sb_sbsql_v3_diagnostic_rendering_probe PRIVATE cxx_std_20)

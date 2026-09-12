@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <functional>
 #include <optional>
 #include <span>
@@ -60,8 +61,12 @@ struct BoundedScopedRowReadControl {
   HeapReadRuntimeObservation* runtime_observation = nullptr;
 };
 
-std::vector<scratchbird::core::index::byte> ReadBinaryFile(
-    const std::string& path);
+// Optional unpublished segments may be absent. All other status/open/read,
+// nonregular-file and observed concurrent-change failures clear the output.
+bool ReadCompleteMgaBinaryFile(
+    const std::string& path,
+    std::vector<scratchbird::core::index::byte>* bytes,
+    std::uint64_t maximum_bytes = std::numeric_limits<std::uint64_t>::max());
 void AppendBinaryU8(std::string* out, std::uint8_t value);
 void AppendBinaryU16(std::string* out, std::uint16_t value);
 void AppendBinaryU32(std::string* out, std::uint32_t value);
@@ -147,6 +152,12 @@ bool DecodeScopedRowBinaryStore(
     ScopedRelationSummary* summary,
     BoundedScopedRowReadControl* control = nullptr,
     std::uint64_t authorized_file_bytes = 0);
+// Decode exactly the caller-admitted immutable bytes; no second file open.
+bool DecodeScopedRowBinaryBytes(
+    const std::vector<scratchbird::core::index::byte>& bytes,
+    std::vector<CrudRowVersionRecord>* rows,
+    ScopedRelationSummary* summary,
+    BoundedScopedRowReadControl* control = nullptr);
 
 void AppendLineField(std::string* line,
                      bool* first,

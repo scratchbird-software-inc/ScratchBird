@@ -763,6 +763,226 @@ const char* Real128BackendName() {
 #endif
 }
 
+
+namespace {
+ExactDecimalBinaryResult DecimalFailure(
+    const bool overflow, std::string detail) {
+  ExactDecimalBinaryResult result;
+  result.overflow = overflow;
+  result.detail = std::move(detail);
+  return result;
+}
+
+std::string RenderExactDecimalV1(const bool negative,
+                                 const std::string_view coefficient,
+                                 const std::uint8_t scale) {
+  if (coefficient == "0") return "0";
+  std::string rendered;
+  if (negative) rendered.push_back('-');
+  if (scale == 0) {
+    rendered.append(coefficient);
+    return rendered;
+  }
+  if (coefficient.size() <= scale) {
+    rendered.append("0.");
+    rendered.append(scale - coefficient.size(), '0');
+    rendered.append(coefficient);
+    return rendered;
+  }
+  const auto integer_bytes = coefficient.size() - scale;
+  rendered.append(coefficient.substr(0, integer_bytes));
+  rendered.push_back('.');
+  rendered.append(coefficient.substr(integer_bytes));
+  return rendered;
+}
+std::uint32_t ReadDecimalU32(const std::uint8_t* bytes) {
+  std::uint32_t value = 0;
+  for (unsigned i = 0; i < 4; ++i) value |= std::uint32_t(bytes[i]) << (8 * i);
+  return value;
+}
+}  // namespace
+
+ExactDecimalBinaryResult EncodeExactDecimalLittleEndian(
+    const std::string_view lexical) {
+  if (lexical.empty() || lexical.size() > 128) {
+    return DecimalFailure(false, "exact decimal value length is invalid");
+  }
+
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  numeric::NumericRequest request;
+  request.operation = numeric::NumericOperation::canonicalize;
+  request.type = numeric::NumericType::decimal;
+  request.left = {numeric::NumericType::decimal, std::string(lexical), false};
+  request.context.precision = 38;
+  request.context.scale = 0;
+  request.context.allow_special_values = false;
+  request.context.canonical_preserve_scale = true;
+  const auto canonicalized = numeric::ApplyNumericOperation(request);
+  if (canonicalized.status == numeric::NumericStatusCode::overflow) {
+    return DecimalFailure(true, "exact decimal precision exceeds 38");
+  }
+  if (canonicalized.status != numeric::NumericStatusCode::ok ||
+      canonicalized.value.is_null || canonicalized.value.encoded.empty()) {
+    return DecimalFailure(false, "sbl_numeric refused the exact decimal lexical value");
+  }
+
+  std::string canonical = canonicalized.value.encoded;
+  if (canonical == "-0") canonical = "0";
+  std::size_t cursor = 0;
+  const bool negative = canonical.front() == '-';
+  if (negative) ++cursor;
+  const auto decimal = canonical.find('.', cursor);
+  const std::size_t scale = decimal == std::string::npos
+                                ? 0
+                                : canonical.size() - decimal - 1;
+  if (scale > 38) {
+    return DecimalFailure(true, "exact decimal scale exceeds 38");
+  }
+  std::string coefficient;
+  coefficient.reserve(canonical.size());
+  for (; cursor < canonical.size(); ++cursor) {
+    const char byte = canonical[cursor];
+    if (byte == '.') continue;
+    if (byte < '0' || byte > '9') {
+      return DecimalFailure(false,
+                            "sbl_numeric returned noncanonical decimal text");
+    }
+    coefficient.push_back(byte);
+  }
+  const auto first_nonzero = coefficient.find_first_not_of('0');
+  if (first_nonzero == std::string::npos) {
+    coefficient = "0";
+    canonical = "0";
+  } else if (first_nonzero != 0) {
+    coefficient.erase(0, first_nonzero);
+  }
+  const std::size_t precision = std::max(coefficient.size(), scale);
+  if (precision == 0 || precision > 38) {
+    return DecimalFailure(true, "exact decimal normalized precision exceeds 38");
+  }
+  const std::size_t group_count =
+      coefficient == "0" ? 1 : (coefficient.size() + 8) / 9;
+  if (group_count == 0 || group_count > 5) {
+    return DecimalFailure(true,
+                          "exact decimal coefficient exceeds five base-1e9 groups");
+  }
+
+  ExactDecimalBinaryResult result;
+  result.precision = static_cast<std::uint8_t>(precision);
+  result.scale = static_cast<std::uint8_t>(scale);
+  result.canonical_lexical = canonical;
+  result.canonical_bytes[0] = static_cast<std::uint8_t>(scale);
+  if (negative && coefficient != "0") result.canonical_bytes[0] |= 0x80U;
+  result.canonical_bytes[1] = result.precision;
+  result.canonical_bytes[2] = static_cast<std::uint8_t>(group_count);
+  std::size_t end = coefficient.size();
+  for (std::size_t group = 0; group < group_count; ++group) {
+    const auto begin = end > 9 ? end - 9 : 0;
+    std::uint32_t value = 0;
+    const auto parsed = std::from_chars(coefficient.data() + begin,
+                                        coefficient.data() + end, value);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != coefficient.data() + end || value >= 1'000'000'000U) {
+      return DecimalFailure(false,
+                            "exact decimal coefficient group is malformed");
+    }
+    const auto offset = 4 + group * 4;
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      result.canonical_bytes[offset + byte] =
+          static_cast<std::uint8_t>(value >> (byte * 8));
+    }
+    end = begin;
+  }
+  if (end != 0) {
+    return DecimalFailure(true,
+                          "exact decimal coefficient group extent overflowed");
+  }
+  result.ok = true;
+  return result;
+}
+
+ExactDecimalBinaryResult DecodeExactDecimalLittleEndian(
+    const std::uint8_t* bytes, const std::size_t size) {
+  if (bytes == nullptr || size != kExactDecimalBinaryBytes) {
+    return DecimalFailure(false, "exact decimal body must be exactly 24 bytes");
+  }
+  const bool negative = (bytes[0] & 0x80U) != 0;
+  const auto scale = static_cast<std::uint8_t>(bytes[0] & 0x7fU);
+  const auto precision = bytes[1];
+  const auto group_count = bytes[2];
+  if (scale > 38 || precision == 0 || precision > 38 ||
+      group_count == 0 || group_count > 5 || bytes[3] != 0) {
+    return DecimalFailure(false,
+                          "exact decimal header is outside canonical bounds");
+  }
+  std::array<std::uint32_t, 5> groups{};
+  for (std::size_t group = 0; group < groups.size(); ++group) {
+    groups[group] = ReadDecimalU32(bytes + 4 + group * 4);
+    if (groups[group] >= 1'000'000'000U ||
+        (group >= group_count && groups[group] != 0)) {
+      return DecimalFailure(false,
+                            "exact decimal coefficient group is noncanonical");
+    }
+  }
+  if ((group_count > 1 && groups[group_count - 1] == 0) ||
+      (group_count == 1 && groups[0] == 0 &&
+       (negative || scale != 0 || precision != 1))) {
+    return DecimalFailure(false,
+                          "exact decimal coefficient is not minimally encoded");
+  }
+
+  std::string coefficient = std::to_string(groups[group_count - 1]);
+  for (std::size_t remaining = group_count - 1; remaining != 0; --remaining) {
+    const auto group = std::to_string(groups[remaining - 1]);
+    coefficient.append(9 - group.size(), '0');
+    coefficient.append(group);
+  }
+  const auto expected_group_count =
+      coefficient == "0" ? 1 : (coefficient.size() + 8) / 9;
+  const auto expected_precision = std::max(coefficient.size(),
+                                            static_cast<std::size_t>(scale));
+  if (expected_group_count != group_count || expected_precision != precision) {
+    return DecimalFailure(false,
+                          "exact decimal precision or group count is noncanonical");
+  }
+  const auto canonical = RenderExactDecimalV1(negative, coefficient, scale);
+  const auto reencoded = EncodeExactDecimalLittleEndian(canonical);
+  if (!reencoded.ok || !std::equal(reencoded.canonical_bytes.begin(),
+                                   reencoded.canonical_bytes.end(), bytes)) {
+    return DecimalFailure(false,
+                          "exact decimal decode and re-encode bytes differ");
+  }
+  auto result = reencoded;
+  result.precision = precision;
+  result.scale = scale;
+  return result;
+}
+
+NumericBinaryResult EncodeInt128LittleEndian(std::string_view canonical) {
+  NumericBinaryResult result;
+  cpp_int value = 0;
+  // Bound before arbitrary precision parsing; the signed minimum has40 bytes.
+  if (canonical.empty() || canonical.size() > 40 ||
+      !ParseInteger(std::string(canonical), true, &value) ||
+      CppIntToString(value) != canonical) {
+    result.diagnostic_code = "NUMERIC.ENCODING.NONCANONICAL";
+    return result;
+  }
+  if (!IntegerInRange(NumericType::int128, value)) {
+    result.status = NumericStatusCode::overflow;
+    result.diagnostic_code = IntegerRangeDiagnostic(NumericType::int128);
+    return result;
+  }
+  if (value < 0) value += cpp_int(1) << 128;
+  result.payload.resize(16);
+  for (auto& byte : result.payload) {
+    byte = static_cast<std::uint8_t>(value & 255);
+    value >>= 8;
+  }
+  result.status = NumericStatusCode::ok;
+  return result;
+}
+
 NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload) {
   if (payload.size() != 16) {
     return Failure(NumericStatusCode::invalid_left,

@@ -11,6 +11,11 @@
 namespace scratchbird::engine::internal_api {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTICS
 EngineApiDiagnostic MakeEngineApiDiagnostic(std::string code, std::string message_key, std::string detail, bool error = true);
+// The caller supplies the owning code/key, which may wrap the native cause.
+// Preserve native status/arguments as private structured data, not detail text.
+EngineApiDiagnostic MakeEngineApiDiagnosticFromNative(
+    const scratchbird::core::platform::DiagnosticRecord& source,
+    std::string code, std::string message_key, std::string detail, bool error = true);
 EngineApiDiagnostic MakeUnavailableDiagnostic(std::string operation_id);
 EngineApiDiagnostic MakeUnsupportedProfileDiagnostic(std::string operation_id, std::string profile);
 EngineApiDiagnostic MakeClusterAuthorityUnavailableDiagnostic(std::string operation_id);

@@ -37,12 +37,6 @@ bool IsReaderOwnVersion(const RowVersionMetadata& metadata, const VisibilitySnap
          metadata.identity.creator_transaction.local_id.value == snapshot.reader_transaction.value;
 }
 
-bool CreatorIsCommitted(const RowVersionMetadata& metadata) {
-  return metadata.state == RowVersionState::committed &&
-         (metadata.creator_transaction_state == TransactionState::committed ||
-          metadata.creator_transaction_state == TransactionState::archived);
-}
-
 bool TypedUuidMatches(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
 }
@@ -234,8 +228,10 @@ RowVersionMetadataResult ValidateRowVersionMetadata(const RowVersionMetadata& me
   return result;
 }
 
-VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
-                                    const VisibilitySnapshot& snapshot) {
+namespace {
+VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
+                                       const VisibilitySnapshot& snapshot,
+                                       bool evaluate_delete_effect) {
   VisibilityResult result;
   result.status = RowVersionOkStatus();
 
@@ -247,7 +243,31 @@ VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
     return result;
   }
 
-  if (metadata.state == RowVersionState::recovery_required || metadata.state == RowVersionState::limbo) {
+  auto state = metadata.state;
+  if (evaluate_delete_effect && state == RowVersionState::delete_marker) {
+    switch (metadata.creator_transaction_state) {
+      case TransactionState::committed:
+      case TransactionState::archived: state = RowVersionState::committed; break;
+      case TransactionState::rolled_back:
+      case TransactionState::failed_terminal: state = RowVersionState::rolled_back; break;
+      case TransactionState::prepared: state = RowVersionState::prepared; break;
+      case TransactionState::limbo: state = RowVersionState::limbo; break;
+      case TransactionState::recovering: state = RowVersionState::recovery_required; break;
+      case TransactionState::created:
+      case TransactionState::active:
+      case TransactionState::preparing:
+      case TransactionState::committing:
+      case TransactionState::rolling_back:
+      case TransactionState::read_only_active: state = RowVersionState::uncommitted; break;
+      default:
+        result.status = RowVersionErrorStatus();
+        result.decision = VisibilityDecision::unknown;
+        result.diagnostic = MakeRowVersionDiagnostic(result.status,
+            "SB-ROW-UNKNOWN-CREATOR-TRANSACTION-STATE", "row_version.unknown_creator_transaction_state");
+        return result;
+    }
+  }
+  if (state == RowVersionState::recovery_required || state == RowVersionState::limbo) {
     result.status = RowVersionWarningStatus();
     result.decision = VisibilityDecision::requires_recovery;
     result.diagnostic = MakeRowVersionDiagnostic(result.status,
@@ -257,7 +277,7 @@ VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
     return result;
   }
 
-  if (metadata.state == RowVersionState::prepared || metadata.state == RowVersionState::uncommitted) {
+  if (state == RowVersionState::prepared || state == RowVersionState::uncommitted) {
     if (snapshot.allow_reader_own_uncommitted && IsReaderOwnVersion(metadata, snapshot)) {
       result.decision = VisibilityDecision::visible;
       return result;
@@ -272,12 +292,14 @@ VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
     return result;
   }
 
-  if (metadata.state == RowVersionState::rolled_back || metadata.state == RowVersionState::delete_marker) {
+  if (state == RowVersionState::rolled_back || state == RowVersionState::delete_marker) {
     result.decision = VisibilityDecision::invisible;
     return result;
   }
 
-  if (!CreatorIsCommitted(metadata)) {
+  if (!(state == RowVersionState::committed &&
+        (metadata.creator_transaction_state == TransactionState::committed ||
+         metadata.creator_transaction_state == TransactionState::archived))) {
     result.status = RowVersionWarningStatus();
     result.decision = VisibilityDecision::wait_for_transaction;
     result.diagnostic = MakeRowVersionDiagnostic(result.status,
@@ -296,6 +318,17 @@ VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
 
   result.decision = VisibilityDecision::visible;
   return result;
+}
+}  // namespace
+
+VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
+                                    const VisibilitySnapshot& snapshot) {
+  return EvaluateVisibilityImpl(metadata, snapshot, false);
+}
+
+VisibilityResult EvaluateVersionEffectVisibility(const RowVersionMetadata& metadata,
+                                                const VisibilitySnapshot& snapshot) {
+  return EvaluateVisibilityImpl(metadata, snapshot, true);
 }
 
 HotStableRowHeadDecisionResult EvaluateHotStableRowHeadDecision(

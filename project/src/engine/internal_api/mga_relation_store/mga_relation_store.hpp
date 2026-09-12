@@ -1608,7 +1608,11 @@ MgaBulkImportImportedRowEventResultV1 RecoverMgaBulkImportImportedRowEventsV1(
     const EngineRequestContext& context,
     const MgaBulkImportSha256V1& recovery_idempotency_key);
 
-std::vector<std::string> ActiveMgaSavepointNames(const EngineRequestContext& context);
+struct MgaSavepointNamesResult {
+  EngineApiDiagnostic diagnostic;
+  std::vector<std::string> names;
+};
+MgaSavepointNamesResult ActiveMgaSavepointNames(const EngineRequestContext& context);
 EngineApiDiagnostic ApplyMgaTemporaryOnCommitActions(const EngineRequestContext& context,
                                                      std::uint64_t local_transaction_id,
                                                      std::uint64_t* deleted_row_count,

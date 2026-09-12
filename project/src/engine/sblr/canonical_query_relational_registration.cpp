@@ -840,7 +840,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   };
   if (!strict_dispatcher_memory ||
       !account_string(result_column.stable_name) ||
-      !account_string(result_column.descriptor.descriptor_uuid.canonical) ||
+      !account_string(result_column.descriptor.descriptor_uuid) ||
       !account_string(result_column.descriptor.descriptor_kind) ||
       !account_string(result_column.descriptor.canonical_type_name) ||
       !account_string(result_column.descriptor.encoded_descriptor)) {

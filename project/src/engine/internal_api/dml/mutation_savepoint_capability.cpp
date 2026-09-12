@@ -7,6 +7,7 @@
 #include "dml/transactional_index_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_savepoint_store.hpp"
+#include "mga_relation_store/mga_relation_store_internal_support.hpp"
 #include "core/index/index_family_registry.hpp"
 #include "sblr_opcode_registry.hpp"
 
@@ -189,7 +190,14 @@ EngineApiDiagnostic AdmitMgaDmlSavepointMutation(
   const auto table = FindVisibleMgaTable(view, std::string(target_relation_uuid),
                                        context.local_transaction_id);
   if (!table) return Refuse("target_relation_not_visible");
-  if (table->temporary) return Admit(P::temporary_lifetime);
+  // Row INSERT/UPDATE/DELETE on an existing temporary relation does not
+  // create, drop or expire that relation. Its row/index/overflow versions
+  // use the same MGA cutoff authority as permanent rows. Validate the
+  // owning session and keep walking the complete effect graph: returning
+  // here would skip constraints, defaults, indexes and trigger admission.
+  const auto temporary_authority =
+      ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(context, *table);
+  if (temporary_authority.error) return temporary_authority;
   const auto constraints = ValidateSavepointConstraintProviders(context, view, *table,
       mutation == MgaDmlMutationKind::insert ? "insert" :
       mutation == MgaDmlMutationKind::update ? "update" : "delete");

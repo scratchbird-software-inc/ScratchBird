@@ -11,9 +11,11 @@
 // SB-QUERY-MEMORY-ARENA-ANCHOR
 #include "memory.hpp"
 #include "hierarchical_memory_budget_ledger.hpp"
+#include "unified_memory_spill_budget.hpp"
 #include "temp_workspace_lifecycle.hpp"
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -38,13 +40,18 @@ enum class QueryMemoryFamily {
 };
 
 struct QueryMemoryContext {
-  std::string query_id;
-  std::string statement_id;
-  std::string session_id;
-  std::string transaction_id;
-  std::string database_id;
-  std::string engine_id;
-  std::string operation_id;
+  QueryMemoryUuid query_id{};
+  QueryMemoryUuid statement_id{};
+  QueryMemoryUuid session_id{};
+  QueryMemoryUuid transaction_id{};
+  QueryMemoryUuid database_id{};
+  QueryMemoryUuid engine_id{};
+  QueryMemoryUuid operation_id{};
+  QueryMemoryUuid snapshot_boundary{};
+  QueryMemoryUuid metadata_boundary{};
+  QueryMemoryUuid resource_budget_reference{};
+  u64 policy_generation = 0;
+  u64 security_generation = 0;
   bool engine_mga_authoritative = true;
   bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
@@ -62,51 +69,8 @@ struct QueryMemoryArenaLimits {
   bool require_hierarchical_reservation = false;
 };
 
-// MMCH_UNIFIED_MEMORY_SPILL_BUDGET
-enum class UnifiedMemorySpillBudgetKind {
-  heap,
-  spill
-};
+bool QueryMemoryContextIdentitiesValid(const QueryMemoryContext& context) noexcept;
 
-struct UnifiedMemorySpillBudgetRequest {
-  std::string operation_id;
-  std::string owner_scope;
-  UnifiedMemorySpillBudgetKind kind = UnifiedMemorySpillBudgetKind::heap;
-  u64 bytes = 0;
-};
-
-struct UnifiedMemorySpillBudgetReservation {
-  std::string reservation_id;
-  std::string operation_id;
-  std::string owner_scope;
-  UnifiedMemorySpillBudgetKind kind = UnifiedMemorySpillBudgetKind::heap;
-  u64 bytes = 0;
-};
-
-struct UnifiedMemorySpillBudgetSnapshot {
-  std::string ledger_id;
-  u64 limit_bytes = 0;
-  u64 heap_bytes = 0;
-  u64 spill_bytes = 0;
-  u64 total_bytes = 0;
-  u64 active_reservation_count = 0;
-  u64 peak_total_bytes = 0;
-  u64 denial_count = 0;
-};
-
-struct UnifiedMemorySpillBudgetResult {
-  Status status;
-  bool fail_closed = false;
-  bool reservation_created = false;
-  bool released = false;
-  bool not_found = false;
-  std::optional<UnifiedMemorySpillBudgetReservation> reservation;
-  UnifiedMemorySpillBudgetSnapshot snapshot;
-  DiagnosticRecord diagnostic;
-  std::vector<std::string> evidence;
-
-  bool ok() const { return status.ok() && !fail_closed; }
-};
 
 struct QueryMemoryGrantRequest {
   QueryMemoryFamily family = QueryMemoryFamily::unknown;
@@ -116,18 +80,22 @@ struct QueryMemoryGrantRequest {
 };
 
 struct QueryMemoryGrant {
-  std::string grant_id;
+  QueryMemoryUuid grant_id{};
   QueryMemoryFamily family = QueryMemoryFamily::unknown;
   u64 bytes = 0;
   u64 spill_reserved_bytes = 0;
   bool spilled = false;
-  std::string spill_allocation_id;
-  std::string spill_operation_id;
-  std::string unified_budget_reservation_id;
+  QueryMemoryUuid spill_object_id{};
+  QueryMemoryUuid spill_operation_id{};
+  QueryMemoryUuid unified_budget_reservation_id{};
 };
 
 struct QueryMemoryArenaCounters {
+  // Logical live payload is distinct from physical bump-region ownership.
   u64 current_bytes = 0;
+  u64 retained_heap_bytes = 0;
+  u64 consumed_heap_bytes = 0;
+  u64 heap_chunk_count = 0;
   u64 peak_bytes = 0;
   u64 denied_count = 0;
   u64 spilled_count = 0;
@@ -175,7 +143,7 @@ class QueryMemoryArena {
   ~QueryMemoryArena();
 
   QueryMemoryArenaResult Grant(QueryMemoryGrantRequest request);
-  QueryMemoryArenaReleaseResult Release(const std::string& grant_id);
+  QueryMemoryArenaReleaseResult Release(const QueryMemoryUuid& grant_id);
   QueryMemoryArenaReleaseResult Cancel(std::string reason);
   QueryMemoryArenaReleaseResult Reset();
 
@@ -184,6 +152,11 @@ class QueryMemoryArena {
   const QueryMemoryArenaLimits& limits() const { return limits_; }
 
  private:
+  struct HeapCapacityOwner {
+    HierarchicalMemoryReservationLease hierarchy;
+    UnifiedMemorySpillBudgetLease unified;
+  };
+
   struct ActiveGrant {
     QueryMemoryGrant grant;
     void* pointer = nullptr;
@@ -211,6 +184,8 @@ class QueryMemoryArena {
                                 std::string reason,
                                 scratchbird::core::platform::StatusCode code =
                                     scratchbird::core::platform::StatusCode::memory_invalid_request);
+  QueryMemoryArenaReleaseResult ReleaseLocked(const QueryMemoryUuid& grant_id);
+  QueryMemoryArenaReleaseResult CleanupAllLocked();
   QueryMemoryArenaReleaseResult RefuseRelease(std::string diagnostic_code,
                                               std::string message_key,
                                               std::string reason,
@@ -227,15 +202,18 @@ class QueryMemoryArena {
                                                           const char* memory_class);
   bool CommitHierarchicalBudget(const HierarchicalMemoryReservationToken& token,
                                 QueryMemoryArenaReleaseResult* rollback_result);
-  void ReleaseHierarchicalBudget(const ActiveGrant& grant,
-                                 std::vector<std::string>* evidence);
+  bool ReleaseHierarchicalBudget(ActiveGrant& grant,
+                                std::vector<std::string>* evidence,
+                                QueryMemoryArenaReleaseResult* failure = nullptr);
   UnifiedMemorySpillBudgetResult ReserveUnifiedBudget(QueryMemoryGrantRequest request,
                                                       UnifiedMemorySpillBudgetKind kind);
-  void ReleaseUnifiedBudget(const ActiveGrant& grant,
-                            std::vector<std::string>* evidence);
+  bool ReleaseUnifiedBudget(ActiveGrant& grant,
+                           std::vector<std::string>* evidence,
+                           QueryMemoryArenaReleaseResult* failure = nullptr);
   bool HasActiveHeapGrantLocked() const;
   DeallocationResult ResetHeapArenaLocked(std::vector<std::string>* evidence);
-  void AppendBaseEvidence(std::vector<std::string>* evidence, QueryMemoryFamily family) const;
+  void AppendBaseEvidence(std::vector<std::string>* evidence, QueryMemoryFamily family,
+                          const QueryMemoryArenaCounters* snapshot = nullptr) const;
   DiagnosticRecord MakeArenaDiagnostic(Status status,
                                        std::string diagnostic_code,
                                        std::string message_key,
@@ -251,48 +229,16 @@ class QueryMemoryArena {
   HierarchicalMemoryBudgetLedger* reservation_ledger_ = nullptr;
   mutable std::mutex mutex_;
   QueryMemoryArenaCounters counters_;
-  std::map<std::string, ActiveGrant> active_;
+  std::map<QueryMemoryUuid, ActiveGrant> active_;
+  // Declared before the arena so implicit destruction frees physical chunks
+  // before their retained reservations, including exception unwinding.
+  std::vector<HeapCapacityOwner> heap_capacity_;
   std::optional<ArenaAllocator> heap_arena_;
-  u64 next_grant_ = 1;
   bool released_ = false;
 };
 
-class UnifiedMemorySpillBudgetLedger {
- public:
-  UnifiedMemorySpillBudgetLedger(std::string ledger_id, u64 limit_bytes);
-  UnifiedMemorySpillBudgetLedger(const UnifiedMemorySpillBudgetLedger&) = delete;
-  UnifiedMemorySpillBudgetLedger& operator=(const UnifiedMemorySpillBudgetLedger&) = delete;
-
-  UnifiedMemorySpillBudgetResult Reserve(UnifiedMemorySpillBudgetRequest request);
-  UnifiedMemorySpillBudgetResult Release(const std::string& reservation_id);
-  UnifiedMemorySpillBudgetResult ReleaseOwnerReservations(const std::string& owner_scope);
-  UnifiedMemorySpillBudgetSnapshot Snapshot() const;
-
- private:
-  struct ActiveReservation {
-    UnifiedMemorySpillBudgetReservation reservation;
-  };
-
-  UnifiedMemorySpillBudgetSnapshot SnapshotLocked() const;
-  DiagnosticRecord MakeDiagnostic(Status status,
-                                  std::string diagnostic_code,
-                                  std::string message_key,
-                                  std::string reason,
-                                  const UnifiedMemorySpillBudgetRequest& request) const;
-
-  std::string ledger_id_;
-  u64 limit_bytes_ = 0;
-  mutable std::mutex mutex_;
-  std::map<std::string, ActiveReservation> active_;
-  u64 heap_bytes_ = 0;
-  u64 spill_bytes_ = 0;
-  u64 peak_total_bytes_ = 0;
-  u64 denial_count_ = 0;
-  u64 next_reservation_ = 1;
-};
 
 const char* QueryMemoryFamilyName(QueryMemoryFamily family);
 bool QueryMemoryFamilySupported(QueryMemoryFamily family);
-const char* UnifiedMemorySpillBudgetKindName(UnifiedMemorySpillBudgetKind kind);
 
 }  // namespace scratchbird::core::memory

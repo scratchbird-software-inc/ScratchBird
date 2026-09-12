@@ -44,7 +44,7 @@ std::string GenerateCrudEngineUuid(std::string kind, std::uint64_t unix_epoch_mi
   return UuidToString(generated.value.value);
 }
 
-bool IsEmptyUuid(const EngineUuid& uuid) { return uuid.canonical.empty(); }
+bool IsEmptyUuid(const EngineUuid& uuid) { return uuid.is_nil(); }
 
 bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t, std::uint64_t observer_tx) {
   if (creator_tx == 0) { return true; }
@@ -55,7 +55,7 @@ bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator
 }
 
 std::string UuidStringOrGenerated(const EngineUuid& uuid, std::string kind) {
-  if (!IsEmptyUuid(uuid)) { return uuid.canonical; }
+  if (!IsEmptyUuid(uuid)) { return uuid; }
   return GenerateCrudEngineUuid(std::move(kind));
 }
 

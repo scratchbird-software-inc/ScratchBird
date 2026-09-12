@@ -105,7 +105,7 @@ struct ServerBootstrapConfig {
   bool database_auto_create = false;
   std::uint64_t database_create_page_size_bytes = 16384;
   std::string database_open_mode = "normal";
-  std::string database_daemon_scope = "shared";
+  std::string database_daemon_scope = "dedicated";
   bool database_ownership_prelocked = false;
   // Internal test-only bypass. This field has no public configuration or CLI
   // parser and defaults fail-closed in every packaged build.

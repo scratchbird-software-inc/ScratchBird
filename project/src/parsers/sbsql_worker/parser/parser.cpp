@@ -7654,53 +7654,64 @@ class NativeRelationalParser final {
   }
 
   NativeRelationalAstDocument ParseHeapCteIdentity() {
+    document_.with_clause = ParseWithClauseSyntax(
+        tokens_, kMaximumNativeRelationalTokens, kMaximumNativeExpressionDepth);
     const auto refuse = [&]() {
       RefuseExact("SBSQL.IMPL.NOT_AVAILABLE",
-                  "native CTE transport requires one nonrecursive SELECT * "
-                  "heap producer and SELECT * from that CTE");
+                  "CTE binding requires a supported child query and identity consumer; "
+                  "general local references and recursive terms remain unimplemented");
       return FinishRefusal();
     };
-    if (cst_.messages.has_errors() || tokens_.size() > kMaximumNativeRelationalTokens ||
-        tokens_.size() < 13 || tokens_[1]->kind != TokenKind::kIdentifier ||
-        !IsWord(*tokens_[2], "AS") || tokens_[3]->text != "(" ||
-        !IsWord(*tokens_[4], "SELECT") || tokens_[5]->text != "*" ||
-        !IsWord(*tokens_[6], "FROM")) {
-      return refuse();
-    }
+    const auto& with = *document_.with_clause;
+    if (cst_.messages.has_errors() ||
+        with.status != WithClauseSyntaxStatus::kValid ||
+        with.definitions.size() != 1) return refuse();
+    const auto& definition = with.definitions.front();
+    const auto begin = definition.body.begin;
+    const auto end = definition.body.end;
+    const auto query = with.query;
+    if (!definition.columns.empty() || !definition.key_expressions.empty() ||
+        definition.materialization != CteMaterialization::kDefault ||
+        definition.search || definition.cycle) return refuse();
     const NativeIdentifierAstNode name{
-        tokens_[1]->text, tokens_[1]->quoted, TokenSourceRange(*tokens_[1])};
-    // A qualified catalog name cannot recurse into the local CTE scope.
-    // Unqualified self-reference is refused before requesting a catalog UUID.
-    std::size_t close = 7;
-    if (tokens_[close]->kind != TokenKind::kIdentifier) return refuse();
-    ++close;
-    while (close + 1 < tokens_.size() && tokens_[close]->text == "." &&
-           tokens_[close + 1]->kind == TokenKind::kIdentifier) {
-      close += 2;
-    }
-    if ((close == 8 && SameIdentifier(name, *tokens_[7])) ||
-        close + 4 >= tokens_.size() || tokens_[close]->text != ")" ||
-        !IsWord(*tokens_[close + 1], "SELECT") ||
-        tokens_[close + 2]->text != "*" ||
-        !IsWord(*tokens_[close + 3], "FROM") ||
-        tokens_[close + 4]->kind != TokenKind::kIdentifier ||
-        !SameIdentifier(name, *tokens_[close + 4]) ||
-        !(tokens_.size() == close + 5 ||
-          (tokens_.size() == close + 6 && tokens_.back()->text == ";"))) {
-      return refuse();
-    }
+        tokens_[definition.name]->text, tokens_[definition.name]->quoted,
+        TokenSourceRange(*tokens_[definition.name])};
+    if (query.end - query.begin != 4 ||
+        !IsWord(*tokens_[query.begin], "SELECT") ||
+        tokens_[query.begin + 1]->text != "*" ||
+        !IsWord(*tokens_[query.begin + 2], "FROM") ||
+        tokens_[query.begin + 3]->kind != TokenKind::kIdentifier ||
+        !SameIdentifier(name, *tokens_[query.begin + 3])) return refuse();
+    // Parse the whole child, preserving its actual root and intermediate nodes.
+    // WITH RECURSIVE alone does not imply a recursive self-reference.
     NativeRelationalParser producer(cst_);
-    producer.tokens_.assign(tokens_.begin() + 4, tokens_.begin() + close);
+    producer.tokens_.assign(tokens_.begin() + begin, tokens_.begin() + end);
+    auto retained_with = std::move(document_.with_clause);
     document_ = producer.Parse();
-    if (!document_.accepted() || document_.relations.size() != 1) return refuse();
+    document_.with_clause = std::move(retained_with);
+    if (!document_.accepted()) return FinishRefusal();
+    for (const auto& source : document_.catalog_relation_sources) {
+      if (source.qualified_name.size() == 1 &&
+          SameIdentifier(name, source.qualified_name.front())) {
+        // Never resolve a local self-reference as an unrelated catalog object.
+        if (document_.with_clause->recursive_keyword) return refuse();
+        RefuseExact("SBSQL.OBJECT_RESOLUTION_FAILED",
+                    "a nonrecursive CTE cannot reference its own declaration");
+        return FinishRefusal();
+      }
+    }
+    std::uint32_t maximum_relation_id = 0;
+    for (const auto& relation : document_.relations)
+      maximum_relation_id = std::max(maximum_relation_id, relation.relation_id);
+    if (maximum_relation_id == std::numeric_limits<std::uint32_t>::max()) return refuse();
     NativeRelationAstNode cte;
-    cte.relation_id = document_.root_relation_id + 1;
+    cte.relation_id = maximum_relation_id + 1;
     cte.relation_kind = NativeRelationAstKind::kCte;
     cte.input_relation_ids = {document_.root_relation_id};
-    cte.range = Span(*tokens_.front(), *tokens_[close + 4]);
+    cte.range = Span(*tokens_.front(), *tokens_[query.end - 1]);
     document_.root_relation_id = cte.relation_id;
     document_.relations.push_back(std::move(cte));
-    if (!IsNativeHeapCteIdentity(document_)) return refuse();
+    if (!NativeCteProducerRoot(document_)) return refuse();
     return std::move(document_);
   }
 

@@ -208,7 +208,7 @@ EngineTypedValue TextValue(std::string value) {
 
 void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       "seq-row-" + std::to_string(result->result_shape.rows.size() + 1);
   for (auto& field : fields) {
     row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
@@ -238,7 +238,7 @@ std::uint64_t Fnv1a64(const std::string& value) {
 
 std::string DerivedUuid(const std::string& prefix, const EngineRequestContext& context, std::uint64_t salt) {
   const std::string seed = prefix + "|" + context.database_path + "|" + context.request_id + "|" +
-                           context.transaction_uuid.canonical + "|" +
+                           context.transaction_uuid + "|" +
                            std::to_string(context.local_transaction_id) + "|" + std::to_string(salt);
   const std::uint64_t a = Fnv1a64(seed);
   const std::uint64_t b = Fnv1a64(seed + "|identity");
@@ -288,7 +288,7 @@ EngineApiDiagnostic AppendDiagnosticEvent(const EngineRequestContext& context,
                      context.local_transaction_id,
                      {{"diagnostic_code", code},
                       {"generator_uuid", generator_uuid},
-                      {"transaction_uuid", context.transaction_uuid.canonical},
+                      {"transaction_uuid", context.transaction_uuid},
                       {"detail", detail}});
 }
 
@@ -351,9 +351,9 @@ bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagn
 
 std::string GeneratorUuidFromRequest(const EngineApiRequest& request, const std::string& explicit_uuid) {
   if (!explicit_uuid.empty()) { return explicit_uuid; }
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    return request.bound_object_identity.object_uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    return request.bound_object_identity.object_uuid;
   }
   return {};
 }
@@ -363,8 +363,8 @@ EngineSequenceGeneratorDefinition NormalizeDefinition(const EngineSequenceCreate
   if (definition.generator_uuid.empty()) {
     definition.generator_uuid = GeneratorUuidFromRequest(request, {});
   }
-  if (definition.database_uuid.empty()) { definition.database_uuid = request.context.database_uuid.canonical; }
-  if (definition.schema_uuid.empty()) { definition.schema_uuid = request.target_schema.uuid.canonical; }
+  if (definition.database_uuid.empty()) { definition.database_uuid = request.context.database_uuid; }
+  if (definition.schema_uuid.empty()) { definition.schema_uuid = request.target_schema.uuid; }
   if (definition.allocation_mode.empty()) { definition.allocation_mode = "local_node_generator"; }
   if (definition.value_type_uuid.empty()) { definition.value_type_uuid = "int64"; }
   if (definition.cache_size == 0) { definition.cache_size = 1; }
@@ -746,9 +746,9 @@ EngineIdentityValueBindingRecord BindingFromFields(const RawSequenceEvent& event
 }
 
 void FillGeneratorResult(EngineApiResult* result, const EngineSequenceGeneratorRecord& generator) {
-  result->primary_object.uuid.canonical = generator.definition.generator_uuid;
+  result->primary_object.uuid = generator.definition.generator_uuid;
   result->primary_object.object_kind = "sequence_generator";
-  result->catalog_row_uuid.canonical = "seq-catalog-" + std::to_string(generator.metadata_epoch);
+  result->catalog_row_uuid = "seq-catalog-" + std::to_string(generator.metadata_epoch);
   AddEvidence(result, "sequence_generator_lifecycle", generator.definition.generator_uuid);
   AddEvidence(result, "sequence_policy_cache", "bounded_nonfinality_cache_v1");
   AddEvidence(result, "mga_transaction_authority", "allocation_not_transaction_finality");
@@ -941,7 +941,7 @@ EngineSequenceCreateGeneratorResult EngineSequenceCreateGenerator(
     return DiagnosticResult<EngineSequenceCreateGeneratorResult>(request.context, kOperation, diagnostic);
   }
   auto fields = DefinitionFields(definition);
-  fields.push_back({"transaction_uuid", request.context.transaction_uuid.canonical});
+  fields.push_back({"transaction_uuid", request.context.transaction_uuid});
   const auto appended = AppendEvent(request.context, "CREATE", request.context.local_transaction_id, std::move(fields));
   if (appended.error) {
     return DiagnosticResult<EngineSequenceCreateGeneratorResult>(request.context, kOperation, appended);
@@ -1054,7 +1054,7 @@ EngineSequenceDropGeneratorResult EngineSequenceDropGenerator(
                                     "DROP",
                                     request.context.local_transaction_id,
                                     {{"generator_uuid", generator_uuid},
-                                     {"transaction_uuid", request.context.transaction_uuid.canonical}});
+                                     {"transaction_uuid", request.context.transaction_uuid}});
   if (appended.error) {
     return DiagnosticResult<EngineSequenceDropGeneratorResult>(request.context, kOperation, appended);
   }
@@ -1113,7 +1113,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
         request.context.local_transaction_id,
         {{"generator_uuid", generator_uuid},
          {"reused_value", std::to_string(value)},
-         {"transaction_uuid", request.context.transaction_uuid.canonical}});
+         {"transaction_uuid", request.context.transaction_uuid}});
     if (reuse.error) {
       return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, reuse);
     }
@@ -1128,7 +1128,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
          {"column_uuid", generator.definition.column_uuid},
          {"statement_uuid", request.statement_uuid},
          {"record_uuid", request.record_uuid},
-         {"transaction_uuid", request.context.transaction_uuid.canonical},
+         {"transaction_uuid", request.context.transaction_uuid},
          {"local_transaction_id", std::to_string(request.context.local_transaction_id)},
          {"allocated_value", std::to_string(value)},
          {"allocation_mode", generator.definition.allocation_mode},
@@ -1186,7 +1186,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
          {"cache_window_active", "1"},
          {"durable_high_water_after", std::to_string(plan.durable_next_value)},
          {"durable_exhausted", BoolText(plan.durable_exhausted)},
-         {"transaction_uuid", request.context.transaction_uuid.canonical}});
+         {"transaction_uuid", request.context.transaction_uuid}});
     if (cache_appended.error) {
       return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, cache_appended);
     }
@@ -1215,7 +1215,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
        {"column_uuid", generator.definition.column_uuid},
        {"statement_uuid", request.statement_uuid},
        {"record_uuid", request.record_uuid},
-       {"transaction_uuid", request.context.transaction_uuid.canonical},
+       {"transaction_uuid", request.context.transaction_uuid},
        {"local_transaction_id", std::to_string(request.context.local_transaction_id)},
        {"allocated_value", std::to_string(value)},
        {"allocation_mode", generator.definition.allocation_mode},
@@ -1352,7 +1352,7 @@ EngineSequenceBindIdentityValueResult EngineSequenceBindIdentityValue(
        {"identity_value_kind", request.identity_value_kind},
        {"identity_value", identity_value},
        {"binding_finality", "allocated_uncommitted"},
-       {"transaction_uuid", request.context.transaction_uuid.canonical},
+       {"transaction_uuid", request.context.transaction_uuid},
        {"local_transaction_id", std::to_string(request.context.local_transaction_id)}});
   if (appended.error) {
     return DiagnosticResult<EngineSequenceBindIdentityValueResult>(request.context, kOperation, appended);

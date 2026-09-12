@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "database_ownership.hpp"
 #include "uuid.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 
@@ -38,6 +39,17 @@ constexpr std::string_view kAliceUuid = "019f0a22-ce00-7000-8000-000000000101";
 constexpr std::string_view kSysdbaUuid = "019f0a22-ce00-7000-8000-000000000102";
 
 bool CreateFixtureDatabase(const std::filesystem::path& path) {
+  // Offline fixture bootstrap is a real owning process until it returns.
+  // Keep exclusive ownership across nested catalog reads and durable grants;
+  // release it before launching the separate server process.
+  scratchbird::server::DatabaseOwnershipRequest ownership_request;
+  ownership_request.database_path = path;
+  ownership_request.owner_kind = "embedded";
+  auto ownership = scratchbird::server::AcquireDatabaseOwnership(ownership_request);
+  if (!ownership.acquired || !ownership.lock || !ownership.lock->valid()) {
+    std::cerr << ownership.diagnostic_code << ':' << ownership.diagnostic_detail << '\n';
+    return false;
+  }
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("server_restart_killed_listener_smoke");
   db::DatabaseCreateConfig create;
   create.path = path.string();

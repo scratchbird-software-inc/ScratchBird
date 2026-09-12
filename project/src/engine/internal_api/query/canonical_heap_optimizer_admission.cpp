@@ -202,11 +202,11 @@ plan::CanonicalMgaStatementContext CanonicalMgaContextFromResolvedSnapshot(
     const EngineRequestContext& context,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
   plan::CanonicalMgaStatementContext result;
-  result.statement_uuid = context.statement_uuid.canonical;
-  result.owning_transaction_uuid = context.transaction_uuid.canonical;
-  result.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  result.statement_uuid = context.statement_uuid;
+  result.owning_transaction_uuid = context.transaction_uuid;
+  result.statement_snapshot_uuid = context.statement_snapshot_uuid;
   result.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   result.owning_local_transaction_id = descriptor.owning_transaction.value;
   result.visible_committed_high_watermark =
       descriptor.visible_committed_high_watermark;
@@ -731,15 +731,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
 
   CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = context.statement_uuid.canonical;
-  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = context.statement_uuid;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1434,11 +1434,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
     }
     const auto& persisted = prepared->second->descriptor;
     const auto width = scan->output_descriptor_ids.size();
-    if (persisted.relation_uuid.canonical != relation_uuid ||
-        persisted.database_uuid.canonical != context.database_uuid.canonical ||
+    if (persisted.relation_uuid != relation_uuid ||
+        persisted.database_uuid != context.database_uuid ||
         persisted.relation_kind != "table" ||
         persisted.storage_profile != "local_mga_rowstore_v1" ||
-        !IsCanonicalUuid(persisted.descriptor_uuid.canonical) ||
+        !IsCanonicalUuid(persisted.descriptor_uuid) ||
         persisted.descriptor_generation == 0 ||
         (persisted.descriptor_status != "production_descriptor" &&
          persisted.descriptor_status != "metadata_bridge_vetted_descriptor") ||
@@ -1472,7 +1472,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       const auto& descriptor = *descriptor_it->second;
       const auto persisted_column = std::ranges::find_if(
           persisted.columns, [&](const auto& candidate) {
-            return candidate.column_uuid.canonical ==
+            return candidate.column_uuid ==
                    *expression.bound_name_uuid;
           });
       if (persisted_column == persisted.columns.end()) {
@@ -1501,11 +1501,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
           !IsCanonicalUuid(descriptor.descriptor_uuid) ||
           !IsCanonicalUuid(descriptor.type_uuid) ||
           descriptor.nullability == RelationalNullability::kUnknown ||
-          !IsCanonicalUuid(column.column_uuid.canonical) ||
-          !column_uuids.insert(column.column_uuid.canonical).second ||
-          column.column_uuid.canonical != *expression.bound_name_uuid ||
+          !IsCanonicalUuid(column.column_uuid) ||
+          !column_uuids.insert(column.column_uuid).second ||
+          column.column_uuid != *expression.bound_name_uuid ||
           output.output_name_utf8 != column.canonical_name_key ||
-          column.value_descriptor.descriptor_uuid.canonical !=
+          column.value_descriptor.descriptor_uuid !=
               descriptor.descriptor_uuid ||
           !persisted_type_uuid.has_value() ||
           *persisted_type_uuid != descriptor.type_uuid ||
@@ -1533,11 +1533,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   }
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.statement_uuid = context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   admission_context.catalog_generation = context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       context.authorization_context.catalog_generation_id;
@@ -1545,11 +1545,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
   admission_context.policy_epoch = context.authorization_context.policy_epoch;
   admission_context.resource_epoch = context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      context.optimizer_route_snapshot_uuid.canonical;
+      context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = context.optimizer_route_epoch;
   admission_context.route_generation = context.optimizer_route_generation;
   admission_context.memory_budget_bytes = context.optimizer_memory_budget_bytes;
@@ -1623,15 +1623,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   }
 
   CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = context.statement_uuid.canonical;
-  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = context.statement_uuid;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1674,11 +1674,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   }
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.statement_uuid = context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   admission_context.catalog_generation = context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       context.authorization_context.catalog_generation_id;
@@ -1686,11 +1686,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
   admission_context.policy_epoch = context.authorization_context.policy_epoch;
   admission_context.resource_epoch = context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      context.optimizer_route_snapshot_uuid.canonical;
+      context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = context.optimizer_route_epoch;
   admission_context.route_generation = context.optimizer_route_generation;
   admission_context.memory_budget_bytes = context.optimizer_memory_budget_bytes;
@@ -1740,7 +1740,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalTableFunctionAdmission(
                   "table_function_output_descriptor");
   }
   EngineDescriptor projected;
-  projected.descriptor_uuid.canonical = output_descriptor->descriptor_uuid;
+  projected.descriptor_uuid = output_descriptor->descriptor_uuid;
   projected.descriptor_kind = "scalar";
   projected.canonical_type_name = "int64";
   projected.encoded_descriptor =
@@ -1789,15 +1789,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
   }
 
   CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = context.statement_uuid.canonical;
-  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = context.statement_uuid;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -1841,11 +1841,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
   }
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.statement_uuid = context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   admission_context.catalog_generation = context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       context.authorization_context.catalog_generation_id;
@@ -1853,11 +1853,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
   admission_context.policy_epoch = context.authorization_context.policy_epoch;
   admission_context.resource_epoch = context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      context.optimizer_route_snapshot_uuid.canonical;
+      context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = context.optimizer_route_epoch;
   admission_context.route_generation = context.optimizer_route_generation;
   admission_context.memory_budget_bytes = context.optimizer_memory_budget_bytes;
@@ -1905,7 +1905,7 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalMatchRecognizeAdmission(
                   "match_recognize_output_descriptor");
   }
   EngineDescriptor projected;
-  projected.descriptor_uuid.canonical = output_descriptor->descriptor_uuid;
+  projected.descriptor_uuid = output_descriptor->descriptor_uuid;
   projected.descriptor_kind = "scalar";
   projected.canonical_type_name = "int64";
   projected.encoded_descriptor =
@@ -1930,28 +1930,28 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
 
   std::uint64_t admitted_at_monotonic_ns = 0;
   if (context.database_path.empty() ||
-      !IsCanonicalUuid(context.database_uuid.canonical) ||
-      !IsCanonicalUuid(context.statement_uuid.canonical) ||
-      !IsCanonicalUuid(context.transaction_uuid.canonical) ||
-      !IsCanonicalUuid(context.statement_snapshot_uuid.canonical) ||
-      !IsCanonicalUuid(context.catalog_epoch_uuid.canonical) ||
+      !IsCanonicalUuid(context.database_uuid) ||
+      !IsCanonicalUuid(context.statement_uuid) ||
+      !IsCanonicalUuid(context.transaction_uuid) ||
+      !IsCanonicalUuid(context.statement_snapshot_uuid) ||
+      !IsCanonicalUuid(context.catalog_epoch_uuid) ||
       context.local_transaction_id == 0 ||
       !context.statement_metadata_snapshot_engine_owned ||
-      !IsCanonicalUuid(context.statement_metadata_snapshot_uuid.canonical) ||
+      !IsCanonicalUuid(context.statement_metadata_snapshot_uuid) ||
       !context.security_context_present ||
       !context.authorization_context.present ||
-      !IsCanonicalUuid(context.authorization_context.authority_uuid.canonical) ||
-      context.authorization_context.principal_uuid.canonical !=
-          context.principal_uuid.canonical ||
+      !IsCanonicalUuid(context.authorization_context.authority_uuid) ||
+      context.authorization_context.principal_uuid !=
+          context.principal_uuid ||
       context.catalog_generation_id == 0 || context.security_epoch == 0 ||
       context.resource_epoch == 0 ||
       context.authorization_context.catalog_generation_id !=
           context.catalog_generation_id ||
       context.authorization_context.security_epoch != context.security_epoch ||
       context.authorization_context.policy_epoch == 0 ||
-      !IsCanonicalUuid(context.optimizer_capability_snapshot_uuid.canonical) ||
-      !IsCanonicalUuid(context.optimizer_resource_snapshot_uuid.canonical) ||
-      !IsCanonicalUuid(context.optimizer_route_snapshot_uuid.canonical) ||
+      !IsCanonicalUuid(context.optimizer_capability_snapshot_uuid) ||
+      !IsCanonicalUuid(context.optimizer_resource_snapshot_uuid) ||
+      !IsCanonicalUuid(context.optimizer_route_snapshot_uuid) ||
       context.optimizer_route_epoch == 0 ||
       context.optimizer_route_generation == 0 ||
       context.optimizer_memory_budget_bytes == 0 ||
@@ -1964,7 +1964,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-CONTEXT-V1",
                   "engine_planning_context");
   }
-  if (!context.prepared_metadata_required_object_uuid.canonical.empty() ||
+  if (!context.prepared_metadata_required_object_uuid.is_nil() ||
       context.prepared_metadata_required_executable_generation != 0 ||
       context.prepared_metadata_required_metadata_epoch != 0) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SCOPE-V1",
@@ -3117,15 +3117,15 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
 
   CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      context.catalog_epoch_uuid.canonical;
+      context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = context.statement_uuid.canonical;
-  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+      context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = context.statement_uuid;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
@@ -3181,11 +3181,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   "exact_statement_relation_authority_cohort");
   }
   const auto& persisted = prepared->second->descriptor;
-  if (persisted.relation_uuid.canonical != relation_uuid ||
-      persisted.database_uuid.canonical != context.database_uuid.canonical ||
+  if (persisted.relation_uuid != relation_uuid ||
+      persisted.database_uuid != context.database_uuid ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
-      !IsCanonicalUuid(persisted.descriptor_uuid.canonical) ||
+      !IsCanonicalUuid(persisted.descriptor_uuid) ||
       persisted.descriptor_generation == 0 ||
       (persisted.descriptor_status != "production_descriptor" &&
        persisted.descriptor_status != "metadata_bridge_vetted_descriptor") ||
@@ -3240,7 +3240,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     }
     const auto persisted_column = std::ranges::find_if(
         persisted.columns, [&](const auto& candidate) {
-          return candidate.column_uuid.canonical ==
+          return candidate.column_uuid ==
                  *expression.bound_name_uuid;
         });
     if (persisted_column == persisted.columns.end()) {
@@ -3274,13 +3274,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          !IsCanonicalUuid(*descriptor.collation_uuid)) ||
         (descriptor.timezone_profile_id.has_value() &&
          descriptor.timezone_profile_id->empty()) ||
-        !IsCanonicalUuid(column.column_uuid.canonical) ||
-        !column_uuids.insert(column.column_uuid.canonical).second ||
-        column.column_uuid.canonical != *expression.bound_name_uuid ||
+        !IsCanonicalUuid(column.column_uuid) ||
+        !column_uuids.insert(column.column_uuid).second ||
+        column.column_uuid != *expression.bound_name_uuid ||
         column.canonical_name_key.empty() ||
         !column_names.insert(column.canonical_name_key).second ||
         output.output_name_utf8 != column.canonical_name_key ||
-        column.value_descriptor.descriptor_uuid.canonical !=
+        column.value_descriptor.descriptor_uuid !=
             descriptor.descriptor_uuid ||
         column.value_descriptor.encoded_descriptor.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
@@ -3310,11 +3310,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   }
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.statement_uuid = context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   admission_context.catalog_generation = context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       context.authorization_context.catalog_generation_id;
@@ -3324,11 +3324,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       context.authorization_context.policy_epoch;
   admission_context.resource_epoch = context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      context.optimizer_capability_snapshot_uuid.canonical;
+      context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      context.optimizer_resource_snapshot_uuid.canonical;
+      context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      context.optimizer_route_snapshot_uuid.canonical;
+      context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = context.optimizer_route_epoch;
   admission_context.route_generation = context.optimizer_route_generation;
   admission_context.memory_budget_bytes =
@@ -3377,7 +3377,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   result.request = std::move(built.request);
   result.admission = std::move(built.admission);
   result.current_relation_descriptor_uuid =
-      persisted.descriptor_uuid.canonical;
+      persisted.descriptor_uuid;
   result.current_relation_descriptor_generation =
       persisted.descriptor_generation;
   result.current_relation_projection_type_names =

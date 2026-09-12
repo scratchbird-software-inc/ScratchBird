@@ -562,7 +562,7 @@ bool DomainVisibilityAllowsRead(const EngineRequestContext& context,
   }
   if (StartsWith(policy, "require_principal:")) {
     const std::string required = domain.visibility_policy_envelope.substr(18);
-    if (!required.empty() && context.principal_uuid.canonical == required) { return true; }
+    if (!required.empty() && context.principal_uuid == required) { return true; }
     *rejection_detail = "domain_visibility_principal_denied:" + column_name;
     return false;
   }
@@ -1237,7 +1237,7 @@ std::optional<DomainRecord> FindVisibleDomain(const EngineRequestContext& contex
 
 EngineDescriptor DomainDescriptor(const DomainRecord& record) {
   EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = record.domain_uuid;
+  descriptor.descriptor_uuid = record.domain_uuid;
   descriptor.descriptor_kind = "domain";
   descriptor.canonical_type_name = record.default_name.empty() ? record.base_canonical_type_name : record.default_name;
   descriptor.encoded_descriptor = std::string("domain_uuid=") + record.domain_uuid + ";base_descriptor_uuid=" +
@@ -1260,8 +1260,8 @@ EngineDescriptor DomainDescriptor(const DomainRecord& record) {
 }
 
 std::string DomainUuidFromDescriptor(const EngineDescriptor& descriptor) {
-  if (descriptor.descriptor_kind == "domain" && !descriptor.descriptor_uuid.canonical.empty()) {
-    return descriptor.descriptor_uuid.canonical;
+  if (descriptor.descriptor_kind == "domain" && !descriptor.descriptor_uuid.is_nil()) {
+    return descriptor.descriptor_uuid;
   }
   return DomainUuidFromColumnDescriptor(descriptor.encoded_descriptor);
 }

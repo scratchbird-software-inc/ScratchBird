@@ -17,10 +17,10 @@ struct PhysicalCostVectorReceipt;
 namespace scratchbird::engine::optimizer {
 
 struct ModelFamilyCostVectorV1 {
-  std::string cost_vector_uuid;
-  std::string provenance_uuid;
-  std::string property_snapshot_uuid;
-  std::string calibration_profile_uuid;
+  scratchbird::core::platform::Uuid cost_vector_uuid;
+  scratchbird::core::platform::Uuid provenance_uuid;
+  scratchbird::core::platform::Uuid property_snapshot_uuid;
+  scratchbird::core::platform::Uuid calibration_profile_uuid;
   std::string scalarization_policy_id;
   std::uint64_t provenance_generation{0};
   std::uint32_t confidence_basis_points{0};
@@ -90,9 +90,9 @@ enum class ModelFamilyAlternativeRouteClassV1 : std::uint8_t {
 };
 
 struct ModelFamilyCandidateV1 {
-  std::string alternative_uuid;
-  std::string provider_uuid;
-  std::string capability_uuid;
+  scratchbird::core::platform::Uuid alternative_uuid;
+  scratchbird::core::platform::Uuid provider_uuid;
+  scratchbird::core::platform::Uuid capability_uuid;
   std::string implementation_id{"physical_document_path_scan_v1"};
   std::uint64_t provider_generation{0};
   bool available{false};
@@ -107,7 +107,7 @@ struct ModelFamilyCandidateV1 {
   bool transaction_finality_authority_claimed{false};
   ModelFamilyAlternativeRouteClassV1 route_class{
       ModelFamilyAlternativeRouteClassV1::kNative};
-  std::string candidate_inventory_receipt_uuid;
+  scratchbird::core::platform::Uuid candidate_inventory_receipt_uuid;
   ModelFamilyCostVectorV1 cost;
 };
 
@@ -126,17 +126,17 @@ struct ModelFamilyCoordinatorRequestV1 {
   std::uint16_t composition_lexical_source_ordinal{0};
   std::uint16_t composition_arity{0};
   std::uint32_t logical_node_id{0};
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::vector<std::uint32_t> output_descriptor_ids;
   scratchbird::engine::executor::PhysicalMgaStatementContext
       mga_statement_context;
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  scratchbird::core::platform::Uuid bound_sblr_tree_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
+  scratchbird::core::platform::Uuid capability_snapshot_uuid;
+  scratchbird::core::platform::Uuid resource_snapshot_uuid;
+  scratchbird::core::platform::Uuid statistics_snapshot_uuid;
+  scratchbird::core::platform::Uuid route_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t current_catalog_generation{0};
   std::uint64_t security_epoch{0};
@@ -165,8 +165,10 @@ struct ModelFamilyCoordinatorResultV1 {
   std::string physical_operator_id;
   std::string diagnostic_id;
   std::string detail;
-  std::string candidate_inventory_receipt_uuid;
-  std::string selected_cost_explain_json;
+  scratchbird::core::platform::Uuid candidate_inventory_receipt_uuid;
+  // Retain the exact typed cost vector. Presentation belongs at the parser
+  // response boundary; engine identity fields never become JSON strings.
+  ModelFamilyCostVectorV1 selected_cost_explain;
 };
 
 ModelFamilyCoordinatorResultV1 CoordinateDocumentFamilySourceV1(
@@ -178,17 +180,14 @@ ModelFamilyCoordinatorResultV1 CoordinateKeyValueFamilySourceV1(
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request);
 
-std::string SerializeModelFamilyCostVectorToJsonV1(
-    const ModelFamilyCostVectorV1& cost);
-
 std::optional<std::uint64_t> ScalarizeModelFamilyCostVectorV1(
     const ModelFamilyCostVectorV1& cost);
 
 struct MultilegDescriptorProfileV1 {
   std::uint8_t profile_kind{0};
   std::uint16_t slot{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   bool nullable{false};
 };
 
@@ -200,14 +199,14 @@ struct MultilegDescriptorDemandV1 {
   std::string canonical_type_name;
   bool nullable{false};
   bool derived{true};
-  std::string persisted_descriptor_uuid;
-  std::string persisted_type_uuid;
+  scratchbird::core::platform::Uuid persisted_descriptor_uuid;
+  scratchbird::core::platform::Uuid persisted_type_uuid;
 };
 
 struct MultilegDescriptorAllocationV1 {
   MultilegDescriptorDemandV1 demand;
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   std::uint8_t profile_kind{0};
   std::uint16_t slot{0};
 };
@@ -231,7 +230,7 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
 class MultilegDescriptorDispatchScopeV1 {
  public:
   MultilegDescriptorDispatchScopeV1(
-      const std::string& statement_uuid,
+      const scratchbird::core::platform::Uuid& statement_uuid,
       const std::vector<MultilegDescriptorProfileV1>& profiles);
   ~MultilegDescriptorDispatchScopeV1();
 
@@ -250,7 +249,7 @@ class MultilegDescriptorDispatchScopeV1 {
 
  private:
   bool installed_{false};
-  std::string statement_uuid_;
+  scratchbird::core::platform::Uuid statement_uuid_;
   std::string diagnostic_id_;
   std::string detail_;
 };
@@ -263,12 +262,12 @@ struct MultilegDescriptorDispatchLookupV1 {
 };
 
 MultilegDescriptorDispatchLookupV1 LookupMultilegDescriptorDispatchScopeV1(
-    const std::string& exact_statement_uuid);
+    const scratchbird::core::platform::Uuid& exact_statement_uuid);
 
 struct ModelFamilyCompositionLegV1 {
   std::uint16_t lexical_source_ordinal{0};
   std::string family_id;
-  std::string selected_plan_uuid;
+  scratchbird::core::platform::Uuid selected_plan_uuid;
   std::uint64_t root_physical_node_id{0};
   scratchbird::engine::executor::PhysicalMgaStatementContext
       mga_statement_context;
@@ -294,7 +293,7 @@ struct ModelFamilyCompositionResultV1 {
   bool no_partial_root{true};
   bool empty_root_required{false};
   std::vector<ModelFamilyCompositionLegV1> lexical_legs;
-  std::string composition_receipt_uuid;
+  scratchbird::core::platform::Uuid composition_receipt_uuid;
   std::string lifecycle_contract_id;
   std::string diagnostic_id;
   std::string detail;
@@ -310,17 +309,17 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
 // a stable schedule without recomputing a cross-family scalar cost.
 struct ModelFamilyDependencyEdgeV1 {
   std::uint16_t abi_version{1};
-  std::string edge_uuid;
+  scratchbird::core::platform::Uuid edge_uuid;
   std::uint16_t producer_lexical_source_ordinal{0};
   std::uint16_t consumer_lexical_source_ordinal{0};
   std::string edge_kind{"data_binding"};
-  std::string required_property_uuid;
-  std::string delivered_property_uuid;
-  std::string descriptor_lineage_uuid;
+  scratchbird::core::platform::Uuid required_property_uuid;
+  scratchbird::core::platform::Uuid delivered_property_uuid;
+  scratchbird::core::platform::Uuid descriptor_lineage_uuid;
   std::vector<std::uint32_t> producer_output_descriptor_ids;
   std::vector<std::uint32_t> consumer_input_descriptor_ids;
-  std::vector<std::string> producer_output_descriptor_uuids;
-  std::vector<std::string> consumer_input_descriptor_uuids;
+  std::vector<internal_api::EngineUuid> producer_output_descriptor_uuids;
+  std::vector<internal_api::EngineUuid> consumer_input_descriptor_uuids;
   bool descriptor_compatible{true};
   bool semantics_authorized{true};
   bool parser_execution_authority_claimed{false};
@@ -328,13 +327,13 @@ struct ModelFamilyDependencyEdgeV1 {
 };
 
 struct ModelFamilyDependencyAlternativeV1 {
-  std::string alternative_uuid;
-  std::string candidate_inventory_receipt_uuid;
+  scratchbird::core::platform::Uuid alternative_uuid;
+  scratchbird::core::platform::Uuid candidate_inventory_receipt_uuid;
   std::string implementation_id;
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string operation_scope_receipt_uuid;
-  std::string selection_policy_receipt_uuid;
+  scratchbird::core::platform::Uuid operation_scope_receipt_uuid;
+  scratchbird::core::platform::Uuid selection_policy_receipt_uuid;
   std::uint64_t authority_approved_comparison_rank{0};
   ModelFamilyCostVectorV1 family_local_cost;
   bool available{false};
@@ -346,31 +345,31 @@ struct ModelFamilyDependencyAlternativeV1 {
 struct ModelFamilyDependencyLegV1 {
   std::uint16_t abi_version{1};
   std::uint16_t lexical_source_ordinal{0};
-  std::string physical_node_uuid;
+  scratchbird::core::platform::Uuid physical_node_uuid;
   std::string family_id;
   std::vector<std::string> operation_ids;
   std::string operation_id;
-  std::string selected_plan_uuid;
-  std::string selected_alternative_uuid;
-  std::string provider_uuid;
-  std::string capability_uuid;
-  std::string delivered_property_uuid;
-  std::string bound_object_uuid;
-  std::string catalog_snapshot_uuid;
-  std::string current_catalog_snapshot_uuid;
-  std::string descriptor_snapshot_uuid;
-  std::string current_descriptor_snapshot_uuid;
-  std::string security_context_uuid;
-  std::string current_security_context_uuid;
-  std::string policy_snapshot_uuid;
-  std::string current_policy_snapshot_uuid;
-  std::string resource_contract_uuid;
-  std::string current_resource_contract_uuid;
-  std::string operation_scope_receipt_uuid;
-  std::string selected_alternative_receipt_uuid;
+  scratchbird::core::platform::Uuid selected_plan_uuid;
+  scratchbird::core::platform::Uuid selected_alternative_uuid;
+  scratchbird::core::platform::Uuid provider_uuid;
+  scratchbird::core::platform::Uuid capability_uuid;
+  scratchbird::core::platform::Uuid delivered_property_uuid;
+  scratchbird::core::platform::Uuid bound_object_uuid;
+  scratchbird::core::platform::Uuid catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid current_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid descriptor_snapshot_uuid;
+  scratchbird::core::platform::Uuid current_descriptor_snapshot_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
+  scratchbird::core::platform::Uuid current_security_context_uuid;
+  scratchbird::core::platform::Uuid policy_snapshot_uuid;
+  scratchbird::core::platform::Uuid current_policy_snapshot_uuid;
+  scratchbird::core::platform::Uuid resource_contract_uuid;
+  scratchbird::core::platform::Uuid current_resource_contract_uuid;
+  scratchbird::core::platform::Uuid operation_scope_receipt_uuid;
+  scratchbird::core::platform::Uuid selected_alternative_receipt_uuid;
   std::uint64_t root_physical_node_id{0};
   std::vector<std::uint32_t> output_descriptor_ids;
-  std::vector<std::string> output_descriptor_uuids;
+  std::vector<internal_api::EngineUuid> output_descriptor_uuids;
   ModelFamilyCostVectorV1 family_local_cost;
   std::vector<ModelFamilyDependencyAlternativeV1> candidate_alternatives;
   scratchbird::engine::executor::PhysicalMgaStatementContext
@@ -416,17 +415,17 @@ struct ModelFamilyDependencyLegV1 {
 
 struct ModelFamilyRelationalConsumerV1 {
   std::uint16_t abi_version{1};
-  std::string physical_node_uuid;
+  scratchbird::core::platform::Uuid physical_node_uuid;
   std::uint64_t physical_node_id{0};
   std::uint64_t causal_counter_id{0};
-  std::string selected_implementation_uuid;
-  std::string expected_security_receipt_uuid;
+  scratchbird::core::platform::Uuid selected_implementation_uuid;
+  scratchbird::core::platform::Uuid expected_security_receipt_uuid;
   std::string join_form_id;
-  std::vector<std::string> input_physical_node_uuids;
+  std::vector<scratchbird::core::platform::Uuid> input_physical_node_uuids;
   std::vector<std::uint32_t> input_descriptor_ids;
   std::vector<std::uint32_t> output_descriptor_ids;
-  std::vector<std::string> input_descriptor_uuids;
-  std::vector<std::string> output_descriptor_uuids;
+  std::vector<internal_api::EngineUuid> input_descriptor_uuids;
+  std::vector<internal_api::EngineUuid> output_descriptor_uuids;
   scratchbird::engine::executor::PhysicalMgaStatementContext
       mga_statement_context;
   std::uint64_t maximum_rows{0};
@@ -444,14 +443,14 @@ struct ModelFamilyRelationalConsumerV1 {
 struct ModelFamilyCoordinatorRuleReceiptV1 {
   std::string rule_id;
   std::string evidence_id;
-  std::string receipt_uuid;
+  scratchbird::core::platform::Uuid receipt_uuid;
   std::uint64_t causal_counter_id{0};
   bool complete{false};
 };
 
 struct ModelFamilyScheduledLegV1 {
   ModelFamilyDependencyLegV1 leg;
-  std::string composition_admission_receipt_uuid;
+  scratchbird::core::platform::Uuid composition_admission_receipt_uuid;
   std::uint16_t composition_arity{0};
   std::vector<std::uint16_t> dependency_ordinals;
   std::uint32_t schedule_wave{0};
@@ -462,10 +461,10 @@ struct ModelFamilyScheduledLegV1 {
 struct ModelFamilyDependencyCoordinatorRequestV1 {
   std::uint16_t abi_version{1};
   std::string composition_profile_id;
-  std::string bound_sblr_tree_uuid;
+  scratchbird::core::platform::Uuid bound_sblr_tree_uuid;
   std::uint64_t selected_plan_generation{0};
   std::uint64_t current_selected_plan_generation{0};
-  std::string canonical_root_physical_node_uuid;
+  scratchbird::core::platform::Uuid canonical_root_physical_node_uuid;
   std::uint64_t canonical_root_physical_node_id{0};
   std::vector<ModelFamilyDependencyLegV1> legs;
   std::vector<ModelFamilyDependencyEdgeV1> edges;
@@ -502,8 +501,8 @@ struct ModelFamilyDependencyCoordinatorResultV1 {
   std::vector<ModelFamilyDependencyEdgeV1> dependency_edges;
   std::vector<ModelFamilyRelationalConsumerV1> relational_consumers;
   std::vector<ModelFamilyCoordinatorRuleReceiptV1> rule_receipts;
-  std::string dependency_dag_receipt_uuid;
-  std::string composition_admission_receipt_uuid;
+  scratchbird::core::platform::Uuid dependency_dag_receipt_uuid;
+  scratchbird::core::platform::Uuid composition_admission_receipt_uuid;
   std::string diagnostic_id;
   std::string detail;
 };

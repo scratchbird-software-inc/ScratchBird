@@ -1,6 +1,6 @@
 canonical_path,content_hash,content_size_bytes
 resources/charsets/README.md,fnv1a64:bb71ac11f53e6d39,3903
-resources/charsets/charsets.json,fnv1a64:dcd738130b745ce6,34250
+resources/charsets/charsets.json,fnv1a64:24d23ffa78e0f017,34250
 resources/charsets/mappings/big5.map.json,fnv1a64:da22c0296e7a27fb,1165881
 resources/charsets/mappings/charset_mapping.schema.json,fnv1a64:757cd606df5a285a,2721
 resources/charsets/mappings/cp1250.map.json,fnv1a64:86c7878e145d2b74,20369

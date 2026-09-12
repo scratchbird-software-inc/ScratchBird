@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "../../core/uuid/uuid.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -16,6 +18,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,11 +28,13 @@
 
 namespace scratchbird::engine::executor {
 
+using PhysicalUuid = scratchbird::core::platform::Uuid;
+
 struct PhysicalMgaStatementContext {
-  std::string statement_uuid;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  PhysicalUuid statement_uuid;
+  PhysicalUuid owning_transaction_uuid;
+  PhysicalUuid statement_snapshot_uuid;
+  PhysicalUuid statement_metadata_snapshot_uuid;
   std::uint64_t owning_local_transaction_id{0};
   std::uint64_t visible_committed_high_watermark{0};
   std::uint64_t oldest_active_transaction_id{0};
@@ -44,6 +49,7 @@ struct PhysicalMgaStatementContext {
   bool complete{false};
   bool current{false};
   std::string statement_timestamp;
+  bool operator==(const PhysicalMgaStatementContext&) const = default;
 };
 
 inline bool PhysicalMgaStatementContextEqual(
@@ -80,17 +86,8 @@ inline bool PhysicalMgaStatementContextEqual(
 
 inline bool PhysicalMgaStatementContextValid(
     const PhysicalMgaStatementContext& context) {
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const PhysicalUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   if (!canonical_uuid(context.statement_uuid) ||
       !canonical_uuid(context.owning_transaction_uuid) ||
@@ -181,13 +178,14 @@ enum class PhysicalAdmissionStage : std::uint8_t {
 
 struct PhysicalAdmissionEvidence {
   PhysicalAdmissionStage stage{PhysicalAdmissionStage::kBoundRequest};
-  std::string evidence_uuid;
+  PhysicalUuid evidence_uuid;
+  bool operator==(const PhysicalAdmissionEvidence&) const = default;
 };
 
 // QOW-SOURCE-RCP-065-COMPLETE-PHYSICAL-PUBLICATION-V1
 struct PhysicalCostVectorReceipt {
-  std::string cost_vector_uuid;
-  std::string calibration_profile_uuid;
+  PhysicalUuid cost_vector_uuid;
+  PhysicalUuid calibration_profile_uuid;
   std::string scalarization_policy_id;
   std::uint64_t scalar_score{0};
   std::uint64_t cpu_units{0};
@@ -362,44 +360,45 @@ struct PhysicalNodeRecord {
   std::vector<std::uint32_t> output_descriptor_ids;
   bool shareable{false};
   std::uint64_t causal_counter_id{0};
-  std::string selected_alternative_uuid;
-  std::string executor_capability_uuid;
+  PhysicalUuid selected_alternative_uuid;
+  PhysicalUuid executor_capability_uuid;
   std::uint32_t executor_capability_abi_version{0};
-  std::string cost_vector_uuid;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  PhysicalUuid cost_vector_uuid;
+  std::vector<PhysicalUuid> required_property_uuids;
+  std::vector<PhysicalUuid> delivered_property_uuids;
   std::uint64_t memory_bytes_required{0};
   std::uint64_t spill_bytes_expected{0};
   bool engine_capability_validated{false};
   PhysicalMgaStatementContext mga_statement_context;
   std::string logical_semantic_variant_id;
   std::uint64_t publication_ordinal{0};
-  std::string transformation_uuid;
+  PhysicalUuid transformation_uuid;
   std::string transformation_rule_id;
-  std::vector<std::string> enforced_property_uuids;
+  std::vector<PhysicalUuid> enforced_property_uuids;
   PhysicalCostVectorReceipt retained_cost;
   // Dispatcher-owned, callback-local resource allowance. Optimizer-published
   // DAG records keep zero; the dispatcher sets it only on the transient node
   // copy passed to an executor after accounting unrelated retained payloads.
   std::uint64_t dispatcher_callback_memory_limit_bytes{0};
+  bool operator==(const PhysicalNodeRecord&) const = default;
 };
 
 struct TypedPhysicalNodeDag {
   std::uint16_t abi_version{1};
-  std::string selected_plan_uuid;
+  PhysicalUuid selected_plan_uuid;
   std::uint64_t root_physical_node_id{0};
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   PhysicalMgaStatementContext mga_statement_context;
   std::vector<PhysicalAdmissionEvidence> admission_evidence;
   std::vector<PhysicalNodeRecord> nodes;
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  PhysicalUuid bound_sblr_tree_uuid;
+  PhysicalUuid catalog_epoch_uuid;
+  PhysicalUuid security_context_uuid;
+  PhysicalUuid capability_snapshot_uuid;
+  PhysicalUuid resource_snapshot_uuid;
+  PhysicalUuid statistics_snapshot_uuid;
+  PhysicalUuid route_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
@@ -427,6 +426,7 @@ struct TypedPhysicalNodeDag {
   bool resource_contract_validated{false};
   bool mga_contract_validated{false};
   bool causal_identity_validated{false};
+  bool operator==(const TypedPhysicalNodeDag&) const = default;
 };
 
 inline bool TypedPhysicalNodeDagCarrierIsExactDefault(
@@ -439,14 +439,10 @@ inline bool TypedPhysicalNodeDagCarrierIsExactDefault(
   const auto& context = dag.mga_statement_context;
   const auto& empty_context = empty.mga_statement_context;
   const bool exact_empty_context_storage =
-      exact_empty_string(context.statement_uuid,
-                         empty_context.statement_uuid) &&
-      exact_empty_string(context.owning_transaction_uuid,
-                         empty_context.owning_transaction_uuid) &&
-      exact_empty_string(context.statement_snapshot_uuid,
-                         empty_context.statement_snapshot_uuid) &&
-      exact_empty_string(context.statement_metadata_snapshot_uuid,
-                         empty_context.statement_metadata_snapshot_uuid) &&
+      context.statement_uuid.is_nil() &&
+      context.owning_transaction_uuid.is_nil() &&
+      context.statement_snapshot_uuid.is_nil() &&
+      context.statement_metadata_snapshot_uuid.is_nil() &&
       exact_empty_string(context.snapshot_kind,
                          empty_context.snapshot_kind) &&
       exact_empty_string(context.statement_timestamp,
@@ -458,8 +454,7 @@ inline bool TypedPhysicalNodeDagCarrierIsExactDefault(
       context.in_doubt_excluded_local_transaction_ids.capacity() ==
           empty_context.in_doubt_excluded_local_transaction_ids.capacity();
   return dag.abi_version == empty.abi_version &&
-         exact_empty_string(dag.selected_plan_uuid,
-                            empty.selected_plan_uuid) &&
+         dag.selected_plan_uuid.is_nil() &&
          dag.root_physical_node_id == empty.root_physical_node_id &&
          dag.local_transaction_id == empty.local_transaction_id &&
          dag.statement_snapshot_id == empty.statement_snapshot_id &&
@@ -468,20 +463,13 @@ inline bool TypedPhysicalNodeDagCarrierIsExactDefault(
          dag.admission_evidence.capacity() ==
              empty.admission_evidence.capacity() &&
          dag.nodes.empty() && dag.nodes.capacity() == empty.nodes.capacity() &&
-         exact_empty_string(dag.bound_sblr_tree_uuid,
-                            empty.bound_sblr_tree_uuid) &&
-         exact_empty_string(dag.catalog_epoch_uuid,
-                            empty.catalog_epoch_uuid) &&
-         exact_empty_string(dag.security_context_uuid,
-                            empty.security_context_uuid) &&
-         exact_empty_string(dag.capability_snapshot_uuid,
-                            empty.capability_snapshot_uuid) &&
-         exact_empty_string(dag.resource_snapshot_uuid,
-                            empty.resource_snapshot_uuid) &&
-         exact_empty_string(dag.statistics_snapshot_uuid,
-                            empty.statistics_snapshot_uuid) &&
-         exact_empty_string(dag.route_snapshot_uuid,
-                            empty.route_snapshot_uuid) &&
+         dag.bound_sblr_tree_uuid.is_nil() &&
+         dag.catalog_epoch_uuid.is_nil() &&
+         dag.security_context_uuid.is_nil() &&
+         dag.capability_snapshot_uuid.is_nil() &&
+         dag.resource_snapshot_uuid.is_nil() &&
+         dag.statistics_snapshot_uuid.is_nil() &&
+         dag.route_snapshot_uuid.is_nil() &&
          dag.catalog_generation == empty.catalog_generation &&
          dag.security_epoch == empty.security_epoch &&
          dag.policy_epoch == empty.policy_epoch &&
@@ -554,17 +542,8 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const PhysicalUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto known_kind = [](const PhysicalNodeKind kind) {
     return kind >= PhysicalNodeKind::kScan &&
@@ -649,8 +628,8 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                   "admission_evidence");
   }
-  std::unordered_set<std::string> admission_evidence_uuids;
-  std::vector<std::string_view> expected_publication_evidence;
+  std::set<PhysicalUuid> admission_evidence_uuids;
+  std::vector<PhysicalUuid> expected_publication_evidence;
   if (optimizer_publication_v2) {
     expected_publication_evidence = {
         dag.bound_sblr_tree_uuid, dag.catalog_epoch_uuid,
@@ -703,9 +682,9 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                     "physical_node_record");
     }
     if (optimizer_publication_v2) {
-      std::unordered_set<std::string> required_properties;
-      std::unordered_set<std::string> delivered_properties;
-      std::unordered_set<std::string> enforced_properties;
+      std::set<PhysicalUuid> required_properties;
+      std::set<PhysicalUuid> delivered_properties;
+      std::set<PhysicalUuid> enforced_properties;
       const auto valid_properties = [&](const auto& properties,
                                         auto* unique) {
         return std::ranges::all_of(properties, [&](const auto& property_uuid) {
@@ -844,9 +823,10 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                       &PhysicalNodeRecord::relational_node_id);
     std::string selected_plan_signature;
     for (const auto* node : canonical_nodes) {
-      selected_plan_signature +=
-          std::to_string(node->relational_node_id) + "=" +
-          node->selected_alternative_uuid + ";";
+      selected_plan_signature += std::to_string(node->relational_node_id) + "=";
+      selected_plan_signature.append(reinterpret_cast<const char*>(
+          node->selected_alternative_uuid.bytes.data()), 16);
+      selected_plan_signature.push_back(';');
     }
     if (selected_plan_signature != dag.selected_plan_signature ||
         retained_selected_scalar_score != dag.selected_scalar_score) {

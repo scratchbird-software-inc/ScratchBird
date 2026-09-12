@@ -32,7 +32,7 @@ SblrDdlDropTableCoordinationResult CompileSblrDdlDropTableDescriptor(
   std::lock_guard lock(g_mutex);
   if (!HasTag(c, "private_ddl_drop_table_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      statement != c.statement_uuid.canonical || !occurrence ||
+      statement != c.statement_uuid || !occurrence ||
       !table_occurrence || !availability) {
     out.diagnostic = Diagnostic("SBLR.OPERAND.INVALID",
                                 "sblr.ddl_drop_table.coordination_invalid");

@@ -277,7 +277,7 @@ void TestTextExactDescriptorTypeCodecIdentity() {
         snapshot, catalog_generation, registry_generation, descriptor,
         descriptor_generation);
     Require(!rejected.ok &&
-                rejected.diagnostic_id == "DATATYPE.DESCRIPTOR_INVALID",
+                rejected.diagnostic_id == "DATATYPE.DESCRIPTOR.INVALID",
             message);
   };
   refuse(std::string(kSnapshotUuid), 1, 1, std::string(kProvisionalUuid), 1,

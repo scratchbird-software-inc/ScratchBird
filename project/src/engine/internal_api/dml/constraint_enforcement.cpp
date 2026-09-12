@@ -168,7 +168,7 @@ std::string ConstraintDiagnosticDetail(const EngineRequestContext& context,
       {"owner_object_uuid", table.table_uuid},
       {"key_descriptor_uuid", key_descriptor_uuid},
       {"support_uuid", support_uuid},
-      {"transaction_uuid", context.transaction_uuid.canonical},
+      {"transaction_uuid", context.transaction_uuid},
       {"operation_uuid", context.request_id},
       {"savepoint_uuid", ""},
       {"pending_check_uuid", ""},
@@ -291,26 +291,26 @@ scratchbird::engine::sblr::SblrExecutionContext ConstraintSblrContext(
     const EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.cluster_uuid = context.cluster_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid = context.statement_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.current_role_uuid = context.current_role_uuid.canonical;
-  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_uuid = context.statement_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
   out.statement_timestamp = context.statement_timestamp;
   out.transaction_timestamp = context.transaction_timestamp;
   out.current_timestamp = context.current_timestamp;
   out.current_monotonic_ns = context.current_monotonic_ns;
   out.security_context_present = context.security_context_present;
   out.transaction_context_present =
-      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+      context.local_transaction_id != 0 || !context.transaction_uuid.is_nil();
   out.cluster_authority_available = context.cluster_authority_available;
   out.read_only_mode = context.read_only_mode;
   return out;
@@ -496,8 +496,8 @@ std::string ContextScopedCacheKey(const EngineRequestContext& context,
          std::to_string(context.security_epoch) + "\n" +
          std::to_string(context.resource_epoch) + "\n" +
          std::to_string(context.name_resolution_epoch) + "\n" +
-         context.database_uuid.canonical + "\n" +
-         context.principal_uuid.canonical + "\n" + identity;
+         context.database_uuid + "\n" +
+         context.principal_uuid + "\n" + identity;
 }
 
 std::string TraceTagFingerprint(const EngineRequestContext& context) {
@@ -513,9 +513,9 @@ std::string TraceTagFingerprint(const EngineRequestContext& context) {
 
 ConstraintDmlProofContext MakeProofContext(const EngineRequestContext& context) {
   ConstraintDmlProofContext proof_context;
-  proof_context.database_uuid = context.database_uuid.canonical;
-  proof_context.transaction_uuid = context.transaction_uuid.canonical;
-  proof_context.principal_uuid = context.principal_uuid.canonical;
+  proof_context.database_uuid = context.database_uuid;
+  proof_context.transaction_uuid = context.transaction_uuid;
+  proof_context.principal_uuid = context.principal_uuid;
   proof_context.isolation_level = context.transaction_isolation_level;
   proof_context.trace_tag_fingerprint = TraceTagFingerprint(context);
   proof_context.local_transaction_id = context.local_transaction_id;
@@ -884,7 +884,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
         child_storage.descriptor.columns.begin(),
         child_storage.descriptor.columns.end(),
         [&](const MgaRelationColumnStorageDescriptor& column) {
-          return column.column_uuid.canonical ==
+          return column.column_uuid ==
                      FieldOrEmpty(fields, {"child_column_uuid"}) &&
                  column.canonical_name_key == column_name;
         });
@@ -892,7 +892,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
         parent_storage.descriptor.columns.begin(),
         parent_storage.descriptor.columns.end(),
         [&](const MgaRelationColumnStorageDescriptor& column) {
-          return column.column_uuid.canonical ==
+          return column.column_uuid ==
                      reference->parent_column_uuid &&
                  column.canonical_name_key == reference->parent_column;
         });
@@ -941,7 +941,7 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
     std::size_t descriptor_support_count = 0;
     for (const auto& index : parent_storage.descriptor.indexes) {
       const auto key_columns = RelationIndexKeyColumns(index);
-      if (index.index_uuid.canonical == reference->support_uuid &&
+      if (index.index_uuid == reference->support_uuid &&
           index.unique && LowerAscii(index.family) == reference->support_family &&
           key_columns.size() == 1 &&
           key_columns.front() == reference->parent_column) {

@@ -32,20 +32,20 @@ enum class CanonicalOptimizerAdmissionStage : std::uint8_t {
 };
 
 struct CanonicalOptimizerCatalogSnapshot {
-  std::string snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid snapshot_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation{0};
-  std::vector<std::string> object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> object_uuids;
   std::vector<std::uint32_t> descriptor_ids;
   bool engine_owned{false};
 };
 
 struct CanonicalOptimizerSecuritySnapshot {
-  std::string security_context_uuid;
+  planner::CanonicalPlannerUuid security_context_uuid;
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
   std::uint64_t catalog_generation{0};
-  std::vector<std::string> authorized_object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> authorized_object_uuids;
   bool engine_owned{false};
 };
 
@@ -53,7 +53,7 @@ struct CanonicalOptimizerMgaSnapshot {
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   planner::CanonicalMgaStatementContext statement_context;
-  std::string metadata_snapshot_uuid;
+  planner::CanonicalPlannerUuid metadata_snapshot_uuid;
   bool transaction_active{false};
   bool statement_snapshot_fixed{false};
   bool engine_owned{false};
@@ -61,9 +61,9 @@ struct CanonicalOptimizerMgaSnapshot {
 };
 
 struct CanonicalOptimizerPolicyCapabilitySnapshot {
-  std::string policy_snapshot_uuid;
+  planner::CanonicalPlannerUuid policy_snapshot_uuid;
   std::uint64_t policy_epoch{0};
-  std::string capability_snapshot_uuid;
+  planner::CanonicalPlannerUuid capability_snapshot_uuid;
   std::uint32_t capability_abi_version{0};
   std::vector<planner::CanonicalLogicalRelationalNodeKind>
       supported_node_kinds;
@@ -72,7 +72,7 @@ struct CanonicalOptimizerPolicyCapabilitySnapshot {
 };
 
 struct CanonicalOptimizerResourceSnapshot {
-  std::string resource_snapshot_uuid;
+  planner::CanonicalPlannerUuid resource_snapshot_uuid;
   std::uint64_t resource_epoch{0};
   std::uint64_t memory_budget_bytes{0};
   std::uint64_t maximum_candidate_count{0};
@@ -84,7 +84,7 @@ struct CanonicalOptimizerResourceSnapshot {
 };
 
 struct CanonicalOptimizerRouteSnapshot {
-  std::string route_snapshot_uuid;
+  planner::CanonicalPlannerUuid route_snapshot_uuid;
   std::uint64_t route_epoch{0};
   std::uint64_t route_generation{0};
   std::string operation_id;
@@ -129,13 +129,13 @@ struct CanonicalOptimizerAdmissionResult {
   bool degraded_for_unknown_statistics{false};
   bool benchmark_clean_ready{false};
   bool data_access_allowed{false};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid security_context_uuid;
+  planner::CanonicalPlannerUuid capability_snapshot_uuid;
+  planner::CanonicalPlannerUuid resource_snapshot_uuid;
+  planner::CanonicalPlannerUuid statistics_snapshot_uuid;
+  planner::CanonicalPlannerUuid route_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   planner::CanonicalMgaStatementContext mga_statement_context;
@@ -151,17 +151,17 @@ struct CanonicalOptimizerAdmissionResult {
 };
 
 struct CanonicalNativeObjectFreeAdmissionContext {
-  std::string statement_uuid;
-  std::string catalog_snapshot_uuid;
-  std::string security_context_uuid;
+  planner::CanonicalPlannerUuid statement_uuid;
+  planner::CanonicalPlannerUuid catalog_snapshot_uuid;
+  planner::CanonicalPlannerUuid security_context_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t authorization_catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
   std::uint64_t resource_epoch{0};
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  planner::CanonicalPlannerUuid capability_snapshot_uuid;
+  planner::CanonicalPlannerUuid resource_snapshot_uuid;
+  planner::CanonicalPlannerUuid route_snapshot_uuid;
   std::uint64_t route_epoch{0};
   std::uint64_t route_generation{0};
   std::uint64_t memory_budget_bytes{0};
@@ -180,8 +180,8 @@ struct CanonicalNativeObjectFreeAdmissionContext {
 
 struct CanonicalNativeObjectAdmissionContext
     : CanonicalNativeObjectFreeAdmissionContext {
-  std::vector<std::string> catalog_object_uuids;
-  std::vector<std::string> authorized_object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> catalog_object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> authorized_object_uuids;
   bool catalog_object_evidence_engine_owned{false};
   bool authorization_object_evidence_engine_owned{false};
 };

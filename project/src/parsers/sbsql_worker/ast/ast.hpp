@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cst/cst.hpp"
+#include "parser/cte_clause.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -471,6 +472,9 @@ struct NativeRelationalAstDocument {
   std::vector<NativeRowPatternAstNode> row_patterns;
   std::vector<NativeExpressionAstNode> expressions;
   std::optional<NativeTemporalTableSourceRefusal> temporal_table_source_refusal;
+  // Full WITH framing survives a later child-query/binding refusal. Syntax
+  // validity is distinct from admitted executable relational nodes.
+  std::optional<WithClauseSyntax> with_clause;
   MessageVectorSet messages;
 
   [[nodiscard]] bool recognized() const {

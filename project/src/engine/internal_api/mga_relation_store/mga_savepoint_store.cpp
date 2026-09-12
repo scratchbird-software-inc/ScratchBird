@@ -9,6 +9,7 @@
 #include "mga_relation_store/mga_savepoint_store.hpp"
 #include "mga_relation_store/mga_event_sequence_allocator.hpp"
 #include "mga_relation_store/mga_update_durable_store.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 
 #include "api_diagnostics.hpp"
@@ -73,6 +74,7 @@ std::vector<std::string> SplitTabs(const std::string& line) {
 }
 
 bool ParseU64(const std::string& text, std::uint64_t* value) {
+  if (text.empty() || (text.size() > 1 && text.front() == '0')) return false;
   const auto parsed =
       std::from_chars(text.data(), text.data() + text.size(), *value);
   return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
@@ -162,14 +164,11 @@ EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-void ApplySavepointRecordLine(const std::string& line,
+bool ApplySavepointRecordLine(const std::string& line,
                               SavepointParsedState* state) {
-  if (state == nullptr) return;
+  if (state == nullptr) return false;
   const auto fields = SplitTabs(line);
-  if (fields.size() < 5 || fields[0] != kRowStoreMagic) {
-    state->marker_authority_corrupt = true;
-    return;
-  }
+  if (fields.size() < 2 || fields[0] != kRowStoreMagic) return false;
   const std::string& kind = fields[1];
   const bool update_statement_create =
       kind == kDmlUpdateStatementSavepointCreateKind;
@@ -183,35 +182,25 @@ void ApplySavepointRecordLine(const std::string& line,
     // A historical host-text record is never admitted as a compatibility
     // authority and forces current transaction reads to fail closed.
     state->update_statement_authority_corrupt = true;
-    return;
+    return false;
   }
   const bool create = kind == "SAVEPOINT";
   const bool release = kind == "RELEASE_SAVEPOINT";
   const bool rollback = kind == "ROLLBACK_TO_SAVEPOINT";
   if ((!create && !release && !rollback) ||
-      !((fields.size() >= 5 && fields.size() <= 7) ||
-        (rollback && fields.size() == 10))) {
-    state->marker_authority_corrupt = true;
-    return;
-  }
+      fields.size() != (rollback ? 10u : 7u)) return false;
   std::uint64_t tx = 0;
+  if (!ParseU64(fields[2], &tx) || tx == 0) return false;
   const std::string name = DecodeCrudTextLocal(fields[3]);
+  if (name.empty() || EncodeCrudText(name) != fields[3]) return false;
   SavepointCutoffs cutoffs;
-  if (!ParseU64(fields[2], &tx) || tx == 0 || name.empty() ||
-      !ParseU64(fields[4], &cutoffs.row_event_sequence) ||
-      (fields.size() >= 6 &&
-       !ParseU64(fields[5], &cutoffs.metadata_event_sequence)) ||
-      (fields.size() >= 7 &&
-       !ParseU64(fields[6], &cutoffs.index_event_sequence))) {
-    state->marker_authority_corrupt = true;
-    return;
-  }
-  if (fields.size() < 6) cutoffs.metadata_event_sequence = cutoffs.row_event_sequence;
-  if (fields.size() < 7) cutoffs.index_event_sequence = cutoffs.row_event_sequence;
+  if (!ParseU64(fields[4], &cutoffs.row_event_sequence) ||
+      !ParseU64(fields[5], &cutoffs.metadata_event_sequence) ||
+      !ParseU64(fields[6], &cutoffs.index_event_sequence)) return false;
   if (create) {
     if (state->next_creation_ordinal == UINT64_MAX) {
       state->marker_authority_corrupt = true;
-      return;
+      return false;
     }
     cutoffs.creation_ordinal = state->next_creation_ordinal++;
     if (auto* observed = state->observation;
@@ -219,7 +208,7 @@ void ApplySavepointRecordLine(const std::string& line,
       if (observed->require_unique_identity) {
         if (observed->creation_ordinal) {
           state->marker_authority_corrupt = true;
-          return;
+          return false;
         }
         observed->creation_ordinal = cutoffs.creation_ordinal;
       }
@@ -247,28 +236,24 @@ void ApplySavepointRecordLine(const std::string& line,
   } else if (rollback) {
     SavepointRollbackRange range;
     range.cutoffs = cutoffs;
-    if (fields.size() == 10 &&
-        (!ParseU64(fields[7], &range.row_upper_event_sequence) ||
-         !ParseU64(fields[8], &range.metadata_upper_event_sequence) ||
-         !ParseU64(fields[9], &range.index_upper_event_sequence) ||
-         range.row_upper_event_sequence < cutoffs.row_event_sequence ||
-         range.metadata_upper_event_sequence < cutoffs.metadata_event_sequence ||
-         range.index_upper_event_sequence < cutoffs.index_event_sequence)) {
-      state->marker_authority_corrupt = true;
-      return;
-    }
+    if (!ParseU64(fields[7], &range.row_upper_event_sequence) ||
+        !ParseU64(fields[8], &range.metadata_upper_event_sequence) ||
+        !ParseU64(fields[9], &range.index_upper_event_sequence) ||
+        range.row_upper_event_sequence < cutoffs.row_event_sequence ||
+        range.metadata_upper_event_sequence < cutoffs.metadata_event_sequence ||
+        range.index_upper_event_sequence < cutoffs.index_event_sequence) return false;
     auto tx_it = state->active_savepoints.find(tx);
     if (tx_it == state->active_savepoints.end() ||
         !tx_it->second.contains(name)) {
       state->marker_authority_corrupt = true;
-      return;
+      return false;
     }
     const auto target = tx_it->second.at(name);
     if (target.row_event_sequence != cutoffs.row_event_sequence ||
         target.metadata_event_sequence != cutoffs.metadata_event_sequence ||
         target.index_event_sequence != cutoffs.index_event_sequence) {
       state->marker_authority_corrupt = true;
-      return;
+      return false;
     }
     if (auto* observed = state->observation;
         observed && observed->transaction == tx &&
@@ -283,6 +268,7 @@ void ApplySavepointRecordLine(const std::string& line,
     });
     state->rollback_ranges[tx].push_back(range);
   }
+  return true;
 }
 
 void NormalizeSavepointRowRollbackRanges(SavepointParsedState* state) {
@@ -338,12 +324,14 @@ void ConsumeMarkerBytes(std::string* pending, SavepointParsedState* state,
       for (auto value : record.cutoffs) fields.push_back(std::to_string(value));
       if (record.kind == 3)
         for (auto value : record.upper) fields.push_back(std::to_string(value));
-      ApplySavepointRecordLine(JoinLine(fields), state);
+      if (!ApplySavepointRecordLine(JoinLine(fields), state))
+        state->marker_authority_corrupt = true;
       consumed += size;
     } else {
       const auto end = remaining.find('\n');
       if (end == std::string_view::npos) break;
-      ApplySavepointRecordLine(std::string(remaining.substr(0, end)), state);
+      if (!ApplySavepointRecordLine(std::string(remaining.substr(0, end)), state))
+        state->marker_authority_corrupt = true;
       consumed += end + 1;
     }
   }
@@ -354,43 +342,48 @@ void ConsumeMarkerBytes(std::string* pending, SavepointParsedState* state,
 
 }  // namespace
 
-static SavepointParsedState ParseSavepointsWithObservation(
-    const EngineRequestContext& context, MgaSavepointMarkerObservation* observation) {
+static SavepointParsedState ParseSavepointBytesWithObservation(
+    const EngineRequestContext& context, std::span<const std::uint8_t> bytes,
+    MgaSavepointMarkerObservation* observation) {
   SavepointParsedState state;
   state.observation = observation;
-  const auto path = SavepointStorePath(context);
-  std::error_code error;
-  const bool exists = std::filesystem::exists(path, error);
-  if (error) state.marker_authority_corrupt = true;
-  if (exists) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) state.marker_authority_corrupt = true;
-    std::string pending;
-    char chunk[64 * 1024];
-    while (input && !state.marker_authority_corrupt) {
-      input.read(chunk, sizeof(chunk));
-      pending.append(chunk, static_cast<std::size_t>(input.gcount()));
-      ConsumeMarkerBytes(&pending, &state, false);
-    }
-    ConsumeMarkerBytes(&pending, &state, true);
-    if (input.bad()) state.marker_authority_corrupt = true;
-  }
-  std::string ignored_detail;
+  std::string pending(bytes.begin(), bytes.end());
+  ConsumeMarkerBytes(&pending, &state, true);
+  std::string detail;
   if (!ApplyDmlUpdateBinarySavepointRecordsForStoreModule(context, &state,
-                                            &ignored_detail)) {
+                                            &detail)) {
     state.update_statement_authority_corrupt = true;
   }
-  if ((state.update_statement_authority_corrupt || state.marker_authority_corrupt) &&
-      context.local_transaction_id != 0) {
-    SavepointRollbackRange fail_closed;
-    fail_closed.cutoffs = {};
-    state.rollback_ranges[context.local_transaction_id].push_back(
-        fail_closed);
-    state.active_savepoints.erase(context.local_transaction_id);
+  if (state.marker_authority_corrupt || state.update_statement_authority_corrupt) {
+    SavepointParsedState failed;
+    failed.marker_authority_corrupt = state.marker_authority_corrupt;
+    failed.update_statement_authority_corrupt = state.update_statement_authority_corrupt;
+    failed.diagnostic = MakeInvalidRequestDiagnostic("mga.savepoints",
+        detail.empty() ? "savepoint_authority_invalid" : detail);
+    return failed;
   }
   NormalizeSavepointRowRollbackRanges(&state);
+  state.diagnostic = OkDiagnostic();
   state.observation = nullptr;
   return state;
+}
+
+static SavepointParsedState ParseSavepointsWithObservation(
+    const EngineRequestContext& context, MgaSavepointMarkerObservation* observation) {
+  std::vector<scratchbird::core::index::byte> bytes;
+  if (!ReadCompleteMgaBinaryFile(SavepointStorePath(context), &bytes)) {
+    SavepointParsedState failed;
+    failed.marker_authority_corrupt = true;
+    failed.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.savepoints", "savepoint_store_read_failed");
+    return failed;
+  }
+  return ParseSavepointBytesWithObservation(context, bytes, observation);
+}
+
+SavepointParsedState ParseSavepointBytes(
+    const EngineRequestContext& context, std::span<const std::uint8_t> bytes) {
+  return ParseSavepointBytesWithObservation(context, bytes, nullptr);
 }
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
@@ -460,9 +453,13 @@ EngineApiDiagnostic ValidateMgaSavepointMarkerAuthority(
 bool ParseSavepointsBounded(const EngineRequestContext& context,
                             BoundedScopedRowReadControl* control,
                             const std::uint64_t retained_memory_bytes,
-                            SavepointParsedState* state) {
-  if (control == nullptr || state == nullptr) return false;
-  *state = {};
+                            SavepointParsedState* output) {
+  if (output == nullptr) return false;
+  *output = {};
+  output->diagnostic = MakeInvalidRequestDiagnostic("mga.savepoints", "savepoint_read_incomplete");
+  if (control == nullptr) return false;
+  SavepointParsedState staged;
+  auto* state = &staged;
   std::uint64_t path_projection = retained_memory_bytes;
   if (!CheckedHeapReadMemoryAdd(
           static_cast<std::uint64_t>(context.database_path.size()),
@@ -476,16 +473,12 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
     return false;
   }
   const std::string path = SavepointStorePath(context);
-  std::error_code ignored;
+  std::error_code error;
   const auto size_started = std::chrono::steady_clock::now();
-  const auto raw_size = std::filesystem::file_size(path, ignored);
+  const auto link_status = std::filesystem::symlink_status(path, error);
   if (!AccountHeapReadWait(control, size_started)) return false;
-  if (ignored) {
-    if (ignored != std::errc::no_such_file_or_directory) {
-      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
-      control->refusal_detail = "heap_read_savepoint_stat_failed";
-      return false;
-    }
+  if (error == std::errc::no_such_file_or_directory ||
+      (!error && link_status.type() == std::filesystem::file_type::not_found)) {
     std::string durable_detail;
     if (!ApplyDmlUpdateBinarySavepointRecordsForStoreModule(context, state,
                                                &durable_detail) ||
@@ -497,7 +490,34 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
       return false;
     }
     NormalizeSavepointRowRollbackRanges(state);
+    state->diagnostic = OkDiagnostic();
+    *output = std::move(staged);
     return true;
+  }
+  if (error) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_status_failed";
+    return false;
+  }
+  const auto metadata_started = std::chrono::steady_clock::now();
+  const auto status = std::filesystem::status(path, error);
+  if (error || !std::filesystem::is_regular_file(status)) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_status_failed";
+    return false;
+  }
+  const auto raw_size = std::filesystem::file_size(path, error);
+  if (error) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_size_failed";
+    return false;
+  }
+  const auto original_time = std::filesystem::last_write_time(path, error);
+  if (!AccountHeapReadWait(control, metadata_started)) return false;
+  if (error) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_time_failed";
+    return false;
   }
   if (raw_size > std::numeric_limits<std::uint64_t>::max()) {
     control->failure_category = MgaHeapReadFailureCategoryV1::kResource;
@@ -585,6 +605,29 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
     return false;
   }
   ConsumeMarkerBytes(&line, state, true);
+  const auto final_stat_started = std::chrono::steady_clock::now();
+  const auto final_status = std::filesystem::status(path, error);
+  if (error || !std::filesystem::is_regular_file(final_status)) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_final_status_failed";
+    return false;
+  }
+  const auto final_size = std::filesystem::file_size(path, error);
+  if (error || final_size != raw_size) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_final_size_changed";
+    return false;
+  }
+  const auto final_time = std::filesystem::last_write_time(path, error);
+  if (!AccountHeapReadWait(control, final_stat_started)) return false;
+  // ConsumeMarkerBytes(final=true) already classifies every residual byte as
+  // corrupt marker authority. Keep file-change failures distinct so a torn
+  // frame reaches the owning corruption diagnostic below.
+  if (error || final_time != original_time) {
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = "heap_read_savepoint_partial_or_changed_record";
+    return false;
+  }
   std::string durable_detail;
   if (!ApplyDmlUpdateBinarySavepointRecordsForStoreModule(context, state,
                                              &durable_detail) ||
@@ -598,6 +641,8 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
     return false;
   }
   NormalizeSavepointRowRollbackRanges(state);
+  state->diagnostic = OkDiagnostic();
+  *output = std::move(staged);
   return true;
 }
 
@@ -734,6 +779,7 @@ EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& con
   const auto authority = ValidateMgaSavepointMarkerAuthority(context);
   if (authority.error) return authority;
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) return savepoints.diagnostic;
   const auto tx_it = savepoints.active_savepoints.find(context.local_transaction_id);
   if (tx_it == savepoints.active_savepoints.end()) {
     return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_not_found");
@@ -774,6 +820,7 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
   const auto authority = ValidateMgaSavepointMarkerAuthority(context);
   if (authority.error) return authority;
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) return savepoints.diagnostic;
   const auto tx_it = savepoints.active_savepoints.find(context.local_transaction_id);
   if (tx_it == savepoints.active_savepoints.end() ||
       tx_it->second.find(savepoint_name) == tx_it->second.end()) {
@@ -783,21 +830,26 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
 }
 
 
-std::vector<std::string> ActiveMgaSavepointNames(const EngineRequestContext& context) {
-  std::vector<std::string> names;
+MgaSavepointNamesResult ActiveMgaSavepointNames(const EngineRequestContext& context) {
+  MgaSavepointNamesResult result;
+  result.diagnostic = OkDiagnostic();
   if (context.local_transaction_id == 0 || context.database_path.empty()) {
-    return names;
+    return result;
   }
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
   const auto tx_it = savepoints.active_savepoints.find(context.local_transaction_id);
   if (tx_it == savepoints.active_savepoints.end()) {
-    return names;
+    return result;
   }
-  names.reserve(tx_it->second.size());
+  result.names.reserve(tx_it->second.size());
   for (const auto& entry : tx_it->second) {
-    names.push_back(entry.first);
+    result.names.push_back(entry.first);
   }
-  return names;
+  return result;
 }
 
 }  // namespace scratchbird::engine::internal_api

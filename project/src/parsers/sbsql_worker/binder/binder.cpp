@@ -578,13 +578,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   if (std::ranges::any_of(ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCte;
       })) {
-    if (!IsNativeHeapCteIdentity(ast)) {
+    const auto producer_root = NativeCteProducerRoot(ast);
+    if (!producer_root) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "CTE identity producer/consumer shape is not exact");
       return RefusedBoundAst(std::move(bound));
     }
     auto producer = ast;
-    producer.root_relation_id = producer.relations.front().relation_id;
+    producer.root_relation_id = *producer_root;
     producer.relations.pop_back();
     bound = BindNativeRelationalAst(producer, context);
     if (!bound.bound) return bound;
@@ -594,14 +595,28 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     cte.input_relation_ids = {bound.root_relation_id};
     cte.semantic_variant_id = "cte.bound.v1";
     BoundScopeAstRecord cte_scope;
-    cte_scope.scope_id = bound.root_scope_id + 1;
+    std::uint32_t maximum_scope_id = 0;
+    for (const auto& scope : bound.scopes)
+      maximum_scope_id = std::max(maximum_scope_id, scope.scope_id);
+    if (maximum_scope_id == std::numeric_limits<std::uint32_t>::max()) {
+      AddBoundAstDiagnostic(&bound, "SBLR.DESCRIPTOR.INVALID", "CTE scope handle overflow");
+      return RefusedBoundAst(std::move(bound));
+    }
+    cte_scope.scope_id = maximum_scope_id + 1;
     cte_scope.parent_scope_id = bound.root_scope_id;
     cte_scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
     cte_scope.visible_relation_ids = {cte.relation_id};
-    const auto producer_outputs = bound.outputs;
+    std::vector<BoundOutputAstRecord> producer_outputs;
     std::uint32_t next_output_id = 0;
-    for (const auto& output : producer_outputs) {
+    for (const auto& output : bound.outputs) {
       next_output_id = std::max(next_output_id, output.output_id);
+      if (output.relation_id == bound.root_relation_id) producer_outputs.push_back(output);
+    }
+    std::ranges::sort(producer_outputs, {}, &BoundOutputAstRecord::ordinal);
+    if (producer_outputs.empty() ||
+        producer_outputs.size() > std::numeric_limits<std::uint32_t>::max() - next_output_id) {
+      AddBoundAstDiagnostic(&bound, "SBLR.DESCRIPTOR.INVALID", "CTE output handle bounds");
+      return RefusedBoundAst(std::move(bound));
     }
     for (auto output : producer_outputs) {
       output.output_id = ++next_output_id;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -17,6 +18,7 @@ namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
 
 namespace {
+using scratchbird::tests::BinaryUuid;
 
 constexpr std::uint64_t kOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
@@ -37,12 +39,12 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
+    const api::EngineUuid& statement_snapshot_uuid) {
   return {
-      "019f0000-0000-7200-8000-00000000e601",
-      "019f0000-0000-7200-8000-00000000e602",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e601"),
+      BinaryUuid("019f0000-0000-7200-8000-00000000e602"),
       statement_snapshot_uuid,
-      "019f0000-0000-7200-8000-00000000e603",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e603"),
       kOwnerLocalTransactionId,
       0,
       kOldestActiveLocalTransactionId,
@@ -88,12 +90,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   for (auto& node : dag->nodes) {
     node.mga_statement_context = context;
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000e604";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e604");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000e605";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e605");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000e606";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e606");
     node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
@@ -108,15 +110,15 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
+                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type_name;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
+  descriptor.type_uuid = type_uuid;
+  descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }
 
@@ -139,33 +141,33 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 
 exec::CanonicalTableSubqueryRequest Request() {
   const auto key = Descriptor(
-      "019f0000-0000-7200-8000-000000002501",
-      "019f0000-0000-7300-8000-000000002502", "int64");
+      BinaryUuid("019f0000-0000-7200-8000-000000002501"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002502"), "int64");
   const auto payload = Descriptor(
-      "019f0000-0000-7200-8000-000000002503",
-      "019f0000-0000-7300-8000-000000002504", "text");
+      BinaryUuid("019f0000-0000-7200-8000-000000002503"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002504"), "text");
 
   exec::CanonicalTableSubqueryRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000002505";
+      BinaryUuid("019f0000-0000-7200-8000-000000002505");
   request.physical_dag.root_physical_node_id = 2502;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000002511"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002511")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000002512"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002512")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000002513"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002513")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000002514"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002514")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000002515"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002515")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000002516"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002516")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000002517"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002517")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000002518"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002518")},
   };
   request.physical_dag.nodes = {
       {.physical_node_id = 2501,
@@ -207,7 +209,7 @@ bool ValidateTableSubquery() {
               api::EngineValueState::sql_null &&
           result.output_batch.rows[1].values[1].is_null &&
           result.selected_plan_uuid ==
-              "019f0000-0000-7200-8000-000000002505" &&
+              BinaryUuid("019f0000-0000-7200-8000-000000002505") &&
           result.executed_physical_node_id == 2502 &&
           result.causal_counter_id == 25002 &&
           result.mga_statement_context.visible_committed_high_watermark == 0 &&
@@ -278,7 +280,7 @@ bool ValidateTableSubquery() {
   result = exec::ExecuteCanonicalTableSubquery(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
                         result.materialized_row_count == 0 &&
-                        result.selected_plan_uuid.empty() &&
+                        result.selected_plan_uuid.is_nil() &&
                         result.executed_physical_node_id == 0 &&
                         !exec::PhysicalMgaStatementContextValid(
                             result.mga_statement_context),

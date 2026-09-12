@@ -14,12 +14,16 @@
 #include <utility>
 #include <vector>
 
-namespace scratchbird::engine::internal_api {
+namespace scratchbird::server::legacy_rendering {
+
+using engine::internal_api::EngineApiResult;
+using engine::internal_api::EngineDescriptor;
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTIC_RENDERING
-// Canonical engine-to-parser-package result envelope. This is not reference
-// rendering. Parser packages consume this envelope and perform client/dialect
-// shaping without becoming engine authority.
+// Legacy in-process projection used by old parser/probe consumers. It is not
+// a validated DiagnosticVector, ExecutionResultEnvelope or MessageVectorSet.
+// This adapter belongs outside the engine. Its historical heuristic fields
+// remain required replacement work, not canonical source or policy authority.
 
 struct EngineParserPackageRenderOptions {
   std::string parser_package_uuid;
@@ -81,8 +85,6 @@ struct EngineRenderedResultEnvelope {
   std::string database_uuid;
   std::string transaction_uuid;
   bool parser_package_rendering_required = true;
-  bool canonical_diagnostics = true;
-  bool canonical_result_shape = true;
   bool render_context_valid = true;
   bool parser_finality_authority = false;
   bool reference_finality_authority = false;
@@ -96,7 +98,10 @@ struct EngineRenderedResultEnvelope {
 EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineApiResult& result,
                                                                    EngineParserPackageRenderOptions options);
 
-bool ValidateEngineRenderedResultEnvelope(const EngineRenderedResultEnvelope& envelope,
-                                          std::vector<std::string>* errors);
+// Checks only this legacy projection's structural consistency. This does not
+// validate canonical diagnostics/results, source registration, policy or wire
+// conformance and must never be used to authorize public message publication.
+bool ValidateLegacyRenderedProjectionStructure(const EngineRenderedResultEnvelope& envelope,
+                                               std::vector<std::string>* errors);
 
-}  // namespace scratchbird::engine::internal_api
+}  // namespace scratchbird::server::legacy_rendering

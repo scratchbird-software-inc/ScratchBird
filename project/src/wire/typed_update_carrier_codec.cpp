@@ -9,6 +9,7 @@
 #include "typed_update_carrier_codec.hpp"
 
 #include "hash_digest.hpp"
+#include "../core/datatypes/canonical_utf8.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -92,7 +93,7 @@ constexpr std::string_view kBooleanCodec = "datatype.boolean.u8.v1";
 
 constexpr const char* kOperandInvalid = "SBLR.OPERAND_INVALID";
 constexpr const char* kAssignmentInvalid = "DML.ASSIGNMENT_SHAPE_INVALID";
-constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR_INVALID";
+constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kResourceExceeded = "RESOURCE.BUDGET_EXCEEDED";
 constexpr const char* kUpdateFailed = "DML.UPDATE_FAILED";
 constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
@@ -153,46 +154,8 @@ bool ValidCodecId(std::string_view value) {
 }
 
 bool ValidUtf8ScalarSequence(std::span<const byte> value, u64* scalar_count = nullptr) {
-  if (scalar_count != nullptr) *scalar_count = 0;
-  u64 count = 0;
-  const auto* bytes = value.data();
-  std::size_t offset = 0;
-  while (offset < value.size()) {
-    const unsigned char first = bytes[offset];
-    if (first <= 0x7f) {
-      ++offset;
-      ++count;
-      continue;
-    }
-    std::size_t length = 0;
-    if (first >= 0xc2 && first <= 0xdf) {
-      length = 2;
-    } else if (first >= 0xe0 && first <= 0xef) {
-      length = 3;
-    } else if (first >= 0xf0 && first <= 0xf4) {
-      length = 4;
-    } else {
-      return false;
-    }
-    if (length > value.size() - offset) {
-      return false;
-    }
-    for (std::size_t index = 1; index < length; ++index) {
-      if ((bytes[offset + index] & 0xc0) != 0x80) {
-        return false;
-      }
-    }
-    if ((first == 0xe0 && bytes[offset + 1] < 0xa0) ||
-        (first == 0xed && bytes[offset + 1] > 0x9f) ||
-        (first == 0xf0 && bytes[offset + 1] < 0x90) ||
-        (first == 0xf4 && bytes[offset + 1] > 0x8f)) {
-      return false;
-    }
-    offset += length;
-    ++count;
-  }
-  if (scalar_count != nullptr) *scalar_count = count;
-  return true;
+  return scratchbird::core::datatypes::ValidateCanonicalUtf8(
+      value.data(), value.size(), scalar_count);
 }
 
 bool ValidUtf8EvidenceField(std::string_view value, bool forbid_equals) {

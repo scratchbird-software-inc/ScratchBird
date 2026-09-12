@@ -9,6 +9,9 @@
 #include "sharded_memory_accounting_ledger.hpp"
 
 #include <algorithm>
+#include <limits>
+#include <new>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::memory {
@@ -28,6 +31,26 @@ Status OkStatus() {
   return LedgerStatus(StatusCode::ok, Severity::info);
 }
 
+ShardedMemoryScopeKey TextScopeKey(const std::string& text) {
+  // Finish fallible payload construction before starting variant lifetime.
+  // Map insertion then moves a fully formed key without copying its payload.
+  std::string prepared = text;
+  static_assert(std::is_nothrow_move_constructible_v<ShardedMemoryScopeKey>);
+  return ShardedMemoryScopeKey{std::move(prepared)};
+}
+
+ShardedMemoryScopeKey CopyScopeKey(const ShardedMemoryScopeKey& key) {
+  if (const auto* text = std::get_if<std::string>(&key)) return TextScopeKey(*text);
+  return std::get<MemoryBinaryScopeKey>(key);
+}
+
+template <class Map>
+typename Map::mapped_type& PrepareScope(Map& map, const ShardedMemoryScopeKey& key) {
+  const auto found = map.find(key);
+  if (found != map.end()) return found->second;
+  return map.try_emplace(CopyScopeKey(key)).first->second;
+}
+
 u64 StableHashString(u64 hash, const std::string& value) {
   constexpr u64 kFnvPrime = 1099511628211ull;
   for (unsigned char ch : value) {
@@ -41,6 +64,12 @@ u64 StableHashEvent(const ShardedMemoryAccountingEvent& event) {
   constexpr u64 kFnvOffset = 1469598103934665603ull;
   constexpr u64 kFnvPrime = 1099511628211ull;
   u64 hash = kFnvOffset;
+  if (!event.tag.binary_ownership.empty()) {
+    for (usize i = 0; i < event.tag.binary_ownership.scopes.size(); ++i)
+      if (MemoryUuidPresent(event.tag.binary_ownership.scopes[i]))
+        return ShardedMemoryScopeHash{}(MemoryBinaryScopeKey{
+            static_cast<MemoryBinaryScopeKind>(i), event.tag.binary_ownership.scopes[i]});
+  }
   if (!event.tag.context_id.empty()) {
     hash = StableHashString(hash, event.tag.context_id);
     return hash;
@@ -90,20 +119,28 @@ bool IsPageBufferAccounting(const ShardedMemoryAccountingLedger::TokenRecord& re
          record.tag.lifetime == MemoryLifetime::page_buffer;
 }
 
-std::vector<std::string> AccountingScopeIds(
-    const ShardedMemoryAccountingLedger::TokenRecord& record) {
-  std::vector<std::string> scope_ids;
-  if (!record.tag.context_id.empty()) {
-    scope_ids.push_back(record.tag.context_id);
-  }
-  for (const auto& scope_id : record.scope_ids) {
-    if (scope_id.empty() ||
-        std::find(scope_ids.begin(), scope_ids.end(), scope_id) != scope_ids.end()) {
-      continue;
+std::vector<ShardedMemoryScopeKey> AccountingScopeIds(const ShardedMemoryAccountingEvent& event) {
+  std::vector<ShardedMemoryScopeKey> scopes;
+  if (!event.tag.binary_ownership.empty()) {
+    for (usize i = 0; i < event.tag.binary_ownership.scopes.size(); ++i) {
+      const auto& uuid = event.tag.binary_ownership.scopes[i];
+      if (MemoryUuidPresent(uuid))
+        scopes.emplace_back(MemoryBinaryScopeKey{static_cast<MemoryBinaryScopeKind>(i), uuid});
     }
-    scope_ids.push_back(scope_id);
+    for (const auto& binary : event.binary_scope_ids) {
+      ShardedMemoryScopeKey key = binary;
+      if (std::find(scopes.begin(), scopes.end(), key) == scopes.end())
+        scopes.push_back(std::move(key));
+    }
+    return scopes;
   }
-  return scope_ids;
+  if (!event.tag.context_id.empty()) scopes.push_back(TextScopeKey(event.tag.context_id));
+  for (const auto& id : event.scope_ids) {
+    auto key = TextScopeKey(id);
+    if (!id.empty() && std::find(scopes.begin(), scopes.end(), key) == scopes.end())
+      scopes.push_back(std::move(key));
+  }
+  return scopes;
 }
 
 void AddBytes(u64 bytes, u64* current, u64* peak) {
@@ -154,10 +191,10 @@ void ReleaseScope(u64 bytes, ShardedMemoryAccountingLedger::ScopeAccounting* sco
   ++scope->release_count;
 }
 
-void MergeScope(const std::string& scope_id,
+void MergeScope(const ShardedMemoryScopeKey& scope_id,
                 const ShardedMemoryAccountingLedger::ScopeAccounting& source,
-                std::map<std::string, ShardedMemoryAccountingLedger::ScopeAccounting>* target) {
-  auto& merged = (*target)[scope_id];
+                std::map<ShardedMemoryScopeKey, ShardedMemoryAccountingLedger::ScopeAccounting>* target) {
+  auto& merged = PrepareScope(*target, scope_id);
   merged.current_bytes += source.current_bytes;
   merged.peak_bytes += source.peak_bytes;
   merged.allocation_count += source.allocation_count;
@@ -177,12 +214,14 @@ void MergeCategory(MemoryCategory category,
 }
 
 std::vector<ShardedMemoryAccountingScopeSnapshot> ScopeSnapshots(
-    const std::map<std::string, ShardedMemoryAccountingLedger::ScopeAccounting>& scopes) {
+    const std::map<ShardedMemoryScopeKey, ShardedMemoryAccountingLedger::ScopeAccounting>& scopes) {
   std::vector<ShardedMemoryAccountingScopeSnapshot> snapshots;
   snapshots.reserve(scopes.size());
   for (const auto& entry : scopes) {
     ShardedMemoryAccountingScopeSnapshot snapshot;
-    snapshot.scope_id = entry.first;
+    if (const auto* binary = std::get_if<MemoryBinaryScopeKey>(&entry.first))
+      snapshot.binary_scope = *binary;
+    else snapshot.scope_id = std::get<std::string>(entry.first);
     snapshot.current_bytes = entry.second.current_bytes;
     snapshot.peak_bytes = entry.second.peak_bytes;
     snapshot.allocation_count = entry.second.allocation_count;
@@ -235,8 +274,18 @@ usize ShardedMemoryAccountingLedger::ShardIndexForEvent(const ShardedMemoryAccou
   return static_cast<usize>(StableHashEvent(event) % static_cast<u64>(shards_.size()));
 }
 
-ShardedMemoryAccountingResult ShardedMemoryAccountingLedger::Reserve(ShardedMemoryAccountingEvent event) {
+ShardedMemoryAccountingResult ShardedMemoryAccountingLedger::Reserve(ShardedMemoryAccountingEvent event) try {
   ShardedMemoryAccountingResult result;
+  if (!MemoryBinaryOwnershipValid(event.tag) ||
+      (!event.tag.binary_ownership.empty() && !event.scope_ids.empty()) ||
+      (!event.binary_scope_ids.empty() && event.tag.binary_ownership.empty()) ||
+      std::any_of(event.binary_scope_ids.begin(), event.binary_scope_ids.end(),
+          [](const auto& key) { return !MemorySystemUuidValid(key.uuid) ||
+              static_cast<unsigned>(key.kind) > static_cast<unsigned>(MemoryBinaryScopeKind::descriptor_snapshot); })) {
+    result.status = LedgerStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic.status = result.status;
+    return result;
+  }
   if (event.bytes == 0) {
     result.status = LedgerStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeLedgerDiagnostic(
@@ -251,20 +300,63 @@ ShardedMemoryAccountingResult ShardedMemoryAccountingLedger::Reserve(ShardedMemo
 
   const usize shard_index = ShardIndexForEvent(event);
   Shard& shard = ShardForIndex(shard_index);
-  const u64 token_id = next_token_id_.fetch_add(1, std::memory_order_relaxed);
+  u64 token_id = next_token_id_.load(std::memory_order_relaxed);
+  while (token_id != 0 &&
+         !next_token_id_.compare_exchange_weak(
+             token_id, token_id == std::numeric_limits<u64>::max() ? 0 : token_id + 1,
+             std::memory_order_relaxed)) {}
+  if (token_id == 0) {
+    result.status = LedgerStatus(StatusCode::memory_limit_exceeded, Severity::error);
+    result.diagnostic.status = result.status;
+    return result;
+  }
 
   std::lock_guard<std::mutex> lock(shard.mutex);
+  // Allocate every token and reporting node before publishing any charge.
+  // Nodes are retained for historical counters; zero-valued nodes left by a
+  // failed preparation own no reservation or allocation.
+  const bool page_buffer = IsPageBufferAccounting(event);
+  TokenRecord record;
+  record.bytes = event.bytes;
+  record.page_buffer_bytes = page_buffer;
+  record.scope_ids = AccountingScopeIds(event);
+  record.tag = std::move(event.tag);
+  if (!record.tag.binary_ownership.empty())
+    record.owner_key = MemoryBinaryScopeKey{MemoryBinaryScopeKind::owner,
+        record.tag.binary_ownership[MemoryBinaryScopeKind::owner]};
+  else if (!record.tag.owner.empty()) record.owner_key = TextScopeKey(record.tag.owner);
+  shard.categories.try_emplace(record.tag.category);
+  for (const auto& scope_id : record.scope_ids) {
+    (void)PrepareScope(shard.contexts, scope_id);
+    PrepareScope(shard.context_categories, scope_id).try_emplace(record.tag.category);
+    if (record.owner_key) (void)PrepareScope(PrepareScope(shard.context_owners, scope_id), *record.owner_key);
+    if (page_buffer) (void)PrepareScope(shard.context_page_buffers, scope_id);
+  }
+  if (record.owner_key) (void)PrepareScope(shard.owners, *record.owner_key);
+  const auto inserted = shard.active_tokens.emplace(token_id, std::move(record));
+  u64 outstanding = global_outstanding_bytes_.load(std::memory_order_relaxed);
+  for (;;) {
+    if (event.bytes > std::numeric_limits<u64>::max() - outstanding) {
+      shard.active_tokens.erase(inserted.first);
+      result.status = LedgerStatus(StatusCode::memory_limit_exceeded, Severity::error);
+      result.diagnostic.status = result.status;
+      return result;
+    }
+    if (global_outstanding_bytes_.compare_exchange_weak(
+            outstanding, outstanding + event.bytes, std::memory_order_relaxed)) break;
+  }
+  // From this point through token publication nothing can allocate or throw.
   shard.reserved_bytes += event.bytes;
   ++shard.reservation_count;
   ++shard.active_reservation_count;
-  shard.active_tokens[token_id] = {event.bytes,
-                                  std::move(event.tag),
-                                  std::move(event.scope_ids),
-                                  IsPageBufferAccounting(event),
-                                  ShardedMemoryAccountingTokenState::reserved};
 
   result.status = OkStatus();
   result.token = {token_id, event.bytes, shard_index};
+  return result;
+} catch (const std::bad_alloc&) {
+  ShardedMemoryAccountingResult result;
+  result.status = LedgerStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
   return result;
 }
 
@@ -324,22 +416,22 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Commit(
       global_current_bytes_.fetch_add(record.bytes, std::memory_order_relaxed) + record.bytes;
   UpdateAtomicPeak(&global_peak_bytes_, global_current);
 
-  CommitCategory(record.bytes, &shard.categories[record.tag.category]);
-  const auto scope_ids = AccountingScopeIds(record);
+  CommitCategory(record.bytes, &shard.categories.at(record.tag.category));
+  const auto& scope_ids = record.scope_ids;
   for (const auto& scope_id : scope_ids) {
-    CommitScope(record.bytes, &shard.contexts[scope_id]);
-    CommitCategory(record.bytes, &shard.context_categories[scope_id][record.tag.category]);
-    if (!record.tag.owner.empty()) {
-      CommitScope(record.bytes, &shard.context_owners[scope_id][record.tag.owner]);
+    CommitScope(record.bytes, &shard.contexts.at(scope_id));
+    CommitCategory(record.bytes, &shard.context_categories.at(scope_id).at(record.tag.category));
+    if (record.owner_key) {
+      CommitScope(record.bytes, &shard.context_owners.at(scope_id).at(*record.owner_key));
     }
   }
-  if (!record.tag.owner.empty()) {
-    CommitScope(record.bytes, &shard.owners[record.tag.owner]);
+  if (record.owner_key) {
+    CommitScope(record.bytes, &shard.owners.at(*record.owner_key));
   }
   if (IsPageBufferAccounting(record)) {
     AddBytes(record.bytes, &shard.page_buffer_current_bytes, &shard.page_buffer_peak_bytes);
     for (const auto& scope_id : scope_ids) {
-      CommitScope(record.bytes, &shard.context_page_buffers[scope_id]);
+      CommitScope(record.bytes, &shard.context_page_buffers.at(scope_id));
     }
     const u64 page_current =
         global_page_buffer_current_bytes_.fetch_add(record.bytes, std::memory_order_relaxed) +
@@ -352,11 +444,21 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Commit(
 
 ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
     ShardedMemoryAccountingToken token) {
+  return ReleaseImpl(token, true);
+}
+
+Status ShardedMemoryAccountingLedger::ReleaseNoAlloc(ShardedMemoryAccountingToken token) {
+  return ReleaseImpl(token, false).status;
+}
+
+ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::ReleaseImpl(
+    ShardedMemoryAccountingToken token, bool materialize_diagnostic) {
   ShardedMemoryAccountingOperationResult result;
   result.status = OkStatus();
   if (!token.valid() || token.shard_index >= shards_.size()) {
     result.status = LedgerStatus(StatusCode::memory_unknown_pointer, Severity::error);
     global_failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    if (!materialize_diagnostic) return result;
     result.diagnostic = MakeLedgerDiagnostic(
         result.status,
         "SB-MEMORY-LEDGER-RELEASE-UNKNOWN-RESERVATION",
@@ -369,8 +471,16 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
 
   Shard& shard = ShardForIndex(token.shard_index);
   std::lock_guard<std::mutex> lock(shard.mutex);
+  const auto no_alloc_failure = [&] {
+    ShardedMemoryAccountingOperationResult failure;
+    failure.status = LedgerStatus(StatusCode::memory_unknown_pointer, Severity::error);
+    ++shard.failed_release_count;
+    global_failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    return failure;
+  };
   auto it = shard.active_tokens.find(token.token_id);
   if (it == shard.active_tokens.end()) {
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(shard,
                         token,
                         true,
@@ -378,8 +488,9 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
                         "memory.ledger.release.unknown_reservation",
                         {{"shard_index", std::to_string(token.shard_index)}});
   }
-  TokenRecord record = it->second;
+  const TokenRecord& record = it->second;
   if (record.bytes != token.bytes) {
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(shard,
                         token,
                         true,
@@ -393,11 +504,13 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
     shard.reserved_bytes -= record.bytes;
     --shard.active_reservation_count;
     ++shard.release_count;
+    global_outstanding_bytes_.fetch_sub(record.bytes, std::memory_order_relaxed);
     shard.active_tokens.erase(it);
     return result;
   }
 
   if (record.state != ShardedMemoryAccountingTokenState::committed) {
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(shard,
                         token,
                         true,
@@ -407,6 +520,7 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
   }
 
   if (shard.current_bytes < record.bytes || shard.active_allocation_count == 0) {
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(shard,
                         token,
                         true,
@@ -420,17 +534,17 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
   --shard.active_allocation_count;
   ++shard.release_count;
   global_current_bytes_.fetch_sub(record.bytes, std::memory_order_relaxed);
-  ReleaseCategory(record.bytes, &shard.categories[record.tag.category]);
-  const auto scope_ids = AccountingScopeIds(record);
+  ReleaseCategory(record.bytes, &shard.categories.at(record.tag.category));
+  const auto& scope_ids = record.scope_ids;
   for (const auto& scope_id : scope_ids) {
-    ReleaseScope(record.bytes, &shard.contexts[scope_id]);
-    ReleaseCategory(record.bytes, &shard.context_categories[scope_id][record.tag.category]);
-    if (!record.tag.owner.empty()) {
-      ReleaseScope(record.bytes, &shard.context_owners[scope_id][record.tag.owner]);
+    ReleaseScope(record.bytes, &shard.contexts.at(scope_id));
+    ReleaseCategory(record.bytes, &shard.context_categories.at(scope_id).at(record.tag.category));
+    if (record.owner_key) {
+      ReleaseScope(record.bytes, &shard.context_owners.at(scope_id).at(*record.owner_key));
     }
   }
-  if (!record.tag.owner.empty()) {
-    ReleaseScope(record.bytes, &shard.owners[record.tag.owner]);
+  if (record.owner_key) {
+    ReleaseScope(record.bytes, &shard.owners.at(*record.owner_key));
   }
   if (IsPageBufferAccounting(record)) {
     if (shard.page_buffer_current_bytes >= record.bytes) {
@@ -439,10 +553,11 @@ ShardedMemoryAccountingOperationResult ShardedMemoryAccountingLedger::Release(
       shard.page_buffer_current_bytes = 0;
     }
     for (const auto& scope_id : scope_ids) {
-      ReleaseScope(record.bytes, &shard.context_page_buffers[scope_id]);
+      ReleaseScope(record.bytes, &shard.context_page_buffers.at(scope_id));
     }
     global_page_buffer_current_bytes_.fetch_sub(record.bytes, std::memory_order_relaxed);
   }
+  global_outstanding_bytes_.fetch_sub(record.bytes, std::memory_order_relaxed);
   shard.active_tokens.erase(it);
   return result;
 }
@@ -459,8 +574,8 @@ ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::Snapshot() const 
       global_page_buffer_peak_bytes_.load(std::memory_order_relaxed);
 
   std::map<MemoryCategory, CategoryAccounting> categories;
-  std::map<std::string, ScopeAccounting> contexts;
-  std::map<std::string, ScopeAccounting> owners;
+  std::map<ShardedMemoryScopeKey, ScopeAccounting> contexts;
+  std::map<ShardedMemoryScopeKey, ScopeAccounting> owners;
 
   snapshot.shards.reserve(shards_.size());
   for (usize index = 0; index < shards_.size(); ++index) {
@@ -506,13 +621,25 @@ ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::Snapshot() const 
 
 ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::SnapshotForContext(
     std::string context_id) const {
+  return SnapshotForScope(ShardedMemoryScopeKey{std::move(context_id)});
+}
+
+ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::SnapshotForContext(
+    MemoryBinaryScopeKey context) const {
+  return SnapshotForScope(ShardedMemoryScopeKey{context});
+}
+
+ShardedMemoryAccountingSnapshot ShardedMemoryAccountingLedger::SnapshotForScope(
+    ShardedMemoryScopeKey context_id) const {
   ShardedMemoryAccountingSnapshot snapshot;
-  snapshot.context_filter = context_id;
+  if (const auto* binary = std::get_if<MemoryBinaryScopeKey>(&context_id))
+    snapshot.binary_context_filter = *binary;
+  else snapshot.context_filter = std::get<std::string>(context_id);
   snapshot.shard_count = static_cast<u64>(shards_.size());
 
   std::map<MemoryCategory, CategoryAccounting> categories;
-  std::map<std::string, ScopeAccounting> contexts;
-  std::map<std::string, ScopeAccounting> owners;
+  std::map<ShardedMemoryScopeKey, ScopeAccounting> contexts;
+  std::map<ShardedMemoryScopeKey, ScopeAccounting> owners;
 
   snapshot.shards.reserve(shards_.size());
   for (usize index = 0; index < shards_.size(); ++index) {

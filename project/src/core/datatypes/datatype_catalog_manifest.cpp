@@ -384,60 +384,71 @@ DatatypeCatalogManifestResult DatatypeCatalogCache::Lookup(
   return LookupDatatypeCatalogRow(manifest_, type_id);
 }
 
-DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
-    const std::string& catalog_snapshot_uuid,
-    u64 catalog_generation,
-    u64 registry_generation,
-    const std::string& descriptor_uuid,
-    u64 descriptor_generation) {
+std::span<const DatatypeTypeCodecIdentityRowV1>
+CurrentDatatypeTypeCodecIdentityRowsV1() {
   // DATATYPE-TYPE-CODEC-IDENTITY-REGISTRY-V1 is a manifest-admitted exact
   // identity table.  This lookup deliberately does not accept a stable name,
   // CanonicalTypeId, or caller-selected codec.
   static const std::array<DatatypeTypeCodecIdentityRowV1, 6> rows{{
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "019d0000-0000-7000-8000-00000000d716", 1,
-       "019d0000-0000-7000-8000-00000000d717", 1,
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x16}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x17}}, 1,
        "datatype.int32.le.v1", 1, 1, 4, true,
        "int32", 2, 1, 2, true, 2, 4, 4, 4,
-       static_cast<u32>(CanonicalTypeId::int32)},
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "019d0000-0000-7000-8000-00000000d711", 1,
-       "019d0000-0000-7000-8000-00000000d712", 1,
+       static_cast<u32>(CanonicalTypeId::int32),
+       {}, false, false, "", "", "", false, false, false, false, false, false, ""},
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x11}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x12}}, 1,
        "datatype.int64.le.v1", 1, 1, 8, false,
        "bigint", 3, 2, 2, true, 2, 8, 8, 8,
-       static_cast<u32>(CanonicalTypeId::int64)},
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "a0000000-6465-7369-ad61-6c0000000000", 1,
-       "019d0000-0000-7000-8000-00000000d713", 1,
+       static_cast<u32>(CanonicalTypeId::int64),
+       {}, false, false, "", "", "", false, false, false, false, false, false, ""},
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0xa0, 0x00, 0x00, 0x00, 0x64, 0x65, 0x73, 0x69, 0xad, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x13}}, 1,
        "datatype.decimal.base1e9.le.v1", 1, 1, 24, false,
        "decimal", 4, 2, 2, true, 3, 24, 24, 24,
-       static_cast<u32>(CanonicalTypeId::decimal)},
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "019d0000-0000-7000-8000-00000000d714", 1,
-       "019d0000-0000-7000-8000-00000000d715", 1,
+       static_cast<u32>(CanonicalTypeId::decimal),
+       {}, false, false, "", "", "", false, false, false, false, false, false, ""},
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x14}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x15}}, 1,
        "datatype.int128.le.v1", 1, 1, 16, true,
        "int128", 5, 1, 2, true, 2, 16, 16, 16,
-       static_cast<u32>(CanonicalTypeId::int128)},
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "01000000-626f-7f6c-a561-6e0000000000", 1,
-       "01000000-626f-7f6c-a561-6e0000000000", 1,
+       static_cast<u32>(CanonicalTypeId::int128),
+       {}, false, false, "", "", "", false, false, false, false, false, false, ""},
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c, 0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c, 0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1,
        "datatype.boolean.u8.v1", 1, 1, 1, true,
        "boolean", 1, 1, 1, false, 1, 1, 1, 1,
-       static_cast<u32>(CanonicalTypeId::boolean)},
-      {"019d0000-0000-7000-8000-00000000d701", 1, 1,
-       "019d0000-0000-7000-8000-00000000d718", 1,
-       "019d0000-0000-7000-8000-00000000d719", 1,
+       static_cast<u32>(CanonicalTypeId::boolean),
+       {}, false, false, "", "", "", false, false, false, false, false, false, ""},
+      {scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x18}}, 1,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x19}}, 1,
        "datatype.text.utf8.v1", 1, 1, 0, true,
        "text", 0, 1, 0, false, 0, 0, 16777216, 0,
        static_cast<u32>(CanonicalTypeId::character),
-       "019d0000-0000-7000-8000-00000000d71a", true, true,
+       scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x1a}}, true, true,
        "byte_sequence",
        "exact_well_formed_UTF8_scalar_sequence_without_implicit_normalization",
        "UTF-8", true, false, true, true, true, true,
        "CTB.TEXT.INVALID_ENCODING"},
   }};
+  return rows;
+}
+
+DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
+    const scratchbird::core::platform::Uuid& catalog_snapshot_uuid,
+    u64 catalog_generation,
+    u64 registry_generation,
+    const scratchbird::core::platform::Uuid& descriptor_uuid,
+    u64 descriptor_generation) {
+  const auto rows = CurrentDatatypeTypeCodecIdentityRowsV1();
   DatatypeTypeCodecIdentityLookupV1 result;
-  result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+  result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
   const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& candidate) {
     return catalog_snapshot_uuid == candidate.catalog_snapshot_uuid &&
            catalog_generation == candidate.catalog_generation &&
@@ -455,25 +466,25 @@ DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
 }
 
 DatatypeTypeCodecIdentityLookupV1 LookupCanonicalBooleanTypeCodecIdentityV1(
-    const std::string& catalog_snapshot_uuid,
+    const scratchbird::core::platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,
     u64 registry_generation) {
   return LookupDatatypeTypeCodecIdentityV1(
       catalog_snapshot_uuid, catalog_generation, registry_generation,
-      "01000000-626f-7f6c-a561-6e0000000000", 1);
+      scratchbird::core::platform::Uuid{{0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c, 0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1);
 }
 
 bool IsExactCanonicalTextTypeCodecIdentityV1(
     const DatatypeTypeCodecIdentityRowV1& row) {
   return row.catalog_snapshot_uuid ==
-             "019d0000-0000-7000-8000-00000000d701" &&
+             scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}} &&
          row.catalog_generation == 1 && row.registry_generation == 1 &&
          row.descriptor_uuid ==
-             "019d0000-0000-7000-8000-00000000d718" &&
+             scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x18}} &&
          row.descriptor_generation == 1 &&
-         row.type_uuid == "019d0000-0000-7000-8000-00000000d719" &&
+         row.type_uuid == scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x19}} &&
          row.type_generation == 1 &&
-         row.codec_uuid == "019d0000-0000-7000-8000-00000000d71a" &&
+         row.codec_uuid == scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x1a}} &&
          row.codec_id == "datatype.text.utf8.v1" &&
          row.codec_version == 1 && row.codec_generation == 1 &&
          row.canonical_value_bytes == 0 && row.null_supported &&
@@ -502,9 +513,9 @@ bool IsExactCanonicalTextTypeCodecIdentityV1(
 }
 
 bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
-    const std::string& descriptor_uuid,
+    const scratchbird::core::platform::Uuid& descriptor_uuid,
     const u64 descriptor_generation,
-    const std::string& type_uuid,
+    const scratchbird::core::platform::Uuid& type_uuid,
     const u64 type_generation,
     const std::string& codec_id,
     const u16 codec_version,
@@ -512,7 +523,7 @@ bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
     const bool containing_slot_nullability_authoritative) {
   if (!containing_slot_nullability_authoritative) return false;
   const auto boolean = LookupCanonicalBooleanTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701", 1, 1);
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1);
   return boolean.ok && descriptor_uuid == boolean.row.descriptor_uuid &&
          descriptor_generation == boolean.row.descriptor_generation &&
          type_uuid == boolean.row.type_uuid &&
@@ -530,28 +541,28 @@ bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
 
 BuiltinOperatorTypeCodecIdentityLookupV1
 LookupBuiltinOperatorTypeCodecIdentityV1(
-    const std::string& operator_snapshot_uuid,
+    const scratchbird::core::platform::Uuid& operator_snapshot_uuid,
     u64 operator_registry_generation,
-    const std::string& operator_uuid,
+    const scratchbird::core::platform::Uuid& operator_uuid,
     u64 operator_generation,
-    const std::string& left_descriptor_uuid,
+    const scratchbird::core::platform::Uuid& left_descriptor_uuid,
     u64 left_descriptor_generation,
-    const std::string& left_type_uuid,
+    const scratchbird::core::platform::Uuid& left_type_uuid,
     u64 left_type_generation,
-    const std::string& right_descriptor_uuid,
+    const scratchbird::core::platform::Uuid& right_descriptor_uuid,
     u64 right_descriptor_generation,
-    const std::string& right_type_uuid,
+    const scratchbird::core::platform::Uuid& right_type_uuid,
     u64 right_type_generation) {
   // SB_REG_BUILTIN_OPERATOR_REGISTRY contributes one accepted comparison row
   // to the narrow typed UPDATE profile.  The exact operand identity is bound
   // into the returned row; no spelling, overload ranking, or host type enum is
   // accepted as authority.
   BuiltinOperatorTypeCodecIdentityLookupV1 result;
-  result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
-  constexpr const char* kSnapshotUuid =
-      "019d0000-0000-7000-8000-00000000d720";
-  constexpr const char* kEqualUuid =
-      "019de5fc-2400-7b73-9c38-dcf10204dbde";
+  result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
+  constexpr scratchbird::core::platform::Uuid kSnapshotUuid =
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x20}};
+  constexpr scratchbird::core::platform::Uuid kEqualUuid =
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x73, 0x9c, 0x38, 0xdc, 0xf1, 0x02, 0x04, 0xdb, 0xde}};
   if (operator_snapshot_uuid != kSnapshotUuid ||
       operator_registry_generation != 1 || operator_uuid != kEqualUuid ||
       operator_generation != 1 || left_descriptor_generation != 1 ||
@@ -562,11 +573,11 @@ LookupBuiltinOperatorTypeCodecIdentityV1(
     return result;
   }
   const auto operand = LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701", 1, 1,
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
       left_descriptor_uuid, left_descriptor_generation);
   const auto boolean = LookupDatatypeTypeCodecIdentityV1(
-      "019d0000-0000-7000-8000-00000000d701", 1, 1,
-      "01000000-626f-7f6c-a561-6e0000000000", 1);
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x01}}, 1, 1,
+      scratchbird::core::platform::Uuid{{0x01, 0x00, 0x00, 0x00, 0x62, 0x6f, 0x7f, 0x6c, 0xa5, 0x61, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00}}, 1);
   if (!operand.ok || operand.row.type_uuid != left_type_uuid || !boolean.ok) {
     return result;
   }
@@ -605,10 +616,10 @@ BuiltinOperatorRegistrySnapshotIdentityLookupV1
 LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1() {
   BuiltinOperatorRegistrySnapshotIdentityLookupV1 result;
   result.ok = true;
-  result.snapshot_uuid = "019d0000-0000-7000-8000-00000000d720";
+  result.snapshot_uuid = scratchbird::core::platform::Uuid{{0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x20}};
   result.registry_generation = 1;
   result.equality_operator_uuid =
-      "019de5fc-2400-7b73-9c38-dcf10204dbde";
+      scratchbird::core::platform::Uuid{{0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x73, 0x9c, 0x38, 0xdc, 0xf1, 0x02, 0x04, 0xdb, 0xde}};
   result.equality_operator_generation = 1;
   return result;
 }

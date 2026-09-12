@@ -82,7 +82,7 @@ struct AllocatorHotPathResult {
   std::string detail;
   std::uint64_t allocation_count_saved = 0;
   std::uint64_t allocation_bytes_saved = 0;
-  std::vector<std::string> grant_ids;
+  std::vector<scratchbird::core::memory::QueryMemoryUuid> grant_ids;
   std::vector<std::string> evidence;
 };
 

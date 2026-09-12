@@ -233,12 +233,12 @@ bool SameResolvedResourceDescriptor(
   return left.present == right.present &&
          left.resource_family == right.resource_family &&
          left.canonical_name == right.canonical_name &&
-         left.resource_uuid.canonical == right.resource_uuid.canonical &&
-         left.parent_resource_uuid.canonical ==
-             right.parent_resource_uuid.canonical &&
+         left.resource_uuid == right.resource_uuid &&
+         left.parent_resource_uuid ==
+             right.parent_resource_uuid &&
          left.parent_canonical_name == right.parent_canonical_name &&
-         left.default_collation_uuid.canonical ==
-             right.default_collation_uuid.canonical &&
+         left.default_collation_uuid ==
+             right.default_collation_uuid &&
          left.default_collation_name == right.default_collation_name &&
          left.seed_pack_name == right.seed_pack_name &&
          left.seed_pack_version == right.seed_pack_version &&
@@ -273,7 +273,7 @@ bool ValidComparisonResources(
          resources.collation_family_epoch == profile.collation_generation &&
          resources.charset_resource.present &&
          resources.charset_resource.resource_family == "charset" &&
-         resources.charset_resource.resource_uuid.canonical ==
+         resources.charset_resource.resource_uuid ==
              resources.charset_uuid_canonical &&
          resources.charset_resource.canonical_name == resources.charset_name &&
          resources.charset_resource.resource_epoch ==
@@ -282,11 +282,11 @@ bool ValidComparisonResources(
              resources.charset_family_epoch &&
          resources.collation_resource.present &&
          resources.collation_resource.resource_family == "collation" &&
-         resources.collation_resource.resource_uuid.canonical ==
+         resources.collation_resource.resource_uuid ==
              resources.collation_uuid_canonical &&
          resources.collation_resource.canonical_name ==
              resources.collation_name &&
-         resources.collation_resource.parent_resource_uuid.canonical ==
+         resources.collation_resource.parent_resource_uuid ==
              resources.charset_uuid_canonical &&
          resources.collation_resource.parent_canonical_name ==
              resources.charset_name &&
@@ -391,8 +391,8 @@ bool ResolveLiveComparisonResources(
   const auto charset = LookupEngineResourceDescriptorByUuid(
       context, charset_uuid, "charset");
   if (!charset.ok || !charset.resource_descriptor.present ||
-      charset.resource_descriptor.resource_uuid.canonical !=
-          charset_uuid.canonical ||
+      charset.resource_descriptor.resource_uuid !=
+          charset_uuid ||
       charset.resource_descriptor.resource_epoch != profile.resource_epoch ||
       charset.resource_descriptor.family_epoch != profile.charset_generation ||
       charset.resource_descriptor.canonical_name.empty()) {
@@ -409,10 +409,10 @@ bool ResolveLiveComparisonResources(
   const auto collation = LookupEngineResourceDescriptorByUuid(
       context, collation_uuid, "collation");
   if (!collation.ok || !collation.resource_descriptor.present ||
-      collation.resource_descriptor.resource_uuid.canonical !=
-          collation_uuid.canonical ||
-      collation.resource_descriptor.parent_resource_uuid.canonical !=
-          charset_uuid.canonical ||
+      collation.resource_descriptor.resource_uuid !=
+          collation_uuid ||
+      collation.resource_descriptor.parent_resource_uuid !=
+          charset_uuid ||
       collation.resource_descriptor.parent_canonical_name !=
           charset.resource_descriptor.canonical_name ||
       collation.resource_descriptor.resource_epoch != profile.resource_epoch ||
@@ -435,14 +435,14 @@ bool ResolveLiveComparisonResources(
   resolved.charset_uuid = profile.charset_uuid;
   resolved.charset_generation = profile.charset_generation;
   resolved.charset_name = charset.resource_descriptor.canonical_name;
-  resolved.charset_uuid_canonical = charset_uuid.canonical;
+  resolved.charset_uuid_canonical = charset_uuid;
   resolved.charset_resource_epoch =
       charset.resource_descriptor.resource_epoch;
   resolved.charset_family_epoch = charset.resource_descriptor.family_epoch;
   resolved.collation_uuid = profile.collation_uuid;
   resolved.collation_generation = profile.collation_generation;
   resolved.collation_name = collation.resource_descriptor.canonical_name;
-  resolved.collation_uuid_canonical = collation_uuid.canonical;
+  resolved.collation_uuid_canonical = collation_uuid;
   resolved.collation_resource_epoch =
       collation.resource_descriptor.resource_epoch;
   resolved.collation_family_epoch =
@@ -596,7 +596,7 @@ bool ResolveProjectedTargetDescriptor(
     return false;
   }
   EngineDescriptor resolved;
-  resolved.descriptor_uuid.canonical = UuidText(selected->descriptor_uuid);
+  resolved.descriptor_uuid = UuidText(selected->descriptor_uuid);
   // Public MGA projection rows retain the persisted descriptor class.  The
   // executor-facing value descriptor is the scalar view of that exact column;
   // its UUID, type and encoded authority remain byte-for-byte unchanged.
@@ -733,16 +733,16 @@ bool ExactSbelMatchesTransfer(
 
 bool SamePinnedContext(const EngineRequestContext& left,
                        const EngineRequestContext& right) {
-  return left.database_uuid.canonical == right.database_uuid.canonical &&
-         left.session_uuid.canonical == right.session_uuid.canonical &&
-         left.transaction_uuid.canonical == right.transaction_uuid.canonical &&
-         left.statement_uuid.canonical == right.statement_uuid.canonical &&
-         left.statement_receipt_uuid.canonical ==
-             right.statement_receipt_uuid.canonical &&
-         left.statement_snapshot_uuid.canonical ==
-             right.statement_snapshot_uuid.canonical &&
-         left.datatype_catalog_snapshot_uuid.canonical ==
-             right.datatype_catalog_snapshot_uuid.canonical &&
+  return left.database_uuid == right.database_uuid &&
+         left.session_uuid == right.session_uuid &&
+         left.transaction_uuid == right.transaction_uuid &&
+         left.statement_uuid == right.statement_uuid &&
+         left.statement_receipt_uuid ==
+             right.statement_receipt_uuid &&
+         left.statement_snapshot_uuid ==
+             right.statement_snapshot_uuid &&
+         left.datatype_catalog_snapshot_uuid ==
+             right.datatype_catalog_snapshot_uuid &&
          left.datatype_catalog_generation == right.datatype_catalog_generation &&
          left.datatype_registry_generation ==
              right.datatype_registry_generation &&
@@ -757,11 +757,11 @@ bool RequestMatchesContext(
   sblr::ContextualTextUuidV2 catalog_snapshot{};
   sblr::ContextualTextUuidV2 mga_snapshot{};
   return context.security_context_present &&
-         ToWireUuid(context.statement_receipt_uuid.canonical,
+         ToWireUuid(context.statement_receipt_uuid,
                     &statement_receipt) &&
-         ToWireUuid(context.datatype_catalog_snapshot_uuid.canonical,
+         ToWireUuid(context.datatype_catalog_snapshot_uuid,
                     &catalog_snapshot) &&
-         ToWireUuid(context.statement_snapshot_uuid.canonical, &mga_snapshot) &&
+         ToWireUuid(context.statement_snapshot_uuid, &mga_snapshot) &&
          statement_receipt == request.statement_receipt_uuid &&
          catalog_snapshot == request.catalog_snapshot_uuid &&
          mga_snapshot == request.mga_snapshot_uuid &&
@@ -790,7 +790,7 @@ bool ValidExecutorAvailability(
     const SblrExecutorAvailabilitySnapshot& availability,
     const EngineRequestContext& context) {
   return ExactUuid(availability.snapshot_uuid) && availability.generation != 0 &&
-         availability.database_uuid == context.database_uuid.canonical &&
+         availability.database_uuid == context.database_uuid &&
          !availability.row_identity_sha256.empty() && availability.installed &&
          availability.availability_state ==
              SblrExecutorAvailabilityState::installed &&
@@ -917,7 +917,7 @@ void AddVectorStorageV2(const std::vector<T>& value,
 void AddDynamicPayloadV2(const EngineUuid& value,
                          const LogicalPayloadAccountingV2 accounting,
                          LogicalByteCounterV2* counter) noexcept {
-  AddStringPayloadV2(value.canonical, accounting, counter);
+  AddStringPayloadV2(value, accounting, counter);
 }
 
 void AddDynamicPayloadV2(const EngineDescriptor& value,
@@ -2410,7 +2410,7 @@ PrepareContextualTextLiteralAuthorityV2(
           literal_descriptor.begin(), literal_descriptor.end());
       runtime.exact_target_relational_descriptor_v2_bytes.assign(
           target_descriptor.begin(), target_descriptor.end());
-      runtime.value.descriptor.descriptor_uuid.canonical =
+      runtime.value.descriptor.descriptor_uuid =
           graph_binding.exact_relational_descriptor_v2_fields[0];
       runtime.value.descriptor.descriptor_kind = "scalar";
       runtime.value.descriptor.canonical_type_name = "text";

@@ -55,7 +55,7 @@ CompileSblrSecurityCreateUserDescriptor(const EngineRequestContext& context,
   SblrSecurityCreateUserCoordinationResult result;
   if (!detail::HasTag(context, "private_security_create_user_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid.canonical || occurrence == 0 ||
+      receipt != context.statement_uuid || occurrence == 0 ||
       user_occurrence == 0 || availability == 0) {
     result.diagnostic = detail::Diagnostic(
         "SBLR.OPERAND.INVALID", "sblr.security_create_user.coordination_invalid");

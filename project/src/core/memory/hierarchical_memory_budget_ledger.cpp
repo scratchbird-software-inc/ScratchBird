@@ -9,10 +9,38 @@
 #include "hierarchical_memory_budget_ledger.hpp"
 
 #include <algorithm>
+#include <limits>
+#include <new>
 #include <set>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::memory {
+
+MemoryBinaryScopeKind HierarchicalMemoryBinaryScopeKind(HierarchicalMemoryScopeKind kind) {
+  switch (kind) {
+    case HierarchicalMemoryScopeKind::process: return MemoryBinaryScopeKind::process;
+    case HierarchicalMemoryScopeKind::database: return MemoryBinaryScopeKind::database;
+    case HierarchicalMemoryScopeKind::tenant: return MemoryBinaryScopeKind::tenant;
+    case HierarchicalMemoryScopeKind::user: return MemoryBinaryScopeKind::user;
+    case HierarchicalMemoryScopeKind::role: return MemoryBinaryScopeKind::role;
+    case HierarchicalMemoryScopeKind::session: return MemoryBinaryScopeKind::session;
+    case HierarchicalMemoryScopeKind::transaction: return MemoryBinaryScopeKind::transaction;
+    case HierarchicalMemoryScopeKind::statement: return MemoryBinaryScopeKind::statement;
+    case HierarchicalMemoryScopeKind::query: return MemoryBinaryScopeKind::query;
+    case HierarchicalMemoryScopeKind::operator_scope: return MemoryBinaryScopeKind::operator_scope;
+    case HierarchicalMemoryScopeKind::page_cache: return MemoryBinaryScopeKind::page_cache;
+    case HierarchicalMemoryScopeKind::background: return MemoryBinaryScopeKind::background;
+    case HierarchicalMemoryScopeKind::plugin: return MemoryBinaryScopeKind::plugin;
+    case HierarchicalMemoryScopeKind::connection: return MemoryBinaryScopeKind::connection;
+    case HierarchicalMemoryScopeKind::cursor: return MemoryBinaryScopeKind::cursor;
+    case HierarchicalMemoryScopeKind::plan_cache_entry: return MemoryBinaryScopeKind::plan_cache_entry;
+    case HierarchicalMemoryScopeKind::prepared_statement: return MemoryBinaryScopeKind::prepared_statement;
+    case HierarchicalMemoryScopeKind::descriptor_snapshot: return MemoryBinaryScopeKind::descriptor_snapshot;
+  }
+  return static_cast<MemoryBinaryScopeKind>(255);
+}
+
 namespace {
 
 using scratchbird::core::platform::MakeDiagnostic;
@@ -44,11 +72,19 @@ u64 StableHashScope(const HierarchicalMemoryScopeRef& scope) {
   u64 hash = kFnvOffset;
   hash ^= static_cast<u64>(scope.kind);
   hash *= kFnvPrime;
+  if (MemoryUuidPresent(scope.binary_scope_uuid)) {
+    for (auto byte : scope.binary_scope_uuid) hash = (hash ^ byte) * kFnvPrime;
+    return hash;
+  }
   return StableHashString(hash, scope.scope_id);
 }
 
-std::string ScopeKey(const HierarchicalMemoryScopeRef& scope) {
-  return std::string(HierarchicalMemoryScopeKindName(scope.kind)) + ":" + scope.scope_id;
+ShardedMemoryScopeKey ScopeKey(const HierarchicalMemoryScopeRef& scope) {
+  if (MemoryUuidPresent(scope.binary_scope_uuid))
+    return MemoryBinaryScopeKey{HierarchicalMemoryBinaryScopeKind(scope.kind), scope.binary_scope_uuid};
+  // Finish fallible text construction before starting variant lifetime.
+  std::string prepared = std::string(HierarchicalMemoryScopeKindName(scope.kind)) + ":" + scope.scope_id;
+  return ShardedMemoryScopeKey{std::move(prepared)};
 }
 
 std::string ClassKey(MemoryCategory category, const std::string& memory_class) {
@@ -72,7 +108,11 @@ DiagnosticRecord MakeBudgetDiagnostic(Status status,
 }
 
 bool ValidScope(const HierarchicalMemoryScopeRef& scope) {
-  return !scope.scope_id.empty();
+  if (static_cast<unsigned>(scope.kind) > static_cast<unsigned>(HierarchicalMemoryScopeKind::descriptor_snapshot))
+    return false;
+  return MemoryUuidPresent(scope.binary_scope_uuid)
+      ? scope.scope_id.empty() && MemorySystemUuidValid(scope.binary_scope_uuid)
+      : !scope.scope_id.empty();
 }
 
 bool ValidateScopeChain(const std::vector<HierarchicalMemoryScopeRef>& chain,
@@ -82,16 +122,17 @@ bool ValidateScopeChain(const std::vector<HierarchicalMemoryScopeRef>& chain,
     *reason = "scope_chain_empty";
     return false;
   }
-  std::set<std::string> seen;
+  std::set<ShardedMemoryScopeKey> seen;
+  const bool binary = MemoryUuidPresent(chain.front().binary_scope_uuid);
   for (const auto& scope : chain) {
-    if (!ValidScope(scope)) {
+    if (!ValidScope(scope) || MemoryUuidPresent(scope.binary_scope_uuid) != binary) {
       *reason = "scope_id_empty";
       return false;
     }
-    const auto key = ScopeKey(scope);
-    if (!seen.insert(key).second) {
+    auto key = ScopeKey(scope);
+    if (!seen.insert(std::move(key)).second) {
       *reason = "duplicate_scope";
-      *duplicate_scope_key = key;
+      *duplicate_scope_key = binary ? "binary_scope" : std::get<std::string>(ScopeKey(scope));
       return false;
     }
   }
@@ -158,9 +199,23 @@ ShardedMemoryAccountingEvent AccountingEventForReservation(
   event.tag.lifetime = MemoryLifetime::statement;
   event.tag.owner = request.owner_id;
   event.page_buffer_bytes = false;
+  if (MemoryUuidPresent(request.binary_owner_uuid)) {
+    event.tag.owner.clear();
+    event.tag.binary_ownership[MemoryBinaryScopeKind::owner] = request.binary_owner_uuid;
+    event.tag.binary_ownership[MemoryBinaryScopeKind::context] = request.scope_chain.front().binary_scope_uuid;
+    event.binary_scope_ids.reserve(request.scope_chain.size());
+    for (const auto& scope : request.scope_chain) {
+      event.binary_scope_ids.push_back({HierarchicalMemoryBinaryScopeKind(scope.kind), scope.binary_scope_uuid});
+      if (scope.kind == HierarchicalMemoryScopeKind::page_cache)
+        event.page_buffer_bytes = true;
+    }
+    if (request.category == MemoryCategory::page_buffer) event.page_buffer_bytes = true;
+    if (event.page_buffer_bytes) event.tag.lifetime = MemoryLifetime::page_buffer;
+    return event;
+  }
   event.scope_ids.reserve(request.scope_chain.size());
   for (const auto& scope : request.scope_chain) {
-    const auto key = ScopeKey(scope);
+    const auto key = std::get<std::string>(ScopeKey(scope));
     if (event.tag.context_id.empty()) {
       event.tag.context_id = key;
     }
@@ -219,14 +274,100 @@ void SubtractPriorityWeight(u64 priority_weight,
           : 0;
 }
 
-void UpdateAtomicPeak(std::atomic<u64>* peak, u64 value) {
-  u64 observed = peak->load(std::memory_order_relaxed);
-  while (observed < value &&
-         !peak->compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
-  }
+}  // namespace
+
+struct HierarchicalMemoryReservationLease::State {
+  mutable std::mutex mutex;
+  bool live = true;
+};
+
+HierarchicalMemoryReservationLease::UseGuard::UseGuard(std::shared_ptr<State> state)
+    : state_(std::move(state)),
+      lock_(state_ ? std::unique_lock<std::mutex>(state_->mutex) : std::unique_lock<std::mutex>()) {}
+
+bool HierarchicalMemoryReservationLease::UseGuard::live() const {
+  return state_ && lock_.owns_lock() && state_->live;
 }
 
-}  // namespace
+HierarchicalMemoryReservationLease::HierarchicalMemoryReservationLease(
+    HierarchicalMemoryReservationLease&& other) noexcept {
+  std::lock_guard lock(other.mutex_);
+  ledger_ = std::exchange(other.ledger_, nullptr);
+  token_ = std::exchange(other.token_, {});
+  state_ = std::move(other.state_);
+}
+
+HierarchicalMemoryReservationLease& HierarchicalMemoryReservationLease::operator=(
+    HierarchicalMemoryReservationLease&& other) noexcept {
+  if (this != &other) {
+    (void)Reset();
+    std::scoped_lock lock(mutex_, other.mutex_);
+    ledger_ = std::exchange(other.ledger_, nullptr);
+    token_ = std::exchange(other.token_, {});
+    state_ = std::move(other.state_);
+  }
+  return *this;
+}
+
+HierarchicalMemoryReservationLease::~HierarchicalMemoryReservationLease() {
+  (void)Reset();
+}
+
+bool HierarchicalMemoryReservationLease::valid() const {
+  std::lock_guard lock(mutex_);
+  return ledger_ && token_.valid() && state_;
+}
+
+HierarchicalMemoryReservationLease::UseGuard HierarchicalMemoryReservationLease::Use() const {
+  std::shared_ptr<State> state;
+  {
+    std::lock_guard lock(mutex_);
+    state = state_;
+  }
+  return UseGuard(std::move(state));
+}
+
+bool HierarchicalMemoryReservationLease::live() const { return Use().live(); }
+
+Status HierarchicalMemoryReservationLease::Reset() {
+  std::lock_guard lock(mutex_);
+  if (!ledger_) return OkStatus();
+  const auto result = ledger_->ReleaseImpl(token_, false, state_.get());
+  if (result.ok() || result.status.code == StatusCode::memory_unknown_pointer) {
+    ledger_ = nullptr;
+    token_ = {};
+    state_.reset();
+  }
+  return result.status;
+}
+
+HierarchicalMemoryRetainResult HierarchicalMemoryBudgetLedger::Retain(
+    HierarchicalMemoryReservationToken token) try {
+  HierarchicalMemoryRetainResult result;
+  result.status = BudgetStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  if (!token.valid()) return result;
+  auto& shard = TokenShardForIndex(TokenShardIndex(token.token_id));
+  std::lock_guard lock(shard.mutex);
+  auto it = shard.tokens.find(token.token_id);
+  if (it == shard.tokens.end() || it->second.token.bytes != token.bytes) return result;
+  auto& record = it->second;
+  if (record.state != HierarchicalMemoryReservationState::active || record.retained_owner) {
+    result.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
+    return result;
+  }
+  auto state = std::make_shared<HierarchicalMemoryReservationLease::State>();
+  result.lease.ledger_ = this;
+  result.lease.token_ = token;
+  result.lease.state_ = state;
+  record.retained_owner = std::move(state);
+  result.status = OkStatus();
+  return result;
+} catch (const std::bad_alloc&) {
+  HierarchicalMemoryRetainResult result;
+  result.status = BudgetStatus(StatusCode::memory_allocation_failed, Severity::error);
+  return result;
+}
+
 
 const char* HierarchicalMemoryScopeKindName(HierarchicalMemoryScopeKind kind) {
   switch (kind) {
@@ -256,6 +397,11 @@ const char* HierarchicalMemoryScopeKindName(HierarchicalMemoryScopeKind kind) {
       return "background";
     case HierarchicalMemoryScopeKind::plugin:
       return "plugin";
+    case HierarchicalMemoryScopeKind::connection: return "connection";
+    case HierarchicalMemoryScopeKind::cursor: return "cursor";
+    case HierarchicalMemoryScopeKind::plan_cache_entry: return "plan_cache_entry";
+    case HierarchicalMemoryScopeKind::prepared_statement: return "prepared_statement";
+    case HierarchicalMemoryScopeKind::descriptor_snapshot: return "descriptor_snapshot";
   }
   return "unknown";
 }
@@ -328,7 +474,7 @@ usize HierarchicalMemoryBudgetLedger::token_shard_count() const {
 }
 
 HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::SetBudget(
-    HierarchicalMemoryBudget budget) {
+    HierarchicalMemoryBudget budget) try {
   HierarchicalMemoryBudgetOperationResult result;
   std::string provenance_reason;
   if (!SafeProvenance(budget.provenance, &provenance_reason)) {
@@ -344,14 +490,16 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::SetBudge
          {"reason", provenance_reason}});
     return result;
   }
-  if (!ValidScope(budget.scope)) {
+  if (!ValidScope(budget.scope) ||
+      static_cast<unsigned>(budget.scope.kind) >
+          static_cast<unsigned>(HierarchicalMemoryScopeKind::descriptor_snapshot)) {
     result.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeBudgetDiagnostic(
         result.status,
         "SB-MEMORY-BUDGET-SCOPE-INVALID",
         "memory.budget.scope.invalid",
         {{"scope_kind", HierarchicalMemoryScopeKindName(budget.scope.kind)},
-         {"reason", "scope_id_empty"}});
+         {"reason", "scope_id_empty_or_kind_invalid"}});
     return result;
   }
   if (budget.hard_limit_bytes != 0 && budget.soft_limit_bytes > budget.hard_limit_bytes) {
@@ -367,23 +515,68 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::SetBudge
     return result;
   }
 
-  ScopeShard& shard = ScopeShardForIndex(ScopeShardIndex(budget.scope));
+  // Prepare owning metadata before inserting a scope node or changing limits.
+  // Reuse existing map nodes: live reservations hold stable pointers to them.
+  auto key = ScopeKey(budget.scope);
+  static_assert(std::is_nothrow_move_assignable_v<std::string>);
+  static_assert(std::is_nothrow_move_constructible_v<HierarchicalMemoryBudgetOperationResult>);
+  const auto shard_index = ScopeShardIndex(budget.scope);
+  ScopeAccounting prepared;
+  prepared.kind = budget.scope.kind;
+  prepared.binary_scope_uuid = budget.scope.binary_scope_uuid;
+  prepared.scope_id = std::move(budget.scope.scope_id);
+  prepared.hard_limit_bytes = budget.hard_limit_bytes;
+  prepared.soft_limit_bytes = budget.soft_limit_bytes;
+  ScopeShard& shard = ScopeShardForIndex(shard_index);
   std::lock_guard<std::mutex> lock(shard.mutex);
-  auto& scope = shard.scopes[ScopeKey(budget.scope)];
-  scope.kind = budget.scope.kind;
-  scope.scope_id = budget.scope.scope_id;
-  scope.hard_limit_bytes = budget.hard_limit_bytes;
-  scope.soft_limit_bytes = budget.soft_limit_bytes;
+  const auto existing = shard.scopes.find(key);
+  if (existing != shard.scopes.end()) {
+    auto& scope = existing->second;
+    const auto hard = prepared.hard_limit_bytes;
+    if (hard != 0 && (scope.active_bytes > hard ||
+                     scope.reserved_bytes > hard - scope.active_bytes)) {
+      result.status = BudgetStatus(StatusCode::memory_limit_exceeded, Severity::error);
+      result.diagnostic = MakeBudgetDiagnostic(result.status,
+          "SB-MEMORY-BUDGET-LIVE-SHRINK-REFUSED",
+          "memory.budget.live_shrink.refused",
+          {{"scope_kind", HierarchicalMemoryScopeKindName(prepared.kind)},
+           {"scope_id", prepared.scope_id},
+           {"existing_work_rule", "reject_change"},
+           {"active_bytes", std::to_string(scope.active_bytes)},
+           {"reserved_bytes", std::to_string(scope.reserved_bytes)},
+           {"requested_hard_limit_bytes", std::to_string(hard)}});
+      return result;
+    }
+    // All remaining work is non-allocating. Preserve every live counter and
+    // token pointer; do not replace the accounting object on policy reload.
+    scope.kind = prepared.kind;
+    scope.scope_id = std::move(prepared.scope_id);
+    scope.binary_scope_uuid = prepared.binary_scope_uuid;
+    scope.hard_limit_bytes = prepared.hard_limit_bytes;
+    scope.soft_limit_bytes = prepared.soft_limit_bytes;
+  } else {
+    shard.scopes.emplace(std::move(key), std::move(prepared));
+  }
   result.status = OkStatus();
+  return result;
+} catch (const std::bad_alloc&) {
+  HierarchicalMemoryBudgetOperationResult result;
+  result.status = BudgetStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
   return result;
 }
 
 HierarchicalMemoryReservationResult HierarchicalMemoryBudgetLedger::Reserve(
-    HierarchicalMemoryReservationRequest request) {
+    HierarchicalMemoryReservationRequest request) try {
   HierarchicalMemoryReservationResult result;
   std::string invalid_reason;
   std::string duplicate_scope_key;
   if (request.requested_bytes == 0 ||
+      (MemoryUuidPresent(request.binary_owner_uuid) &&
+       (!request.owner_id.empty() || !MemorySystemUuidValid(request.binary_owner_uuid))) ||
+      (!request.scope_chain.empty() &&
+       MemoryUuidPresent(request.scope_chain.front().binary_scope_uuid) !=
+           MemoryUuidPresent(request.binary_owner_uuid)) ||
       !ValidateScopeChain(request.scope_chain, &invalid_reason, &duplicate_scope_key)) {
     result.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeBudgetDiagnostic(
@@ -416,16 +609,46 @@ HierarchicalMemoryReservationResult HierarchicalMemoryBudgetLedger::Reserve(
     request.weight = 1;
   }
 
-  const u64 token_id = next_token_id_.fetch_add(1, std::memory_order_relaxed);
+  const auto priority = static_cast<u64>(std::max(request.priority, 0));
+  if (request.weight > std::numeric_limits<u64>::max() - priority) {
+    result.status = BudgetStatus(StatusCode::memory_limit_exceeded, Severity::error);
+    result.diagnostic.status = result.status;
+    return result;
+  }
+  const u64 priority_weight = priority + request.weight;
+  u64 token_id = next_token_id_.load(std::memory_order_relaxed);
+  while (token_id != 0 &&
+         !next_token_id_.compare_exchange_weak(
+             token_id, token_id == std::numeric_limits<u64>::max() ? 0 : token_id + 1,
+             std::memory_order_relaxed)) {}
+  if (token_id == 0) {
+    result.status = BudgetStatus(StatusCode::memory_limit_exceeded, Severity::error);
+    result.diagnostic.status = result.status;
+    return result;
+  }
   TokenShard& token_shard = TokenShardForIndex(TokenShardIndex(token_id));
   std::lock_guard<std::mutex> token_lock(token_shard.mutex);
   auto scope_locks = LockScopeShardsForChain(request.scope_chain);
+  ReservationRecord record;
+  record.scope_shard_indexes = ScopeShardIndexesForChain(request.scope_chain);
+  record.scopes.reserve(request.scope_chain.size());
 
   for (const auto& scope_ref : request.scope_chain) {
     ScopeShard& scope_shard = ScopeShardForIndex(ScopeShardIndex(scope_ref));
     auto& scope = scope_shard.scopes[ScopeKey(scope_ref)];
     scope.kind = scope_ref.kind;
     scope.scope_id = scope_ref.scope_id;
+    scope.binary_scope_uuid = scope_ref.binary_scope_uuid;
+    record.scopes.push_back(&scope);
+    const auto max = std::numeric_limits<u64>::max();
+    if (scope.reserved_bytes > max - scope.active_bytes ||
+        request.requested_bytes > max - scope.active_bytes - scope.reserved_bytes ||
+        priority_weight > max - scope.priority_weight_total) {
+      hard_limit_refusal_count_.fetch_add(1, std::memory_order_relaxed);
+      result.status = BudgetStatus(StatusCode::memory_limit_exceeded, Severity::error);
+      result.diagnostic.status = result.status;
+      return result;
+    }
     const u64 projected = scope.active_bytes + scope.reserved_bytes + request.requested_bytes;
     if (scope.hard_limit_bytes != 0 && projected > scope.hard_limit_bytes) {
       hard_limit_refusal_count_.fetch_add(1, std::memory_order_relaxed);
@@ -464,49 +687,56 @@ HierarchicalMemoryReservationResult HierarchicalMemoryBudgetLedger::Reserve(
     }
   }
 
-  auto accounting_reservation =
-      accounting_.Reserve(AccountingEventForReservation(request));
-  if (!accounting_reservation.ok()) {
-    result.status = accounting_reservation.status;
-    result.recommendation = HierarchicalMemoryReservationRecommendation::deny;
-    result.diagnostic = accounting_reservation.diagnostic;
-    return result;
-  }
-
-  const u64 priority_weight = static_cast<u64>(std::max(request.priority, 0)) + request.weight;
-  for (const auto& scope_ref : request.scope_chain) {
-    ScopeShard& scope_shard = ScopeShardForIndex(ScopeShardIndex(scope_ref));
-    auto& scope = scope_shard.scopes[ScopeKey(scope_ref)];
-    scope.reserved_bytes += request.requested_bytes;
-    ++scope.reservation_count;
-    ++scope.active_reservation_count;
-    scope.priority_weight_total += priority_weight;
-  }
   ScopeShard& class_shard = ScopeShardForIndex(ScopeShardIndex(request.scope_chain.front()));
   auto& class_accounting = class_shard.classes[ClassKey(request.category, request.memory_class)];
   class_accounting.category = request.category;
   class_accounting.memory_class = request.memory_class;
-  class_accounting.reserved_bytes += request.requested_bytes;
-  ++class_accounting.reservation_count;
-
-  ReservationRecord record;
+  record.class_accounting = &class_accounting;
+  auto accounting_event = AccountingEventForReservation(request);
   record.token = {token_id, request.requested_bytes};
   record.scope_chain = std::move(request.scope_chain);
   record.category = request.category;
   record.memory_class = std::move(request.memory_class);
   record.owner_id = std::move(request.owner_id);
-  record.accounting_token = accounting_reservation.token;
+  record.binary_owner_uuid = request.binary_owner_uuid;
   record.priority = request.priority;
   record.weight = request.weight;
   record.lease_expires_at_ms = request.lease_expires_at_ms;
-  token_shard.tokens[token_id] = std::move(record);
-  global_reserved_bytes_.fetch_add(request.requested_bytes, std::memory_order_relaxed);
+  auto inserted = token_shard.tokens.emplace(token_id, std::move(record));
+  auto accounting_reservation = accounting_.Reserve(std::move(accounting_event));
+  if (!accounting_reservation.ok()) {
+    token_shard.tokens.erase(inserted.first);
+    result.status = accounting_reservation.status;
+    result.recommendation = HierarchicalMemoryReservationRecommendation::deny;
+    result.diagnostic = std::move(accounting_reservation.diagnostic);
+    return result;
+  }
+
+  // All fallible preparation completed before the actual accounting reserve.
+  // The token shard remains locked until both ledgers publish the same owner.
+  auto& published = inserted.first->second;
+  published.accounting_token = accounting_reservation.token;
+  for (auto* scope_ptr : published.scopes) {
+    auto& scope = *scope_ptr;
+    scope.reserved_bytes += request.requested_bytes;
+    ++scope.reservation_count;
+    ++scope.active_reservation_count;
+    scope.priority_weight_total += priority_weight;
+  }
+  class_accounting.reserved_bytes += request.requested_bytes;
+  ++class_accounting.reservation_count;
+
   global_reservation_count_.fetch_add(1, std::memory_order_relaxed);
   global_active_reservation_count_.fetch_add(1, std::memory_order_relaxed);
 
   result.status = OkStatus();
   result.recommendation = HierarchicalMemoryReservationRecommendation::granted;
   result.token = {token_id, request.requested_bytes};
+  return result;
+} catch (const std::bad_alloc&) {
+  HierarchicalMemoryReservationResult result;
+  result.status = BudgetStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
   return result;
 }
 
@@ -543,7 +773,7 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Commit(
                          {"recorded_bytes", std::to_string(record.token.bytes)}});
   }
 
-  auto scope_locks = LockScopeShardsForChain(record.scope_chain);
+  ScopeLocks scope_locks(*this, record.scope_shard_indexes);
   const auto accounting_commit = accounting_.Commit(record.accounting_token);
   if (!accounting_commit.ok()) {
     failed_commit_count_.fetch_add(1, std::memory_order_relaxed);
@@ -553,16 +783,14 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Commit(
     return result;
   }
 
-  for (const auto& scope_ref : record.scope_chain) {
-    ScopeShard& scope_shard = ScopeShardForIndex(ScopeShardIndex(scope_ref));
-    auto& scope = scope_shard.scopes[ScopeKey(scope_ref)];
+  for (auto* scope_ptr : record.scopes) {
+    auto& scope = *scope_ptr;
     SubtractReservedBytes(record.token.bytes, &scope);
     AddActiveBytes(record.token.bytes, &scope);
     ++scope.commit_count;
     ++scope.active_allocation_count;
   }
-  ScopeShard& class_shard = ScopeShardForIndex(ScopeShardIndex(record.scope_chain.front()));
-  auto& class_accounting = class_shard.classes[ClassKey(record.category, record.memory_class)];
+  auto& class_accounting = *record.class_accounting;
   class_accounting.reserved_bytes =
       class_accounting.reserved_bytes >= record.token.bytes
           ? class_accounting.reserved_bytes - record.token.bytes
@@ -572,14 +800,9 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Commit(
                                          class_accounting.active_bytes);
   ++class_accounting.commit_count;
   record.state = HierarchicalMemoryReservationState::active;
-  global_reserved_bytes_.fetch_sub(record.token.bytes, std::memory_order_relaxed);
   global_active_reservation_count_.fetch_sub(1, std::memory_order_relaxed);
   global_commit_count_.fetch_add(1, std::memory_order_relaxed);
   global_active_allocation_count_.fetch_add(1, std::memory_order_relaxed);
-  const u64 global_current =
-      global_current_bytes_.fetch_add(record.token.bytes, std::memory_order_relaxed) +
-      record.token.bytes;
-  UpdateAtomicPeak(&global_peak_bytes_, global_current);
 
   HierarchicalMemoryBudgetOperationResult result;
   result.status = OkStatus();
@@ -588,8 +811,24 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Commit(
 
 HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
     HierarchicalMemoryReservationToken token) {
+  return ReleaseImpl(token, true);
+}
+
+Status HierarchicalMemoryBudgetLedger::ReleaseNoAlloc(HierarchicalMemoryReservationToken token) {
+  return ReleaseImpl(token, false).status;
+}
+
+HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::ReleaseImpl(
+    HierarchicalMemoryReservationToken token, bool materialize_diagnostic,
+    const HierarchicalMemoryReservationLease::State* retained_owner) {
+  const auto no_alloc_failure = [] {
+    HierarchicalMemoryBudgetOperationResult failure;
+    failure.status = BudgetStatus(StatusCode::memory_unknown_pointer, Severity::error);
+    return failure;
+  };
   if (!token.valid()) {
     failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(StatusCode::memory_unknown_pointer,
                         "SB-MEMORY-BUDGET-RELEASE-UNKNOWN-RESERVATION",
                         "memory.budget.release.unknown_reservation",
@@ -602,6 +841,7 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
   auto it = token_shard.tokens.find(token.token_id);
   if (it == token_shard.tokens.end()) {
     failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(StatusCode::memory_unknown_pointer,
                         "SB-MEMORY-BUDGET-RELEASE-UNKNOWN-RESERVATION",
                         "memory.budget.release.unknown_reservation",
@@ -611,6 +851,7 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
   ReservationRecord& record = it->second;
   if (record.token.bytes != token.bytes) {
     failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+    if (!materialize_diagnostic) return no_alloc_failure();
     return TokenFailure(StatusCode::memory_unknown_pointer,
                         "SB-MEMORY-BUDGET-RELEASE-UNDERFLOW-REFUSED",
                         "memory.budget.release.underflow_refused",
@@ -619,8 +860,33 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
                          {"recorded_bytes", std::to_string(record.token.bytes)}});
   }
 
-  auto scope_locks = LockScopeShardsForChain(record.scope_chain);
-  const auto accounting_release = accounting_.Release(record.accounting_token);
+  std::unique_lock<std::mutex> owner_lock;
+  if (record.retained_owner) {
+    owner_lock = std::unique_lock<std::mutex>(record.retained_owner->mutex);
+    if (retained_owner != record.retained_owner.get()) {
+      HierarchicalMemoryBudgetOperationResult result;
+      result.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
+      result.retained = true;
+      result.retained_bytes = token.bytes;
+      result.newly_revoked = !record.revocation_pending;
+      record.retained_owner->live = false;
+      if (!record.revocation_pending) {
+        record.revocation_pending = true;
+        record.pending_reason = CleanupReason::release;
+        pending_revocation_count_.fetch_add(1, std::memory_order_relaxed);
+        retained_revoked_bytes_.fetch_add(token.bytes, std::memory_order_relaxed);
+      }
+      failed_release_count_.fetch_add(1, std::memory_order_relaxed);
+      return result;
+    }
+    record.retained_owner->live = false;
+  } else if (retained_owner) {
+    return no_alloc_failure();
+  }
+  ScopeLocks scope_locks(*this, record.scope_shard_indexes);
+  const auto accounting_release = materialize_diagnostic
+      ? accounting_.Release(record.accounting_token)
+      : ShardedMemoryAccountingOperationResult{accounting_.ReleaseNoAlloc(record.accounting_token), {}};
   if (!accounting_release.ok()) {
     failed_release_count_.fetch_add(1, std::memory_order_relaxed);
     HierarchicalMemoryBudgetOperationResult result;
@@ -629,19 +895,22 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
     return result;
   }
 
-  for (const auto& scope_ref : record.scope_chain) {
-    ScopeShard& scope_shard = ScopeShardForIndex(ScopeShardIndex(scope_ref));
-    auto& scope = scope_shard.scopes[ScopeKey(scope_ref)];
+  for (auto* scope_ptr : record.scopes) {
+    auto& scope = *scope_ptr;
     SubtractPriorityWeight(PriorityWeight(record.priority, record.weight), &scope);
     if (record.state == HierarchicalMemoryReservationState::reserved) {
       SubtractReservedBytes(record.token.bytes, &scope);
     } else {
       SubtractActiveBytes(record.token.bytes, &scope);
     }
-    ++scope.release_count;
+    switch (record.revocation_pending ? record.pending_reason : CleanupReason::release) {
+      case CleanupReason::release: ++scope.release_count; break;
+      case CleanupReason::cancel: ++scope.cancel_cleanup_count; break;
+      case CleanupReason::owner: ++scope.owner_cleanup_count; break;
+      case CleanupReason::lease_expiry: ++scope.lease_expiry_cleanup_count; break;
+    }
   }
-  ScopeShard& class_shard = ScopeShardForIndex(ScopeShardIndex(record.scope_chain.front()));
-  auto& class_accounting = class_shard.classes[ClassKey(record.category, record.memory_class)];
+  auto& class_accounting = *record.class_accounting;
   if (record.state == HierarchicalMemoryReservationState::reserved) {
     class_accounting.reserved_bytes =
         class_accounting.reserved_bytes >= record.token.bytes
@@ -655,13 +924,21 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Release(
   }
   ++class_accounting.release_count;
   if (record.state == HierarchicalMemoryReservationState::active) {
-    global_current_bytes_.fetch_sub(record.token.bytes, std::memory_order_relaxed);
     global_active_allocation_count_.fetch_sub(1, std::memory_order_relaxed);
   } else {
-    global_reserved_bytes_.fetch_sub(record.token.bytes, std::memory_order_relaxed);
     global_active_reservation_count_.fetch_sub(1, std::memory_order_relaxed);
   }
-  global_release_count_.fetch_add(1, std::memory_order_relaxed);
+  switch (record.revocation_pending ? record.pending_reason : CleanupReason::release) {
+    case CleanupReason::release: global_release_count_.fetch_add(1, std::memory_order_relaxed); break;
+    case CleanupReason::cancel: global_cancel_cleanup_count_.fetch_add(1, std::memory_order_relaxed); break;
+    case CleanupReason::owner: global_owner_cleanup_count_.fetch_add(1, std::memory_order_relaxed); break;
+    case CleanupReason::lease_expiry: global_lease_expiry_cleanup_count_.fetch_add(1, std::memory_order_relaxed); break;
+  }
+  if (record.revocation_pending) {
+    pending_revocation_count_.fetch_sub(1, std::memory_order_relaxed);
+    retained_revoked_bytes_.fetch_sub(token.bytes, std::memory_order_relaxed);
+  }
+  scope_locks.Unlock();  // The index vector belongs to the token being erased.
   token_shard.tokens.erase(it);
 
   HierarchicalMemoryBudgetOperationResult result;
@@ -694,9 +971,18 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::Cancel(
 }
 
 HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupOwner(std::string owner_id) {
+  return CleanupOwnerImpl(owner_id, {});
+}
+
+HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupOwner(const MemoryBinaryUuid& owner_uuid) {
+  return CleanupOwnerImpl({}, owner_uuid);
+}
+
+HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupOwnerImpl(
+    std::string_view owner_id, const MemoryBinaryUuid& owner_uuid) {
   HierarchicalMemoryCleanupResult cleanup;
   cleanup.status = OkStatus();
-  if (owner_id.empty()) {
+  if (MemoryUuidPresent(owner_uuid) ? !MemorySystemUuidValid(owner_uuid) : owner_id.empty()) {
     cleanup.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
     cleanup.diagnostic = MakeBudgetDiagnostic(cleanup.status,
                                               "SB-MEMORY-BUDGET-OWNER-CLEANUP-INVALID",
@@ -708,19 +994,24 @@ HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupOwner(std
   for (auto& token_shard_ptr : token_shards_) {
     TokenShard& token_shard = *token_shard_ptr;
     std::lock_guard<std::mutex> token_lock(token_shard.mutex);
-    std::vector<u64> token_ids;
-    for (const auto& entry : token_shard.tokens) {
-      if (entry.second.owner_id == owner_id) {
-        token_ids.push_back(entry.first);
-      }
-    }
-    std::sort(token_ids.begin(), token_ids.end());
-    for (u64 token_id : token_ids) {
-      const auto bytes = token_shard.tokens[token_id].token.bytes;
-      const auto result = CleanupLocked(token_shard, token_id, CleanupReason::owner);
-      if (result.ok()) {
-        ++cleanup.cleaned_reservation_count;
-        cleanup.cleaned_bytes += bytes;
+    for (auto it = token_shard.tokens.begin(); it != token_shard.tokens.end();) {
+      auto current = it++;
+      if (current->second.owner_id != owner_id || current->second.binary_owner_uuid != owner_uuid) continue;
+      const auto bytes = current->second.token.bytes;
+      auto result = CleanupLocked(token_shard, current->first, CleanupReason::owner);
+      if (result.retained || result.ok()) {
+        if (result.retained) {
+          cleanup.status = result.status;
+          cleanup.revoked_reservation_count += result.newly_revoked ? 1 : 0;
+          cleanup.retained_bytes += result.retained_bytes;
+        } else {
+          ++cleanup.cleaned_reservation_count;
+          cleanup.cleaned_bytes += bytes;
+        }
+      } else {
+        cleanup.status = result.status;
+        cleanup.diagnostic = std::move(result.diagnostic);
+        return cleanup;
       }
     }
   }
@@ -733,20 +1024,25 @@ HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupExpiredLe
   for (auto& token_shard_ptr : token_shards_) {
     TokenShard& token_shard = *token_shard_ptr;
     std::lock_guard<std::mutex> token_lock(token_shard.mutex);
-    std::vector<u64> token_ids;
-    for (const auto& entry : token_shard.tokens) {
-      const u64 lease = entry.second.lease_expires_at_ms;
-      if (lease != 0 && lease <= now_ms) {
-        token_ids.push_back(entry.first);
-      }
-    }
-    std::sort(token_ids.begin(), token_ids.end());
-    for (u64 token_id : token_ids) {
-      const auto bytes = token_shard.tokens[token_id].token.bytes;
-      const auto result = CleanupLocked(token_shard, token_id, CleanupReason::lease_expiry);
-      if (result.ok()) {
-        ++cleanup.cleaned_reservation_count;
-        cleanup.cleaned_bytes += bytes;
+    for (auto it = token_shard.tokens.begin(); it != token_shard.tokens.end();) {
+      auto current = it++;
+      const auto lease = current->second.lease_expires_at_ms;
+      if (lease == 0 || lease > now_ms) continue;
+      const auto bytes = current->second.token.bytes;
+      auto result = CleanupLocked(token_shard, current->first, CleanupReason::lease_expiry);
+      if (result.retained || result.ok()) {
+        if (result.retained) {
+          cleanup.status = result.status;
+          cleanup.revoked_reservation_count += result.newly_revoked ? 1 : 0;
+          cleanup.retained_bytes += result.retained_bytes;
+        } else {
+          ++cleanup.cleaned_reservation_count;
+          cleanup.cleaned_bytes += bytes;
+        }
+      } else {
+        cleanup.status = result.status;
+        cleanup.diagnostic = std::move(result.diagnostic);
+        return cleanup;
       }
     }
   }
@@ -773,23 +1069,28 @@ HierarchicalMemoryBudgetSnapshot HierarchicalMemoryBudgetLedger::Snapshot() cons
       global_active_reservation_count_.load(std::memory_order_relaxed);
   snapshot.active_allocation_count =
       global_active_allocation_count_.load(std::memory_order_relaxed);
+  snapshot.pending_revocation_count = pending_revocation_count_.load(std::memory_order_relaxed);
+  snapshot.retained_revoked_bytes = retained_revoked_bytes_.load(std::memory_order_relaxed);
   snapshot.hard_limit_refusal_count = hard_limit_refusal_count_.load(std::memory_order_relaxed);
   snapshot.soft_limit_recommendation_count =
       soft_limit_recommendation_count_.load(std::memory_order_relaxed);
   snapshot.failed_commit_count = failed_commit_count_.load(std::memory_order_relaxed);
   snapshot.failed_release_count = failed_release_count_.load(std::memory_order_relaxed);
 
-  std::map<std::string, HierarchicalMemoryScopeSnapshot> scopes;
+  std::map<ShardedMemoryScopeKey, HierarchicalMemoryScopeSnapshot> scopes;
   std::map<std::string, HierarchicalMemoryClassSnapshot> classes;
   for (const auto& shard_ptr : scope_shards_) {
     const ScopeShard& shard = *shard_ptr;
     std::lock_guard<std::mutex> lock(shard.mutex);
     for (const auto& entry : shard.scopes) {
       const auto& source = entry.second;
-      const auto scope_accounting = accounting_.SnapshotForContext(entry.first);
+      const auto scope_accounting = std::holds_alternative<std::string>(entry.first)
+          ? accounting_.SnapshotForContext(std::get<std::string>(entry.first))
+          : accounting_.SnapshotForContext(std::get<MemoryBinaryScopeKey>(entry.first));
       HierarchicalMemoryScopeSnapshot scope;
       scope.kind = source.kind;
       scope.scope_id = source.scope_id;
+      scope.binary_scope_uuid = source.binary_scope_uuid;
       scope.hard_limit_bytes = source.hard_limit_bytes;
       scope.soft_limit_bytes = source.soft_limit_bytes;
       scope.reserved_bytes = source.reserved_bytes;
@@ -805,7 +1106,8 @@ HierarchicalMemoryBudgetSnapshot HierarchicalMemoryBudgetLedger::Snapshot() cons
       scope.active_reservation_count = source.active_reservation_count;
       scope.active_allocation_count = source.active_allocation_count;
       scope.priority_weight_total = source.priority_weight_total;
-      scopes[entry.first] = std::move(scope);
+      // Avoid copying a fallible string inside a variant constructor.
+      scopes.emplace(ScopeKey({source.kind, source.scope_id, source.binary_scope_uuid}), std::move(scope));
 
     }
     for (const auto& entry : shard.classes) {
@@ -858,6 +1160,25 @@ std::vector<usize> HierarchicalMemoryBudgetLedger::ScopeShardIndexesForChain(
   return indexes;
 }
 
+HierarchicalMemoryBudgetLedger::ScopeLocks::ScopeLocks(
+    HierarchicalMemoryBudgetLedger& ledger, const std::vector<usize>& indexes)
+    : ledger_(ledger), indexes_(indexes) {
+  try {
+    for (; locked_ < indexes_.size(); ++locked_)
+      ledger_.scope_shards_[indexes_[locked_]]->mutex.lock();
+  } catch (...) {
+    Unlock();
+    throw;
+  }
+}
+
+HierarchicalMemoryBudgetLedger::ScopeLocks::~ScopeLocks() { Unlock(); }
+
+void HierarchicalMemoryBudgetLedger::ScopeLocks::Unlock() noexcept {
+  while (locked_ != 0)
+    ledger_.scope_shards_[indexes_[--locked_]]->mutex.unlock();
+}
+
 std::vector<std::unique_lock<std::mutex>> HierarchicalMemoryBudgetLedger::LockScopeShardsForChain(
     const std::vector<HierarchicalMemoryScopeRef>& chain) {
   const auto shard_indexes = ScopeShardIndexesForChain(chain);
@@ -901,8 +1222,26 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
                         {token_id, 0},
                         {{"reason", "token_not_found"}});
   }
-  ReservationRecord record = it->second;
-  auto scope_locks = LockScopeShardsForChain(record.scope_chain);
+  ReservationRecord& record = it->second;
+  if (record.retained_owner) {
+    std::lock_guard owner_lock(record.retained_owner->mutex);
+    HierarchicalMemoryBudgetOperationResult result;
+    // Revocation was requested, but cleanup is not complete until the owning
+    // context has quiesced and released physical storage and this lease.
+    result.status = BudgetStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.retained = true;
+    result.retained_bytes = record.token.bytes;
+    result.newly_revoked = !record.revocation_pending;
+    record.retained_owner->live = false;
+    if (!record.revocation_pending) {
+      record.revocation_pending = true;
+      record.pending_reason = reason;
+      pending_revocation_count_.fetch_add(1, std::memory_order_relaxed);
+      retained_revoked_bytes_.fetch_add(record.token.bytes, std::memory_order_relaxed);
+    }
+    return result;
+  }
+  ScopeLocks scope_locks(*this, record.scope_shard_indexes);
   const auto accounting_release = accounting_.Release(record.accounting_token);
   if (!accounting_release.ok()) {
     HierarchicalMemoryBudgetOperationResult result;
@@ -910,9 +1249,8 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
     result.diagnostic = accounting_release.diagnostic;
     return result;
   }
-  for (const auto& scope_ref : record.scope_chain) {
-    ScopeShard& scope_shard = ScopeShardForIndex(ScopeShardIndex(scope_ref));
-    auto& scope = scope_shard.scopes[ScopeKey(scope_ref)];
+  for (auto* scope_ptr : record.scopes) {
+    auto& scope = *scope_ptr;
     SubtractPriorityWeight(PriorityWeight(record.priority, record.weight), &scope);
     if (record.state == HierarchicalMemoryReservationState::reserved) {
       SubtractReservedBytes(record.token.bytes, &scope);
@@ -920,6 +1258,9 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
       SubtractActiveBytes(record.token.bytes, &scope);
     }
     switch (reason) {
+      case CleanupReason::release:
+        ++scope.release_count;
+        break;
       case CleanupReason::cancel:
         ++scope.cancel_cleanup_count;
         break;
@@ -932,8 +1273,7 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
     }
 
   }
-  ScopeShard& class_shard = ScopeShardForIndex(ScopeShardIndex(record.scope_chain.front()));
-  auto& class_accounting = class_shard.classes[ClassKey(record.category, record.memory_class)];
+  auto& class_accounting = *record.class_accounting;
   if (record.state == HierarchicalMemoryReservationState::reserved) {
     class_accounting.reserved_bytes =
         class_accounting.reserved_bytes >= record.token.bytes
@@ -947,13 +1287,14 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
   }
   ++class_accounting.release_count;
   if (record.state == HierarchicalMemoryReservationState::active) {
-    global_current_bytes_.fetch_sub(record.token.bytes, std::memory_order_relaxed);
     global_active_allocation_count_.fetch_sub(1, std::memory_order_relaxed);
   } else {
-    global_reserved_bytes_.fetch_sub(record.token.bytes, std::memory_order_relaxed);
     global_active_reservation_count_.fetch_sub(1, std::memory_order_relaxed);
   }
   switch (reason) {
+    case CleanupReason::release:
+      global_release_count_.fetch_add(1, std::memory_order_relaxed);
+      break;
     case CleanupReason::cancel:
       global_cancel_cleanup_count_.fetch_add(1, std::memory_order_relaxed);
       break;
@@ -964,6 +1305,7 @@ HierarchicalMemoryBudgetOperationResult HierarchicalMemoryBudgetLedger::CleanupL
       global_lease_expiry_cleanup_count_.fetch_add(1, std::memory_order_relaxed);
       break;
   }
+  scope_locks.Unlock();
   token_shard.tokens.erase(it);
 
   HierarchicalMemoryBudgetOperationResult result;

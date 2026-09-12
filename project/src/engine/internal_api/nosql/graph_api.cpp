@@ -152,7 +152,7 @@ bool ExactGraphValueDescriptor(const EngineDescriptor& descriptor,
         !fields.contains("datatype_descriptor_uuid") ||
         fields.at("datatype_descriptor_uuid") !=
             expected_registry_identity->descriptor_uuid ||
-        descriptor.descriptor_uuid.canonical !=
+        descriptor.descriptor_uuid !=
             expected_column_uuid ||
         !fields.contains("datatype_descriptor_generation") ||
         fields.at("datatype_descriptor_generation") !=
@@ -198,8 +198,8 @@ bool ExactGraphDescriptorCohort(
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = descriptor.columns[ordinal];
     for (std::size_t prior = 0; prior < ordinal; ++prior) {
-      if (descriptor.columns[prior].column_uuid.canonical ==
-          column.column_uuid.canonical) {
+      if (descriptor.columns[prior].column_uuid ==
+          column.column_uuid) {
         return false;
       }
     }
@@ -237,11 +237,11 @@ bool ExactGraphDescriptorCohort(
         column.storage_class != "inline_row_value" ||
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
-        !CanonicalUuid(column.column_uuid.canonical) ||
+        !CanonicalUuid(column.column_uuid) ||
         !ExactGraphValueDescriptor(column.value_descriptor, kTypes[ordinal],
                                    expected_type_uuid,
                                    expected_registry_identity,
-                                   column.column_uuid.canonical,
+                                   column.column_uuid,
                                    kNullable[ordinal])) {
       return false;
     }
@@ -1352,11 +1352,11 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
     return corpus;
   };
   if (!CanonicalUuid(request.graph_object_uuid) ||
-      request.bound_object_identity.object_uuid.canonical !=
+      request.bound_object_identity.object_uuid !=
           request.graph_object_uuid ||
       request.bound_object_identity.resolved_object_type != "graph" ||
       !CanonicalUuid(
-          request.bound_object_identity.resolved_schema_uuid.canonical) ||
+          request.bound_object_identity.resolved_schema_uuid) ||
       request.bound_object_identity.catalog_generation_id == 0 ||
       request.bound_object_identity.security_epoch == 0 ||
       request.bound_object_identity.resource_epoch == 0 ||
@@ -1389,14 +1389,14 @@ PersistentGraphCorpus LoadPersistentGraphCorpus(
                    "persistent graph relation descriptor is unavailable");
   }
   const auto& relation = loaded.descriptor;
-  if (relation.relation_uuid.canonical != request.graph_object_uuid ||
-      relation.database_uuid.canonical !=
-          request.context.database_uuid.canonical ||
-      relation.schema_uuid.canonical !=
-          request.bound_object_identity.resolved_schema_uuid.canonical ||
+  if (relation.relation_uuid != request.graph_object_uuid ||
+      relation.database_uuid !=
+          request.context.database_uuid ||
+      relation.schema_uuid !=
+          request.bound_object_identity.resolved_schema_uuid ||
       relation.relation_kind != "table" ||
       relation.storage_profile != "local_mga_rowstore_v1" ||
-      relation.descriptor_uuid.canonical.empty() ||
+      relation.descriptor_uuid.is_nil() ||
       relation.descriptor_generation != request.provider_generation ||
       !ExactGraphDescriptorCohort(relation)) {
     return invalid(kNoSqlProviderGenerationStale,
@@ -1946,11 +1946,11 @@ EngineGraphWriteResult StructuredGraphWrite(
     const EngineGraphWriteRequest& request,
     const std::string& operation_id) {
   if (!CanonicalUuid(request.graph_object_uuid) ||
-      request.bound_object_identity.object_uuid.canonical !=
+      request.bound_object_identity.object_uuid !=
           request.graph_object_uuid ||
       request.bound_object_identity.resolved_object_type != "graph" ||
       !CanonicalUuid(
-          request.bound_object_identity.resolved_schema_uuid.canonical) ||
+          request.bound_object_identity.resolved_schema_uuid) ||
       request.bound_object_identity.catalog_generation_id !=
           request.context.catalog_generation_id ||
       request.bound_object_identity.security_epoch !=
@@ -1977,15 +1977,15 @@ EngineGraphWriteResult StructuredGraphWrite(
       LoadMgaRelationStorageDescriptor(request.context,
                                        request.graph_object_uuid);
   if (!loaded.ok ||
-      loaded.descriptor.relation_uuid.canonical !=
+      loaded.descriptor.relation_uuid !=
           request.graph_object_uuid ||
-      loaded.descriptor.database_uuid.canonical !=
-          request.context.database_uuid.canonical ||
-      loaded.descriptor.schema_uuid.canonical !=
-          request.bound_object_identity.resolved_schema_uuid.canonical ||
+      loaded.descriptor.database_uuid !=
+          request.context.database_uuid ||
+      loaded.descriptor.schema_uuid !=
+          request.bound_object_identity.resolved_schema_uuid ||
       loaded.descriptor.relation_kind != "table" ||
       loaded.descriptor.storage_profile != "local_mga_rowstore_v1" ||
-      loaded.descriptor.descriptor_uuid.canonical.empty() ||
+      loaded.descriptor.descriptor_uuid.is_nil() ||
       loaded.descriptor.descriptor_generation != request.provider_generation ||
       !ExactGraphDescriptorCohort(loaded.descriptor)) {
     return DiagnosticResult<EngineGraphWriteResult>(
@@ -2084,7 +2084,7 @@ EngineGraphWriteResult StructuredGraphWrite(
   auto result =
       MakeApiBehaviorSuccess<EngineGraphWriteResult>(request.context,
                                                      operation_id);
-  result.primary_object.uuid.canonical = request.graph_object_uuid;
+  result.primary_object.uuid = request.graph_object_uuid;
   result.primary_object.object_kind = "graph";
   result.dml_summary.rows_changed = rows.size();
   result.dml_summary.append_calls = 1;

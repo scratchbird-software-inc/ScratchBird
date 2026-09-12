@@ -214,7 +214,7 @@ bool IsClusterProviderExecutionResult(const scratchbird::engine::sblr::SblrDispa
          result.dispatched_to_api &&
          result.api_result.ok &&
          StartsWith(result.api_result.result_shape.result_kind, "cluster.") &&
-         !HasApiDiagnostic(result.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED") &&
+         !HasApiDiagnostic(result.api_result, "PROCESS.CLUSTER_PATH_ABSENT") &&
          !HasApiDiagnostic(result.api_result, "SB_SBLR_DISPATCH_CLUSTER_AUTHORITY_UNAVAILABLE") &&
          !HasApiDiagnostic(result.api_result, "SB_ENGINE_API_NOT_IMPLEMENTED");
 }
@@ -341,7 +341,7 @@ int main(int argc, char** argv) {
           HasApiDiagnostic(result.api_result, "SB_SBLR_DISPATCH_CLUSTER_AUTHORITY_UNAVAILABLE");
       const bool has_provider_refusal =
           !result.api_result.ok &&
-          HasApiDiagnostic(result.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED");
+          HasApiDiagnostic(result.api_result, "PROCESS.CLUSTER_PATH_ABSENT");
       const bool has_provider_execution = IsClusterProviderExecutionResult(result);
       if (!result.envelope_validated || !result.dispatched_to_api ||
           (!has_old_dispatch_refusal && !has_provider_refusal && !has_provider_execution)) {

@@ -13,6 +13,7 @@
 #include <limits>
 #include <ranges>
 #include <unordered_set>
+#include <set>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
@@ -21,22 +22,13 @@ namespace {
 constexpr std::string_view kCanonicalRouteId =
     "native.sblr.query.execute.v2";
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
+bool IsCanonicalUuid(const planner::CanonicalPlannerUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 template <typename T>
 bool IsUnique(const std::vector<T>& values) {
-  std::unordered_set<T> seen;
+  std::set<T> seen;
   return std::ranges::all_of(values,
                              [&](const auto& value) {
                                return seen.insert(value).second;
@@ -56,9 +48,9 @@ std::vector<std::uint32_t> RequiredDescriptors(
   return descriptors;
 }
 
-std::vector<std::string> RequiredObjects(
+std::vector<planner::CanonicalPlannerUuid> RequiredObjects(
     const planner::CanonicalLogicalRelationalGraph& graph) {
-  std::vector<std::string> objects;
+  std::vector<planner::CanonicalPlannerUuid> objects;
   for (const auto& node : graph.nodes) {
     objects.insert(objects.end(), node.required_object_uuids.begin(),
                    node.required_object_uuids.end());

@@ -104,23 +104,23 @@ bool IssueUuid(wire::TypedUpdateUuid* out) {
   return true;
 }
 auto ContextKey(const EngineRequestContext& c) {
-  return std::tie(c.database_path, c.database_uuid.canonical, c.session_uuid.canonical,
-      c.principal_uuid.canonical, c.transaction_uuid.canonical, c.local_transaction_id,
-      c.statement_uuid.canonical, c.statement_receipt_uuid.canonical,
-      c.statement_snapshot_uuid.canonical, c.statement_snapshot_generation,
-      c.statement_metadata_snapshot_uuid.canonical, c.statement_metadata_snapshot_engine_owned,
+  return std::tie(c.database_path, c.database_uuid, c.session_uuid,
+      c.principal_uuid, c.transaction_uuid, c.local_transaction_id,
+      c.statement_uuid, c.statement_receipt_uuid,
+      c.statement_snapshot_uuid, c.statement_snapshot_generation,
+      c.statement_metadata_snapshot_uuid, c.statement_metadata_snapshot_engine_owned,
       c.snapshot_visible_through_local_transaction_id,
       c.statement_metadata_snapshot_visible_through_local_transaction_id,
       c.statement_metadata_snapshot_active_excluded_local_transaction_ids,
       c.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids,
-      c.catalog_generation_id, c.catalog_epoch_uuid.canonical, c.resource_epoch,
-      c.resource_admission_uuid.canonical, c.security_context_present, c.security_epoch,
-      c.authorization_context.present, c.authorization_context.authority_uuid.canonical,
-      c.authorization_context.security_context_generation, c.authorization_context.principal_uuid.canonical,
+      c.catalog_generation_id, c.catalog_epoch_uuid, c.resource_epoch,
+      c.resource_admission_uuid, c.security_context_present, c.security_epoch,
+      c.authorization_context.present, c.authorization_context.authority_uuid,
+      c.authorization_context.security_context_generation, c.authorization_context.principal_uuid,
       c.authorization_context.catalog_generation_id, c.authorization_context.security_epoch,
-      c.authorization_context.policy_epoch, c.current_role_uuid.canonical,
-      c.transaction_policy_snapshot_uuid.canonical, c.transaction_policy_snapshot_generation,
-      c.datatype_catalog_snapshot_uuid.canonical, c.datatype_catalog_generation,
+      c.authorization_context.policy_epoch, c.current_role_uuid,
+      c.transaction_policy_snapshot_uuid, c.transaction_policy_snapshot_generation,
+      c.datatype_catalog_snapshot_uuid, c.datatype_catalog_generation,
       c.datatype_registry_generation, c.transaction_isolation_level,
       c.read_only_mode, c.cluster_transaction_active, c.route_fence_present);
 }
@@ -129,16 +129,16 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c) {
     return Refuse("read-write unfenced local MGA context required", "SBLR.OPERATION_UNSUPPORTED");
   if (!c.security_context_present || !c.authorization_context.present ||
       !c.statement_metadata_snapshot_engine_owned || !c.local_transaction_id || !c.resource_epoch ||
-      !ExactUuid(c.database_uuid.canonical) || !ExactUuid(c.transaction_uuid.canonical) ||
-      !ExactUuid(c.statement_uuid.canonical) || !ExactUuid(c.session_uuid.canonical) ||
-      !ExactUuid(c.principal_uuid.canonical) || !ExactUuid(c.statement_receipt_uuid.canonical) ||
-      !ExactUuid(c.statement_snapshot_uuid.canonical) ||
-      !ExactUuid(c.statement_metadata_snapshot_uuid.canonical) ||
-      !ExactUuid(c.resource_admission_uuid.canonical) ||
-      !ExactUuid(c.authorization_context.authority_uuid.canonical) ||
+      !ExactUuid(c.database_uuid) || !ExactUuid(c.transaction_uuid) ||
+      !ExactUuid(c.statement_uuid) || !ExactUuid(c.session_uuid) ||
+      !ExactUuid(c.principal_uuid) || !ExactUuid(c.statement_receipt_uuid) ||
+      !ExactUuid(c.statement_snapshot_uuid) ||
+      !ExactUuid(c.statement_metadata_snapshot_uuid) ||
+      !ExactUuid(c.resource_admission_uuid) ||
+      !ExactUuid(c.authorization_context.authority_uuid) ||
       !c.authorization_context.security_context_generation || !c.security_epoch ||
       !c.authorization_context.policy_epoch || !c.catalog_generation_id ||
-      c.authorization_context.principal_uuid.canonical != c.principal_uuid.canonical ||
+      c.authorization_context.principal_uuid != c.principal_uuid ||
       c.authorization_context.catalog_generation_id != c.catalog_generation_id ||
       c.authorization_context.security_epoch != c.security_epoch)
     return Refuse("authenticated receipt resource context is incomplete", "SECURITY.ACCESS_DENIED");
@@ -147,7 +147,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c) {
   const auto txn = mga::LookupLocalTransaction(loaded.snapshot->inventory,
                                               mga::MakeLocalTransactionId(c.local_transaction_id));
   if (!txn.ok() || txn.entry.state != mga::TransactionState::active || txn.entry.rollback_only ||
-      txn.entry.identity.transaction_uuid.value != uuid::ParseUuid(c.transaction_uuid.canonical).value)
+      txn.entry.identity.transaction_uuid.value != uuid::ParseUuid(c.transaction_uuid).value)
     return Refuse("owning MGA transaction is not active", "MGA.TRANSACTION.STALE");
   return Ok();
 }
@@ -306,8 +306,8 @@ EngineDmlUpdateResourceCaptureV1 EngineDmlUpdateResourceGovernorV1::Capture(cons
   b.resource_budget_generation = state_->generation;
   b.grant_receipt_generation = ++state_->next_grant_generation;
   b.cancellation_generation = b.grant_receipt_generation;
-  b.authenticated_statement_receipt_uuid = BinaryUuid(c.statement_receipt_uuid.canonical);
-  b.owning_transaction_uuid = BinaryUuid(c.transaction_uuid.canonical);
+  b.authenticated_statement_receipt_uuid = BinaryUuid(c.statement_receipt_uuid);
+  b.owning_transaction_uuid = BinaryUuid(c.transaction_uuid);
   const auto& p = state_->policy;
   b.maximum_assignments = p.maximum_assignments;
   b.maximum_predicate_nodes = p.maximum_predicate_nodes;
@@ -324,7 +324,7 @@ EngineDmlUpdateResourceCaptureV1 EngineDmlUpdateResourceGovernorV1::Capture(cons
   }
   resources::HierarchicalMemoryBudgetReserveRequest request;
   request.operation_id = "dml.update_rows";
-  request.owner_scope = c.statement_receipt_uuid.canonical;
+  request.owner_scope = c.statement_receipt_uuid;
   request.leaf_scope_id = "canonical_values";
   request.bytes = b.maximum_total_canonical_value_bytes;
   // Prepare request bookkeeping first, then retain the owner before debiting.

@@ -10,6 +10,7 @@
 // DATABASE_OWNERSHIP: server route ownership is a hard fail-closed token.
 
 #include "database_ownership.hpp"
+#include "../storage/disk/route_ownership_lease.hpp"
 
 #include <chrono>
 #include <cerrno>
@@ -35,6 +36,14 @@
 namespace scratchbird::server {
 
 namespace {
+
+std::uint64_t CurrentProcessId() {
+#ifdef _WIN32
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
 
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -121,64 +130,126 @@ std::string DescriptorText(const DatabaseOwnershipRequest& request) {
 }  // namespace
 
 DatabaseOwnershipLock::DatabaseOwnershipLock(NativeHandle handle,
+                                             NativeHandle storage_handle,
                                              std::filesystem::path lock_path)
-    : handle_(handle), lock_path_(std::move(lock_path)) {}
+    : handle_(handle), storage_handle_(storage_handle),
+      owner_pid_(CurrentProcessId()), lock_path_(std::move(lock_path)) {}
 
 DatabaseOwnershipLock::~DatabaseOwnershipLock() {
   release();
 }
 
 DatabaseOwnershipLock::DatabaseOwnershipLock(DatabaseOwnershipLock&& other) noexcept
-    : handle_(other.handle_), lock_path_(std::move(other.lock_path_)) {
+    : lease_(std::move(other.lease_)),
+      handle_(other.handle_), storage_handle_(other.storage_handle_),
+      owner_pid_(other.owner_pid_), lock_path_(std::move(other.lock_path_)) {
 #ifdef _WIN32
   other.handle_ = nullptr;
+  other.storage_handle_ = nullptr;
 #else
   other.handle_ = -1;
+  other.storage_handle_ = -1;
 #endif
+  other.owner_pid_ = 0;
 }
 
 DatabaseOwnershipLock& DatabaseOwnershipLock::operator=(DatabaseOwnershipLock&& other) noexcept {
   if (this != &other) {
     release();
+    lease_ = std::move(other.lease_);
     handle_ = other.handle_;
+    storage_handle_ = other.storage_handle_;
+    owner_pid_ = other.owner_pid_;
     lock_path_ = std::move(other.lock_path_);
 #ifdef _WIN32
     other.handle_ = nullptr;
+    other.storage_handle_ = nullptr;
 #else
     other.handle_ = -1;
+    other.storage_handle_ = -1;
 #endif
+    other.owner_pid_ = 0;
   }
   return *this;
 }
 
-bool DatabaseOwnershipLock::valid() const {
 #ifdef _WIN32
-  return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE;
+std::uint32_t DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path) {
 #else
-  return handle_ >= 0;
+int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path) {
+#endif
+  // Allocate before transferring either handle. Existing primary files are
+  // locked by their opened inode before any descriptor publication.
+  auto lease = std::shared_ptr<storage::disk::RouteOwnershipLease>(
+      new storage::disk::RouteOwnershipLease(lock_path_.string(), owner_pid_));
+#ifdef _WIN32
+  lease->handle_ = std::exchange(handle_, nullptr);
+  lease->storage_handle_ = std::exchange(storage_handle_, nullptr);
+#else
+  lease->handle_ = std::exchange(handle_, -1);
+  lease->storage_handle_ = std::exchange(storage_handle_, -1);
+#endif
+  lease_ = std::move(lease);
+  return lease_->AcquireDataFile(database_path);
+}
+
+bool DatabaseOwnershipLock::PublishStorageLease() {
+  // Publication still happens only after the checked durable descriptor write.
+  return lease_ && lease_->Publish(lease_);
+}
+
+DatabaseOwnershipLock::NativeHandle DatabaseOwnershipLock::native_handle() const {
+  return lease_ ? lease_->handle_ : handle_;
+}
+
+bool DatabaseOwnershipLock::valid() const {
+  if (lease_) return lease_->valid();
+  if (owner_pid_ != CurrentProcessId()) return false;
+#ifdef _WIN32
+  return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE &&
+         storage_handle_ != nullptr && storage_handle_ != INVALID_HANDLE_VALUE;
+#else
+  return handle_ >= 0 && storage_handle_ >= 0;
 #endif
 }
 
 void DatabaseOwnershipLock::release() {
+  if (lease_) {
+    lease_->Withdraw();
+    lease_.reset();  // admitted FileDevices retain the OS locks until final close
+  }
 #ifdef _WIN32
   if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
     ::CloseHandle(static_cast<HANDLE>(handle_));
     handle_ = nullptr;
   }
+  if (storage_handle_ != nullptr && storage_handle_ != INVALID_HANDLE_VALUE) {
+    ::CloseHandle(static_cast<HANDLE>(storage_handle_));
+    storage_handle_ = nullptr;
+  }
 #else
+  // A forked child must not unlock the parent's shared open-file description.
+  // Closing the inherited fd is safe; flock(LOCK_UN) would release its lock.
+  const bool owning_process = owner_pid_ == CurrentProcessId();
   if (handle_ >= 0) {
-    (void)::flock(handle_, LOCK_UN);
+    if (owning_process) (void)::flock(handle_, LOCK_UN);
     (void)::close(handle_);
     handle_ = -1;
   }
+  if (storage_handle_ >= 0) {
+    if (owning_process) (void)::flock(storage_handle_, LOCK_UN);
+    (void)::close(storage_handle_);
+    storage_handle_ = -1;
+  }
 #endif
+  owner_pid_ = 0;
 }
 
 std::filesystem::path DatabaseOwnershipLockPath(const std::filesystem::path& database_path) {
   std::filesystem::path out = database_path;
-  // Storage owns <database>.sb.owner.lock while the file is open.  This route
-  // descriptor is deliberately separate so embedded clients can discover the
-  // controlling SBPS endpoint without blocking the storage lifecycle itself.
+  // Routing metadata has a separate file, but a server must also retain
+  // <database>.sb.owner.lock for the entire lifetime of this route owner.
+  // The descriptor is discovery data, not a substitute for storage exclusion.
   out += ".sb.route.owner.lock";
   return out;
 }
@@ -213,6 +284,10 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     return result;
   }
 
+  // Allocate path storage before native acquisition so an allocation failure
+  // cannot strand either lock before the RAII owner has been constructed.
+  const auto storage_lock_path = request.database_path.string() + ".sb.owner.lock";
+  auto retained_lock_path = result.lock_path;
 #ifdef _WIN32
   HANDLE handle = ::CreateFileA(result.lock_path.string().c_str(),
                                 GENERIC_READ | GENERIC_WRITE,
@@ -234,12 +309,33 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     return result;
   }
 
+  HANDLE storage_handle = ::CreateFileA(storage_lock_path.c_str(),
+                                        GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (storage_handle == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    ::CloseHandle(handle);
+    result.diagnostic_code = WindowsSharingConflict(error)
+        ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("storage_owner_acquire_failed:") +
+                               WindowsLastErrorText(error);
+    return result;
+  }
+  DatabaseOwnershipLock ownership(handle, storage_handle, std::move(retained_lock_path));
+  const DWORD data_owner_error = ownership.PrepareStorageLease(request.database_path.string());
+  if (data_owner_error != ERROR_SUCCESS) {
+    result.diagnostic_code = WindowsSharingConflict(data_owner_error)
+        ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("data_owner_acquire_failed:") +
+                               WindowsLastErrorText(data_owner_error);
+    return result;
+  }
+  // No descriptor is published until the actual primary is owned as well.
   const std::string text = DescriptorText(request);
   LARGE_INTEGER zero{};
   if (::SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN) == 0 ||
       ::SetEndOfFile(handle) == 0) {
     const DWORD error = ::GetLastError();
-    ::CloseHandle(handle);
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
     result.diagnostic_detail = std::string("descriptor_truncate_failed:") +
                                WindowsLastErrorText(error);
@@ -254,7 +350,6 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
                   nullptr) == 0 ||
       written != text.size()) {
     const DWORD error = ::GetLastError();
-    ::CloseHandle(handle);
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
     result.diagnostic_detail = std::string("descriptor_write_failed:") +
                                WindowsLastErrorText(error);
@@ -263,13 +358,17 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
 
   if (::FlushFileBuffers(handle) == 0) {
     const DWORD error = ::GetLastError();
-    ::CloseHandle(handle);
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
     result.diagnostic_detail = std::string("descriptor_sync_failed:") +
                                WindowsLastErrorText(error);
     return result;
   }
-  result.lock = std::make_shared<DatabaseOwnershipLock>(handle, result.lock_path);
+  if (!ownership.PublishStorageLease()) {
+    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = "process_lease_publication_failed";
+    return result;
+  }
+  result.lock = std::make_shared<DatabaseOwnershipLock>(std::move(ownership));
   result.acquired = true;
   return result;
 #else
@@ -294,11 +393,42 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     return result;
   }
 
-  const std::string text = DescriptorText(request);
-  if (::ftruncate(fd, 0) != 0 || ::lseek(fd, 0, SEEK_SET) < 0) {
+  const int storage_fd = ::open(storage_lock_path.c_str(),
+                                O_RDWR | O_CREAT | FileOpenCloexecFlag(),
+                                S_IRUSR | S_IWUSR);
+  if (storage_fd < 0) {
     const int saved_errno = errno;
     (void)::flock(fd, LOCK_UN);
     (void)::close(fd);
+    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("storage_owner_open_failed:") +
+                               std::strerror(saved_errno);
+    return result;
+  }
+  if (::flock(storage_fd, LOCK_EX | LOCK_NB) != 0) {
+    const int saved_errno = errno;
+    (void)::close(storage_fd);
+    (void)::flock(fd, LOCK_UN);
+    (void)::close(fd);
+    result.diagnostic_code = (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN)
+        ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("storage_owner_lock_failed:") +
+                               std::strerror(saved_errno);
+    return result;
+  }
+  DatabaseOwnershipLock ownership(fd, storage_fd, std::move(retained_lock_path));
+  const int data_owner_error = ownership.PrepareStorageLease(request.database_path.string());
+  if (data_owner_error != 0) {
+    result.diagnostic_code = (data_owner_error == EWOULDBLOCK || data_owner_error == EAGAIN)
+        ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("data_owner_acquire_failed:") +
+                               std::strerror(data_owner_error);
+    return result;
+  }
+  // Do not truncate or publish metadata while another process owns storage.
+  const std::string text = DescriptorText(request);
+  if (::ftruncate(fd, 0) != 0 || ::lseek(fd, 0, SEEK_SET) < 0) {
+    const int saved_errno = errno;
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
     result.diagnostic_detail = std::string("descriptor_truncate_failed:") +
                                std::strerror(saved_errno);
@@ -308,19 +438,32 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
   std::size_t remaining = text.size();
   while (remaining > 0) {
     const ssize_t wrote = ::write(fd, data, remaining);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      (void)::flock(fd, LOCK_UN);
-      (void)::close(fd);
+    if (wrote <= 0) {
+      if (wrote < 0 && errno == EINTR) continue;
+      const int saved_errno = wrote == 0 ? EIO : errno;
       result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
-      result.diagnostic_detail = std::string("descriptor_write_failed:") + std::strerror(errno);
+      result.diagnostic_detail = std::string("descriptor_write_failed:") +
+                                 std::strerror(saved_errno);
       return result;
     }
     data += wrote;
     remaining -= static_cast<std::size_t>(wrote);
   }
-  (void)::fsync(fd);
-  result.lock = std::make_shared<DatabaseOwnershipLock>(fd, result.lock_path);
+  int synced;
+  do { synced = ::fsync(fd); } while (synced != 0 && errno == EINTR);
+  if (synced != 0) {
+    const int saved_errno = errno;
+    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = std::string("descriptor_sync_failed:") +
+                               std::strerror(saved_errno);
+    return result;
+  }
+  if (!ownership.PublishStorageLease()) {
+    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = "process_lease_publication_failed";
+    return result;
+  }
+  result.lock = std::make_shared<DatabaseOwnershipLock>(std::move(ownership));
   result.acquired = true;
   return result;
 #endif

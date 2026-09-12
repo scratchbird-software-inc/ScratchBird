@@ -361,7 +361,7 @@ UpdatePageReservationPlan ReserveUpdatePages(const EngineUpdateRowsRequest& requ
   UpdatePageReservationPlan plan;
   plan.estimated_rows = estimated_matches;
   plan.requested_pages = std::max<std::uint64_t>(1, (estimated_matches + 127) / 128);
-  plan.reservation_id = MakeId("update_page_reservation", request.target_table.uuid.canonical + ":" + std::to_string(plan.requested_pages));
+  plan.reservation_id = MakeId("update_page_reservation", request.target_table.uuid + ":" + std::to_string(plan.requested_pages));
   if (ResolveUpdateFeatureGates(request).page_reservation != UpdateFeatureState::enabled) {
     plan.reservation_available = false;
     plan.refusal_reason = "page_reservation_disabled";
@@ -394,13 +394,13 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
   UpdateBatchContext context;
   context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
   context.local_transaction_id = request.context.local_transaction_id;
-  context.transaction_uuid = request.context.transaction_uuid.canonical;
-  context.database_uuid = request.context.database_uuid.canonical;
-  context.target_object_uuid = request.target_table.uuid.canonical;
+  context.transaction_uuid = request.context.transaction_uuid;
+  context.database_uuid = request.context.database_uuid;
+  context.target_object_uuid = request.target_table.uuid;
   context.estimated_match_count = EstimateMatches(request, state, table, indexes);
   context.update_mode = ResolveUpdateBatchMode(request, state, table, indexes);
   context.predicate_kind = request.update_predicate.predicate_kind.empty() ? "all_visible_rows" : request.update_predicate.predicate_kind;
-  context.security_context_uuid = request.context.principal_uuid.canonical;
+  context.security_context_uuid = request.context.principal_uuid;
   context.policy_snapshot_uuid = UpdateBatchOptionValue(request, "policy_snapshot_uuid=");
   context.feature_gates = ResolveUpdateFeatureGates(request);
   context.memory_policy = ResolveUpdateMemoryPolicy(request);
@@ -409,7 +409,7 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
   context.delta_ledger_policy = ResolveUpdateSecondaryIndexDeltaLedgerPolicy(request, context.feature_gates);
   context.index_plan = BuildUpdateIndexMaintenancePlan(request, state, table, indexes, context.feature_gates, context.delta_ledger_policy);
   context.accepted = request.context.local_transaction_id != 0 &&
-                     !request.target_table.uuid.canonical.empty() &&
+                     !request.target_table.uuid.is_nil() &&
                      !request.assignments.empty() &&
                      !context.assignment_template.touches_opaque_render_only_column &&
                      !context.index_plan.rejected &&
@@ -417,7 +417,7 @@ UpdateBatchContext BuildUpdateBatchContext(const EngineUpdateRowsRequest& reques
   if (!context.accepted) {
     if (request.context.local_transaction_id == 0) {
       context.fallback_reason = "local_transaction_id_required";
-    } else if (request.target_table.uuid.canonical.empty()) {
+    } else if (request.target_table.uuid.is_nil()) {
       context.fallback_reason = "target_table_uuid_required";
     } else if (request.assignments.empty()) {
       context.fallback_reason = "at_least_one_assignment_required";

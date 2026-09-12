@@ -33317,17 +33317,28 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const auto refuse_cte = [&]() {
       AddNativeRelationalLoweringError(
           &envelope, "QOW-DIAG-BOUNDAST-RELATION",
-          "CTE lowering requires an exact heap identity scope and output mapping");
+          "CTE lowering requires an exact child-root scope and output mapping");
       return envelope;
     };
-    if (native.relations.size() != 2 || native.scopes.size() != 2) {
+    if (native.relations.size() < 2 || native.scopes.size() < 2) {
       return refuse_cte();
     }
-    const auto& source = native.relations.front();
     const auto& cte = native.relations.back();
     const auto& scope = native.scopes.back();
-    if (source.relation_kind != NativeRelationAstKind::kCatalogSource ||
-        cte.relation_kind != NativeRelationAstKind::kCte ||
+    if (cte.input_relation_ids.size() != 1 || !scope.parent_scope_id) return refuse_cte();
+    const auto source_it = std::ranges::find(
+        native.relations, cte.input_relation_ids.front(), &BoundRelationAstRecord::relation_id);
+    const auto parent_it = std::ranges::find(
+        native.scopes, *scope.parent_scope_id, &BoundScopeAstRecord::scope_id);
+    if (source_it == native.relations.end() || parent_it == native.scopes.end())
+      return refuse_cte();
+    const auto& source = *source_it;
+    const auto& parent = *parent_it;
+    for (std::size_t i = 0; i + 1 < native.relations.size(); ++i)
+      if (native.relations[i].relation_id >= cte.relation_id) return refuse_cte();
+    for (std::size_t i = 0; i + 1 < native.scopes.size(); ++i)
+      if (native.scopes[i].scope_id >= scope.scope_id) return refuse_cte();
+    if (cte.relation_kind != NativeRelationAstKind::kCte ||
         cte.relation_id <= source.relation_id ||
         native.root_relation_id != cte.relation_id ||
         cte.input_relation_ids != std::vector<std::uint32_t>{source.relation_id} ||
@@ -33340,9 +33351,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !cte.window_invocation_ids.empty() || !cte.ordering_terms.empty() ||
         !cte.bound_expression_ids.empty() || cte.bound_object_uuid.has_value() || cte.lateral ||
         scope.scope_id != native.root_scope_id ||
-        scope.scope_id <= native.scopes.front().scope_id ||
-        scope.parent_scope_id != native.scopes.front().scope_id ||
-        scope.catalog_epoch_uuid != native.scopes.front().catalog_epoch_uuid ||
+        scope.scope_id <= parent.scope_id ||
+        scope.catalog_epoch_uuid != parent.catalog_epoch_uuid ||
         scope.visible_relation_ids != std::vector<std::uint32_t>{cte.relation_id}) {
       return refuse_cte();
     }
@@ -33350,12 +33360,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     producer.native_relational.relations.pop_back();
     producer.native_relational.root_relation_id = source.relation_id;
     producer.native_relational.scopes.pop_back();
-    producer.native_relational.root_scope_id = native.scopes.front().scope_id;
+    producer.native_relational.root_scope_id = parent.scope_id;
     std::erase_if(producer.native_relational.outputs, [&](const auto& output) {
       return output.relation_id == cte.relation_id;
     });
-    const auto& source_outputs = producer.native_relational.outputs;
-    if (source_outputs.empty() || native.outputs.size() != source_outputs.size() * 2 ||
+    std::vector<BoundOutputAstRecord> source_outputs;
+    std::uint32_t maximum_output_id = 0;
+    for (const auto& output : producer.native_relational.outputs) {
+      maximum_output_id = std::max(maximum_output_id, output.output_id);
+      if (output.relation_id == source.relation_id) source_outputs.push_back(output);
+    }
+    std::ranges::sort(source_outputs, {}, &BoundOutputAstRecord::ordinal);
+    if (source_outputs.empty() ||
+        source_outputs.size() > std::numeric_limits<std::uint32_t>::max() - maximum_output_id ||
+        native.outputs.size() != producer.native_relational.outputs.size() + source_outputs.size() ||
         cte.output_expression_ids.size() != source_outputs.size() ||
         scope.visible_projection_ids.size() != source_outputs.size()) return refuse_cte();
     std::vector<const BoundOutputAstRecord*> cte_outputs;
@@ -33368,7 +33386,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const auto& input = source_outputs[i];
       const auto& output = *cte_outputs[i];
       if (input.relation_id != source.relation_id ||
-          output.output_id != source_outputs.back().output_id + i + 1 ||
+          output.output_id != maximum_output_id + i + 1 ||
           output.expression_id != input.expression_id ||
           output.descriptor_id != input.descriptor_id || output.visible != input.visible ||
           output.ordinal != input.ordinal || output.output_name_utf8 != input.output_name_utf8 ||
@@ -39659,7 +39677,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             bound.descriptor_refs[width] !=
                 aggregate_descriptor.descriptor_uuid) {
           AddNativeRelationalLoweringError(
-              &envelope, "DATATYPE.DESCRIPTOR_INVALID",
+              &envelope, "DATATYPE.DESCRIPTOR.INVALID",
               "catalog grouped SUM requires the exact bigint input and nullable int128 result identities");
           return envelope;
         }

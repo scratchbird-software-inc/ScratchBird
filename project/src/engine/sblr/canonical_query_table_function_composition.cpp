@@ -97,13 +97,12 @@ bool MaterializeCanonicalGenerateSeriesBatch(
     return false;
   }
   api::EngineDescriptor engine_descriptor;
-  engine_descriptor.descriptor_uuid.canonical =
+  engine_descriptor.descriptor_uuid =
       output_descriptor->descriptor_uuid;
+  engine_descriptor.type_uuid = output_descriptor->type_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   engine_descriptor.canonical_type_name = "int64";
-  engine_descriptor.encoded_descriptor =
-      "type_uuid=" + output_descriptor->type_uuid +
-      ";nullability=non_null";
+  engine_descriptor.encoded_descriptor = "nullability=non_null";
   batch->columns.push_back(
       {"generate_series", engine_descriptor, false,
        output_descriptor->descriptor_id});
@@ -264,7 +263,7 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
       admission.admission};
   const auto& graph = admission.request.logical_graph;
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto capability_uuid =
       DerivedCanonicalUuid(identity_scope,
                            "table-function.generate-series.capability");
@@ -329,7 +328,7 @@ ExecuteCanonicalGenerateSeriesTableFunctionQuery(
   selected.runtime_limits.maximum_total_materialized_cells =
       kGenerateSeriesMaximumRowCount;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
@@ -560,7 +559,7 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
       admission.admission};
   const auto& graph = admission.request.logical_graph;
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              input.context.statement_uuid.canonical;
+                              input.context.statement_uuid;
   const auto source_capability_uuid = DerivedCanonicalUuid(
       identity_scope, "table-function.generate-series.capability");
   const auto match_capability_uuid = DerivedCanonicalUuid(
@@ -659,7 +658,7 @@ ExecuteCanonicalGenerateSeriesMatchRecognizeQuery(
   selected.runtime_limits.maximum_total_materialized_cells =
       kGenerateSeriesMaximumRowCount;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =

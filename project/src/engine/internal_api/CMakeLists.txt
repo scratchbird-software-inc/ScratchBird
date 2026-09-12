@@ -6,6 +6,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(NOT TARGET sb_core_diagnostic_catalog)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/diagnostics
+                   ${CMAKE_CURRENT_BINARY_DIR}/core_diagnostics)
+endif()
+
 if(SB_BUILD_QOW_CLOSURE_TESTS)
   if(NOT TARGET sb_core_platform)
     add_subdirectory(
@@ -244,6 +249,7 @@ if(NOT TARGET sb_engine_plan_shapes)
     ${CMAKE_CURRENT_SOURCE_DIR}/../planner
   )
   target_compile_features(sb_engine_plan_shapes PUBLIC cxx_std_20)
+  target_link_libraries(sb_engine_plan_shapes PUBLIC sb_core_uuid)
 endif()
 if(NOT TARGET sb_engine_optimizer_contract_only)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../optimizer ${CMAKE_CURRENT_BINARY_DIR}/engine_optimizer)
@@ -278,6 +284,7 @@ if(NOT TARGET sb_wire_typed_result_transport_codec)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../wire/typed_result_transport_codec.cpp
   )
   target_compile_features(sb_wire_typed_result_transport_codec PUBLIC cxx_std_20)
+  target_link_libraries(sb_wire_typed_result_transport_codec PRIVATE sb_core_uuid)
   target_include_directories(sb_wire_typed_result_transport_codec PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../wire
   )
@@ -299,6 +306,8 @@ if(NOT TARGET sb_engine_typed_result_producer_cursor)
   )
   target_link_libraries(sb_engine_typed_result_producer_cursor PUBLIC
     sb_wire_typed_result_transport_codec
+    PRIVATE
+    sb_core_uuid
   )
 endif()
 
@@ -401,7 +410,6 @@ add_library(sb_engine_internal_api
   ddl/comment_api.cpp
   ddl/create_api.cpp
   ddl/drop_api.cpp
-  diagnostics/diagnostic_rendering.cpp
   diagnostics/diagnostic_template_cache.cpp
   dml/constraint_enforcement.cpp
   dml/mutation_savepoint_capability.cpp
@@ -835,6 +843,7 @@ endif()
 find_package(OpenSSL REQUIRED)
 
 target_link_libraries(sb_engine_internal_api PUBLIC
+  $<LINK_ONLY:sb_core_diagnostic_catalog>
   sb_contextual_text_literal_v2_codec
   sb_sblr_operation_wire_codec
   sb_mga_contextual_text_sidecar_set_v2

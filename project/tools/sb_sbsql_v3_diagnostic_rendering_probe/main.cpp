@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "api_unsupported.hpp"
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -16,6 +16,7 @@
 #include <vector>
 
 using namespace scratchbird::engine::internal_api;
+using namespace scratchbird::server::legacy_rendering;
 
 namespace {
 
@@ -102,6 +103,16 @@ bool HasRenderedEvidence(const EngineRenderedResultEnvelope& envelope, const std
   return false;
 }
 
+bool HasExactSourceEvidence(const EngineRenderedResultEnvelope& envelope,
+                            const EngineApiResult& source) {
+  if (envelope.evidence.size() != source.evidence.size()) return false;
+  for (std::size_t i = 0; i < source.evidence.size(); ++i) {
+    if (envelope.evidence[i].evidence_kind != source.evidence[i].evidence_kind ||
+        envelope.evidence[i].evidence_id != source.evidence[i].evidence_id) return false;
+  }
+  return true;
+}
+
 bool HasRedactedDetail(const EngineRenderedResultEnvelope& envelope) {
   for (const auto& diagnostic : envelope.diagnostics) {
     if (diagnostic.internal_detail_redacted && diagnostic.detail == "redacted") { return true; }
@@ -126,32 +137,32 @@ int main(int argc, char** argv) {
 
   std::vector<std::string> errors;
   const auto success = RenderEngineApiResultForParserPackage(MakeSuccessResult(), Options());
-  const bool success_valid = ValidateEngineRenderedResultEnvelope(success, &errors);
+  const bool success_valid = ValidateLegacyRenderedProjectionStructure(success, &errors);
   const bool success_ok = success.ok &&
                           success_valid &&
                           success.parser_package_rendering_required &&
-                          success.canonical_diagnostics &&
-                          success.canonical_result_shape &&
                           success.rows.size() == 1 &&
                           success.rows.front().fields.size() == 1 &&
                           success.rows.front().fields.front().name == "answer" &&
+                          success.rows.front().fields.front().encoded_value == "forty_two" &&
                           HasRenderedEvidence(success, "canonical_result_shape", "engine_api");
 
   errors.clear();
-  const auto failure = RenderEngineApiResultForParserPackage(MakeFailureResult(), Options());
-  const bool failure_valid = ValidateEngineRenderedResultEnvelope(failure, &errors);
+  const auto failure_source = MakeFailureResult();
+  const auto failure = RenderEngineApiResultForParserPackage(failure_source, Options());
+  const bool failure_valid = ValidateLegacyRenderedProjectionStructure(failure, &errors);
   const bool failure_ok = !failure.ok &&
                           failure_valid &&
                           HasRenderedDiagnosticCode(failure, "SB_ENGINE_API_CLUSTER_AUTHORITY_UNAVAILABLE") &&
                           HasRenderedDiagnosticCode(failure, "SB_ENGINE_API_EMBEDDED_TRUST_MODE") &&
                           HasRedactedDetail(failure) &&
-                          HasRenderedEvidence(failure, "cluster_placeholder", "fail_closed");
+                          HasExactSourceEvidence(failure, failure_source);
 
   auto invalid_options = Options();
   invalid_options.parser_package_uuid.clear();
   errors.clear();
   const auto invalid = RenderEngineApiResultForParserPackage(MakeSuccessResult(), invalid_options);
-  const bool invalid_validation_failed = !ValidateEngineRenderedResultEnvelope(invalid, &errors);
+  const bool invalid_validation_failed = !ValidateLegacyRenderedProjectionStructure(invalid, &errors);
   const bool invalid_ok = !invalid.ok &&
                           !invalid.render_context_valid &&
                           invalid_validation_failed &&
@@ -167,4 +178,3 @@ int main(int argc, char** argv) {
   std::cout << "}\n";
   return ok ? 0 : 1;
 }
-

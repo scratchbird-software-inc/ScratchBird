@@ -8,13 +8,19 @@
 
 #pragma once
 
+#include "../../core/uuid/uuid.hpp"
+
 #include <algorithm>
+#include <map>
+#include <set>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,11 +30,32 @@
 
 namespace scratchbird::engine::planner {
 
+using CanonicalPlannerUuid = scratchbird::core::platform::Uuid;
+
+// Opaque versioned binding bytes, never a textual UUID or an issued identity.
+class CanonicalPlannerBindingBytes {
+ public:
+  explicit CanonicalPlannerBindingBytes(std::string_view domain) { Text(domain); }
+  void Number(std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8)
+      bytes_.push_back(static_cast<char>(value >> shift));
+  }
+  void Flag(bool value) { bytes_.push_back(value ? 1 : 0); }
+  void Identity(const CanonicalPlannerUuid& value) {
+    bytes_.append(reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size());
+  }
+  void Text(std::string_view value) { Number(value.size()); bytes_.append(value); }
+  std::string Take() && { return std::move(bytes_); }
+ private:
+  std::string bytes_;
+};
+
+
 struct CanonicalMgaStatementContext {
-  std::string statement_uuid;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  CanonicalPlannerUuid statement_uuid;
+  CanonicalPlannerUuid owning_transaction_uuid;
+  CanonicalPlannerUuid statement_snapshot_uuid;
+  CanonicalPlannerUuid statement_metadata_snapshot_uuid;
   std::uint64_t owning_local_transaction_id{0};
   std::uint64_t visible_committed_high_watermark{0};
   std::uint64_t oldest_active_transaction_id{0};
@@ -80,17 +107,8 @@ inline bool CanonicalMgaStatementContextEqual(
 inline bool CanonicalMgaStatementContextStructurallyValid(
     const CanonicalMgaStatementContext& context,
     const bool require_current = false) {
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   if (!canonical_uuid(context.statement_uuid) ||
       !canonical_uuid(context.owning_transaction_uuid) ||
@@ -210,20 +228,20 @@ struct CanonicalLogicalRelationalNode {
   std::vector<std::uint32_t> bound_expression_ids;
   std::vector<std::uint32_t> argument_expression_ids;
   std::vector<std::uint32_t> origin_relational_node_ids;
-  std::vector<std::string> required_object_uuids;
+  std::vector<CanonicalPlannerUuid> required_object_uuids;
   std::string semantic_variant_id;
   bool shareable{false};
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<CanonicalPlannerUuid> required_property_uuids;
+  std::vector<CanonicalPlannerUuid> delivered_property_uuids;
   CanonicalLogicalModelFamilyIdentity model_family_identity{
       CanonicalLogicalModelFamilyIdentity::kUnspecified};
 };
 
 struct CanonicalLogicalRelationalGraph {
   std::uint16_t abi_version{1};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
+  CanonicalPlannerUuid bound_sblr_tree_uuid;
+  CanonicalPlannerUuid catalog_epoch_uuid;
+  CanonicalPlannerUuid security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   CanonicalMgaStatementContext mga_statement_context;
@@ -314,17 +332,8 @@ ValidateCanonicalLogicalRelationalGraph(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto known_kind = [](const CanonicalLogicalRelationalNodeKind kind) {
     return kind >= CanonicalLogicalRelationalNodeKind::kRelationSource &&
@@ -643,7 +652,7 @@ ValidateCanonicalLogicalRelationalGraph(
                       node.logical_node_id, "origin_relational_node_ids");
       }
     }
-    std::unordered_set<std::string> object_uuids;
+    std::set<CanonicalPlannerUuid> object_uuids;
     for (const auto& object_uuid : node.required_object_uuids) {
       if (!canonical_uuid(object_uuid) ||
           !object_uuids.insert(object_uuid).second) {
@@ -739,22 +748,22 @@ ValidateCanonicalLogicalRelationalGraph(
 }
 
 struct CanonicalPhysicalAlternativeRecord {
-  std::string alternative_uuid;
+  CanonicalPlannerUuid alternative_uuid;
   std::uint32_t logical_node_id{0};
   std::string implementation_id;
-  std::string capability_uuid;
+  CanonicalPlannerUuid capability_uuid;
   std::vector<std::uint32_t> output_descriptor_ids;
   bool available{false};
   std::string refusal_diagnostic_id;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<CanonicalPlannerUuid> required_property_uuids;
+  std::vector<CanonicalPlannerUuid> delivered_property_uuids;
 };
 
 struct CanonicalPhysicalAlternativeCatalog {
   std::uint16_t abi_version{1};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
+  CanonicalPlannerUuid bound_sblr_tree_uuid;
+  CanonicalPlannerUuid catalog_epoch_uuid;
+  CanonicalPlannerUuid security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   CanonicalMgaStatementContext mga_statement_context;
@@ -806,17 +815,8 @@ ValidateCanonicalLogicalPhysicalBoundary(
     return refuse(issue.diagnostic_id, issue.logical_node_id,
                   issue.field_id);
   }
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto stable_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -864,7 +864,7 @@ ValidateCanonicalLogicalPhysicalBoundary(
   for (const auto& node : graph.nodes) {
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
-  std::unordered_set<std::string> alternative_uuids;
+  std::set<CanonicalPlannerUuid> alternative_uuids;
   std::unordered_set<std::string> node_implementations;
   std::unordered_map<std::uint32_t, std::size_t> available_by_node;
   for (const auto& alternative : catalog.alternatives) {
@@ -980,18 +980,18 @@ struct CanonicalLogicalPropertyOrderingTerm {
       CanonicalLogicalPropertySortDirection::kAscending};
   CanonicalLogicalPropertyNullPlacement null_placement{
       CanonicalLogicalPropertyNullPlacement::kNullsLast};
-  std::string collation_uuid;
+  CanonicalPlannerUuid collation_uuid;
 };
 
 struct CanonicalLogicalPropertyRecord {
-  std::string property_uuid;
+  CanonicalPlannerUuid property_uuid;
   CanonicalLogicalPropertyKind property_kind{
       CanonicalLogicalPropertyKind::kOrdering};
   std::uint32_t origin_logical_node_id{0};
   std::vector<std::uint32_t> expression_ids;
   std::vector<CanonicalLogicalPropertyOrderingTerm> ordering_terms;
-  std::vector<std::string> dependency_property_uuids;
-  std::string window_frame_descriptor_uuid;
+  std::vector<CanonicalPlannerUuid> dependency_property_uuids;
+  CanonicalPlannerUuid window_frame_descriptor_uuid;
   CanonicalLogicalDistributionKind distribution_kind{
       CanonicalLogicalDistributionKind::kNone};
   CanonicalLogicalMaterializationKind materialization_kind{
@@ -1000,17 +1000,17 @@ struct CanonicalLogicalPropertyRecord {
       CanonicalLogicalRewindabilityKind::kNone};
   CanonicalLogicalLocalityKind locality_kind{
       CanonicalLogicalLocalityKind::kNone};
-  std::string locality_uuid;
-  std::string security_visibility_context_uuid;
+  CanonicalPlannerUuid locality_uuid;
+  CanonicalPlannerUuid security_visibility_context_uuid;
   std::uint64_t security_visibility_generation{0};
   bool populated_from_bound_sblr{false};
 };
 
 struct CanonicalLogicalPropertyCatalog {
   std::uint16_t abi_version{1};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
+  CanonicalPlannerUuid bound_sblr_tree_uuid;
+  CanonicalPlannerUuid catalog_epoch_uuid;
+  CanonicalPlannerUuid security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   CanonicalMgaStatementContext mga_statement_context;
@@ -1022,14 +1022,15 @@ struct CanonicalLogicalPropertyCatalog {
 
 struct CanonicalLogicalNodePropertyBinding {
   std::uint32_t logical_node_id{0};
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<CanonicalPlannerUuid> required_property_uuids;
+  std::vector<CanonicalPlannerUuid> delivered_property_uuids;
 };
 
 struct CanonicalLogicalPropertyIssue {
   std::string diagnostic_id;
   std::uint32_t logical_node_id{0};
   std::string field_id;
+  CanonicalPlannerUuid property_uuid;
 };
 
 struct CanonicalLogicalPropertyValidationResult {
@@ -1082,62 +1083,40 @@ inline const char* CanonicalLogicalPropertyKindName(
 
 inline std::string SerializeCanonicalLogicalPropertyIdentity(
     const CanonicalLogicalPropertyRecord& property) {
-  std::vector<std::uint32_t> expression_ids = property.expression_ids;
+  auto expressions = property.expression_ids;
   if (property.property_kind == CanonicalLogicalPropertyKind::kGrouping ||
-      property.property_kind ==
-          CanonicalLogicalPropertyKind::kPartitioning ||
-      property.property_kind ==
-          CanonicalLogicalPropertyKind::kExpressionEquivalence ||
+      property.property_kind == CanonicalLogicalPropertyKind::kPartitioning ||
+      property.property_kind == CanonicalLogicalPropertyKind::kExpressionEquivalence ||
       property.property_kind == CanonicalLogicalPropertyKind::kUniqueness ||
-      property.property_kind == CanonicalLogicalPropertyKind::kDistribution) {
-    std::ranges::sort(expression_ids);
-  }
-  std::vector<std::string> dependencies =
-      property.dependency_property_uuids;
+      property.property_kind == CanonicalLogicalPropertyKind::kDistribution)
+    std::ranges::sort(expressions);
+  auto dependencies = property.dependency_property_uuids;
   std::ranges::sort(dependencies);
-  std::string serialized =
-      "logical-property-v1|" + property.property_uuid + "|" +
-      CanonicalLogicalPropertyKindName(property.property_kind) + "|" +
-      std::to_string(property.origin_logical_node_id) + "|expressions=";
-  for (const auto expression_id : expression_ids) {
-    serialized += std::to_string(expression_id) + ",";
-  }
-  serialized += "|ordering=";
+  CanonicalPlannerBindingBytes out("logical-property-v2");
+  out.Identity(property.property_uuid);
+  out.Number(static_cast<std::uint8_t>(property.property_kind));
+  out.Number(property.origin_logical_node_id);
+  out.Number(expressions.size());
+  for (auto id : expressions) out.Number(id);
+  out.Number(property.ordering_terms.size());
   for (const auto& term : property.ordering_terms) {
-    serialized += std::to_string(term.expression_id) + ":" +
-                  (term.direction ==
-                           CanonicalLogicalPropertySortDirection::kAscending
-                       ? "asc"
-                       : "desc") +
-                  ":" +
-                  (term.null_placement ==
-                           CanonicalLogicalPropertyNullPlacement::kNullsFirst
-                       ? "nulls_first"
-                       : "nulls_last") +
-                  ":" + term.collation_uuid + ",";
+    out.Number(term.expression_id);
+    out.Number(static_cast<std::uint8_t>(term.direction));
+    out.Number(static_cast<std::uint8_t>(term.null_placement));
+    out.Identity(term.collation_uuid);
   }
-  serialized += "|dependencies=";
-  for (const auto& dependency : dependencies) {
-    serialized += dependency + ",";
-  }
-  serialized += "|frame=" + property.window_frame_descriptor_uuid;
-  serialized += "|distribution=" +
-                std::to_string(static_cast<std::uint8_t>(
-                    property.distribution_kind));
-  serialized += "|materialization=" +
-                std::to_string(static_cast<std::uint8_t>(
-                    property.materialization_kind));
-  serialized += "|rewindability=" +
-                std::to_string(static_cast<std::uint8_t>(
-                    property.rewindability_kind));
-  serialized += "|locality=" +
-                std::to_string(static_cast<std::uint8_t>(
-                    property.locality_kind)) +
-                ":" + property.locality_uuid;
-  serialized += "|security_visibility=" +
-                property.security_visibility_context_uuid + ":" +
-                std::to_string(property.security_visibility_generation);
-  return serialized;
+  out.Number(dependencies.size());
+  for (const auto& id : dependencies) out.Identity(id);
+  out.Identity(property.window_frame_descriptor_uuid);
+  out.Number(static_cast<std::uint8_t>(property.distribution_kind));
+  out.Number(static_cast<std::uint8_t>(property.materialization_kind));
+  out.Number(static_cast<std::uint8_t>(property.rewindability_kind));
+  out.Number(static_cast<std::uint8_t>(property.locality_kind));
+  out.Identity(property.locality_uuid);
+  out.Identity(property.security_visibility_context_uuid);
+  out.Number(property.security_visibility_generation);
+  out.Flag(property.populated_from_bound_sblr);
+  return std::move(out).Take();
 }
 
 // QOW-SOURCE-OPT-003-V1
@@ -1161,17 +1140,8 @@ ValidateCanonicalLogicalPropertyCatalog(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto graph_validation = ValidateCanonicalLogicalRelationalGraph(graph);
   if (!graph_validation.accepted) {
@@ -1211,7 +1181,7 @@ ValidateCanonicalLogicalPropertyCatalog(
     bound_expression_ids.insert(node.bound_expression_ids.begin(),
                                 node.bound_expression_ids.end());
   }
-  std::unordered_map<std::string, const CanonicalLogicalPropertyRecord*>
+  std::map<CanonicalPlannerUuid, const CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   std::size_t property_reference_count = 0;
   for (const auto& property : catalog.properties) {
@@ -1260,13 +1230,13 @@ ValidateCanonicalLogicalPropertyCatalog(
                CanonicalLogicalPropertyNullPlacement::kNullsFirst &&
            term.null_placement !=
                CanonicalLogicalPropertyNullPlacement::kNullsLast) ||
-          (!term.collation_uuid.empty() &&
+          (!term.collation_uuid.is_nil() &&
            !canonical_uuid(term.collation_uuid))) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-ORDERING-V1",
                       property.origin_logical_node_id, "ordering_terms");
       }
     }
-    std::unordered_set<std::string> dependencies;
+    std::set<CanonicalPlannerUuid> dependencies;
     for (const auto& dependency : property.dependency_property_uuids) {
       if (!canonical_uuid(dependency) ||
           !dependencies.insert(dependency).second ||
@@ -1313,14 +1283,14 @@ ValidateCanonicalLogicalPropertyCatalog(
         property.rewindability_kind ==
             CanonicalLogicalRewindabilityKind::kNone &&
         property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
-        property.locality_uuid.empty() &&
-        property.security_visibility_context_uuid.empty() &&
+        property.locality_uuid.is_nil() &&
+        property.security_visibility_context_uuid.is_nil() &&
         property.security_visibility_generation == 0;
     const bool shape_valid =
         (ordering && property.expression_ids.empty() &&
          !property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          no_specialized_state) ||
         (expression_set &&
          property.expression_ids.size() >=
@@ -1330,7 +1300,7 @@ ValidateCanonicalLogicalPropertyCatalog(
                   : 1U) &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          no_specialized_state) ||
         (window && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
@@ -1340,7 +1310,7 @@ ValidateCanonicalLogicalPropertyCatalog(
          no_specialized_state) ||
         (distribution && property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind !=
              CanonicalLogicalDistributionKind::kNone &&
          ((property.distribution_kind ==
@@ -1354,13 +1324,13 @@ ValidateCanonicalLogicalPropertyCatalog(
          property.rewindability_kind ==
              CanonicalLogicalRewindabilityKind::kNone &&
          property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (materialization && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              CanonicalLogicalDistributionKind::kNone &&
          property.materialization_kind !=
@@ -1368,13 +1338,13 @@ ValidateCanonicalLogicalPropertyCatalog(
          property.rewindability_kind ==
              CanonicalLogicalRewindabilityKind::kNone &&
          property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (rewindability && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              CanonicalLogicalDistributionKind::kNone &&
          property.materialization_kind ==
@@ -1382,13 +1352,13 @@ ValidateCanonicalLogicalPropertyCatalog(
          property.rewindability_kind !=
              CanonicalLogicalRewindabilityKind::kNone &&
          property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (locality && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              CanonicalLogicalDistributionKind::kNone &&
          property.materialization_kind ==
@@ -1397,12 +1367,12 @@ ValidateCanonicalLogicalPropertyCatalog(
              CanonicalLogicalRewindabilityKind::kNone &&
          property.locality_kind != CanonicalLogicalLocalityKind::kNone &&
          canonical_uuid(property.locality_uuid) &&
-         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (security_visibility && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              CanonicalLogicalDistributionKind::kNone &&
          property.materialization_kind ==
@@ -1410,7 +1380,7 @@ ValidateCanonicalLogicalPropertyCatalog(
          property.rewindability_kind ==
              CanonicalLogicalRewindabilityKind::kNone &&
          property.locality_kind == CanonicalLogicalLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
          property.security_visibility_context_uuid ==
              catalog.security_context_uuid &&
          property.security_visibility_generation != 0);
@@ -1457,7 +1427,7 @@ ValidateCanonicalLogicalPropertyCatalog(
     }
   }
 
-  std::unordered_set<std::string> referenced_properties;
+  std::set<CanonicalPlannerUuid> referenced_properties;
   for (const auto& node : graph.nodes) {
     if (node.required_property_uuids.size() >
             maximum_property_references - property_reference_count) {
@@ -1471,9 +1441,9 @@ ValidateCanonicalLogicalPropertyCatalog(
                     node.logical_node_id, "property_reference_count");
     }
     property_reference_count += node.delivered_property_uuids.size();
-    std::unordered_set<std::string> node_refs;
+    std::set<std::pair<bool, CanonicalPlannerUuid>> node_refs;
     for (const auto& property_uuid : node.required_property_uuids) {
-      if (!node_refs.insert("r:" + property_uuid).second ||
+      if (!node_refs.insert({false, property_uuid}).second ||
           !properties_by_uuid.contains(property_uuid)) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
                       node.logical_node_id, "required_property_uuids");
@@ -1481,7 +1451,7 @@ ValidateCanonicalLogicalPropertyCatalog(
       referenced_properties.insert(property_uuid);
     }
     for (const auto& property_uuid : node.delivered_property_uuids) {
-      if (!node_refs.insert("d:" + property_uuid).second ||
+      if (!node_refs.insert({true, property_uuid}).second ||
           !properties_by_uuid.contains(property_uuid)) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
                       node.logical_node_id, "delivered_property_uuids");
@@ -1498,8 +1468,9 @@ ValidateCanonicalLogicalPropertyCatalog(
                    input->delivered_property_uuids.end();
           });
       if (!delivered_by_input) {
-        return refuse("QOW-DIAG-LOGICAL-PROPERTY-PROPAGATION-V1",
-                      node.logical_node_id, property_uuid);
+        result.issues.push_back({"QOW-DIAG-LOGICAL-PROPERTY-PROPAGATION-V1",
+                                 node.logical_node_id, "delivered_property_uuids", property_uuid});
+        return result;
       }
     }
   }
@@ -1526,102 +1497,75 @@ struct CanonicalLogicalPropertySerializationResult {
 // preimage, so any invalidating scope change produces refusal, not reuse.
 inline std::string SerializeCanonicalMgaStatementContext(
     const CanonicalMgaStatementContext& context) {
-  std::string serialized =
-      "mga-v1|statement=" + context.statement_uuid +
-      "|owner_uuid=" + context.owning_transaction_uuid +
-      "|snapshot_uuid=" + context.statement_snapshot_uuid +
-      "|metadata_uuid=" + context.statement_metadata_snapshot_uuid +
-      "|owner_local=" +
-      std::to_string(context.owning_local_transaction_id) +
-      "|visible_high_water=" +
-      std::to_string(context.visible_committed_high_watermark) +
-      "|oldest_active=" +
-      std::to_string(context.oldest_active_transaction_id) +
-      "|oldest_interesting=" +
-      std::to_string(context.oldest_interesting_transaction_id) +
-      "|oldest_snapshot=" +
-      std::to_string(context.oldest_snapshot_transaction_id) +
-      "|retention=" +
-      std::to_string(context.retention_horizon_transaction_id) +
-      "|active_excluded=";
-  for (const auto id : context.active_excluded_local_transaction_ids) {
-    serialized += std::to_string(id) + ",";
-  }
-  if (!context.statement_timestamp.empty()) {
-    serialized += "|statement_timestamp=" + context.statement_timestamp;
-  }
-  serialized += "|in_doubt_excluded=";
-  for (const auto id : context.in_doubt_excluded_local_transaction_ids) {
-    serialized += std::to_string(id) + ",";
-  }
-  serialized +=
-      "|kind=" + context.snapshot_kind + "|publication_next=" +
-      std::to_string(
-          context.publication_inventory_next_local_transaction_id) +
-      "|inventory_authoritative=" +
-      (context.inventory_authoritative ? "true" : "false") +
-      "|complete=" + (context.complete ? "true" : "false") +
-      "|current=" + (context.current ? "true" : "false");
-  return serialized;
+  CanonicalPlannerBindingBytes out("mga-v2");
+  out.Identity(context.statement_uuid);
+  out.Identity(context.owning_transaction_uuid);
+  out.Identity(context.statement_snapshot_uuid);
+  out.Identity(context.statement_metadata_snapshot_uuid);
+  out.Number(context.owning_local_transaction_id);
+  out.Number(context.visible_committed_high_watermark);
+  out.Number(context.oldest_active_transaction_id);
+  out.Number(context.oldest_interesting_transaction_id);
+  out.Number(context.oldest_snapshot_transaction_id);
+  out.Number(context.retention_horizon_transaction_id);
+  out.Number(context.active_excluded_local_transaction_ids.size());
+  for (auto id : context.active_excluded_local_transaction_ids) out.Number(id);
+  out.Text(context.statement_timestamp);
+  out.Number(context.in_doubt_excluded_local_transaction_ids.size());
+  for (auto id : context.in_doubt_excluded_local_transaction_ids) out.Number(id);
+  out.Text(context.snapshot_kind);
+  out.Number(context.publication_inventory_next_local_transaction_id);
+  out.Flag(context.inventory_authoritative);
+  out.Flag(context.complete);
+  out.Flag(context.current);
+  return std::move(out).Take();
 }
 
 inline CanonicalLogicalPropertySerializationResult
 SerializeCanonicalLogicalPropertyCatalog(
     const CanonicalLogicalRelationalGraph& graph,
-    const CanonicalLogicalPropertyCatalog& catalog) {
+    const CanonicalLogicalPropertyCatalog& catalog) try {
   CanonicalLogicalPropertySerializationResult result;
-  const auto validation =
-      ValidateCanonicalLogicalPropertyCatalog(graph, catalog);
-  if (!validation.accepted) {
-    result.issues = validation.issues;
-    return result;
-  }
-  std::string serialized =
-      "logical-property-catalog-v1|bound_sblr=" +
-      catalog.bound_sblr_tree_uuid + "|catalog=" + catalog.catalog_epoch_uuid +
-      "|security=" + catalog.security_context_uuid + "|transaction=" +
-      std::to_string(catalog.local_transaction_id) + "|snapshot=" +
-      std::to_string(catalog.statement_snapshot_id) + "|" +
-      SerializeCanonicalMgaStatementContext(
-          catalog.mga_statement_context) + "|";
-
+  const auto validation = ValidateCanonicalLogicalPropertyCatalog(graph, catalog);
+  if (!validation.accepted) { result.issues = validation.issues; return result; }
+  CanonicalPlannerBindingBytes out("logical-property-catalog-v2");
+  out.Number(catalog.abi_version);
+  out.Identity(catalog.bound_sblr_tree_uuid);
+  out.Identity(catalog.catalog_epoch_uuid);
+  out.Identity(catalog.security_context_uuid);
+  out.Number(catalog.local_transaction_id);
+  out.Number(catalog.statement_snapshot_id);
+  out.Text(SerializeCanonicalMgaStatementContext(catalog.mga_statement_context));
+  out.Flag(catalog.raw_sql_text_present);
+  out.Flag(catalog.parser_execution_authority_claimed);
+  out.Flag(catalog.transaction_finality_authority_claimed);
   std::vector<const CanonicalLogicalPropertyRecord*> properties;
-  properties.reserve(catalog.properties.size());
-  for (const auto& property : catalog.properties) {
-    properties.push_back(&property);
-  }
-  std::ranges::sort(properties, {},
-                    &CanonicalLogicalPropertyRecord::property_uuid);
-  for (const auto* property : properties) {
-    const auto identity = SerializeCanonicalLogicalPropertyIdentity(*property);
-    serialized += "property=" + std::to_string(identity.size()) + ":" +
-                  identity + ";";
-  }
-
+  for (const auto& property : catalog.properties) properties.push_back(&property);
+  std::ranges::sort(properties, {}, &CanonicalLogicalPropertyRecord::property_uuid);
+  out.Number(properties.size());
+  for (const auto* property : properties)
+    out.Text(SerializeCanonicalLogicalPropertyIdentity(*property));
   std::vector<const CanonicalLogicalRelationalNode*> nodes;
-  nodes.reserve(graph.nodes.size());
   for (const auto& node : graph.nodes) nodes.push_back(&node);
-  std::ranges::sort(nodes, {},
-                    &CanonicalLogicalRelationalNode::logical_node_id);
+  std::ranges::sort(nodes, {}, &CanonicalLogicalRelationalNode::logical_node_id);
+  out.Number(nodes.size());
   for (const auto* node : nodes) {
     auto required = node->required_property_uuids;
     auto delivered = node->delivered_property_uuids;
-    std::ranges::sort(required);
-    std::ranges::sort(delivered);
-    serialized += "node=" + std::to_string(node->logical_node_id) +
-                  "|required=";
-    for (const auto& property_uuid : required) {
-      serialized += property_uuid + ",";
-    }
-    serialized += "|delivered=";
-    for (const auto& property_uuid : delivered) {
-      serialized += property_uuid + ",";
-    }
-    serialized += ";";
+    std::ranges::sort(required); std::ranges::sort(delivered);
+    out.Number(node->logical_node_id);
+    out.Number(required.size());
+    for (const auto& id : required) out.Identity(id);
+    out.Number(delivered.size());
+    for (const auto& id : delivered) out.Identity(id);
   }
   result.accepted = true;
-  result.canonical_serialization = std::move(serialized);
+  result.canonical_serialization = std::move(out).Take();
   return result;
+} catch (const std::bad_alloc&) {
+  return {};
+} catch (const std::length_error&) {
+  return {};
 }
 
 inline CanonicalLogicalPropertyPopulationResult
@@ -1834,7 +1778,7 @@ struct LogicalPlanNode {
   std::string operation_id;
   std::string stable_name;
   std::vector<std::string> required_descriptors;
-  std::vector<std::string> required_object_uuids;
+  std::vector<CanonicalPlannerUuid> required_object_uuids;
   std::vector<std::string> diagnostics;
 };
 

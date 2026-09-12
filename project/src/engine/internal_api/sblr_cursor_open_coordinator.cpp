@@ -14,10 +14,30 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 std::mutex coordinator_mutex;
-std::unordered_map<std::string, SblrCursorOpenSnapshot> descriptors;
-std::unordered_map<std::string, SblrCursorOpenSnapshot> cursors;
-std::unordered_map<std::string, SblrCursorOpenSnapshot> retired_cursors;
+struct OwnedCursorSnapshot : SblrCursorOpenSnapshot {
+  scratchbird::core::platform::Uuid database_uuid;
+};
+std::unordered_map<std::string, OwnedCursorSnapshot> descriptors;
+std::unordered_map<std::string, OwnedCursorSnapshot> cursors;
+std::unordered_map<std::string, OwnedCursorSnapshot> retired_cursors;
 std::uint64_t next_generation = 0;
+
+auto DatabaseIdentity(const EngineRequestContext& context) {
+  // Adapt the existing text request context once. Registry ownership is binary;
+  // neither a filesystem path nor a UUID spelling is an ownership key. The
+  // legacy context and snapshot UUID fields still require boundary migration.
+  return scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+      scratchbird::core::platform::UuidKind::database,
+      context.database_uuid);
+}
+
+void EraseDatabase(std::unordered_map<std::string, OwnedCursorSnapshot>& registry,
+                   const scratchbird::core::platform::Uuid& database_uuid) {
+  for (auto entry = registry.begin(); entry != registry.end();) {
+    if (entry->second.database_uuid == database_uuid) entry = registry.erase(entry);
+    else ++entry;
+  }
+}
 
 EngineApiDiagnostic Diagnostic(std::string code, std::string key) {
   return MakeEngineApiDiagnostic(std::move(code), std::move(key), {});
@@ -68,29 +88,31 @@ SblrCursorOpenResult CompileAndPublishSblrExecutablePlanReceipt(
     std::uint32_t fetch_size, std::uint64_t availability_generation) {
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
+  const auto database = DatabaseIdentity(context);
   if (!HasTag(context, "private_executable_plan_receipt_compiler") ||
-      !context.statement_metadata_snapshot_engine_owned) {
+      !context.statement_metadata_snapshot_engine_owned || !database.ok()) {
     result.diagnostic =
         Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.plan_receipt_hidden");
     return result;
   }
-  if (receipt_uuid != context.statement_uuid.canonical || !occurrence ||
+  if (receipt_uuid != context.statement_uuid || !occurrence ||
       mode != 1 || hold < 1 || hold > 2 || !fetch_size ||
       fetch_size > 65535 || !availability_generation ||
-      context.principal_uuid.canonical.empty()) {
+      context.principal_uuid.is_nil()) {
     result.diagnostic =
         Diagnostic("SBLR.OPERAND_INVALID", "sblr.cursor.plan_receipt_invalid");
     return result;
   }
-  SblrCursorOpenSnapshot snapshot;
+  OwnedCursorSnapshot snapshot;
+  snapshot.database_uuid = database.value.value;
   snapshot.receipt_uuid = receipt_uuid;
   snapshot.occurrence = occurrence;
   snapshot.descriptor_uuid = NewIdentity();
   snapshot.plan_uuid = NewIdentity();
   snapshot.row_shape_uuid = NewIdentity();
-  snapshot.transaction_uuid = context.transaction_uuid.canonical;
-  snapshot.session_uuid = context.session_uuid.canonical;
-  snapshot.security_uuid = context.principal_uuid.canonical;
+  snapshot.transaction_uuid = context.transaction_uuid;
+  snapshot.session_uuid = context.session_uuid;
+  snapshot.security_uuid = context.principal_uuid;
   snapshot.descriptor_generation = ++next_generation;
   snapshot.plan_generation = ++next_generation;
   snapshot.row_shape_generation = ++next_generation;
@@ -168,13 +190,15 @@ SblrCursorOpenResult OpenSblrCursor(
     std::uint64_t availability_generation) {
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
-  if (!HasTag(context, "private_cursor_open")) {
+  const auto database = DatabaseIdentity(context);
+  if (!HasTag(context, "private_cursor_open") || !database.ok()) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
   const auto found = descriptors.find(descriptor_uuid);
   if (found == descriptors.end() ||
-      found->second.session_uuid != context.session_uuid.canonical) {
+      found->second.database_uuid != database.value.value ||
+      found->second.session_uuid != context.session_uuid) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
@@ -207,15 +231,22 @@ SblrCursorOpenResult OpenSblrCursor(
 EngineApiDiagnostic RecoverSblrOpenCursors(
     const EngineRequestContext& context) {
   std::lock_guard lock(coordinator_mutex);
-  if (!HasTag(context, "right:SBLR_CURSOR_ADMIN")) {
+  const auto database = DatabaseIdentity(context);
+  if (!HasTag(context, "right:SBLR_CURSOR_ADMIN") || !database.ok()) {
     return Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.recovery_denied");
   }
   for (const auto& [unused, snapshot] : cursors) {
     (void)unused;
-    AppendJournal(context, 'X', snapshot);
+    if (snapshot.database_uuid != database.value.value) continue;
+    if (!AppendJournal(context, 'X', snapshot)) {
+      // Keep all live cursors and pending descriptors available on publication
+      // failure. A failed close must not be reported as successful recovery.
+      return Diagnostic("CURSOR.CLOSE_FAILED",
+                        "sblr.cursor.recovery_publish_failed");
+    }
   }
-  cursors.clear();
-  descriptors.clear();
+  EraseDatabase(cursors, database.value.value);
+  EraseDatabase(descriptors, database.value.value);
   return Diagnostic("OK", "ok");
 }
 
@@ -226,12 +257,15 @@ SblrCursorOpenResult FetchSblrCursor(
     std::uint32_t maximum_rows) {
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
-  if (!HasTag(context, "private_cursor_fetch")) {
+  const auto database = DatabaseIdentity(context);
+  if (!HasTag(context, "private_cursor_fetch") || !database.ok()) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
   const auto found = cursors.find(cursor_uuid);
-  if (found == cursors.end() || found->second.session_uuid != context.session_uuid.canonical) {
+  if (found == cursors.end() ||
+      found->second.database_uuid != database.value.value ||
+      found->second.session_uuid != context.session_uuid) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
@@ -270,19 +304,25 @@ SblrCursorOpenResult CloseSblrCursor(
     std::uint8_t close_reason) {
   std::lock_guard lock(coordinator_mutex);
   SblrCursorOpenResult result;
-  if (!HasTag(context, "private_cursor_close")) {
+  const auto database = DatabaseIdentity(context);
+  if (!HasTag(context, "private_cursor_close") || !database.ok()) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
   const auto found = cursors.find(cursor_uuid);
   if (found == cursors.end()) {
-    if (retired_cursors.find(cursor_uuid) != retired_cursors.end())
+    const auto retired = retired_cursors.find(cursor_uuid);
+    // Retirement does not disclose existence across database/session ownership.
+    if (retired != retired_cursors.end() &&
+        retired->second.database_uuid == database.value.value &&
+        retired->second.session_uuid == context.session_uuid)
       result.diagnostic = Diagnostic("CURSOR.STALE", "sblr.cursor.stale");
     else
       result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }
-  if (found->second.session_uuid != context.session_uuid.canonical) {
+  if (found->second.database_uuid != database.value.value ||
+      found->second.session_uuid != context.session_uuid) {
     result.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.cursor.hidden");
     return result;
   }

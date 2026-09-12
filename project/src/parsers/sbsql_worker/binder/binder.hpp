@@ -10,6 +10,7 @@
 
 #include "ast/ast.hpp"
 #include "common/common.hpp"
+#include "../../../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -37,10 +38,10 @@ struct BoundWidthPrecisionScale {
 
 struct NativeDescriptorBindingInput {
   std::uint32_t descriptor_id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   BoundNullability nullability{BoundNullability::kUnknown};
-  std::optional<std::string> collation_uuid;
+  std::optional<scratchbird::core::platform::Uuid> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   BoundWidthPrecisionScale width_precision_scale;
   // Engine-projected canonical type evidence used by closed model profiles.
@@ -52,8 +53,8 @@ struct NativeDescriptorBindingInput {
   std::string codec_id;
   std::uint16_t codec_version{0};
   std::uint64_t codec_generation{0};
-  std::string statement_receipt_uuid;
-  std::string datatype_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_receipt_uuid;
+  scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
 };
@@ -61,8 +62,8 @@ struct NativeDescriptorBindingInput {
 struct NativeExpressionBindingInput {
   std::uint32_t expression_id{0};
   std::uint32_t descriptor_id{0};
-  std::optional<std::string> function_uuid;
-  std::optional<std::string> bound_name_uuid;
+  std::optional<scratchbird::core::platform::Uuid> function_uuid;
+  std::optional<scratchbird::core::platform::Uuid> bound_name_uuid;
   std::uint64_t structural_literal_occurrence_id{0};
   std::uint64_t structural_parameter_occurrence_id{0};
   std::uint64_t structural_variable_occurrence_id{0};
@@ -88,14 +89,14 @@ struct NativeWindowFunctionBindingInput {
   std::uint32_t function_expression_id{0};
   std::uint16_t abi_version{0};
   std::string builtin_id;
-  std::string function_uuid;
+  scratchbird::core::platform::Uuid function_uuid;
   bool executable{false};
   std::uint32_t result_descriptor_id{0};
 };
 
 struct NativeCatalogColumnBindingInput {
   std::uint32_t ordinal{0};
-  std::string column_uuid;
+  scratchbird::core::platform::Uuid column_uuid;
   std::uint32_t descriptor_id{0};
   std::string canonical_name_key;
 };
@@ -104,10 +105,10 @@ struct NativeCatalogRelationBindingInput {
   std::uint32_t source_id{0};
   NativeCatalogRelationResolutionState resolution_state{
       NativeCatalogRelationResolutionState::kUnresolved};
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::string resolved_object_type;
-  std::string resolved_schema_uuid;
-  std::optional<std::string> parent_object_uuid;
+  scratchbird::core::platform::Uuid resolved_schema_uuid;
+  std::optional<scratchbird::core::platform::Uuid> parent_object_uuid;
   std::uint64_t catalog_generation_id{0};
   std::uint64_t security_epoch{0};
   std::uint64_t resource_epoch{0};
@@ -115,7 +116,7 @@ struct NativeCatalogRelationBindingInput {
   // Spatial profile identity is supplied by the authenticated catalog
   // description. It is compared with every independently resolved operation
   // CRS and never inferred by the parser or provider.
-  std::optional<std::string> spatial_crs_uuid;
+  std::optional<scratchbird::core::platform::Uuid> spatial_crs_uuid;
   std::uint64_t spatial_crs_generation{0};
 };
 
@@ -123,31 +124,31 @@ struct NativeCatalogRelationBindingInput {
 // engine-to-parser boundary.  The binder compares against these values; it
 // never creates, selects, resolves, or repairs MGA authority.
 struct NativeRelationalEngineStatementAuthority {
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::string statement_timestamp;
-  std::string transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
+  scratchbird::core::platform::Uuid statement_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_metadata_snapshot_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
 };
 
 struct NativeSpatialCrsBindingInput {
   std::string operation_id;
-  std::string crs_uuid;
+  scratchbird::core::platform::Uuid crs_uuid;
   std::uint64_t crs_generation{0};
 };
 
 struct NativeRelationalBindingContext {
-  std::string bound_ast_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid bound_ast_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::string statement_timestamp;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  scratchbird::core::platform::Uuid owning_transaction_uuid;
+  scratchbird::core::platform::Uuid statement_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   NativeRelationalEngineStatementAuthority engine_statement_authority;
@@ -157,17 +158,17 @@ struct NativeRelationalBindingContext {
   std::vector<NativeRelationBindingInput> relations;
   std::vector<NativeWindowFunctionBindingInput> window_functions;
   std::vector<NativeCatalogRelationBindingInput> catalog_relations;
-  std::string search_analyzer_uuid;
+  scratchbird::core::platform::Uuid search_analyzer_uuid;
   std::uint64_t search_analyzer_generation{0};
   std::vector<NativeSpatialCrsBindingInput> spatial_crs_bindings;
 };
 
 struct BoundDescriptorAstRecord {
   std::uint32_t descriptor_id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   BoundNullability nullability{BoundNullability::kUnknown};
-  std::optional<std::string> collation_uuid;
+  std::optional<scratchbird::core::platform::Uuid> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   BoundWidthPrecisionScale width_precision_scale;
   std::string canonical_type_name;
@@ -177,8 +178,8 @@ struct BoundDescriptorAstRecord {
   std::string codec_id;
   std::uint16_t codec_version{0};
   std::uint64_t codec_generation{0};
-  std::string statement_receipt_uuid;
-  std::string datatype_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_receipt_uuid;
+  scratchbird::core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
 };
@@ -189,8 +190,8 @@ struct BoundExpressionAstRecord {
   std::optional<NativeLiteralAstKind> literal_kind;
   std::vector<std::uint32_t> child_expression_ids;
   std::uint32_t result_descriptor_id{0};
-  std::optional<std::string> bound_function_uuid;
-  std::optional<std::string> bound_name_uuid;
+  std::optional<scratchbird::core::platform::Uuid> bound_function_uuid;
+  std::optional<scratchbird::core::platform::Uuid> bound_name_uuid;
   std::optional<std::string> canonical_operator_name;
   std::optional<std::string> literal_or_parameter_ref;
   std::uint64_t structural_literal_occurrence_id{0};
@@ -251,7 +252,7 @@ struct BoundWindowInvocationAstRecord {
   std::optional<std::string> output_name_utf8;
   std::uint16_t function_abi_version{0};
   std::string builtin_id;
-  std::string bound_function_uuid;
+  scratchbird::core::platform::Uuid bound_function_uuid;
   std::uint32_t result_descriptor_id{0};
   std::vector<std::uint32_t> argument_expression_ids;
 };
@@ -302,7 +303,7 @@ struct BoundRelationAstRecord {
   std::vector<BoundOrderingAstTerm> ordering_terms;
   std::vector<std::uint32_t> bound_expression_ids;
   std::string semantic_variant_id;
-  std::optional<std::string> bound_object_uuid;
+  std::optional<scratchbird::core::platform::Uuid> bound_object_uuid;
   bool lateral{false};
 };
 
@@ -311,12 +312,12 @@ struct BoundScopeAstRecord {
   std::optional<std::uint32_t> parent_scope_id;
   std::vector<std::uint32_t> visible_relation_ids;
   std::vector<std::uint32_t> visible_projection_ids;
-  std::string catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
 };
 
 struct BoundCatalogColumnAstRecord {
   std::uint32_t ordinal{0};
-  std::string column_uuid;
+  scratchbird::core::platform::Uuid column_uuid;
   std::uint32_t descriptor_id{0};
   std::string canonical_name_key;
 };
@@ -379,7 +380,7 @@ struct BoundCatalogRelationSourceAstRecord {
   std::vector<NativeIdentifierAstNode> model_search_analyzer_name;
   std::string model_search_query_kind;
   std::optional<std::uint64_t> model_search_top_k;
-  std::string model_search_analyzer_uuid;
+  scratchbird::core::platform::Uuid model_search_analyzer_uuid;
   std::uint64_t model_search_analyzer_generation{0};
   std::optional<std::uint32_t> model_spatial_alias_expression_id;
   std::optional<std::uint32_t> model_spatial_operation_expression_id;
@@ -395,7 +396,7 @@ struct BoundCatalogRelationSourceAstRecord {
   std::string model_spatial_predicate_id;
   std::optional<std::uint32_t> model_spatial_top_k_expression_id;
   std::optional<std::uint64_t> model_spatial_top_k;
-  std::vector<std::string> model_spatial_crs_uuids;
+  std::vector<scratchbird::core::platform::Uuid> model_spatial_crs_uuids;
   std::vector<std::uint64_t> model_spatial_crs_generations;
   std::optional<std::uint32_t> model_columnar_alias_expression_id;
   std::optional<std::uint32_t> model_columnar_operation_expression_id;
@@ -403,7 +404,7 @@ struct BoundCatalogRelationSourceAstRecord {
   std::optional<std::uint32_t> model_columnar_filter_expression_id;
   std::optional<std::uint32_t> model_columnar_predicate_expression_id;
   std::vector<std::uint32_t> model_columnar_project_expression_ids;
-  std::vector<std::string> model_columnar_project_column_uuids;
+  std::vector<scratchbird::core::platform::Uuid> model_columnar_project_column_uuids;
   std::string model_graph_direction;
   std::optional<std::uint64_t> model_graph_minimum_depth;
   std::optional<std::uint64_t> model_graph_maximum_depth;
@@ -412,10 +413,10 @@ struct BoundCatalogRelationSourceAstRecord {
   bool model_wildcard_path{false};
   SourceRange qualified_name_range;
   SourceRange range;
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::string resolved_object_type;
-  std::string resolved_schema_uuid;
-  std::optional<std::string> parent_object_uuid;
+  scratchbird::core::platform::Uuid resolved_schema_uuid;
+  std::optional<scratchbird::core::platform::Uuid> parent_object_uuid;
   std::uint64_t catalog_generation_id{0};
   std::uint64_t security_epoch{0};
   std::uint64_t resource_epoch{0};
@@ -531,13 +532,13 @@ template <typename SourceRecord>
 
 struct BoundNativeRelationalDocument {
   bool bound{false};
-  std::string bound_ast_uuid;
-  std::string security_context_uuid;
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid bound_ast_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::string statement_timestamp;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  scratchbird::core::platform::Uuid owning_transaction_uuid;
+  scratchbird::core::platform::Uuid statement_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   std::uint32_t root_relation_id{0};
@@ -565,14 +566,14 @@ struct BoundStatement {
   std::uint64_t catalog_epoch{0};
   std::uint64_t security_policy_epoch{0};
   std::uint64_t descriptor_epoch{0};
-  std::string parser_package_uuid;
+  scratchbird::core::platform::Uuid parser_package_uuid;
   std::string parser_package_version;
   std::string parser_build_id;
-  std::string command_registry_snapshot_uuid;
-  std::string session_uuid;
-  std::string connection_uuid;
-  std::string database_uuid;
-  std::string dialect_profile_uuid;
+  scratchbird::core::platform::Uuid command_registry_snapshot_uuid;
+  scratchbird::core::platform::Uuid session_uuid;
+  scratchbird::core::platform::Uuid connection_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid dialect_profile_uuid;
   std::string registry_family;
   std::string operation_family;
   std::string command_family;
@@ -606,7 +607,7 @@ struct BoundStatement {
   bool requires_transaction_authority{false};
   bool requires_cluster_profile{false};
   bool exact_refusal_required{false};
-  std::vector<std::string> resolved_object_uuids;
+  std::vector<scratchbird::core::platform::Uuid> resolved_object_uuids;
   std::vector<std::string> descriptor_refs;
   std::vector<std::string> policy_refs;
   std::vector<std::string> required_rights;

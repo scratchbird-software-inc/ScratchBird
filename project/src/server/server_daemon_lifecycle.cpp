@@ -48,13 +48,13 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
     const HostedEngineState& engine_state) {
   ServerDaemonLifecycleSnapshot snapshot;
   snapshot.lifecycle_generation = artifacts.generation;
-  snapshot.daemon_scope = config.database_daemon_scope.empty() ? "shared" : config.database_daemon_scope;
+  snapshot.daemon_scope = config.database_daemon_scope;
   snapshot.dedicated_database_daemon = IsDedicatedScope(config);
   const bool artifacts_publishable = !artifacts.pid_file.empty() ||
                                      !artifacts.owner_token_file.empty() ||
                                      !artifacts.lifecycle_state_file.empty();
 
-  if (snapshot.daemon_scope != "shared" && snapshot.daemon_scope != "dedicated") {
+  if (snapshot.daemon_scope != "dedicated") {
     snapshot.scope_ambiguous = true;
     snapshot.state = "failed";
     snapshot.diagnostics.push_back(DaemonDiagnostic(
@@ -104,7 +104,7 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
     }
   }
 
-  if (snapshot.dedicated_database_daemon && snapshot.hosted_database_count > 1) {
+  if (snapshot.hosted_database_count > 1) {
     snapshot.scope_ambiguous = true;
     snapshot.state = "failed";
     snapshot.diagnostics.push_back(DaemonDiagnostic(

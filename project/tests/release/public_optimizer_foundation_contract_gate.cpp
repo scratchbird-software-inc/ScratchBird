@@ -1181,16 +1181,12 @@ bool ValidateModelFamilyOptimizerOwnedProfiles() {
             native.selected_candidate.cost.calibration_profile_uuid ==
                 request.capability_snapshots.front()
                     .metrics.calibration_profile_uuid &&
-            native.selected_cost_explain_json.find(
-                "\"memory_grant_units\":512") != std::string::npos &&
-            native.selected_cost_explain_json.find(
-                "\"memory_allocation_units\":512") != std::string::npos &&
-            native.selected_cost_explain_json.find(
-                "\"complete_dimension_vector\":true") !=
-                std::string::npos &&
-            native.selected_cost_explain_json.find(
-                "\"scalarization_policy_id\":\"model-family.complete-unit-sum-minus-cache-benefit.v1\"") !=
-                std::string::npos &&
+            native.selected_cost_explain == native.selected_candidate.cost &&
+            native.selected_cost_explain.memory_grant_units == 512 &&
+            native.selected_cost_explain.memory_allocation_units == 512 &&
+            native.selected_cost_explain.complete_dimension_vector &&
+            native.selected_cost_explain.scalarization_policy_id ==
+                "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
             native.candidate_inventory_receipt_uuid ==
                 inventory.candidate_inventory_receipt_uuid &&
             reordered_inventory.accepted &&

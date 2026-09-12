@@ -12,6 +12,7 @@
 #include "datatype_layout.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -93,12 +94,12 @@ DatatypeCatalogManifestResult LookupDatatypeCatalogRow(
     CanonicalTypeId type_id);
 
 struct DatatypeTypeCodecIdentityRowV1 {
-  std::string catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid catalog_snapshot_uuid;
   u64 catalog_generation = 0;
   u64 registry_generation = 0;
-  std::string descriptor_uuid;
+  scratchbird::core::platform::Uuid descriptor_uuid;
   u64 descriptor_generation = 0;
-  std::string type_uuid;
+  scratchbird::core::platform::Uuid type_uuid;
   u64 type_generation = 0;
   std::string codec_id;
   u16 codec_version = 0;
@@ -124,7 +125,7 @@ struct DatatypeTypeCodecIdentityRowV1 {
   // codec_uuid and the fields below are populated when the admitted Core row
   // carries variable-width/text semantics.  Empty/default values mean the
   // fixed-width row has no such extension; consumers may not infer one.
-  std::string codec_uuid;
+  scratchbird::core::platform::Uuid codec_uuid;
   bool canonical_value_variable_width = false;
   bool canonical_value_exact_zero_is_width_marker = false;
   std::string canonical_byte_order;
@@ -145,14 +146,21 @@ struct DatatypeTypeCodecIdentityLookupV1 {
   std::string diagnostic_id;
 };
 
+// Read-only compiled registry population, not statement or descriptor authority.
+// Consumers must match the exact projected snapshot and generations, reject
+// ambiguous matches, and revalidate against the live engine receipt at use.
+// Enumeration never supplies a default snapshot or a nearest-generation row.
+std::span<const DatatypeTypeCodecIdentityRowV1>
+CurrentDatatypeTypeCodecIdentityRowsV1();
+
 DatatypeTypeCodecIdentityLookupV1 LookupDatatypeTypeCodecIdentityV1(
-    const std::string& catalog_snapshot_uuid,
+    const scratchbird::core::platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,
     u64 registry_generation,
-    const std::string& descriptor_uuid,
+    const scratchbird::core::platform::Uuid& descriptor_uuid,
     u64 descriptor_generation);
 DatatypeTypeCodecIdentityLookupV1 LookupCanonicalBooleanTypeCodecIdentityV1(
-    const std::string& catalog_snapshot_uuid,
+    const scratchbird::core::platform::Uuid& catalog_snapshot_uuid,
     u64 catalog_generation,
     u64 registry_generation);
 
@@ -169,9 +177,9 @@ bool IsExactCanonicalTextTypeCodecIdentityV1(
 // never grants the exception.  Callers must separately establish that the
 // containing-slot nullability is known (nullable or non-null, never unknown).
 bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
-    const std::string& descriptor_uuid,
+    const scratchbird::core::platform::Uuid& descriptor_uuid,
     u64 descriptor_generation,
-    const std::string& type_uuid,
+    const scratchbird::core::platform::Uuid& type_uuid,
     u64 type_generation,
     const std::string& codec_id,
     u16 codec_version,
@@ -179,25 +187,25 @@ bool IsExactCanonicalBooleanDescriptorTypeAliasV1(
     bool containing_slot_nullability_authoritative);
 
 struct BuiltinOperatorTypeCodecIdentityRowV1 {
-  std::string operator_snapshot_uuid;
+  scratchbird::core::platform::Uuid operator_snapshot_uuid;
   u64 operator_registry_generation = 0;
-  std::string operator_uuid;
+  scratchbird::core::platform::Uuid operator_uuid;
   u64 operator_generation = 0;
   std::uint8_t semantic_code = 0;
   std::uint8_t operand_arity = 0;
   std::uint8_t null_behavior_code = 0;
   std::uint8_t accepted_state = 0;
-  std::string left_descriptor_uuid;
+  scratchbird::core::platform::Uuid left_descriptor_uuid;
   u64 left_descriptor_generation = 0;
-  std::string left_type_uuid;
+  scratchbird::core::platform::Uuid left_type_uuid;
   u64 left_type_generation = 0;
-  std::string right_descriptor_uuid;
+  scratchbird::core::platform::Uuid right_descriptor_uuid;
   u64 right_descriptor_generation = 0;
-  std::string right_type_uuid;
+  scratchbird::core::platform::Uuid right_type_uuid;
   u64 right_type_generation = 0;
-  std::string result_descriptor_uuid;
+  scratchbird::core::platform::Uuid result_descriptor_uuid;
   u64 result_descriptor_generation = 0;
-  std::string result_type_uuid;
+  scratchbird::core::platform::Uuid result_type_uuid;
   u64 result_type_generation = 0;
   std::string result_codec_id;
   u16 result_codec_version = 0;
@@ -215,9 +223,9 @@ struct BuiltinOperatorTypeCodecIdentityLookupV1 {
 
 struct BuiltinOperatorRegistrySnapshotIdentityLookupV1 {
   bool ok = false;
-  std::string snapshot_uuid;
+  scratchbird::core::platform::Uuid snapshot_uuid;
   u64 registry_generation = 0;
-  std::string equality_operator_uuid;
+  scratchbird::core::platform::Uuid equality_operator_uuid;
   u64 equality_operator_generation = 0;
   std::string diagnostic_id;
 };
@@ -227,17 +235,17 @@ LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
 
 BuiltinOperatorTypeCodecIdentityLookupV1
 LookupBuiltinOperatorTypeCodecIdentityV1(
-    const std::string& operator_snapshot_uuid,
+    const scratchbird::core::platform::Uuid& operator_snapshot_uuid,
     u64 operator_registry_generation,
-    const std::string& operator_uuid,
+    const scratchbird::core::platform::Uuid& operator_uuid,
     u64 operator_generation,
-    const std::string& left_descriptor_uuid,
+    const scratchbird::core::platform::Uuid& left_descriptor_uuid,
     u64 left_descriptor_generation,
-    const std::string& left_type_uuid,
+    const scratchbird::core::platform::Uuid& left_type_uuid,
     u64 left_type_generation,
-    const std::string& right_descriptor_uuid,
+    const scratchbird::core::platform::Uuid& right_descriptor_uuid,
     u64 right_descriptor_generation,
-    const std::string& right_type_uuid,
+    const scratchbird::core::platform::Uuid& right_type_uuid,
     u64 right_type_generation);
 
 }  // namespace scratchbird::core::datatypes

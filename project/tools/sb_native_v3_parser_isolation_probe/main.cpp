@@ -58,7 +58,7 @@ NativeV3ParserPackageRequest BaseRequest(const Args& args, std::string command) 
   return request;
 }
 
-bool HasEvidence(const scratchbird::engine::internal_api::EngineRenderedResultEnvelope& envelope,
+bool HasEvidence(const scratchbird::server::legacy_rendering::EngineRenderedResultEnvelope& envelope,
                  const std::string& kind,
                  const std::string& id = {}) {
   for (const auto& evidence : envelope.evidence) {
@@ -99,8 +99,6 @@ int main(int argc, char** argv) {
                                show_version.dispatched_to_engine_api &&
                                show_version.rendered_for_parser_package &&
                                show_version.rendered_result.parser_package_rendering_required &&
-                               show_version.rendered_result.canonical_diagnostics &&
-                               show_version.rendered_result.canonical_result_shape &&
                                show_version.rendered_result.operation_id == "observability.show_version" &&
                                HasEvidence(show_version.rendered_result, "observability", "observability.show_version");
 
@@ -127,4 +125,3 @@ int main(int argc, char** argv) {
   std::cout << "}\n";
   return ok ? 0 : 1;
 }
-

@@ -13,6 +13,7 @@
 #include "optimizer_request.hpp"
 #include "optimizer_planning_context.hpp"
 #include "result_cursor_plan_memory_governance.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,9 +26,11 @@
 #include <mutex>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -57,11 +60,11 @@ enum class CanonicalPreparedPlanDependencyKind : std::uint8_t {
 struct CanonicalPreparedPlanParameterDescriptor {
   std::uint32_t ordinal{0};
   std::uint32_t descriptor_id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
-  std::string domain_uuid;
-  std::string collation_uuid;
-  std::string timezone_uuid;
+  internal_api::EngineUuid descriptor_uuid;
+  internal_api::EngineUuid type_uuid;
+  internal_api::EngineUuid domain_uuid;
+  internal_api::EngineUuid collation_uuid;
+  internal_api::EngineUuid timezone_uuid;
   std::string type_modifier_digest;
   std::string encoded_descriptor;
   bool nullable{false};
@@ -74,11 +77,11 @@ struct CanonicalPreparedPlanResultDescriptor {
   std::uint32_t ordinal{0};
   std::uint32_t descriptor_id{0};
   std::string name_utf8;
-  std::string descriptor_uuid;
-  std::string type_uuid;
-  std::string domain_uuid;
-  std::string collation_uuid;
-  std::string timezone_uuid;
+  internal_api::EngineUuid descriptor_uuid;
+  internal_api::EngineUuid type_uuid;
+  internal_api::EngineUuid domain_uuid;
+  internal_api::EngineUuid collation_uuid;
+  internal_api::EngineUuid timezone_uuid;
   std::string type_modifier_digest;
   std::string encoded_descriptor;
   bool nullable{false};
@@ -90,7 +93,7 @@ struct CanonicalPreparedPlanResultDescriptor {
 struct CanonicalPreparedPlanDependency {
   CanonicalPreparedPlanDependencyKind dependency_kind{
       CanonicalPreparedPlanDependencyKind::kObject};
-  std::string dependency_uuid;
+  internal_api::EngineUuid dependency_uuid;
   std::uint64_t generation{0};
   std::string definition_digest;
 
@@ -108,15 +111,15 @@ struct CanonicalPreparedPhysicalNode {
   bool shareable{false};
   std::uint64_t publication_ordinal{0};
   std::uint64_t causal_counter_id{0};
-  std::string selected_alternative_uuid;
-  std::string transformation_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid transformation_uuid;
   std::string transformation_rule_id;
-  std::string executor_capability_uuid;
+  internal_api::EngineUuid executor_capability_uuid;
   std::uint32_t executor_capability_abi_version{0};
-  std::string cost_vector_uuid;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
-  std::vector<std::string> enforced_property_uuids;
+  internal_api::EngineUuid cost_vector_uuid;
+  std::vector<internal_api::EngineUuid> required_property_uuids;
+  std::vector<internal_api::EngineUuid> delivered_property_uuids;
+  std::vector<internal_api::EngineUuid> enforced_property_uuids;
   executor::PhysicalCostVectorReceipt retained_cost;
   std::uint64_t memory_bytes_required{0};
   std::uint64_t spill_bytes_expected{0};
@@ -160,7 +163,7 @@ struct CanonicalPreparedExplainNodeEstimate {
 
 struct CanonicalPreparedExplainCandidateRecord {
   std::string candidate_family_id;
-  std::string alternative_uuid;
+  internal_api::EngineUuid alternative_uuid;
   std::uint32_t logical_node_id{0};
   CanonicalPreparedExplainCandidateDisposition disposition{
       CanonicalPreparedExplainCandidateDisposition::kRejected};
@@ -181,7 +184,7 @@ struct CanonicalPreparedExplainBarrierRecord {
 };
 
 struct CanonicalPreparedExplainStatisticRecord {
-  std::string statistic_uuid;
+  internal_api::EngineUuid statistic_uuid;
   CanonicalPreparedExplainStatisticState state{
       CanonicalPreparedExplainStatisticState::kMissing};
   std::string confidence_id;
@@ -202,10 +205,10 @@ struct CanonicalPreparedExplainAssumptionRecord {
 
 struct CanonicalPreparedExplainEvidence {
   std::uint16_t abi_version{1};
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::string selected_plan_signature;
-  std::string bound_sblr_tree_uuid;
-  std::string statistics_snapshot_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::string search_strategy_id;
   std::vector<CanonicalPreparedExplainStageRecord> stages;
@@ -232,7 +235,7 @@ struct CanonicalPreparedMetricValue {
   std::string metric_id;
   std::string unit_id;
   std::uint64_t unsigned_value{0};
-  std::string source_snapshot_uuid;
+  internal_api::EngineUuid source_snapshot_uuid;
   std::uint64_t source_generation{0};
 
   bool operator==(const CanonicalPreparedMetricValue&) const = default;
@@ -242,16 +245,16 @@ struct CanonicalPreparedMetricCollectionReceipt {
   std::uint16_t abi_version{1};
   std::uint16_t stable_leg_ordinal{0};
   std::uint32_t dependency_wave{0};
-  std::string leg_uuid;
+  internal_api::EngineUuid leg_uuid;
   std::string family_id;
-  std::vector<std::string> dependency_leg_uuids;
+  std::vector<internal_api::EngineUuid> dependency_leg_uuids;
   std::vector<std::string> required_metric_ids;
-  std::string metric_snapshot_uuid;
+  internal_api::EngineUuid metric_snapshot_uuid;
   std::uint64_t metric_snapshot_generation{0};
   std::uint64_t started_at_monotonic_ns{0};
   std::uint64_t completed_at_monotonic_ns{0};
   std::vector<CanonicalPreparedMetricValue> metrics;
-  std::string collection_receipt_uuid;
+  internal_api::EngineUuid collection_receipt_uuid;
   std::string dependency_definition_digest;
   bool collected{false};
   bool cancelled{false};
@@ -267,16 +270,16 @@ struct CanonicalPreparedMetricCollectionReceipt {
 struct CanonicalPreparedLegPlanReceipt {
   std::uint16_t abi_version{1};
   std::uint16_t stable_leg_ordinal{0};
-  std::string leg_uuid;
+  internal_api::EngineUuid leg_uuid;
   std::string family_id;
-  std::vector<std::string> dependency_leg_uuids;
-  std::string metric_collection_receipt_uuid;
-  std::string selected_leg_plan_uuid;
-  std::string selected_alternative_uuid;
-  std::string family_local_cost_vector_uuid;
-  std::vector<std::string> retained_alternative_uuids;
+  std::vector<internal_api::EngineUuid> dependency_leg_uuids;
+  internal_api::EngineUuid metric_collection_receipt_uuid;
+  internal_api::EngineUuid selected_leg_plan_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid family_local_cost_vector_uuid;
+  std::vector<internal_api::EngineUuid> retained_alternative_uuids;
   std::uint64_t estimated_output_rows{0};
-  std::string planning_receipt_uuid;
+  internal_api::EngineUuid planning_receipt_uuid;
   bool planned{false};
   bool family_local_selection{true};
   bool cross_family_cost_comparison_performed{false};
@@ -288,17 +291,17 @@ struct CanonicalPreparedLegPlanReceipt {
 
 struct CanonicalPreparedMetricCoordinatorReceipt {
   std::uint16_t abi_version{1};
-  std::string coordinator_policy_uuid;
+  internal_api::EngineUuid coordinator_policy_uuid;
   std::uint64_t coordinator_policy_generation{0};
-  std::string bound_sblr_tree_uuid;
-  std::string route_snapshot_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid route_snapshot_uuid;
   std::uint64_t route_epoch{0};
   std::uint64_t route_generation{0};
   std::string cluster_scope_id;
   std::uint16_t metric_thread_budget{0};
   std::uint16_t maximum_observed_concurrency{0};
   std::uint64_t timeout_ns{0};
-  std::string dependency_chain_receipt_uuid;
+  internal_api::EngineUuid dependency_chain_receipt_uuid;
   bool all_workers_joined{false};
   bool transient_state_cleaned{false};
   bool dependency_chain_acyclic{false};
@@ -312,23 +315,23 @@ struct CanonicalPreparedMetricCoordinatorReceipt {
 
 struct CanonicalPreparedPhysicalPlan {
   std::uint16_t abi_version{1};
-  std::string prepared_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
-  std::string parameter_shape_uuid;
-  std::string result_schema_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid parameter_shape_uuid;
+  internal_api::EngineUuid result_schema_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::string selected_plan_signature;
   std::uint64_t selected_scalar_score{0};
   std::uint64_t root_physical_node_id{0};
   std::uint64_t published_node_count{0};
   std::uint64_t first_causal_counter_id{0};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  internal_api::EngineUuid security_context_uuid;
+  internal_api::EngineUuid capability_snapshot_uuid;
+  internal_api::EngineUuid resource_snapshot_uuid;
+  internal_api::EngineUuid statistics_snapshot_uuid;
+  internal_api::EngineUuid route_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
@@ -359,10 +362,10 @@ struct CanonicalPreparedPhysicalPlan {
 };
 
 struct CanonicalPreparePhysicalPlanRequest {
-  std::string prepared_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
-  std::string parameter_shape_uuid;
-  std::string result_schema_uuid;
+  internal_api::EngineUuid parameter_shape_uuid;
+  internal_api::EngineUuid result_schema_uuid;
   executor::TypedPhysicalNodeDag selected_physical_dag;
   std::vector<CanonicalPreparedPlanParameterDescriptor> parameters;
   std::vector<CanonicalPreparedPlanResultDescriptor> result_descriptors;
@@ -407,7 +410,7 @@ struct CanonicalPreparePhysicalPlanResult {
 class CanonicalPreparedPlanStore {
  public:
   std::shared_ptr<const CanonicalPreparedPhysicalPlan> Find(
-      const std::string& prepared_plan_uuid) const {
+      const internal_api::EngineUuid& prepared_plan_uuid) const {
     std::lock_guard lock(mutex_);
     const auto found = plans_.find(prepared_plan_uuid);
     return found == plans_.end() ? nullptr : found->second;
@@ -433,7 +436,7 @@ class CanonicalPreparedPlanStore {
   }
 
   mutable std::mutex mutex_;
-  std::map<std::string, std::shared_ptr<const CanonicalPreparedPhysicalPlan>>
+  std::map<internal_api::EngineUuid, std::shared_ptr<const CanonicalPreparedPhysicalPlan>>
       plans_;
 };
 
@@ -448,20 +451,11 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
         {"QOW-DIAG-OPT-010-PREPARE-REFUSAL-V1", std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return value != "00000000-0000-0000-0000-000000000000";
+  const auto canonical_uuid = [](const internal_api::EngineUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
-  const auto optional_uuid = [&](const std::string& value) {
-    return value.empty() || canonical_uuid(value);
+  const auto optional_uuid = [&](const internal_api::EngineUuid& value) {
+    return value.is_nil() || canonical_uuid(value);
   };
   const auto digest = [](const std::string_view value) {
     return value.size() == 64 &&
@@ -554,17 +548,17 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
                               const executor::PhysicalCostVectorReceipt& right) {
       return left == right;
     };
-    std::string previous_candidate_key;
+    using CandidateKey = std::tuple<std::uint32_t, std::string,
+                                    internal_api::EngineUuid, std::uint8_t>;
+    std::optional<CandidateKey> previous_candidate_key;
     for (const auto& candidate : explain.candidates) {
       const auto disposition = candidate.disposition;
       const auto known_disposition =
           disposition == CanonicalPreparedExplainCandidateDisposition::kSelected ||
           disposition == CanonicalPreparedExplainCandidateDisposition::kRejected ||
           disposition == CanonicalPreparedExplainCandidateDisposition::kPruned;
-      const auto key = std::to_string(candidate.logical_node_id) + ":" +
-                       candidate.candidate_family_id + ":" +
-                       candidate.alternative_uuid + ":" +
-                       std::to_string(static_cast<std::uint8_t>(disposition));
+      const CandidateKey key{candidate.logical_node_id, candidate.candidate_family_id,
+                             candidate.alternative_uuid, static_cast<std::uint8_t>(disposition)};
       const auto candidate_node = std::ranges::find_if(
           dag.nodes, [&](const auto& node) {
             return node.relational_node_id == candidate.logical_node_id;
@@ -574,7 +568,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
           candidate.candidate_family_id.empty() ||
           !canonical_uuid(candidate.alternative_uuid) ||
           candidate.confidence_id.empty() ||
-          (!previous_candidate_key.empty() && key <= previous_candidate_key) ||
+          (previous_candidate_key && key <= *previous_candidate_key) ||
           (disposition !=
                CanonicalPreparedExplainCandidateDisposition::kSelected &&
            candidate.reason_id.empty())) {
@@ -626,7 +620,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
       }
       previous_barrier_key = key;
     }
-    std::string previous_statistic_uuid;
+    internal_api::EngineUuid previous_statistic_uuid;
     for (const auto& statistic : explain.statistics) {
       const auto known_state =
           statistic.state == CanonicalPreparedExplainStatisticState::kUsed ||
@@ -635,7 +629,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
               CanonicalPreparedExplainStatisticState::kNotApplicable;
       if (!canonical_uuid(statistic.statistic_uuid) || !known_state ||
           statistic.confidence_id.empty() ||
-          (!previous_statistic_uuid.empty() &&
+          (!previous_statistic_uuid.is_nil() &&
            statistic.statistic_uuid <= previous_statistic_uuid)) {
         return refuse("explain_statistic_evidence");
       }
@@ -653,19 +647,21 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   }
 
   std::unordered_set<std::uint32_t> parameter_descriptor_ids;
-  std::unordered_set<std::string> parameter_descriptor_uuids;
+  const auto optional_binary_uuid = [](const internal_api::EngineUuid& value) {
+    return value.is_nil() || core::uuid::IsEngineIdentityUuid(value);
+  };
+  std::set<std::array<std::uint8_t, 16>> parameter_descriptor_uuids;
   parameter_descriptor_ids.reserve(request.parameters.size());
-  parameter_descriptor_uuids.reserve(request.parameters.size());
   for (std::size_t index = 0; index < request.parameters.size(); ++index) {
     const auto& parameter = request.parameters[index];
     if (parameter.ordinal != index + 1 || parameter.descriptor_id == 0 ||
         !parameter_descriptor_ids.insert(parameter.descriptor_id).second ||
-        !canonical_uuid(parameter.descriptor_uuid) ||
-        !parameter_descriptor_uuids.insert(parameter.descriptor_uuid).second ||
-        !canonical_uuid(parameter.type_uuid) ||
-        !optional_uuid(parameter.domain_uuid) ||
-        !optional_uuid(parameter.collation_uuid) ||
-        !optional_uuid(parameter.timezone_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(parameter.descriptor_uuid) ||
+        !parameter_descriptor_uuids.insert(parameter.descriptor_uuid.bytes).second ||
+        !core::uuid::IsEngineIdentityUuid(parameter.type_uuid) ||
+        !optional_binary_uuid(parameter.domain_uuid) ||
+        !optional_binary_uuid(parameter.collation_uuid) ||
+        !optional_binary_uuid(parameter.timezone_uuid) ||
         !digest(parameter.type_modifier_digest)) {
       return refuse("typed_parameter_descriptor");
     }
@@ -680,19 +676,18 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
           root->output_descriptor_ids.size()) {
     return refuse("result_descriptor_coverage");
   }
-  std::unordered_set<std::string> result_descriptor_uuids;
-  result_descriptor_uuids.reserve(request.result_descriptors.size());
+  std::set<std::array<std::uint8_t, 16>> result_descriptor_uuids;
   for (std::size_t index = 0; index < request.result_descriptors.size();
        ++index) {
     const auto& descriptor = request.result_descriptors[index];
     if (descriptor.ordinal != index + 1 || descriptor.descriptor_id == 0 ||
         descriptor.descriptor_id != root->output_descriptor_ids[index] ||
-        !canonical_uuid(descriptor.descriptor_uuid) ||
-        !result_descriptor_uuids.insert(descriptor.descriptor_uuid).second ||
-        !canonical_uuid(descriptor.type_uuid) ||
-        !optional_uuid(descriptor.domain_uuid) ||
-        !optional_uuid(descriptor.collation_uuid) ||
-        !optional_uuid(descriptor.timezone_uuid) ||
+        !core::uuid::IsEngineIdentityUuid(descriptor.descriptor_uuid) ||
+        !result_descriptor_uuids.insert(descriptor.descriptor_uuid.bytes).second ||
+        !core::uuid::IsEngineIdentityUuid(descriptor.type_uuid) ||
+        !optional_binary_uuid(descriptor.domain_uuid) ||
+        !optional_binary_uuid(descriptor.collation_uuid) ||
+        !optional_binary_uuid(descriptor.timezone_uuid) ||
         !digest(descriptor.type_modifier_digest)) {
       return refuse("typed_result_descriptor");
     }
@@ -702,7 +697,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
     return refuse("generation_qualified_dependencies");
   }
   std::uint8_t previous_dependency_kind{0};
-  std::string previous_dependency_uuid;
+  internal_api::EngineUuid previous_dependency_uuid;
   for (const auto& dependency : request.dependencies) {
     const auto kind =
         static_cast<std::uint8_t>(dependency.dependency_kind);
@@ -845,10 +840,10 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
       }
       return std::vector<std::string>{};
     };
-    std::unordered_set<std::string> completed_leg_uuids;
+    std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> completed_leg_uuids;
     std::unordered_set<std::string> family_ids;
-    std::unordered_set<std::string> metric_snapshot_uuids;
-    std::map<std::string, std::uint32_t> completed_dependency_waves;
+    std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> metric_snapshot_uuids;
+    std::map<internal_api::EngineUuid, std::uint32_t> completed_dependency_waves;
     for (std::size_t index = 0;
          index < request.prepare_metric_collection_receipts.size(); ++index) {
       const auto& metric = request.prepare_metric_collection_receipts[index];
@@ -1092,7 +1087,7 @@ enum class CanonicalExecutablePlanStatus : std::uint8_t {
 };
 
 struct CanonicalExecutablePlanGeneration {
-  std::string identity_uuid;
+  internal_api::EngineUuid identity_uuid;
   std::uint64_t generation{0};
   std::string definition_digest;
 
@@ -1100,7 +1095,7 @@ struct CanonicalExecutablePlanGeneration {
 };
 
 struct CanonicalExecutablePlanCapabilityGeneration {
-  std::string capability_uuid;
+  internal_api::EngineUuid capability_uuid;
   std::uint32_t abi_version{0};
   std::uint64_t generation{0};
   std::string definition_digest;
@@ -1110,21 +1105,21 @@ struct CanonicalExecutablePlanCapabilityGeneration {
 };
 
 struct CanonicalExecutablePlanCacheKey {
-  std::string cache_plan_uuid;
-  std::string compiled_at_uuidv7;
+  internal_api::EngineUuid cache_plan_uuid;
+  internal_api::EngineUuid compiled_at_uuidv7;
   CanonicalExecutablePlanStatus plan_status{
       CanonicalExecutablePlanStatus::kValid};
   std::string plan_key_digest;
-  std::string database_uuid;
+  internal_api::EngineUuid database_uuid;
   std::uint64_t engine_format_generation{0};
-  std::string sblr_unit_uuid;
-  std::string internal_procedure_uuid;
-  std::string bound_sblr_tree_uuid;
-  std::string parser_compatibility_profile_uuid;
+  internal_api::EngineUuid sblr_unit_uuid;
+  internal_api::EngineUuid internal_procedure_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid parser_compatibility_profile_uuid;
   std::uint64_t parser_compatibility_generation{0};
-  std::string donor_compatibility_profile_uuid;
+  internal_api::EngineUuid donor_compatibility_profile_uuid;
   std::uint64_t donor_compatibility_generation{0};
-  std::string plan_policy_profile_uuid;
+  internal_api::EngineUuid plan_policy_profile_uuid;
   std::uint64_t optimizer_configuration_generation{0};
   std::string bound_object_set_digest;
   std::string security_policy_digest;
@@ -1134,26 +1129,26 @@ struct CanonicalExecutablePlanCacheKey {
   CanonicalExecutablePlanSnapshotClass snapshot_class{
       CanonicalExecutablePlanSnapshotClass::kReadCommitted};
   bool standalone_database{true};
-  std::string cluster_uuid;
+  internal_api::EngineUuid cluster_uuid;
   std::uint64_t cluster_epoch{0};
 
-  std::string prepared_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
-  std::string parameter_shape_uuid;
-  std::string result_schema_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid parameter_shape_uuid;
+  internal_api::EngineUuid result_schema_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::string selected_plan_signature;
   std::uint64_t selected_scalar_score{0};
   std::uint64_t root_physical_node_id{0};
   std::uint64_t published_node_count{0};
   std::uint64_t first_causal_counter_id{0};
 
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string capability_snapshot_uuid;
-  std::string resource_snapshot_uuid;
-  std::string statistics_snapshot_uuid;
-  std::string route_snapshot_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  internal_api::EngineUuid security_context_uuid;
+  internal_api::EngineUuid capability_snapshot_uuid;
+  internal_api::EngineUuid resource_snapshot_uuid;
+  internal_api::EngineUuid statistics_snapshot_uuid;
+  internal_api::EngineUuid route_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
@@ -1264,7 +1259,7 @@ struct CanonicalExecutablePlanCacheLookupRequest {
   bool engine_security_revalidated{false};
   bool engine_policy_revalidated{false};
   bool engine_authorization_revalidated{false};
-  std::string authorization_revalidation_receipt_uuid;
+  internal_api::EngineUuid authorization_revalidation_receipt_uuid;
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_authority_claimed{false};
   bool recovery_authority_claimed{false};
@@ -1272,13 +1267,13 @@ struct CanonicalExecutablePlanCacheLookupRequest {
 
 struct CanonicalExecutablePlanCacheHitReceipt {
   std::string plan_key_digest;
-  std::string prepared_plan_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t root_physical_node_id{0};
   std::vector<std::uint64_t> physical_node_ids;
   std::vector<std::uint64_t> causal_counter_ids;
-  std::string parameter_shape_uuid;
-  std::string result_schema_uuid;
+  internal_api::EngineUuid parameter_shape_uuid;
+  internal_api::EngineUuid result_schema_uuid;
   std::size_t transient_parameter_value_count{0};
   bool immutable_stored_plan_unchanged{false};
   bool fresh_engine_mga_statement_bound{false};
@@ -1307,17 +1302,8 @@ struct CanonicalExecutablePlanCacheLookupResult {
   std::vector<CanonicalExecutablePlanCacheIssue> issues;
 };
 
-inline bool CanonicalExecutablePlanUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return value != "00000000-0000-0000-0000-000000000000";
+inline bool CanonicalExecutablePlanUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 inline bool CanonicalExecutablePlanDigest(const std::string_view value) {
@@ -1327,22 +1313,20 @@ inline bool CanonicalExecutablePlanDigest(const std::string_view value) {
          });
 }
 
-inline bool CanonicalExecutablePlanUuidV7(const std::string_view value) {
-  if (!CanonicalExecutablePlanUuid(value) || value[14] != '7') return false;
-  return value[19] == '8' || value[19] == '9' || value[19] == 'a' ||
-         value[19] == 'b';
+inline bool CanonicalExecutablePlanUuidV7(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 inline bool CanonicalExecutablePlanGenerationVectorValid(
     const std::vector<CanonicalExecutablePlanGeneration>& values,
     const bool empty_allowed) {
   if (!empty_allowed && values.empty()) return false;
-  std::string previous;
+  internal_api::EngineUuid previous;
   for (const auto& value : values) {
     if (!CanonicalExecutablePlanUuid(value.identity_uuid) ||
         value.generation == 0 ||
         !CanonicalExecutablePlanDigest(value.definition_digest) ||
-        (!previous.empty() && value.identity_uuid <= previous)) {
+        (!previous.is_nil() && value.identity_uuid <= previous)) {
       return false;
     }
     previous = value.identity_uuid;
@@ -1371,17 +1355,17 @@ inline bool CanonicalExecutablePlanCapabilityVectorValid(
     const std::vector<CanonicalExecutablePlanCapabilityGeneration>& values,
     const CanonicalPreparedPhysicalPlan& plan) {
   if (values.empty()) return false;
-  std::string previous;
+  internal_api::EngineUuid previous;
   for (const auto& value : values) {
     if (!CanonicalExecutablePlanUuid(value.capability_uuid) ||
         value.abi_version == 0 || value.generation == 0 ||
         !CanonicalExecutablePlanDigest(value.definition_digest) ||
-        (!previous.empty() && value.capability_uuid <= previous)) {
+        (!previous.is_nil() && value.capability_uuid <= previous)) {
       return false;
     }
     previous = value.capability_uuid;
   }
-  std::vector<std::pair<std::string, std::uint32_t>> expected;
+  std::vector<std::pair<internal_api::EngineUuid, std::uint32_t>> expected;
   for (const auto& node : plan.nodes) {
     expected.emplace_back(node.executor_capability_uuid,
                           node.executor_capability_abi_version);
@@ -1408,12 +1392,12 @@ inline bool CanonicalExecutablePlanKeyMatchesPreparedPlan(
       CanonicalExecutablePlanUuid(key.sblr_unit_uuid) !=
       CanonicalExecutablePlanUuid(key.internal_procedure_uuid);
   const bool donor_identity_valid =
-      (key.donor_compatibility_profile_uuid.empty() &&
+      (key.donor_compatibility_profile_uuid.is_nil() &&
        key.donor_compatibility_generation == 0) ||
       (CanonicalExecutablePlanUuid(key.donor_compatibility_profile_uuid) &&
        key.donor_compatibility_generation != 0);
   const bool cluster_identity_valid =
-      (key.standalone_database && key.cluster_uuid.empty() &&
+      (key.standalone_database && key.cluster_uuid.is_nil() &&
        key.cluster_epoch == 0) ||
       (!key.standalone_database &&
        CanonicalExecutablePlanUuid(key.cluster_uuid) &&
@@ -1637,12 +1621,10 @@ ValidateCanonicalExecutablePlanParameterBindings(
     const auto* value = binding.typed_value;
     if (declared == plan.parameters.end() || binding.descriptor != *declared ||
         value == nullptr || declared->encoded_descriptor.empty() ||
-        value->descriptor.descriptor_uuid.canonical !=
+        value->descriptor.descriptor_uuid !=
             declared->descriptor_uuid ||
         value->descriptor.encoded_descriptor != declared->encoded_descriptor ||
-        value->descriptor.encoded_descriptor.find("type_uuid=" +
-                                                  declared->type_uuid) ==
-            std::string::npos ||
+        value->descriptor.type_uuid != declared->type_uuid ||
         (value->state !=
              scratchbird::engine::internal_api::EngineValueState::value &&
          value->state != scratchbird::engine::internal_api::
@@ -1915,7 +1897,7 @@ struct CanonicalExecutablePlanInvalidationReceipt {
   bool invalidated{false};
   bool duplicate_invalidation{false};
   std::uint64_t invalidation_generation{0};
-  std::string prepared_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
   std::string field_id;
   bool protected_detail{false};
   bool stale_execution_observed{false};
@@ -1935,7 +1917,7 @@ struct CanonicalExecutablePlanReprepareCandidate {
 };
 
 struct CanonicalExecutablePlanReprepareRequest {
-  std::string invalidated_prepared_plan_uuid;
+  internal_api::EngineUuid invalidated_prepared_plan_uuid;
   CanonicalExecutablePlanCacheKey current_key;
   CanonicalPreparedPlanStore* prepared_plan_store{nullptr};
   bool engine_invalidation_authorized{false};
@@ -1959,8 +1941,8 @@ struct CanonicalExecutablePlanReprepareResult {
   std::uint64_t governed_attempt_count{0};
   std::uint64_t total_attempt_count{0};
   std::uint64_t stale_execution_count{0};
-  std::string old_prepared_plan_uuid;
-  std::string replacement_prepared_plan_uuid;
+  internal_api::EngineUuid old_prepared_plan_uuid;
+  internal_api::EngineUuid replacement_prepared_plan_uuid;
   CanonicalExecutablePlanInvalidationReceipt invalidation;
   std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement_entry;
   std::vector<CanonicalExecutablePlanCacheIssue> issues;
@@ -2203,7 +2185,7 @@ class CanonicalExecutablePlanCache {
   }
 
   CanonicalExecutablePlanInvalidationReceipt InvalidateIfStale(
-      const std::string& prepared_plan_uuid,
+      const internal_api::EngineUuid& prepared_plan_uuid,
       const CanonicalExecutablePlanCacheKey& current_key,
       const bool engine_invalidation_authorized) {
     CanonicalExecutablePlanInvalidationReceipt receipt;
@@ -2409,7 +2391,7 @@ class CanonicalExecutablePlanCache {
       old_state->replacement_admitted = replacement != nullptr;
       old_state->replacement_entry = replacement;
       old_state->replacement_prepared_plan_uuid =
-          replacement ? replacement->key.prepared_plan_uuid : std::string{};
+          replacement ? replacement->key.prepared_plan_uuid : internal_api::EngineUuid{};
       old_state->reprepare_failure_field = failure_field;
       old_state->status = replacement ? CanonicalExecutablePlanStatus::kRetired
                                       : CanonicalExecutablePlanStatus::kInvalid;
@@ -2434,7 +2416,7 @@ class CanonicalExecutablePlanCache {
     bool reprepare_attempted{false};
     bool reprepare_in_progress{false};
     bool replacement_admitted{false};
-    std::string replacement_prepared_plan_uuid;
+    internal_api::EngineUuid replacement_prepared_plan_uuid;
     std::shared_ptr<const CanonicalExecutablePlanCacheEntry> replacement_entry;
     std::string reprepare_failure_field;
     std::unordered_set<std::string>
@@ -2444,10 +2426,10 @@ class CanonicalExecutablePlanCache {
 
   mutable std::mutex mutex_;
   std::uint64_t invalidation_generation_{0};
-  std::map<std::string,
+  std::map<internal_api::EngineUuid,
            std::shared_ptr<LifecycleState>>
       states_;
-  std::unordered_set<std::string> cache_plan_uuids_;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> cache_plan_uuids_;
 };
 
 struct CanonicalExecutablePlanHitExecutionRequest {
@@ -2491,9 +2473,9 @@ struct CanonicalExecutablePlanHitExecutionResult {
   std::uint64_t uncached_fallback_invocation_count{0};
   std::optional<CanonicalPlannerContinuationReplayReceipt>
       continuation_replay_receipt;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_root_physical_node_id{0};
-  std::string result_schema_uuid;
+  internal_api::EngineUuid result_schema_uuid;
   std::vector<CanonicalExecutablePlanExecutedNodeReceipt> executed_nodes;
   CanonicalExecutablePlanCacheLookupResult checkout;
   executor::CanonicalPhysicalDagDispatchResult dispatch;
@@ -2538,9 +2520,9 @@ enum class CanonicalExplainFieldState : std::uint8_t {
 
 struct CanonicalExplainDisclosurePolicy {
   std::uint16_t abi_version{1};
-  std::string request_uuid;
-  std::string subject_uuid;
-  std::string redaction_policy_uuid;
+  internal_api::EngineUuid request_uuid;
+  internal_api::EngineUuid subject_uuid;
+  internal_api::EngineUuid redaction_policy_uuid;
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
   bool engine_plan_read_authorized{false};
@@ -2567,7 +2549,7 @@ struct CanonicalExplainCandidateRecord {
   CanonicalPreparedExplainCandidateDisposition disposition{
       CanonicalPreparedExplainCandidateDisposition::kRejected};
   std::string candidate_family_id;
-  std::string alternative_uuid;
+  internal_api::EngineUuid alternative_uuid;
   std::string reason_id;
   std::uint64_t estimated_rows{0};
   executor::PhysicalCostVectorReceipt retained_cost;
@@ -2584,16 +2566,16 @@ struct CanonicalExplainNodeRecord {
   std::size_t execution_ordinal{0};
   std::string implementation_id;
   std::string logical_semantic_variant_id;
-  std::string selected_alternative_uuid;
-  std::string transformation_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid transformation_uuid;
   std::string transformation_rule_id;
-  std::string executor_capability_uuid;
+  internal_api::EngineUuid executor_capability_uuid;
   std::uint32_t executor_capability_abi_version{0};
   std::vector<std::uint64_t> input_physical_node_ids;
   std::vector<std::uint32_t> output_descriptor_ids;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
-  std::vector<std::string> enforced_property_uuids;
+  std::vector<internal_api::EngineUuid> required_property_uuids;
+  std::vector<internal_api::EngineUuid> delivered_property_uuids;
+  std::vector<internal_api::EngineUuid> enforced_property_uuids;
   executor::PhysicalCostVectorReceipt estimated_cost;
   std::uint64_t memory_bytes_required{0};
   std::uint64_t spill_bytes_expected{0};
@@ -2628,12 +2610,12 @@ struct CanonicalExplainNodeRecord {
 struct CanonicalExplainDocument {
   std::uint16_t abi_version{1};
   CanonicalExplainMode mode{CanonicalExplainMode::kPlain};
-  std::string prepared_plan_uuid;
+  internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::string selected_plan_signature;
-  std::string bound_sblr_tree_uuid;
-  std::string result_schema_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid result_schema_uuid;
   std::uint64_t root_physical_node_id{0};
   std::uint64_t published_node_count{0};
   std::string search_strategy_id;
@@ -2653,7 +2635,7 @@ struct CanonicalExplainDocument {
   bool reprepare_attempted{false};
   bool reprepare_succeeded{false};
   std::uint64_t reprepare_attempt_count{0};
-  std::string replacement_prepared_plan_uuid;
+  internal_api::EngineUuid replacement_prepared_plan_uuid;
   bool data_access_observation_known{false};
   bool data_access_observed{false};
   CanonicalExplainFieldState data_access_state{
@@ -2680,10 +2662,10 @@ struct CanonicalExplainRequest {
   bool reprepare_attempted{false};
   bool reprepare_succeeded{false};
   std::uint64_t reprepare_attempt_count{0};
-  std::string replacement_prepared_plan_uuid;
+  internal_api::EngineUuid replacement_prepared_plan_uuid;
   const executor::CanonicalPhysicalDagDispatchResult* completed_dispatch{
       nullptr};
-  std::string completed_result_schema_uuid;
+  internal_api::EngineUuid completed_result_schema_uuid;
   bool engine_result_schema_evidence{false};
   executor::CanonicalExecutionMgaAuthority mga_authority;
   CanonicalExplainDisclosurePolicy disclosure;
@@ -2731,10 +2713,10 @@ struct OptimizerPlanCacheKeyInput {
   std::uint64_t compatibility_epoch = 0;
   std::uint64_t format_compatibility_epoch = 0;
   std::uint64_t route_epoch = 0;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> function_uuids;
-  std::vector<std::string> index_uuids;
-  std::vector<std::string> filespace_uuids;
+  std::vector<internal_api::EngineUuid> object_uuids;
+  std::vector<internal_api::EngineUuid> function_uuids;
+  std::vector<internal_api::EngineUuid> index_uuids;
+  std::vector<internal_api::EngineUuid> filespace_uuids;
   std::vector<std::string> dependency_digests;
 };
 
@@ -2747,7 +2729,7 @@ struct CachedOptimizerPlan {
   bool invalidated_by_dependency = false;
   std::string invalidation_diagnostic_code;
   std::string invalidation_event_kind;
-  std::string invalidation_dependency_uuid;
+  internal_api::EngineUuid invalidation_dependency_uuid;
   bool metadata_only = true;
   bool mga_visibility_recheck_required = true;
   bool security_recheck_required = true;
@@ -2761,7 +2743,7 @@ struct CachedOptimizerPlan {
 
 struct OptimizerInvalidationEvent {
   std::string event_kind;
-  std::string dependency_uuid;
+  internal_api::EngineUuid dependency_uuid;
   std::uint64_t event_epoch = 0;
 };
 
@@ -2805,8 +2787,8 @@ struct OptimizerPlanCacheMemoryGovernanceRequest {
 };
 
 struct OptimizerPlanCachePersistenceRequest {
-  std::string storage_scope_uuid;
-  std::string persisted_by_principal_uuid;
+  internal_api::EngineUuid storage_scope_uuid;
+  internal_api::EngineUuid persisted_by_principal_uuid;
   std::uint64_t persisted_epoch = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t stats_epoch = 0;
@@ -2853,10 +2835,10 @@ struct OptimizerProductionPlanCacheKeyRequest {
   std::string memory_grant_digest;
   std::uint64_t compatibility_epoch = 0;
   std::uint64_t format_compatibility_epoch = 0;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> function_uuids;
-  std::vector<std::string> index_uuids;
-  std::vector<std::string> filespace_uuids;
+  std::vector<internal_api::EngineUuid> object_uuids;
+  std::vector<internal_api::EngineUuid> function_uuids;
+  std::vector<internal_api::EngineUuid> index_uuids;
+  std::vector<internal_api::EngineUuid> filespace_uuids;
   std::vector<std::string> dependency_digests;
   bool cluster_route_requested = false;
   bool parser_or_reference_authority_claimed = false;
@@ -2906,17 +2888,17 @@ std::string BuildNormalizedOptimizerPolicyControlDigest(
     const scratchbird::engine::planner::OptimizerPolicyMetadata& policy);
 OptimizerPlanCacheKeyInput BuildOptimizerPlanCacheKeyInput(const BoundOptimizerRequest& request,
                                                            std::string cost_profile_id,
-                                                           std::vector<std::string> object_uuids = {},
-                                                           std::vector<std::string> function_uuids = {},
-                                                           std::vector<std::string> index_uuids = {},
-                                                           std::vector<std::string> filespace_uuids = {});
+                                                           std::vector<internal_api::EngineUuid> object_uuids = {},
+                                                           std::vector<internal_api::EngineUuid> function_uuids = {},
+                                                           std::vector<internal_api::EngineUuid> index_uuids = {},
+                                                           std::vector<internal_api::EngineUuid> filespace_uuids = {});
 OptimizerProductionPlanCacheKeyResult BuildProductionOptimizerPlanCacheKeyInput(
     const OptimizerProductionPlanCacheKeyRequest& request);
 bool OptimizerPlanDependsOnEvent(const CachedOptimizerPlan& plan, const OptimizerInvalidationEvent& event);
 bool OptimizerInvalidationEventKindRecognized(const std::string& event_kind);
 std::string OptimizerInvalidationDiagnosticCode(const OptimizerInvalidationEvent& event);
 OptimizerInvalidationEvent OptimizerInvalidationEventForMutation(std::string mutation_source,
-                                                                 std::string dependency_uuid,
+                                                                 internal_api::EngineUuid dependency_uuid,
                                                                  std::uint64_t event_epoch);
 OptimizerPlanCacheEnterpriseValidation ValidateEnterpriseOptimizerPlanCacheKeyInput(
     const OptimizerPlanCacheKeyInput& input);

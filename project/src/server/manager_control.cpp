@@ -194,7 +194,7 @@ void AddManagementSessionGrant(
     std::string right,
     bool deny) {
   engine_api::EngineMaterializedAuthorizationGrant grant;
-  grant.grant_uuid.canonical =
+  grant.grant_uuid =
       "server-management-session-grant:" + right + (deny ? ":deny" : ":allow");
   grant.subject_uuid = subject_uuid;
   grant.subject_kind = "principal";
@@ -210,15 +210,15 @@ MaterializeManagementSessionAuthorizationContext(
     const engine_api::EngineRequestContext& context) {
   engine_api::EngineMaterializedAuthorizationContext authorization;
   authorization.authority_uuid = context.database_uuid;
-  if (authorization.authority_uuid.canonical.empty()) {
-    authorization.authority_uuid.canonical = "server-management-authority";
+  if (authorization.authority_uuid.is_nil()) {
+    authorization.authority_uuid = "server-management-authority";
   }
   authorization.principal_uuid = context.principal_uuid;
   authorization.security_epoch = context.security_epoch;
   authorization.policy_epoch = session.policy_generation;
   authorization.catalog_generation_id = context.catalog_generation_id;
-  if (authorization.authority_uuid.canonical.empty() ||
-      authorization.principal_uuid.canonical.empty() ||
+  if (authorization.authority_uuid.is_nil() ||
+      authorization.principal_uuid.is_nil() ||
       authorization.security_epoch == 0 || authorization.policy_epoch == 0 ||
       authorization.catalog_generation_id == 0) {
     return authorization;
@@ -279,11 +279,11 @@ engine_api::EngineRequestContext EngineContextForManagement(
                                   : engine_api::EngineTrustMode::server_isolated;
   engine_context.request_id = UuidBytesToText(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
-  engine_context.database_uuid.canonical = session.database_uuid;
-  engine_context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
-  engine_context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  engine_context.database_uuid = session.database_uuid;
+  engine_context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
+  engine_context.session_uuid = UuidBytesToText(session.session_uuid);
   engine_context.local_transaction_id = session.local_transaction_id;
-  engine_context.transaction_uuid.canonical = session.transaction_uuid;
+  engine_context.transaction_uuid = session.transaction_uuid;
   engine_context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
   engine_context.application_name = session.application_name;
@@ -324,9 +324,9 @@ std::optional<ServerDiagnostic> EngineAuthorizeManagement(
   engine_api::EngineAuthorizeRequest authorize;
   authorize.context = EngineContextForManagement(context, session, frame);
   authorize.required_right = engine_right;
-  authorize.target_database.uuid.canonical = session.database_uuid;
+  authorize.target_database.uuid = session.database_uuid;
   authorize.target_database.object_kind = "database";
-  authorize.target_object.uuid.canonical = session.database_uuid;
+  authorize.target_object.uuid = session.database_uuid;
   authorize.target_object.object_kind = "server_management";
   authorize.option_envelopes.push_back("operation_key:" + operation_key);
   const auto authorized = engine_api::EngineAuthorize(authorize);
@@ -993,24 +993,24 @@ TRequest EngineLifecycleRequestForManagement(const ServerManagementContext& cont
     engine_request.context.database_path = context.config->database_default_path.string();
   }
   if (!request.target_uuid.empty()) {
-    engine_request.context.database_uuid.canonical = request.target_uuid;
+    engine_request.context.database_uuid = request.target_uuid;
   }
-  if (engine_request.context.database_uuid.canonical.empty()) {
-    engine_request.context.database_uuid.canonical = session.database_uuid;
+  if (engine_request.context.database_uuid.is_nil()) {
+    engine_request.context.database_uuid = session.database_uuid;
   }
-  engine_request.target_database.uuid.canonical = engine_request.context.database_uuid.canonical;
+  engine_request.target_database.uuid = engine_request.context.database_uuid;
   engine_request.target_database.object_kind = "database";
-  engine_request.target_object.uuid.canonical = engine_request.context.database_uuid.canonical;
+  engine_request.target_object.uuid = engine_request.context.database_uuid;
   engine_request.target_object.object_kind = "database_lifecycle";
   engine_request.option_envelopes.push_back("operation_key:" + request.operation_key);
   engine_request.option_envelopes.push_back("admin_cli_route:true");
   engine_request.option_envelopes.push_back("audit_reason:" + request.audit_reason);
   if (request.operation_key == "create_database" &&
-      engine_request.context.transaction_uuid.canonical.empty()) {
+      engine_request.context.transaction_uuid.is_nil()) {
     // CREATE owns its bootstrap transaction inside the engine lifecycle
     // boundary. The management request identity is the replay-stable receipt;
     // it is never a parser-selected database or storage identity.
-    engine_request.context.transaction_uuid.canonical =
+    engine_request.context.transaction_uuid =
         engine_request.context.request_id;
     engine_request.context.local_transaction_id = 1;
     engine_request.option_envelopes.push_back(
@@ -1052,7 +1052,7 @@ std::string EngineLifecycleResultRecordsJson(const engine_api::EngineApiResult& 
   if (first_record) {
     out << "{\"operation_key\":\"" << JsonEscape(operation_key)
         << "\",\"operation_id\":\"" << JsonEscape(result.operation_id)
-        << "\",\"primary_object_uuid\":\"" << JsonEscape(result.primary_object.uuid.canonical)
+        << "\",\"primary_object_uuid\":\"" << JsonEscape(result.primary_object.uuid)
         << "\",\"primary_object_kind\":\"" << JsonEscape(result.primary_object.object_kind)
         << "\",\"authorization_authority\":\"engine\""
         << ",\"audit_marker\":\"DBLC_STATIC_ADMIN_AUTH_AUDIT_ROUTE\"}";
@@ -1467,9 +1467,9 @@ ServerManagementResponse HandleServerManagementRequest(const ServerManagementCon
   } else if (decoded->operation_key == "export_server_support_bundle") {
     engine_api::EnginePrepareSupportBundleRequest prepare;
     prepare.context = EngineContextForManagement(context, *session, frame);
-    prepare.target_database.uuid.canonical = session->database_uuid;
+    prepare.target_database.uuid = session->database_uuid;
     prepare.target_database.object_kind = "database";
-    prepare.target_object.uuid.canonical = session->database_uuid;
+    prepare.target_object.uuid = session->database_uuid;
     prepare.target_object.object_kind = "support_bundle";
     prepare.option_envelopes.push_back("engine_authorized_support_export:true");
     const auto prepared = engine_api::EnginePrepareSupportBundle(prepare);

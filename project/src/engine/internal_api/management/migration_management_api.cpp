@@ -156,7 +156,7 @@ EngineAlterMigrationResult EngineAlterMigration(const EngineAlterMigrationReques
         MakeInvalidRequestDiagnostic(request.operation_id, "migration_action_start_pause_resume_abort_or_finalize_required"));
   }
   EngineAlterMigrationRequest normalized = request;
-  normalized.target_object.uuid.canonical = migration_ref;
+  normalized.target_object.uuid = migration_ref;
   auto result = PersistedRecordResultWithPayload<EngineAlterMigrationResult>(
       normalized,
       request.operation_id.empty() ? "migration.alter" : request.operation_id,

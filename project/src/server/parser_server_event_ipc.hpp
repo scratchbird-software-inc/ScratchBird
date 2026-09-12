@@ -9,6 +9,7 @@
 #pragma once
 
 #include "event_notification_router.hpp"
+#include "../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -38,9 +39,7 @@ struct ParserServerMessageVector {
   std::vector<std::pair<std::string, std::string>> fields;
 };
 
-struct ParserServerEventUuidRef {
-  std::string canonical;
-};
+using ParserServerEventUuidRef = scratchbird::core::platform::Uuid;
 
 enum class ParserServerEventTrustMode {
   server_isolated,

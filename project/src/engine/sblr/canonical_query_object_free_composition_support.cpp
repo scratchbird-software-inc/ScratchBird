@@ -198,20 +198,18 @@ MaterializedValues MaterializeValues(
       return result;
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid.canonical =
+    engine_descriptor.descriptor_uuid =
         descriptor->second->descriptor_uuid;
+    engine_descriptor.type_uuid = descriptor->second->type_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name = type_names[column];
     engine_descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor->second->type_uuid + ";nullability=" +
+        std::string("nullability=") +
         (descriptor->second->nullability ==
                  api::RelationalNullability::kNullable
              ? "nullable"
              : "non_null");
-    if (descriptor->second->collation_uuid.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";collation_uuid=" + *descriptor->second->collation_uuid;
-    }
+    engine_descriptor.collation_uuid = descriptor->second->collation_uuid.value_or(api::EngineUuid{});
     if (descriptor->second->timezone_profile_id.has_value()) {
       engine_descriptor.encoded_descriptor +=
           ";timezone_profile_id=" + *descriptor->second->timezone_profile_id;
@@ -275,12 +273,12 @@ MaterializedValues MaterializeValues(
         value.encoded_value = std::to_string(decoded);
         value.binary_value.clear();
       }
-      if (value.descriptor.descriptor_uuid.canonical !=
-          result.batch.columns[column].descriptor.descriptor_uuid.canonical) {
+      if (value.descriptor.descriptor_uuid !=
+          result.batch.columns[column].descriptor.descriptor_uuid) {
         auto rebound = api::QowPreserveCanonicalDescriptorAfterScalarV1(
             result.batch.columns[column].descriptor, std::move(value));
-        if (rebound.descriptor.descriptor_uuid.canonical !=
-            result.batch.columns[column].descriptor.descriptor_uuid.canonical) {
+        if (rebound.descriptor.descriptor_uuid !=
+            result.batch.columns[column].descriptor.descriptor_uuid) {
           result.batch = {};
           result.result_bindings.clear();
           result.detail =
@@ -335,7 +333,7 @@ api::EngineApiResult SuccessfulApiResult(
       {"canonical.selected_plan",
        execution.dispatch.selected_plan_uuid});
   result.evidence.push_back(
-      {"canonical.result_abi", "QOW-RESULT-DIAGNOSTIC-ABI-V1"});
+      {"canonical.result_abi", "QOW-RESULT-DIAGNOSTIC-ABI-V2"});
   return result;
 }
 

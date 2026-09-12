@@ -43,24 +43,55 @@ namespace idx = scratchbird::core::index;
 constexpr const char* kRowStoreMagic = "SBMGA1";
 constexpr std::string_view kLineHexFieldPrefix = "SBHEX:";
 
-bool FileExistsAndNotEmpty(const std::string& path) {
+bool InspectBinarySegment(const std::string& path, bool* present) {
+  *present = false;
   std::error_code error;
-  return std::filesystem::exists(path, error) &&
-         std::filesystem::file_size(path, error) != 0;
+  const auto link_status = std::filesystem::symlink_status(path, error);
+  if (link_status.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) return true;
+  if (error) return false;
+  const auto status = std::filesystem::status(path, error);
+  if (error || !std::filesystem::is_regular_file(status)) return false;
+  *present = true;
+  return true;
 }
 
 }  // namespace
 
-std::vector<idx::byte> ReadBinaryFile(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) { return {}; }
-  std::vector<idx::byte> bytes;
-  const auto begin = std::istreambuf_iterator<char>(in);
-  const auto end = std::istreambuf_iterator<char>();
-  for (auto it = begin; it != end; ++it) {
-    bytes.push_back(static_cast<idx::byte>(*it));
+bool ReadCompleteMgaBinaryFile(const std::string& path,
+                              std::vector<idx::byte>* bytes,
+                              const std::uint64_t maximum_bytes) {
+  if (bytes == nullptr) return false;
+  bytes->clear();
+  bool present = false;
+  if (!InspectBinarySegment(path, &present)) return false;
+  if (!present) return true;
+  std::error_code error;
+  const auto expected_size = std::filesystem::file_size(path, error);
+  if (error || expected_size > bytes->max_size() || expected_size > maximum_bytes) return false;
+  const auto expected_time = std::filesystem::last_write_time(path, error);
+  if (error) return false;
+  std::ifstream input(path, std::ios::binary);
+  if (!input.is_open() || !input.good()) return false;
+  std::vector<idx::byte> staged;
+  std::array<char, 64 * 1024> chunk{};
+  for (;;) {
+    input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const auto count = input.gcount();
+    if (input.bad() || count < 0 ||
+        static_cast<std::uintmax_t>(count) > expected_size - staged.size()) return false;
+    staged.insert(staged.end(), chunk.data(), chunk.data() + count);
+    if (input.eof()) break;
+    if (input.fail()) return false;
   }
-  return bytes;
+  if (staged.size() != expected_size ||
+      !InspectBinarySegment(path, &present) || !present) return false;
+  const auto final_size = std::filesystem::file_size(path, error);
+  if (error || final_size != expected_size) return false;
+  const auto final_time = std::filesystem::last_write_time(path, error);
+  if (error || final_time != expected_time) return false;
+  *bytes = std::move(staged);
+  return true;
 }
 
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra);
@@ -1206,30 +1237,59 @@ bool DecodeScopedRowBinaryStore(
     BoundedScopedRowReadControl* control,
     const std::uint64_t authorized_file_bytes) {
   if (rows == nullptr || summary == nullptr) { return false; }
+  summary->trusted = false;
   if (BoundedScopedReadCancelled(control)) { return false; }
-  const auto existence_started = std::chrono::steady_clock::now();
-  const bool file_exists = FileExistsAndNotEmpty(path);
-  if (!AccountHeapReadWait(control, existence_started)) return false;
-  if (!file_exists) {
-    if (control != nullptr && authorized_file_bytes != 0) {
-      control->failure_category =
-          MgaHeapReadFailureCategoryV1::kCorruptStorage;
-      control->refusal_detail =
-          "heap_read_scoped_binary_changed_during_read";
-      return false;
-    }
-    summary->trusted = true;
-    return true;
-  }
   std::vector<idx::byte> bytes;
   if (control == nullptr) {
-    bytes = ReadBinaryFile(path);
-  } else if (!ReadBinaryFileBounded(path,
-                                    authorized_file_bytes,
-                                    control,
-                                    &bytes)) {
-    return false;
+    if (!ReadCompleteMgaBinaryFile(path, &bytes)) return false;
+  } else {
+    const auto existence_started = std::chrono::steady_clock::now();
+    bool file_exists = false;
+    const bool inspected = InspectBinarySegment(path, &file_exists);
+    if (!AccountHeapReadWait(control, existence_started)) return false;
+    if (!inspected) {
+      control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+      control->refusal_detail = "heap_read_scoped_binary_status_failed";
+      return false;
+    }
+    if (!file_exists) {
+      if (authorized_file_bytes != 0) {
+        control->failure_category = MgaHeapReadFailureCategoryV1::kCorruptStorage;
+        control->refusal_detail = "heap_read_scoped_binary_changed_during_read";
+        return false;
+      }
+      summary->trusted = true;
+      return true;
+    }
+    if (!ReadBinaryFileBounded(path, authorized_file_bytes, control, &bytes)) return false;
   }
+  return DecodeScopedRowBinaryBytes(bytes, rows, summary, control);
+}
+
+bool DecodeScopedRowBinaryBytes(
+    const std::vector<idx::byte>& bytes,
+    std::vector<CrudRowVersionRecord>* rows,
+    ScopedRelationSummary* summary,
+    BoundedScopedRowReadControl* control) {
+  if (rows == nullptr || summary == nullptr) return false;
+  bool published = false;
+  struct RestorePartialDecode {
+    std::vector<CrudRowVersionRecord>& rows;
+    ScopedRelationSummary& summary;
+    const std::size_t original_size;
+    const ScopedRelationSummary original_summary;
+    const bool& published;
+    ~RestorePartialDecode() {
+      if (published) return;
+      rows.resize(original_size);
+      const bool malformed = summary.malformed;
+      summary = original_summary;
+      summary.trusted = false;
+      summary.malformed = summary.malformed || malformed;
+    }
+  } restore{*rows, *summary, rows->size(), *summary, published};
+  summary->trusted = false;
+  if (BoundedScopedReadCancelled(control)) return false;
   std::size_t offset = 0;
   while (offset < bytes.size()) {
     if (BoundedScopedReadCancelled(control)) { return false; }
@@ -1665,6 +1725,7 @@ bool DecodeScopedRowBinaryStore(
     }
   }
   summary->trusted = true;
+  published = true;
   return true;
 }
 

@@ -402,14 +402,14 @@ void PopulateSessionSecurityProjectionContext(
     const EngineShowCatalogRequest& request,
     SysInformationProjectionContext* projection_context) {
   if (projection_context == nullptr) { return; }
-  projection_context->principal_uuid = request.context.principal_uuid.canonical;
+  projection_context->principal_uuid = request.context.principal_uuid;
   projection_context->principal_name = OptionValue(request, "principal_name:");
   projection_context->requested_role_name = OptionValue(request, "requested_role_name:");
   projection_context->active_role_name = OptionValue(request, "active_role_name:");
   if (projection_context->active_role_name.empty()) {
     projection_context->active_role_name = projection_context->requested_role_name;
   }
-  projection_context->active_role_uuid = request.context.current_role_uuid.canonical;
+  projection_context->active_role_uuid = request.context.current_role_uuid;
   if (projection_context->active_role_uuid.empty()) {
     projection_context->active_role_uuid = OptionValue(request, "current_role_uuid:");
   }
@@ -1015,7 +1015,7 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   projection_context.default_language = request.context.language_context.default_language_tag.empty()
                                             ? "en"
                                             : request.context.language_context.default_language_tag;
-  projection_context.session_uuid = request.context.session_uuid.canonical;
+  projection_context.session_uuid = request.context.session_uuid;
   projection_context.cluster_authority_available = request.context.cluster_authority_available;
   PopulateSessionSecurityProjectionContext(request, &projection_context);
   const EngineRequestContext catalog_read_context = CatalogReadContext(request.context);
@@ -1028,7 +1028,10 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
   std::vector<SysInformationResolverNameSource> resolver_names;
   std::vector<SysInformationColumnSource> columns;
   std::vector<SysInformationDomainSource> domain_sources;
-  const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx);
+  EngineApiDiagnostic schema_diagnostic;
+  const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+      request.context, "observability.show_catalog", schema_diagnostic);
   std::map<std::string, std::string> schema_path_by_uuid;
   std::map<std::string, std::string> schema_uuid_by_path;
   std::set<std::string> object_uuids_in_projection;
@@ -1467,7 +1470,7 @@ EngineShowDatabaseResult EngineShowDatabase(const EngineShowDatabaseRequest& req
       request,
       "observability.show_database",
       {{"database_path", request.context.database_path},
-       {"database_uuid", request.context.database_uuid.canonical},
+       {"database_uuid", request.context.database_uuid},
        {"page_size_bytes", std::to_string(request.context.database_page_size_bytes)},
        {"cluster_authority_active", BoolText(request.context.cluster_authority_available)}},
       "rs.show.database.v1");
@@ -1518,7 +1521,7 @@ EngineShowSessionsResult EngineShowSessions(const EngineShowSessionsRequest& req
   return ShowBase<EngineShowSessionsResult>(
       request,
       "observability.show_sessions",
-      {{"session_uuid", request.context.session_uuid.canonical},
+      {{"session_uuid", request.context.session_uuid},
        {"scope", request.context.security_context_present ? "all_or_self" : "self"}},
       "rs.show.sessions.v1");
 }
@@ -1657,8 +1660,8 @@ EngineShowDiagnosticsResult EngineShowDiagnostics(const EngineShowDiagnosticsReq
   AddApiBehaviorEvidence(&result, "diagnostic_rows", "1");
   AddApiBehaviorRow(&result,
                     {{"current_sqlstate", request.context.current_sqlstate},
-                     {"diagnostic_uuid", request.context.current_diagnostic_uuid.canonical},
-                     {"statement_uuid", request.context.statement_uuid.canonical}});
+                     {"diagnostic_uuid", request.context.current_diagnostic_uuid},
+                     {"statement_uuid", request.context.statement_uuid}});
   AddSbsfc080Evidence(&result, request);
   return result;
 }
@@ -1671,8 +1674,8 @@ EngineShowDiagnosticsExtendedResult EngineShowDiagnosticsExtended(
   AddApiBehaviorEvidence(&result, "diagnostic_extended_rows", "1");
   AddApiBehaviorRow(&result,
                     {{"current_sqlstate", request.context.current_sqlstate},
-                     {"diagnostic_uuid", request.context.current_diagnostic_uuid.canonical},
-                     {"statement_uuid", request.context.statement_uuid.canonical},
+                     {"diagnostic_uuid", request.context.current_diagnostic_uuid},
+                     {"statement_uuid", request.context.statement_uuid},
                      {"request_id", request.context.request_id},
                      {"trace_tag_count", std::to_string(request.context.trace_tags.size())}});
   AddSbsfc080Evidence(&result, request);
@@ -1686,7 +1689,7 @@ EngineShowArchiveReplicationResult EngineShowArchiveReplication(
   AddApiBehaviorEvidence(&result, "observability", "observability.show_archive_replication");
   AddApiBehaviorEvidence(&result, "archive_replication_rows", "1");
   AddApiBehaviorRow(&result,
-                    {{"database_uuid", request.context.database_uuid.canonical},
+                    {{"database_uuid", request.context.database_uuid},
                      {"archive_mode", "local_mga_inventory"},
                      {"replication_channels", "0"},
                      {"cluster_authority", request.context.cluster_authority_available ? "active" : "inactive"}});
@@ -1732,7 +1735,7 @@ EngineShowFilespaceExtendedResult EngineShowFilespaceExtended(
   AddApiBehaviorEvidence(&result, "observability", "observability.show_filespace_extended");
   AddApiBehaviorEvidence(&result, "filespace_rows", "1");
   AddApiBehaviorRow(&result,
-                    {{"database_uuid", request.context.database_uuid.canonical},
+                    {{"database_uuid", request.context.database_uuid},
                      {"database_path", request.context.database_path},
                      {"filespace_scope", "primary_database"},
                      {"mga_finality_authority", "local_transaction_inventory"},
@@ -1749,8 +1752,8 @@ EngineShowDecisionServiceResult EngineShowDecisionService(
   AddApiBehaviorEvidence(&result, "observability", "observability.show_decision_service");
   AddApiBehaviorEvidence(&result, "decision_service_rows", "1");
   AddApiBehaviorRow(&result,
-                    {{"database_uuid", request.context.database_uuid.canonical},
-                     {"cluster_uuid", request.context.cluster_uuid.canonical},
+                    {{"database_uuid", request.context.database_uuid},
+                     {"cluster_uuid", request.context.cluster_uuid},
                      {"decision_service_scope",
                       request.context.cluster_authority_available ? "cluster_provider" : "local_node"},
                      {"decision_service_state",
@@ -1828,7 +1831,7 @@ EngineShowAccelerationResult EngineShowAcceleration(const EngineShowAcceleration
          {"provider_generation", std::to_string(provider.generation)},
          {"snapshot_generation", std::to_string(snapshot->generation)},
          {"snapshot_sha256", snapshot->evidence_sha256},
-         {"node_uuid", request.context.node_uuid.canonical}});
+         {"node_uuid", request.context.node_uuid}});
   }
   // AddApiBehaviorRow supplies a generic fallback result kind.  Restore the
   // operation-owned contract after all rows have been materialized.

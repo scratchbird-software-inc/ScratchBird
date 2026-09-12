@@ -168,10 +168,10 @@ std::string LedgerKey(const EngineRequestContext& context,
                       const EngineObjectReference& filespace) {
   const std::string path = context.database_path.empty() ? std::string("database_path_absent")
                                                          : context.database_path;
-  const std::string database = context.database_uuid.canonical.empty()
+  const std::string database = context.database_uuid.is_nil()
                                    ? std::string("database_uuid_absent")
-                                   : context.database_uuid.canonical;
-  return path + "|" + database + "|" + filespace.uuid.canonical + "|filespace.preallocate";
+                                   : context.database_uuid;
+  return path + "|" + database + "|" + filespace.uuid + "|filespace.preallocate";
 }
 
 platform::u64 StableSeed(const std::string& value, platform::u64 salt) {
@@ -216,7 +216,7 @@ EngineObjectReference TargetFilespace(const EngineApiRequest& request) {
     }
   }
   EngineObjectReference target;
-  target.uuid.canonical = OptionValue(request, "target_filespace_uuid:");
+  target.uuid = OptionValue(request, "target_filespace_uuid:");
   target.object_kind = "filespace";
   return target;
 }
@@ -237,9 +237,9 @@ bool VisibleFilespaceCatalogDescriptorExists(const EngineRequestContext& context
   }
   const std::string path = context.database_path.empty() ? std::string("database_path_absent")
                                                          : context.database_path;
-  const std::string database = context.database_uuid.canonical.empty()
+  const std::string database = context.database_uuid.is_nil()
                                    ? std::string("database_uuid_absent")
-                                   : context.database_uuid.canonical;
+                                   : context.database_uuid;
   const std::string key = path + "|" + database + "|filespace.lifecycle";
   std::lock_guard<std::mutex> lock(FilespaceLifecycleRouteMutex());
   const auto runtime = FilespaceLifecycleRouteRegistries().find(key);
@@ -263,9 +263,9 @@ EngineApiDiagnostic FilespaceCatalogDescriptorNotFoundDiagnostic(const char* ope
 std::string LifecycleRegistryKey(const EngineRequestContext& context) {
   const std::string path = context.database_path.empty() ? std::string("database_path_absent")
                                                          : context.database_path;
-  const std::string database = context.database_uuid.canonical.empty()
+  const std::string database = context.database_uuid.is_nil()
                                    ? std::string("database_uuid_absent")
-                                   : context.database_uuid.canonical;
+                                   : context.database_uuid;
   return path + "|" + database + "|filespace.lifecycle";
 }
 
@@ -346,7 +346,7 @@ std::string DefaultLifecyclePath(const EngineApiRequest& request,
   const std::string base = request.context.database_path.empty()
                                ? std::string("/tmp/scratchbird-filespace")
                                : request.context.database_path;
-  return base + "." + target.uuid.canonical + ".filespace";
+  return base + "." + target.uuid + ".filespace";
 }
 
 platform::u64 RequestedPreallocationPages(const EngineApiRequest& request,
@@ -760,9 +760,9 @@ filespace::FilespacePackageRequest BuildPackageStorageRequest(
   storage_request.database_uuid = database_uuid;
   storage_request.target_database_uuid = database_uuid;
   storage_request.package_name = "route_filespace_package";
-  storage_request.operator_identity = request.context.principal_uuid.canonical.empty()
+  storage_request.operator_identity = request.context.principal_uuid.is_nil()
                                           ? "engine.operator"
-                                          : request.context.principal_uuid.canonical;
+                                          : request.context.principal_uuid;
   storage_request.descriptors.push_back(
       PackageDescriptorForRoute(database_uuid,
                                 filespace_uuid,
@@ -1213,7 +1213,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
           MakeInvalidRequestDiagnostic(operation, "local_transaction_id_required"));
     }
   }
-  if (request.context.database_uuid.canonical.empty()) {
+  if (request.context.database_uuid.is_nil()) {
     return FilespaceDiscoveryFailure(
         request,
         MakeInvalidRequestDiagnostic(operation, "database_uuid_required"));
@@ -1230,7 +1230,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
   }
 
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   if (!database_uuid.valid()) {
     return FilespaceDiscoveryFailure(
         request,
@@ -1491,7 +1491,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
     }
   }
 
-  if (request.context.database_uuid.canonical.empty()) {
+  if (request.context.database_uuid.is_nil()) {
     return FilespacePackageFailure(
         request,
         MakeInvalidRequestDiagnostic(operation, "database_uuid_required"));
@@ -1509,7 +1509,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
   }
 
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   if (!database_uuid.valid()) {
     return FilespacePackageFailure(
         request,
@@ -1740,12 +1740,12 @@ EngineStorageTierMigrationResult EnginePlanStorageTierMigrationOperation(
         request,
         MakeInvalidRequestDiagnostic(operation, "local_transaction_id_required"));
   }
-  if (request.context.database_uuid.canonical.empty()) {
+  if (request.context.database_uuid.is_nil()) {
     return StorageTierMigrationFailure(
         request,
         MakeInvalidRequestDiagnostic(operation, "database_uuid_required"));
   }
-  if (request.target_object.uuid.canonical.empty() ||
+  if (request.target_object.uuid.is_nil() ||
       (request.target_object.object_kind != "filespace" &&
        request.target_object.object_kind != "shard" &&
        request.target_object.object_kind != "object")) {
@@ -1756,20 +1756,20 @@ EngineStorageTierMigrationResult EnginePlanStorageTierMigrationOperation(
 
   const auto& descriptor = request.descriptor;
   if (!descriptor.storage_tier_policy_resolved ||
-      descriptor.storage_tier_policy_uuid.canonical.empty()) {
+      descriptor.storage_tier_policy_uuid.is_nil()) {
     return StorageTierMigrationFailure(
         request,
         MakeInvalidRequestDiagnostic(operation, "storage_tier_policy_required"));
   }
-  if (descriptor.source_tier_uuid.canonical.empty() ||
-      descriptor.target_tier_uuid.canonical.empty() ||
+  if (descriptor.source_tier_uuid.is_nil() ||
+      descriptor.target_tier_uuid.is_nil() ||
       !TierClassKnown(descriptor.source_tier_class) ||
       !TierClassKnown(descriptor.target_tier_class)) {
     return StorageTierMigrationFailure(
         request,
         MakeInvalidRequestDiagnostic(operation, "source_and_target_storage_tiers_required"));
   }
-  if (descriptor.source_tier_uuid.canonical == descriptor.target_tier_uuid.canonical ||
+  if (descriptor.source_tier_uuid == descriptor.target_tier_uuid ||
       descriptor.source_tier_class == descriptor.target_tier_class) {
     return StorageTierMigrationFailure(
         request,
@@ -1912,10 +1912,10 @@ EngineStorageTierMigrationResult EnginePlanStorageTierMigrationOperation(
         &result,
         {{"storage_tier_operation", operation},
          {"target_object_kind", request.target_object.object_kind},
-         {"target_uuid", request.target_object.uuid.canonical},
+         {"target_uuid", request.target_object.uuid},
          {"source_tier", EngineStorageTierClassName(descriptor.source_tier_class)},
          {"target_tier", EngineStorageTierClassName(descriptor.target_tier_class)},
-         {"storage_tier_policy_uuid", descriptor.storage_tier_policy_uuid.canonical},
+         {"storage_tier_policy_uuid", descriptor.storage_tier_policy_uuid},
          {"page_family_eligibility_validated", "true"},
          {"typed_dependency_manifest_validated",
           descriptor.typed_dependency_manifest_validated ? "true" : "false"},
@@ -1959,10 +1959,10 @@ EngineStorageTierMigrationResult EnginePlanStorageTierMigrationOperation(
   AddApiBehaviorRow(&result,
                     {{"storage_tier_operation", operation},
                      {"target_object_kind", request.target_object.object_kind},
-                     {"target_uuid", request.target_object.uuid.canonical},
+                     {"target_uuid", request.target_object.uuid},
                      {"source_tier", EngineStorageTierClassName(descriptor.source_tier_class)},
                      {"target_tier", EngineStorageTierClassName(descriptor.target_tier_class)},
-                     {"storage_tier_policy_uuid", descriptor.storage_tier_policy_uuid.canonical},
+                     {"storage_tier_policy_uuid", descriptor.storage_tier_policy_uuid},
                      {"page_family_eligibility_validated", "true"},
                      {"typed_dependency_manifest_validated",
                       descriptor.typed_dependency_manifest_validated ? "true" : "false"},
@@ -1974,7 +1974,7 @@ EngineStorageTierMigrationResult EnginePlanStorageTierMigrationOperation(
   result.result_shape.result_kind = "rs.storage_tier.descriptor_plan.v1";
   AddApiBehaviorEvidence(&result, "storage_tier_descriptor_plan", operation);
   AddApiBehaviorEvidence(&result, "storage_tier_policy_uuid",
-                         descriptor.storage_tier_policy_uuid.canonical);
+                         descriptor.storage_tier_policy_uuid);
   AddApiBehaviorEvidence(&result, "parser_storage_authority", "false");
   AddApiBehaviorEvidence(&result, "durable_state_changed", "false");
   AddApiBehaviorEvidence(&result, "physical_data_movement_dispatched", "false");
@@ -2019,7 +2019,7 @@ EngineStorageManagementResult EngineStorageManagementOperation(
                     {{"storage_action", action},
                      {"surface_id", surface_id},
                      {"object_kind", object_kind},
-                     {"object_uuid", request.target_object.uuid.canonical},
+                     {"object_uuid", request.target_object.uuid},
                      {"storage_authority", "engine_open_core_management_api"},
                      {"cluster_provider_dispatch", "false"}});
   AddApiBehaviorEvidence(&result, "storage_management_operation", action);
@@ -2089,7 +2089,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
   }
 
   const EngineObjectReference target = TargetFilespace(request);
-  if (target.uuid.canonical.empty()) {
+  if (target.uuid.is_nil()) {
     return FilespaceLifecycleFailure(
         request,
         effective_operation,
@@ -2097,9 +2097,9 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
   }
 
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
-                                                 target.uuid.canonical);
+                                                 target.uuid);
   if (!database_uuid.valid()) {
     return FilespaceLifecycleFailure(
         request,
@@ -2117,7 +2117,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
       lifecycle_operation == filespace::FilespaceOperation::create_filespace ||
       lifecycle_operation == filespace::FilespaceOperation::attach_filespace;
   if (!creates_or_attaches_descriptor &&
-      !VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid.canonical)) {
+      !VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid)) {
     return FilespaceLifecycleFailure(
         request,
         effective_operation,
@@ -2247,12 +2247,12 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
 
   auto result = MakeApiBehaviorSuccess<EngineFilespaceLifecycleResult>(
       request.context, effective_operation);
-  result.primary_object.uuid.canonical = target.uuid.canonical;
+  result.primary_object.uuid = target.uuid;
   result.primary_object.object_kind = "filespace";
   AddApiBehaviorRow(&result,
                     {{"operation_id", effective_operation},
                      {"storage_executor", "ApplyFilespaceOperation"},
-                     {"filespace_uuid", target.uuid.canonical},
+                     {"filespace_uuid", target.uuid},
                      {"merge_target_filespace_uuid",
                       UuidText(storage_request.merge_target_filespace_uuid)},
                      {"filespace_role", filespace::FilespaceRoleName(storage_result.descriptor.role)},
@@ -2268,7 +2268,7 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
                          "filespace_lifecycle_storage_operation",
                          filespace::FilespaceOperationName(lifecycle_operation));
   AddApiBehaviorEvidence(&result, "storage_executor", "ApplyFilespaceOperation");
-  AddApiBehaviorEvidence(&result, "filespace", target.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "filespace", target.uuid);
   if (storage_request.merge_target_filespace_uuid.valid()) {
     AddApiBehaviorEvidence(&result,
                            "merge_target_filespace",
@@ -2335,18 +2335,18 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
   }
 
   const EngineObjectReference target = TargetFilespace(request);
-  if (target.uuid.canonical.empty()) {
+  if (target.uuid.is_nil()) {
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "target_filespace_uuid_required"));
   }
 
   const std::string key = LedgerKey(request.context, target);
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
-                                                 target.uuid.canonical);
+                                                 target.uuid);
   const auto transaction_uuid = ParseEngineIdentity(platform::UuidKind::transaction,
-                                                   request.context.transaction_uuid.canonical);
+                                                   request.context.transaction_uuid);
   if (!database_uuid.valid()) {
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "database_uuid_invalid_for_storage_route"));
@@ -2355,7 +2355,7 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "target_filespace_uuid_invalid_for_storage_route"));
   }
-  if (!VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid.canonical)) {
+  if (!VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid)) {
     return FilespacePreallocateFailure(
         request, FilespaceCatalogDescriptorNotFoundDiagnostic(kOperation));
   }

@@ -551,13 +551,13 @@ void TestClusterSecurityBeforeProvider(const Fixture& fixture) {
     Require(!routed.api_result.ok, "compile-link stub provider accepted route");
     Require(HasDiagnostic(
                 routed.api_result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub diagnostic missing");
   } else if (provider.supports_execution) {
     Require(routed.api_result.ok, "external cluster provider did not accept");
   } else {
     Require(!routed.api_result.ok, "no-cluster provider route accepted");
-    Require(HasDiagnostic(routed.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDiagnostic(routed.api_result, "PROCESS.CLUSTER_PATH_ABSENT"),
             "no-cluster diagnostic missing");
   }
   Require(HasEvidence(routed.api_result, "agent_cluster_api_route"),

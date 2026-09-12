@@ -346,7 +346,7 @@ std::vector<mga::SerializableKeyRange> RangesForRows(
   constexpr std::size_t kMaxPointRangesForRowMutation = 1024;
   std::size_t projected_range_count = 0;
   for (const auto& row : rows) {
-    if (!row.requested_row_uuid.canonical.empty()) {
+    if (!row.requested_row_uuid.is_nil()) {
       ++projected_range_count;
     }
     projected_range_count += row.fields.size();
@@ -359,10 +359,10 @@ std::vector<mga::SerializableKeyRange> RangesForRows(
     }
   }
   for (const auto& row : rows) {
-    if (!row.requested_row_uuid.canonical.empty()) {
+    if (!row.requested_row_uuid.is_nil()) {
       ranges.push_back(mga::MakeSerializablePointRange(
           relation_uuid,
-          RowUuidKey(row.requested_row_uuid.canonical)));
+          RowUuidKey(row.requested_row_uuid)));
     }
     for (const auto& [column, value] : row.fields) {
       if (column.empty()) {

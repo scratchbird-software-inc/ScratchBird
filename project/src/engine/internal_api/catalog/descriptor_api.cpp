@@ -116,12 +116,12 @@ std::vector<std::string> ObjectUuidsForPinnedDescriptorKey(const EngineGetDescri
                                                            const std::string& descriptor_uuid) {
   std::vector<std::string> uuids;
   if (!descriptor_uuid.empty()) uuids.push_back(descriptor_uuid);
-  if (!request.target_object.uuid.canonical.empty()) uuids.push_back(request.target_object.uuid.canonical);
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    uuids.push_back(request.bound_object_identity.object_uuid.canonical);
+  if (!request.target_object.uuid.is_nil()) uuids.push_back(request.target_object.uuid);
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    uuids.push_back(request.bound_object_identity.object_uuid);
   }
   for (const auto& object : request.related_objects) {
-    if (!object.uuid.canonical.empty()) uuids.push_back(object.uuid.canonical);
+    if (!object.uuid.is_nil()) uuids.push_back(object.uuid);
   }
   return uuids;
 }
@@ -129,8 +129,8 @@ std::vector<std::string> ObjectUuidsForPinnedDescriptorKey(const EngineGetDescri
 std::vector<std::string> IndexUuidsForPinnedDescriptorKey(const EngineGetDescriptorRequest& request) {
   std::vector<std::string> uuids;
   for (const auto& index : request.indexes) {
-    if (!index.requested_index_uuid.canonical.empty()) {
-      uuids.push_back(index.requested_index_uuid.canonical);
+    if (!index.requested_index_uuid.is_nil()) {
+      uuids.push_back(index.requested_index_uuid);
     }
   }
   return uuids;
@@ -155,9 +155,9 @@ CatalogPinnedDescriptorCacheKey DescriptorCacheKey(const EngineGetDescriptorRequ
   key.index_uuids = IndexUuidsForPinnedDescriptorKey(request);
   key.security_policy_identity = OptionValue(request, "security_policy_identity:");
   if (key.security_policy_identity.empty()) {
-    key.security_policy_identity = request.context.principal_uuid.canonical.empty()
+    key.security_policy_identity = request.context.principal_uuid.is_nil()
                                        ? "security_policy:default"
-                                       : "principal:" + request.context.principal_uuid.canonical;
+                                       : "principal:" + request.context.principal_uuid;
   }
   key.redaction_policy_identity = OptionValue(request, "redaction_policy_identity:");
   if (key.redaction_policy_identity.empty()) key.redaction_policy_identity = "redaction_policy:default";
@@ -189,9 +189,9 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
 namespace {
 
 EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescriptorRequest& request) {
-  const std::string descriptor_uuid = !request.target_object.uuid.canonical.empty()
-                                          ? request.target_object.uuid.canonical
-                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid.canonical : std::string{});
+  const std::string descriptor_uuid = !request.target_object.uuid.is_nil()
+                                          ? request.target_object.uuid
+                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : std::string{});
   if (descriptor_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(
         request.context,
@@ -205,10 +205,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
     for (const auto& object : catalog_objects.state.objects) {
       if (object.object_uuid != descriptor_uuid) { continue; }
       auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
-      result.primary_object.uuid.canonical = object.object_uuid;
+      result.primary_object.uuid = object.object_uuid;
       result.primary_object.object_kind = object.object_kind;
       result.descriptor_owner = result.primary_object;
-      result.descriptor.descriptor_uuid.canonical = object.object_uuid;
+      result.descriptor.descriptor_uuid = object.object_uuid;
       result.descriptor.descriptor_kind = object.object_kind == "synonym" ? "sys.catalog.synonym" : object.object_kind;
       result.descriptor.canonical_type_name = object.object_kind;
       result.descriptor.encoded_descriptor = "object_uuid=" + object.object_uuid + ";object_kind=" +
@@ -227,7 +227,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
   }
   if (const auto domain = FindVisibleDomain(request.context, descriptor_uuid, observer_tx)) {
     auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
-    result.primary_object.uuid.canonical = domain->domain_uuid;
+    result.primary_object.uuid = domain->domain_uuid;
     result.primary_object.object_kind = "domain";
     result.descriptor_owner = result.primary_object;
     result.descriptor = DomainDescriptor(*domain);
@@ -240,10 +240,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
   if (crud.ok) {
     if (const auto table = FindVisibleCrudTable(crud.state, descriptor_uuid, observer_tx)) {
       auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
-      result.primary_object.uuid.canonical = table->table_uuid;
+      result.primary_object.uuid = table->table_uuid;
       result.primary_object.object_kind = "table";
       result.descriptor_owner = result.primary_object;
-      result.descriptor.descriptor_uuid.canonical = table->table_uuid;
+      result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
       result.descriptor.encoded_descriptor = "table_uuid=" + table->table_uuid + ";columns=" + EncodeCrudPairs(table->columns);
@@ -259,10 +259,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
     const RelationReadSnapshot mga_crud = BuildCrudCompatibilityStateFromMga(mga_relations.state);
     if (const auto table = FindVisibleCrudTable(mga_crud, descriptor_uuid, observer_tx)) {
       auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
-      result.primary_object.uuid.canonical = table->table_uuid;
+      result.primary_object.uuid = table->table_uuid;
       result.primary_object.object_kind = "table";
       result.descriptor_owner = result.primary_object;
-      result.descriptor.descriptor_uuid.canonical = table->table_uuid;
+      result.descriptor.descriptor_uuid = table->table_uuid;
       result.descriptor.descriptor_kind = "table";
       result.descriptor.canonical_type_name = table->default_name;
       result.descriptor.encoded_descriptor = "table_uuid=" + table->table_uuid + ";columns=" + EncodeCrudPairs(table->columns);
@@ -275,7 +275,7 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
   }
   if (const auto record = FindVisibleApiBehaviorRecord(request.context, descriptor_uuid, observer_tx)) {
     auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
-    result.primary_object.uuid.canonical = record->object_uuid;
+    result.primary_object.uuid = record->object_uuid;
     result.primary_object.object_kind = record->object_kind;
     result.descriptor_owner = result.primary_object;
     result.descriptor = ApiBehaviorDescriptor(*record);
@@ -296,9 +296,9 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
 }  // namespace
 
 EngineGetDescriptorResult EngineGetDescriptor(const EngineGetDescriptorRequest& request) {
-  const std::string descriptor_uuid = !request.target_object.uuid.canonical.empty()
-                                          ? request.target_object.uuid.canonical
-                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid.canonical : std::string{});
+  const std::string descriptor_uuid = !request.target_object.uuid.is_nil()
+                                          ? request.target_object.uuid
+                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : std::string{});
   if (descriptor_uuid.empty()) {
     return EngineGetDescriptorUncachedImpl(request);
   }

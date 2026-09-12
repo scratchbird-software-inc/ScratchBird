@@ -133,7 +133,7 @@ EngineExplainOperationResult EngineExplainOperation(const EngineExplainOperation
         validation);
   }
   AddExplainOdf108Surface(&result, snapshot);
-  AddApiBehaviorRow(&result, {{"operation_id", request.operation_id}, {"target_uuid", request.target_object.uuid.canonical}, {"plan_kind", plan_result.plan_kind}, {"payload", ApiBehaviorPayloadFromRequest(request)}});
+  AddApiBehaviorRow(&result, {{"operation_id", request.operation_id}, {"target_uuid", request.target_object.uuid}, {"plan_kind", plan_result.plan_kind}, {"payload", ApiBehaviorPayloadFromRequest(request)}});
   return result;
 }
 

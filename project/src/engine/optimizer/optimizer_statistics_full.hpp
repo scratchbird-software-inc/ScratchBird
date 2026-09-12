@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::optimizer {
@@ -32,8 +33,8 @@ enum class OptimizerStatsFreshnessState {
 };
 
 struct OptimizerStatsIdentity {
-  std::string object_uuid;
-  std::string statistic_uuid;
+  planner::CanonicalPlannerUuid object_uuid;
+  planner::CanonicalPlannerUuid statistic_uuid;
   std::uint64_t stats_epoch = 0;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t transaction_visibility_epoch = 0;
@@ -52,7 +53,7 @@ struct TableCardinalityStats {
 
 struct ColumnStats {
   OptimizerStatsIdentity identity;
-  std::string column_uuid;
+  planner::CanonicalPlannerUuid column_uuid;
   std::string descriptor_digest;
   // SEARCH_KEY: OPCH_STATISTICS_ANALYZE_PARITY
   // Sampling and HLL evidence are optimizer estimates only and never replace
@@ -81,13 +82,13 @@ struct HistogramBucketStats {
 
 struct HistogramStats {
   OptimizerStatsIdentity identity;
-  std::string column_uuid;
+  planner::CanonicalPlannerUuid column_uuid;
   std::vector<HistogramBucketStats> buckets;
 };
 
 struct MostCommonValueStats {
   OptimizerStatsIdentity identity;
-  std::string column_uuid;
+  planner::CanonicalPlannerUuid column_uuid;
   std::string value_encoded;
   double frequency = 0.0;
 };
@@ -115,8 +116,8 @@ struct ExtendedOptimizerJointMcvEntry {
 struct ExtendedOptimizerStatistic {
   OptimizerStatsIdentity identity;
   ExtendedOptimizerStatisticKind kind = ExtendedOptimizerStatisticKind::kMultiColumnNdv;
-  std::string relation_uuid;
-  std::vector<std::string> column_uuids;
+  planner::CanonicalPlannerUuid relation_uuid;
+  std::vector<planner::CanonicalPlannerUuid> column_uuids;
   std::vector<std::string> document_path_digests;
   std::vector<ExtendedOptimizerJointMcvEntry> joint_mcv;
   std::uint64_t multi_column_distinct_count = 0;
@@ -134,14 +135,14 @@ struct ExtendedOptimizerStatistic {
 
 struct IndexStats {
   OptimizerStatsIdentity identity;
-  std::string index_uuid;
-  std::string relation_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
+  planner::CanonicalPlannerUuid relation_uuid;
   std::string index_family = "btree";
   std::string descriptor_digest;
   std::string collation_identity;
-  std::vector<std::string> key_column_uuids;
+  std::vector<planner::CanonicalPlannerUuid> key_column_uuids;
   std::vector<std::string> key_expression_digests;
-  std::vector<std::string> covered_column_uuids;
+  std::vector<planner::CanonicalPlannerUuid> covered_column_uuids;
   std::string generated_column_expression_digest;
   std::string computed_expression_digest;
   std::string partial_predicate_text;
@@ -181,6 +182,10 @@ struct IndexStats {
   bool family_claim_removed = false;
 };
 
+bool OptimizerTableStatsAreUsable(const TableCardinalityStats& stats);
+bool OptimizerIndexStatsAreUsable(const IndexStats& stats,
+    const planner::CanonicalPlannerUuid& relation_uuid, std::string_view descriptor_digest);
+
 struct ExpressionStats {
   OptimizerStatsIdentity identity;
   std::string expression_digest;
@@ -191,7 +196,7 @@ struct ExpressionStats {
 
 struct PageFilespaceStats {
   OptimizerStatsIdentity identity;
-  std::string filespace_uuid;
+  planner::CanonicalPlannerUuid filespace_uuid;
   std::string page_family;
   std::uint64_t page_size_bytes = 0;
   std::uint64_t free_pages = 0;
@@ -202,7 +207,7 @@ struct PageFilespaceStats {
 };
 
 struct OptimizerStatsSnapshot {
-  std::string snapshot_id;
+  planner::CanonicalPlannerUuid snapshot_id;
   std::uint64_t stats_epoch = 0;
   std::uint64_t catalog_epoch = 0;
   std::vector<TableCardinalityStats> tables;
@@ -217,17 +222,17 @@ struct OptimizerStatsSnapshot {
 
 struct StatsInvalidationEvent {
   std::string event_kind;
-  std::string object_uuid;
-  std::string index_uuid;
-  std::string security_policy_identity;
-  std::string redaction_policy_identity;
+  planner::CanonicalPlannerUuid object_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
+  planner::CanonicalPlannerUuid security_policy_identity;
+  planner::CanonicalPlannerUuid redaction_policy_identity;
   std::uint64_t new_catalog_epoch = 0;
   std::uint64_t new_stats_epoch = 0;
   std::string reason;
 };
 
 struct AnalyzeSampleInput {
-  std::string relation_uuid;
+  planner::CanonicalPlannerUuid relation_uuid;
   std::uint64_t sampled_rows = 0;
   std::uint64_t total_rows_estimate = 0;
   std::uint64_t page_count = 0;
@@ -247,16 +252,16 @@ class OptimizerStatisticsStore {
   void UpsertExpression(ExpressionStats stats);
   void UpsertPageFilespace(PageFilespaceStats stats);
 
-  std::optional<TableCardinalityStats> FindTable(const std::string& relation_uuid) const;
-  std::optional<ColumnStats> FindColumn(const std::string& relation_uuid, const std::string& column_uuid) const;
+  std::optional<TableCardinalityStats> FindTable(const planner::CanonicalPlannerUuid& relation_uuid) const;
+  std::optional<ColumnStats> FindColumn(const planner::CanonicalPlannerUuid& relation_uuid, const planner::CanonicalPlannerUuid& column_uuid) const;
   std::vector<ExtendedOptimizerStatistic> FindExtendedStatisticsForRelation(
-      const std::string& relation_uuid) const;
-  std::optional<IndexStats> FindIndex(const std::string& index_uuid) const;
-  std::optional<PageFilespaceStats> FindFilespace(const std::string& filespace_uuid, const std::string& page_family) const;
+      const planner::CanonicalPlannerUuid& relation_uuid) const;
+  std::optional<IndexStats> FindIndex(const planner::CanonicalPlannerUuid& index_uuid) const;
+  std::optional<PageFilespaceStats> FindFilespace(const planner::CanonicalPlannerUuid& filespace_uuid, const std::string& page_family) const;
 
-  void MarkStaleByObject(const std::string& object_uuid, std::uint64_t catalog_epoch);
-  OptimizerStatsSnapshot Snapshot(std::string snapshot_id) const;
-  OptimizerStatisticsCatalog ToLegacyCatalog() const;
+  void MarkStaleByObject(const planner::CanonicalPlannerUuid& object_uuid, std::uint64_t catalog_epoch);
+  OptimizerStatsSnapshot Snapshot(planner::CanonicalPlannerUuid snapshot_id) const;
+  std::optional<OptimizerStatisticsCatalog> ToLegacyCatalog() const;
 
  private:
   std::vector<TableCardinalityStats> tables_;
@@ -279,10 +284,10 @@ struct OptimizerPinnedStatsDescriptorKey {
   std::uint64_t name_resolution_epoch = 0;
   std::uint64_t stats_epoch = 0;
   std::string descriptor_set_digest;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> index_uuids;
-  std::string security_policy_identity;
-  std::string redaction_policy_identity;
+  std::vector<planner::CanonicalPlannerUuid> object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> index_uuids;
+  planner::CanonicalPlannerUuid security_policy_identity;
+  planner::CanonicalPlannerUuid redaction_policy_identity;
 };
 
 struct OptimizerPinnedStatsDescriptorSnapshot {
@@ -306,8 +311,8 @@ struct OptimizerPinnedStatsLookupResult {
 struct OptimizerPinnedStatsInvalidatedEntry {
   std::string cache_key;
   std::string reason;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> index_uuids;
+  std::vector<planner::CanonicalPlannerUuid> object_uuids;
+  std::vector<planner::CanonicalPlannerUuid> index_uuids;
 };
 
 struct OptimizerPinnedStatsInvalidationResult {
@@ -334,7 +339,7 @@ OptimizerPinnedStatsDescriptorCache& GlobalOptimizerPinnedStatsDescriptorCache()
 const char* OptimizerStatsFreshnessStateName(OptimizerStatsFreshnessState state);
 bool OptimizerStatsIdentityIsUsable(const OptimizerStatsIdentity& identity);
 const char* ExtendedOptimizerStatisticKindName(ExtendedOptimizerStatisticKind kind);
-TableCardinalityStats BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput& input);
+std::optional<TableCardinalityStats> BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput& input);
 std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const OptimizerStatsSnapshot& snapshot);
 double EstimateEqualitySelectivityFromColumnStats(const ColumnStats& stats, std::uint64_t table_rows);
 double EstimateRangeSelectivityFromHistogram(const HistogramStats& stats);

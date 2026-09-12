@@ -40,12 +40,12 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
   out.trust_mode = EngineTrustModeFrom(context.trust_mode);
   out.request_id = context.request_id;
   out.database_path = context.database_path;
-  out.database_uuid.canonical = context.database_uuid.canonical;
+  out.database_uuid = context.database_uuid;
   out.database_page_size_bytes = context.database_page_size_bytes;
-  out.principal_uuid.canonical = context.principal_uuid.canonical;
-  out.session_uuid.canonical = context.session_uuid.canonical;
-  out.transaction_uuid.canonical = context.transaction_uuid.canonical;
-  out.statement_uuid.canonical = context.statement_uuid.canonical;
+  out.principal_uuid = context.principal_uuid;
+  out.session_uuid = context.session_uuid;
+  out.transaction_uuid = context.transaction_uuid;
+  out.statement_uuid = context.statement_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id = context.snapshot_visible_through_local_transaction_id;
   out.statement_timestamp = context.statement_timestamp;
@@ -131,7 +131,7 @@ bool ParserServerEventIpcRuntime::SessionReady(const ParserServerEventSession& s
     return false;
   }
   if (!session.session_bound || session.parser_channel_uuid.empty() ||
-      session.engine_context.session_uuid.canonical.empty() || session.engine_context.database_path.empty()) {
+      session.engine_context.session_uuid.is_nil() || session.engine_context.database_path.empty()) {
     if (vectors != nullptr) {
       vectors->push_back(DiagnosticVector("PARSER_SERVER_IPC.SESSION_REQUIRED",
                                           "parser_server_ipc.session_required",
@@ -209,7 +209,7 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
     engine_request.context = EngineContextFrom(request.session.engine_context);
     engine_request.operation_id = "session.notification.unlisten_all";
     engine_request.option_envelopes.push_back("session_uuid:" +
-                                             request.session.engine_context.session_uuid.canonical);
+                                             request.session.engine_context.session_uuid);
     const auto engine_result = api::EngineUnlistenSessionNotifications(engine_request);
     if (!engine_result.ok) {
       result.outcome = "rejected";
@@ -217,7 +217,7 @@ PsEventUnsubscribeResult ParserServerEventIpcRuntime::HandleUnsubscribe(const Ps
       return result;
     }
     const auto router_result = router_->UnregisterSession(request.session.parser_channel_uuid,
-                                                          request.session.engine_context.session_uuid.canonical);
+                                                          request.session.engine_context.session_uuid);
     result.removed_count = engine_result.removed_count;
     result.outcome = router_result.ok ? "accepted" : "rejected";
     if (!router_result.ok) {
@@ -384,18 +384,18 @@ PsEventDisconnectResult ParserServerEventIpcRuntime::HandleDisconnect(const PsEv
                                                          true));
     return result;
   }
-  if (request.session.session_bound && !request.session.engine_context.session_uuid.canonical.empty()) {
+  if (request.session.session_bound && !request.session.engine_context.session_uuid.is_nil()) {
     api::EngineUnlistenSessionNotificationsRequest engine_request;
     engine_request.context = EngineContextFrom(request.session.engine_context);
     engine_request.operation_id = "session.notification.unlisten_all";
     engine_request.option_envelopes.push_back("session_uuid:" +
-                                             request.session.engine_context.session_uuid.canonical);
+                                             request.session.engine_context.session_uuid);
     const auto engine_result = api::EngineUnlistenSessionNotifications(engine_request);
     if (!engine_result.ok) {
       AppendEngineDiagnostics(engine_result, &result.message_vector_set);
     }
     const auto router_result = router_->UnregisterSession(request.session.parser_channel_uuid,
-                                                          request.session.engine_context.session_uuid.canonical);
+                                                          request.session.engine_context.session_uuid);
     result.removed_count = router_result.affected_count;
     result.outcome = (router_result.ok && engine_result.ok) ? "accepted" : "rejected";
     if (!router_result.ok) {

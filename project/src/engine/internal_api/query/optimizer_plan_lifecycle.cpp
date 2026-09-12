@@ -370,15 +370,15 @@ std::optional<EngineApiDiagnostic> ValidateStatementBinding(
     return PlanDiagnostic(kOptimizerPlanDiagnosticCatalogIdentityRequired,
                           "independent selected catalog epoch UUID is required");
   }
-  if (context.transaction_uuid.canonical !=
+  if (context.transaction_uuid !=
           statement.owning_transaction_uuid ||
       context.local_transaction_id != statement.owning_local_transaction_id ||
-      context.statement_uuid.canonical != statement.statement_uuid ||
-      context.statement_snapshot_uuid.canonical !=
+      context.statement_uuid != statement.statement_uuid ||
+      context.statement_snapshot_uuid !=
           statement.statement_snapshot_uuid ||
-      context.statement_metadata_snapshot_uuid.canonical !=
+      context.statement_metadata_snapshot_uuid !=
           statement.statement_metadata_snapshot_uuid ||
-      context.catalog_epoch_uuid.canonical != selected_catalog_epoch_uuid ||
+      context.catalog_epoch_uuid != selected_catalog_epoch_uuid ||
       context.snapshot_visible_through_local_transaction_id !=
           statement.visible_committed_high_watermark ||
       !context.statement_metadata_snapshot_engine_owned ||
@@ -397,11 +397,11 @@ std::optional<EngineApiDiagnostic> ValidateStatementBinding(
       context.catalog_generation_id != dag.catalog_generation ||
       context.security_epoch != dag.security_epoch ||
       context.resource_epoch != dag.resource_epoch ||
-      context.optimizer_capability_snapshot_uuid.canonical !=
+      context.optimizer_capability_snapshot_uuid !=
           dag.capability_snapshot_uuid ||
-      context.optimizer_resource_snapshot_uuid.canonical !=
+      context.optimizer_resource_snapshot_uuid !=
           dag.resource_snapshot_uuid ||
-      context.optimizer_route_snapshot_uuid.canonical !=
+      context.optimizer_route_snapshot_uuid !=
           dag.route_snapshot_uuid ||
       context.optimizer_route_epoch != dag.route_epoch ||
       context.optimizer_route_generation != dag.route_generation) {
@@ -448,7 +448,7 @@ EngineTypedValue TextValue(std::string value) {
 
 void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       "optimizer-plan-row-" + std::to_string(result->result_shape.rows.size() + 1);
   for (auto& field : fields) {
     row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
@@ -874,7 +874,7 @@ void ApplyRecoverySnapshot(EngineOptimizerPlanLifecycleState* state, const RawPl
 }
 
 void FillEntryResult(EngineApiResult* result, const EngineOptimizerPlanCacheEntry& entry) {
-  result->primary_object.uuid.canonical = entry.plan_uuid;
+  result->primary_object.uuid = entry.plan_uuid;
   result->primary_object.object_kind = "optimizer_plan_cache_entry";
   AddEvidence(result, "optimizer_plan_cache_entry", entry.plan_uuid);
   AddEvidence(result, "optimizer_plan_metadata_only", "true");

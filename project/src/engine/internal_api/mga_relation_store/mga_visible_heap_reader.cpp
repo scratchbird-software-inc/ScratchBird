@@ -196,7 +196,7 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairsForHeapRead(
 
 bool AccountHeapReadEngineDescriptorMemory(
     const EngineDescriptor& descriptor, std::uint64_t* total) {
-  return AccountHeapReadOwnedString(descriptor.descriptor_uuid.canonical,
+  return AccountHeapReadOwnedString(descriptor.descriptor_uuid,
                                     total) &&
          AccountHeapReadOwnedString(descriptor.descriptor_kind, total) &&
          AccountHeapReadOwnedString(descriptor.canonical_type_name, total) &&
@@ -208,7 +208,7 @@ std::optional<std::uint64_t> HeapReadStorageDescriptorMemoryBytes(
   std::uint64_t bytes = sizeof(descriptor);
   std::uint64_t allocation_bytes = 0;
   const auto account_uuid = [&](const EngineUuid& uuid) {
-    return AccountHeapReadOwnedString(uuid.canonical, &bytes);
+    return AccountHeapReadOwnedString(uuid, &bytes);
   };
   if (!account_uuid(descriptor.descriptor_uuid) ||
       !account_uuid(descriptor.database_uuid) ||
@@ -440,7 +440,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     return invalid("relation_uuid_required");
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return invalid("exact_active_transaction_and_snapshot_required", nullptr,
                    MgaHeapReadFailureCategoryV1::kMgaContext);
   }
@@ -478,18 +478,18 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     if (prepared_statement == nullptr ||
         prepared_statement->transaction_states == nullptr ||
         prepared_authority->relation_uuid != relation_uuid ||
-        prepared_statement->database_uuid != context.database_uuid.canonical ||
-        prepared_statement->statement_uuid != context.statement_uuid.canonical ||
+        prepared_statement->database_uuid != context.database_uuid ||
+        prepared_statement->statement_uuid != context.statement_uuid ||
         prepared_statement->transaction_uuid !=
-            context.transaction_uuid.canonical ||
+            context.transaction_uuid ||
         prepared_statement->statement_snapshot_uuid !=
-            context.statement_snapshot_uuid.canonical ||
+            context.statement_snapshot_uuid ||
         prepared_statement->statement_metadata_snapshot_uuid !=
-            context.statement_metadata_snapshot_uuid.canonical ||
+            context.statement_metadata_snapshot_uuid ||
         prepared_statement->catalog_epoch_uuid !=
-            context.catalog_epoch_uuid.canonical ||
+            context.catalog_epoch_uuid ||
         prepared_statement->authorization_authority_uuid !=
-            context.authorization_context.authority_uuid.canonical ||
+            context.authorization_context.authority_uuid ||
         prepared_statement->catalog_generation !=
             context.catalog_generation_id ||
         prepared_statement->security_epoch !=
@@ -529,11 +529,11 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
                     MgaHeapReadFailureCategoryV1::kCatalog);
     }
     const auto& loaded = loaded_descriptor.descriptor;
-    if (loaded.relation_uuid.canonical != relation_uuid ||
-        loaded.database_uuid.canonical != context.database_uuid.canonical ||
+    if (loaded.relation_uuid != relation_uuid ||
+        loaded.database_uuid != context.database_uuid ||
         loaded.relation_kind != "table" ||
         loaded.storage_profile != "local_mga_rowstore_v1" ||
-        loaded.descriptor_uuid.canonical.empty() ||
+        loaded.descriptor_uuid.is_nil() ||
         loaded.descriptor_generation == 0 ||
         loaded.descriptor_status.empty()) {
       return invalid("current_persisted_local_heap_descriptor_required",
@@ -805,7 +805,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     const auto& row = admitted_versions[index];
     ++result.visibility_recheck_count;
     if ((!row.temporary_session_uuid.empty() &&
-         row.temporary_session_uuid != context.session_uuid.canonical) ||
+         row.temporary_session_uuid != context.session_uuid) ||
         !creator_visible(row.creator_tx)) {
       ++result.invisible_row_version_count;
       continue;
@@ -993,7 +993,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
   result.current_relation_base_generation = current_relation_base_generation;
   result.evidence.push_back(
       {"mga_heap_read_relation_descriptor_uuid",
-       descriptor.descriptor_uuid.canonical});
+       descriptor.descriptor_uuid});
   result.evidence.push_back(
       {"mga_heap_read_relation_descriptor_generation",
        std::to_string(descriptor.descriptor_generation)});
@@ -2673,16 +2673,16 @@ EngineApiDiagnostic RevalidatePreparedMgaHeapReadAuthorityCohort(
   if (statement == nullptr || statement->transaction_states == nullptr ||
       statement->transaction_inventory_snapshot == nullptr ||
       cohort.relations.empty() ||
-      statement->database_uuid != context.database_uuid.canonical ||
-      statement->statement_uuid != context.statement_uuid.canonical ||
-      statement->transaction_uuid != context.transaction_uuid.canonical ||
+      statement->database_uuid != context.database_uuid ||
+      statement->statement_uuid != context.statement_uuid ||
+      statement->transaction_uuid != context.transaction_uuid ||
       statement->statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       statement->statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
-      statement->catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
+      statement->catalog_epoch_uuid != context.catalog_epoch_uuid ||
       statement->authorization_authority_uuid !=
-          context.authorization_context.authority_uuid.canonical ||
+          context.authorization_context.authority_uuid ||
       statement->catalog_generation != context.catalog_generation_id ||
       statement->security_epoch != context.authorization_context.security_epoch ||
       statement->policy_epoch != context.authorization_context.policy_epoch ||
@@ -2745,19 +2745,19 @@ EngineApiDiagnostic RevalidatePreparedMgaHeapReadAuthorityCohort(
   for (const auto& [relation_uuid, relation] : cohort.relations) {
     if (relation == nullptr || relation->statement.get() != statement ||
         relation->relation_uuid != relation_uuid ||
-        relation->descriptor.relation_uuid.canonical != relation_uuid ||
-        relation->descriptor.database_uuid.canonical !=
-            context.database_uuid.canonical ||
-        relation->descriptor.descriptor_uuid.canonical.empty() ||
+        relation->descriptor.relation_uuid != relation_uuid ||
+        relation->descriptor.database_uuid !=
+            context.database_uuid ||
+        relation->descriptor.descriptor_uuid.is_nil() ||
         relation->descriptor.descriptor_generation == 0 ||
         relation->current_relation_base_generation == 0 ||
         (relation->temporary
              ? (relation->temporary_scope == "global"
                     ? (!relation->temporary_session_uuid.empty() ||
-                       context.session_uuid.canonical.empty())
+                       context.session_uuid.is_nil())
                     : (relation->temporary_scope != "private" ||
                        relation->temporary_session_uuid !=
-                           context.session_uuid.canonical))
+                           context.session_uuid))
              : (!relation->temporary_scope.empty() ||
                 !relation->temporary_session_uuid.empty()))) {
       return MakeInvalidRequestDiagnostic(
@@ -2812,7 +2812,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
       runtime_observation == nullptr ? &owned_runtime_observation
                                      : runtime_observation;
   if (relation_uuid.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return refuse("exact_relation_transaction_and_snapshot_required",
                   MgaHeapReadFailureCategoryV1::kMgaContext);
   }
@@ -2849,18 +2849,18 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   if (prepared_statement == nullptr ||
       prepared_statement->transaction_states == nullptr ||
       prepared_authority->relation_uuid != relation_uuid ||
-      prepared_statement->database_uuid != context.database_uuid.canonical ||
-      prepared_statement->statement_uuid != context.statement_uuid.canonical ||
+      prepared_statement->database_uuid != context.database_uuid ||
+      prepared_statement->statement_uuid != context.statement_uuid ||
       prepared_statement->transaction_uuid !=
-          context.transaction_uuid.canonical ||
+          context.transaction_uuid ||
       prepared_statement->statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       prepared_statement->statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       prepared_statement->catalog_epoch_uuid !=
-          context.catalog_epoch_uuid.canonical ||
+          context.catalog_epoch_uuid ||
       prepared_statement->authorization_authority_uuid !=
-          context.authorization_context.authority_uuid.canonical ||
+          context.authorization_context.authority_uuid ||
       prepared_statement->catalog_generation !=
           context.catalog_generation_id ||
       prepared_statement->security_epoch !=
@@ -2961,7 +2961,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   if (text_exists &&
       !DecodeStreamingCountTextFile(
           text_path, text_bytes, relation_uuid,
-          context.session_uuid.canonical, prepared_statement->snapshot_vector,
+          context.session_uuid, prepared_statement->snapshot_vector,
           *prepared_statement->transaction_states, savepoints,
           result.descriptor, request.maximum_decoded_bytes,
           request.maximum_memory_bytes, &cancellation_requested, &rows,
@@ -2976,7 +2976,7 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   if (binary_exists &&
       !DecodeStreamingCountBinaryFile(
           binary_path, binary_bytes, relation_uuid,
-          context.session_uuid.canonical, prepared_statement->snapshot_vector,
+          context.session_uuid, prepared_statement->snapshot_vector,
           *prepared_statement->transaction_states, savepoints,
           result.descriptor, request.maximum_decoded_bytes,
           request.maximum_memory_bytes, &cancellation_requested, &rows,

@@ -279,7 +279,7 @@ DeletePageReclamationPlan BuildDeletePageReclamationPlan(const EngineDeleteRowsR
   DeletePageReclamationPlan plan;
   plan.estimated_rows = estimated_matches;
   plan.notify_page_agent_after_tombstones = std::max<std::uint64_t>(1, estimated_matches / 2);
-  plan.plan_id = MakeId("delete_reclamation_notice", request.target_table.uuid.canonical + ":" + std::to_string(estimated_matches));
+  plan.plan_id = MakeId("delete_reclamation_notice", request.target_table.uuid + ":" + std::to_string(estimated_matches));
   plan.page_reclamation_notice_enabled = feature_gates.page_reclamation_notice == DeleteFeatureState::enabled;
   if (!plan.page_reclamation_notice_enabled) {
     plan.refusal_reason = "page_reclamation_notice_disabled";
@@ -312,12 +312,12 @@ DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& reques
   DeleteBatchContext context;
   context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
   context.local_transaction_id = request.context.local_transaction_id;
-  context.transaction_uuid = request.context.transaction_uuid.canonical;
-  context.database_uuid = request.context.database_uuid.canonical;
-  context.target_object_uuid = request.target_table.uuid.canonical;
+  context.transaction_uuid = request.context.transaction_uuid;
+  context.database_uuid = request.context.database_uuid;
+  context.target_object_uuid = request.target_table.uuid;
   context.estimated_match_count = EstimateMatches(request, state, table, indexes);
   context.delete_mode = ResolveDeleteBatchMode(request, state, table, indexes);
-  context.security_context_uuid = request.context.principal_uuid.canonical;
+  context.security_context_uuid = request.context.principal_uuid;
   context.policy_snapshot_uuid = {};
   context.feature_gates = ResolveDeleteFeatureGates(request);
   context.memory_policy = ResolveDeleteMemoryPolicy(request);
@@ -331,14 +331,14 @@ DeleteBatchContext BuildDeleteBatchContext(const EngineDeleteRowsRequest& reques
   context.reclamation_plan = BuildDeletePageReclamationPlan(request, context.estimated_match_count, context.feature_gates);
   context.tombstone_only = request.tombstone_only;
   context.accepted = request.context.local_transaction_id != 0 &&
-                     !request.target_table.uuid.canonical.empty() &&
+                     !request.target_table.uuid.is_nil() &&
                      request.tombstone_only &&
                      !context.predicate_template.touches_opaque_render_only_column &&
                      !context.index_plan.rejected;
   if (!context.accepted) {
     if (request.context.local_transaction_id == 0) {
       context.fallback_reason = "local_transaction_id_required";
-    } else if (request.target_table.uuid.canonical.empty()) {
+    } else if (request.target_table.uuid.is_nil()) {
       context.fallback_reason = "target_table_uuid_required";
     } else if (!request.tombstone_only) {
       context.fallback_reason = "physical_delete_requires_policy";

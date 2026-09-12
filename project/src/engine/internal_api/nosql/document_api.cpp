@@ -86,8 +86,8 @@ std::string DocumentProviderPath(const EngineRequestContext& context) {
 }
 
 std::string DocumentCollectionUuid(const EngineRequestContext& context) {
-  if (!context.current_schema_uuid.canonical.empty()) {
-    return context.current_schema_uuid.canonical;
+  if (!context.current_schema_uuid.is_nil()) {
+    return context.current_schema_uuid;
   }
   return DocumentPathProviderIdentityForContext(context, 1).relation_uuid;
 }
@@ -125,8 +125,8 @@ std::string RequestDocumentName(const EngineApiRequest& request,
       !request.localized_names.front().name.empty()) {
     return request.localized_names.front().name;
   }
-  if (!request.target_object.uuid.canonical.empty()) {
-    return request.target_object.uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) {
+    return request.target_object.uuid;
   }
   return fallback;
 }
@@ -435,12 +435,12 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
   record.name = RequestDocumentName(request, RowField(result, "name"));
   record.document_uuid =
       bound_document_uuid.empty()
-          ? ProviderUuidOrGenerated(result.primary_object.uuid.canonical,
+          ? ProviderUuidOrGenerated(result.primary_object.uuid,
                                     "object")
           : bound_document_uuid;
   record.row_uuid =
       bound_row_uuid.empty()
-          ? ProviderUuidOrGenerated(result.catalog_row_uuid.canonical, "row")
+          ? ProviderUuidOrGenerated(result.catalog_row_uuid, "row")
           : bound_row_uuid;
   record.payload = RowField(result, "payload");
   record.fragments =
@@ -473,7 +473,7 @@ DocumentProviderWriteOutcome UpsertPhysicalDocument(
 DocumentProviderWriteOutcome DeletePhysicalDocument(
     const EngineApiRequest& request) {
   DocumentProviderWriteOutcome outcome;
-  const auto requested = RequestDocumentName(request, request.target_object.uuid.canonical);
+  const auto requested = RequestDocumentName(request, request.target_object.uuid);
   std::optional<PhysicalDocumentRecord> deleted;
   {
     std::lock_guard<std::mutex> guard(DocumentStoresMutex());
@@ -481,7 +481,7 @@ DocumentProviderWriteOutcome DeletePhysicalDocument(
     LoadDocumentProviderLocked(request.context, &state);
     for (auto it = state.documents.begin(); it != state.documents.end(); ++it) {
       if (it->second.collection_uuid == DocumentCollectionUuid(request.context) &&
-          (it->second.document_uuid == request.target_object.uuid.canonical ||
+          (it->second.document_uuid == request.target_object.uuid ||
            it->second.name == requested)) {
         deleted = it->second;
         state.documents.erase(it);
@@ -798,11 +798,11 @@ EngineDescriptor DocumentProjectionDescriptor(
     const EngineDocumentFindRequest& request,
     const std::size_t ordinal) {
   if (ordinal < request.descriptors.size()) return request.descriptors[ordinal];
-  if (!request.comparison_value.descriptor.descriptor_uuid.canonical.empty()) {
+  if (!request.comparison_value.descriptor.descriptor_uuid.is_nil()) {
     return request.comparison_value.descriptor;
   }
   EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
+  descriptor.descriptor_uuid =
       "019f0000-0000-7200-8000-00000000d073";
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "text";
@@ -907,7 +907,7 @@ bool AddProjectedDocumentRow(EngineDocumentFindResult* result,
     const auto& value = path_value.value;
     if (!add_bytes(sizeof(EngineDocumentTypedPathValue)) ||
         !add_bytes(path_value.path.size()) ||
-        !add_bytes(value.descriptor.descriptor_uuid.canonical.size()) ||
+        !add_bytes(value.descriptor.descriptor_uuid.size()) ||
         !add_bytes(value.descriptor.descriptor_kind.size()) ||
         !add_bytes(value.descriptor.canonical_type_name.size()) ||
         !add_bytes(value.descriptor.encoded_descriptor.size()) ||
@@ -1030,9 +1030,9 @@ bool RecheckDocumentPathCandidate(
   const auto record = state.documents.find(provider_candidate.document_uuid);
   if (record == state.documents.end()) { return false; }
   const auto requested_collection =
-      request.target_object.uuid.canonical.empty()
+      request.target_object.uuid.is_nil()
           ? DocumentCollectionUuid(context)
-          : request.target_object.uuid.canonical;
+          : request.target_object.uuid;
   if (record->second.collection_uuid != requested_collection) { return false; }
   if (record->second.row_uuid != provider_candidate.row_uuid) { return false; }
   const auto matched = PathMatches(request, record->second);
@@ -1080,9 +1080,9 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
   }
 
   const auto requested_collection =
-      request.target_object.uuid.canonical.empty()
+      request.target_object.uuid.is_nil()
           ? DocumentCollectionUuid(request.context)
-          : request.target_object.uuid.canonical;
+          : request.target_object.uuid;
   if (!IsEngineUuidText(requested_collection) ||
       !IsEngineUuidText(request.expected_descriptor_uuid) ||
       request.expected_descriptor_generation == 0) {
@@ -1137,13 +1137,13 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
     return fields;
   };
   const auto exact_projection_binding = [&](const auto& relation) {
-    if (relation.relation_uuid.canonical != requested_collection ||
-        relation.database_uuid.canonical !=
-            request.context.database_uuid.canonical ||
-        !IsEngineUuidText(relation.schema_uuid.canonical) ||
+    if (relation.relation_uuid != requested_collection ||
+        relation.database_uuid !=
+            request.context.database_uuid ||
+        !IsEngineUuidText(relation.schema_uuid) ||
         relation.relation_kind != "table" ||
         relation.storage_profile != "local_mga_rowstore_v1" ||
-        relation.descriptor_uuid.canonical !=
+        relation.descriptor_uuid !=
             request.expected_descriptor_uuid ||
         relation.descriptor_generation !=
             request.expected_descriptor_generation ||
@@ -1159,8 +1159,8 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       const auto& column = relation.columns[ordinal];
       const auto fields = descriptor_fields(column.value_descriptor);
       if (column.ordinal != ordinal ||
-          !IsEngineUuidText(column.column_uuid.canonical) ||
-          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !IsEngineUuidText(column.column_uuid) ||
+          !column_uuids.insert(column.column_uuid).second ||
           !QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
           column.value_descriptor.descriptor_kind !=
               "canonical_type_descriptor" ||
@@ -1170,7 +1170,7 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       const auto occurrence = fields->find("column_uuid");
       if ((column.value_descriptor.canonical_type_name == "text" &&
            (occurrence == fields->end() ||
-            occurrence->second != column.column_uuid.canonical)) ||
+            occurrence->second != column.column_uuid)) ||
           (column.value_descriptor.canonical_type_name != "text" &&
            occurrence != fields->end())) {
         return false;
@@ -1220,12 +1220,12 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
       }
       const auto column = std::ranges::find_if(
           relation.columns, [&](const auto& candidate) {
-            return candidate.column_uuid.canonical == column_uuid;
+            return candidate.column_uuid == column_uuid;
           });
       if (column == relation.columns.end() ||
           column->canonical_name_key != path ||
-          column->value_descriptor.descriptor_uuid.canonical !=
-              runtime.descriptor_uuid.canonical ||
+          column->value_descriptor.descriptor_uuid !=
+              runtime.descriptor_uuid ||
           column->value_descriptor.canonical_type_name !=
               runtime.canonical_type_name ||
           column->nullable != request.projected_path_nullable[ordinal]) {
@@ -1362,8 +1362,8 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
     return access_failure(diagnostic, read.diagnostic.detail);
   }
   if (!exact_projection_binding(read.descriptor) ||
-      read.descriptor.descriptor_uuid.canonical !=
-          preflight.descriptor.descriptor_uuid.canonical ||
+      read.descriptor.descriptor_uuid !=
+          preflight.descriptor.descriptor_uuid ||
       read.descriptor.descriptor_generation !=
           preflight.descriptor.descriptor_generation ||
       read.current_relation_base_generation == 0) {
@@ -1435,7 +1435,7 @@ EngineDocumentFindResult ExactCollectionDocumentFind(
                          2 * sizeof(EngineDocumentTypedPathValue)) &&
              checked_add(retained_row_bytes, path.size()) &&
              checked_add(retained_row_bytes,
-                         descriptor.descriptor_uuid.canonical.size()) &&
+                         descriptor.descriptor_uuid.size()) &&
              checked_add(retained_row_bytes,
                          descriptor.descriptor_kind.size()) &&
              checked_add(retained_row_bytes,
@@ -1834,10 +1834,10 @@ EngineDocumentInsertResult EngineDocumentInsert(const EngineDocumentInsertReques
     const auto collection = LoadMgaRelationStorageDescriptor(
         request.context, request.collection_uuid);
     if (!collection.ok ||
-        collection.descriptor.relation_uuid.canonical !=
+        collection.descriptor.relation_uuid !=
             request.collection_uuid ||
-        collection.descriptor.database_uuid.canonical !=
-            request.context.database_uuid.canonical ||
+        collection.descriptor.database_uuid !=
+            request.context.database_uuid ||
         collection.descriptor.relation_kind != "table" ||
         collection.descriptor.storage_profile != "local_mga_rowstore_v1" ||
         collection.descriptor.descriptor_generation == 0) {

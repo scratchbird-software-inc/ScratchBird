@@ -7,13 +7,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query_memory_arena.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::memory {
 namespace {
+
+static_assert(std::is_nothrow_move_constructible_v<QueryMemoryArenaResult>);
+static_assert(std::is_nothrow_move_assignable_v<QueryMemoryArenaCounters>);
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::MakeDiagnostic;
@@ -37,13 +42,13 @@ MemoryTag ArenaTag(const QueryMemoryContext& context,
   tag.purpose = purpose.empty() ? "query_memory_grant" : purpose;
   tag.category = MemoryCategory::executor_query_reserved;
   tag.lifetime = MemoryLifetime::arena;
-  tag.owner = context.query_id;
-  tag.context_id = context.statement_id;
-  tag.database_id = context.database_id;
-  tag.session_id = context.session_id;
-  tag.transaction_id = context.transaction_id;
-  tag.statement_id = context.statement_id;
-  tag.query_id = context.query_id;
+  tag.binary_ownership[MemoryBinaryScopeKind::owner] = context.query_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::context] = context.statement_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::database] = context.database_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::session] = context.session_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::transaction] = context.transaction_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::statement] = context.statement_id.bytes;
+  tag.binary_ownership[MemoryBinaryScopeKind::query] = context.query_id.bytes;
   (void)family;
   return tag;
 }
@@ -55,19 +60,13 @@ std::string BoolText(bool value) {
 std::vector<HierarchicalMemoryScopeRef> ScopeChainForContext(
     const QueryMemoryContext& context) {
   std::vector<HierarchicalMemoryScopeRef> chain;
-  const std::string process_scope =
-      context.engine_id.empty() ? std::string("scratchbird-engine") : context.engine_id;
-  chain.push_back({HierarchicalMemoryScopeKind::process, process_scope});
-  if (!context.database_id.empty()) {
-    chain.push_back({HierarchicalMemoryScopeKind::database, context.database_id});
-  }
-  chain.push_back({HierarchicalMemoryScopeKind::session, context.session_id});
-  chain.push_back({HierarchicalMemoryScopeKind::transaction, context.transaction_id});
-  chain.push_back({HierarchicalMemoryScopeKind::statement, context.statement_id});
-  chain.push_back({HierarchicalMemoryScopeKind::query, context.query_id});
-  if (!context.operation_id.empty()) {
-    chain.push_back({HierarchicalMemoryScopeKind::operator_scope, context.operation_id});
-  }
+  chain.push_back({HierarchicalMemoryScopeKind::process, {}, context.engine_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::database, {}, context.database_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::session, {}, context.session_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::transaction, {}, context.transaction_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::statement, {}, context.statement_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::query, {}, context.query_id.bytes});
+  chain.push_back({HierarchicalMemoryScopeKind::operator_scope, {}, context.operation_id.bytes});
   return chain;
 }
 
@@ -114,15 +113,6 @@ bool QueryMemoryFamilySupported(QueryMemoryFamily family) {
   return false;
 }
 
-const char* UnifiedMemorySpillBudgetKindName(UnifiedMemorySpillBudgetKind kind) {
-  switch (kind) {
-    case UnifiedMemorySpillBudgetKind::heap:
-      return "heap";
-    case UnifiedMemorySpillBudgetKind::spill:
-      return "spill";
-  }
-  return "heap";
-}
 
 QueryMemoryArena::QueryMemoryArena(QueryMemoryContext context,
                                    QueryMemoryArenaLimits limits,
@@ -138,7 +128,33 @@ QueryMemoryArena::QueryMemoryArena(QueryMemoryContext context,
       reservation_ledger_(reservation_ledger) {}
 
 QueryMemoryArena::~QueryMemoryArena() {
-  (void)Reset();
+  // Heap destruction is a final owning teardown, not the allocating public
+  // cleanup/report API. Object destruction requires callers to have quiesced.
+  // Erase payloads, retire actual chunks, then release their retained leases.
+  for (const auto& [id, grant] : active_) {
+    if (grant.arena_owned && grant.pointer != nullptr)
+      SecureZeroMemory(grant.pointer, static_cast<usize>(grant.grant.bytes));
+  }
+  heap_arena_.reset();
+  heap_capacity_.clear();
+  counters_.retained_heap_bytes = 0;
+  counters_.consumed_heap_bytes = 0;
+  counters_.heap_chunk_count = 0;
+  for (auto it = active_.begin(); it != active_.end();) {
+    if (!it->second.arena_owned) { ++it; continue; }
+    const auto& grant = it->second.grant;
+    counters_.current_bytes -= grant.bytes;
+    const auto family = counters_.current_family_bytes.find(grant.family);
+    if (family != counters_.current_family_bytes.end()) {
+      family->second -= grant.bytes;
+      if (family->second == 0) counters_.current_family_bytes.erase(family);
+    }
+    --counters_.active_grant_count;
+    ++counters_.release_count;
+    it = active_.erase(it);
+  }
+  counters_.leak_count = counters_.active_grant_count;
+  if (!active_.empty()) (void)Reset();
 }
 
 QueryMemoryArenaResult QueryMemoryArena::Grant(QueryMemoryGrantRequest request) {
@@ -227,317 +243,358 @@ QueryMemoryArenaResult QueryMemoryArena::Grant(QueryMemoryGrantRequest request) 
                   StatusCode::memory_limit_exceeded);
   }
 
-  auto hierarchical = ReserveHierarchicalBudget(request, "query_heap_grant");
-  if (!hierarchical.ok()) {
-    ++counters_.denied_count;
-    QueryMemoryArenaResult result;
-    result.status = hierarchical.status;
-    result.fail_closed = true;
-    result.diagnostic = hierarchical.diagnostic;
-    result.counters = counters_;
-    result.evidence = std::move(hierarchical.evidence);
-    return result;
-  }
+  const auto grant_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!grant_identity || active_.contains(*grant_identity))
+    return Refuse(request, "SB_QUERY_MEMORY_ARENA.CONTEXT_REQUIRED",
+                  "query_memory_arena.context_required", "grant identity issuance failed",
+                  StatusCode::memory_allocation_failed);
 
-  auto unified = ReserveUnifiedBudget(request, UnifiedMemorySpillBudgetKind::heap);
-  if (!unified.ok()) {
-    if (hierarchical.token.has_value()) {
-      (void)reservation_ledger_->Release(*hierarchical.token);
-    }
-    auto refused = Refuse(request,
-                         "SB_QUERY_MEMORY_ARENA.UNIFIED_BUDGET_DENIED",
-                         "query_memory_arena.unified_budget_denied",
-                         unified.diagnostic.diagnostic_code.empty()
-                             ? "unified heap and spill budget denied heap grant"
-                             : unified.diagnostic.diagnostic_code,
-                         StatusCode::memory_limit_exceeded);
-    refused.evidence.insert(refused.evidence.end(),
-                            unified.evidence.begin(),
-                            unified.evidence.end());
-    return refused;
-  }
+  QueryMemoryArenaCounters projected = counters_;
+  projected.current_bytes += request.bytes;
+  projected.peak_bytes = std::max(projected.peak_bytes, projected.current_bytes);
+  ++projected.grant_count;
+  ++projected.active_grant_count;
+  projected.current_family_bytes[request.family] += request.bytes;
+  projected.peak_family_bytes[request.family] =
+      std::max(projected.peak_family_bytes[request.family], projected.current_family_bytes[request.family]);
+  projected.leak_count = projected.active_grant_count;
 
-  QueryMemoryArenaReleaseResult commit_failure;
-  if (hierarchical.token.has_value() &&
-      !CommitHierarchicalBudget(*hierarchical.token, &commit_failure)) {
-    if (unified.reservation.has_value()) {
-      (void)unified_budget_->Release(unified.reservation->reservation_id);
-    }
-    QueryMemoryArenaResult result;
-    result.status = commit_failure.status;
-    result.fail_closed = true;
-    result.diagnostic = commit_failure.diagnostic;
-    result.counters = counters_;
-    AppendBaseEvidence(&result.evidence, request.family);
-    result.evidence.insert(result.evidence.end(),
-                           commit_failure.evidence.begin(),
-                           commit_failure.evidence.end());
-    return result;
-  }
+  // Preallocate the owning map node. Transferring this node into active_ after
+  // allocation does not allocate; UUID comparison and ownership moves are noexcept.
+  std::map<QueryMemoryUuid, ActiveGrant> staged;
+  auto& active = staged[*grant_identity];
+  active.grant.grant_id = *grant_identity;
+  active.grant.family = request.family;
+  active.grant.bytes = request.bytes;
+  active.tag = ArenaTag(context_, request.family, request.purpose);
+  active.arena_owned = true;
 
-  MemoryTag tag = ArenaTag(context_, request.family, request.purpose);
-  if (!heap_arena_.has_value()) {
+  if (!heap_arena_) {
     MemoryTag heap_tag = ArenaTag(context_, request.family, "query_memory_bump_region");
     heap_tag.callsite = "core.memory.query_memory_arena.bump_region";
     heap_arena_.emplace(allocator_, std::move(heap_tag));
   }
-  AllocationResult allocated =
-      heap_arena_->Allocate(static_cast<usize>(request.bytes), 0);
-  if (!allocated.ok()) {
-    if (hierarchical.token.has_value()) {
-      ActiveGrant rollback_grant;
-      rollback_grant.reservation_token = *hierarchical.token;
-      ReleaseHierarchicalBudget(rollback_grant, nullptr);
+  const auto capacity = heap_arena_->CapacitySnapshot();
+  const auto physical = allocator_->AvailableCapacity(active.tag);
+  if (!physical.ok())
+    return Refuse(request, "SB_QUERY_MEMORY_ARENA.ALLOCATOR_REQUIRED",
+                  "query_memory_arena.allocator_required",
+                  "physical allocator refused capacity planning", physical.status.code);
+  u64 growth_limit = physical.available_bytes;
+  const auto constrain = [&](u64 limit, u64 owned) {
+    if (limit != 0) growth_limit = std::min(growth_limit, owned < limit ? limit - owned : 0);
+  };
+  constrain(limits_.hard_limit_bytes, capacity.retained_bytes);
+  constrain(limits_.query_limit_bytes, capacity.retained_bytes);
+  constrain(limits_.soft_limit_bytes, capacity.retained_bytes);
+  if (unified_budget_) {
+    const auto budget = unified_budget_->Snapshot();
+    constrain(budget.limit_bytes, budget.total_bytes);
+  }
+  if (reservation_ledger_) {
+    const auto budget = reservation_ledger_->Snapshot();
+    const auto chain = ScopeChainForContext(context_);
+    for (const auto& scope : budget.scopes) {
+      const auto selected = std::find_if(chain.begin(), chain.end(), [&](const auto& owner) {
+        return owner.kind == scope.kind && owner.binary_scope_uuid == scope.binary_scope_uuid &&
+               owner.scope_id == scope.scope_id;
+      });
+      if (selected != chain.end()) constrain(scope.hard_limit_bytes, scope.current_bytes);
     }
-    if (unified.reservation.has_value()) {
-      (void)unified_budget_->Release(unified.reservation->reservation_id);
+  }
+  const auto plan = heap_arena_->PlanAllocation(static_cast<usize>(request.bytes), 0,
+                                               static_cast<usize>(growth_limit));
+  if (!plan.ok()) {
+    if (request.spillable && limits_.allow_spill)
+      return SpillInsteadOfGrant(std::move(request), "retained heap capacity pressure");
+    return Refuse(request, "SB_QUERY_MEMORY_ARENA.HARD_LIMIT_EXCEEDED",
+                  "query_memory_arena.hard_limit_exceeded",
+                  "retained heap capacity cannot admit exact growth", plan.status.code);
+  }
+  // A capacity owner is independent of any logical grant. The reservation
+  // authorities below recheck the availability hints before physical growth.
+  if (plan.growth_bytes != 0) heap_capacity_.reserve(heap_capacity_.size() + 1);
+  HeapCapacityOwner capacity_owner;
+  auto capacity_request = request;
+  capacity_request.bytes = plan.growth_bytes;
+
+  struct BudgetRollback {
+    HierarchicalMemoryBudgetLedger* hierarchy;
+    UnifiedMemorySpillBudgetLedger* unified;
+    HierarchicalMemoryReservationToken token{};
+    QueryMemoryUuid unified_id{};
+    bool published = false;
+    ~BudgetRollback() noexcept {
+      if (published) return;
+      try {
+        if (unified != nullptr && !unified_id.is_nil()) (void)unified->ReleaseNoAlloc(unified_id);
+        if (hierarchy != nullptr && token.valid()) (void)hierarchy->ReleaseNoAlloc(token);
+      } catch (...) { }
     }
-    ++counters_.denied_count;
+  } rollback{reservation_ledger_, unified_budget_};
+
+  HierarchicalReservationResult hierarchical;
+  hierarchical.status = OkStatus();
+  if (plan.growth_bytes != 0)
+    hierarchical = ReserveHierarchicalBudget(capacity_request, "query_heap_capacity");
+  if (!hierarchical.ok()) {
     QueryMemoryArenaResult result;
-    result.status = allocated.status;
+    result.status = hierarchical.status;
     result.fail_closed = true;
-    result.diagnostic = allocated.diagnostic;
+    result.diagnostic = std::move(hierarchical.diagnostic);
     result.counters = counters_;
-    AppendBaseEvidence(&result.evidence, request.family);
-    result.evidence.push_back("query_memory_arena.fail_closed=true");
-    result.evidence.push_back("query_memory_arena.refused=allocator_refused");
+    result.evidence = std::move(hierarchical.evidence);
     return result;
   }
+  if (hierarchical.token) rollback.token = *hierarchical.token;
 
-  QueryMemoryGrant grant;
-  grant.grant_id = context_.query_id + ".grant." + std::to_string(next_grant_++);
-  grant.family = request.family;
-  grant.bytes = request.bytes;
-  if (unified.reservation.has_value()) {
-    grant.unified_budget_reservation_id = unified.reservation->reservation_id;
+  UnifiedMemorySpillBudgetResult unified;
+  unified.status = OkStatus();
+  if (plan.growth_bytes != 0)
+    unified = ReserveUnifiedBudget(capacity_request, UnifiedMemorySpillBudgetKind::heap);
+  if (!unified.ok()) {
+    QueryMemoryArenaResult result;
+    result.status = unified.status;
+    result.fail_closed = true;
+    result.diagnostic = std::move(unified.diagnostic);
+    result.counters = counters_;
+    result.evidence = std::move(unified.evidence);
+    return result;
+  }
+  if (unified.reservation) {
+    rollback.unified_id = unified.reservation->reservation_id;
   }
 
-  ActiveGrant active;
-  active.grant = grant;
-  active.pointer = allocated.pointer;
-  active.alignment = allocated.alignment;
-  active.tag = std::move(tag);
-  active.arena_owned = true;
-  if (hierarchical.token.has_value()) {
-    active.reservation_token = *hierarchical.token;
-  }
-  active_.emplace(grant.grant_id, active);
-
-  counters_.current_bytes += request.bytes;
-  counters_.peak_bytes = std::max(counters_.peak_bytes, counters_.current_bytes);
-  ++counters_.grant_count;
-  ++counters_.active_grant_count;
-  counters_.current_family_bytes[request.family] += request.bytes;
-  counters_.peak_family_bytes[request.family] =
-      std::max(counters_.peak_family_bytes[request.family],
-               counters_.current_family_bytes[request.family]);
-  counters_.leak_count = counters_.active_grant_count;
-
+  // Stage the entire response before changing any bump cursor or allocating
+  // physical backing. A failed staging allocation releases both budgets.
   QueryMemoryArenaResult result;
   result.status = OkStatus();
-  result.grant = grant;
-  result.counters = counters_;
-  AppendBaseEvidence(&result.evidence, request.family);
-  result.evidence.push_back("query_memory_arena.grant_id=" + grant.grant_id);
-  result.evidence.push_back("query_memory_arena.granted_bytes=" +
-                            std::to_string(grant.bytes));
+  result.grant = active.grant;
+  result.counters = projected;
+  AppendBaseEvidence(&result.evidence, request.family, &projected);
+  result.evidence.push_back("query_memory_arena.granted_bytes=" + std::to_string(request.bytes));
   result.evidence.push_back("query_memory_arena.spilled=false");
   result.evidence.push_back("query_memory_arena.heap_backing=bump_region");
   result.evidence.push_back("query_memory_arena.heap_reset_scope=query_arena");
-  result.evidence.insert(result.evidence.end(),
-                         hierarchical.evidence.begin(),
-                         hierarchical.evidence.end());
-  result.evidence.insert(result.evidence.end(),
-                         unified.evidence.begin(),
-                         unified.evidence.end());
+  result.evidence.insert(result.evidence.end(), hierarchical.evidence.begin(), hierarchical.evidence.end());
+  result.evidence.insert(result.evidence.end(), unified.evidence.begin(), unified.evidence.end());
+  if (rollback.token.valid()) {
+    const auto committed = reservation_ledger_->Commit(rollback.token);
+    if (!committed.ok()) {
+      result.status = committed.status;
+      result.fail_closed = true;
+      result.grant.reset();
+      result.diagnostic = committed.diagnostic;
+      result.counters = counters_;
+      return result;
+    }
+    auto retained = reservation_ledger_->Retain(rollback.token);
+    if (!retained.ok()) {
+      result.status = retained.status;
+      result.fail_closed = true;
+      result.grant.reset();
+      result.counters = counters_;
+      return result;
+    }
+    capacity_owner.hierarchy = std::move(retained.lease);
+    rollback.token = {};
+  }
+  if (!rollback.unified_id.is_nil()) {
+    auto retained = unified_budget_->Retain(rollback.unified_id);
+    if (!retained.ok()) {
+      result.status = retained.status;
+      result.fail_closed = true;
+      result.grant.reset();
+      result.counters = counters_;
+      return result;
+    }
+    capacity_owner.unified = std::move(retained.lease);
+    rollback.unified_id = {};
+  }
+
+  // No ledger operations are allowed after these guards are acquired. Owner
+  // cleanup may be holding the ledger lock while waiting for a use to finish.
+  // Destruction releases guards before any unpublished reservation rollback.
+  std::vector<HierarchicalMemoryReservationLease::UseGuard> hierarchy_uses;
+  std::vector<UnifiedMemorySpillBudgetLease::UseGuard> unified_uses;
+  hierarchy_uses.reserve(heap_capacity_.size() + 1);
+  unified_uses.reserve(heap_capacity_.size() + 1);
+  const auto protect = [&](const HeapCapacityOwner& owner) {
+    bool live = true;
+    if (owner.hierarchy.valid()) {
+      hierarchy_uses.push_back(owner.hierarchy.Use());
+      live = hierarchy_uses.back().live();
+    }
+    if (owner.unified.valid()) {
+      unified_uses.push_back(owner.unified.Use());
+      live = unified_uses.back().live() && live;
+    }
+    return live;
+  };
+  bool live = protect(capacity_owner);
+  for (const auto& owner : heap_capacity_) live = protect(owner) && live;
+  if (!live) {
+    result.status = ErrorStatus(StatusCode::memory_invalid_request);
+    result.fail_closed = true;
+    result.grant.reset();
+    result.counters = counters_;
+    return result;
+  }
+
+  auto node = staged.extract(*grant_identity);
+  const auto allocated = heap_arena_->AllocateWithinCapacity(
+      static_cast<usize>(request.bytes), 0, plan.growth_bytes);
+  if (!allocated.ok()) {
+    result.status = allocated.status;
+    result.fail_closed = true;
+    result.grant.reset();
+    result.evidence.clear();
+    result.diagnostic = allocated.diagnostic;
+    result.counters = counters_;
+    return result;
+  }
+  node.mapped().pointer = allocated.pointer;
+  node.mapped().alignment = allocated.alignment;
+  if (plan.growth_bytes != 0) heap_capacity_.push_back(std::move(capacity_owner));
+  const auto actual_capacity = heap_arena_->CapacitySnapshot();
+  projected.retained_heap_bytes = result.counters.retained_heap_bytes = actual_capacity.retained_bytes;
+  projected.consumed_heap_bytes = result.counters.consumed_heap_bytes = actual_capacity.consumed_bytes;
+  projected.heap_chunk_count = result.counters.heap_chunk_count = actual_capacity.chunk_count;
+  active_.insert(std::move(node));
+  counters_ = std::move(projected);
+  rollback.published = true;
   return result;
 }
 
-QueryMemoryArenaReleaseResult QueryMemoryArena::Release(const std::string& grant_id) {
+QueryMemoryArenaReleaseResult QueryMemoryArena::Release(const QueryMemoryUuid& grant_id) {
   std::lock_guard<std::mutex> lock(mutex_);
+  return ReleaseLocked(grant_id);
+}
+
+QueryMemoryArenaReleaseResult QueryMemoryArena::ReleaseLocked(const QueryMemoryUuid& grant_id) {
   const auto it = active_.find(grant_id);
-  if (it == active_.end()) {
+  if (it == active_.end())
     return RefuseRelease("SB_QUERY_MEMORY_ARENA.UNKNOWN_GRANT",
-                         "query_memory_arena.unknown_grant",
-                         "release requested for unknown grant",
+                         "query_memory_arena.unknown_grant", "release requested for unknown grant",
                          StatusCode::memory_unknown_pointer);
-  }
 
-  ActiveGrant active = it->second;
-  active_.erase(it);
-
+  ActiveGrant& active = it->second;
   QueryMemoryArenaReleaseResult result;
   result.status = OkStatus();
+  // Complete the successful counter response before irreversible cleanup.
+  // In particular, a surviving family's map must not allocate after the
+  // released grant has been erased and is no longer available for retry.
+  auto projected = counters_;
+  projected.current_bytes -= active.grant.bytes;
+  auto projected_family = projected.current_family_bytes.find(active.grant.family);
+  if (projected_family != projected.current_family_bytes.end()) {
+    projected_family->second -= active.grant.bytes;
+    if (projected_family->second == 0) projected.current_family_bytes.erase(projected_family);
+  }
+  if (active.grant.spilled) projected.spilled_bytes -= active.grant.spill_reserved_bytes;
+  --projected.active_grant_count;
+  ++projected.release_count;
+  projected.leak_count = projected.active_grant_count;
+  result.counters = projected;
   AppendBaseEvidence(&result.evidence, active.grant.family);
-  result.evidence.push_back("query_memory_arena.release.grant_id=" + grant_id);
-
-  if (active.pointer != nullptr && active.arena_owned) {
-    SecureZeroMemory(active.pointer, static_cast<usize>(active.grant.bytes));
-    result.evidence.push_back(
-        "query_memory_arena.release.heap_backing_retained_until_reset=true");
-  } else if (active.pointer != nullptr) {
-    DeallocationResult released = allocator_->Deallocate(active.pointer, active.tag);
-    if (!released.ok()) {
-      result.status = released.status;
-      result.fail_closed = true;
-      result.diagnostic = released.diagnostic;
+  auto failed = [&] {
+    result.fail_closed = true;
+    if (result.status.ok()) result.status = ErrorStatus(StatusCode::memory_allocation_failed);
+    result.counters = counters_;
+    return result;
+  };
+  // Keep the owning record and both reservations until the actual spill is
+  // removed. A refused unlink must be retryable by this exact grant.
+  if (active.grant.spilled) {
+    if (temp_workspace_ == nullptr) return failed();
+    const auto cleanup = ReleaseSpill(active);
+    if (!cleanup.ok()) {
+      result.status = cleanup.status;
+      result.diagnostic = cleanup.diagnostic;
+      return failed();
     }
+    counters_.spilled_bytes -= active.grant.spill_reserved_bytes;
+    active.grant.spill_reserved_bytes = 0;
+    active.grant.spilled = false;
   }
-  if (active.grant.spilled && temp_workspace_ != nullptr) {
-    TempWorkspaceCleanupResult spill = ReleaseSpill(active);
-    if (!spill.ok()) {
-      result.status = spill.status;
-      result.fail_closed = true;
-      result.diagnostic = spill.diagnostic;
+  if (active.pointer != nullptr) {
+    if (active.arena_owned) {
+      SecureZeroMemory(active.pointer, static_cast<usize>(active.grant.bytes));
+      result.evidence.push_back(
+          "query_memory_arena.release.heap_backing_retained_until_reset=true");
+    } else {
+      const auto deallocated = allocator_->Deallocate(active.pointer, active.tag);
+      if (!deallocated.ok()) {
+        result.status = deallocated.status;
+        result.diagnostic = deallocated.diagnostic;
+        return failed();
+      }
     }
+    active.pointer = nullptr;
   }
-  ReleaseUnifiedBudget(active, &result.evidence);
-  ReleaseHierarchicalBudget(active, &result.evidence);
   if (!HasActiveHeapGrantLocked()) {
     const auto reset = ResetHeapArenaLocked(&result.evidence);
     if (!reset.ok()) {
       result.status = reset.status;
-      result.fail_closed = true;
       result.diagnostic = reset.diagnostic;
+      return failed();
     }
   }
+  if (!ReleaseUnifiedBudget(active, &result.evidence, &result) ||
+      !ReleaseHierarchicalBudget(active, &result.evidence, &result)) return failed();
 
-  counters_.current_bytes =
-      active.grant.bytes >= counters_.current_bytes ? 0 : counters_.current_bytes - active.grant.bytes;
-  auto family_it = counters_.current_family_bytes.find(active.grant.family);
-  if (family_it != counters_.current_family_bytes.end()) {
-    family_it->second =
-        active.grant.bytes >= family_it->second ? 0 : family_it->second - active.grant.bytes;
-    if (family_it->second == 0) {
-      counters_.current_family_bytes.erase(family_it);
+  projected.retained_heap_bytes = counters_.retained_heap_bytes;
+  projected.consumed_heap_bytes = counters_.consumed_heap_bytes;
+  projected.heap_chunk_count = counters_.heap_chunk_count;
+  result.counters.retained_heap_bytes = projected.retained_heap_bytes;
+  result.counters.consumed_heap_bytes = projected.consumed_heap_bytes;
+  result.counters.heap_chunk_count = projected.heap_chunk_count;
+  counters_ = std::move(projected);
+  active_.erase(it);
+  return result;
+}
+
+QueryMemoryArenaReleaseResult QueryMemoryArena::CleanupAllLocked() {
+  QueryMemoryArenaReleaseResult result;
+  result.status = OkStatus();
+  // Stop new grants even if cleanup fails; Release/Reset can retry retained
+  // owners. Iteration never discards records whose release did not complete.
+  released_ = true;
+  for (auto it = active_.begin(); it != active_.end();) {
+    const auto identity = (it++)->first;
+    auto released = ReleaseLocked(identity);
+    if (!released.ok()) {
+      result.status = released.status;
+      result.diagnostic = std::move(released.diagnostic);
+      result.fail_closed = true;
     }
   }
-  if (counters_.active_grant_count != 0) {
-    --counters_.active_grant_count;
+  const auto reset = ResetHeapArenaLocked(&result.evidence);
+  if (!reset.ok()) {
+    result.status = reset.status;
+    result.diagnostic = reset.diagnostic;
+    result.fail_closed = true;
   }
-  ++counters_.release_count;
-  counters_.leak_count = counters_.active_grant_count;
   result.counters = counters_;
-  result.evidence.push_back("query_memory_arena.current_bytes=" +
-                            std::to_string(counters_.current_bytes));
-  result.evidence.push_back("query_memory_arena.leak_count=" +
-                            std::to_string(counters_.leak_count));
   return result;
 }
 
 QueryMemoryArenaReleaseResult QueryMemoryArena::Cancel(std::string reason) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (released_ && active_.empty()) {
+  if (released_ && active_.empty())
     return RefuseRelease("SB_QUERY_MEMORY_ARENA.CANCEL_AFTER_RELEASE",
                          "query_memory_arena.cancel_after_release",
                          "cancel requested after arena release");
-  }
-
-  QueryMemoryArenaReleaseResult result;
-  result.status = OkStatus();
-  AppendBaseEvidence(&result.evidence, QueryMemoryFamily::unknown);
+  ++counters_.cancelled_count;
+  auto result = CleanupAllLocked();
   result.evidence.push_back("query_memory_arena.cancelled=true");
   result.evidence.push_back("query_memory_arena.cancel_reason=" + std::move(reason));
-  result.evidence.push_back("query_memory_arena.transaction_finality_authority=false");
-  result.evidence.push_back("query_memory_arena.visibility_authority=false");
-
-  for (auto& entry : active_) {
-    ActiveGrant& active = entry.second;
-    if (active.pointer != nullptr && active.arena_owned) {
-      SecureZeroMemory(active.pointer, static_cast<usize>(active.grant.bytes));
-      result.evidence.push_back(
-          "query_memory_arena.cancel.heap_backing_retained_until_reset=true");
-      active.pointer = nullptr;
-    } else if (active.pointer != nullptr) {
-      DeallocationResult released = allocator_->Deallocate(active.pointer, active.tag);
-      if (!released.ok()) {
-        result.status = released.status;
-        result.fail_closed = true;
-        result.diagnostic = released.diagnostic;
-      }
-      active.pointer = nullptr;
-    }
-    if (active.grant.spilled && temp_workspace_ != nullptr) {
-      TempWorkspaceCleanupResult spill = ReleaseSpill(active);
-      if (!spill.ok()) {
-        result.status = spill.status;
-        result.fail_closed = true;
-        result.diagnostic = spill.diagnostic;
-      }
-    }
-    ReleaseUnifiedBudget(active, &result.evidence);
-    ReleaseHierarchicalBudget(active, &result.evidence);
-  }
-  const auto reset = ResetHeapArenaLocked(&result.evidence);
-  if (!reset.ok()) {
-    result.status = reset.status;
-    result.fail_closed = true;
-    result.diagnostic = reset.diagnostic;
-  }
-
-  active_.clear();
-  counters_.current_bytes = 0;
-  counters_.current_family_bytes.clear();
-  counters_.active_grant_count = 0;
-  counters_.leak_count = 0;
-  ++counters_.cancelled_count;
-  released_ = true;
-  result.counters = counters_;
-  result.evidence.push_back("query_memory_arena.leak_count=0");
   return result;
 }
 
 QueryMemoryArenaReleaseResult QueryMemoryArena::Reset() {
   std::lock_guard<std::mutex> lock(mutex_);
-  QueryMemoryArenaReleaseResult result;
-  result.status = OkStatus();
-  AppendBaseEvidence(&result.evidence, QueryMemoryFamily::unknown);
-  result.evidence.push_back("query_memory_arena.reset=true");
-
-  for (auto& entry : active_) {
-    ActiveGrant& active = entry.second;
-    if (active.pointer != nullptr && active.arena_owned) {
-      SecureZeroMemory(active.pointer, static_cast<usize>(active.grant.bytes));
-      result.evidence.push_back(
-          "query_memory_arena.reset.heap_backing_retained_until_reset=true");
-      active.pointer = nullptr;
-    } else if (active.pointer != nullptr) {
-      DeallocationResult released = allocator_->Deallocate(active.pointer, active.tag);
-      if (!released.ok()) {
-        result.status = released.status;
-        result.fail_closed = true;
-        result.diagnostic = released.diagnostic;
-      }
-      active.pointer = nullptr;
-    }
-    if (active.grant.spilled && temp_workspace_ != nullptr) {
-      TempWorkspaceCleanupResult spill = ReleaseSpill(active);
-      if (!spill.ok()) {
-        result.status = spill.status;
-        result.fail_closed = true;
-        result.diagnostic = spill.diagnostic;
-      }
-    }
-    ReleaseUnifiedBudget(active, &result.evidence);
-    ReleaseHierarchicalBudget(active, &result.evidence);
-  }
-  const auto reset = ResetHeapArenaLocked(&result.evidence);
-  if (!reset.ok()) {
-    result.status = reset.status;
-    result.fail_closed = true;
-    result.diagnostic = reset.diagnostic;
-  }
-
-  active_.clear();
-  counters_.current_bytes = 0;
-  counters_.current_family_bytes.clear();
-  counters_.active_grant_count = 0;
-  counters_.leak_count = 0;
-  released_ = true;
-  result.counters = counters_;
-  result.evidence.push_back("query_memory_arena.current_bytes=0");
-  result.evidence.push_back("query_memory_arena.leak_count=0");
-  return result;
+  return CleanupAllLocked();
 }
 
 QueryMemoryArenaCounters QueryMemoryArena::Snapshot() const {
@@ -590,8 +647,16 @@ QueryMemoryArenaReleaseResult QueryMemoryArena::RefuseRelease(std::string diagno
 }
 
 bool QueryMemoryArena::ContextMissing() const {
-  return context_.query_id.empty() || context_.statement_id.empty() ||
-         context_.session_id.empty() || context_.transaction_id.empty();
+  return !QueryMemoryContextIdentitiesValid(context_);
+}
+
+bool QueryMemoryContextIdentitiesValid(const QueryMemoryContext& context) noexcept {
+  for (const auto& id : {context.query_id, context.statement_id, context.session_id,
+       context.transaction_id, context.database_id, context.engine_id,
+       context.operation_id, context.snapshot_boundary, context.metadata_boundary,
+       context.resource_budget_reference})
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(id)) return false;
+  return true;
 }
 
 bool QueryMemoryArena::UnsafeAuthority() const {
@@ -645,146 +710,135 @@ QueryMemoryArenaResult QueryMemoryArena::SpillInsteadOfGrant(QueryMemoryGrantReq
                   StatusCode::memory_limit_exceeded);
   }
 
-  auto hierarchical = ReserveHierarchicalBudget(request, "query_spill_grant");
-  if (!hierarchical.ok()) {
-    ++counters_.denied_count;
-    QueryMemoryArenaResult result;
-    result.status = hierarchical.status;
-    result.fail_closed = true;
-    result.diagnostic = hierarchical.diagnostic;
-    result.counters = counters_;
-    result.evidence = std::move(hierarchical.evidence);
-    return result;
-  }
+  const auto grant_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  const auto spill_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  const auto spill_operation = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!grant_identity || !spill_identity || !spill_operation ||
+      active_.contains(*grant_identity) || *grant_identity == *spill_identity ||
+      *spill_identity == *spill_operation || *grant_identity == *spill_operation)
+    return Refuse(request, "SB_QUERY_MEMORY_ARENA.CONTEXT_REQUIRED",
+                  "query_memory_arena.context_required", "spill identity issuance failed",
+                  StatusCode::memory_allocation_failed);
 
-  auto unified = ReserveUnifiedBudget(request, UnifiedMemorySpillBudgetKind::spill);
-  if (!unified.ok()) {
-    if (hierarchical.token.has_value()) {
-      (void)reservation_ledger_->Release(*hierarchical.token);
-    }
-    auto refused = Refuse(request,
-                         "SB_QUERY_MEMORY_ARENA.UNIFIED_BUDGET_DENIED",
-                         "query_memory_arena.unified_budget_denied",
-                         unified.diagnostic.diagnostic_code.empty()
-                             ? "unified heap and spill budget denied spill reservation"
-                             : unified.diagnostic.diagnostic_code,
-                         StatusCode::memory_limit_exceeded);
-    refused.evidence.insert(refused.evidence.end(),
-                            unified.evidence.begin(),
-                            unified.evidence.end());
-    return refused;
-  }
+  QueryMemoryArenaCounters projected = counters_;
+  ++projected.spilled_count;
+  projected.spilled_bytes += request.bytes;
+  ++projected.grant_count;
+  ++projected.active_grant_count;
+  projected.leak_count = projected.active_grant_count;
 
-  QueryMemoryGrant grant;
-  grant.grant_id = context_.query_id + ".grant." + std::to_string(next_grant_++);
+  std::map<QueryMemoryUuid, ActiveGrant> staged;
+  auto& active = staged[*grant_identity];
+  auto& grant = active.grant;
+  grant.grant_id = *grant_identity;
   grant.family = request.family;
-  grant.bytes = 0;
   grant.spilled = true;
   grant.spill_reserved_bytes = request.bytes;
-  if (unified.reservation.has_value()) {
-    grant.unified_budget_reservation_id = unified.reservation->reservation_id;
-  }
-  grant.spill_operation_id = context_.operation_id.empty()
-                                 ? grant.grant_id + ".spill"
-                                 : context_.operation_id + "." + grant.grant_id + ".spill";
+  grant.spill_object_id = *spill_identity;
+  grant.spill_operation_id = *spill_operation;
+  active.tag = ArenaTag(context_, request.family, request.purpose);
 
   TempWorkspaceAllocationRequest spill;
   spill.storage_class = TempStorageClass::spill_file;
   spill.lifetime = TempWorkspaceLifetime::operation_lifetime;
-  spill.owner.temp_object_uuid = grant.grant_id;
+  spill.owner.temp_object_uuid = grant.spill_object_id;
   spill.owner.database_id = context_.database_id;
   spill.owner.engine_id = context_.engine_id;
   spill.owner.session_id = context_.session_id;
   spill.owner.transaction_id = context_.transaction_id;
   spill.owner.statement_id = context_.statement_id;
   spill.owner.operation_id = grant.spill_operation_id;
-  spill.owner.resource_budget_reference = context_.query_id;
+  spill.owner.resource_budget_reference = context_.resource_budget_reference;
+  spill.owner.snapshot_boundary = context_.snapshot_boundary;
+  spill.owner.metadata_boundary = context_.metadata_boundary;
+  spill.owner.policy_generation = context_.policy_generation;
+  spill.owner.security_generation = context_.security_generation;
   spill.bytes = request.bytes;
   spill.purpose = request.purpose.empty() ? "query_memory_spill" : request.purpose;
 
-  TempWorkspaceResult reserved = temp_workspace_->AllocateSpillFile(spill);
-  if (!reserved.ok() || !reserved.record.has_value()) {
-    if (hierarchical.token.has_value()) {
-      (void)reservation_ledger_->Release(*hierarchical.token);
+  struct BudgetRollback {
+    HierarchicalMemoryBudgetLedger* hierarchy;
+    UnifiedMemorySpillBudgetLedger* unified;
+    HierarchicalMemoryReservationToken token{};
+    QueryMemoryUuid unified_id{};
+    bool published = false;
+    ~BudgetRollback() {
+      if (published) return;
+      if (unified != nullptr && !unified_id.is_nil()) (void)unified->ReleaseNoAlloc(unified_id);
+      if (hierarchy != nullptr && token.valid()) (void)hierarchy->ReleaseNoAlloc(token);
     }
-    if (unified.reservation.has_value()) {
-      (void)unified_budget_->Release(unified.reservation->reservation_id);
-    }
-    ++counters_.denied_count;
+  } rollback{reservation_ledger_, unified_budget_};
+
+  auto hierarchical = ReserveHierarchicalBudget(request, "query_spill_grant");
+  if (!hierarchical.ok()) {
     QueryMemoryArenaResult result;
-    result.status = ErrorStatus(StatusCode::memory_limit_exceeded);
+    result.status = hierarchical.status;
     result.fail_closed = true;
-    result.diagnostic = MakeArenaDiagnostic(
-        result.status,
-        "SB_QUERY_MEMORY_ARENA.SPILL_QUOTA_DENIED",
-        "query_memory_arena.spill_quota_denied",
-        reserved.diagnostic.diagnostic_code.empty()
-            ? "spill workspace reservation was denied"
-            : reserved.diagnostic.diagnostic_code,
-        request.family,
-        request.bytes);
+    result.diagnostic = std::move(hierarchical.diagnostic);
     result.counters = counters_;
-    AppendBaseEvidence(&result.evidence, request.family);
-    result.evidence.push_back("query_memory_arena.fail_closed=true");
-    result.evidence.push_back("query_memory_arena.refused=spill_quota_denied");
-    if (!reserved.diagnostic.diagnostic_code.empty()) {
-      result.evidence.push_back("query_memory_arena.spill_workspace_refused=" +
-                                reserved.diagnostic.diagnostic_code);
-    }
+    result.evidence = std::move(hierarchical.evidence);
     return result;
   }
+  if (hierarchical.token) rollback.token = active.reservation_token = *hierarchical.token;
 
-  QueryMemoryArenaReleaseResult commit_failure;
-  if (hierarchical.token.has_value() &&
-      !CommitHierarchicalBudget(*hierarchical.token, &commit_failure)) {
-    (void)temp_workspace_->CleanupOperation(grant.spill_operation_id);
-    if (unified.reservation.has_value()) {
-      (void)unified_budget_->Release(unified.reservation->reservation_id);
-    }
+  auto unified = ReserveUnifiedBudget(request, UnifiedMemorySpillBudgetKind::spill);
+  if (!unified.ok()) {
     QueryMemoryArenaResult result;
-    result.status = commit_failure.status;
+    result.status = unified.status;
     result.fail_closed = true;
-    result.diagnostic = commit_failure.diagnostic;
+    result.diagnostic = std::move(unified.diagnostic);
     result.counters = counters_;
-    AppendBaseEvidence(&result.evidence, request.family);
-    result.evidence.insert(result.evidence.end(),
-                           commit_failure.evidence.begin(),
-                           commit_failure.evidence.end());
+    result.evidence = std::move(unified.evidence);
     return result;
   }
-
-  grant.spill_allocation_id = reserved.record->allocation_id;
-  ActiveGrant active;
-  active.grant = grant;
-  active.tag = ArenaTag(context_, request.family, request.purpose);
-  if (hierarchical.token.has_value()) {
-    active.reservation_token = *hierarchical.token;
+  if (unified.reservation) {
+    rollback.unified_id = unified.reservation->reservation_id;
+    grant.unified_budget_reservation_id = rollback.unified_id;
   }
-  active_.emplace(grant.grant_id, active);
 
-  ++counters_.spilled_count;
-  counters_.spilled_bytes += request.bytes;
-  ++counters_.grant_count;
-  ++counters_.active_grant_count;
-  counters_.leak_count = counters_.active_grant_count;
-
+  // Query ownership is the binary temp-object identity, not its OS filename.
+  // All caller metadata and the map node are complete before file publication.
   QueryMemoryArenaResult result;
   result.status = OkStatus();
   result.grant = grant;
-  result.counters = counters_;
-  AppendBaseEvidence(&result.evidence, request.family);
+  result.counters = projected;
+  AppendBaseEvidence(&result.evidence, request.family, &projected);
   result.evidence.push_back("query_memory_arena.spilled=true");
   result.evidence.push_back("query_memory_arena.spill_reserved_bytes=" +
                             std::to_string(request.bytes));
   result.evidence.push_back("query_memory_arena.spill_reason=" + std::move(reason));
-  result.evidence.push_back("query_memory_arena.spill_allocation_id=" +
-                            grant.spill_allocation_id);
-  result.evidence.insert(result.evidence.end(),
-                         hierarchical.evidence.begin(),
-                         hierarchical.evidence.end());
-  result.evidence.insert(result.evidence.end(),
-                         unified.evidence.begin(),
-                         unified.evidence.end());
+  result.evidence.insert(result.evidence.end(), hierarchical.evidence.begin(), hierarchical.evidence.end());
+  result.evidence.insert(result.evidence.end(), unified.evidence.begin(), unified.evidence.end());
+
+  if (rollback.token.valid()) {
+    const auto committed = reservation_ledger_->Commit(rollback.token);
+    if (!committed.ok()) {
+      result.status = committed.status;
+      result.fail_closed = true;
+      result.grant.reset();
+      result.diagnostic = committed.diagnostic;
+      result.counters = counters_;
+      return result;
+    }
+  }
+  auto node = staged.extract(*grant_identity);
+  auto reserved = temp_workspace_->AllocateSpillFile(std::move(spill));
+  if (!reserved.ok() || !reserved.record) {
+    result.status = reserved.ok() ? ErrorStatus(StatusCode::memory_allocation_failed) : reserved.status;
+    result.fail_closed = true;
+    result.diagnostic = std::move(reserved.diagnostic);
+    result.evidence.clear();
+    if (!reserved.record) {
+      result.grant.reset();
+      result.counters = counters_;
+      return result;
+    }
+    // A post-rename OS sync failure can leave a real retained temp owner.
+    // Publish its exact query cleanup owner too, but never report success.
+  }
+  active_.insert(std::move(node));
+  counters_ = std::move(projected);
+  rollback.published = true;
   return result;
 }
 
@@ -823,13 +877,15 @@ QueryMemoryArena::ReserveHierarchicalBudget(QueryMemoryGrantRequest request,
   reservation.category = MemoryCategory::executor_query_reserved;
   reservation.memory_class = memory_class == nullptr ? "query_memory_grant" : memory_class;
   reservation.requested_bytes = request.bytes;
-  reservation.owner_id = context_.query_id;
+  reservation.binary_owner_uuid = context_.query_id.bytes;
   reservation.spillable = request.spillable;
   reservation.cancelable = true;
   reservation.priority = 1;
   reservation.weight = 1;
   reservation.provenance = QueryArenaReservationProvenance();
 
+  result.evidence.reserve(result.evidence.size() + 1);
+  std::string granted_evidence = "query_memory_arena.hierarchical_reservation_granted=true";
   auto reserved = reservation_ledger_->Reserve(std::move(reservation));
   if (!reserved.ok()) {
     result.status = reserved.status;
@@ -839,11 +895,7 @@ QueryMemoryArena::ReserveHierarchicalBudget(QueryMemoryGrantRequest request,
     return result;
   }
   result.token = reserved.token;
-  result.evidence.push_back("query_memory_arena.hierarchical_reservation_granted=true");
-  result.evidence.push_back("query_memory_arena.hierarchical_reservation_token=" +
-                            std::to_string(reserved.token.token_id));
-  result.evidence.push_back("query_memory_arena.hierarchical_reservation_bytes=" +
-                            std::to_string(reserved.token.bytes));
+  result.evidence.push_back(std::move(granted_evidence));
   return result;
 }
 
@@ -872,19 +924,26 @@ bool QueryMemoryArena::CommitHierarchicalBudget(
   return false;
 }
 
-void QueryMemoryArena::ReleaseHierarchicalBudget(
-    const ActiveGrant& grant,
-    std::vector<std::string>* evidence) {
-  if (reservation_ledger_ == nullptr || !grant.reservation_token.valid()) {
-    return;
-  }
-  auto released = reservation_ledger_->Release(grant.reservation_token);
-  if (evidence != nullptr) {
+bool QueryMemoryArena::ReleaseHierarchicalBudget(
+    ActiveGrant& grant, std::vector<std::string>* evidence,
+    QueryMemoryArenaReleaseResult* failure) {
+  if (!grant.reservation_token.valid()) return true;
+  if (reservation_ledger_ == nullptr) return false;
+  const auto released = reservation_ledger_->Release(grant.reservation_token);
+  // Remember completed cleanup before optional evidence allocation can fail.
+  if (released.ok()) grant.reservation_token = {};
+  if (evidence != nullptr)
     evidence->push_back("query_memory_arena.hierarchical_reservation_released=" +
                         BoolText(released.ok()));
-    evidence->push_back("query_memory_arena.hierarchical_reservation_token=" +
-                        std::to_string(grant.reservation_token.token_id));
+  if (!released.ok()) {
+    if (failure != nullptr) {
+      failure->status = released.status;
+      failure->diagnostic = released.diagnostic;
+      failure->fail_closed = true;
+    }
+    return false;
   }
+  return true;
 }
 
 UnifiedMemorySpillBudgetResult QueryMemoryArena::ReserveUnifiedBudget(
@@ -901,9 +960,7 @@ UnifiedMemorySpillBudgetResult QueryMemoryArena::ReserveUnifiedBudget(
     return result;
   }
   UnifiedMemorySpillBudgetRequest budget;
-  budget.operation_id = context_.operation_id.empty()
-                            ? context_.query_id + "." + request.purpose
-                            : context_.operation_id + "." + request.purpose;
+  budget.operation_id = context_.operation_id;
   budget.owner_scope = context_.query_id;
   budget.kind = kind;
   budget.bytes = request.bytes;
@@ -911,16 +968,24 @@ UnifiedMemorySpillBudgetResult QueryMemoryArena::ReserveUnifiedBudget(
   return result;
 }
 
-void QueryMemoryArena::ReleaseUnifiedBudget(const ActiveGrant& grant,
-                                            std::vector<std::string>* evidence) {
-  if (unified_budget_ == nullptr ||
-      grant.grant.unified_budget_reservation_id.empty()) {
-    return;
+bool QueryMemoryArena::ReleaseUnifiedBudget(
+    ActiveGrant& grant, std::vector<std::string>* evidence,
+    QueryMemoryArenaReleaseResult* failure) {
+  if (grant.grant.unified_budget_reservation_id.is_nil()) return true;
+  if (unified_budget_ == nullptr) return false;
+  const auto released = unified_budget_->Release(grant.grant.unified_budget_reservation_id);
+  if (released.ok()) grant.grant.unified_budget_reservation_id = {};
+  if (evidence != nullptr)
+    evidence->insert(evidence->end(), released.evidence.begin(), released.evidence.end());
+  if (!released.ok()) {
+    if (failure != nullptr) {
+      failure->status = released.status;
+      failure->diagnostic = released.diagnostic;
+      failure->fail_closed = true;
+    }
+    return false;
   }
-  auto released = unified_budget_->Release(
-      grant.grant.unified_budget_reservation_id);
-  evidence->insert(evidence->end(), released.evidence.begin(),
-                   released.evidence.end());
+  return true;
 }
 
 bool QueryMemoryArena::HasActiveHeapGrantLocked() const {
@@ -937,10 +1002,17 @@ DeallocationResult QueryMemoryArena::ResetHeapArenaLocked(
     std::vector<std::string>* evidence) {
   DeallocationResult result;
   result.status = OkStatus();
-  if (!heap_arena_.has_value()) {
+  if (!heap_arena_.has_value() || HasActiveHeapGrantLocked()) {
     return result;
   }
   result = heap_arena_->Reset();
+  const auto capacity = heap_arena_->CapacitySnapshot();
+  counters_.retained_heap_bytes = capacity.retained_bytes;
+  counters_.consumed_heap_bytes = capacity.consumed_bytes;
+  counters_.heap_chunk_count = capacity.chunk_count;
+  // Arena reset retires chunks from the back. Keep each still-owned chunk's
+  // leases on a partial failure and release only physically retired owners.
+  while (heap_capacity_.size() > capacity.chunk_count) heap_capacity_.pop_back();
   if (evidence != nullptr) {
     evidence->push_back("query_memory_arena.heap_bump_region_reset=" +
                         BoolText(result.ok()));
@@ -949,24 +1021,23 @@ DeallocationResult QueryMemoryArena::ResetHeapArenaLocked(
 }
 
 void QueryMemoryArena::AppendBaseEvidence(std::vector<std::string>* evidence,
-                                          QueryMemoryFamily family) const {
+                                          QueryMemoryFamily family,
+                                          const QueryMemoryArenaCounters* snapshot) const {
+  const auto& counters = snapshot == nullptr ? counters_ : *snapshot;
   evidence->push_back("query_memory_arena.family=" +
                       std::string(QueryMemoryFamilyName(family)));
-  evidence->push_back("query_memory_arena.query_id=" + context_.query_id);
-  evidence->push_back("query_memory_arena.statement_id=" + context_.statement_id);
-  evidence->push_back("query_memory_arena.session_id=" + context_.session_id);
   evidence->push_back("query_memory_arena.transaction_context_bound=" +
-                      BoolText(!context_.transaction_id.empty()));
+                      BoolText(!context_.transaction_id.is_nil()));
   evidence->push_back("query_memory_arena.current_bytes=" +
-                      std::to_string(counters_.current_bytes));
+                      std::to_string(counters.current_bytes));
   evidence->push_back("query_memory_arena.peak_bytes=" +
-                      std::to_string(counters_.peak_bytes));
+                      std::to_string(counters.peak_bytes));
   evidence->push_back("query_memory_arena.denied_count=" +
-                      std::to_string(counters_.denied_count));
+                      std::to_string(counters.denied_count));
   evidence->push_back("query_memory_arena.spilled_count=" +
-                      std::to_string(counters_.spilled_count));
+                      std::to_string(counters.spilled_count));
   evidence->push_back("query_memory_arena.cancelled_count=" +
-                      std::to_string(counters_.cancelled_count));
+                      std::to_string(counters.cancelled_count));
   evidence->push_back("query_memory_arena.transaction_finality_authority=false");
   evidence->push_back("query_memory_arena.visibility_authority=false");
   evidence->push_back("query_memory_arena.parser_execution_authority=false");
@@ -982,10 +1053,10 @@ DiagnosticRecord QueryMemoryArena::MakeArenaDiagnostic(Status status,
   std::vector<DiagnosticArgument> arguments;
   arguments.push_back({"reason", std::move(reason)});
   arguments.push_back({"family", QueryMemoryFamilyName(family)});
-  arguments.push_back({"query_id", context_.query_id});
-  arguments.push_back({"statement_id", context_.statement_id});
-  arguments.push_back({"session_id", context_.session_id});
-  arguments.push_back({"transaction_context_bound", BoolText(!context_.transaction_id.empty())});
+  arguments.push_back({"query_id_present", BoolText(!context_.query_id.is_nil())});
+  arguments.push_back({"statement_id_present", BoolText(!context_.statement_id.is_nil())});
+  arguments.push_back({"session_id_present", BoolText(!context_.session_id.is_nil())});
+  arguments.push_back({"transaction_context_bound", BoolText(!context_.transaction_id.is_nil())});
   arguments.push_back({"requested_bytes", std::to_string(requested_bytes)});
   arguments.push_back({"current_bytes", std::to_string(counters_.current_bytes)});
   arguments.push_back({"hard_limit_bytes", std::to_string(limits_.hard_limit_bytes)});
@@ -1004,216 +1075,5 @@ DiagnosticRecord QueryMemoryArena::MakeArenaDiagnostic(Status status,
                         "Use bounded query memory grants, bounded spill reservations, or cancel the statement.");
 }
 
-UnifiedMemorySpillBudgetLedger::UnifiedMemorySpillBudgetLedger(
-    std::string ledger_id,
-    u64 limit_bytes)
-    : ledger_id_(std::move(ledger_id)), limit_bytes_(limit_bytes) {}
-
-UnifiedMemorySpillBudgetSnapshot
-UnifiedMemorySpillBudgetLedger::SnapshotLocked() const {
-  UnifiedMemorySpillBudgetSnapshot snapshot;
-  snapshot.ledger_id = ledger_id_;
-  snapshot.limit_bytes = limit_bytes_;
-  snapshot.heap_bytes = heap_bytes_;
-  snapshot.spill_bytes = spill_bytes_;
-  snapshot.total_bytes = heap_bytes_ + spill_bytes_;
-  snapshot.active_reservation_count = active_.size();
-  snapshot.peak_total_bytes = peak_total_bytes_;
-  snapshot.denial_count = denial_count_;
-  return snapshot;
-}
-
-UnifiedMemorySpillBudgetSnapshot
-UnifiedMemorySpillBudgetLedger::Snapshot() const {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return SnapshotLocked();
-}
-
-UnifiedMemorySpillBudgetResult UnifiedMemorySpillBudgetLedger::Reserve(
-    UnifiedMemorySpillBudgetRequest request) {
-  UnifiedMemorySpillBudgetResult result;
-  result.status = OkStatus();
-  result.evidence.push_back("MMCH_UNIFIED_MEMORY_SPILL_BUDGET");
-  result.evidence.push_back("unified_memory_spill.ledger_id=" + ledger_id_);
-  result.evidence.push_back("unified_memory_spill.operation_id=" + request.operation_id);
-  result.evidence.push_back("unified_memory_spill.owner_scope=" + request.owner_scope);
-  result.evidence.push_back("unified_memory_spill.kind=" +
-                            std::string(UnifiedMemorySpillBudgetKindName(request.kind)));
-  result.evidence.push_back("unified_memory_spill.requested_bytes=" +
-                            std::to_string(request.bytes));
-  result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (limit_bytes_ == 0 || request.operation_id.empty() ||
-      request.owner_scope.empty() || request.bytes == 0) {
-    ++denial_count_;
-    result.status = ErrorStatus(StatusCode::memory_invalid_request);
-    result.fail_closed = true;
-    result.snapshot = SnapshotLocked();
-    result.diagnostic = MakeDiagnostic(
-        result.status,
-        "SB_UNIFIED_MEMORY_SPILL_BUDGET.REQUEST_INVALID",
-        "unified_memory_spill.request_invalid",
-        "limit operation owner and positive bytes are required",
-        request);
-    result.evidence.push_back("unified_memory_spill.reservation_created=false");
-    result.evidence.push_back("unified_memory_spill.fail_closed=true");
-    return result;
-  }
-  const u64 current = heap_bytes_ + spill_bytes_;
-  if (request.bytes > limit_bytes_ || current > limit_bytes_ - request.bytes) {
-    ++denial_count_;
-    result.status = ErrorStatus(StatusCode::memory_limit_exceeded);
-    result.fail_closed = true;
-    result.snapshot = SnapshotLocked();
-    result.diagnostic = MakeDiagnostic(
-        result.status,
-        "SB_UNIFIED_MEMORY_SPILL_BUDGET.LIMIT_EXCEEDED",
-        "unified_memory_spill.limit_exceeded",
-        "combined heap and spill budget exceeded",
-        request);
-    result.evidence.push_back("unified_memory_spill.reservation_created=false");
-    result.evidence.push_back("unified_memory_spill.fail_closed=true");
-    result.evidence.push_back("unified_memory_spill.current_total_bytes=" +
-                              std::to_string(current));
-    return result;
-  }
-
-  UnifiedMemorySpillBudgetReservation reservation;
-  reservation.reservation_id =
-      ledger_id_ + ":" + request.operation_id + ":" +
-      std::to_string(next_reservation_++);
-  reservation.operation_id = std::move(request.operation_id);
-  reservation.owner_scope = std::move(request.owner_scope);
-  reservation.kind = request.kind;
-  reservation.bytes = request.bytes;
-  if (reservation.kind == UnifiedMemorySpillBudgetKind::heap) {
-    heap_bytes_ += reservation.bytes;
-  } else {
-    spill_bytes_ += reservation.bytes;
-  }
-  peak_total_bytes_ = std::max(peak_total_bytes_, heap_bytes_ + spill_bytes_);
-  active_[reservation.reservation_id] = ActiveReservation{reservation};
-  result.reservation = reservation;
-  result.reservation_created = true;
-  result.snapshot = SnapshotLocked();
-  result.evidence.push_back("unified_memory_spill.reservation_created=true");
-  result.evidence.push_back("unified_memory_spill.reservation_id=" +
-                            reservation.reservation_id);
-  result.evidence.push_back("unified_memory_spill.total_bytes=" +
-                            std::to_string(result.snapshot.total_bytes));
-  return result;
-}
-
-UnifiedMemorySpillBudgetResult UnifiedMemorySpillBudgetLedger::Release(
-    const std::string& reservation_id) {
-  UnifiedMemorySpillBudgetResult result;
-  result.status = OkStatus();
-  result.evidence.push_back("MMCH_UNIFIED_MEMORY_SPILL_BUDGET");
-  result.evidence.push_back("unified_memory_spill.ledger_id=" + ledger_id_);
-  result.evidence.push_back("unified_memory_spill.reservation_id=" + reservation_id);
-  result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto it = active_.find(reservation_id);
-  if (it == active_.end()) {
-    result.status = ErrorStatus(StatusCode::memory_unknown_pointer);
-    result.fail_closed = true;
-    result.not_found = true;
-    result.snapshot = SnapshotLocked();
-    UnifiedMemorySpillBudgetRequest request;
-    request.operation_id = reservation_id;
-    result.diagnostic = MakeDiagnostic(result.status,
-                                       "SB_UNIFIED_MEMORY_SPILL_BUDGET.NOT_FOUND",
-                                       "unified_memory_spill.not_found",
-                                       "reservation was not active",
-                                       request);
-    result.evidence.push_back("unified_memory_spill.released=false");
-    return result;
-  }
-  result.reservation = it->second.reservation;
-  if (it->second.reservation.kind == UnifiedMemorySpillBudgetKind::heap) {
-    heap_bytes_ = it->second.reservation.bytes >= heap_bytes_
-                      ? 0
-                      : heap_bytes_ - it->second.reservation.bytes;
-  } else {
-    spill_bytes_ = it->second.reservation.bytes >= spill_bytes_
-                       ? 0
-                       : spill_bytes_ - it->second.reservation.bytes;
-  }
-  active_.erase(it);
-  result.released = true;
-  result.snapshot = SnapshotLocked();
-  result.evidence.push_back("unified_memory_spill.released=true");
-  result.evidence.push_back("unified_memory_spill.total_bytes=" +
-                            std::to_string(result.snapshot.total_bytes));
-  return result;
-}
-
-UnifiedMemorySpillBudgetResult
-UnifiedMemorySpillBudgetLedger::ReleaseOwnerReservations(
-    const std::string& owner_scope) {
-  UnifiedMemorySpillBudgetResult result;
-  result.status = OkStatus();
-  result.evidence.push_back("MMCH_UNIFIED_MEMORY_SPILL_BUDGET");
-  result.evidence.push_back("unified_memory_spill.ledger_id=" + ledger_id_);
-  result.evidence.push_back("unified_memory_spill.owner_scope=" + owner_scope);
-  result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
-
-  std::vector<std::string> reservations;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& entry : active_) {
-      if (entry.second.reservation.owner_scope == owner_scope) {
-        reservations.push_back(entry.first);
-      }
-    }
-  }
-  u64 released_count = 0;
-  for (const auto& reservation_id : reservations) {
-    auto released = Release(reservation_id);
-    if (released.ok()) {
-      ++released_count;
-    }
-  }
-  result.snapshot = Snapshot();
-  result.released = released_count != 0;
-  result.evidence.push_back("unified_memory_spill.owner_released_count=" +
-                            std::to_string(released_count));
-  return result;
-}
-
-DiagnosticRecord UnifiedMemorySpillBudgetLedger::MakeDiagnostic(
-    Status status,
-    std::string diagnostic_code,
-    std::string message_key,
-    std::string reason,
-    const UnifiedMemorySpillBudgetRequest& request) const {
-  std::vector<DiagnosticArgument> arguments;
-  arguments.push_back({"reason", std::move(reason)});
-  arguments.push_back({"ledger_id", ledger_id_});
-  arguments.push_back({"operation_id", request.operation_id});
-  arguments.push_back({"owner_scope", request.owner_scope});
-  arguments.push_back({"kind", UnifiedMemorySpillBudgetKindName(request.kind)});
-  arguments.push_back({"requested_bytes", std::to_string(request.bytes)});
-  arguments.push_back({"limit_bytes", std::to_string(limit_bytes_)});
-  arguments.push_back({"heap_bytes", std::to_string(heap_bytes_)});
-  arguments.push_back({"spill_bytes", std::to_string(spill_bytes_)});
-  arguments.push_back({"authority_scope",
-                       "evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"});
-  return scratchbird::core::platform::MakeDiagnostic(
-      status.code,
-      status.severity,
-      status.subsystem,
-      std::move(diagnostic_code),
-      std::move(message_key),
-      std::move(arguments),
-      {},
-      "core.memory.unified_memory_spill_budget",
-      "Lower heap grants, spill less, or cancel the query.");
-}
 
 }  // namespace scratchbird::core::memory

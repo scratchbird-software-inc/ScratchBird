@@ -54,7 +54,7 @@ constexpr const char* kSecurityDenied = "SECURITY.ACCESS_DENIED";
 constexpr const char* kTransactionInvalid = "MGA.TRANSACTION.INVALID";
 constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
 constexpr const char* kPlanInvalid = "SBLR.PLAN_TREE.INVALID_HANDLE";
-constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR_INVALID";
+constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kProjectionExpressionInvalid =
     "PROJECTION.EXPRESSION_VECTOR_INVALID";
 constexpr const char* kProjectionOutputInvalid =

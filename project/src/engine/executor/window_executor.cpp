@@ -16,7 +16,7 @@
 #include <cctype>
 #include <limits>
 #include <string_view>
-#include <unordered_set>
+#include <set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -90,8 +90,7 @@ bool NtileOperandPayloadBytes(
     std::uint64_t* bytes) {
   if (bytes == nullptr) return false;
   *bytes = 1;
-  const std::array<std::size_t, 6> payloads{
-      operand.descriptor.descriptor_uuid.canonical.size(),
+  const std::array<std::size_t, 5> payloads{
       operand.descriptor.descriptor_kind.size(),
       operand.descriptor.canonical_type_name.size(),
       operand.descriptor.encoded_descriptor.size(), operand.encoded_value.size(),
@@ -121,39 +120,37 @@ bool RealRankingEncodedPayloadBytes(const std::size_t row_count,
   return true;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
+  const auto count = std::ranges::count_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
   const auto found = std::ranges::find_if(
-      manifest.manifest.descriptor_rows, [&](const auto& row) {
-        return row.stable_name == stable_name;
-      });
-  if (found == manifest.manifest.descriptor_rows.end() ||
+      manifest.manifest.descriptor_rows,
+      [&](const auto& row) { return row.stable_name == stable_name; });
+  if (count != 1 || found == manifest.manifest.descriptor_rows.end() ||
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          internal_api::EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid : internal_api::EngineUuid{};
+}
+
+std::optional<internal_api::EngineUuid> CanonicalDescriptorTypeIdentity(
+    const internal_api::EngineDescriptor& descriptor) {
+  if (!internal_api::QowCanonicalDescriptorIdentityV1(descriptor)) return std::nullopt;
+  return descriptor.type_uuid;
 }
 
 std::optional<std::string_view> CanonicalDescriptorField(
@@ -176,8 +173,8 @@ std::optional<std::string_view> CanonicalDescriptorField(
   return result;
 }
 
-std::size_t PropertyCount(const std::vector<std::string>& properties,
-                          const std::string_view property_uuid) {
+std::size_t PropertyCount(const std::vector<internal_api::EngineUuid>& properties,
+                          const internal_api::EngineUuid& property_uuid) {
   return static_cast<std::size_t>(std::ranges::count(properties, property_uuid));
 }
 
@@ -329,7 +326,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
                   "window peer property identity was not preserved");
   }
   if ((request.partition_terms.empty() !=
-       request.partition_property_uuid.empty()) ||
+       request.partition_property_uuid.is_nil()) ||
       (!request.partition_terms.empty() &&
        (!IsCanonicalUuid(request.partition_property_uuid) ||
         PropertyCount(selected_node->required_property_uuids,
@@ -337,7 +334,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     return refuse("QOW-DIAG-WINDOW-PARTITION",
                   "window partition property identity was not preserved");
   }
-  if ((request.order_terms.empty() != request.ordering_property_uuid.empty()) ||
+  if ((request.order_terms.empty() != request.ordering_property_uuid.is_nil()) ||
       (!request.order_terms.empty() &&
        (!IsCanonicalUuid(request.ordering_property_uuid) ||
         PropertyCount(selected_node->required_property_uuids,
@@ -352,15 +349,15 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
           expected_required_property_count ||
       request.window_property_uuid == request.partition_property_uuid ||
       request.window_property_uuid == request.ordering_property_uuid ||
-      (!request.partition_property_uuid.empty() &&
+      (!request.partition_property_uuid.is_nil() &&
        request.partition_property_uuid == request.ordering_property_uuid) ||
       !std::ranges::all_of(
           selected_node->delivered_property_uuids,
           [&](const auto& property_uuid) {
             return property_uuid == request.window_property_uuid ||
-                   (!request.partition_property_uuid.empty() &&
+                   (!request.partition_property_uuid.is_nil() &&
                     property_uuid == request.partition_property_uuid) ||
-                   (!request.ordering_property_uuid.empty() &&
+                   (!request.ordering_property_uuid.is_nil() &&
                     property_uuid == request.ordering_property_uuid);
           })) {
     return refuse("QOW-DIAG-WINDOW-PROPERTY-BINDING",
@@ -368,7 +365,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   }
   const bool has_bound_terms =
       !request.partition_terms.empty() || !request.order_terms.empty();
-  if ((has_bound_terms != !request.term_binding_evidence_uuid.empty()) ||
+  if ((has_bound_terms != !request.term_binding_evidence_uuid.is_nil()) ||
       (has_bound_terms &&
        (!IsCanonicalUuid(request.term_binding_evidence_uuid) ||
         request.term_binding_evidence_uuid == request.window_property_uuid ||
@@ -680,10 +677,10 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   const bool exact_ordering_property =
       selected_node->required_property_uuids.size() == 1 &&
       IsCanonicalUuid(selected_node->required_property_uuids.front());
-  const std::string ordering_property_uuid =
+  const internal_api::EngineUuid ordering_property_uuid =
       exact_ordering_property
           ? selected_node->required_property_uuids.front()
-          : std::string{};
+          : internal_api::EngineUuid{};
   const auto window_property = std::ranges::find_if(
       selected_node->delivered_property_uuids,
       [&](const auto& property_uuid) {
@@ -700,7 +697,7 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   if (input_node == nullptr ||
       input_node->node_kind != PhysicalNodeKind::kSort ||
       input_node->delivered_property_uuids !=
-          std::vector<std::string>{ordering_property_uuid} ||
+          std::vector<internal_api::EngineUuid>{ordering_property_uuid} ||
       !exact_window_property ||
       selected_node->executor_capability_abi_version != 1 ||
       !selected_node->engine_capability_validated ||
@@ -715,11 +712,10 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.row_number_column.descriptor_id);
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.row_number_column.descriptor, "type_uuid");
+  const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.row_number_column.descriptor);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
+  constexpr internal_api::EngineUuid kRowNumberFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39, 0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}};
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.row_number_column.descriptor_id == 0 ||
       request.row_number_column.nullable ||
@@ -727,31 +723,30 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumberBound(
       request.row_number_column.descriptor.canonical_type_name != "int64" ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.row_number_column.descriptor) ||
-      !result_type_uuid.has_value() || canonical_int64_type_uuid.empty() ||
+      !result_type_uuid.has_value() || canonical_int64_type_uuid.is_nil() ||
       *result_type_uuid != canonical_int64_type_uuid ||
       request.row_number_column.descriptor.encoded_descriptor !=
-          "type_uuid=" + canonical_int64_type_uuid +
-              ";nullability=non_null" ||
-      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+          "nullability=non_null" ||
+      request.row_number_column.descriptor.descriptor_uuid ==
           *result_type_uuid ||
-      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+      request.row_number_column.descriptor.descriptor_uuid ==
           ordering_property_uuid ||
-      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+      request.row_number_column.descriptor.descriptor_uuid ==
           *window_property ||
-      request.row_number_column.descriptor.descriptor_uuid.canonical ==
+      request.row_number_column.descriptor.descriptor_uuid ==
           request.deterministic_order_evidence_uuid) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "ROW_NUMBER output descriptor is not bound int64"));
   }
-  const std::array<std::string_view, 7> row_number_identity_domain{
+  const std::array<internal_api::EngineUuid, 7> row_number_identity_domain{
       kRowNumberFunctionUuid,
-      request.row_number_column.descriptor.descriptor_uuid.canonical,
+      request.row_number_column.descriptor.descriptor_uuid,
       *result_type_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
       request.deterministic_order_evidence_uuid};
-  const std::unordered_set<std::string_view> distinct_row_number_identities(
+  const std::set<internal_api::EngineUuid> distinct_row_number_identities(
       row_number_identity_domain.begin(), row_number_identity_domain.end());
   if (distinct_row_number_identities.size() !=
           row_number_identity_domain.size() ||
@@ -897,10 +892,10 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
   const bool exact_ordering_property =
       selected_node->required_property_uuids.size() == 1 &&
       IsCanonicalUuid(selected_node->required_property_uuids.front());
-  const std::string ordering_property_uuid =
+  const internal_api::EngineUuid ordering_property_uuid =
       exact_ordering_property
           ? selected_node->required_property_uuids.front()
-          : std::string{};
+          : internal_api::EngineUuid{};
   const auto window_property = std::ranges::find_if(
       selected_node->delivered_property_uuids,
       [&](const auto& property_uuid) {
@@ -916,10 +911,10 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       *window_property != ordering_property_uuid;
   if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
       input_node->delivered_property_uuids !=
-          std::vector<std::string>{ordering_property_uuid} ||
+          std::vector<internal_api::EngineUuid>{ordering_property_uuid} ||
       !exact_window_property || request.function_abi_version != 1 ||
       request.builtin_id != "sb.window.ntile" ||
-      request.function_uuid != "019de5fc-2400-7047-9474-232ca488c094" ||
+      request.function_uuid != internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x70,0x47,0x94,0x74,0x23,0x2c,0xa4,0x88,0xc0,0x94}} ||
       !IsCanonicalUuid(request.function_uuid) ||
       selected_node->executor_capability_abi_version != 1 ||
       !selected_node->engine_capability_validated ||
@@ -944,13 +939,11 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
   output_descriptor_ids.push_back(request.ntile_column.descriptor_id);
   const auto decoded_bucket_count =
       DecodeInt64Value(request.bucket_count_operand);
-  const auto output_type_uuid = CanonicalDescriptorField(
-      request.ntile_column.descriptor, "type_uuid");
+  const auto output_type_uuid = CanonicalDescriptorTypeIdentity(request.ntile_column.descriptor);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto output_nullability = CanonicalDescriptorField(
       request.ntile_column.descriptor, "nullability");
-  const auto operand_type_uuid = CanonicalDescriptorField(
-      request.bucket_count_operand.descriptor, "type_uuid");
+  const auto operand_type_uuid = CanonicalDescriptorTypeIdentity(request.bucket_count_operand.descriptor);
   const auto operand_nullability = CanonicalDescriptorField(
       request.bucket_count_operand.descriptor, "nullability");
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
@@ -962,24 +955,23 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
           request.ntile_column.descriptor) ||
       !output_type_uuid.has_value() ||
       !IsCanonicalUuid(*output_type_uuid) ||
-      canonical_int64_type_uuid.empty() ||
+      canonical_int64_type_uuid.is_nil() ||
       *output_type_uuid != canonical_int64_type_uuid ||
       !output_nullability.has_value() ||
       *output_nullability != "non_null" ||
       request.ntile_column.descriptor.encoded_descriptor !=
-          "type_uuid=" + canonical_int64_type_uuid +
-              ";nullability=non_null" ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+          "nullability=non_null" ||
+      request.ntile_column.descriptor.descriptor_uuid ==
           *output_type_uuid ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+      request.ntile_column.descriptor.descriptor_uuid ==
           request.function_uuid ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+      request.ntile_column.descriptor.descriptor_uuid ==
           ordering_property_uuid ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+      request.ntile_column.descriptor.descriptor_uuid ==
           *window_property ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+      request.ntile_column.descriptor.descriptor_uuid ==
           request.order_term_binding_evidence_uuid ||
-      request.ntile_column.descriptor.descriptor_uuid.canonical ==
+      request.ntile_column.descriptor.descriptor_uuid ==
           request.deterministic_order_evidence_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size() ||
@@ -996,41 +988,39 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       !operand_nullability.has_value() ||
       *operand_nullability != "non_null" ||
       request.bucket_count_operand.descriptor.encoded_descriptor !=
-          "type_uuid=" + canonical_int64_type_uuid +
-              ";nullability=non_null" ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+          "nullability=non_null" ||
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           *operand_type_uuid ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
-          request.ntile_column.descriptor.descriptor_uuid.canonical ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
+          request.ntile_column.descriptor.descriptor_uuid ||
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           request.function_uuid ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           ordering_property_uuid ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           *window_property ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           request.order_term_binding_evidence_uuid ||
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical ==
+      request.bucket_count_operand.descriptor.descriptor_uuid ==
           request.deterministic_order_evidence_uuid ||
       !decoded_bucket_count.ok() || decoded_bucket_count.value <= 0) {
     return refuse(Refusal(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
         "NTILE output and positive int64 bucket operand are not exact"));
   }
-  const std::array<std::string_view, 8> ntile_identity_domain{
+  const std::array<internal_api::EngineUuid, 9> ntile_identity_domain{
       request.function_uuid,
-      request.ntile_column.descriptor.descriptor_uuid.canonical,
+      request.order_term_binding_evidence_uuid,
+      request.ntile_column.descriptor.descriptor_uuid,
       *output_type_uuid,
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      request.bucket_count_operand.descriptor.descriptor_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
       request.deterministic_order_evidence_uuid};
-  const std::unordered_set<std::string_view> distinct_ntile_identities(
+  const std::set<internal_api::EngineUuid> distinct_ntile_identities(
       ntile_identity_domain.begin(), ntile_identity_domain.end());
-  if (selected_node->executor_capability_uuid !=
-          request.order_term_binding_evidence_uuid ||
-      distinct_ntile_identities.size() != ntile_identity_domain.size() ||
+  if (distinct_ntile_identities.size() != ntile_identity_domain.size() ||
       std::ranges::any_of(ntile_identity_domain, [](const auto identity) {
         return !IsCanonicalUuid(identity);
       })) {
@@ -1042,13 +1032,14 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
       execution_ordered_input_batch.columns[request.order_term.column]
           .descriptor;
   const auto& order_descriptor_uuid =
-      order_descriptor.descriptor_uuid.canonical;
+      order_descriptor.descriptor_uuid;
   const auto order_type_uuid =
-      CanonicalDescriptorField(order_descriptor, "type_uuid");
-  const std::array<std::string_view, 7> forbidden_order_type_roles{
+      CanonicalDescriptorTypeIdentity(order_descriptor);
+  const std::array<internal_api::EngineUuid, 8> forbidden_order_type_roles{
       request.function_uuid,
-      request.ntile_column.descriptor.descriptor_uuid.canonical,
-      request.bucket_count_operand.descriptor.descriptor_uuid.canonical,
+      request.order_term_binding_evidence_uuid,
+      request.ntile_column.descriptor.descriptor_uuid,
+      request.bucket_count_operand.descriptor.descriptor_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
@@ -1088,7 +1079,7 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
                                     &ntile_payload_bytes) ||
       !NtileOperandPayloadBytes(request.bucket_count_operand,
                                 &operand_payload_bytes) ||
-      !PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+      !PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
           request.order_term, ordering_property_uuid,
           &binding_receipt_workspace_bytes) ||
       selected_node->memory_bytes_required == 0 ||
@@ -1114,18 +1105,18 @@ CanonicalDescriptorNtileResult ExecuteCanonicalDescriptorNtileBound(
         "NTILE runtime materialization exceeds its selected node grant"));
   }
   std::uint64_t actual_binding_receipt_workspace_bytes = 0;
-  const auto expected_order_term_binding_evidence_uuid =
-      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
-          request.order_term, ordering_property_uuid,
-          binding_receipt_workspace_bytes,
-          &actual_binding_receipt_workspace_bytes);
-  if (expected_order_term_binding_evidence_uuid.empty() ||
-      actual_binding_receipt_workspace_bytes !=
-          binding_receipt_workspace_bytes ||
-      selected_node->executor_capability_uuid !=
-          expected_order_term_binding_evidence_uuid ||
+  if (!request.order_term_binding_receipt ||
       request.order_term_binding_evidence_uuid !=
-          selected_node->executor_capability_uuid) {
+          request.order_term_binding_receipt->identity() ||
+      request.order_term_binding_evidence_uuid ==
+          selected_node->executor_capability_uuid ||
+      !request.order_term_binding_receipt->Matches(
+          execution_dag, selected_node->physical_node_id,
+          execution_ordered_input_batch.columns[request.order_term.column],
+          request.order_term, ordering_property_uuid, request.mga_authority,
+          binding_receipt_workspace_bytes,
+          &actual_binding_receipt_workspace_bytes) ||
+      actual_binding_receipt_workspace_bytes != binding_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
         "NTILE order term differs from optimizer-published capability "
@@ -1215,22 +1206,22 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
 
   const bool lag = request.builtin_id == "sb.window.lag" &&
                    request.function_uuid ==
-                       "019de5fc-2400-782c-8436-9ac310301738";
+                       internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x2c,0x84,0x36,0x9a,0xc3,0x10,0x30,0x17,0x38}};
   const bool lead = request.builtin_id == "sb.window.lead" &&
                     request.function_uuid ==
-                        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+                        internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7a,0x06,0xbc,0x3c,0x67,0x47,0xcf,0x5b,0xe6,0x6f}};
   const bool first_value =
       request.builtin_id == "sb.window.first_value" &&
       request.function_uuid ==
-          "019de5fc-2400-7264-90fb-d25bd0f806f2";
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x64,0x90,0xfb,0xd2,0x5b,0xd0,0xf8,0x06,0xf2}};
   const bool last_value =
       request.builtin_id == "sb.window.last_value" &&
       request.function_uuid ==
-          "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x23,0xa5,0xbe,0x7e,0xd3,0xf1,0xa5,0xc3,0xec}};
   const bool nth_value =
       request.builtin_id == "sb.window.nth_value" &&
       request.function_uuid ==
-          "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0xc9,0x80,0xe6,0x9f,0x2c,0xcf,0x08,0x07,0x6f}};
   const std::string_view implementation_id =
       lag ? "window.lag.v1"
           : (lead ? "window.lead.v1"
@@ -1290,10 +1281,10 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const bool exact_ordering_property =
       selected_node->required_property_uuids.size() == 1 &&
       IsCanonicalUuid(selected_node->required_property_uuids.front());
-  const std::string ordering_property_uuid =
+  const internal_api::EngineUuid ordering_property_uuid =
       exact_ordering_property
           ? selected_node->required_property_uuids.front()
-          : std::string{};
+          : internal_api::EngineUuid{};
   const auto window_property = std::ranges::find_if(
       selected_node->delivered_property_uuids,
       [&](const auto& property_uuid) {
@@ -1309,7 +1300,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       *window_property != ordering_property_uuid;
   if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
       input_node->delivered_property_uuids !=
-          std::vector<std::string>{ordering_property_uuid} ||
+          std::vector<internal_api::EngineUuid>{ordering_property_uuid} ||
       !exact_window_property ||
       selected_node->executor_capability_abi_version != 1 ||
       !selected_node->engine_capability_validated ||
@@ -1351,15 +1342,10 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.order_term,
       execution_ordered_input_batch.columns[request.order_term.column]);
   if (!order_validation.ok) return refuse(order_validation);
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.result_column.descriptor, "type_uuid");
-  const auto source_type_uuid = CanonicalDescriptorField(
-      execution_ordered_input_batch.columns[request.value_column].descriptor,
-      "type_uuid");
-  const auto order_type_uuid = CanonicalDescriptorField(
-      execution_ordered_input_batch.columns[request.order_term.column]
-          .descriptor,
-      "type_uuid");
+  const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.result_column.descriptor);
+  const auto source_type_uuid = CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[request.value_column].descriptor);
+  const auto order_type_uuid = CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[request.order_term.column]
+          .descriptor);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto canonical_boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
   const auto has_auxiliary_type_fields = [](const auto& descriptor) {
@@ -1379,7 +1365,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       }
       return false;
     };
-    return contains_field("collation_uuid") ||
+    return !descriptor.collation_uuid.is_nil() ||
            contains_field("timezone_profile_id") || contains_field("width") ||
            contains_field("precision") || contains_field("scale") ||
            contains_field("element_profile");
@@ -1390,8 +1376,8 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
           : nullptr;
   const auto nth_operand_type_uuid =
       nth_operand == nullptr
-          ? std::optional<std::string_view>{}
-          : CanonicalDescriptorField(nth_operand->descriptor, "type_uuid");
+          ? std::optional<internal_api::EngineUuid>{}
+          : CanonicalDescriptorTypeIdentity(nth_operand->descriptor);
   const auto nth_operand_nullability =
       nth_operand == nullptr
           ? std::optional<std::string_view>{}
@@ -1399,12 +1385,12 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   const auto decoded_nth =
       nth_operand == nullptr ? Int64DecodeResult{}
                              : DecodeInt64Value(*nth_operand);
-  std::vector<std::string_view> independent_identities{
+  std::vector<internal_api::EngineUuid> independent_identities{
       request.function_uuid,
       execution_ordered_input_batch.columns[request.value_column]
-          .descriptor.descriptor_uuid.canonical,
-      request.result_column.descriptor.descriptor_uuid.canonical,
-      result_type_uuid.value_or(std::string_view{}),
+          .descriptor.descriptor_uuid,
+      request.result_column.descriptor.descriptor_uuid,
+      result_type_uuid.value_or(internal_api::EngineUuid{}),
       ordering_property_uuid,
       *window_property,
       request.window_frame_descriptor_uuid,
@@ -1416,7 +1402,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
     independent_identities.insert(
         independent_identities.begin() + 2,
         execution_ordered_input_batch.columns[request.order_term.column]
-            .descriptor.descriptor_uuid.canonical);
+            .descriptor.descriptor_uuid);
   }
   const bool exact_int64_value =
       source_type_uuid.has_value() && result_type_uuid.has_value() &&
@@ -1427,7 +1413,7 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       request.result_column.descriptor.canonical_type_name == "int64";
   const bool exact_boolean_value =
       source_type_uuid.has_value() && result_type_uuid.has_value() &&
-      !canonical_boolean_type_uuid.empty() &&
+      !canonical_boolean_type_uuid.is_nil() &&
       *source_type_uuid == canonical_boolean_type_uuid &&
       *result_type_uuid == canonical_boolean_type_uuid &&
       execution_ordered_input_batch.columns[request.value_column]
@@ -1447,18 +1433,18 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       !nth_value && order_type_uuid.has_value() &&
       order_descriptor.canonical_type_name != "int64" &&
       IsCanonicalBoundedSignedIntegerDescriptor(order_descriptor) &&
-      !canonical_order_type_uuid.empty() &&
+      !canonical_order_type_uuid.is_nil() &&
       *order_type_uuid == canonical_order_type_uuid;
   const bool exact_boolean_order =
       !nth_value && order_type_uuid.has_value() &&
-      !canonical_boolean_type_uuid.empty() &&
+      !canonical_boolean_type_uuid.is_nil() &&
       *order_type_uuid == canonical_boolean_type_uuid &&
       execution_ordered_input_batch.columns[request.order_term.column]
               .descriptor.canonical_type_name == "boolean";
   if (!result_type_uuid.has_value() || !IsCanonicalUuid(*result_type_uuid) ||
       !source_type_uuid.has_value() || !IsCanonicalUuid(*source_type_uuid) ||
       !order_type_uuid.has_value() || !IsCanonicalUuid(*order_type_uuid) ||
-      canonical_int64_type_uuid.empty() ||
+      canonical_int64_type_uuid.is_nil() ||
       (!exact_int64_value && !exact_boolean_value) ||
       (!exact_int64_order && !exact_narrow_bounded_signed_order &&
        !exact_boolean_order) ||
@@ -1490,29 +1476,29 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
       *nth_operand_type_uuid == canonical_int64_type_uuid &&
       nth_operand_nullability.has_value() &&
       *nth_operand_nullability == "non_null" &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           *nth_operand_type_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           execution_ordered_input_batch.columns[request.value_column]
-              .descriptor.descriptor_uuid.canonical &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+              .descriptor.descriptor_uuid &&
+      nth_operand->descriptor.descriptor_uuid !=
           execution_ordered_input_batch.columns[request.order_term.column]
-              .descriptor.descriptor_uuid.canonical &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
-          request.result_column.descriptor.descriptor_uuid.canonical &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+              .descriptor.descriptor_uuid &&
+      nth_operand->descriptor.descriptor_uuid !=
+          request.result_column.descriptor.descriptor_uuid &&
+      nth_operand->descriptor.descriptor_uuid !=
           request.function_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical != ordering_property_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical != *window_property &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid != ordering_property_uuid &&
+      nth_operand->descriptor.descriptor_uuid != *window_property &&
+      nth_operand->descriptor.descriptor_uuid !=
           request.window_frame_descriptor_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           request.executor_capability_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           request.order_term_binding_evidence_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           request.deterministic_order_evidence_uuid &&
-      nth_operand->descriptor.descriptor_uuid.canonical !=
+      nth_operand->descriptor.descriptor_uuid !=
           request.frame_property_binding_evidence_uuid &&
       decoded_nth.ok() && decoded_nth.value > 0;
   const bool exact_non_nth_operand_state =
@@ -1537,14 +1523,19 @@ ExecuteCanonicalDescriptorNavigationWindowBound(
   }
   std::uint64_t planned_receipt_workspace_bytes = 0;
   std::uint64_t actual_receipt_workspace_bytes = 0;
-  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+  if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
           request.order_term, ordering_property_uuid,
           &planned_receipt_workspace_bytes) ||
-      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
-          request.order_term, ordering_property_uuid,
-          planned_receipt_workspace_bytes,
-          &actual_receipt_workspace_bytes) !=
-          request.order_term_binding_evidence_uuid ||
+      !request.order_term_binding_receipt ||
+      request.order_term_binding_evidence_uuid !=
+          request.order_term_binding_receipt->identity() ||
+      request.order_term_binding_evidence_uuid ==
+          selected_node->executor_capability_uuid ||
+      !request.order_term_binding_receipt->Matches(
+          execution_dag, selected_node->physical_node_id,
+          execution_ordered_input_batch.columns[request.order_term.column],
+          request.order_term, ordering_property_uuid, request.mga_authority,
+          planned_receipt_workspace_bytes, &actual_receipt_workspace_bytes) ||
       actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
@@ -1958,10 +1949,10 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   const bool exact_ordering_property =
       selected_node->required_property_uuids.size() == 1 &&
       IsCanonicalUuid(selected_node->required_property_uuids.front());
-  const std::string ordering_property_uuid =
+  const internal_api::EngineUuid ordering_property_uuid =
       exact_ordering_property
           ? selected_node->required_property_uuids.front()
-          : std::string{};
+          : internal_api::EngineUuid{};
   const auto window_property = std::ranges::find_if(
       selected_node->delivered_property_uuids,
       [&](const auto& property_uuid) {
@@ -1977,7 +1968,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       *window_property != ordering_property_uuid;
   if (input_node == nullptr || input_node->node_kind != PhysicalNodeKind::kSort ||
       input_node->delivered_property_uuids !=
-          std::vector<std::string>{ordering_property_uuid} ||
+          std::vector<internal_api::EngineUuid>{ordering_property_uuid} ||
       !exact_window_property ||
       selected_node->executor_capability_abi_version != 1 ||
       !selected_node->engine_capability_validated ||
@@ -1999,17 +1990,15 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.result_column.descriptor_id);
   const auto canonical_int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto canonical_boolean_type_uuid =
-      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : std::string{};
+      boolean_window ? CanonicalCoreDatatypeUuid("boolean") : internal_api::EngineUuid{};
   const bool value_column_in_range =
       request.value_column.has_value() &&
       *request.value_column < execution_ordered_input_batch.columns.size();
   const auto source_type_uuid =
       value_column_in_range
-          ? CanonicalDescriptorField(
-                execution_ordered_input_batch.columns[*request.value_column]
-                    .descriptor,
-                "type_uuid")
-          : std::optional<std::string_view>{};
+          ? CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[*request.value_column]
+                    .descriptor)
+          : std::optional<internal_api::EngineUuid>{};
   const auto source_nullability =
       value_column_in_range
           ? CanonicalDescriptorField(
@@ -2047,16 +2036,13 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           ? CanonicalCoreDatatypeUuid(
                 execution_ordered_input_batch.columns[*request.value_column]
                     .descriptor.canonical_type_name)
-          : std::string{};
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.result_column.descriptor, "type_uuid");
+          : internal_api::EngineUuid{};
+  const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.result_column.descriptor);
   const auto order_type_uuid =
       request.order_term.column < execution_ordered_input_batch.columns.size()
-          ? CanonicalDescriptorField(
-                execution_ordered_input_batch.columns[request.order_term.column]
-                    .descriptor,
-                "type_uuid")
-          : std::optional<std::string_view>{};
+          ? CanonicalDescriptorTypeIdentity(execution_ordered_input_batch.columns[request.order_term.column]
+                    .descriptor)
+          : std::optional<internal_api::EngineUuid>{};
   const auto* order_descriptor =
       request.order_term.column < execution_ordered_input_batch.columns.size()
           ? &execution_ordered_input_batch
@@ -2065,7 +2051,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
           : nullptr;
   const auto canonical_order_type_uuid =
       order_descriptor == nullptr
-          ? std::string{}
+          ? internal_api::EngineUuid{}
           : CanonicalCoreDatatypeUuid(
                 order_descriptor->canonical_type_name);
   const auto has_auxiliary_type_fields = [](const auto& descriptor) {
@@ -2085,7 +2071,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       }
       return false;
     };
-    return contains_field("collation_uuid") ||
+    return !descriptor.collation_uuid.is_nil() ||
            contains_field("timezone_profile_id") || contains_field("width") ||
            contains_field("precision") || contains_field("scale") ||
            contains_field("element_profile");
@@ -2095,11 +2081,10 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       IsCanonicalBoundedSignedIntegerDescriptor(*order_descriptor) &&
       scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           *order_descriptor) &&
-      !canonical_order_type_uuid.empty() &&
+      !canonical_order_type_uuid.is_nil() &&
       *order_type_uuid == canonical_order_type_uuid &&
       order_descriptor->encoded_descriptor ==
-          "type_uuid=" + canonical_order_type_uuid + ";nullability=" +
-              (execution_ordered_input_batch
+          std::string("nullability=") + (execution_ordered_input_batch
                        .columns[request.order_term.column]
                        .nullable
                    ? "nullable"
@@ -2112,7 +2097,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
          (value_column_in_range && source_type_uuid.has_value() &&
           IsCanonicalUuid(*source_type_uuid) &&
           *source_type_uuid !=
-              "00000000-0000-0000-0000-000000000000" &&
+              internal_api::EngineUuid{{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}} &&
           exact_source_nullability &&
           execution_ordered_input_batch.columns[*request.value_column]
                   .descriptor.descriptor_kind == "scalar" &&
@@ -2130,12 +2115,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
                   .descriptor,
               execution_ordered_input_batch.columns[*request.value_column]
                   .nullable) &&
-          (canonical_source_type_uuid.empty() ||
+          (canonical_source_type_uuid.is_nil() ||
            *source_type_uuid == canonical_source_type_uuid))) &&
         !request.result_column.nullable &&
         request.result_column.descriptor.encoded_descriptor ==
-            "type_uuid=" + canonical_int64_type_uuid +
-                ";nullability=non_null" &&
+            "nullability=non_null" &&
         !has_auxiliary_type_fields(request.result_column.descriptor);
   } else if (value_column_in_range && source_type_uuid.has_value() &&
              boolean_window) {
@@ -2146,16 +2130,13 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         *source_type_uuid == canonical_boolean_type_uuid &&
         execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor.encoded_descriptor ==
-            "type_uuid=" + canonical_boolean_type_uuid +
-                ";nullability=" +
-                (execution_ordered_input_batch
+            std::string("nullability=") + (execution_ordered_input_batch
                          .columns[*request.value_column]
                          .nullable
                      ? "nullable"
                      : "non_null") &&
         request.result_column.descriptor.encoded_descriptor ==
-            "type_uuid=" + canonical_boolean_type_uuid +
-                ";nullability=nullable" &&
+            "nullability=nullable" &&
         CanonicalDerivedDescriptorTypeMatches(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor,
@@ -2173,20 +2154,17 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
         IsCanonicalBoundedSignedIntegerDescriptor(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor) &&
-        !canonical_source_type_uuid.empty() &&
+        !canonical_source_type_uuid.is_nil() &&
         *source_type_uuid == canonical_source_type_uuid &&
         execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor.encoded_descriptor ==
-            "type_uuid=" + canonical_source_type_uuid +
-                ";nullability=" +
-                (execution_ordered_input_batch
+            std::string("nullability=") + (execution_ordered_input_batch
                          .columns[*request.value_column]
                          .nullable
                      ? "nullable"
                      : "non_null") &&
         request.result_column.descriptor.encoded_descriptor ==
-            "type_uuid=" + canonical_int64_type_uuid +
-                ";nullability=nullable" &&
+            "nullability=nullable" &&
         !has_auxiliary_type_fields(
             execution_ordered_input_batch.columns[*request.value_column]
                 .descriptor) &&
@@ -2206,8 +2184,8 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       (!count_star_window && !source_type_uuid.has_value()) ||
       !result_type_uuid.has_value() ||
       !order_type_uuid.has_value() ||
-      canonical_int64_type_uuid.empty() ||
-      (boolean_window && canonical_boolean_type_uuid.empty()) ||
+      canonical_int64_type_uuid.is_nil() ||
+      (boolean_window && canonical_boolean_type_uuid.is_nil()) ||
       *result_type_uuid !=
           (boolean_window ? canonical_boolean_type_uuid
                           : canonical_int64_type_uuid) ||
@@ -2226,9 +2204,9 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       execution_ordered_input_batch.columns[request.order_term.column]);
   if (!order_validation.ok) return refuse(order_validation);
 
-  std::vector<std::string_view> independent_identities{
+  std::vector<internal_api::EngineUuid> independent_identities{
       request.aggregate_descriptor.function_uuid,
-      request.result_column.descriptor.descriptor_uuid.canonical,
+      request.result_column.descriptor.descriptor_uuid,
       *result_type_uuid,
       ordering_property_uuid,
       *window_property,
@@ -2241,15 +2219,15 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
     independent_identities.insert(
         independent_identities.begin() + 1,
         execution_ordered_input_batch.columns[*request.value_column]
-            .descriptor.descriptor_uuid.canonical);
+            .descriptor.descriptor_uuid);
   }
   if (!count_star_window && *source_type_uuid != *result_type_uuid) {
     independent_identities.insert(independent_identities.begin() + 2,
                                   *source_type_uuid);
   }
-  const std::array<std::string_view, 9> order_authority_identities = {
+  const std::array<internal_api::EngineUuid, 9> order_authority_identities = {
       request.aggregate_descriptor.function_uuid,
-      request.result_column.descriptor.descriptor_uuid.canonical,
+      request.result_column.descriptor.descriptor_uuid,
       ordering_property_uuid,
       *window_property,
       request.window_frame_descriptor_uuid,
@@ -2258,7 +2236,7 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
       request.deterministic_order_evidence_uuid,
       request.frame_property_binding_evidence_uuid};
   const auto& order_descriptor_uuid =
-      order_descriptor->descriptor_uuid.canonical;
+      order_descriptor->descriptor_uuid;
   const bool order_identity_collision =
       order_descriptor_uuid == *order_type_uuid ||
       order_descriptor_uuid == *result_type_uuid ||
@@ -2267,11 +2245,11 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
        request.order_term.column != *request.value_column &&
        order_descriptor_uuid ==
            execution_ordered_input_batch.columns[*request.value_column]
-               .descriptor.descriptor_uuid.canonical) ||
+               .descriptor.descriptor_uuid) ||
       (!count_star_window &&
        *order_type_uuid ==
            execution_ordered_input_batch.columns[*request.value_column]
-               .descriptor.descriptor_uuid.canonical) ||
+               .descriptor.descriptor_uuid) ||
       std::ranges::any_of(order_authority_identities, [&](const auto identity) {
         return order_descriptor_uuid == identity ||
                *order_type_uuid == identity;
@@ -2293,14 +2271,19 @@ ExecuteCanonicalDescriptorAggregateWindowBound(
   }
   std::uint64_t planned_receipt_workspace_bytes = 0;
   std::uint64_t actual_receipt_workspace_bytes = 0;
-  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+  if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
           request.order_term, ordering_property_uuid,
           &planned_receipt_workspace_bytes) ||
-      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
-          request.order_term, ordering_property_uuid,
-          planned_receipt_workspace_bytes,
-          &actual_receipt_workspace_bytes) !=
-          request.order_term_binding_evidence_uuid ||
+      !request.order_term_binding_receipt ||
+      request.order_term_binding_evidence_uuid !=
+          request.order_term_binding_receipt->identity() ||
+      request.order_term_binding_evidence_uuid ==
+          selected_node->executor_capability_uuid ||
+      !request.order_term_binding_receipt->Matches(
+          execution_dag, selected_node->physical_node_id,
+          execution_ordered_input_batch.columns[request.order_term.column],
+          request.order_term, ordering_property_uuid, request.mga_authority,
+          planned_receipt_workspace_bytes, &actual_receipt_workspace_bytes) ||
       actual_receipt_workspace_bytes != planned_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-WINDOW-PROPERTY-BINDING",
@@ -2673,7 +2656,7 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
   if (request.function_abi_version != 1 ||
       request.builtin_id != "sb.window.lag" ||
       request.function_uuid !=
-          "019de5fc-2400-782c-8436-9ac310301738") {
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x2c,0x84,0x36,0x9a,0xc3,0x10,0x30,0x17,0x38}}) {
     CanonicalDescriptorLagWindowResult result;
     result.diagnostic = Refusal(
         "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
@@ -2690,7 +2673,7 @@ CanonicalDescriptorLagWindowResult ExecuteCanonicalDescriptorLagWindow(
   if (request.function_abi_version != 1 ||
       request.builtin_id != "sb.window.lag" ||
       request.function_uuid !=
-          "019de5fc-2400-782c-8436-9ac310301738") {
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x2c,0x84,0x36,0x9a,0xc3,0x10,0x30,0x17,0x38}}) {
     CanonicalDescriptorLagWindowResult result;
     result.diagnostic = Refusal(
         "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
@@ -2711,17 +2694,17 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   const bool cume_dist =
       request.builtin_id == "sb.window.cume_dist" ||
       request.function_uuid ==
-          "019de5fc-2400-721c-be64-2568b64a02b9";
+          internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x1c,0xbe,0x64,0x25,0x68,0xb6,0x4a,0x02,0xb9}};
   const bool percent_rank =
       !cume_dist &&
       (request.builtin_id == "sb.window.percent_rank" ||
        request.function_uuid ==
-           "019de5fc-2400-7d86-86fe-96f3f27b5dd6");
+           internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x86,0x86,0xfe,0x96,0xf3,0xf2,0x7b,0x5d,0xd6}});
   const bool dense_rank =
       !cume_dist && !percent_rank &&
       (request.builtin_id == "sb.window.dense_rank" ||
        request.function_uuid ==
-           "019de5fc-2400-741d-bef0-f079fd3ba494");
+           internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x74,0x1d,0xbe,0xf0,0xf0,0x79,0xfd,0x3b,0xa4,0x94}});
   const bool real_ranking = percent_rank || cume_dist;
   const std::string_view ranking_name =
       cume_dist
@@ -2740,13 +2723,13 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
           : (percent_rank
                  ? "sb.window.percent_rank"
                  : (dense_rank ? "sb.window.dense_rank" : "sb.window.rank"));
-  const std::string_view expected_function_uuid =
+  const internal_api::EngineUuid expected_function_uuid =
       cume_dist
-          ? "019de5fc-2400-721c-be64-2568b64a02b9"
+          ? internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x1c,0xbe,0x64,0x25,0x68,0xb6,0x4a,0x02,0xb9}}
           : (percent_rank
-                 ? "019de5fc-2400-7d86-86fe-96f3f27b5dd6"
-                 : (dense_rank ? "019de5fc-2400-741d-bef0-f079fd3ba494"
-                               : "019de5fc-2400-7b94-870d-0dd789ca70ab"));
+                 ? internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x86,0x86,0xfe,0x96,0xf3,0xf2,0x7b,0x5d,0xd6}}
+                 : (dense_rank ? internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x74,0x1d,0xbe,0xf0,0xf0,0x79,0xfd,0x3b,0xa4,0x94}}
+                               : internal_api::EngineUuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7b,0x94,0x87,0x0d,0x0d,0xd7,0x89,0xca,0x70,0xab}}));
   const std::string_view expected_result_type =
       real_ranking ? "real64" : "int64";
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
@@ -2800,10 +2783,10 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   const bool exact_ordering_property =
       selected_node->required_property_uuids.size() == 1 &&
       IsCanonicalUuid(selected_node->required_property_uuids.front());
-  const std::string ordering_property_uuid =
+  const internal_api::EngineUuid ordering_property_uuid =
       exact_ordering_property
           ? selected_node->required_property_uuids.front()
-          : std::string{};
+          : internal_api::EngineUuid{};
   const auto window_property = std::ranges::find_if(
       selected_node->delivered_property_uuids,
       [&](const auto& property_uuid) {
@@ -2820,7 +2803,7 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   if (input_node == nullptr ||
       input_node->node_kind != PhysicalNodeKind::kSort ||
       input_node->delivered_property_uuids !=
-          std::vector<std::string>{ordering_property_uuid} ||
+          std::vector<internal_api::EngineUuid>{ordering_property_uuid} ||
       !exact_window_property ||
       request.function_abi_version != 1 ||
       request.builtin_id != expected_builtin ||
@@ -2847,8 +2830,7 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   std::vector<std::uint32_t> output_descriptor_ids =
       input_node->output_descriptor_ids;
   output_descriptor_ids.push_back(request.ranking_column.descriptor_id);
-  const auto result_type_uuid = CanonicalDescriptorField(
-      request.ranking_column.descriptor, "type_uuid");
+  const auto result_type_uuid = CanonicalDescriptorTypeIdentity(request.ranking_column.descriptor);
   const auto expected_result_type_uuid =
       CanonicalCoreDatatypeUuid(expected_result_type);
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
@@ -2859,22 +2841,21 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
           expected_result_type ||
       !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(
           request.ranking_column.descriptor) ||
-      !result_type_uuid.has_value() || expected_result_type_uuid.empty() ||
+      !result_type_uuid.has_value() || expected_result_type_uuid.is_nil() ||
       *result_type_uuid != expected_result_type_uuid ||
       request.ranking_column.descriptor.encoded_descriptor !=
-          "type_uuid=" + expected_result_type_uuid +
-              ";nullability=non_null" ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+          "nullability=non_null" ||
+      request.ranking_column.descriptor.descriptor_uuid ==
           *result_type_uuid ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid ==
           request.function_uuid ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid ==
           ordering_property_uuid ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid ==
           *window_property ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid ==
           request.order_term_binding_evidence_uuid ||
-      request.ranking_column.descriptor.descriptor_uuid.canonical ==
+      request.ranking_column.descriptor.descriptor_uuid ==
           request.deterministic_order_evidence_uuid ||
       request.order_term.column >=
           execution_ordered_input_batch.columns.size()) {
@@ -2883,19 +2864,18 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
         std::string(ranking_name) +
             " output or order descriptor is not bound"));
   }
-  const std::array<std::string_view, 7> ranking_identity_domain{
+  const std::array<internal_api::EngineUuid, 8> ranking_identity_domain{
       request.function_uuid,
-      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      request.order_term_binding_evidence_uuid,
+      request.ranking_column.descriptor.descriptor_uuid,
       *result_type_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
       request.deterministic_order_evidence_uuid};
-  const std::unordered_set<std::string_view> distinct_ranking_identities(
+  const std::set<internal_api::EngineUuid> distinct_ranking_identities(
       ranking_identity_domain.begin(), ranking_identity_domain.end());
-  if (selected_node->executor_capability_uuid !=
-          request.order_term_binding_evidence_uuid ||
-      distinct_ranking_identities.size() != ranking_identity_domain.size() ||
+  if (distinct_ranking_identities.size() != ranking_identity_domain.size() ||
       std::ranges::any_of(ranking_identity_domain, [](const auto identity) {
         return !IsCanonicalUuid(identity);
       })) {
@@ -2908,12 +2888,13 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
       execution_ordered_input_batch.columns[request.order_term.column]
           .descriptor;
   const auto order_type_uuid =
-      CanonicalDescriptorField(order_descriptor, "type_uuid");
+      CanonicalDescriptorTypeIdentity(order_descriptor);
   const auto& order_descriptor_uuid =
-      order_descriptor.descriptor_uuid.canonical;
-  const std::array<std::string_view, 6> forbidden_order_type_roles{
+      order_descriptor.descriptor_uuid;
+  const std::array<internal_api::EngineUuid, 7> forbidden_order_type_roles{
       request.function_uuid,
-      request.ranking_column.descriptor.descriptor_uuid.canonical,
+      request.order_term_binding_evidence_uuid,
+      request.ranking_column.descriptor.descriptor_uuid,
       ordering_property_uuid,
       *window_property,
       selected_node->executor_capability_uuid,
@@ -2990,7 +2971,7 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
   }
 
   std::uint64_t binding_receipt_workspace_bytes = 0;
-  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+  if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
           request.order_term, ordering_property_uuid,
           &binding_receipt_workspace_bytes)) {
     return refuse(Refusal(
@@ -3039,18 +3020,18 @@ CanonicalDescriptorPeerRankingResult ExecuteCanonicalDescriptorPeerRankingBound(
             " runtime materialization exceeds its selected node grant"));
   }
   std::uint64_t actual_binding_receipt_workspace_bytes = 0;
-  const auto expected_order_term_binding_evidence_uuid =
-      ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
-          request.order_term, ordering_property_uuid,
-          binding_receipt_workspace_bytes,
-          &actual_binding_receipt_workspace_bytes);
-  if (expected_order_term_binding_evidence_uuid.empty() ||
-      actual_binding_receipt_workspace_bytes !=
-          binding_receipt_workspace_bytes ||
-      selected_node->executor_capability_uuid !=
-          expected_order_term_binding_evidence_uuid ||
+  if (!request.order_term_binding_receipt ||
       request.order_term_binding_evidence_uuid !=
-          selected_node->executor_capability_uuid) {
+          request.order_term_binding_receipt->identity() ||
+      request.order_term_binding_evidence_uuid ==
+          selected_node->executor_capability_uuid ||
+      !request.order_term_binding_receipt->Matches(
+          execution_dag, selected_node->physical_node_id,
+          execution_ordered_input_batch.columns[request.order_term.column],
+          request.order_term, ordering_property_uuid, request.mga_authority,
+          binding_receipt_workspace_bytes,
+          &actual_binding_receipt_workspace_bytes) ||
+      actual_binding_receipt_workspace_bytes != binding_receipt_workspace_bytes) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-WINDOW-ORDER-REQUIRED-V1",
         std::string(ranking_name) +

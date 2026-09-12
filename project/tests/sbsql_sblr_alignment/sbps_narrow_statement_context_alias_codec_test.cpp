@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/parser_server_ipc/sbps_narrow_statement_context_alias_codec.hpp"
+#include "hash_digest.hpp"
 
 #include <array>
+#include <algorithm>
+#include <iostream>
 #include <cstdlib>
 #include <cstdint>
 #include <stdexcept>
@@ -25,6 +28,15 @@ static_assert(ipc::kPsStatementContextSourceResultSchemaV11 == 7032);
 
 void Require(bool condition, const std::string& detail) {
   if (!condition) throw std::runtime_error(detail);
+}
+
+void HashDiagnosticRow(std::vector<byte>* bytes, std::size_t at) {
+  constexpr std::string_view domain="ScratchBird.DiagnosticIdentityRegistryRow.V1";
+  std::vector<byte> preimage(domain.begin(),domain.end());
+  preimage.insert(preimage.end(),bytes->begin()+at,bytes->begin()+at+40);
+  const auto digest=scratchbird::core::hash::ComputeSha256Digest(preimage);
+  Require(digest.ok()&&digest.digest_bytes==32,"independent row hash failed");
+  std::copy(digest.digest.begin(),digest.digest.end(),bytes->begin()+at+40);
 }
 
 ipc::PsStatementContextUuidV1 Uuid(std::uint16_t discriminator) {
@@ -207,13 +219,14 @@ ResultFixture Schema7032V71Fixture() {
           "schema7032 v71 extension prefix fixture drifted");
   PutUuid(&out, Uuid(23));
   U64(&out, 6);
-  U32(&out, 0);
+  U32(&out, 4);
   out.push_back(1);
   out.push_back(1);
   U16(&out, 0);
   U32(&out, 4);
   U32(&out, 0);
-  out.insert(out.end(), 32, 0x5a);
+  out.insert(out.end(), 32, 0);
+  HashDiagnosticRow(&out,fixture.extension+260);
   fixture.trailer = out.size();
 
   PutUuid(&out, Uuid(24));
@@ -313,6 +326,37 @@ void ResultAliasContract() {
           "7710 summary drifted");
 
   auto alias_drift = fixture.bytes;
+  const auto row_at=fixture.extension+260;
+  for(std::size_t offset=0;offset<72;++offset) {
+    auto corrupt=fixture.bytes;corrupt[row_at+offset]^=1;
+    const auto rejected=ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(corrupt,corrupt);
+    Require(!rejected.ok()&&rejected.canonical_payload.empty(),"7710 accepted corrupted diagnostic row");
+  }
+  for(unsigned variant=0;variant<5;++variant) {
+    auto invalid=fixture.bytes;
+    if(variant==0)invalid[row_at+6]=0x40;
+    if(variant==1)invalid[row_at+24]=0;
+    if(variant==2)invalid[row_at+28]=13;
+    if(variant==3)invalid[row_at+32]=146;
+    if(variant==4)invalid[fixture.extension+228+6]=0x40;
+    HashDiagnosticRow(&invalid,row_at);
+    const auto rejected=ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(invalid,invalid);
+    Require(!rejected.ok()&&rejected.canonical_payload.empty(),"7710 accepted hashed invalid diagnostic shape");
+  }
+  auto gapped=fixture.bytes;
+  const std::vector<byte> second(gapped.begin()+row_at,gapped.begin()+row_at+72);
+  gapped.insert(gapped.begin()+row_at+72,second.begin(),second.end());
+  gapped[fixture.extension+252]=2;
+  gapped[row_at+72+15]=24;gapped[row_at+72+24]=8;
+  HashDiagnosticRow(&gapped,row_at+72);
+  Require(ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(gapped,gapped).ok(),
+          "7710 rejected valid gapped registry ranks");
+  auto duplicate=gapped;duplicate[row_at+72+15]=23;HashDiagnosticRow(&duplicate,row_at+72);
+  Require(!ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(duplicate,duplicate).ok(),
+          "7710 accepted duplicate UUID/generation");
+  auto descending=gapped;descending[row_at+72+24]=2;HashDiagnosticRow(&descending,row_at+72);
+  Require(!ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(descending,descending).ok(),
+          "7710 accepted descending registry ranks");
   alias_drift.back() ^= 1;
   const auto mismatched =
       ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(
@@ -355,7 +399,7 @@ int main() {
     RequestAliasContract();
     ResultAliasContract();
   } catch (const std::exception& error) {
-    (void)error;
+    std::cerr << error.what() << '\n';
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

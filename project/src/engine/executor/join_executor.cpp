@@ -9,6 +9,7 @@
 #include "descriptor_value_runtime.hpp"
 
 #include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -50,9 +51,9 @@ bool AccountJoinString(const std::string& value,
 bool AccountJoinDescriptor(const internal_api::EngineDescriptor& descriptor,
                            const std::uint64_t limit,
                            std::uint64_t* total) {
-  return AccountJoinString(descriptor.descriptor_uuid.canonical, limit,
-                           total) &&
-         AccountJoinString(descriptor.descriptor_kind, limit, total) &&
+  // Binary UUID slots are inline in the containing object, already charged
+  // by its sizeof. Only dynamic descriptor storage is additional here.
+  return AccountJoinString(descriptor.descriptor_kind, limit, total) &&
          AccountJoinString(descriptor.canonical_type_name, limit, total) &&
          AccountJoinString(descriptor.encoded_descriptor, limit, total);
 }
@@ -68,43 +69,8 @@ bool AccountJoinValue(const internal_api::EngineTypedValue& value,
                           limit, total);
 }
 
-bool CanonicalJoinUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
-}
-
-std::optional<std::string_view> CanonicalJoinDescriptorField(
-    const internal_api::EngineDescriptor& descriptor,
-    const std::string_view key) {
-  const auto prefix = std::string(key) + "=";
-  std::optional<std::string_view> value;
-  std::size_t begin = 0;
-  while (begin <= descriptor.encoded_descriptor.size()) {
-    const auto end = descriptor.encoded_descriptor.find(';', begin);
-    const auto field =
-        std::string_view(descriptor.encoded_descriptor)
-            .substr(begin, end == std::string::npos ? std::string::npos
-                                                    : end - begin);
-    if (field.starts_with(prefix)) {
-      if (value.has_value() || field.size() == prefix.size()) {
-        return std::nullopt;
-      }
-      value = field.substr(prefix.size());
-    }
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  return value;
+bool CanonicalJoinUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 template <typename Integer>
@@ -123,9 +89,9 @@ bool ParseCanonicalJoinUnsigned(const std::string_view text,
 }
 
 struct CanonicalBooleanJoinAliasCarrierV1 {
-  std::string_view datatype_descriptor_uuid;
+  internal_api::EngineUuid datatype_descriptor_uuid{};
   std::uint64_t datatype_descriptor_generation = 0;
-  std::string_view type_uuid;
+  internal_api::EngineUuid type_uuid{};
   std::uint64_t type_generation = 0;
   std::string_view codec_id;
   std::uint16_t codec_version = 0;
@@ -139,15 +105,16 @@ bool DecodeExactCanonicalBooleanJoinAliasCarrierV1(
     CanonicalBooleanJoinAliasCarrierV1* carrier) {
   if (carrier == nullptr ||
       !internal_api::QowCanonicalDescriptorIdentityV1(column.descriptor) ||
+      !column.descriptor.collation_uuid.is_nil() ||
       column.descriptor.descriptor_kind != "scalar" ||
       column.descriptor.canonical_type_name != "boolean") {
     return false;
   }
 
   CanonicalBooleanJoinAliasCarrierV1 decoded;
-  bool datatype_descriptor_uuid_seen = false;
+  decoded.datatype_descriptor_uuid = column.descriptor.descriptor_uuid;
+  decoded.type_uuid = column.descriptor.type_uuid;
   bool datatype_descriptor_generation_seen = false;
-  bool type_uuid_seen = false;
   bool type_generation_seen = false;
   bool codec_id_seen = false;
   bool codec_version_seen = false;
@@ -169,13 +136,7 @@ bool DecodeExactCanonicalBooleanJoinAliasCarrierV1(
     }
     const auto key = field.substr(0, separator);
     const auto value = field.substr(separator + 1);
-    if (key == "datatype_descriptor_uuid") {
-      if (datatype_descriptor_uuid_seen || !CanonicalJoinUuid(value)) {
-        return false;
-      }
-      datatype_descriptor_uuid_seen = true;
-      decoded.datatype_descriptor_uuid = value;
-    } else if (key == "datatype_descriptor_generation") {
+    if (key == "datatype_descriptor_generation") {
       if (datatype_descriptor_generation_seen ||
           !ParseCanonicalJoinUnsigned(
               value, &decoded.datatype_descriptor_generation) ||
@@ -183,10 +144,6 @@ bool DecodeExactCanonicalBooleanJoinAliasCarrierV1(
         return false;
       }
       datatype_descriptor_generation_seen = true;
-    } else if (key == "type_uuid") {
-      if (type_uuid_seen || !CanonicalJoinUuid(value)) return false;
-      type_uuid_seen = true;
-      decoded.type_uuid = value;
     } else if (key == "type_generation") {
       if (type_generation_seen ||
           !ParseCanonicalJoinUnsigned(value, &decoded.type_generation) ||
@@ -232,29 +189,25 @@ bool DecodeExactCanonicalBooleanJoinAliasCarrierV1(
     if (begin == column.descriptor.encoded_descriptor.size()) return false;
   }
 
-  if (!datatype_descriptor_uuid_seen ||
-      !datatype_descriptor_generation_seen || !type_uuid_seen ||
+  if (!datatype_descriptor_generation_seen ||
       !type_generation_seen || !codec_id_seen || !codec_version_seen ||
       !codec_generation_seen || !null_encoding_seen || !nullability_seen ||
       decoded.datatype_descriptor_uuid !=
-          column.descriptor.descriptor_uuid.canonical ||
+          column.descriptor.descriptor_uuid ||
       decoded.datatype_descriptor_uuid != decoded.type_uuid ||
       decoded.nullable != column.nullable || decoded.null_encoding != 1 ||
       !scratchbird::core::datatypes::
           IsExactCanonicalBooleanDescriptorTypeAliasV1(
-              std::string(decoded.datatype_descriptor_uuid),
+              decoded.datatype_descriptor_uuid,
               decoded.datatype_descriptor_generation,
-              std::string(decoded.type_uuid), decoded.type_generation,
+              decoded.type_uuid, decoded.type_generation,
               std::string(decoded.codec_id), decoded.codec_version,
               decoded.codec_generation, true)) {
     return false;
   }
   const auto canonical =
-      "datatype_descriptor_uuid=" +
-      std::string(decoded.datatype_descriptor_uuid) +
-      ";datatype_descriptor_generation=" +
+      "datatype_descriptor_generation=" +
       std::to_string(decoded.datatype_descriptor_generation) +
-      ";type_uuid=" + std::string(decoded.type_uuid) +
       ";type_generation=" + std::to_string(decoded.type_generation) +
       ";codec_id=" + std::string(decoded.codec_id) +
       ";codec_version=" + std::to_string(decoded.codec_version) +
@@ -273,28 +226,27 @@ DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
     const DescriptorBatch& right_batch) {
   struct ObservedJoinDescriptorRoleV1 {
     const ExecutorColumnDescriptor* column = nullptr;
-    std::string_view type_uuid;
+    internal_api::EngineUuid type_uuid;
   };
-  std::unordered_set<std::string_view> descriptor_uuids;
-  std::unordered_set<std::string_view> type_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> descriptor_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> type_uuids;
   std::vector<ObservedJoinDescriptorRoleV1> observed_roles;
   const auto collect = [&](const DescriptorBatch& batch) {
     for (std::size_t column = 0; column < batch.columns.size(); ++column) {
       const auto& observed_column = batch.columns[column];
       const auto& descriptor = observed_column.descriptor;
-      const auto type_uuid =
-          CanonicalJoinDescriptorField(descriptor, "type_uuid");
+      const auto& type_uuid = descriptor.type_uuid;
       if (!internal_api::QowCanonicalDescriptorIdentityV1(descriptor) ||
-          !type_uuid.has_value() || !CanonicalJoinUuid(*type_uuid)) {
+          !CanonicalJoinUuid(type_uuid)) {
         auto diagnostic = Refusal(
             "SBLR.PLAN_TREE.INVALID_HANDLE",
             "join descriptor or type identity is unresolved");
         diagnostic.column_index = column;
         return diagnostic;
       }
-      descriptor_uuids.insert(descriptor.descriptor_uuid.canonical);
-      type_uuids.insert(*type_uuid);
-      observed_roles.push_back({&observed_column, *type_uuid});
+      descriptor_uuids.insert(descriptor.descriptor_uuid);
+      type_uuids.insert(type_uuid);
+      observed_roles.push_back({&observed_column, type_uuid});
     }
     return DescriptorRuntimeDiagnostic{};
   };
@@ -306,7 +258,7 @@ DescriptorRuntimeDiagnostic ValidateCanonicalJoinDescriptorRoleDomains(
     if (!type_uuids.contains(descriptor_uuid)) continue;
     const bool exact_boolean_alias =
         std::ranges::all_of(observed_roles, [&](const auto& observed) {
-          if (observed.column->descriptor.descriptor_uuid.canonical !=
+          if (observed.column->descriptor.descriptor_uuid !=
                   descriptor_uuid &&
               observed.type_uuid != descriptor_uuid) {
             return true;

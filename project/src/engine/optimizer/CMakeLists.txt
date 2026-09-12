@@ -93,6 +93,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     target_include_directories(sb_qow_optimizer_feedback PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    target_link_libraries(sb_qow_optimizer_feedback PUBLIC sb_qow_canonical_logical_graph)
   endif()
   return()
 endif()

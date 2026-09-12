@@ -24,35 +24,35 @@ EngineApiDiagnostic Refuse(std::string detail,
 }
 
 auto ContextKey(const EngineRequestContext& c) {
-  return std::tie(c.database_path, c.database_uuid.canonical,
-      c.session_uuid.canonical, c.principal_uuid.canonical,
-      c.transaction_uuid.canonical, c.local_transaction_id,
-      c.statement_uuid.canonical, c.statement_receipt_uuid.canonical,
-      c.statement_snapshot_uuid.canonical, c.statement_metadata_snapshot_uuid.canonical,
+  return std::tie(c.database_path, c.database_uuid,
+      c.session_uuid, c.principal_uuid,
+      c.transaction_uuid, c.local_transaction_id,
+      c.statement_uuid, c.statement_receipt_uuid,
+      c.statement_snapshot_uuid, c.statement_metadata_snapshot_uuid,
       c.statement_snapshot_generation, c.snapshot_visible_through_local_transaction_id,
       c.statement_metadata_snapshot_visible_through_local_transaction_id,
       c.statement_metadata_snapshot_active_excluded_local_transaction_ids,
       c.statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids,
       c.statement_metadata_snapshot_engine_owned, c.catalog_generation_id,
-      c.catalog_epoch_uuid.canonical, c.current_role_uuid.canonical,
-      c.transaction_isolation_level, c.resource_admission_uuid.canonical,
-      c.transaction_policy_snapshot_uuid.canonical,
+      c.catalog_epoch_uuid, c.current_role_uuid,
+      c.transaction_isolation_level, c.resource_admission_uuid,
+      c.transaction_policy_snapshot_uuid,
       c.transaction_policy_snapshot_generation, c.read_only_mode,
       c.cluster_transaction_active, c.route_fence_present,
-      c.datatype_catalog_snapshot_uuid.canonical, c.datatype_catalog_generation,
+      c.datatype_catalog_snapshot_uuid, c.datatype_catalog_generation,
       c.datatype_registry_generation, c.resource_epoch, c.security_epoch,
       c.security_context_present, c.authorization_context.present,
-      c.authorization_context.authority_uuid.canonical,
+      c.authorization_context.authority_uuid,
       c.authorization_context.security_context_generation,
-      c.authorization_context.principal_uuid.canonical,
+      c.authorization_context.principal_uuid,
       c.authorization_context.catalog_generation_id,
       c.authorization_context.security_epoch, c.authorization_context.policy_epoch);
 }
 
 auto ResourceKey(const EngineResolvedResourceDescriptor& r) {
   return std::tie(r.present, r.resource_family, r.canonical_name,
-      r.resource_uuid.canonical, r.parent_resource_uuid.canonical,
-      r.parent_canonical_name, r.default_collation_uuid.canonical,
+      r.resource_uuid, r.parent_resource_uuid,
+      r.parent_canonical_name, r.default_collation_uuid,
       r.default_collation_name, r.seed_pack_name, r.seed_pack_version,
       r.resource_epoch, r.family_epoch, r.family_version,
       r.min_bytes, r.max_bytes, r.variable_width, r.default_for_parent,
@@ -76,13 +76,13 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   }
   if (!context.security_context_present || !context.authorization_context.present ||
       !context.statement_metadata_snapshot_engine_owned ||
-      !CanonicalNonNilMigrationUuid(context.statement_metadata_snapshot_uuid.canonical) ||
-      !CanonicalNonNilMigrationUuid(context.statement_uuid.canonical) ||
-      !CanonicalNonNilMigrationUuid(context.statement_receipt_uuid.canonical) ||
-      !CanonicalNonNilMigrationUuid(context.statement_snapshot_uuid.canonical) ||
-      !CanonicalNonNilMigrationUuid(context.authorization_context.authority_uuid.canonical) ||
+      !CanonicalNonNilMigrationUuid(context.statement_metadata_snapshot_uuid) ||
+      !CanonicalNonNilMigrationUuid(context.statement_uuid) ||
+      !CanonicalNonNilMigrationUuid(context.statement_receipt_uuid) ||
+      !CanonicalNonNilMigrationUuid(context.statement_snapshot_uuid) ||
+      !CanonicalNonNilMigrationUuid(context.authorization_context.authority_uuid) ||
       context.authorization_context.security_context_generation == 0 ||
-      context.authorization_context.principal_uuid.canonical != context.principal_uuid.canonical ||
+      context.authorization_context.principal_uuid != context.principal_uuid ||
       context.authorization_context.catalog_generation_id != context.catalog_generation_id ||
       context.authorization_context.security_epoch != context.security_epoch ||
       context.authorization_context.policy_epoch == 0 || context.security_epoch == 0 ||
@@ -104,7 +104,7 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   }
   const auto column = std::find_if(relation.descriptor.columns.begin(),
       relation.descriptor.columns.end(), [&](const auto& c) {
-        return c.column_uuid.canonical == ContextualUuidTextV2(key.column_uuid) &&
+        return c.column_uuid == ContextualUuidTextV2(key.column_uuid) &&
                c.ordinal == key.column_ordinal &&
                c.column_generation == expected_column_generation;
       });
@@ -158,13 +158,13 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   if (contextual && (descriptor.resource_epoch != context.resource_epoch ||
       !cs.present || !co.present || cs.resource_family != "charset" ||
       co.resource_family != "collation" ||
-      cs.resource_uuid.canonical != ContextualUuidTextV2(descriptor.charset_uuid) ||
-      co.resource_uuid.canonical != ContextualUuidTextV2(descriptor.collation_uuid) ||
+      cs.resource_uuid != ContextualUuidTextV2(descriptor.charset_uuid) ||
+      co.resource_uuid != ContextualUuidTextV2(descriptor.collation_uuid) ||
       cs.resource_epoch != context.resource_epoch ||
       co.resource_epoch != context.resource_epoch ||
       cs.family_epoch != descriptor.charset_generation ||
       co.family_epoch != descriptor.collation_generation ||
-      co.parent_resource_uuid.canonical != cs.resource_uuid.canonical ||
+      co.parent_resource_uuid != cs.resource_uuid ||
       co.parent_canonical_name != cs.canonical_name ||
       co.canonical_name.empty() || co.seed_pack_name.empty() || co.seed_pack_version.empty())) {
     result.diagnostic = Refuse("sealed descriptor and live locale resource identity differ",
@@ -175,7 +175,7 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   // a width-based guess. Other charsets need a separately admitted conversion.
   if (!cs.present || cs.resource_family != "charset" ||
       cs.resource_epoch != context.resource_epoch || cs.family_epoch == 0 ||
-      !CanonicalNonNilMigrationUuid(cs.resource_uuid.canonical) ||
+      !CanonicalNonNilMigrationUuid(cs.resource_uuid) ||
       cs.seed_pack_name.empty() || cs.seed_pack_version.empty() ||
       cs.canonical_name != "UTF-8" || cs.min_bytes != 1 || cs.max_bytes != 4 ||
       !cs.variable_width) {

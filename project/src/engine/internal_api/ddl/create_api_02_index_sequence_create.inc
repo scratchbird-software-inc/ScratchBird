@@ -14,7 +14,7 @@
   }
   if (exact_recovery_identity) {
     if (mutation_audit_recovery_uuid !=
-        request.recovery_operation_uuid.canonical) {
+        request.recovery_operation_uuid) {
       return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
           request.context,
           "ddl.create_schema",
@@ -24,15 +24,15 @@
     }
     schema_extension_payload.push_back(
         "catalog_ddl_recovery_operation=" +
-        request.recovery_operation_uuid.canonical);
+        request.recovery_operation_uuid);
     schema_extension_payload.push_back(
         "catalog_ddl_result_row_uuid=" +
-        request.requested_catalog_row_uuid.canonical);
+        request.requested_catalog_row_uuid);
     schema_extension_payload.push_back(
-        "catalog_ddl_mutation_uuid=" + request.mutation_uuid.canonical);
+        "catalog_ddl_mutation_uuid=" + request.mutation_uuid);
     schema_extension_payload.push_back(
         "catalog_ddl_statement_publication_barrier=" +
-        request.statement_publication_barrier_uuid.canonical);
+        request.statement_publication_barrier_uuid);
   }
   record.payload = SchemaTreePayload(record.parent_schema_uuid, record.localized_names, record.localized_comments);
   for (const auto& extension : schema_extension_payload) {
@@ -40,7 +40,9 @@
     record.payload.append(extension);
   }
   const auto existing_schema = FindVisibleSchemaTreeRecord(
-      request.context, schema_uuid, request.context.local_transaction_id);
+      request.context, schema_uuid, request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+      request.context, "ddl.create_schema", schema_diagnostic);
   if (existing_schema.has_value()) {
     const bool exact_replay =
         exact_recovery_identity &&
@@ -135,11 +137,11 @@
     }
   }
   auto result = MakeApiBehaviorSuccess<EngineCreateSchemaResult>(request.context, "ddl.create_schema");
-  result.primary_object.uuid.canonical = record.schema_uuid;
+  result.primary_object.uuid = record.schema_uuid;
   result.primary_object.object_kind = "schema";
-  result.catalog_row_uuid.canonical =
+  result.catalog_row_uuid =
       exact_recovery_identity
-          ? request.requested_catalog_row_uuid.canonical
+          ? request.requested_catalog_row_uuid
           : GenerateCrudEngineUuid("row");
   AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.create_schema");
   AddApiBehaviorEvidence(&result, "schema", record.schema_uuid);
@@ -157,7 +159,7 @@
                           "ddl.create_schema",
                           "schema",
                           record.schema_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "schema_tree");
   return result;
 }
@@ -190,8 +192,8 @@ EngineCreateSynonymResult EngineCreateSynonym(const EngineCreateSynonymRequest& 
     AddDdlPublicationResult(&result,
                             kOperation,
                             "synonym",
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "catalog.synonym");
   }
   return result;
@@ -210,9 +212,9 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "parent_schema_not_visible"));
   }
-  std::string target_schema_uuid = request.target_schema.uuid.canonical;
+  std::string target_schema_uuid = request.target_schema.uuid;
   if (target_schema_uuid.empty()) {
-    target_schema_uuid = request.context.current_schema_uuid.canonical;
+    target_schema_uuid = request.context.current_schema_uuid;
   }
   if (target_schema_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
@@ -220,9 +222,12 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "target_schema_uuid_required"));
   }
-  if (!FindVisibleSchemaTreeRecord(request.context,
-                                   target_schema_uuid,
-                                   request.context.local_transaction_id)) {
+  EngineApiDiagnostic schema_diagnostic;
+  const auto target_schema = FindVisibleSchemaTreeRecord(request.context, target_schema_uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+      request.context, "ddl.create_table", schema_diagnostic);
+  if (!target_schema) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,
         "ddl.create_table",
@@ -302,7 +307,9 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       domain_uuid = ResolveDomainTypeUuidFromColumnDescriptor(request,
                                                              column_descriptor,
                                                              &qualified_domain_lookup_required,
-                                                             &requested_domain_type_name);
+                                                             &requested_domain_type_name, schema_diagnostic);
+      if (schema_diagnostic.error) return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context, "ddl.create_table", schema_diagnostic);
     }
     if (domain_uuid.empty() && qualified_domain_lookup_required) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
@@ -468,14 +475,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     // inferred into this registry from a name, width, enum, or random UUID.
     const auto identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            request.context.datatype_catalog_snapshot_uuid.canonical,
+            request.context.datatype_catalog_snapshot_uuid,
             request.context.datatype_catalog_generation,
             request.context.datatype_registry_generation,
             engine_datatype_descriptor_uuid, 1);
     if (persist_full_registry_tuple) {
       if (!identity.ok ||
           identity.row.catalog_snapshot_uuid !=
-              request.context.datatype_catalog_snapshot_uuid.canonical ||
+              request.context.datatype_catalog_snapshot_uuid ||
           identity.row.catalog_generation !=
               request.context.datatype_catalog_generation ||
           identity.row.registry_generation !=
@@ -894,7 +901,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   created_table.temporary_scope = temporary_options.temporary ? temporary_options.scope : "";
   created_table.temporary_session_uuid =
       temporary_options.temporary && temporary_options.scope != "global"
-          ? request.context.session_uuid.canonical
+          ? request.context.session_uuid
           : "";
   created_table.on_commit_action = temporary_options.temporary ? temporary_options.on_commit_action : "";
   std::vector<EngineLocalizedName> table_names = request.table_names.empty() ? request.localized_names : request.table_names;
@@ -902,14 +909,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   EngineCatalogCreateObjectRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = "ddl.create_table";
-  catalog_request.target_object.uuid.canonical = table_uuid;
+  catalog_request.target_object.uuid = table_uuid;
   catalog_request.target_object.object_kind = "table";
-  catalog_request.target_schema.uuid.canonical = target_schema_uuid;
+  catalog_request.target_schema.uuid = target_schema_uuid;
   catalog_request.localized_names = table_names;
   if (created_table.temporary && created_table.temporary_scope != "global") {
     catalog_request.name_namespace.kind =
         EngineCatalogNameNamespaceKind::kSessionTemporary;
-    catalog_request.name_namespace.owner_session_uuid.canonical =
+    catalog_request.name_namespace.owner_session_uuid =
         created_table.temporary_session_uuid;
   }
   const auto catalog_created = EngineCatalogCreateObject(catalog_request);
@@ -972,10 +979,10 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     implicit_support_indexes.push_back(std::move(support_index));
   }
   auto result = MakeCrudSuccessResult<EngineCreateTableResult>(request.context, "ddl.create_table");
-  result.primary_object.uuid.canonical = table_uuid;
+  result.primary_object.uuid = table_uuid;
   result.primary_object.object_kind = "table";
   result.table_object = result.primary_object;
-  result.table_catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.table_catalog_row_uuid = GenerateCrudEngineUuid("row");
   result.catalog_row_uuid = result.table_catalog_row_uuid;
   result.created_catalog_records.push_back(result.primary_object);
   result.evidence.push_back({"mga_relation_metadata", "table_create"});

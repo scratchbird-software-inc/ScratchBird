@@ -795,7 +795,7 @@ bool ProveClusterSblrFailsClosed(const api::EngineRequestContext& context) {
          Expect(!refused.api_result.ok,
                 "cluster SBLR route succeeded without provider") &&
          Expect(DispatchHasDiagnostic(refused,
-                                      "SBLR.CLUSTER.SUPPORT_NOT_ENABLED") ||
+                                      "PROCESS.CLUSTER_PATH_ABSENT") ||
                     DispatchHasDiagnostic(
                         refused,
                         "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY"),

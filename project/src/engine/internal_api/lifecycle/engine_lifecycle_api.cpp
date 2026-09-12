@@ -140,7 +140,7 @@ scratchbird::storage::database::DatabaseLifecycleOperationConfig LifecycleOperat
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
   config.operation_uuid = request.context.request_id;
-  config.actor_uuid = request.context.principal_uuid.canonical;
+  config.actor_uuid = request.context.principal_uuid;
   config.write_evidence = write_evidence;
   return config;
 }
@@ -152,11 +152,11 @@ scratchbird::storage::database::DatabaseLifecycleRepairConfig LifecycleRepairCon
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
   config.operation_uuid = request.context.request_id;
-  config.actor_uuid = request.context.principal_uuid.canonical;
+  config.actor_uuid = request.context.principal_uuid;
   config.repair_plan_id = OptionValue(request, "repair_plan_id:");
   if (config.repair_plan_id.empty()) { config.repair_plan_id = OptionValue(request, "repair_plan:"); }
   config.expected_database_uuid = OptionValue(request, "expected_database_uuid:");
-  if (config.expected_database_uuid.empty()) { config.expected_database_uuid = request.context.database_uuid.canonical; }
+  if (config.expected_database_uuid.empty()) { config.expected_database_uuid = request.context.database_uuid; }
   config.expected_filespace_uuid = OptionValue(request, "expected_filespace_uuid:");
   config.repair_admission_proven = OptionBool(request, "repair_admission_proven:", false) ||
                                    OptionBool(request, "restricted_or_maintenance_admission:", false);
@@ -175,12 +175,12 @@ scratchbird::storage::database::DatabaseDropConfig LifecycleDropConfig(
   config.cluster_authority_available = request.context.cluster_authority_available;
   config.decryption_available = OptionBool(request, "decryption_available:", false);
   config.operation_uuid = request.context.request_id;
-  config.actor_uuid = request.context.principal_uuid.canonical;
+  config.actor_uuid = request.context.principal_uuid;
   config.drop_mode = OptionValue(request, "drop_mode:");
   if (config.drop_mode.empty()) config.drop_mode = "logical";
   config.expected_database_uuid = OptionValue(request, "expected_database_uuid:");
   if (config.expected_database_uuid.empty() && OptionValue(request, "database_path:").empty()) {
-    config.expected_database_uuid = request.context.database_uuid.canonical;
+    config.expected_database_uuid = request.context.database_uuid;
   }
   config.expected_filespace_uuid = OptionValue(request, "expected_filespace_uuid:");
   config.drop_safety_preconditions = OptionBool(request, "drop_safety_preconditions:", false);
@@ -354,7 +354,7 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   auto authority = ValidateLifecycleAuthority<EngineCreateLifecycleResult>(
       request, operation, true);
   if (!authority.ok) return authority;
-  if (request.context.transaction_uuid.canonical.empty() ||
+  if (request.context.transaction_uuid.is_nil() ||
       request.context.local_transaction_id == 0) {
     return LifecycleFailure<EngineCreateLifecycleResult>(
         request.context, operation, "MGA.TRANSACTION.INVALID",
@@ -420,7 +420,7 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
       created.state.filespace_uuid.value);
   auto result = MakeApiBehaviorSuccess<EngineCreateLifecycleResult>(
       request.context, operation);
-  result.primary_object.uuid.canonical = database_uuid_text;
+  result.primary_object.uuid = database_uuid_text;
   result.primary_object.object_kind = "database";
   AddApiBehaviorRow(&result,
                     {{"operation_uuid", request.context.request_id},

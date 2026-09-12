@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "diagnostics.hpp"
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 #include "api_diagnostics.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "observability/metrics_api.hpp"
@@ -28,6 +28,7 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace rendering = scratchbird::server::legacy_rendering;
 namespace server = scratchbird::server;
 
 void Require(bool condition, std::string_view message) {
@@ -338,16 +339,16 @@ void TestParserRendering() {
       "engine.shutdown.ack_timeout",
       "listener acknowledgement timeout for hidden internal route",
       true));
-  api::EngineParserPackageRenderOptions options;
+  rendering::EngineParserPackageRenderOptions options;
   options.parser_package_uuid = "019e150f-0000-7000-8000-000000000021";
   options.parser_package_version = "sbsql-observability";
   options.client_dialect = "sbsql_v3";
   options.correlation_uuid = "019e150f-0000-7000-8000-000000000019";
   options.request_uuid = "019e150f-0000-7000-8000-000000000018";
   options.session_uuid = "019e150f-0000-7000-8000-000000000016";
-  const auto envelope = api::RenderEngineApiResultForParserPackage(result, options);
+  const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, options);
   std::vector<std::string> errors;
-  Require(api::ValidateEngineRenderedResultEnvelope(envelope, &errors),
+  Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
           "parser rendered lifecycle diagnostic envelope failed validation");
   Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser rendered envelope claimed finality authority");

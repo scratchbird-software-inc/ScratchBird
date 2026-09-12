@@ -71,7 +71,10 @@ std::string ProfileIdFor(const OptimizerRuntimeFeedback& feedback) {
 }
 
 bool UnsafeAuthority(const OptimizerRuntimeFeedback& feedback) {
-  return !feedback.advisory_only ||
+  return (feedback.statistic_target &&
+          (!feedback.statistic_target->Valid() ||
+           feedback.statistic_target->kind != OptimizerStatisticTargetKind::kObject)) ||
+         !feedback.advisory_only ||
          !feedback.mga_visibility_recheck_preserved ||
          feedback.parser_or_reference_authority ||
          feedback.transaction_finality_authority != "engine_transaction_inventory";
@@ -131,7 +134,6 @@ OptimizerMemoryGrantFeedback BuildMemoryGrantFeedback(const OptimizerRuntimeFeed
 
 OptimizerFeedbackStatus EvaluateOptimizerRuntimeFeedback(const OptimizerRuntimeFeedback& feedback) {
   OptimizerFeedbackStatus status;
-  status.memory_grant = BuildMemoryGrantFeedback(feedback);
 
   if (feedback.operator_family.empty() || feedback.plan_shape.empty()) {
     status.ok = false;
@@ -167,6 +169,7 @@ OptimizerFeedbackStatus EvaluateOptimizerRuntimeFeedback(const OptimizerRuntimeF
     return status;
   }
 
+  status.memory_grant = BuildMemoryGrantFeedback(feedback);
   status.estimate_error_ratio = ErrorRatio(feedback.estimated_rows, feedback.actual_rows);
   status.page_error_ratio = ErrorRatio(feedback.estimated_pages, feedback.actual_pages);
   status.io_error_ratio = ErrorRatio(feedback.estimated_io_operations, feedback.actual_io_operations);
@@ -215,9 +218,13 @@ OptimizerFeedbackStatus EvaluateOptimizerRuntimeFeedback(const OptimizerRuntimeF
 OptimizerCalibratedCostProfile BuildOptimizerCalibratedCostProfile(const OptimizerRuntimeFeedback& feedback,
                                                                     const OptimizerFeedbackStatus& status) {
   OptimizerCalibratedCostProfile profile;
-  if (!status.ok || !status.applied) return profile;
+  if (!status.ok || !status.applied || UnsafeAuthority(feedback) ||
+      !feedback.policy_allowed || feedback.operator_family.empty() ||
+      feedback.plan_shape.empty() ||
+      feedback.freshness_microseconds > feedback.max_freshness_microseconds) return profile;
 
   profile.apply = true;
+  profile.statistic_target = feedback.statistic_target;
   profile.profile_id = ProfileIdFor(feedback);
   profile.row_cost_multiplier = DirectionalMultiplier(feedback.estimated_rows, feedback.actual_rows);
   profile.page_cost_multiplier = DirectionalMultiplier(feedback.estimated_pages, feedback.actual_pages);

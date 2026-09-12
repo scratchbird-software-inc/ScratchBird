@@ -185,14 +185,13 @@ ExecutorOperatorMemoryResult RequestExecutorOperatorMemory(
   result.status = OperatorMemoryOkStatus();
   result.grant_id = result.query_memory.arena_result.grant->grant_id;
   result.evidence.push_back("executor.operator_memory.live_operator_route=true");
-  result.evidence.push_back("executor.operator_memory.grant_id=" + result.grant_id);
   return result;
 }
 
 scratchbird::core::memory::QueryMemoryArenaReleaseResult ReleaseExecutorOperatorMemory(
     scratchbird::core::memory::QueryMemoryArena* arena,
     ExecutorMemoryOperatorKind operator_kind,
-    const std::string& grant_id) {
+    const scratchbird::core::memory::QueryMemoryUuid& grant_id) {
   auto result = ReleaseExecutorQueryMemory(arena, grant_id);
   result.evidence.push_back("MMCH_LIVE_OPERATOR_MEMORY_GRANTS");
   result.evidence.push_back("executor.operator_memory.release_kind=" +

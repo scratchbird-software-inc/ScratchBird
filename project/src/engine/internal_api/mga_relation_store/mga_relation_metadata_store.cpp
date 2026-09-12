@@ -9,6 +9,8 @@
 #include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "mga_relation_store/mga_relation_store_internal_support.hpp"
+#include "mga_relation_store/mga_row_codec.hpp"
+#include "mga_relation_store/mga_savepoint_store.hpp"
 
 #include "api_diagnostics.hpp"
 #include "crud_support/crud_store.hpp"
@@ -154,12 +156,51 @@ std::string JoinLine(const std::vector<std::string>& fields) {
   return line;
 }
 
-std::vector<std::string> ReadLines(const std::string& path) {
+MetadataStoreFileIdentity MetadataStoreTextFileIdentity(const std::string& path);
+
+struct MetadataReadResult {
+  bool ok = false;
+  MetadataStoreFileIdentity identity;
   std::vector<std::string> lines;
-  std::ifstream input(path, std::ios::binary);
-  std::string line;
-  while (std::getline(input, line)) lines.push_back(std::move(line));
-  return lines;
+  std::vector<scratchbird::core::index::byte> marker_bytes;
+  scratchbird::core::hash::Digest256 content_sha256{};
+};
+
+MetadataReadResult ReadContent(const std::string& path, bool binary_markers) {
+  MetadataReadResult result;
+  const auto before = MetadataStoreTextFileIdentity(path);
+  std::vector<scratchbird::core::index::byte> bytes;
+  if (!ReadCompleteMgaBinaryFile(path,&bytes)) return result;
+  // Hash the exact same admitted bytes that supply the decoded records.
+  // A size/mtime pair is an observation fence, never cache content authority.
+  if (!binary_markers && !bytes.empty() && bytes.back()!='\n') return result;
+  const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);
+  if (!digest.ok() || digest.digest_bytes!=scratchbird::core::hash::kSha256DigestBytes) return result;
+  result.content_sha256=digest.digest;
+  if (binary_markers) {
+    result.marker_bytes = std::move(bytes);
+  } else {
+    auto begin=bytes.begin();
+    while(begin!=bytes.end()) {
+      const auto end=std::find(begin,bytes.end(),'\n');
+      result.lines.emplace_back(begin,end);
+      begin=end+1; // The final-delimiter check above proves this stays in range.
+    }
+  }
+  const auto after = MetadataStoreTextFileIdentity(path);
+  if (before.ok!=after.ok || before.file_size != after.file_size ||
+      before.file_mtime_ticks != after.file_mtime_ticks) return {};
+  result.identity = after;
+  result.ok = true;
+  return result;
+}
+
+MetadataReadResult ReadLines(const std::string& path) {
+  return ReadContent(path, false);
+}
+
+MetadataReadResult ReadSavepointBytes(const std::string& path) {
+  return ReadContent(path, true);
 }
 
 bool AppendLine(const std::string& path, const std::string& line) {
@@ -220,11 +261,30 @@ MetadataStoreFileIdentity MetadataStoreTextFileIdentity(
   return identity;
 }
 
-bool MetadataEventRolledBackBySavepoint(
-    const std::function<bool(std::uint64_t, std::uint64_t)>& predicate,
-    const std::uint64_t creator_tx,
-    const std::uint64_t event_sequence) {
-  return predicate && predicate(creator_tx, event_sequence);
+auto MetadataSavepointCacheDigest(const MetadataReadResult& records,
+                                  const SavepointParsedState& savepoints) {
+  // Cache identity, not a durable format. Include the exact admitted marker
+  // bytes and the effective rollback ranges from all owned savepoint journals.
+  std::vector<scratchbird::core::index::byte> bytes(
+      records.content_sha256.begin(), records.content_sha256.end());
+  const auto append = [&](std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8)
+      bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  };
+  append(savepoints.rollback_ranges.size());
+  for (const auto& [tx, ranges] : savepoints.rollback_ranges) {
+    append(tx);
+    append(ranges.size());
+    for (const auto& range : ranges) {
+      append(range.cutoffs.row_event_sequence);
+      append(range.cutoffs.metadata_event_sequence);
+      append(range.cutoffs.index_event_sequence);
+      append(range.row_upper_event_sequence);
+      append(range.metadata_upper_event_sequence);
+      append(range.index_upper_event_sequence);
+    }
+  }
+  return scratchbird::core::hash::ComputeSha256Digest(bytes);
 }
 
 std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
@@ -263,6 +323,16 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairsWithKeyCache(
 }
 
 }  // namespace
+
+bool ReadCompleteMgaTextRecords(const std::string& path,
+                               std::vector<std::string>* records) {
+  if (records == nullptr) return false;
+  records->clear();
+  auto read = ReadLines(path);
+  if (!read.ok) return false;
+  *records = std::move(read.lines);
+  return true;
+}
 
 std::uint64_t ChecksumText(const std::string& value) {
   std::uint64_t checksum = 1469598103934665603ull;
@@ -749,6 +819,7 @@ std::vector<std::string> ConstraintMutationBatchLineFields(
 struct DescriptorFieldsCacheRecord {
   std::uintmax_t file_size = 0;
   std::int64_t file_mtime_ticks = 0;
+  scratchbird::core::hash::Digest256 content_sha256{};
   std::shared_ptr<const DescriptorFieldsByRelation> descriptors;
 };
 
@@ -783,20 +854,13 @@ std::uintmax_t ExistingFileSize(const std::string& path) {
   return std::filesystem::file_size(path, ignored);
 }
 
-MetadataStoreFileIdentity ExistingFileIdentity(const std::string& path) {
-  std::error_code ignored;
-  if (path.empty() || !std::filesystem::exists(path, ignored)) {
-    return {};
-  }
-  return MetadataStoreTextFileIdentity(path);
-}
-
-std::shared_ptr<const DescriptorFieldsByRelation>
-LoadDescriptorFieldsSnapshot(
-    const EngineRequestContext& context,
+static std::shared_ptr<const DescriptorFieldsByRelation>
+LoadAdmittedDescriptorFieldsSnapshot(
+    const std::string& path,
+    const MetadataReadResult& lines,
     std::string_view required_relation_uuid) {
-  const std::string path = DescriptorStorePath(context);
-  const auto identity = ExistingFileIdentity(path);
+  if (!lines.ok) return nullptr;
+  const auto identity = lines.identity;
   const std::uintmax_t file_size = identity.ok ? identity.file_size : 0;
   const std::int64_t file_mtime_ticks =
       identity.ok ? identity.file_mtime_ticks : 0;
@@ -806,6 +870,7 @@ LoadDescriptorFieldsSnapshot(
     if (cached != DescriptorFieldsCache().end() &&
         cached->second.file_size == file_size &&
         cached->second.file_mtime_ticks == file_mtime_ticks &&
+        cached->second.content_sha256 == lines.content_sha256 &&
         cached->second.descriptors != nullptr &&
         (required_relation_uuid.empty() ||
          cached->second.descriptors->contains(
@@ -821,7 +886,7 @@ LoadDescriptorFieldsSnapshot(
   // re-read the durable store even if its coarse file identity is unchanged.
   // A genuine durable miss remains fail-closed in the caller.
   DescriptorFieldsByRelation descriptors;
-  for (const auto& line : ReadLines(path)) {
+  for (const auto& line : lines.lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kDescriptorMagic || fields[1] != "RELATION") { continue; }
     descriptors[fields[2]] = DecodeCrudPairs(fields[3]);
@@ -830,9 +895,17 @@ LoadDescriptorFieldsSnapshot(
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
     auto immutable =
         std::make_shared<const DescriptorFieldsByRelation>(std::move(descriptors));
-    DescriptorFieldsCache()[path] = {file_size, file_mtime_ticks, immutable};
+    DescriptorFieldsCache()[path] = {file_size, file_mtime_ticks, lines.content_sha256, immutable};
     return immutable;
   }
+}
+
+std::shared_ptr<const DescriptorFieldsByRelation>
+LoadDescriptorFieldsSnapshot(
+    const EngineRequestContext& context,
+    std::string_view required_relation_uuid) {
+  const std::string path = DescriptorStorePath(context);
+  return LoadAdmittedDescriptorFieldsSnapshot(path, ReadLines(path), required_relation_uuid);
 }
 
 DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
@@ -856,20 +929,9 @@ EngineApiDiagnostic PersistDescriptorFields(const EngineRequestContext& context,
   }
   {
     const std::lock_guard<std::mutex> guard(DescriptorFieldsCacheMutex());
-    auto cached = DescriptorFieldsCache().find(path);
-    if (cached != DescriptorFieldsCache().end()) {
-      const auto updated_identity = ExistingFileIdentity(path);
-      auto updated = std::make_shared<DescriptorFieldsByRelation>(
-          cached->second.descriptors == nullptr
-              ? DescriptorFieldsByRelation{}
-              : *cached->second.descriptors);
-      (*updated)[relation_uuid] = fields;
-      cached->second.descriptors = std::move(updated);
-      cached->second.file_size =
-          updated_identity.ok ? updated_identity.file_size : 0;
-      cached->second.file_mtime_ticks =
-          updated_identity.ok ? updated_identity.file_mtime_ticks : 0;
-    }
+    // An append does not prove all older bytes still match the cached image.
+    // Existing statement holders retain their immutable snapshots.
+    DescriptorFieldsCache().erase(path);
   }
   return OkDiagnostic();
 }
@@ -882,17 +944,32 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
   }
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
-  const auto metadata_identity = ExistingFileIdentity(metadata_path);
-  const auto savepoint_identity = ExistingFileIdentity(savepoint_path);
+  const std::string descriptor_path = DescriptorStorePath(context);
+  const auto metadata_lines = ReadLines(metadata_path);
+  const auto savepoint_lines = ReadSavepointBytes(savepoint_path);
+  const auto descriptor_lines = ReadLines(descriptor_path);
+  if (!metadata_lines.ok || !savepoint_lines.ok || !descriptor_lines.ok) {
+    return MakeInvalidRequestDiagnostic("mga.relation_metadata",
+        !metadata_lines.ok ? "metadata_store_read_failed" :
+        !savepoint_lines.ok ? "savepoint_store_read_failed" : "descriptor_store_read_failed");
+  }
+  const auto metadata_identity = metadata_lines.identity;
+  const auto savepoint_identity = savepoint_lines.identity;
+  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.marker_bytes);
+  if (savepoints.diagnostic.error) return savepoints.diagnostic;
+  const auto savepoint_digest = MetadataSavepointCacheDigest(savepoint_lines, savepoints);
+  if (!savepoint_digest.ok()) return MakeInvalidRequestDiagnostic(
+      "mga.relation_metadata", "savepoint_cache_digest_failed");
   const MgaMetadataCacheKey cache_key{
-      context.database_uuid.canonical,
+      context.database_uuid,
       metadata_path,
       metadata_identity.ok ? metadata_identity.file_size : 0,
       metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0,
       savepoint_path,
       savepoint_identity.ok ? savepoint_identity.file_size : 0,
       savepoint_identity.ok ? savepoint_identity.file_mtime_ticks : 0,
-      context.local_transaction_id};
+      context.local_transaction_id,metadata_lines.content_sha256,savepoint_digest.digest,
+      descriptor_path,descriptor_lines.content_sha256};
   {
     const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
     const auto cached = MgaMetadataCache().find(cache_key);
@@ -914,10 +991,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
       return OkDiagnostic();
     }
   }
-  const auto savepoints =
-      MakeMgaMetadataRollbackPredicateForStoreModule(context);
   MgaMetadataCacheEntry decoded;
-  for (const auto& line : ReadLines(metadata_path)) {
+  for (const auto& line : metadata_lines.lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 4 || fields[0] != kRowStoreMagic) { continue; }
     if (fields[1] == "TABLE_METADATA") {
@@ -1030,11 +1105,11 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           complete_fields.size() < base_fields.size() + 1 ||
           !std::equal(base_fields.begin(), base_fields.end(),
                       complete_fields.begin()) ||
-          descriptor.database_uuid.canonical !=
-              context.database_uuid.canonical ||
-          descriptor.relation_uuid.canonical != table.table_uuid ||
+          descriptor.database_uuid !=
+              context.database_uuid ||
+          descriptor.relation_uuid != table.table_uuid ||
           descriptor.relation_generation != event_sequence ||
-          descriptor.descriptor_uuid.canonical !=
+          descriptor.descriptor_uuid !=
               fields[stf::kRelationDescriptorUuid] ||
           descriptor.descriptor_generation != descriptor_generation) {
         return MakeInvalidRequestDiagnostic(
@@ -1140,7 +1215,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           ParseU64(fields[cbf::kParentBaseTableEventSequence]) == 0 ||
           fields[cbf::kConstraintKind] != "foreign_key" ||
           fields[cbf::kTableUuid] != fields[cbf::kOwnerTableUuid] ||
-          fields[cbf::kDatabaseUuid] != context.database_uuid.canonical) {
+          fields[cbf::kDatabaseUuid] != context.database_uuid) {
         return MakeInvalidRequestDiagnostic(
             "mga.relation_metadata", "constraint_mutation_batch_invalid");
       }
@@ -1461,7 +1536,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           ParseU64(fields[12]) != ParseU64(fields[11]) + 1 ||
           !CanonicalNonNilMigrationUuid(fields[13]) ||
           fields[13] !=
-              context.datatype_catalog_snapshot_uuid.canonical ||
+              context.datatype_catalog_snapshot_uuid ||
           datatype_catalog_generation == 0 ||
           std::to_string(datatype_catalog_generation) != fields[14] ||
           datatype_catalog_generation !=
@@ -1563,9 +1638,9 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
             ValidateMgaRelationStorageDescriptor(relation_descriptor);
         std::size_t migrated_storage_columns = 0;
         for (const auto& column : relation_descriptor.columns) {
-          if (column.column_uuid.canonical != row.column_uuid) continue;
+          if (column.column_uuid != row.column_uuid) continue;
           if (column.canonical_name_key != migrated_column_name ||
-              column.value_descriptor.descriptor_uuid.canonical !=
+              column.value_descriptor.descriptor_uuid !=
                   row.column_uuid ||
               column.value_descriptor.encoded_descriptor !=
                   migrated_column_descriptor ||
@@ -1581,9 +1656,9 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         }
         if (migrated_table_columns != 1 || migrated_storage_columns != 1 ||
             relation_validation.error ||
-            relation_descriptor.database_uuid.canonical !=
-                context.database_uuid.canonical ||
-            relation_descriptor.relation_uuid.canonical != row.object_uuid ||
+            relation_descriptor.database_uuid !=
+                context.database_uuid ||
+            relation_descriptor.relation_uuid != row.object_uuid ||
             relation_descriptor.relation_generation != event_sequence) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata",
@@ -1601,7 +1676,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
             ParseU64(fields[base + 20]);
         if (!CanonicalNonNilMigrationUuid(fields[base + 16]) ||
             fields[base + 16] !=
-                relation_descriptor.descriptor_uuid.canonical ||
+                relation_descriptor.descriptor_uuid ||
             descriptor_generation == 0 ||
             descriptor_generation !=
                 relation_descriptor.descriptor_generation ||
@@ -1722,10 +1797,10 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
               "mga.relation_metadata",
               "text_migration_prior_lineage_missing");
         }
-        const auto persisted =
-            LoadDescriptorFieldsByRelation(context, row.object_uuid);
-        const auto prior_fields = persisted.find(row.object_uuid);
-        if (prior_fields == persisted.end()) {
+        const auto persisted = LoadAdmittedDescriptorFieldsSnapshot(
+            descriptor_path, descriptor_lines, row.object_uuid);
+        const auto prior_fields = persisted->find(row.object_uuid);
+        if (prior_fields == persisted->end()) {
           return MakeInvalidRequestDiagnostic(
               "mga.relation_metadata",
               "text_migration_prior_relation_projection_missing");
@@ -1733,9 +1808,9 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
         auto expected_relation =
             DeserializeMgaRelationStorageDescriptor(prior_fields->second);
         if (ValidateMgaRelationStorageDescriptor(expected_relation).error ||
-            expected_relation.database_uuid.canonical !=
-                context.database_uuid.canonical ||
-            expected_relation.relation_uuid.canonical != row.object_uuid ||
+            expected_relation.database_uuid !=
+                context.database_uuid ||
+            expected_relation.relation_uuid != row.object_uuid ||
             expected_relation.relation_generation !=
                 row.old_row_generation) {
           return MakeInvalidRequestDiagnostic(
@@ -1764,7 +1839,7 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
                 "text_migration_prior_relation_column_invalid");
           }
           const bool declared = identities.contains(
-              {row.object_uuid, column.column_uuid.canonical});
+              {row.object_uuid, column.column_uuid});
           if (!declared) {
             if (column.value_descriptor.encoded_descriptor !=
                     prior_column->second ||
@@ -1779,11 +1854,11 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
           if (column.column_generation != row.old_row_generation ||
               !RewriteLegacyTextDescriptor(
                   context, &migrated_table_descriptor,
-                  column.column_uuid.canonical) ||
+                  column.column_uuid) ||
               !RewriteLegacyTextDescriptor(
                   context,
                   &column.value_descriptor.encoded_descriptor,
-                  column.column_uuid.canonical) ||
+                  column.column_uuid) ||
               migrated_table_descriptor !=
                   column.value_descriptor.encoded_descriptor ||
               column.value_descriptor.encoded_descriptor !=
@@ -1793,8 +1868,8 @@ EngineApiDiagnostic LoadMgaMetadata(RelationReadSnapshot* state,
                 "text_migration_prior_relation_column_invalid");
           }
           prior_column->second = sealed_column->second;
-          column.value_descriptor.descriptor_uuid.canonical =
-              column.column_uuid.canonical;
+          column.value_descriptor.descriptor_uuid =
+              column.column_uuid;
           column.value_descriptor.canonical_type_name = "text";
           column.column_generation = event_sequence;
           ++migrated_lineage_columns;
@@ -1955,17 +2030,41 @@ MgaMetadataSnapshotLoadResult LoadMgaMetadataSnapshot(
   MgaMetadataSnapshotLoadResult result;
   const std::string metadata_path = MetadataStorePath(context);
   const std::string savepoint_path = SavepointStorePath(context);
-  const auto metadata_identity = ExistingFileIdentity(metadata_path);
-  const auto savepoint_identity = ExistingFileIdentity(savepoint_path);
+  const std::string descriptor_path = DescriptorStorePath(context);
+  // A previously decoded generation cannot turn current I/O failure into
+  // authoritative metadata. Validate all three complete streams before cache use.
+  const auto metadata_lines = ReadLines(metadata_path);
+  const auto savepoint_lines = ReadSavepointBytes(savepoint_path);
+  const auto descriptor_lines = ReadLines(descriptor_path);
+  if (!metadata_lines.ok || !savepoint_lines.ok || !descriptor_lines.ok) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.relation_metadata",
+        !metadata_lines.ok ? "metadata_store_read_failed" :
+        !savepoint_lines.ok ? "savepoint_store_read_failed" : "descriptor_store_read_failed");
+    return result;
+  }
+  const auto metadata_identity = metadata_lines.identity;
+  const auto savepoint_identity = savepoint_lines.identity;
+  const auto savepoints = ParseSavepointBytes(context, savepoint_lines.marker_bytes);
+  if (savepoints.diagnostic.error) {
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
+  const auto savepoint_digest = MetadataSavepointCacheDigest(savepoint_lines, savepoints);
+  if (!savepoint_digest.ok()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_metadata", "savepoint_cache_digest_failed");
+    return result;
+  }
   result.key = MgaMetadataCacheKey{
-      context.database_uuid.canonical,
+      context.database_uuid,
       metadata_path,
       metadata_identity.ok ? metadata_identity.file_size : 0,
       metadata_identity.ok ? metadata_identity.file_mtime_ticks : 0,
       savepoint_path,
       savepoint_identity.ok ? savepoint_identity.file_size : 0,
       savepoint_identity.ok ? savepoint_identity.file_mtime_ticks : 0,
-      context.local_transaction_id};
+      context.local_transaction_id,metadata_lines.content_sha256,savepoint_digest.digest,
+      descriptor_path,descriptor_lines.content_sha256};
   {
     const std::lock_guard<std::mutex> guard(MgaMetadataCacheMutex());
     const auto cached = MgaMetadataCache().find(result.key);

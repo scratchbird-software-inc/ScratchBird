@@ -37,10 +37,12 @@ struct EngineListCatalogChildrenResult : EngineApiResult {};
 EngineListCatalogChildrenResult EngineListCatalogChildren(const EngineListCatalogChildrenRequest& request);
 
 std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequestContext& context,
-                                                             std::uint64_t observer_tx);
+                                                             std::uint64_t observer_tx,
+                                                             EngineApiDiagnostic& diagnostic);
 std::optional<EngineSchemaTreeRecord> FindVisibleSchemaTreeRecord(const EngineRequestContext& context,
                                                                   const std::string& schema_uuid,
-                                                                  std::uint64_t observer_tx);
+                                                                  std::uint64_t observer_tx,
+                                                                  EngineApiDiagnostic& diagnostic);
 std::string SchemaTreeDefaultName(const std::vector<EngineLocalizedName>& names, const std::string& fallback);
 std::string SchemaTreePayload(const std::string& parent_schema_uuid,
                               const std::vector<EngineLocalizedName>& names,
@@ -49,11 +51,13 @@ std::optional<std::string> SchemaTreePathConflict(const EngineRequestContext& co
                                                   const std::string& schema_uuid,
                                                   const std::string& parent_schema_uuid,
                                                   const std::vector<EngineLocalizedName>& names,
-                                                  std::uint64_t observer_tx);
+                                                  std::uint64_t observer_tx,
+                                                  EngineApiDiagnostic& diagnostic);
 bool SchemaTreeWouldCreateCycle(const EngineRequestContext& context,
                                 const std::string& schema_uuid,
                                 const std::string& proposed_parent_schema_uuid,
-                                std::uint64_t observer_tx);
+                                std::uint64_t observer_tx,
+                                EngineApiDiagnostic& diagnostic);
 EngineApiDiagnostic PersistSchemaTreeRecord(const EngineRequestContext& context,
                                             const EngineSchemaTreeRecord& record,
                                             const std::string& operation_id);

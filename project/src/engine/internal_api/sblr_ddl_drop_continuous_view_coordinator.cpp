@@ -25,7 +25,7 @@ SblrDdlDropContinuousViewCoordinationResult CompileSblrDdlDropContinuousViewDesc
   std::lock_guard lock(mutex);
   SblrDdlDropContinuousViewCoordinationResult result;
   if (!tag(c, "private_ddl_drop_continuous_view_binder") ||
-      !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid.canonical ||
+      !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid ||
       !occurrence || !view_occurrence || !availability) {
     result.diagnostic = diagnostic("SBLR.OPERAND.INVALID", "sblr.ddl_drop_continuous_view.coordination_invalid");
     return result;

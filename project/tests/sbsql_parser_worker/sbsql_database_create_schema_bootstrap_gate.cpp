@@ -26,6 +26,26 @@
 #include <string_view>
 #include <vector>
 
+#include <stdexcept>
+#include <utility>
+
+namespace scratchbird::engine::internal_api {
+template <typename... Args>
+auto CheckedSchemaTreeRecords(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = VisibleSchemaTreeRecords(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+template <typename... Args>
+auto CheckedFindSchemaTreeRecord(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = FindVisibleSchemaTreeRecord(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+}  // namespace scratchbird::engine::internal_api
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -230,7 +250,7 @@ void RequireBootstrapCatalogRowsPersisted(const std::filesystem::path& database_
 
 std::set<std::string> VisibleSchemaPaths(const api::EngineRequestContext& context) {
   std::set<std::string> paths;
-  for (const auto& schema : api::VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+  for (const auto& schema : api::CheckedSchemaTreeRecords(context, context.local_transaction_id)) {
     for (const auto& name : schema.localized_names) {
       if (!name.path.empty()) { paths.insert(name.path); }
     }
@@ -331,7 +351,7 @@ void CreateUserThroughEnginePolicy(const std::filesystem::path& database_path,
   const auto observer = Context(database_path, database_uuid);
   const auto paths = VisibleSchemaPaths(observer);
   Require(paths.count("users.benchmark_user") == 1, "adduser policy did not create users.benchmark_user home schema");
-  const auto home_schema = api::FindVisibleSchemaTreeRecord(observer, home_schema_uuid, 0);
+  const auto home_schema = api::CheckedFindSchemaTreeRecord(observer, home_schema_uuid, 0);
   Require(home_schema.has_value(), "returned home schema UUID was not visible after commit");
 }
 

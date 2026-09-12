@@ -141,7 +141,7 @@ SblrDdlCreateProcedureCoordinationResult CompileSblrDdlCreateProcedureDescriptor
   SblrDdlCreateProcedureCoordinationResult result;
   if (!HasTag(context, "private_ddl_create_procedure_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid.canonical || occurrence == 0 ||
+      receipt != context.statement_uuid || occurrence == 0 ||
       procedure_occurrence == 0 || availability == 0) {
     result.diagnostic = Diagnostic(
         "SBLR.OPERAND_INVALID",

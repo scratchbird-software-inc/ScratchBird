@@ -92,7 +92,7 @@ wire::TypedResultDescriptorAuthorityValidator AuthorityFor(
         actual.columns[0].type_uuid == expected.columns[0].type_uuid &&
         actual.columns[0].codec_id == expected.columns[0].codec_id;
     if (!decision.accepted) {
-      decision.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+      decision.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
       decision.detail = "public_abi_fixture_descriptor_drift";
     }
     return decision;

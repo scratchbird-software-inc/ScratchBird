@@ -10,8 +10,8 @@
 
 // SB-WIRE-TYPED-RESULT-TRANSPORT-CODEC-ANCHOR
 //
-// This codec is deliberately disjoint from the active public ABI, parser-server
-// client, and SBWP routes. It implements PS-RESULT-TRANSPORT-BINARY-V1. Outer
+// Implements PS-RESULT-TRANSPORT-BINARY-V1 and its shared column validation.
+// Codec conformance alone does not establish ABI, IPC, or SBWP adoption. Outer
 // SBPS/session or engine-result authority is supplied by the carrier binding;
 // inner SHA-256 values are deterministic evidence, never authentication keys.
 
@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::wire {
@@ -33,12 +34,17 @@ using scratchbird::core::platform::u64;
 
 inline constexpr u16 kTypedResultTransportVersion = 1;
 inline constexpr u16 kTypedResultRowDescriptorHeaderBytes = 128;
+inline constexpr u32 kTypedResultColumnDescriptorPrefixBytes = 92;
 inline constexpr u16 kTypedResultBatchHeaderBytes = 224;
 inline constexpr u32 kTypedResultEvidenceHashBytes = 32;
 
 using TypedResultUuid = std::array<byte, 16>;
 using TypedResultEvidenceHash =
     std::array<byte, kTypedResultEvidenceHashBytes>;
+
+// Shared by the byte codec and engine schema publication. Empty labels are
+// legal; otherwise require at most 4096 bytes of strict UTF-8 without NUL.
+bool ValidTypedResultColumnName(std::string_view name);
 
 enum class TypedResultNullability : std::uint8_t {
   not_null = 0,
@@ -207,7 +213,23 @@ TypedResultDescriptorCodecResult DecodeTypedResultRowDescriptor(
 TypedResultBatchCodecResult EncodeTypedResultBatch(
     const TypedResultBatch& batch,
     const TypedResultRowDescriptor& descriptor,
-    const TypedResultCarrierBinding& carrier_binding);
+    const TypedResultCarrierBinding& carrier_binding,
+    // Exact complete packet ceiling, including every row/cell/envelope header
+    // and the fixed evidence area. Zero permits no nonempty packet. A larger
+    // caller value cannot widen the transport's 16 MiB maximum. Admission
+    // precedes descriptor/value copying and packet allocation; this byte limit
+    // is not a physical memory reservation or descriptor authority.
+    u64 maximum_bytes = 16ull * 1024ull * 1024ull);
+
+// Consuming overload: validation and packet allocation finish before batch
+// ownership moves. Refusal or an allocation exception leaves the input intact.
+// Success retains the original row/cell/payload storage with verified evidence;
+// it does not create a physical grant or commit a producer/cursor transition.
+TypedResultBatchCodecResult EncodeTypedResultBatch(
+    TypedResultBatch&& batch,
+    const TypedResultRowDescriptor& descriptor,
+    const TypedResultCarrierBinding& carrier_binding,
+    u64 maximum_bytes = 16ull * 1024ull * 1024ull);
 
 // Carrier facts must come from the already-admitted SBPS result/fetch or
 // public-engine result handle; packet bytes cannot create the binding.

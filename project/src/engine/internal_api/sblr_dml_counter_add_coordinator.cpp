@@ -50,7 +50,7 @@ SblrDmlCounterAddCoordinationResult CompileSblrDmlCounterAddDescriptor(
     SblrDmlCounterAddCoordinationResult result;
     if (!context.security_context_present ||
         !context.statement_metadata_snapshot_engine_owned ||
-        receipt != context.statement_uuid.canonical || occurrence == 0 ||
+        receipt != context.statement_uuid || occurrence == 0 ||
         counter_occurrence == 0 || availability == 0) {
         result.diagnostic = MakeEngineApiDiagnostic(
             "SBLR.OPERAND.INVALID",

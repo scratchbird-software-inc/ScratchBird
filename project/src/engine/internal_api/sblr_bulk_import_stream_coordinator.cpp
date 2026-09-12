@@ -276,21 +276,21 @@ bool ContextMatches(const EngineRequestContext& context,
   Uuid catalog{};
   Uuid security{};
   Uuid resource{};
-  return CanonicalUuid(context.statement_receipt_uuid.canonical, &receipt) &&
+  return CanonicalUuid(context.statement_receipt_uuid, &receipt) &&
          receipt == value.authenticated_receipt_uuid &&
-         CanonicalUuid(context.transaction_uuid.canonical, &transaction) &&
+         CanonicalUuid(context.transaction_uuid, &transaction) &&
          transaction == value.owning_transaction_uuid &&
          context.local_transaction_id == value.owning_local_transaction_id &&
-         CanonicalUuid(context.statement_snapshot_uuid.canonical, &snapshot) &&
+         CanonicalUuid(context.statement_snapshot_uuid, &snapshot) &&
          snapshot == value.statement_snapshot_uuid &&
-         CanonicalUuid(context.catalog_epoch_uuid.canonical, &catalog) &&
+         CanonicalUuid(context.catalog_epoch_uuid, &catalog) &&
          catalog == value.catalog_epoch_uuid &&
          context.catalog_generation_id == value.catalog_generation &&
-         CanonicalUuid(context.authorization_context.authority_uuid.canonical,
+         CanonicalUuid(context.authorization_context.authority_uuid,
                        &security) &&
          security == value.security_context_uuid &&
          context.authorization_context.security_epoch == value.security_epoch &&
-         CanonicalUuid(context.resource_admission_uuid.canonical, &resource) &&
+         CanonicalUuid(context.resource_admission_uuid, &resource) &&
          resource == value.resource_grant_uuid &&
          context.resource_epoch == value.resource_grant_generation;
 }
@@ -331,7 +331,7 @@ CoordinateDurableSblrBulkImportStreamDescriptorV1(
                   "sblr.bulk_import_stream.authority_invalid");
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return refuse("MGA.TRANSACTION_INVALID",
                   "sblr.bulk_import_stream.transaction_invalid");
   }
@@ -466,7 +466,7 @@ SblrBulkImportStreamCoordinationResult CompileSblrBulkImportStreamDescriptor(
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
       !HasTag(context, "private_bulk_import_stream_compiler") ||
-      receipt != context.statement_uuid.canonical || occurrence == 0 ||
+      receipt != context.statement_uuid || occurrence == 0 ||
       import_occurrence == 0 || availability == 0) {
     result.diagnostic =
         Diagnostic("SBLR.OPERAND_INVALID",

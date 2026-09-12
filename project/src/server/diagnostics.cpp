@@ -11,10 +11,37 @@
 #include "diagnostics.hpp"
 
 #include <cctype>
+#include <new>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 namespace scratchbird::server {
+
+bool AdoptEngineDiagnosticSource(
+    const scratchbird::server_engine_bridge::EngineDiagnosticSnapshot& source,
+    ServerDiagnostic* target) {
+  if (target == nullptr || source.code.empty() || source.code != target->code ||
+      (source.occurrence_uuid[6] & 0xf0) != 0x70 ||
+      (source.occurrence_uuid[8] & 0xc0) != 0x80 ||
+      (source.canonical_metadata && source.canonical_metadata->code != source.code)) {
+    return false;
+  }
+  static_assert(std::is_nothrow_move_assignable_v<ServerDiagnostic>);
+  try {
+    auto copy = *target;
+    copy.engine_source_snapshot = source;
+    copy.occurrence_uuid = source.occurrence_uuid;
+    *target = std::move(copy);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
+}
 
 const char* SeverityName(ServerDiagnosticSeverity severity) {
   switch (severity) {
@@ -33,23 +60,23 @@ std::string EscapeMessageVectorText(const std::string& value) {
   escaped.reserve(value.size());
   for (const char ch : value) {
     switch (ch) {
-      case '\\':
-        escaped += "\\\\\\\\";
-        break;
-      case '"':
-        escaped += "\\\\\"";
-        break;
-      case '\n':
-        escaped += "\\\\n";
-        break;
-      case '\r':
-        escaped += "\\\\r";
-        break;
-      case '\t':
-        escaped += "\\\\t";
-        break;
+      case '\\': escaped += "\\\\"; break;
+      case '"': escaped += "\\\""; break;
+      case '\n': escaped += "\\n"; break;
+      case '\r': escaped += "\\r"; break;
+      case '\t': escaped += "\\t"; break;
+      case '\b': escaped += "\\b"; break;
+      case '\f': escaped += "\\f"; break;
       default:
-        escaped += ch;
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          constexpr char hex[] = "0123456789abcdef";
+          const auto byte = static_cast<unsigned char>(ch);
+          escaped += "\\u00";
+          escaped += hex[byte >> 4];
+          escaped += hex[byte & 0x0f];
+        } else {
+          escaped += ch;
+        }
         break;
     }
   }
@@ -79,7 +106,8 @@ bool IsPublicDiagnosticFieldAllowed(std::string_view key, std::string_view value
   for (char& ch : lowered_value) {
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   }
-  if (lowered == "presented_name" ||
+  if (lowered == "private_detail" ||
+      lowered == "presented_name" ||
       lowered == "object_name" ||
       lowered == "relation_name" ||
       lowered == "schema_name" ||
@@ -126,19 +154,6 @@ std::string LowerDiagnosticText(std::string_view value) {
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   }
   return lowered;
-}
-
-bool IsRetryableDiagnosticCode(std::string_view code) {
-  const auto lowered = LowerDiagnosticText(code);
-  return lowered.find("timeout") != std::string::npos ||
-         lowered.find("busy") != std::string::npos ||
-         lowered.find("retry") != std::string::npos ||
-         lowered.find("stale") != std::string::npos ||
-         lowered.find("unavailable") != std::string::npos ||
-         lowered.find("drain") != std::string::npos ||
-         lowered.find("ack") != std::string::npos ||
-         lowered.find("lock_timeout") != std::string::npos ||
-         lowered.find("serialization") != std::string::npos;
 }
 
 std::string DiagnosticShapeIdForCode(std::string_view code) {
@@ -192,7 +207,9 @@ void WriteMessageVectorHeader(std::ostringstream* out,
   const auto shape = diagnostic.diagnostic_shape_id.empty()
       ? DiagnosticShapeIdForCode(diagnostic.code)
       : diagnostic.diagnostic_shape_id;
-  const bool retryable = diagnostic.retryable || IsRetryableDiagnosticCode(diagnostic.code);
+  // Rendering preserves the owning source decision. Code spelling, severity
+  // and message text cannot establish policy or transaction finality.
+  const bool retryable = diagnostic.retryable;
   *out << "{\"message_vector\":{\"code\":\"" << EscapeMessageVectorText(diagnostic.code)
        << "\",\"message_key\":\"" << EscapeMessageVectorText(diagnostic.message_key)
        << "\",\"severity\":\"" << SeverityName(diagnostic.severity)

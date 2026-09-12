@@ -34,14 +34,14 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
 }
 
 bool UuidPresent(const EngineUuid& uuid) {
-  return !uuid.canonical.empty();
+  return !uuid.is_nil();
 }
 
 bool CanonicalNonzeroUuid(const EngineUuid& uuid) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(uuid.canonical);
+  const auto parsed = scratchbird::core::uuid::ParseUuid(uuid);
   return parsed.ok() && !parsed.value.is_nil() &&
          scratchbird::core::uuid::UuidToString(parsed.value) ==
-             uuid.canonical;
+             uuid;
 }
 
 bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
@@ -50,21 +50,21 @@ bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
 }
 
 bool UuidEquals(const EngineUuid& lhs, const EngineUuid& rhs) {
-  return lhs.canonical == rhs.canonical;
+  return lhs == rhs;
 }
 
 std::string SubjectKey(const EngineUuid& uuid, const std::string& kind) {
-  return kind + ":" + uuid.canonical;
+  return kind + ":" + uuid;
 }
 
 bool TargetMatches(const EngineUuid& candidate, const std::string& target_uuid) {
-  return candidate.canonical.empty() || candidate.canonical == target_uuid;
+  return candidate.is_nil() || candidate == target_uuid;
 }
 
 bool SubjectMatches(const EngineAuthorizationSubject& subject,
                     const EngineUuid& subject_uuid,
                     const std::string& subject_kind) {
-  return subject.subject_uuid.canonical == subject_uuid.canonical &&
+  return subject.subject_uuid == subject_uuid &&
          subject.subject_kind == subject_kind;
 }
 
@@ -137,7 +137,7 @@ bool SubjectRecordActive(const DurableAuthorizationState& state,
 
 std::set<std::string> KnownRights() {
   return {
-      "CONNECT", "VISIBLE", "DISCOVER", "LIST_CHILD", "SELECT", "INSERT", "UPDATE", "DELETE", "EXECUTE",
+      "CONNECT", "VISIBLE", "DISCOVER", "LIST_CHILD", "READ_DIAGNOSTIC_DETAIL", "SELECT", "INSERT", "UPDATE", "DELETE", "EXECUTE",
       "CREATE", "ALTER", "DROP", "CATALOG_MUTATE", "USAGE", "TYPE_DDL",
       "DOMAIN_USE", "DOMAIN_CAST", "DOMAIN_METHOD", "DOMAIN_POLICY_ADMIN",
       "DOMAIN_UNMASK", "UNMASK", "POLICY_ADMIN", "OBS_METRICS_READ_SELF", "OBS_METRICS_READ_ALL",
@@ -288,7 +288,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (!SubjectRecordActive(state, subject_uuid, subject_kind)) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.AUTHORIZATION.SUBJECT_MISSING",
-          subject_kind + ":" + subject_uuid.canonical));
+          subject_kind + ":" + subject_uuid));
       return false;
     }
     if (subject_kind == "role") {
@@ -297,7 +297,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
           role.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "role_epoch_mismatch:" + subject_uuid.canonical));
+            "role_epoch_mismatch:" + subject_uuid));
         return false;
       }
     }
@@ -307,7 +307,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
           group.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "group_epoch_mismatch:" + subject_uuid.canonical));
+            "group_epoch_mismatch:" + subject_uuid));
         return false;
       }
     }
@@ -322,14 +322,14 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     visiting.insert(key);
     subjects.push_back({subject_uuid, subject_kind});
     for (const auto& edge : state.memberships) {
-      if (!edge.active || edge.member_uuid.canonical != subject_uuid.canonical ||
+      if (!edge.active || edge.member_uuid != subject_uuid ||
           edge.member_kind != subject_kind) {
         continue;
       }
       if (edge.security_epoch != 0 && edge.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "membership_epoch_mismatch:" + edge.parent_uuid.canonical));
+            "membership_epoch_mismatch:" + edge.parent_uuid));
         return false;
       }
       if (!self(self, edge.parent_uuid, edge.parent_kind)) { return false; }
@@ -356,7 +356,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     }
     for (const auto& right : KnownRights()) {
       EngineMaterializedAuthorizationGrant grant;
-      grant.grant_uuid.canonical =
+      grant.grant_uuid =
           "engine-owned-sysarch-grant:" + right;
       grant.subject_uuid = subject.subject_uuid;
       grant.subject_kind = "role";
@@ -381,7 +381,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (grant.security_epoch == 0 || grant.security_epoch != state.security_epoch) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
-          "grant_epoch_mismatch:" + grant.grant_uuid.canonical));
+          "grant_epoch_mismatch:" + grant.grant_uuid));
       return result;
     }
     context.grants.push_back({grant.grant_uuid,
@@ -407,7 +407,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (policy.policy_epoch == 0 || policy.policy_epoch != state.policy_epoch) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
-          "policy_epoch_mismatch:" + policy.policy_uuid.canonical));
+          "policy_epoch_mismatch:" + policy.policy_uuid));
       return result;
     }
     if (policy.policy_kind == "row_policy" &&
@@ -422,7 +422,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
           "row_policy_native_authority_missing:" +
-              policy.policy_uuid.canonical));
+              policy.policy_uuid));
       return result;
     }
     EngineMaterializedAuthorizationPolicy materialized;
@@ -548,7 +548,7 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     if (policy.requires_runtime_recheck) {
       decision.policy_recheck_required = true;
       decision.policy_recheck_reasons.push_back(
-          policy.policy_kind.empty() ? policy.policy_uuid.canonical : policy.policy_kind);
+          policy.policy_kind.empty() ? policy.policy_uuid : policy.policy_kind);
     }
   }
 

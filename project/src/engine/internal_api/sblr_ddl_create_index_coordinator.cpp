@@ -33,7 +33,7 @@ SblrDdlCreateIndexCoordinationResult CompileSblrDdlCreateIndexDescriptor(
   SblrDdlCreateIndexCoordinationResult o;
   if (!tag(c, "private_ddl_create_index_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      !canonical_uuid(r) || r != c.statement_uuid.canonical || !occurrence ||
+      !canonical_uuid(r) || r != c.statement_uuid || !occurrence ||
       !index_occurrence || !availability) {
     o.diagnostic = d("SBLR.OPERAND_INVALID",
                      "sblr.ddl_create_index.coordination_invalid");

@@ -10,6 +10,10 @@ if(NOT TARGET sb_core_metrics)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../metrics ${CMAKE_CURRENT_BINARY_DIR}/core_metrics)
 endif()
 
+if(NOT TARGET sb_core_uuid)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../uuid ${CMAKE_CURRENT_BINARY_DIR}/core_uuid)
+endif()
+
 add_library(sb_core_memory
   background_memory_reclamation.cpp
   foreign_memory_reservation.cpp
@@ -30,6 +34,7 @@ add_library(sb_core_memory
   memory_pressure_response.cpp
   plugin_native_memory_sandbox.cpp
   query_memory_arena.cpp
+  unified_memory_spill_budget.cpp
   reservation_backed_memory_resource.cpp
   result_cursor_plan_memory_governance.cpp
   sharded_memory_accounting_ledger.cpp
@@ -40,7 +45,7 @@ add_library(sb_core_memory
 
 target_compile_features(sb_core_memory PUBLIC cxx_std_17)
 target_include_directories(sb_core_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(sb_core_memory PUBLIC sb_core_platform sb_core_metrics)
+target_link_libraries(sb_core_memory PUBLIC sb_core_platform sb_core_metrics sb_core_uuid)
 if(WIN32)
   target_link_libraries(sb_core_memory PUBLIC bcrypt)
 endif()

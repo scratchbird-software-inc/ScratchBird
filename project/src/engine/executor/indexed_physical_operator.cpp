@@ -43,16 +43,16 @@ IndexedPhysicalOperatorResult Fail(std::string code, std::string detail) {
   return result;
 }
 
-std::string TypedUuidText(const platform::TypedUuid& typed) {
-  return typed.valid() ? uuid::UuidToString(typed.value) : std::string{};
-}
-
 bool HasBoundKey(const page::IndexBtreePhysicalScanBound& bound) {
   return bound.unbounded || !bound.encoded_key.empty();
 }
 
 bool LocatorPreservesRechecks(const page::IndexBtreePhysicalRowLocator& locator) {
-  return locator.mga_recheck_required &&
+  return locator.row_uuid.kind == platform::UuidKind::row &&
+         locator.version_uuid.kind == platform::UuidKind::row &&
+         uuid::IsEngineIdentityUuid(locator.row_uuid.value) &&
+         uuid::IsEngineIdentityUuid(locator.version_uuid.value) &&
+         locator.mga_recheck_required &&
          locator.security_recheck_required &&
          !locator.visibility_authority &&
          !locator.authorization_authority &&
@@ -131,8 +131,8 @@ IndexedPhysicalOperatorLocator CopyLocator(
     const page::IndexBtreePhysicalRowLocator& locator,
     std::uint64_t outer_ordinal = 0) {
   IndexedPhysicalOperatorLocator copied;
-  copied.row_uuid = TypedUuidText(locator.row_uuid);
-  copied.version_uuid = TypedUuidText(locator.version_uuid);
+  copied.row_uuid = locator.row_uuid.value;
+  copied.version_uuid = locator.version_uuid.value;
   copied.encoded_key = locator.encoded_key;
   copied.outer_ordinal = outer_ordinal;
   copied.leaf_page_number = locator.leaf_page_number;

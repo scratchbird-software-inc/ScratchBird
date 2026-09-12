@@ -185,23 +185,33 @@ void VerifyNormalizedCommandBoundaryManifest() {
 
 void VerifyProviderInfoResult(const api::EngineApiResult& result,
                               const cluster_provider::ClusterProviderInfo& info) {
-  Require(result.ok, "cluster provider info command failed");
-  Require(result.operation_id == cluster_provider::kClusterProviderInfoOperationId,
-          "cluster provider info returned the wrong operation id");
-  Require(result.result_shape.result_kind == cluster_provider::kClusterProviderInfoResultKind,
-          "cluster provider info returned the wrong result kind");
-  Require(result.result_shape.rows.size() == 1,
-          "cluster provider info returned the wrong row count");
-  Require(RowFieldEquals(result, "provider_name", info.provider_name),
-          "cluster provider info returned the wrong provider name");
-  Require(RowFieldEquals(result, "provider_type", info.provider_type),
-          "cluster provider info returned the wrong provider type");
-  Require(RowFieldEquals(result, "provider_version", info.provider_version),
-          "cluster provider info returned the wrong provider version");
-  Require(RowFieldEquals(result, "support_status", info.support_status),
-          "cluster provider info returned the wrong support status");
-  Require(RowFieldEquals(result, "supports_execution", info.supports_execution ? "true" : "false"),
-          "cluster provider info returned the wrong support flag");
+  if (info.provider_type == "no_cluster" || info.provider_type == "compile_link_stub") {
+    Require(!result.ok && result.cluster_authority_required &&
+                result.operation_id == cluster_provider::kClusterProviderInfoOperationId,
+            "standalone provider inspection fabricated success or lost ownership");
+    Require(HasApiDiagnostic(result, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "standalone inspection lost normative absent-path diagnostic");
+    Require(result.result_shape.rows.empty() && result.result_shape.columns.empty(),
+            "standalone inspection fabricated typed result identities");
+  } else {
+    Require(result.ok, "cluster provider info command failed");
+    Require(result.operation_id == cluster_provider::kClusterProviderInfoOperationId,
+            "cluster provider info returned the wrong operation id");
+    Require(result.result_shape.result_kind == cluster_provider::kClusterProviderInfoResultKind,
+            "cluster provider info returned the wrong result kind");
+    Require(result.result_shape.rows.size() == 1,
+            "cluster provider info returned the wrong row count");
+    Require(RowFieldEquals(result, "provider_name", info.provider_name),
+            "cluster provider info returned the wrong provider name");
+    Require(RowFieldEquals(result, "provider_type", info.provider_type),
+            "cluster provider info returned the wrong provider type");
+    Require(RowFieldEquals(result, "provider_version", info.provider_version),
+            "cluster provider info returned the wrong provider version");
+    Require(RowFieldEquals(result, "support_status", info.support_status),
+            "cluster provider info returned the wrong support status");
+    Require(RowFieldEquals(result, "supports_execution", info.supports_execution ? "true" : "false"),
+            "cluster provider info returned the wrong support flag");
+  }
   Require(HasEvidence(result, "cluster_provider_name", info.provider_name),
           "cluster provider info evidence omitted provider name");
   Require(HasEvidence(result, "cluster_provider_type", info.provider_type),
@@ -215,9 +225,9 @@ void VerifyProviderInfoResult(const api::EngineApiResult& result,
 void VerifyClusterProviderProfile() {
   api::EngineRequestContext context;
   context.security_context_present = true;
-  context.database_uuid.canonical = "cluster-provider-conformance-database";
-  context.session_uuid.canonical = "cluster-provider-conformance-session";
-  context.principal_uuid.canonical = "cluster-provider-conformance-user";
+  // Component routing fixture: satisfy the engine transaction prerequisite;
+  // do not invent database/session/principal identifiers from text labels.
+  context.local_transaction_id = 1;
 
   auto envelope =
       scratchbird::test::sbsql::BuildCanonicalEngineSblrEnvelopeForTest(
@@ -301,10 +311,10 @@ void VerifyClusterProviderProfile() {
     Require(HasUnsupportedFeature(result.api_result, "cluster.provider.stub"),
             "compile-link stub returned the wrong unsupported feature");
     Require(HasApiDiagnostic(result.api_result,
-                             cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                             "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub returned the wrong API diagnostic");
     Require(HasDispatchDiagnostic(result,
-                                  cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                                  "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub returned the wrong dispatch diagnostic");
     Require(HasEvidence(result.api_result, "cluster_provider", "stub"),
             "compile-link stub provider evidence is missing");

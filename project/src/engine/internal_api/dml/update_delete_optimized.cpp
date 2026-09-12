@@ -746,7 +746,7 @@ bool UpdateRowVersionVisibleWithHighWater(
     const EngineRequestContext& context,
     std::uint64_t visible_through) {
   if (!row.temporary_session_uuid.empty() &&
-      row.temporary_session_uuid != context.session_uuid.canonical) {
+      row.temporary_session_uuid != context.session_uuid) {
     return false;
   }
   const std::uint64_t observer_tx = context.local_transaction_id;
@@ -1290,20 +1290,20 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
 
   DmlTargetAccessPlanRequest plan_request;
   plan_request.mutation_kind = "dml.update_rows";
-  plan_request.database_uuid = request.context.database_uuid.canonical;
+  plan_request.database_uuid = request.context.database_uuid;
   plan_request.relation_uuid = table.table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = request.update_predicate.predicate_kind;
   plan_request.predicate_descriptor_digest = PredicateDigest(request.update_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid.canonical + ":" +
-      request.context.current_role_uuid.canonical + ":" +
+      request.context.principal_uuid + ":" +
+      request.context.current_role_uuid + ":" +
       std::to_string(request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid.canonical + ":" +
+      request.context.session_uuid + ":" +
       std::to_string(request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
@@ -1809,20 +1809,20 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
 
   DmlTargetAccessPlanRequest plan_request;
   plan_request.mutation_kind = "dml.delete_rows";
-  plan_request.database_uuid = request.context.database_uuid.canonical;
+  plan_request.database_uuid = request.context.database_uuid;
   plan_request.relation_uuid = table.table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = request.delete_predicate.predicate_kind;
   plan_request.predicate_descriptor_digest = PredicateDigest(request.delete_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid.canonical + ":" +
-      request.context.current_role_uuid.canonical + ":" +
+      request.context.principal_uuid + ":" +
+      request.context.current_role_uuid + ":" +
       std::to_string(request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid.canonical + ":" +
+      request.context.session_uuid + ":" +
       std::to_string(request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
@@ -3219,16 +3219,16 @@ bool DmlUpdateContextMatches(const EngineRequestContext& context,
                              const DmlUpdateRowsDescriptorRecordV1& record) {
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
-         context.statement_receipt_uuid.canonical ==
+         context.statement_receipt_uuid ==
              record.statement_receipt_uuid &&
-         context.database_uuid.canonical == record.database_uuid &&
-         context.transaction_uuid.canonical == record.transaction_uuid &&
+         context.database_uuid == record.database_uuid &&
+         context.transaction_uuid == record.transaction_uuid &&
          context.local_transaction_id == record.local_transaction_id &&
-         context.statement_snapshot_uuid.canonical ==
+         context.statement_snapshot_uuid ==
              record.statement_snapshot_uuid &&
-         context.statement_metadata_snapshot_uuid.canonical ==
+         context.statement_metadata_snapshot_uuid ==
              record.metadata_snapshot_uuid &&
-         context.datatype_catalog_snapshot_uuid.canonical ==
+         context.datatype_catalog_snapshot_uuid ==
              record.datatype_catalog_snapshot_uuid &&
          context.datatype_catalog_generation ==
              record.datatype_catalog_generation &&
@@ -3236,7 +3236,7 @@ bool DmlUpdateContextMatches(const EngineRequestContext& context,
              record.datatype_registry_generation &&
          context.security_epoch == record.security_epoch &&
          context.authorization_context.present &&
-         context.authorization_context.authority_uuid.canonical ==
+         context.authorization_context.authority_uuid ==
              record.security_context_uuid &&
          context.authorization_context.security_context_generation ==
              record.security_context_generation &&
@@ -3294,12 +3294,12 @@ bool DmlUpdateResolveColumnIdentity(
     DmlUpdateBoundColumnV1* identity,
     EngineApiDiagnostic* diagnostic) {
   if (identity == nullptr || diagnostic == nullptr ||
-      column.column_uuid.canonical.empty() ||
+      column.column_uuid.is_nil() ||
       column.column_generation == 0 ||
-      column.value_descriptor.descriptor_uuid.canonical.empty()) {
+      column.value_descriptor.descriptor_uuid.is_nil()) {
     if (diagnostic != nullptr) {
       *diagnostic = DmlUpdateDescriptorDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.column_identity_absent");
     }
     return false;
@@ -3327,7 +3327,7 @@ bool DmlUpdateResolveColumnIdentity(
                                    encoded_descriptor_generation->size() ||
       descriptor_generation == 0) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.column_identity_stale",
         column.canonical_name_key);
     return false;
@@ -3338,7 +3338,7 @@ bool DmlUpdateResolveColumnIdentity(
   // these two authorities makes every persisted column look stale.
   const auto lookup = scratchbird::core::datatypes::
       LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
           *encoded_descriptor_uuid, descriptor_generation);
@@ -3346,12 +3346,12 @@ bool DmlUpdateResolveColumnIdentity(
       *encoded_type_uuid != lookup.row.type_uuid ||
       *encoded_descriptor_uuid != lookup.row.descriptor_uuid) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.column_identity_stale",
         column.canonical_name_key);
     return false;
   }
-  identity->column_uuid = column.column_uuid.canonical;
+  identity->column_uuid = column.column_uuid;
   identity->column_generation = column.column_generation;
   identity->ordinal = column.ordinal;
   identity->canonical_name_key = column.canonical_name_key;
@@ -3407,7 +3407,7 @@ bool DmlUpdateBindLiteral(
   }
   const auto lookup = scratchbird::core::datatypes::
       LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
           identity->datatype_descriptor_uuid,
@@ -3416,7 +3416,7 @@ bool DmlUpdateBindLiteral(
   if (!lookup.ok ||
       !DmlUpdateEncodeSignedInteger(literal, lookup.row, &canonical_binary)) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.literal_codec_refused",
         column.canonical_name_key);
     return false;
@@ -3596,7 +3596,7 @@ bool DmlUpdateBuildPredicateCarrier(
     update_wire::TypedUpdatePredicateRecord node;
     if (!initialize_node(&node, 1) || !bind_boolean_result(&node)) {
       *diagnostic = DmlUpdateDescriptorDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.predicate_boolean_authority_unavailable");
       return false;
     }
@@ -3669,7 +3669,7 @@ bool DmlUpdateBuildPredicateCarrier(
         !DmlUpdateTypedUuid(binding.equality_operator_uuid,
                             &compare_node.operator_uuid)) {
       *diagnostic = DmlUpdateDescriptorDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.predicate_operator_authority_unavailable");
       return false;
     }
@@ -3766,16 +3766,16 @@ bool DmlUpdateBuildExecutionAuthorityCarriers(
   auto& recovery = record->canonical_carriers.recovery_token;
   const auto& owner = record->resource_owner;
   if (!DmlUpdateIssueTypedIdentity(&target_order.target_order_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+      !DmlUpdateTypedUuid(context.statement_receipt_uuid,
                           &target_order.authenticated_statement_receipt_uuid) ||
       !DmlUpdateTypedUuid(record->relation_occurrence_uuid,
                           &target_order.target_relation_occurrence_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_snapshot_uuid.canonical,
+      !DmlUpdateTypedUuid(context.statement_snapshot_uuid,
                           &target_order.statement_snapshot_uuid) ||
       !DmlUpdateIssueTypedIdentity(&recovery.recovery_token_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+      !DmlUpdateTypedUuid(context.statement_receipt_uuid,
                           &recovery.authenticated_statement_receipt_uuid) ||
-      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
+      !DmlUpdateTypedUuid(context.transaction_uuid,
                           &recovery.owning_transaction_uuid) ||
       !DmlUpdateTypedUuid(record->operation_uuid,
                           &recovery.operation_uuid) ||
@@ -4233,7 +4233,7 @@ bool DmlUpdateCaptureCanonicalProviderAuthorities(
           datatype_authority.exact_builtin_operator_authority_duov) {
     *diagnostic = datatype_authority.diagnostic.code.empty()
                       ? DmlUpdateDescriptorDiagnostic(
-                            "DATATYPE.DESCRIPTOR_INVALID",
+                            "DATATYPE.DESCRIPTOR.INVALID",
                             "sblr.dml_update_rows.datatype_operator_capture_failed")
                       : datatype_authority.diagnostic;
     return false;
@@ -4467,13 +4467,13 @@ bool DmlUpdateRevalidateCanonicalAuthority(
   update_wire::TypedUpdateUuid relation_uuid{};
   update_wire::TypedUpdateUuid security_context_uuid{};
   update_wire::TypedUpdateUuid security_snapshot_uuid{};
-  if (!DmlUpdateTypedUuid(context.statement_receipt_uuid.canonical,
+  if (!DmlUpdateTypedUuid(context.statement_receipt_uuid,
                           &receipt_uuid) ||
-      !DmlUpdateTypedUuid(context.transaction_uuid.canonical,
+      !DmlUpdateTypedUuid(context.transaction_uuid,
                           &transaction_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_snapshot_uuid.canonical,
+      !DmlUpdateTypedUuid(context.statement_snapshot_uuid,
                           &statement_snapshot_uuid) ||
-      !DmlUpdateTypedUuid(context.statement_metadata_snapshot_uuid.canonical,
+      !DmlUpdateTypedUuid(context.statement_metadata_snapshot_uuid,
                           &catalog_snapshot_uuid) ||
       !DmlUpdateTypedUuid(record.relation_uuid, &relation_uuid) ||
       !DmlUpdateTypedUuid(record.security_context_uuid,
@@ -4489,7 +4489,7 @@ bool DmlUpdateRevalidateCanonicalAuthority(
       descriptor.datatype_registry_generation !=
           context.datatype_registry_generation ||
       !context.authorization_context.present ||
-      context.authorization_context.authority_uuid.canonical !=
+      context.authorization_context.authority_uuid !=
           record.security_context_uuid ||
       context.authorization_context.security_context_generation !=
           record.security_context_generation ||
@@ -4578,7 +4578,7 @@ bool DmlUpdateBuildJournalRecordV1(
   journal.operation_uuid = journal.descriptor.operation_uuid;
   journal.recovery_token_uuid = journal.descriptor.recovery_token_uuid;
   journal.recovery_generation = journal.descriptor.recovery_generation;
-  if (!DmlUpdateTypedUuid(context.database_uuid.canonical,
+  if (!DmlUpdateTypedUuid(context.database_uuid,
                           &journal.database_uuid)) {
     return false;
   }
@@ -4798,11 +4798,11 @@ bool DmlUpdateDecodeDurableRecoveryV1(
   update_wire::TypedUpdateUuid expected_descriptor_uuid{};
   if (!DmlUpdateTypedUuid(descriptor_ref.descriptor_uuid,
                           &expected_descriptor_uuid) ||
-      recovered.identity.database_uuid != context.database_uuid.canonical ||
+      recovered.identity.database_uuid != context.database_uuid ||
       recovered.identity.authenticated_statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       recovered.identity.owning_transaction_uuid !=
-          context.transaction_uuid.canonical ||
+          context.transaction_uuid ||
       recovered.identity.owning_local_transaction_id !=
           context.local_transaction_id ||
       recovered.identity.descriptor_uuid != descriptor_ref.descriptor_uuid ||
@@ -5173,7 +5173,7 @@ bool DmlUpdatePrepareJournalRecordV1(
     DmlUpdatePreparedJournalAppendV1* prepared) {
   try {
     if (prepared == nullptr || context.database_path.empty() ||
-        context.database_uuid.canonical != record.database_uuid) {
+        context.database_uuid != record.database_uuid) {
       return false;
     }
     std::vector<std::uint8_t> journal;
@@ -5517,7 +5517,7 @@ void RetryRetiredDmlUpdateResourceOwnersV1(const EngineRequestContext& context) 
       std::lock_guard guard(g_dml_update_resource_owner_mutex);
       for (const auto& [id, owner] : g_dml_update_resource_owners) {
         if (owner->context.database_path != context.database_path ||
-            owner->context.database_uuid.canonical != context.database_uuid.canonical ||
+            owner->context.database_uuid != context.database_uuid ||
             !owner->receipt->SharesRuntimeWith(*scope) || !owner->receipt->IsRevoked()) continue;
         if (std::none_of(receipts.begin(), receipts.end(), [&](const auto& prior) {
               return prior->receipt == owner->receipt;
@@ -5542,10 +5542,10 @@ bool PrepareDmlUpdateTransactionFinalityV1(const EngineRequestContext& context) 
       std::lock_guard guard(g_dml_update_resource_owner_mutex);
       for (const auto& [id, owner] : g_dml_update_resource_owners) {
         if (!matches(owner)) continue;
-        if (owner->context.database_uuid.canonical != context.database_uuid.canonical ||
-            owner->context.transaction_uuid.canonical != context.transaction_uuid.canonical ||
-            owner->context.session_uuid.canonical != context.session_uuid.canonical ||
-            owner->context.principal_uuid.canonical != context.principal_uuid.canonical) return false;
+        if (owner->context.database_uuid != context.database_uuid ||
+            owner->context.transaction_uuid != context.transaction_uuid ||
+            owner->context.session_uuid != context.session_uuid ||
+            owner->context.principal_uuid != context.principal_uuid) return false;
         if (owner->receipt->IsRevoked()) retired.push_back(owner);
       }
     }
@@ -5600,7 +5600,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
       !context.authorization_context.present ||
-      context.authorization_context.authority_uuid.canonical.empty() ||
+      context.authorization_context.authority_uuid.is_nil() ||
       context.authorization_context.security_context_generation == 0 ||
       context.dml_update_resource_receipt.expired() ||
       !DmlUpdateHasTraceTag(context, "private_dml_update_rows_binder")) {
@@ -5608,11 +5608,11 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
                   "sblr.dml_update_rows.binding_authority_required");
   }
   if (context.read_only_mode || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
-      context.statement_receipt_uuid.canonical.empty() ||
-      context.statement_receipt_uuid.canonical !=
+      context.transaction_uuid.is_nil() ||
+      context.statement_receipt_uuid.is_nil() ||
+      context.statement_receipt_uuid !=
           demand.authenticated_statement_receipt_uuid ||
-      context.datatype_catalog_snapshot_uuid.canonical.empty() ||
+      context.datatype_catalog_snapshot_uuid.is_nil() ||
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0 ||
       demand.structural_occurrence_id == 0 ||
@@ -5656,31 +5656,31 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
 
   DmlUpdateRowsDescriptorRecordV1 record;
   DmlUpdateUnpublishedReservationGuardV1 reservation_guard{context, record};
-  record.statement_receipt_uuid = context.statement_receipt_uuid.canonical;
+  record.statement_receipt_uuid = context.statement_receipt_uuid;
   record.structural_occurrence_id = demand.structural_occurrence_id;
-  record.database_uuid = context.database_uuid.canonical;
-  record.session_uuid = context.session_uuid.canonical;
-  record.transaction_uuid = context.transaction_uuid.canonical;
+  record.database_uuid = context.database_uuid;
+  record.session_uuid = context.session_uuid;
+  record.transaction_uuid = context.transaction_uuid;
   record.local_transaction_id = context.local_transaction_id;
-  record.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  record.statement_snapshot_uuid = context.statement_snapshot_uuid;
   record.metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   record.datatype_catalog_snapshot_uuid =
-      context.datatype_catalog_snapshot_uuid.canonical;
+      context.datatype_catalog_snapshot_uuid;
   record.datatype_catalog_generation = context.datatype_catalog_generation;
   record.datatype_registry_generation = context.datatype_registry_generation;
   record.security_epoch = context.security_epoch;
   record.catalog_generation_id = context.catalog_generation_id;
   record.executor_availability_snapshot = current_availability;
-  record.relation_uuid = loaded.descriptor.relation_uuid.canonical;
+  record.relation_uuid = loaded.descriptor.relation_uuid;
   record.relation_generation = loaded.descriptor.relation_generation;
   record.relation_descriptor_uuid =
-      loaded.descriptor.descriptor_uuid.canonical;
+      loaded.descriptor.descriptor_uuid;
   record.relation_descriptor_generation =
       loaded.descriptor.descriptor_generation;
   record.prepared_request.context = context;
   record.prepared_request.operation_id = "dml.update_rows";
-  record.prepared_request.target_table.uuid.canonical = record.relation_uuid;
+  record.prepared_request.target_table.uuid = record.relation_uuid;
   record.prepared_request.target_table.object_kind = "table";
   record.prepared_request.option_envelopes.push_back(
       "result_payload_policy:summary_only");
@@ -5701,7 +5701,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
     const auto* column = DmlUpdateFindColumn(
         loaded.descriptor, assignment.target_column_spelling);
     if (column == nullptr || column->generated ||
-        !assigned_column_uuids.insert(column->column_uuid.canonical).second) {
+        !assigned_column_uuids.insert(column->column_uuid).second) {
       return refuse("DML.ASSIGNMENT_SHAPE_INVALID",
                     "sblr.dml_update_rows.assignment_column_refused",
                     assignment.target_column_spelling);
@@ -5723,7 +5723,7 @@ EngineDmlUpdateRowsBindResultV1 BindDmlUpdateRowsDescriptorV1(
       if (!DmlUpdateTypedUuid(record.relation_uuid, &key.relation_uuid) ||
           !DmlUpdateTypedUuid(record.relation_descriptor_uuid, &key.relation_descriptor_uuid) ||
           !DmlUpdateTypedUuid(identity.column_uuid, &key.column_uuid))
-        return refuse("DATATYPE.DESCRIPTOR_INVALID", "sblr.dml_update_rows.text_target_identity_invalid");
+        return refuse("DATATYPE.DESCRIPTOR.INVALID", "sblr.dml_update_rows.text_target_identity_invalid");
       key.relation_descriptor_generation = record.relation_descriptor_generation;
       key.column_ordinal = identity.ordinal;
       const auto target = CaptureDmlUpdateTextTargetV2(context, key, identity.column_generation);
@@ -6039,7 +6039,7 @@ bool DmlUpdateRevalidateRecoveredSecurityV1(
       security.snapshot.policy_generation !=
           decoded.security_snapshot.policy_generation ||
       security.snapshot.authenticated_statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       security.snapshot.target_relation_uuid !=
           DmlUpdateUuidText(decoded.security_snapshot.target_relation_uuid)) {
     *diagnostic = DmlUpdateDescriptorDiagnostic(
@@ -6267,8 +6267,8 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
         context, descriptor_ref, structural_occurrence_id);
   }
   if (found->second.statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
-      found->second.database_uuid != context.database_uuid.canonical) {
+          context.statement_receipt_uuid ||
+      found->second.database_uuid != context.database_uuid) {
     result.diagnostic = DmlUpdateDescriptorDiagnostic(
         "SECURITY.ACCESS_DENIED",
         "sblr.dml_update_rows.descriptor_cross_authority_refused");
@@ -6337,7 +6337,7 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
           record.relation_uuid);
   if (!loaded.ok ||
       loaded.descriptor.relation_generation != record.relation_generation ||
-      loaded.descriptor.descriptor_uuid.canonical !=
+      loaded.descriptor.descriptor_uuid !=
           record.relation_descriptor_uuid ||
       loaded.descriptor.descriptor_generation !=
           record.relation_descriptor_generation) {
@@ -6353,7 +6353,7 @@ EngineDmlUpdateRowsConsumeResultV1 ConsumeDmlUpdateRowsDescriptorV1(
     const auto match = std::find_if(
         loaded.descriptor.columns.begin(), loaded.descriptor.columns.end(),
         [&](const auto& column) {
-          return column.column_uuid.canonical == identity.column_uuid;
+          return column.column_uuid == identity.column_uuid;
         });
     return match == loaded.descriptor.columns.end() ? nullptr : &*match;
   };
@@ -7010,11 +7010,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "local_transaction_id_required"));
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
   }
   const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
-      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::update);
+      request.context, request.target_table.uuid, MgaDmlMutationKind::update);
   if (savepoint_admission.error)
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context, "dml.update_rows", savepoint_admission);
@@ -7078,10 +7078,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   TransactionalRelationStore relation_store(effective_request.context);
   auto loaded = needs_source_scope
       ? relation_store.LoadMutationTargetRows(
-            std::vector<std::string>{effective_request.target_table.uuid.canonical,
+            std::vector<std::string>{effective_request.target_table.uuid,
                                      source_uuid})
       : relation_store.LoadMutationTargetRows(
-            effective_request.target_table.uuid.canonical);
+            effective_request.target_table.uuid);
   mark_update_phase("load_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
   if (descriptor_atomic_execution &&
@@ -7090,7 +7090,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         "sblr.dml_update_rows.cancelled_after_target_enumeration");
   }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
-  auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid, effective_request.context.local_transaction_id);
   mark_update_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -7098,7 +7098,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         "dml.update_rows",
         MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_not_visible"));
   }
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
         "dml.update_rows",
@@ -7108,7 +7108,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   const bool executable_trigger_descriptors_present =
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
-          request.target_table.uuid.canonical);
+          request.target_table.uuid);
   const auto resolved_projection_predicate =
       ResolveColumnInProjectionPredicate(effective_request, state);
   if (resolved_projection_predicate.attempted) {
@@ -7136,7 +7136,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   auto serializable_admission = dml::CheckSerializablePredicateMutation(
       effective_request.context,
       "dml.update_rows",
-      effective_request.target_table.uuid.canonical,
+      effective_request.target_table.uuid,
       effective_request.update_predicate,
       false,
       effective_request.option_envelopes);
@@ -7154,7 +7154,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
 
   auto visible_indexes = VisibleMgaIndexesForTable(
       state,
-      effective_request.target_table.uuid.canonical,
+      effective_request.target_table.uuid,
       effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(effective_request.context, *table, visible_indexes, &relation_descriptor);
@@ -7180,10 +7180,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (update_needs_index_entries && state.index_entries.empty()) {
     auto reloaded = needs_source_scope
         ? relation_store.LoadMutationTargets(
-              std::vector<std::string>{request.target_table.uuid.canonical,
+              std::vector<std::string>{request.target_table.uuid,
                                        source_uuid})
         : relation_store.LoadMutationTarget(
-              request.target_table.uuid.canonical);
+              request.target_table.uuid);
     if (!reloaded.ok) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
           request.context,
@@ -7195,7 +7195,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                            reloaded.evidence.end());
     state = relation_store.BuildReadView(&reloaded);
     table = FindVisibleMgaTable(state,
-                                 request.target_table.uuid.canonical,
+                                 request.target_table.uuid,
                                  request.context.local_transaction_id);
     if (!table) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -7205,7 +7205,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     }
     visible_indexes = VisibleMgaIndexesForTable(
         state,
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.context.local_transaction_id);
     batch_context =
         BuildUpdateBatchContext(effective_request, state, *table, visible_indexes);
@@ -7296,7 +7296,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (UpdateMutationWindowActive(effective_request)) {
     materialized_rows = VisibleMgaRowsForContext(
         state,
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.context);
     row_refs.reserve(materialized_rows.size());
     for (const auto& row : materialized_rows) {
@@ -7320,7 +7320,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                  DmlTargetAccessKind::table_scan &&
              AppendOnlyUpdateCandidateRefs(
                  state,
-                 effective_request.target_table.uuid.canonical,
+                 effective_request.target_table.uuid,
                  effective_request.context,
                  &row_refs)) {
     result.evidence.push_back({"update_visible_row_stream",
@@ -7330,7 +7330,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                  DmlTargetAccessKind::table_scan &&
              VisibleCrudRowRefsForContext(
                  state,
-                 effective_request.target_table.uuid.canonical,
+                 effective_request.target_table.uuid,
                  effective_request.context,
                  &row_refs)) {
     result.evidence.push_back({"update_visible_row_stream",
@@ -7338,7 +7338,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   } else {
     materialized_rows = VisibleMgaRowsForContext(
         state,
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.context);
     row_refs.reserve(materialized_rows.size());
     for (const auto& row : materialized_rows) {
@@ -7484,7 +7484,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     if (batch_context.index_plan.has_affected_unique_exact) {
       const auto unique_check =
           ValidateMgaUniqueIndexesForRow(state,
-                                          request.target_table.uuid.canonical,
+                                          request.target_table.uuid,
                                           row.row_uuid,
                                           values,
                                           request.context);
@@ -7499,11 +7499,11 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const std::string version_uuid = GenerateCrudEngineUuid("row");
     CrudRowVersionRecord row_record;
     row_record.creator_tx = request.context.local_transaction_id;
-    row_record.table_uuid = request.target_table.uuid.canonical;
+    row_record.table_uuid = request.target_table.uuid;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = version_uuid;
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid.canonical : "";
+        table->temporary ? request.context.session_uuid : "";
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = false;
@@ -7617,7 +7617,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const auto row_allocation = ReserveDmlPageAllocationRuntime(
         request.context,
         request.option_envelopes,
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         DmlPageAllocationRuntimeFamily::row_data,
         static_cast<std::uint64_t>(staged_update_rows.size()),
         "update.row_data");
@@ -7659,7 +7659,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       if (staged.toast_required) {
         auto storage_values = staged.logical_values;
         const auto large_value_persisted = PersistMgaLargeValuesForRow(request.context,
-                                                                       request.target_table.uuid.canonical,
+                                                                       request.target_table.uuid,
                                                                        staged.row_record.row_uuid,
                                                                        staged.row_record.version_uuid,
                                                                        true,
@@ -7679,7 +7679,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         effective_request.context,
         "dml.update_rows",
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.update_predicate,
         false,
         effective_request.option_envelopes);
@@ -7745,7 +7745,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     }
     const auto index_appended = AppendSynchronousUpdateIndexEntries(request.context,
                                                                     batch_context,
-                                                                    request.target_table.uuid.canonical,
+                                                                    request.target_table.uuid,
                                                                     staged_update_rows,
                                                                     row_records,
                                                                     hot_update_shape_enabled,
@@ -7787,7 +7787,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         returning_row.creator_tx = request.context.local_transaction_id;
         returning_row.event_sequence = row_record.event_sequence;
         returning_row.sequence = row_record.sequence;
-        returning_row.table_uuid = request.target_table.uuid.canonical;
+        returning_row.table_uuid = request.target_table.uuid;
         returning_row.row_uuid = row_record.row_uuid;
         returning_row.version_uuid = row_record.version_uuid;
         returning_row.previous_version_uuid = row_record.previous_version_uuid;
@@ -7804,7 +7804,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         request.context,
         "dml.update_rows",
-        request.target_table.uuid.canonical,
+        request.target_table.uuid,
         request.update_predicate,
         false,
         request.option_envelopes);
@@ -7856,7 +7856,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
                                                                        : "rs.dml.returning.v1"});
   result.evidence.push_back({"domain_validation", "write_path_checked"});
-  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
+  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid});
   result.evidence.push_back({"dml_returning", "affected_rows"});
   if (descriptor_atomic_execution &&
       DmlUpdateCancellationRequested(request.context)) {
@@ -7872,7 +7872,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     const auto trigger_result =
         dml_trigger_runtime::FireAfterUpdateTableTriggers(request.context,
                                                           state,
-                                                          request.target_table.uuid.canonical,
+                                                          request.target_table.uuid,
                                                           trigger_update_rows,
                                                           request.option_envelopes);
     if (!trigger_result.ok) {
@@ -7912,11 +7912,11 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "local_transaction_id_required"));
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_uuid_required"));
   }
   const auto savepoint_admission = AdmitMgaDmlSavepointMutation(
-      request.context, request.target_table.uuid.canonical, MgaDmlMutationKind::delete_rows);
+      request.context, request.target_table.uuid, MgaDmlMutationKind::delete_rows);
   if (savepoint_admission.error)
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context, "dml.delete_rows", savepoint_admission);
@@ -7973,17 +7973,17 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   NormalizeDeletePredicateFromLoweredOptions(&effective_request);
   TransactionalRelationStore relation_store(effective_request.context);
   auto loaded = relation_store.LoadConstraintScope(
-      effective_request.target_table.uuid.canonical);
+      effective_request.target_table.uuid);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
-  const auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  const auto table = FindVisibleMgaTable(state, effective_request.target_table.uuid, effective_request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
         "dml.delete_rows",
         MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_not_visible"));
   }
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
         "dml.delete_rows",
@@ -7999,7 +7999,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   auto serializable_admission = dml::CheckSerializablePredicateMutation(
       effective_request.context,
       "dml.delete_rows",
-      effective_request.target_table.uuid.canonical,
+      effective_request.target_table.uuid,
       effective_request.delete_predicate,
       true,
       effective_request.option_envelopes);
@@ -8014,7 +8014,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     return failure;
   }
 
-  const auto visible_indexes = VisibleMgaIndexesForTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
+  const auto visible_indexes = VisibleMgaIndexesForTable(state, effective_request.target_table.uuid, effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(request.context, *table, visible_indexes, &relation_descriptor);
   if (descriptor_ready.error) {
@@ -8108,7 +8108,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   const auto rows = candidate_stream.rows_ready
                         ? candidate_stream.rows
                         : VisibleMgaRowsForContext(state,
-                                                    effective_request.target_table.uuid.canonical,
+                                                    effective_request.target_table.uuid,
                                                     effective_request.context);
   result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
   std::vector<CrudRowVersionRecord> returning_rows;
@@ -8146,11 +8146,11 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     AddDeleteTrace(&batch_context, "delete.row.tombstone", "write", row.row_uuid);
     CrudRowVersionRecord row_record;
     row_record.creator_tx = effective_request.context.local_transaction_id;
-    row_record.table_uuid = effective_request.target_table.uuid.canonical;
+    row_record.table_uuid = effective_request.target_table.uuid;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = GenerateCrudEngineUuid("row");
     row_record.temporary_session_uuid =
-        table->temporary ? effective_request.context.session_uuid.canonical : "";
+        table->temporary ? effective_request.context.session_uuid : "";
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = true;
@@ -8184,7 +8184,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         effective_request.context,
         "dml.delete_rows",
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.delete_predicate,
         true,
         effective_request.option_envelopes);
@@ -8279,7 +8279,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
         effective_request.context,
         "dml.delete_rows",
-        effective_request.target_table.uuid.canonical,
+        effective_request.target_table.uuid,
         effective_request.delete_predicate,
         true,
         effective_request.option_envelopes);
@@ -8306,7 +8306,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     result.result_shape = CrudRowsToResultShape(returning_rows);
   }
   result.evidence.push_back({"mga_row_version", "row_delete_tombstone"});
-  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
+  result.evidence.push_back({"relation_descriptor", relation_descriptor.descriptor_uuid});
   result.evidence.push_back({"dml_returning", "affected_rows"});
   std::vector<CrudRowVersionRecord> trigger_delete_rows;
   trigger_delete_rows.reserve(staged_delete_rows.size());
@@ -8316,7 +8316,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   const auto trigger_result =
       dml_trigger_runtime::FireAfterDeleteTableTriggers(effective_request.context,
                                                         state,
-                                                        effective_request.target_table.uuid.canonical,
+                                                        effective_request.target_table.uuid,
                                                         trigger_delete_rows,
                                                         effective_request.option_envelopes);
   if (!trigger_result.ok) {

@@ -25,11 +25,11 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool Empty(const EngineUuid& uuid) {
-  return uuid.canonical.empty();
+  return uuid.is_nil();
 }
 
 bool Empty(const EngineObjectReference& object) {
-  return object.uuid.canonical.empty();
+  return object.uuid.is_nil();
 }
 
 bool OneOf(const std::string& value, std::initializer_list<const char*> allowed) {
@@ -52,9 +52,9 @@ void RecordParticipantMetrics(const EngineRemoteParticipantInsertRequest& reques
   if (!request.context.cluster_authority_available) {
     return;
   }
-  const std::string database_uuid = MetricLabel(request.target_database.uuid.canonical);
-  const std::string table_uuid = MetricLabel(request.target_table.uuid.canonical);
-  const std::string participant_node_uuid = MetricLabel(request.participant_node_uuid.canonical);
+  const std::string database_uuid = MetricLabel(request.target_database.uuid);
+  const std::string table_uuid = MetricLabel(request.target_table.uuid);
+  const std::string participant_node_uuid = MetricLabel(request.participant_node_uuid);
   (void)scratchbird::core::metrics::RecordClusterInsertParticipantAdmission(database_uuid,
                                                                            table_uuid,
                                                                            participant_node_uuid,
@@ -94,11 +94,11 @@ EngineRemoteParticipantInsertResult ParticipantFailure(const EngineRemotePartici
     result.evidence.push_back({"standalone_cluster_boundary", "cluster_metric_path_skipped"});
     result.evidence.push_back({"standalone_cluster_boundary", "remote_participant_path_not_entered"});
   }
-  if (!request.remote_request_uuid.canonical.empty()) {
-    result.evidence.push_back({"remote_request_uuid", request.remote_request_uuid.canonical});
+  if (!request.remote_request_uuid.is_nil()) {
+    result.evidence.push_back({"remote_request_uuid", request.remote_request_uuid});
   }
-  if (!request.target_table.uuid.canonical.empty()) {
-    result.evidence.push_back({"target_table_uuid", request.target_table.uuid.canonical});
+  if (!request.target_table.uuid.is_nil()) {
+    result.evidence.push_back({"target_table_uuid", request.target_table.uuid});
   }
   RecordParticipantMetrics(request, "refused", reason, retryable);
   return result;
@@ -251,22 +251,22 @@ EngineRemoteParticipantInsertResult EnginePrepareRemoteParticipantInsert(
                                    provider_result,
                                    "cluster.prepare_remote_participant_insert");
   result.evidence.push_back({"remote_execution", "fail_closed_until_cluster_finality_executor_exists"});
-  result.evidence.push_back({"remote_request_uuid", request.remote_request_uuid.canonical});
-  result.evidence.push_back({"target_database_uuid", request.target_database.uuid.canonical});
-  result.evidence.push_back({"target_table_uuid", request.target_table.uuid.canonical});
-  result.evidence.push_back({"target_shard_uuid", request.target_shard.uuid.canonical});
-  result.evidence.push_back({"target_range_uuid", request.target_range.uuid.canonical});
-  result.evidence.push_back({"owner_node_uuid", request.owner_node_uuid.canonical});
-  result.evidence.push_back({"participant_node_uuid", request.participant_node_uuid.canonical});
-  result.evidence.push_back({"route_epoch_uuid", request.route_epoch_uuid.canonical});
+  result.evidence.push_back({"remote_request_uuid", request.remote_request_uuid});
+  result.evidence.push_back({"target_database_uuid", request.target_database.uuid});
+  result.evidence.push_back({"target_table_uuid", request.target_table.uuid});
+  result.evidence.push_back({"target_shard_uuid", request.target_shard.uuid});
+  result.evidence.push_back({"target_range_uuid", request.target_range.uuid});
+  result.evidence.push_back({"owner_node_uuid", request.owner_node_uuid});
+  result.evidence.push_back({"participant_node_uuid", request.participant_node_uuid});
+  result.evidence.push_back({"route_epoch_uuid", request.route_epoch_uuid});
   result.evidence.push_back({"route_epoch", std::to_string(request.route_epoch)});
   result.evidence.push_back({"route_generation", std::to_string(request.route_generation)});
-  result.evidence.push_back({"participant_uuid", request.participant_uuid.canonical});
-  result.evidence.push_back({"policy_snapshot_uuid", request.policy_snapshot_uuid.canonical});
-  result.evidence.push_back({"finality_service_uuid", request.finality_service_uuid.canonical});
+  result.evidence.push_back({"participant_uuid", request.participant_uuid});
+  result.evidence.push_back({"policy_snapshot_uuid", request.policy_snapshot_uuid});
+  result.evidence.push_back({"finality_service_uuid", request.finality_service_uuid});
   result.evidence.push_back({"canonical_row_count", std::to_string(result.canonical_row_count)});
-  if (!request.checkpoint_uuid.canonical.empty()) {
-    result.evidence.push_back({"checkpoint_uuid", request.checkpoint_uuid.canonical});
+  if (!request.checkpoint_uuid.is_nil()) {
+    result.evidence.push_back({"checkpoint_uuid", request.checkpoint_uuid});
   }
   RecordParticipantMetrics(request, "validated_fail_closed", result.refusal_reason, result.retryable);
   return result;

@@ -75,7 +75,7 @@ EngineGrantRightResult EngineGrantRight(const EngineGrantRightRequest& request) 
   }
   if (result.ok) {
     AddSecurityEvidence(&result, "security_evidence_before_success", "grant_right");
-    AddSecurityEvidence(&result, "security_grant_admin", request.context.principal_uuid.canonical);
+    AddSecurityEvidence(&result, "security_grant_admin", request.context.principal_uuid);
   }
   return result;
 }
@@ -92,7 +92,7 @@ EngineRevokeRightResult EngineRevokeRight(const EngineRevokeRightRequest& reques
   auto result = PersistedRecordResult<EngineRevokeRightResult>(request, "security.revoke_right", "grant", true, "revoked", true);
   if (result.ok) {
     AddSecurityEvidence(&result, "security_evidence_before_success", "revoke_right");
-    AddSecurityEvidence(&result, "security_grant_admin", request.context.principal_uuid.canonical);
+    AddSecurityEvidence(&result, "security_grant_admin", request.context.principal_uuid);
   }
   return result;
 }

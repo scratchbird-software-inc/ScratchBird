@@ -93,12 +93,12 @@ PhysicalMgaStatementContext PhysicalMgaContextFromResolvedSnapshot(
     const scratchbird::engine::internal_api::EngineRequestContext& context,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
   PhysicalMgaStatementContext expected;
-  expected.statement_uuid = context.statement_uuid.canonical;
-  expected.owning_transaction_uuid = context.transaction_uuid.canonical;
+  expected.statement_uuid = context.statement_uuid;
+  expected.owning_transaction_uuid = context.transaction_uuid;
   expected.statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   expected.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   expected.owning_local_transaction_id = descriptor.owning_transaction.value;
   expected.visible_committed_high_watermark =
       descriptor.visible_committed_high_watermark;
@@ -170,11 +170,11 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
   CurrentHeapMgaResolutionBinding binding;
   binding.trust_mode = context.trust_mode;
   binding.database_path = context.database_path;
-  binding.transaction_uuid = context.transaction_uuid.canonical;
-  binding.statement_uuid = context.statement_uuid.canonical;
-  binding.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  binding.transaction_uuid = context.transaction_uuid;
+  binding.statement_uuid = context.statement_uuid;
+  binding.statement_snapshot_uuid = context.statement_snapshot_uuid;
   binding.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   binding.local_transaction_id = context.local_transaction_id;
   binding.visible_committed_high_watermark =
       context.snapshot_visible_through_local_transaction_id;
@@ -183,11 +183,11 @@ CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
     api::EngineRequestContext context;
     context.trust_mode = binding.trust_mode;
     context.database_path = binding.database_path;
-    context.transaction_uuid.canonical = binding.transaction_uuid;
-    context.statement_uuid.canonical = binding.statement_uuid;
-    context.statement_snapshot_uuid.canonical =
+    context.transaction_uuid = binding.transaction_uuid;
+    context.statement_uuid = binding.statement_uuid;
+    context.statement_snapshot_uuid =
         binding.statement_snapshot_uuid;
-    context.statement_metadata_snapshot_uuid.canonical =
+    context.statement_metadata_snapshot_uuid =
         binding.statement_metadata_snapshot_uuid;
     context.local_transaction_id = binding.local_transaction_id;
     context.snapshot_visible_through_local_transaction_id =
@@ -420,7 +420,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
                    "wire-v2 direct optimizer publication is required");
   }
-  if (!context.prepared_metadata_required_object_uuid.canonical.empty() ||
+  if (!context.prepared_metadata_required_object_uuid.is_nil() ||
       context.prepared_metadata_required_executable_generation != 0 ||
       context.prepared_metadata_required_metadata_epoch != 0) {
     return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
@@ -444,7 +444,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
                    true);
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
+      context.transaction_uuid.is_nil() ||
       physical_dag.local_transaction_id !=
           context.local_transaction_id ||
       physical_dag.statement_snapshot_id !=
@@ -457,24 +457,24 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
           physical_dag.bound_sblr_tree_uuid ||
-      relational.statement_uuid != context.statement_uuid.canonical ||
+      relational.statement_uuid != context.statement_uuid ||
       relational.owning_transaction_uuid !=
-          context.transaction_uuid.canonical ||
+          context.transaction_uuid ||
       relational.statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       relational.statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       relational.local_transaction_id != context.local_transaction_id ||
       relational.snapshot_visible_through_local_transaction_id !=
           context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
-          context.catalog_epoch_uuid.canonical ||
+          context.catalog_epoch_uuid ||
       physical_dag.catalog_epoch_uuid !=
-          context.catalog_epoch_uuid.canonical ||
+          context.catalog_epoch_uuid ||
       relational.bound_security_context_uuid !=
-          authorization.authority_uuid.canonical ||
+          authorization.authority_uuid ||
       physical_dag.security_context_uuid !=
-          authorization.authority_uuid.canonical ||
+          authorization.authority_uuid ||
       physical_dag.catalog_generation !=
           context.catalog_generation_id ||
       context.catalog_generation_id !=
@@ -484,11 +484,11 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       physical_dag.policy_epoch != authorization.policy_epoch ||
       physical_dag.resource_epoch != context.resource_epoch ||
       physical_dag.capability_snapshot_uuid !=
-          context.optimizer_capability_snapshot_uuid.canonical ||
+          context.optimizer_capability_snapshot_uuid ||
       physical_dag.resource_snapshot_uuid !=
-          context.optimizer_resource_snapshot_uuid.canonical ||
+          context.optimizer_resource_snapshot_uuid ||
       physical_dag.route_snapshot_uuid !=
-          context.optimizer_route_snapshot_uuid.canonical ||
+          context.optimizer_route_snapshot_uuid ||
       physical_dag.route_epoch != context.optimizer_route_epoch ||
       physical_dag.route_generation !=
           context.optimizer_route_generation ||
@@ -890,14 +890,14 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     bool duplicate_identity = false;
     for (std::size_t prior = 0; prior < persisted_ordinal; ++prior) {
       const auto& prior_column = read.descriptor.columns[prior];
-      if (prior_column.column_uuid.canonical == column.column_uuid.canonical ||
+      if (prior_column.column_uuid == column.column_uuid ||
           prior_column.canonical_name_key == column.canonical_name_key) {
         duplicate_identity = true;
         break;
       }
     }
     if (column.ordinal != persisted_ordinal ||
-        !IsCanonicalHeapBindingUuid(column.column_uuid.canonical) ||
+        !IsCanonicalHeapBindingUuid(column.column_uuid) ||
         column.canonical_name_key.empty() || duplicate_identity) {
       return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
                      "persisted relation column identities are incomplete",
@@ -932,7 +932,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
     }
     const auto persisted_column = std::ranges::find_if(
         read.descriptor.columns, [&](const auto& candidate) {
-          return candidate.column_uuid.canonical ==
+          return candidate.column_uuid ==
                  *expression->bound_name_uuid;
         });
     if (persisted_column == read.descriptor.columns.end()) {
@@ -945,9 +945,9 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
         column.value_descriptor.encoded_descriptor, "type_uuid");
     const bool nullable = relational_descriptor->nullability ==
                           api::RelationalNullability::kNullable;
-    if (column.column_uuid.canonical != *expression->bound_name_uuid ||
+    if (column.column_uuid != *expression->bound_name_uuid ||
         output->output_name_utf8 != column.canonical_name_key ||
-        column.value_descriptor.descriptor_uuid.canonical !=
+        column.value_descriptor.descriptor_uuid !=
             relational_descriptor->descriptor_uuid ||
         column.value_descriptor.encoded_descriptor.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
@@ -979,7 +979,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
             column.value_descriptor, &projected_descriptor_bytes) ||
         !api::AccountHeapReadEngineDescriptorMemory(
             column.value_descriptor, &projected_descriptor_bytes) ||
-        !api::AddHeapReadOwnedStringMemory(column.column_uuid.canonical,
+        !api::AddHeapReadOwnedStringMemory(column.column_uuid,
                                          &projected_descriptor_bytes) ||
         !account_materialization(projected_descriptor_bytes)) {
       return invalid(
@@ -996,7 +996,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       // Publication at this boundary uses the exact scalar execution view
       // already bound above; contextual descriptors retain the full
       // persisted carrier and are revalidated through their live authority.
-      output_descriptor.descriptor_uuid.canonical =
+      output_descriptor.descriptor_uuid =
           relational_descriptor->descriptor_uuid;
       output_descriptor.encoded_descriptor =
           "type_uuid=" + relational_descriptor->type_uuid +
@@ -1022,7 +1022,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
                              column.nullable,
                              output->descriptor_id});
     output_descriptors.push_back(std::move(output_descriptor));
-    column_uuids.push_back(column.column_uuid.canonical);
+    column_uuids.push_back(column.column_uuid);
   }
   batch.rows.reserve(read.visible_rows.size());
   std::vector<std::string> record_uuids;
@@ -1175,7 +1175,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
       };
   const auto& result_mga_context = mga_authority.statement_context;
   if (!account_result_string(relation_uuid) ||
-      !account_result_string(read.descriptor.descriptor_uuid.canonical) ||
+      !account_result_string(read.descriptor.descriptor_uuid) ||
       !account_result_string(physical_dag.selected_plan_uuid) ||
       !account_result_string(result_mga_context.statement_uuid) ||
       !account_result_string(result_mga_context.owning_transaction_uuid) ||
@@ -1232,7 +1232,7 @@ ExecuteCanonicalHeapRelationAcquisitionPrepared(
   result.relation_uuid = relation_uuid;
   result.column_uuids = std::move(column_uuids);
   result.current_relation_descriptor_uuid =
-      read.descriptor.descriptor_uuid.canonical;
+      read.descriptor.descriptor_uuid;
   result.current_relation_descriptor_generation =
       read.descriptor.descriptor_generation;
   result.selected_plan_uuid = physical_dag.selected_plan_uuid;
@@ -1349,7 +1349,7 @@ bool AccountHeapRegistrationDescriptor(
   namespace api = scratchbird::engine::internal_api;
   std::uint64_t allocation_bytes = 0;
   const auto account_uuid = [&](const api::EngineUuid& uuid) {
-    return AccountHeapRegistrationString(uuid.canonical, bytes);
+    return AccountHeapRegistrationString(uuid, bytes);
   };
   if (!account_uuid(descriptor.descriptor_uuid) ||
       !account_uuid(descriptor.database_uuid) ||
@@ -1468,13 +1468,13 @@ std::optional<std::uint64_t> HeapPhysicalRegistrationRetainedMemoryBytes(
           &bytes) ||
       !AccountHeapRegistrationString(state.context->database_path, &bytes) ||
       !AccountHeapRegistrationString(
-          state.context->transaction_uuid.canonical, &bytes) ||
+          state.context->transaction_uuid, &bytes) ||
       !AccountHeapRegistrationString(
-          state.context->statement_uuid.canonical, &bytes) ||
+          state.context->statement_uuid, &bytes) ||
       !AccountHeapRegistrationString(
-          state.context->statement_snapshot_uuid.canonical, &bytes) ||
+          state.context->statement_snapshot_uuid, &bytes) ||
       !AccountHeapRegistrationString(
-          state.context->statement_metadata_snapshot_uuid.canonical, &bytes) ||
+          state.context->statement_metadata_snapshot_uuid, &bytes) ||
       !api::HeapReadMemoryMultiply(
           state.acquisition_leaf_bindings.capacity(),
           sizeof(HeapAcquisitionLeafBinding), &allocation_bytes) ||
@@ -1903,7 +1903,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   }
   const auto& authorization = context.authorization_context;
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
+      context.transaction_uuid.is_nil() ||
       physical.local_transaction_id !=
           context.local_transaction_id ||
       physical.statement_snapshot_id !=
@@ -1912,24 +1912,24 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
           physical.bound_sblr_tree_uuid ||
-      relational.statement_uuid != context.statement_uuid.canonical ||
+      relational.statement_uuid != context.statement_uuid ||
       relational.owning_transaction_uuid !=
-          context.transaction_uuid.canonical ||
+          context.transaction_uuid ||
       relational.statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       relational.statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       relational.local_transaction_id != context.local_transaction_id ||
       relational.snapshot_visible_through_local_transaction_id !=
           context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
-          context.catalog_epoch_uuid.canonical ||
+          context.catalog_epoch_uuid ||
       physical.catalog_epoch_uuid !=
-          context.catalog_epoch_uuid.canonical ||
+          context.catalog_epoch_uuid ||
       relational.bound_security_context_uuid !=
-          authorization.authority_uuid.canonical ||
+          authorization.authority_uuid ||
       physical.security_context_uuid !=
-          authorization.authority_uuid.canonical ||
+          authorization.authority_uuid ||
       physical.catalog_generation !=
           context.catalog_generation_id ||
       context.catalog_generation_id !=
@@ -1939,11 +1939,11 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
       physical.policy_epoch != authorization.policy_epoch ||
       physical.resource_epoch != context.resource_epoch ||
       physical.capability_snapshot_uuid !=
-          context.optimizer_capability_snapshot_uuid.canonical ||
+          context.optimizer_capability_snapshot_uuid ||
       physical.resource_snapshot_uuid !=
-          context.optimizer_resource_snapshot_uuid.canonical ||
+          context.optimizer_resource_snapshot_uuid ||
       physical.route_snapshot_uuid !=
-          context.optimizer_route_snapshot_uuid.canonical ||
+          context.optimizer_route_snapshot_uuid ||
       physical.route_epoch != context.optimizer_route_epoch ||
       physical.route_generation !=
           context.optimizer_route_generation ||
@@ -1960,7 +1960,7 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
         "QOW-DIAG-QRY-004-HEAP-DISPATCH-AUTHORITY-V1",
         "heap registration authority is stale, missing, or over budget");
   }
-  if (!context.prepared_metadata_required_object_uuid.canonical.empty() ||
+  if (!context.prepared_metadata_required_object_uuid.is_nil() ||
       context.prepared_metadata_required_executable_generation != 0 ||
       context.prepared_metadata_required_metadata_epoch != 0) {
     return HeapAcquisitionRefusal(
@@ -2847,12 +2847,12 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   const auto& physical = request.selected_physical_dag;
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
-  if (!exec::IsCanonicalHeapBindingUuid(context.statement_uuid.canonical) ||
+  if (!exec::IsCanonicalHeapBindingUuid(context.statement_uuid) ||
       !exec::IsCanonicalHeapBindingUuid(request.execution_attempt_uuid) ||
       !exec::IsCanonicalHeapBindingUuid(
           request.transaction_effect_evidence_uuid) ||
-      context.statement_uuid.canonical == request.execution_attempt_uuid ||
-      context.statement_uuid.canonical ==
+      context.statement_uuid == request.execution_attempt_uuid ||
+      context.statement_uuid ==
           request.transaction_effect_evidence_uuid ||
       request.execution_attempt_uuid ==
           request.transaction_effect_evidence_uuid) {
@@ -3030,7 +3030,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   selected.available_executors.push_back(std::move(*built.registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      context.statement_uuid.canonical;
+      context.statement_uuid;
   selected.result_publication_request.execution_attempt_uuid =
       request.execution_attempt_uuid;
   selected.result_publication_request.result_kind =

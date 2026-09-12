@@ -674,10 +674,6 @@ bool LifecycleOperationRequiresCacheInvalidation(std::string_view operation_key)
          operation_key == "refuse_upgrade_database";
 }
 
-bool LifecycleDiagnosticRetryable(std::string_view diagnostic_code) {
-  return IsRetryableDiagnosticCode(diagnostic_code);
-}
-
 ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
     ServerObservabilityState* state,
     ServerLifecycleObservabilityEvent event) {
@@ -691,7 +687,8 @@ ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
         IsOutcomeSuccess(event.outcome) &&
         LifecycleOperationRequiresCacheInvalidation(event.operation_key);
   }
-  event.retryable = event.retryable || LifecycleDiagnosticRetryable(event.diagnostic_code);
+  // Observation must retain the source retry decision, including false.
+  // Evaluating its governing retry policy belongs to the operation owner.
 
   ServerDiagnostic diagnostic{
       event.diagnostic_code.empty() ? "SERVER.LIFECYCLE.OBSERVED" : event.diagnostic_code,

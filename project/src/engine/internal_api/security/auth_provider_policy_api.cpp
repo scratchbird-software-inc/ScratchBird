@@ -24,8 +24,8 @@ EngineReloadAuthProviderPolicyResult EngineReloadAuthProviderPolicy(const Engine
   if (!result.ok) { return result; }
   result.policy = AuthProviderPolicyFromRequest(request);
   result.reloaded = true;
-  AddSecurityEvidence(&result, "auth_provider_policy_reloaded", result.policy.policy_uuid.canonical);
-  AddSecurityRow(&result, {{"policy_uuid", result.policy.policy_uuid.canonical},
+  AddSecurityEvidence(&result, "auth_provider_policy_reloaded", result.policy.policy_uuid);
+  AddSecurityRow(&result, {{"policy_uuid", result.policy.policy_uuid},
                            {"provider_family", result.policy.provider_family},
                            {"stale_behavior", result.policy.stale_behavior},
                            {"cache_bounds", result.policy.cache_bounds}});

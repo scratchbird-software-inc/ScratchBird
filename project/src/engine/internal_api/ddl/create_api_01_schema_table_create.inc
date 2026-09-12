@@ -121,8 +121,8 @@ std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
   }
 
   std::set<std::string> sessions;
-  if (!context.session_uuid.canonical.empty()) {
-    sessions.insert(context.session_uuid.canonical);
+  if (!context.session_uuid.is_nil()) {
+    sessions.insert(context.session_uuid);
   }
   for (const auto& row : state.row_versions) {
     if (row.table_uuid == table.table_uuid && !row.temporary_session_uuid.empty()) {
@@ -133,7 +133,7 @@ std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
   std::vector<CrudRowVersionRecord> rows;
   for (const auto& session_uuid : sessions) {
     EngineRequestContext session_context = context;
-    session_context.session_uuid.canonical = session_uuid;
+    session_context.session_uuid = session_uuid;
     auto visible = VisibleCrudRowsForContext(state, table.table_uuid, session_context);
     rows.insert(rows.end(),
                 std::make_move_iterator(visible.begin()),
@@ -150,7 +150,7 @@ bool ExistingRowsHaveDuplicateKeys(const RelationReadSnapshot& state,
     std::map<std::string, std::set<std::string>> seen_by_session;
     for (const auto& row : RowsVisibleForCreateIndexBuild(state, table, context)) {
       const std::string session_key = row.temporary_session_uuid.empty()
-                                          ? context.session_uuid.canonical
+                                          ? context.session_uuid
                                           : row.temporary_session_uuid;
       for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
         if (!seen_by_session[session_key].insert(key).second) { return true; }
@@ -177,12 +177,12 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
   auto result = PersistedRecordResult<TResult>(request, operation_id, object_kind, require_transaction, state);
   if (!result.ok) { return result; }
   const std::string fallback_name = ApiBehaviorPrimaryName(request, object_kind);
-  const std::string scope_uuid = request.target_schema.uuid.canonical.empty()
-                                     ? request.target_object.uuid.canonical
-                                     : request.target_schema.uuid.canonical;
+  const std::string scope_uuid = request.target_schema.uuid.is_nil()
+                                     ? request.target_object.uuid
+                                     : request.target_schema.uuid;
   const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
                                                                 operation_id,
-                                                                result.primary_object.uuid.canonical,
+                                                                result.primary_object.uuid,
                                                                 object_kind,
                                                                 scope_uuid,
                                                                 request.localized_names,
@@ -190,8 +190,8 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
   if (name_appended.error) {
     return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id, name_appended);
   }
-  AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid.canonical);
-  AddApiBehaviorRow(&result, {{"object_uuid", result.primary_object.uuid.canonical},
+  AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid);
+  AddApiBehaviorRow(&result, {{"object_uuid", result.primary_object.uuid},
                               {"object_kind", object_kind},
                               {"schema_uuid", scope_uuid},
                               {"name", fallback_name},
@@ -200,8 +200,8 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
   AddDdlPublicationResult(&result,
                           operation_id,
                           object_kind,
-                          result.primary_object.uuid.canonical,
-                          result.catalog_row_uuid.canonical,
+                          result.primary_object.uuid,
+                          result.catalog_row_uuid,
                           scope_uuid.empty() ? object_kind : scope_uuid);
   return result;
 }
@@ -224,24 +224,28 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
   }
   const std::string schema_uuid = ApiBehaviorObjectUuid(request, "schema");
   const bool any_recovery_identity =
-      !request.recovery_operation_uuid.canonical.empty() ||
-      !request.requested_catalog_row_uuid.canonical.empty() ||
-      !request.mutation_uuid.canonical.empty() ||
-      !request.statement_publication_barrier_uuid.canonical.empty();
+      !request.recovery_operation_uuid.is_nil() ||
+      !request.requested_catalog_row_uuid.is_nil() ||
+      !request.mutation_uuid.is_nil() ||
+      !request.statement_publication_barrier_uuid.is_nil();
   const bool exact_recovery_identity =
-      !request.recovery_operation_uuid.canonical.empty() &&
-      !request.requested_catalog_row_uuid.canonical.empty() &&
-      !request.mutation_uuid.canonical.empty() &&
-      !request.statement_publication_barrier_uuid.canonical.empty();
+      !request.recovery_operation_uuid.is_nil() &&
+      !request.requested_catalog_row_uuid.is_nil() &&
+      !request.mutation_uuid.is_nil() &&
+      !request.statement_publication_barrier_uuid.is_nil();
   if (any_recovery_identity != exact_recovery_identity) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
         request.context,
         "ddl.create_schema",
         MakeInvalidRequestDiagnostic("ddl.create_schema", "recovery_identity_tuple_incomplete"));
   }
-  const std::string parent_schema_uuid = request.target_schema.uuid.canonical;
-  if (!parent_schema_uuid.empty() &&
-      !FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid, request.context.local_transaction_id)) {
+  const std::string parent_schema_uuid = request.target_schema.uuid;
+  EngineApiDiagnostic schema_diagnostic;
+  const auto parent_schema = FindVisibleSchemaTreeRecord(request.context, parent_schema_uuid,
+      request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+      request.context, "ddl.create_schema", schema_diagnostic);
+  if (!parent_schema_uuid.empty() && !parent_schema) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
         request.context,
         "ddl.create_schema",
@@ -252,11 +256,11 @@ EngineCreateSchemaResult EngineCreateSchema(const EngineCreateSchemaRequest& req
     const std::string fallback = schema_uuid.empty() ? "unnamed_schema" : schema_uuid;
     names.push_back({"en", "default", fallback, fallback, true});
   }
-  if (const auto conflict = SchemaTreePathConflict(request.context,
-                                                  schema_uuid,
-                                                  parent_schema_uuid,
-                                                  names,
-                                                  request.context.local_transaction_id)) {
+  const auto conflict = SchemaTreePathConflict(request.context, schema_uuid, parent_schema_uuid,
+      names, request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
+      request.context, "ddl.create_schema", schema_diagnostic);
+  if (conflict) {
     return MakeApiBehaviorDiagnostic<EngineCreateSchemaResult>(
         request.context,
         "ddl.create_schema",

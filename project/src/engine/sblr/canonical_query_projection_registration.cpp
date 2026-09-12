@@ -168,7 +168,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
   for (const auto& column : profile.expression_output_columns) {
     if (registration_retained_bytes == 0 ||
         !account_string(column.stable_name) ||
-        !account_string(column.descriptor.descriptor_uuid.canonical) ||
+        !account_string(column.descriptor.descriptor_uuid) ||
         !account_string(column.descriptor.descriptor_kind) ||
         !account_string(column.descriptor.canonical_type_name) ||
         !account_string(column.descriptor.encoded_descriptor)) {

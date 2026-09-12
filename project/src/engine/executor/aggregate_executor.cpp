@@ -60,8 +60,8 @@ bool ExecutorColumnDescriptorCarrierIsExactDefault(
     return value.empty() && value.capacity() == baseline.capacity();
   };
   return exact_empty_string(column.stable_name, empty.stable_name) &&
-         exact_empty_string(column.descriptor.descriptor_uuid.canonical,
-                            empty.descriptor.descriptor_uuid.canonical) &&
+         column.descriptor.descriptor_uuid.is_nil() &&
+         column.descriptor.type_uuid.is_nil() &&
          exact_empty_string(column.descriptor.descriptor_kind,
                             empty.descriptor.descriptor_kind) &&
          exact_empty_string(column.descriptor.canonical_type_name,
@@ -232,7 +232,8 @@ std::optional<std::string_view> AggregateDescriptorField(
   return value;
 }
 
-std::string ExactCoreAggregateTypeUuid(const std::string_view stable_name) {
+scratchbird::engine::internal_api::EngineUuid ExactCoreAggregateTypeUuid(
+    const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -246,14 +247,15 @@ std::string ExactCoreAggregateTypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity = scratchbird::core::datatypes::
       LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          scratchbird::core::platform::Uuid{{
+              0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid
+                     : scratchbird::engine::internal_api::EngineUuid{};
 }
 
 std::size_t CanonicalAggregateExpectedArity(
@@ -509,7 +511,6 @@ std::size_t EstimateCanonicalAggregateStateBytes(
   };
   std::size_t bytes = sizeof(state);
   const auto add_value_dynamic_bytes = [&](const EngineTypedValue& value) {
-    add(&bytes, value.descriptor.descriptor_uuid.canonical.capacity());
     add(&bytes, value.descriptor.descriptor_kind.capacity());
     add(&bytes, value.encoded_value.capacity());
     add(&bytes, value.binary_value.capacity());
@@ -759,8 +760,6 @@ bool AggregateValueStateBytes(const EngineTypedValue& value,
   if (bytes == nullptr) return false;
   *bytes = sizeof(value);
   return CheckedAggregateFinalizationAdd(
-             bytes, value.descriptor.descriptor_uuid.canonical.size()) &&
-         CheckedAggregateFinalizationAdd(
              bytes, value.descriptor.descriptor_kind.size()) &&
          CheckedAggregateFinalizationAdd(
              bytes, value.descriptor.canonical_type_name.size()) &&
@@ -777,8 +776,6 @@ bool AggregateValueDynamicStateBytes(const EngineTypedValue& value,
   if (bytes == nullptr) return false;
   *bytes = 0;
   return CheckedAggregateFinalizationAdd(
-             bytes, value.descriptor.descriptor_uuid.canonical.size()) &&
-         CheckedAggregateFinalizationAdd(
              bytes, value.descriptor.descriptor_kind.size()) &&
          CheckedAggregateFinalizationAdd(
              bytes, value.descriptor.canonical_type_name.size()) &&
@@ -984,8 +981,8 @@ bool AddCanonicalFrequencyValue(
 
 bool SameAggregateValueIdentity(const EngineTypedValue& left,
                                 const EngineTypedValue& right) {
-  return left.descriptor.descriptor_uuid.canonical ==
-             right.descriptor.descriptor_uuid.canonical &&
+  return left.descriptor.descriptor_uuid ==
+             right.descriptor.descriptor_uuid &&
          left.descriptor.descriptor_kind ==
              right.descriptor.descriptor_kind &&
          left.descriptor.canonical_type_name ==
@@ -1000,14 +997,7 @@ bool SameAggregateValueIdentity(const EngineTypedValue& left,
 bool SameAggregateDescriptorIdentity(
     const EngineTypedValue& value,
     const ExecutorColumnDescriptor& column) {
-  return value.descriptor.descriptor_uuid.canonical ==
-             column.descriptor.descriptor_uuid.canonical &&
-         value.descriptor.descriptor_kind ==
-             column.descriptor.descriptor_kind &&
-         value.descriptor.canonical_type_name ==
-             column.descriptor.canonical_type_name &&
-         value.descriptor.encoded_descriptor ==
-             column.descriptor.encoded_descriptor;
+  return value.descriptor == column.descriptor;
 }
 
 EngineTypedValue AggregateValue(const ExecutorColumnDescriptor& column,
@@ -1772,12 +1762,11 @@ bool ValidateCanonicalAggregateResultType(
   if (!fixed_type_name.empty()) {
     const auto expected_type_uuid =
         ExactCoreAggregateTypeUuid(fixed_type_name);
-    const auto actual_type_uuid = AggregateDescriptorField(
-        request.result_column.descriptor, "type_uuid");
+    const auto& actual_type_uuid = request.result_column.descriptor.type_uuid;
     const auto& result_descriptor_uuid =
-        request.result_column.descriptor.descriptor_uuid.canonical;
-    if (expected_type_uuid.empty() || !actual_type_uuid.has_value() ||
-        *actual_type_uuid != expected_type_uuid ||
+        request.result_column.descriptor.descriptor_uuid;
+    if (expected_type_uuid.is_nil() ||
+        actual_type_uuid != expected_type_uuid ||
         !internal_api::QowCanonicalDescriptorIdentityV1(
             request.result_column.descriptor) ||
         request.result_column.descriptor.descriptor_kind != "scalar" ||
@@ -2121,12 +2110,12 @@ bool AggregateFrequencyIdentityLess(const EngineTypedValue& left,
       left.state);
   const auto right_state =
       static_cast<std::underlying_type_t<EngineValueState>>(right.state);
-  return std::tie(left.descriptor.descriptor_uuid.canonical,
+  return std::tie(left.descriptor.descriptor_uuid,
                   left.descriptor.descriptor_kind,
                   left.descriptor.canonical_type_name,
                   left.descriptor.encoded_descriptor, left_state,
                   left.is_null, left.encoded_value, left.binary_value) <
-         std::tie(right.descriptor.descriptor_uuid.canonical,
+         std::tie(right.descriptor.descriptor_uuid,
                   right.descriptor.descriptor_kind,
                   right.descriptor.canonical_type_name,
                   right.descriptor.encoded_descriptor, right_state,
@@ -3057,7 +3046,9 @@ bool BuildCanonicalAggregateEqualityAuthorityProfile(
     append_number(request.descriptor.abi_version);
     append_number(static_cast<std::uint8_t>(request.descriptor.function));
     append(request.descriptor.builtin_id);
-    append(request.descriptor.function_uuid);
+    append(std::string_view(
+        reinterpret_cast<const char*>(request.descriptor.function_uuid.bytes.data()),
+        request.descriptor.function_uuid.bytes.size()));
     append(request.descriptor.count_star ? "1" : "0");
     append(request.distinct ? "1" : "0");
     append_number(request.value_columns.size());
@@ -3088,7 +3079,12 @@ bool BuildCanonicalAggregateEqualityAuthorityProfile(
       append_number(column_index);
       append_number(request.value_expression_descriptor_ids[index]);
       append(column.stable_name);
-      append(column.descriptor.descriptor_uuid.canonical);
+      append(std::string_view(
+          reinterpret_cast<const char*>(column.descriptor.descriptor_uuid.bytes.data()),
+          column.descriptor.descriptor_uuid.bytes.size()));
+      append(std::string_view(
+          reinterpret_cast<const char*>(column.descriptor.type_uuid.bytes.data()),
+          column.descriptor.type_uuid.bytes.size()));
       append(column.descriptor.descriptor_kind);
       append(column.descriptor.canonical_type_name);
       append(column.descriptor.encoded_descriptor);
@@ -3097,7 +3093,8 @@ bool BuildCanonicalAggregateEqualityAuthorityProfile(
       append_number(term.expression_descriptor_id);
       append_number(static_cast<std::uint8_t>(term.direction));
       append_number(static_cast<std::uint8_t>(term.null_placement));
-      append(term.collation_uuid);
+      append(std::string_view(reinterpret_cast<const char*>(
+          term.collation_uuid.bytes.data()), 16));
       append_number(term.resource_epoch);
       append_number(term.collation_epoch);
       append_number(term.timezone_epoch);
@@ -3712,8 +3709,12 @@ bool AddSerializedStateStringSize(const std::size_t string_size,
 
 bool AddSerializedStateValueSize(const EngineTypedValue& value,
                                  std::size_t* total) {
-  return AddSerializedStateStringSize(
-             value.descriptor.descriptor_uuid.canonical.size(), total) &&
+  return scratchbird::core::uuid::IsEngineIdentityUuid(
+             value.descriptor.descriptor_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(value.descriptor.type_uuid) &&
+         (value.descriptor.collation_uuid.is_nil() ||
+          scratchbird::core::uuid::IsEngineIdentityUuid(value.descriptor.collation_uuid)) &&
+         CheckedAggregateFinalizationAdd(total, 48) &&
          AddSerializedStateStringSize(
              value.descriptor.descriptor_kind.size(), total) &&
          AddSerializedStateStringSize(
@@ -3730,7 +3731,9 @@ bool PlanCanonicalAggregateCoreStateSerialization(
     const CanonicalAggregateCoreState& state,
     const std::size_t maximum_bytes,
     std::size_t* encoded_bytes) {
-  if (encoded_bytes == nullptr || maximum_bytes == 0) return false;
+  if (encoded_bytes == nullptr || maximum_bytes == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(
+          request.descriptor.function_uuid)) return false;
   *encoded_bytes = 0;
   const auto add_u64 = [&]() {
     return CheckedAggregateFinalizationAdd(encoded_bytes,
@@ -3745,10 +3748,10 @@ bool PlanCanonicalAggregateCoreStateSerialization(
   std::array<char, 64> int_storage{};
   std::string_view int_text;
   if (!FormatInt128StateText(state.int64_sum, &int_storage, &int_text) ||
-      !add_string(std::string_view("scratchbird.aggregate-state.v3").size()) ||
+      !add_string(std::string_view("scratchbird.aggregate-state.v5").size()) ||
       !add_u64() || !add_u64() ||
       !add_string(request.descriptor.builtin_id.size()) ||
-      !add_string(request.descriptor.function_uuid.size()) || !add_byte() ||
+      !CheckedAggregateFinalizationAdd(encoded_bytes, 16) || !add_byte() ||
       !add_byte() ||
       !add_string(request.aggregate_equality_authority_profile.size()) ||
       !add_u64() || !add_u64() || !add_u64() || !add_u64() ||
@@ -3816,7 +3819,12 @@ bool PlanCanonicalAggregateCoreStateSerialization(
 
 void AppendStateValue(AggregateStateBytes* bytes,
                       const EngineTypedValue& value) {
-  AppendStateString(bytes, value.descriptor.descriptor_uuid.canonical);
+  bytes->insert(bytes->end(), value.descriptor.descriptor_uuid.bytes.begin(),
+                value.descriptor.descriptor_uuid.bytes.end());
+  bytes->insert(bytes->end(), value.descriptor.type_uuid.bytes.begin(),
+                value.descriptor.type_uuid.bytes.end());
+  bytes->insert(bytes->end(), value.descriptor.collation_uuid.bytes.begin(),
+                value.descriptor.collation_uuid.bytes.end());
   AppendStateString(bytes, value.descriptor.descriptor_kind);
   AppendStateString(bytes, value.descriptor.canonical_type_name);
   AppendStateString(bytes, value.descriptor.encoded_descriptor);
@@ -3841,12 +3849,13 @@ bool SerializeCanonicalAggregateCoreState(
     return false;
   }
   bytes->reserve(planned_bytes);
-  AppendStateString(bytes, "scratchbird.aggregate-state.v3");
+  AppendStateString(bytes, "scratchbird.aggregate-state.v5");
   AppendStateU64(bytes, request.descriptor.abi_version);
   AppendStateU64(bytes,
                  static_cast<std::uint8_t>(request.descriptor.function));
   AppendStateString(bytes, request.descriptor.builtin_id);
-  AppendStateString(bytes, request.descriptor.function_uuid);
+  bytes->insert(bytes->end(), request.descriptor.function_uuid.bytes.begin(),
+                request.descriptor.function_uuid.bytes.end());
   bytes->push_back(request.descriptor.count_star ? 1 : 0);
   bytes->push_back(request.distinct ? 1 : 0);
   AppendStateString(bytes, request.aggregate_equality_authority_profile);
@@ -3971,7 +3980,9 @@ class AggregateStateReader {
 
   bool ReadValue(EngineTypedValue* value) {
     if (value == nullptr ||
-        !ReadString(&value->descriptor.descriptor_uuid.canonical) ||
+        !ReadIdentity(&value->descriptor.descriptor_uuid) ||
+        !ReadIdentity(&value->descriptor.type_uuid) ||
+        !ReadIdentity(&value->descriptor.collation_uuid, true) ||
         !ReadString(&value->descriptor.descriptor_kind) ||
         !ReadString(&value->descriptor.canonical_type_name) ||
         !ReadString(&value->descriptor.encoded_descriptor) ||
@@ -3997,6 +4008,19 @@ class AggregateStateReader {
     return true;
   }
 
+  bool ReadIdentity(scratchbird::engine::internal_api::EngineUuid* value,
+                    const bool allow_nil = false) {
+    if (value == nullptr || Remaining() < 16 || maximum_bytes_ < 16) return false;
+    scratchbird::engine::internal_api::EngineUuid candidate;
+    std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_), 16,
+                candidate.bytes.begin());
+    if (!(allow_nil && candidate.is_nil()) &&
+        !scratchbird::core::uuid::IsEngineIdentityUuid(candidate)) return false;
+    *value = candidate;
+    offset_ += 16;
+    return true;
+  }
+
   std::size_t Remaining() const { return bytes_.size() - offset_; }
 
  private:
@@ -4016,6 +4040,7 @@ bool PlanCanonicalAggregateCoreStateDeserialization(
   }
   AggregateStateReader reader(bytes, maximum_serialized_bytes);
   std::string_view text;
+  scratchbird::engine::internal_api::EngineUuid function_uuid;
   std::uint64_t abi_version = 0;
   std::uint64_t function = 0;
   std::uint8_t count_star = 0;
@@ -4026,13 +4051,13 @@ bool PlanCanonicalAggregateCoreStateDeserialization(
   std::size_t equality_key_generation_count = 0;
   std::size_t equality_comparison_count = 0;
   if (!reader.ReadStringView(&text) ||
-      text != "scratchbird.aggregate-state.v3" ||
+      text != "scratchbird.aggregate-state.v5" ||
       !reader.ReadU64(&abi_version) ||
       abi_version != request.descriptor.abi_version ||
       !reader.ReadU64(&function) ||
       function != static_cast<std::uint8_t>(request.descriptor.function) ||
       !reader.ReadStringView(&text) || text != request.descriptor.builtin_id ||
-      !reader.ReadStringView(&text) || text != request.descriptor.function_uuid ||
+      !reader.ReadIdentity(&function_uuid) || function_uuid != request.descriptor.function_uuid ||
       !reader.ReadByte(&count_star) || count_star > 1 ||
       (count_star != 0) != request.descriptor.count_star ||
       !reader.ReadByte(&distinct) || distinct > 1 ||
@@ -4091,7 +4116,13 @@ bool PlanCanonicalAggregateCoreStateDeserialization(
                                            text.size());
   };
   const auto read_value = [&]() {
-    for (std::size_t field = 0; field < 5; ++field) {
+    scratchbird::engine::internal_api::EngineUuid descriptor_uuid;
+    scratchbird::engine::internal_api::EngineUuid type_uuid;
+    scratchbird::engine::internal_api::EngineUuid collation_uuid;
+    if (!reader.ReadIdentity(&descriptor_uuid) ||
+        !reader.ReadIdentity(&type_uuid) ||
+        !reader.ReadIdentity(&collation_uuid, true)) return false;
+    for (std::size_t field = 0; field < 4; ++field) {
       if (!add_dynamic_string()) return false;
     }
     std::size_t binary_size = 0;
@@ -4126,7 +4157,8 @@ bool PlanCanonicalAggregateCoreStateDeserialization(
   };
   std::size_t count = 0;
   if (!read_count(&count,
-                  function_kind == CanonicalAggregateFunction::array_agg)) {
+                  function_kind == CanonicalAggregateFunction::array_agg) ||
+      (function_kind == CanonicalAggregateFunction::array_agg && count != transition_count)) {
     return false;
   }
   for (std::size_t index = 0; index < count; ++index) {
@@ -4250,20 +4282,21 @@ bool DeserializeCanonicalAggregateCoreState(
   *validation_equality_comparison_count = 0;
   AggregateStateReader reader(bytes, maximum_serialized_bytes);
   std::string_view text;
+  scratchbird::engine::internal_api::EngineUuid function_uuid;
   std::uint64_t abi_version = 0;
   std::uint64_t function = 0;
   std::uint8_t count_star = 0;
   std::uint8_t distinct = 0;
   std::uint64_t strategy = 0;
   if (!reader.ReadStringView(&text) ||
-      text != "scratchbird.aggregate-state.v3" ||
+      text != "scratchbird.aggregate-state.v5" ||
       !reader.ReadU64(&abi_version) ||
       abi_version != request.descriptor.abi_version ||
       !reader.ReadU64(&function) ||
       function != static_cast<std::uint8_t>(request.descriptor.function) ||
       !reader.ReadStringView(&text) || text != request.descriptor.builtin_id ||
-      !reader.ReadStringView(&text) ||
-      text != request.descriptor.function_uuid ||
+      !reader.ReadIdentity(&function_uuid) ||
+      function_uuid != request.descriptor.function_uuid ||
       !reader.ReadByte(&count_star) || count_star > 1 ||
       (count_star != 0) != request.descriptor.count_star ||
       !reader.ReadByte(&distinct) || distinct > 1 ||
@@ -4311,21 +4344,38 @@ bool DeserializeCanonicalAggregateCoreState(
   }
   state->saw_true = saw_true != 0;
   state->saw_false = saw_false != 0;
+  const auto bound_restored_value = [&](const EngineTypedValue& value) {
+    if (request.value_columns.size() != 1 ||
+        request.value_columns.front() >= equality_authority_batch.columns.size()) {
+      return false;
+    }
+    const auto& column = equality_authority_batch.columns[request.value_columns.front()];
+    if (!SameAggregateDescriptorIdentity(value, column)) return false;
+    if (value.state == EngineValueState::sql_null) {
+      return column.nullable && value.is_null && value.encoded_value.empty() &&
+             value.binary_value.empty();
+    }
+    return value.state == EngineValueState::value && !value.is_null &&
+           (!IsCanonicalInt128DescriptorV1(column.descriptor) ||
+            (value.encoded_value.empty() && value.binary_value.size() == 16));
+  };
   if (has_extremum != 0) {
     EngineTypedValue extremum;
-    if (!reader.ReadValue(&extremum)) return false;
+    if (!reader.ReadValue(&extremum) || !bound_restored_value(extremum) ||
+        extremum.state != EngineValueState::value) return false;
     state->extremum = std::move(extremum);
   }
   const auto read_values = [&](std::vector<EngineTypedValue>* values,
                                const bool admitted) {
     std::size_t count = 0;
     if (!reader.ReadSize(&count) || count > maximum_serialized_bytes ||
-        count > state->transition_count || (!admitted && count != 0)) {
+        count > state->transition_count || (!admitted && count != 0) ||
+        (admitted && count != state->transition_count)) {
       return false;
     }
     for (std::size_t index = 0; index < count; ++index) {
       EngineTypedValue value;
-      if (!reader.ReadValue(&value)) return false;
+      if (!reader.ReadValue(&value) || !bound_restored_value(value)) return false;
       values->push_back(std::move(value));
     }
     return true;
@@ -4336,6 +4386,11 @@ bool DeserializeCanonicalAggregateCoreState(
               CanonicalAggregateFunction::array_agg)) {
     return false;
   }
+  if (request.descriptor.function == CanonicalAggregateFunction::array_agg &&
+      static_cast<std::size_t>(std::ranges::count_if(
+          state->collection_values, [](const auto& value) {
+            return value.state != EngineValueState::sql_null;
+          })) != state->non_null_count) return false;
   const auto read_strings = [&](std::vector<std::string>* values,
                                 const bool admitted) {
     std::size_t count = 0;
@@ -4444,9 +4499,6 @@ bool DeserializeCanonicalAggregateCoreState(
         std::size_t decoded_local_bytes = equality_key.capacity();
         if (!CheckedAggregateFinalizationAdd(
                 &decoded_local_bytes,
-                value.descriptor.descriptor_uuid.canonical.capacity()) ||
-            !CheckedAggregateFinalizationAdd(
-                &decoded_local_bytes,
                 value.descriptor.descriptor_kind.capacity()) ||
             !CheckedAggregateFinalizationAdd(
                 &decoded_local_bytes,
@@ -4552,17 +4604,8 @@ bool DeserializeCanonicalAggregateCoreState(
              maximum_live_state_bytes;
 }
 
-bool IsCanonicalAggregateStateSpillUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
-  }
-  return true;
+bool IsCanonicalAggregateStateSpillUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 }  // namespace
@@ -4783,135 +4826,6 @@ ExecuteCanonicalDescriptorCountStarExactCardinality(
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1
-// Exact ABI-v1 projection of the normative private seed registry.  A registry
-// row is not an implementation claim by itself: executable is true only when
-// the row is routed through the bounded canonical state below.  Every accepted
-// aggregate is eligible for the canonical OVER bridge; descriptor,
-// direct-argument, ordering, type, and resource profiles still fail closed.
-const std::vector<CanonicalAggregateRegistryEntry>&
-CanonicalAggregateRuntimeRegistryV1() {
-  using Function = CanonicalAggregateFunction;
-  static const std::vector<CanonicalAggregateRegistryEntry> registry = {
-      {1, Function::count, "sb.aggregate.count", "019de5fc-2400-784a-9aec-371f8b95b7ea", true, true, true},
-      {1, Function::sum, "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777", true, true, true},
-      {1, Function::avg, "sb.aggregate.avg", "019de5fc-2400-78ac-b50c-45b832831004", true, true, true},
-      {1, Function::min, "sb.aggregate.min", "019de5fc-2400-781c-881b-4af4d55d402b", true, true},
-      {1, Function::max, "sb.aggregate.max", "019de5fc-2400-7d1e-8aa4-80bc647fbd9a", true, true},
-      {1, Function::bool_and, "sb.aggregate.bool_and", "019de5fc-2400-78b0-ad98-a681e93b4c49", true, true},
-      {1, Function::bool_or, "sb.aggregate.bool_or", "019de5fc-2400-7c2a-a3f2-e4b9d36df403", true, true},
-      {1, Function::array_agg, "sb.aggregate.array_agg", "019de5fc-2400-7159-9f7b-915513b8c0d4", true, true},
-      {1, Function::string_agg, "sb.aggregate.string_agg", "019de5fc-2400-7243-abc6-4f6a777dff00", true, true},
-      {1, Function::json_agg, "sb.aggregate.json_agg", "019dffbb-f001-7021-8a00-000000000023", true, true},
-      {1, Function::json_object_agg, "sb.aggregate.json_object_agg", "019dffbb-f001-7021-8a00-000000000024", true, true},
-      {1, Function::stddev_pop, "sb.aggregate.stddev_pop", "019de5fc-2400-73c9-ba10-4665f741215d", true, true},
-      {1, Function::variance_pop, "sb.aggregate.variance_pop", "019de5fc-2400-7fda-b470-e85414dcb314", true, true},
-      {1, Function::every, "sb.aggregate.every", "019dffbb-f000-7876-9644-ae83b363d3bc", true, true},
-      {1, Function::listagg, "sb.aggregate.listagg", "019dffbb-f000-7e93-8e4d-6063849de049", true, true},
-      {1, Function::rank, "sb.aggregate.rank", "019dffbb-f000-7336-ab53-fef5316220d7", true, true},
-      {1, Function::dense_rank, "sb.aggregate.dense_rank", "019dffbb-f000-7bd3-a731-1734581eb8ce", true, true},
-      {1, Function::percent_rank, "sb.aggregate.percent_rank", "019dffbb-f000-7817-911f-9f8b2e66ebec", true, true},
-      {1, Function::cume_dist, "sb.aggregate.cume_dist", "019dffbb-f000-7244-89fd-8fa66ae930d5", true, true},
-      {1, Function::mode, "sb.aggregate.mode", "019dffbb-f000-7150-9be6-bcf97f8facf5", true, true},
-      {1, Function::percentile_cont, "sb.aggregate.percentile_cont", "019dffbb-f000-7cfd-83dd-15435fe55bf5", true, true},
-      {1, Function::percentile_disc, "sb.aggregate.percentile_disc", "019dffbb-f000-7081-b766-7db818a89c04", true, true},
-      {1, Function::approx_count_distinct, "sb.aggregate.approx_count_distinct", "019dffbb-f000-7736-96f3-e20cbd532ba5", true, true},
-      {1, Function::approx_median, "sb.aggregate.approx_median", "019dffbb-f000-7ce0-85a6-cbcd71f2c86e", true, true},
-      {1, Function::approx_percentile_cont, "sb.aggregate.approx_percentile_cont", "019dffbb-f000-76df-98a6-aa77d1a342f8", true, true},
-      {1, Function::approx_percentile_disc, "sb.aggregate.approx_percentile_disc", "019dffbb-f000-7578-a88f-8db4bb649755", true, true},
-      {1, Function::approx_top_k, "sb.aggregate.approx_top_k", "019dffbb-f000-7f47-8fe1-0c5e0ec87bf0", true, true},
-      {1, Function::stddev, "sb.aggregate.stddev", "019dffbb-f000-7475-8516-ff003b2bdad9", true, true},
-      {1, Function::variance, "sb.aggregate.variance", "019dffbb-f000-7968-82c5-04cffbeb971b", true, true},
-      {1, Function::stddev_samp, "sb.aggregate.stddev_samp", "019dffbb-f000-7d99-a495-70f9c3b1b587", true, true},
-      {1, Function::variance_samp, "sb.aggregate.variance_samp", "019dffbb-f000-732b-8a0c-2aa88b04f3c5", true, true},
-      {1, Function::corr, "sb.aggregate.corr", "019dffbb-f000-77bb-ba9b-2e78acf84521", true, true},
-      {1, Function::covar_pop, "sb.aggregate.covar_pop", "019dffbb-f000-7f09-8ceb-17ad4c70e99f", true, true},
-      {1, Function::covar_samp, "sb.aggregate.covar_samp", "019dffbb-f000-747d-bc01-caad9137d070", true, true},
-      {1, Function::regr_count, "sb.aggregate.regr_count", "019dffbb-f000-75aa-bbe6-a4a67dacb81f", true, true},
-      {1, Function::regr_avgx, "sb.aggregate.regr_avgx", "019dffbb-f000-7662-a816-d1df50e9b664", true, true},
-      {1, Function::regr_avgy, "sb.aggregate.regr_avgy", "019dffbb-f000-7d03-ac2d-753cdb7744c0", true, true},
-      {1, Function::regr_intercept, "sb.aggregate.regr_intercept", "019dffbb-f000-7c7c-b576-d67ea9d4bcbb", true, true},
-      {1, Function::regr_r2, "sb.aggregate.regr_r2", "019dffbb-f000-7a43-9a28-a119b31d9c20", true, true},
-      {1, Function::regr_slope, "sb.aggregate.regr_slope", "019dffbb-f000-7f80-b81a-5240a6dbab55", true, true},
-      {1, Function::regr_sxx, "sb.aggregate.regr_sxx", "019dffbb-f000-735e-9e55-5f9243786403", true, true},
-      {1, Function::regr_sxy, "sb.aggregate.regr_sxy", "019dffbb-f000-788b-a249-866547a43ebe", true, true},
-      {1, Function::regr_syy, "sb.aggregate.regr_syy", "019dffbb-f000-74f7-98ba-c24ead6d30df", true, true},
-  };
-  return registry;
-}
-
-const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByFunctionV1(
-    const CanonicalAggregateFunction function) {
-  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto found = std::ranges::find_if(
-      registry, [&](const auto& entry) { return entry.function == function; });
-  return found == registry.end() ? nullptr : &*found;
-}
-
-const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByBuiltinIdV1(
-    const std::string_view builtin_id) {
-  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto found = std::ranges::find_if(registry, [&](const auto& entry) {
-    return entry.builtin_id == builtin_id;
-  });
-  return found == registry.end() ? nullptr : &*found;
-}
-
-const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByUuidV1(
-    const std::string_view function_uuid) {
-  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto found = std::ranges::find_if(registry, [&](const auto& entry) {
-    return entry.function_uuid == function_uuid;
-  });
-  return found == registry.end() ? nullptr : &*found;
-}
-
-const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateExactV1(
-    const std::uint16_t abi_version,
-    const CanonicalAggregateFunction function,
-    const std::string_view builtin_id,
-    const std::string_view function_uuid) {
-  const auto* entry = LookupCanonicalAggregateByFunctionV1(function);
-  return entry != nullptr && entry->abi_version == abi_version &&
-                 entry->builtin_id == builtin_id &&
-                 entry->function_uuid == function_uuid
-             ? entry
-             : nullptr;
-}
-
-std::vector<std::string> ValidateCanonicalAggregateRuntimeRegistryV1() {
-  std::vector<std::string> errors;
-  std::set<CanonicalAggregateFunction> functions;
-  std::set<std::string> builtin_ids;
-  std::set<std::string> function_uuids;
-  for (const auto& entry : CanonicalAggregateRuntimeRegistryV1()) {
-    if (entry.abi_version != 1 ||
-        entry.function == CanonicalAggregateFunction::unknown ||
-        entry.builtin_id.empty() || entry.function_uuid.empty()) {
-      errors.push_back("incomplete aggregate registry row");
-      continue;
-    }
-    if (!functions.insert(entry.function).second) {
-      errors.push_back("duplicate aggregate function enum");
-    }
-    if (!builtin_ids.insert(entry.builtin_id).second) {
-      errors.push_back("duplicate aggregate builtin id: " + entry.builtin_id);
-    }
-    if (!function_uuids.insert(entry.function_uuid).second) {
-      errors.push_back("duplicate aggregate function UUID: " +
-                       entry.function_uuid);
-    }
-    if (LookupCanonicalAggregateByFunctionV1(entry.function) != &entry ||
-        LookupCanonicalAggregateByBuiltinIdV1(entry.builtin_id) != &entry ||
-        LookupCanonicalAggregateByUuidV1(entry.function_uuid) != &entry ||
-        LookupCanonicalAggregateExactV1(entry.abi_version, entry.function,
-                                        entry.builtin_id,
-                                        entry.function_uuid) != &entry) {
-      errors.push_back("aggregate registry lookup drift: " +
-                       entry.builtin_id);
-    }
-  }
-  return errors;
-}
 
 struct CanonicalAggregateExecutionMemoryScope {
   std::size_t retained_memory_bytes = 0;
@@ -5770,9 +5684,14 @@ ExecuteCanonicalAggregateStateSpillSelected(
       request.aggregate_request.maximum_state_bytes,
       *node_memory_grant - combined_retained_memory_bytes -
           input_payload_bytes - baseline.final_output_bytes);
-  const auto owner_directory =
-      (request.spill_root / request.spill_owner_uuid).lexically_normal();
-  if (owner_directory.filename() != request.spill_owner_uuid) {
+  const auto owner_component =
+      scratchbird::core::uuid::EngineIdentityPathComponent(request.spill_owner_uuid);
+  if (!owner_component.has_value()) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-OWNERSHIP-V1",
+                  "aggregate state spill owner identity is invalid");
+  }
+  const auto owner_directory = (request.spill_root / *owner_component).lexically_normal();
+  if (owner_directory.filename() != *owner_component) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-OWNERSHIP-V1",
                   "aggregate state spill owner directory is not exact");
   }
@@ -5912,8 +5831,7 @@ ExecuteCanonicalAggregateStateSpillSelected(
 
   TempSpillRequest spill;
   spill.route_kind = TempSpillRouteKind::kSort;
-  spill.route_label =
-      "qow205.aggregate-registry-state." + request.spill_owner_uuid;
+  spill.route_label = "qow205.aggregate-registry-state";
   spill.spill_directory = owner_directory;
   spill.runtime_generation = request.runtime_generation;
   spill.reopen_runtime_generation = request.reopen_runtime_generation;
@@ -7442,7 +7360,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
     result.authority = {};
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -8288,7 +8206,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
     result.authority = {};
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.executed_physical_node_id = 0;
     result.causal_counter_id = 0;
     return result;
@@ -8674,8 +8592,8 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
             actual_value.is_null != expected_value.is_null ||
             actual_value.encoded_value != expected_value.encoded_value ||
             actual_value.binary_value != expected_value.binary_value ||
-            actual_value.descriptor.descriptor_uuid.canonical !=
-                expected_value.descriptor.descriptor_uuid.canonical ||
+            actual_value.descriptor.descriptor_uuid !=
+                expected_value.descriptor.descriptor_uuid ||
             actual_value.descriptor.canonical_type_name !=
                 expected_value.descriptor.canonical_type_name ||
             actual_value.descriptor.encoded_descriptor !=

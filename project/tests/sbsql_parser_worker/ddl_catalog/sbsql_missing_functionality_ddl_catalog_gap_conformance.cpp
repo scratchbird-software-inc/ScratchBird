@@ -31,6 +31,19 @@
 #include <string_view>
 #include <vector>
 
+#include <stdexcept>
+#include <utility>
+
+namespace scratchbird::engine::internal_api {
+template <typename... Args>
+auto CheckedFindSchemaTreeRecord(Args&&... args) {
+  EngineApiDiagnostic diagnostic;
+  auto result = FindVisibleSchemaTreeRecord(std::forward<Args>(args)..., diagnostic);
+  if (diagnostic.error) throw std::runtime_error(diagnostic.code + ":" + diagnostic.detail);
+  return result;
+}
+}  // namespace scratchbird::engine::internal_api
+
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
@@ -591,7 +604,7 @@ int main() {
 
   CommitFixture(&fixture);
   authorized = Context(fixture, true);
-  const auto schema = api::FindVisibleSchemaTreeRecord(
+  const auto schema = api::CheckedFindSchemaTreeRecord(
       authorized,
       std::string(kSchemaUuid),
       fixture.local_transaction_id);

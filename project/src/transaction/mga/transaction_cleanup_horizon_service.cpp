@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_cleanup_horizon_service.hpp"
+#include "transaction_snapshot.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -129,40 +131,10 @@ AuthoritativeCleanupHorizonResult ValidateInventory(
                         "transaction.cleanup_horizon.inventory_missing",
                         "complete durable transaction inventory is required");
   }
-  if (request.inventory.next_local_transaction_id == kInvalidLocalTransactionId) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(request.inventory); *reason) {
     return ServiceError(request,
                         "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
-                        "transaction.cleanup_horizon.next_transaction_invalid");
-  }
-  for (std::size_t i = 0; i < request.inventory.entries.size(); ++i) {
-    const TransactionInventoryEntry& entry = request.inventory.entries[i];
-    if (!entry.identity.valid()) {
-      return ServiceError(request,
-                          "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
-                          "transaction.cleanup_horizon.invalid_transaction_identity",
-                          std::to_string(i));
-    }
-    if (entry.identity.local_id.value >= request.inventory.next_local_transaction_id) {
-      return ServiceError(request,
-                          "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
-                          "transaction.cleanup_horizon.future_transaction_in_inventory",
-                          std::to_string(entry.identity.local_id.value));
-    }
-    for (std::size_t j = i + 1; j < request.inventory.entries.size(); ++j) {
-      const TransactionInventoryEntry& other = request.inventory.entries[j];
-      if (entry.identity.local_id.value == other.identity.local_id.value) {
-        return ServiceError(request,
-                            "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
-                            "transaction.cleanup_horizon.duplicate_local_transaction_id",
-                            std::to_string(entry.identity.local_id.value));
-      }
-      if (entry.identity.transaction_uuid.value == other.identity.transaction_uuid.value) {
-        return ServiceError(request,
-                            "SB-MGA-CLEANUP-HORIZON-INVENTORY-INVALID",
-                            "transaction.cleanup_horizon.duplicate_transaction_uuid",
-                            std::to_string(entry.identity.local_id.value));
-      }
-    }
+                        std::string("transaction.cleanup_horizon.") + reason);
   }
   AuthoritativeCleanupHorizonResult result;
   result.status = CleanupHorizonOkStatus();
@@ -311,6 +283,19 @@ AuthoritativeCleanupHorizonResult ComputeAuthoritativeCleanupHorizon(
   LocalTransactionHorizonRequest horizon_request;
   horizon_request.inventory = request.inventory;
   horizon_request.active_snapshot_horizons = request.active_snapshot_horizons;
+  const auto published_horizons = PublishedSnapshotRetentionHorizons(request.inventory);
+  if (!published_horizons.ok()) {
+    AuthoritativeCleanupHorizonResult result;
+    result.status = published_horizons.status;
+    result.diagnostic = published_horizons.diagnostic;
+    AddBaseEvidence(&result, request);
+    AddEvidence(&result, "fail_closed", "true");
+    AddEvidence(&result, "diagnostic_code", result.diagnostic.diagnostic_code);
+    return result;
+  }
+  horizon_request.active_snapshot_horizons.insert(
+      horizon_request.active_snapshot_horizons.end(),
+      published_horizons.horizons.begin(), published_horizons.horizons.end());
   const auto horizons = ComputeLocalTransactionHorizons(horizon_request);
   if (!horizons.ok()) {
     AuthoritativeCleanupHorizonResult result;
@@ -330,7 +315,7 @@ AuthoritativeCleanupHorizonResult ComputeAuthoritativeCleanupHorizon(
                 horizons.horizons.oldest_active_transaction.value,
                 horizons.horizons.oldest_snapshot_transaction.value}));
   AddInventoryBlockers(request.inventory, &result);
-  AddSnapshotBlockers(request.active_snapshot_horizons, &result);
+  AddSnapshotBlockers(horizon_request.active_snapshot_horizons, &result);
   AddAlwaysActiveSessionBlockers(request, &result);
 
   result.cleanup_horizon_authoritative = true;
@@ -349,7 +334,7 @@ AuthoritativeCleanupHorizonResult ComputeAuthoritativeCleanupHorizon(
   AddEvidence(&result, "inventory_entry_count",
               std::to_string(request.inventory.entries.size()));
   AddEvidence(&result, "active_snapshot_count",
-              std::to_string(request.active_snapshot_horizons.size()));
+              std::to_string(horizon_request.active_snapshot_horizons.size()));
   AddEvidence(&result, "always_active_session_count",
               std::to_string(request.always_active_sessions.size()));
   AddEvidence(&result, "blocker_count", std::to_string(result.blockers.size()));

@@ -73,10 +73,10 @@ std::uint64_t EstimateRows(const EngineInsertRowsRequest& request) {
 }
 
 std::string TargetUuid(const EngineInsertRowsRequest& request) {
-  if (!request.target_table.uuid.canonical.empty()) {
-    return request.target_table.uuid.canonical;
+  if (!request.target_table.uuid.is_nil()) {
+    return request.target_table.uuid;
   }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 bool IsUniqueIndex(const CrudIndexRecord& index) {
@@ -379,16 +379,16 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
     if (!policy.requires_runtime_recheck) {
       continue;
     }
-    if (!policy.target_uuid.canonical.empty() &&
-        policy.target_uuid.canonical != table.table_uuid) {
+    if (!policy.target_uuid.is_nil() &&
+        policy.target_uuid != table.table_uuid) {
       continue;
     }
     ++plan.runtime_policy_recheck_count;
     AppendKeyPart(&security_policy, "runtime_recheck_policy",
-                  policy.policy_uuid.canonical + "|" +
+                  policy.policy_uuid + "|" +
                       policy.subject_kind + "|" +
-                      policy.subject_uuid.canonical + "|" +
-                      policy.target_uuid.canonical + "|" +
+                      policy.subject_uuid + "|" +
+                      policy.target_uuid + "|" +
                       policy.right + "|" +
                       policy.policy_kind + "|" +
                       std::to_string(policy.policy_epoch) + "|" +
@@ -522,29 +522,29 @@ std::string BoolKey(bool value) {
 std::string PreparedInsertAuthorizationDigest(const EngineRequestContext& context) {
   std::ostringstream out;
   AppendKeyPart(&out, "security_context_present", BoolKey(context.security_context_present));
-  AppendKeyPart(&out, "principal", context.principal_uuid.canonical);
-  AppendKeyPart(&out, "role", context.current_role_uuid.canonical);
+  AppendKeyPart(&out, "principal", context.principal_uuid);
+  AppendKeyPart(&out, "role", context.current_role_uuid);
   AppendKeyPart(&out, "security_epoch", context.security_epoch);
   AppendKeyPart(&out, "policy_epoch", context.resource_epoch);
   AppendKeyPart(&out, "catalog_epoch", context.catalog_generation_id);
   const auto& auth = context.authorization_context;
   AppendKeyPart(&out, "auth_present", BoolKey(auth.present));
-  AppendKeyPart(&out, "auth_authority", auth.authority_uuid.canonical);
-  AppendKeyPart(&out, "auth_principal", auth.principal_uuid.canonical);
+  AppendKeyPart(&out, "auth_authority", auth.authority_uuid);
+  AppendKeyPart(&out, "auth_principal", auth.principal_uuid);
   AppendKeyPart(&out, "auth_security_epoch", auth.security_epoch);
   AppendKeyPart(&out, "auth_policy_epoch", auth.policy_epoch);
   AppendKeyPart(&out, "auth_catalog_epoch", auth.catalog_generation_id);
   std::vector<std::string> subjects;
   for (const auto& subject : auth.effective_subjects) {
-    subjects.push_back(subject.subject_kind + "|" + subject.subject_uuid.canonical);
+    subjects.push_back(subject.subject_kind + "|" + subject.subject_uuid);
   }
   AppendStringListKeyPart(&out, "auth_subjects", std::move(subjects));
   std::vector<std::string> grants;
   for (const auto& grant : auth.grants) {
-    grants.push_back(grant.grant_uuid.canonical + "|" +
+    grants.push_back(grant.grant_uuid + "|" +
                      grant.subject_kind + "|" +
-                     grant.subject_uuid.canonical + "|" +
-                     grant.target_uuid.canonical + "|" +
+                     grant.subject_uuid + "|" +
+                     grant.target_uuid + "|" +
                      grant.right + "|" +
                      BoolKey(grant.deny) + "|" +
                      std::to_string(grant.security_epoch));
@@ -552,10 +552,10 @@ std::string PreparedInsertAuthorizationDigest(const EngineRequestContext& contex
   AppendStringListKeyPart(&out, "auth_grants", std::move(grants));
   std::vector<std::string> policies;
   for (const auto& policy : auth.policies) {
-    policies.push_back(policy.policy_uuid.canonical + "|" +
+    policies.push_back(policy.policy_uuid + "|" +
                        policy.subject_kind + "|" +
-                       policy.subject_uuid.canonical + "|" +
-                       policy.target_uuid.canonical + "|" +
+                       policy.subject_uuid + "|" +
+                       policy.target_uuid + "|" +
                        policy.right + "|" +
                        policy.policy_kind + "|" +
                        BoolKey(policy.deny) + "|" +
@@ -572,11 +572,11 @@ PreparedInsertDescriptor PreparedInsertDescriptorIdentity(
     const EngineInsertRowsRequest& request,
     const CrudTableRecord& table) {
   PreparedInsertDescriptor descriptor;
-  descriptor.database_uuid = request.context.database_uuid.canonical;
+  descriptor.database_uuid = request.context.database_uuid;
   descriptor.table_uuid = table.table_uuid;
-  descriptor.principal_uuid = request.context.principal_uuid.canonical;
-  descriptor.role_uuid = request.context.current_role_uuid.canonical;
-  descriptor.session_uuid = request.context.session_uuid.canonical;
+  descriptor.principal_uuid = request.context.principal_uuid;
+  descriptor.role_uuid = request.context.current_role_uuid;
+  descriptor.session_uuid = request.context.session_uuid;
   descriptor.catalog_epoch = request.context.catalog_generation_id;
   descriptor.security_epoch = request.context.security_epoch;
   descriptor.policy_epoch = request.context.resource_epoch;
@@ -1215,9 +1215,9 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
                                          : request.context.request_id;
   memory_context.statement_id = context->statement_uuid;
   memory_context.session_id =
-      request.context.session_uuid.canonical.empty()
+      request.context.session_uuid.is_nil()
           ? ("session:" + context->security_context_uuid)
-          : request.context.session_uuid.canonical;
+          : request.context.session_uuid;
   memory_context.transaction_id =
       context->transaction_uuid.empty()
           ? std::to_string(context->local_transaction_id)
@@ -1334,14 +1334,14 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
   InsertBatchContext context;
   context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
   context.local_transaction_id = request.context.local_transaction_id;
-  context.transaction_uuid = request.context.transaction_uuid.canonical;
-  context.database_uuid = request.context.database_uuid.canonical;
-  context.schema_uuid = request.target_schema.uuid.canonical;
+  context.transaction_uuid = request.context.transaction_uuid;
+  context.database_uuid = request.context.database_uuid;
+  context.schema_uuid = request.target_schema.uuid;
   context.target_object_uuid = TargetUuid(request);
   context.estimated_row_count = EstimateRows(request);
   context.insert_mode = ResolveInsertBatchMode(request);
   context.duplicate_mode = ResolveInsertDuplicateMode(request);
-  context.security_context_uuid = request.context.principal_uuid.canonical;
+  context.security_context_uuid = request.context.principal_uuid;
   context.policy_snapshot_uuid = InsertBatchOptionValue(request, "policy_snapshot_uuid=");
   context.feature_gates = ResolveInsertFeatureGates(request);
   context.memory_policy = ResolveInsertMemoryPolicy(request);

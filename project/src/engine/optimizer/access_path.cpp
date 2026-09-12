@@ -58,8 +58,27 @@ PlanCandidate MakeCandidate(std::string id,
   return candidate;
 }
 
-std::string RequiredObjectUuid(const planner::LogicalPlanNode& node) {
-  return node.required_object_uuids.empty() ? "local.default" : node.required_object_uuids.front();
+std::optional<OptimizerStatisticTarget> RequiredObjectTarget(const planner::LogicalPlanNode& node) {
+  if (node.required_object_uuids.empty()) return OptimizerStatisticTarget::LocalDefault();
+  if (node.required_object_uuids.size() != 1) return std::nullopt;
+  const auto target = OptimizerStatisticTarget::Object(node.required_object_uuids.front());
+  return target.Valid() ? std::optional{target} : std::nullopt;
+}
+
+std::optional<OptimizerStatistic> SelectedStatistic(
+    const OptimizerStatisticsCatalog& statistics, const std::string& name,
+    const OptimizerStatisticTarget& target, bool unsigned_value = false) {
+  if (!target.Valid()) return std::nullopt;
+  const auto usable = [&](const auto& value) {
+    return unsigned_value ? CheckedOptimizerStatisticUnsigned(value).has_value()
+                          : ValidateStatistic(value, 60000000).ok;
+  };
+  if (auto exact = statistics.Find(name, target);
+      exact && usable(*exact)) return exact;
+  if (target.kind != OptimizerStatisticTargetKind::kObject) return std::nullopt;
+  auto fallback = statistics.Find(name, OptimizerStatisticTarget::LocalDefault());
+  if (fallback && usable(*fallback)) return fallback;
+  return std::nullopt;
 }
 
 bool HasDescriptor(const planner::LogicalPlanNode& node, std::string_view descriptor) {
@@ -74,102 +93,93 @@ bool IsShapeReadNode(const planner::LogicalPlanNode& node) {
 
 void AttachStatisticDiagnostics(PlanCandidate* candidate,
                                 const OptimizerStatisticsCatalog& statistics,
-                                const std::string& object_uuid,
-                                const std::vector<std::string>& statistic_names) {
+                                const OptimizerStatisticTarget& target,
+                                const std::vector<std::string>& statistic_names,
+                                std::initializer_list<std::string_view> continuous_statistics = {}) {
   if (candidate == nullptr) return;
-  for (const auto& statistic_name : statistic_names) {
-    const auto exact = statistics.Find(statistic_name, object_uuid);
-    if (exact && exact->available && exact->source == StatisticSource::kPolicyDefault) {
-      candidate->uses_policy_default_statistics = true;
-      candidate->statistics_diagnostics.push_back("policy-default:" + statistic_name + ":" + object_uuid);
+  for (const auto& name : statistic_names) {
+    const bool unsigned_value = std::ranges::find(continuous_statistics, name) == continuous_statistics.end();
+    const auto selected = SelectedStatistic(statistics, name, target, unsigned_value);
+    if (!selected) {
+      candidate->statistics_diagnostics.push_back("statistics-missing:" + name);
       continue;
     }
-    if (exact && exact->available) {
-      continue;
-    }
-    const auto local_default = statistics.Find(statistic_name, "local.default");
-    if (local_default && local_default->available) {
+    candidate->statistic_inputs.push_back(*selected);
+    if (selected->target.kind == OptimizerStatisticTargetKind::kLocalDefault) {
       candidate->uses_local_default_statistics = true;
-      candidate->statistics_diagnostics.push_back("local.default:" + statistic_name);
-      if (local_default->source == StatisticSource::kPolicyDefault) {
-        candidate->uses_policy_default_statistics = true;
-        candidate->statistics_diagnostics.push_back("policy-default:" + statistic_name + ":local.default");
-      }
+      candidate->statistics_diagnostics.push_back("local-default:" + name);
+    }
+    if (selected->source == StatisticSource::kPolicyDefault) {
+      candidate->uses_policy_default_statistics = true;
+      candidate->statistics_diagnostics.push_back("policy-default:" + name);
     }
   }
 }
 
 std::uint64_t EstimateUnsignedForObject(const OptimizerStatisticsCatalog& statistics,
                                         const std::string& statistic_name,
-                                        const std::string& object_uuid,
+                                        const OptimizerStatisticTarget& target,
                                         std::uint64_t fallback) {
-  auto value = statistics.EstimateUnsigned(statistic_name, object_uuid, 0);
-  if (value != 0) { return value; }
-  value = statistics.EstimateUnsigned(statistic_name, "local.default", 0);
-  return value == 0 ? fallback : value;
+  if (auto selected = SelectedStatistic(statistics, statistic_name, target, true))
+    return *CheckedOptimizerStatisticUnsigned(*selected);
+  return fallback;
 }
 
 double EstimateDoubleForObject(const OptimizerStatisticsCatalog& statistics,
                                const std::string& statistic_name,
-                               const std::string& object_uuid,
+                               const OptimizerStatisticTarget& target,
                                double fallback) {
-  if (const auto value = statistics.Find(statistic_name, object_uuid); value && value->available) {
-    return value->value;
-  }
-  if (const auto value = statistics.Find(statistic_name, "local.default"); value && value->available) {
-    return value->value;
-  }
+  if (auto value = SelectedStatistic(statistics, statistic_name, target)) return value->value;
   return fallback;
 }
 
 OptimizerCostEnvironment EnvironmentForStatistics(const OptimizerStatisticsCatalog& statistics,
-                                                  const std::string& object_uuid) {
+                                                  const OptimizerStatisticTarget& target) {
   OptimizerCostEnvironment environment;
   environment.cost_profile_id = "runtime_metric_local_v1";
   environment.memory_budget_bytes = EstimateUnsignedForObject(statistics,
                                                               "memory_grant_available_bytes",
-                                                              object_uuid,
+                                                              target,
                                                               1048576);
-  const double read_latency = EstimateDoubleForObject(statistics, "page_family_read_latency_microseconds", object_uuid, 1000.0);
+  const double read_latency = EstimateDoubleForObject(statistics, "page_family_read_latency_microseconds", target, 1000.0);
   environment.sequential_page_cost = std::clamp(read_latency / 1000.0, 0.25, 10.0);
   environment.random_page_cost = std::clamp(environment.sequential_page_cost * 4.0, 1.0, 40.0);
   return environment;
 }
 
-std::vector<OptimizerMetricCostInput> MetricFeedbackForStatistics(const OptimizerStatisticsCatalog& statistics,
-                                                                  const std::string& object_uuid) {
+std::vector<OptimizerMetricCostInput> MetricFeedbackForStatistics(
+    const OptimizerStatisticsCatalog& statistics, const OptimizerStatisticTarget& target,
+    const planner::LogicalPlanNode& node) {
   std::vector<OptimizerMetricCostInput> feedback;
   const auto add = [&](const std::string& statistic_name, const std::string& metric_name) {
-    if (const auto value = statistics.Find(statistic_name, object_uuid); value && value->available) {
-      feedback.push_back({metric_name, value->value, value->freshness_microseconds, true});
-      return;
-    }
-    if (const auto value = statistics.Find(statistic_name, "local.default"); value && value->available) {
-      feedback.push_back({metric_name, value->value, value->freshness_microseconds, true});
+    if (auto value = SelectedStatistic(statistics, statistic_name, target)) {
+      OptimizerMetricCostInput metric;
+      metric.metric_name = metric_name;
+      metric.value = value->value;
+      metric.freshness_microseconds = value->freshness_microseconds;
+      metric.policy_allowed = true;
+      metric.statistic_target = value->target;
+      feedback.push_back(std::move(metric));
     }
   };
   add("operator_latency_multiplier", "operator_latency_multiplier");
   add("io_latency_multiplier", "io_latency_multiplier");
   add("estimate_uncertainty", "estimate_uncertainty");
   const auto add_runtime_feedback = [&](const std::string& statistic_name, const std::string& metric_name) {
-    const auto push = [&](const auto& value) {
-      OptimizerMetricCostInput metric;
-      metric.metric_name = metric_name;
-      metric.value = value.value;
-      metric.freshness_microseconds = value.freshness_microseconds;
-      metric.policy_allowed = true;
-      metric.operator_family = "access_path";
-      metric.plan_shape = object_uuid;
-      metric.cost_profile_id = "runtime_metric_local_v1";
-      feedback.push_back(std::move(metric));
-    };
-    if (const auto value = statistics.Find(statistic_name, object_uuid); value && value->available) {
-      push(*value);
-      return;
-    }
-    if (const auto value = statistics.Find(statistic_name, "local.default"); value && value->available) {
-      push(*value);
-    }
+    if (target.kind != OptimizerStatisticTargetKind::kObject) return;
+    const auto value = statistics.Find(statistic_name, target);
+    if (!value || !ValidateStatistic(*value, 60000000).ok ||
+        value->source != StatisticSource::kRuntimeMetric || value->cluster_only) return;
+    OptimizerMetricCostInput metric;
+    metric.metric_name = metric_name;
+    metric.value = value->value;
+    metric.freshness_microseconds = value->freshness_microseconds;
+    metric.policy_allowed = true;
+    metric.operator_family = "access_path";
+    metric.plan_shape = planner::PhysicalAccessKindName(node.access_kind);
+    metric.statistic_target = value->target;
+    metric.cost_profile_id = "runtime_metric_local_v1";
+    feedback.push_back(std::move(metric));
   };
   add_runtime_feedback("feedback_estimated_rows", "feedback.estimated_rows");
   add_runtime_feedback("feedback_actual_rows", "feedback.actual_rows");
@@ -217,17 +227,24 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     candidates.push_back(BuildRemoteNodePushdownCandidate({}));
     return candidates;
   }
-  const std::string object_uuid = RequiredObjectUuid(node);
-  const std::uint64_t row_count = EstimateUnsignedForObject(statistics, "row_count", object_uuid, 1000);
-  const std::uint64_t visible_count = EstimateUnsignedForObject(statistics, "visible_row_count", object_uuid, row_count);
-  const std::uint64_t retained_versions = EstimateUnsignedForObject(statistics, "relation_retained_version_count", object_uuid, visible_count);
-  const std::uint64_t page_count = EstimateUnsignedForObject(statistics, "page_count", object_uuid, 64);
-  const std::uint64_t row_width_bytes = EstimateUnsignedForObject(statistics, "average_row_bytes", object_uuid, 32);
-  const std::uint64_t filespace_available_pages = EstimateUnsignedForObject(statistics, "filespace_available_pages", object_uuid, page_count + 1);
-  const double cache_hit_ratio = std::clamp(EstimateDoubleForObject(statistics, "page_cache_hit_ratio", object_uuid, 0.0), 0.0, 1.0);
-  const double cache_pressure = std::clamp(EstimateDoubleForObject(statistics, "page_cache_pressure_level", object_uuid, 0.0), 0.0, 10.0);
-  const auto environment = EnvironmentForStatistics(statistics, object_uuid);
-  const auto metric_feedback = MetricFeedbackForStatistics(statistics, object_uuid);
+  const auto selected_target = RequiredObjectTarget(node);
+  if (!selected_target) {
+    CostVector refused;
+    candidates.push_back(MakeCandidate("CAND-OPT-OBJECT-BINDING", node.access_kind,
+        {}, refused, 0, {"invalid_or_ambiguous_object_binding"}));
+    return candidates;
+  }
+  const auto target = *selected_target;
+  const std::uint64_t row_count = EstimateUnsignedForObject(statistics, "row_count", target, 1000);
+  const std::uint64_t visible_count = EstimateUnsignedForObject(statistics, "visible_row_count", target, row_count);
+  const std::uint64_t retained_versions = EstimateUnsignedForObject(statistics, "relation_retained_version_count", target, visible_count);
+  const std::uint64_t page_count = EstimateUnsignedForObject(statistics, "page_count", target, 64);
+  const std::uint64_t row_width_bytes = EstimateUnsignedForObject(statistics, "average_row_bytes", target, 32);
+  const std::uint64_t filespace_available_pages = EstimateUnsignedForObject(statistics, "filespace_available_pages", target, page_count + 1);
+  const double cache_hit_ratio = std::clamp(EstimateDoubleForObject(statistics, "page_cache_hit_ratio", target, 0.0), 0.0, 1.0);
+  const double cache_pressure = std::clamp(EstimateDoubleForObject(statistics, "page_cache_pressure_level", target, 0.0), 0.0, 10.0);
+  const auto environment = EnvironmentForStatistics(statistics, target);
+  const auto metric_feedback = MetricFeedbackForStatistics(statistics, target, node);
 
   auto table_scan = EstimateBaseOperatorCost(environment,
                                              planner::PhysicalAccessKind::kTableScan,
@@ -244,7 +261,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
   FinalizeCostVector(&table_scan);
   table_scan = ApplyMetricFeedbackCost(std::move(table_scan), metric_feedback);
   auto table_scan_candidate = MakeCandidate("CAND-OPT-001", planner::PhysicalAccessKind::kTableScan, {"relation_uuid", "visibility_rules", "row_count", "page_count", "page_cache", "filespace_available_pages"}, table_scan, visible_count);
-  AttachStatisticDiagnostics(&table_scan_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "filespace_available_pages"});
+  AttachStatisticDiagnostics(&table_scan_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "filespace_available_pages"});
   candidates.push_back(std::move(table_scan_candidate));
 
   const bool wants_row_uuid = node.access_kind == planner::PhysicalAccessKind::kRowUuidLookup ||
@@ -265,17 +282,17 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     candidates.push_back(MakeCandidate("CAND-OPT-003", planner::PhysicalAccessKind::kRowUuidLookup, {"row_uuid_predicate", "relation_uuid"}, row_uuid, 1));
   }
   if (wants_equality) {
-    const auto index_depth = EstimateUnsignedForObject(statistics, "index_depth", object_uuid, 3);
-    const auto index_leaf_pages = EstimateUnsignedForObject(statistics, "index_leaf_pages", object_uuid, 1);
-    const auto index_distinct_keys = EstimateUnsignedForObject(statistics, "index_distinct_keys", object_uuid, 0);
-    const auto fragmentation = EstimateDoubleForObject(statistics, "index_fragmentation_ratio", object_uuid, 0.0);
+    const auto index_depth = EstimateUnsignedForObject(statistics, "index_depth", target, 3);
+    const auto index_leaf_pages = EstimateUnsignedForObject(statistics, "index_leaf_pages", target, 1);
+    const auto index_distinct_keys = EstimateUnsignedForObject(statistics, "index_distinct_keys", target, 0);
+    const auto fragmentation = EstimateDoubleForObject(statistics, "index_fragmentation_ratio", target, 0.0);
     PredicateSelectivityInput equality_selectivity;
     equality_selectivity.predicate_kind = HasDescriptor(node, "predicate.unique_eq") ? "unique_eq" : "scalar_eq";
     equality_selectivity.input_rows = visible_count;
     equality_selectivity.distinct_values = index_distinct_keys;
-    equality_selectivity.has_mcv_frequency = statistics.Find("mcv_frequency", object_uuid).has_value();
-    equality_selectivity.mcv_frequency = EstimateDoubleForObject(statistics, "mcv_frequency", object_uuid, 0.0);
-    equality_selectivity.input_confidence = statistics.ConfidenceFor(index_distinct_keys == 0 ? "mcv_frequency" : "index_distinct_keys", object_uuid);
+    equality_selectivity.has_mcv_frequency = SelectedStatistic(statistics, "mcv_frequency", target).has_value();
+    equality_selectivity.mcv_frequency = EstimateDoubleForObject(statistics, "mcv_frequency", target, 0.0);
+    equality_selectivity.input_confidence = statistics.ConfidenceFor(index_distinct_keys == 0 ? "mcv_frequency" : "index_distinct_keys", target);
     const auto equality_estimate = EstimatePredicateSelectivity(equality_selectivity);
     const auto equality_rows = EstimateRowsAfterSelectivity(visible_count, equality_estimate);
     auto index_lookup = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kScalarBtreeLookup, equality_rows, row_width_bytes, index_depth);
@@ -285,7 +302,7 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     index_lookup = ApplyMetricFeedbackCost(std::move(index_lookup), metric_feedback);
     auto btree_candidate = MakeCandidate("CAND-OPT-004", planner::PhysicalAccessKind::kScalarBtreeLookup, {"index_uuid", "exact_key_descriptor", "index_exactness", "index_depth", "index_fragmentation_ratio"}, index_lookup, equality_rows);
     btree_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
-    AttachStatisticDiagnostics(&btree_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_depth", "index_leaf_pages", "index_fragmentation_ratio"});
+    AttachStatisticDiagnostics(&btree_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_depth", "index_leaf_pages", "index_fragmentation_ratio"}, {"index_fragmentation_ratio"});
     candidates.push_back(std::move(btree_candidate));
 
     auto hash_lookup = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kScalarHashLookup, equality_rows, row_width_bytes, 1);
@@ -296,44 +313,44 @@ std::vector<PlanCandidate> GenerateLocalAccessPathCandidates(const planner::Logi
     hash_lookup = ApplyMetricFeedbackCost(std::move(hash_lookup), metric_feedback);
     auto hash_candidate = MakeCandidate("CAND-OPT-HASH", planner::PhysicalAccessKind::kScalarHashLookup, {"index_uuid", "hash_key_descriptor", "hash_bucket_directory"}, hash_lookup, equality_rows);
     hash_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
-    AttachStatisticDiagnostics(&hash_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_distinct_keys"});
+    AttachStatisticDiagnostics(&hash_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_distinct_keys"});
     candidates.push_back(std::move(hash_candidate));
 
-    if (wants_covering || EstimateDoubleForObject(statistics, "index_visibility_coverage", object_uuid, 0.0) > 0.0) {
+    if (wants_covering || EstimateDoubleForObject(statistics, "index_visibility_coverage", target, 0.0) > 0.0) {
       auto covering = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kCoveringIndexScan, equality_rows, row_width_bytes, index_depth);
       covering.io_cost += index_depth;
       FinalizeCostVector(&covering);
       covering = ApplyMetricFeedbackCost(std::move(covering), metric_feedback);
       auto covering_candidate = MakeCandidate("CAND-OPT-006", planner::PhysicalAccessKind::kCoveringIndexScan, {"index_uuid", "projection_covered", "visibility_rules", "index_visibility_coverage"}, covering, equality_rows);
       covering_candidate.statistics_diagnostics.push_back(equality_estimate.diagnostic_code);
-      AttachStatisticDiagnostics(&covering_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_visibility_coverage", "index_depth"});
+      AttachStatisticDiagnostics(&covering_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_visibility_coverage", "index_depth"}, {"index_visibility_coverage"});
       candidates.push_back(std::move(covering_candidate));
     }
   }
   if (wants_covering && !wants_equality) {
-    const auto index_depth = EstimateUnsignedForObject(statistics, "index_depth", object_uuid, 3);
+    const auto index_depth = EstimateUnsignedForObject(statistics, "index_depth", target, 3);
     auto covering = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kCoveringIndexScan, 1, row_width_bytes, index_depth);
     covering.io_cost += index_depth;
     FinalizeCostVector(&covering);
     covering = ApplyMetricFeedbackCost(std::move(covering), metric_feedback);
     auto covering_candidate = MakeCandidate("CAND-OPT-006", planner::PhysicalAccessKind::kCoveringIndexScan, {"index_uuid", "projection_covered", "visibility_rules", "index_visibility_coverage"}, covering, 1);
-    AttachStatisticDiagnostics(&covering_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_visibility_coverage", "index_depth"});
+    AttachStatisticDiagnostics(&covering_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_visibility_coverage", "index_depth"}, {"index_visibility_coverage"});
     candidates.push_back(std::move(covering_candidate));
   }
   if (wants_range) {
     PredicateSelectivityInput range_selectivity;
     range_selectivity.predicate_kind = "scalar_range";
     range_selectivity.input_rows = visible_count;
-    range_selectivity.has_histogram = statistics.Find("index_selectivity", object_uuid).has_value();
-    range_selectivity.range_fraction = EstimateDoubleForObject(statistics, "index_selectivity", object_uuid, 0.33);
-    range_selectivity.input_confidence = statistics.ConfidenceFor("index_selectivity", object_uuid);
+    range_selectivity.has_histogram = SelectedStatistic(statistics, "index_selectivity", target).has_value();
+    range_selectivity.range_fraction = EstimateDoubleForObject(statistics, "index_selectivity", target, 0.33);
+    range_selectivity.input_confidence = statistics.ConfidenceFor("index_selectivity", target);
     const auto range_estimate = EstimatePredicateSelectivity(range_selectivity);
     const auto estimated_rows = EstimateRowsAfterSelectivity(visible_count, range_estimate);
     auto range = EstimateBaseOperatorCost(environment, planner::PhysicalAccessKind::kScalarBtreeRange, estimated_rows, row_width_bytes, std::max<std::uint64_t>(1, estimated_rows / 64));
     range = ApplyMetricFeedbackCost(std::move(range), metric_feedback);
     auto range_candidate = MakeCandidate("CAND-OPT-005", planner::PhysicalAccessKind::kScalarBtreeRange, {"index_uuid", "compatible_ordering", "range_predicate", "index_selectivity"}, range, estimated_rows);
     range_candidate.statistics_diagnostics.push_back(range_estimate.diagnostic_code);
-    AttachStatisticDiagnostics(&range_candidate, statistics, object_uuid, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_selectivity", "index_depth", "index_leaf_pages"});
+    AttachStatisticDiagnostics(&range_candidate, statistics, target, {"row_count", "visible_row_count", "page_count", "average_row_bytes", "memory_grant_available_bytes", "index_selectivity", "index_depth", "index_leaf_pages"}, {"index_selectivity"});
     candidates.push_back(std::move(range_candidate));
   }
   planner::PhysicalAccessKind specialized_kind = node.access_kind;

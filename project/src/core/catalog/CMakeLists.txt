@@ -17,6 +17,14 @@ add_library(sb_core_catalog
   catalog_index_profile.cpp
   ipar_catalog_support_services.cpp
   catalog_record_codec.cpp
+  catalog_value_codec.cpp
+  catalog_database_record_codec.cpp
+  catalog_filespace_record_codec.cpp
+  catalog_schema_record_codec.cpp
+  catalog_localized_record_codec.cpp
+  catalog_resource_record_codec.cpp
+  catalog_name_record_codec.cpp
+  catalog_name_envelope.cpp
   catalog_records.cpp
 )
 

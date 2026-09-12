@@ -9,6 +9,10 @@
 #include "memory_fairness_scheduler.hpp"
 
 #include <algorithm>
+#include <limits>
+#include <string_view>
+#include <new>
+#include <type_traits>
 #include <set>
 #include <utility>
 
@@ -84,8 +88,9 @@ bool ValidateScopeChain(const std::vector<HierarchicalMemoryScopeRef>& chain,
   }
   std::set<std::string> seen;
   for (const auto& scope : chain) {
-    if (scope.scope_id.empty()) {
-      *reason = "scope_id_empty";
+    if (scope.scope_id.empty() || static_cast<unsigned>(scope.kind) >
+        static_cast<unsigned>(HierarchicalMemoryScopeKind::descriptor_snapshot)) {
+      *reason = "scope_id_empty_or_kind_invalid";
       return false;
     }
     const auto key = ScopeKey(scope);
@@ -98,9 +103,14 @@ bool ValidateScopeChain(const std::vector<HierarchicalMemoryScopeRef>& chain,
   return true;
 }
 
-bool IsClusterMemoryCategory(MemoryCategory category) {
-  return category == MemoryCategory::cluster_control_reserved ||
-         category == MemoryCategory::cluster_decision_reserved;
+// A pending real reservation is owned even while later preparation fails.
+struct PendingReservation {
+  HierarchicalMemoryBudgetLedger* ledger;
+  HierarchicalMemoryReservationToken token;
+  ~PendingReservation() { if (token.valid()) (void)ledger->ReleaseNoAlloc(token); }
+};
+void Increment(u64& value) noexcept {
+  if (value != std::numeric_limits<u64>::max()) ++value;
 }
 
 DiagnosticRecord MakeFairnessDiagnostic(
@@ -156,7 +166,7 @@ MultiTenantMemoryFairnessScheduler::MultiTenantMemoryFairnessScheduler(
 
 HierarchicalMemoryBudgetOperationResult
 MultiTenantMemoryFairnessScheduler::SetScopePolicy(
-    MemoryFairnessScopePolicy policy) {
+    MemoryFairnessScopePolicy policy) try {
   HierarchicalMemoryBudgetOperationResult result;
   std::string provenance_reason;
   if (!SafeProvenance(policy.provenance, &provenance_reason)) {
@@ -229,370 +239,280 @@ MultiTenantMemoryFairnessScheduler::SetScopePolicy(
   budget.hard_limit_bytes = policy.hard_max_bytes;
   budget.soft_limit_bytes = 0;
   budget.provenance = policy.provenance;
+
+  // Serialize policy publication with scheduler readers and prepare any map
+  // node before changing the actual parent budget. The parent update uses
+  // reject_change for still-owned grants; a refusal leaves both policies alone.
+  const auto key = ScopeKey(policy.scope);
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto existing = scopes_.find(key);
+  decltype(scopes_) prepared;
+  if (existing == scopes_.end()) {
+    ScopeState state;
+    state.policy = std::move(policy);
+    prepared.emplace(key, std::move(state));
+  }
+  auto node = prepared.empty() ? decltype(scopes_)::node_type{} : prepared.extract(prepared.begin());
   auto budget_result = ledger_->SetBudget(std::move(budget));
   if (!budget_result.ok()) {
     return budget_result;
   }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto& state = scopes_[ScopeKey(policy.scope)];
-  state.policy = std::move(policy);
+  static_assert(std::is_nothrow_move_assignable_v<MemoryFairnessScopePolicy>);
+  static_assert(std::is_nothrow_move_constructible_v<HierarchicalMemoryBudgetOperationResult>);
+  if (existing != scopes_.end()) {
+    existing->second.policy = std::move(policy);
+  } else {
+    // Same-allocator node transfer and string comparison do not allocate.
+    scopes_.insert(std::move(node));
+  }
   result.status = OkStatus();
+  return result;
+} catch (const std::bad_alloc&) {
+  HierarchicalMemoryBudgetOperationResult result;
+  result.status = FairnessStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
   return result;
 }
 
 MemoryFairnessDecision MultiTenantMemoryFairnessScheduler::Admit(
-    MemoryFairnessRequest request) {
-  std::string invalid_reason;
-  std::string duplicate_scope_key;
+    MemoryFairnessRequest request) try {
+  // One lock orders policy checks, parent ownership and local publication.
+  // There is no reclaim wait or callback while holding this admission lock.
+  std::lock_guard lock(mutex_);
+  std::string reason, duplicate;
   if (request.requested_bytes == 0 ||
-      !ValidateScopeChain(request.scope_chain, &invalid_reason,
-                          &duplicate_scope_key)) {
-    return FailDecision(
-        request,
-        MemoryFairnessDecisionAction::deny,
-        StatusCode::memory_invalid_request,
-        Severity::error,
-        "SB-MEMORY-FAIRNESS-REQUEST-INVALID",
-        "memory.fairness.request.invalid",
-        request.requested_bytes == 0 ? "requested_bytes_zero" : invalid_reason,
-        duplicate_scope_key,
-        false,
-        false,
-        false,
-        false,
-        false);
+      !ValidateScopeChain(request.scope_chain, &reason, &duplicate) ||
+      static_cast<unsigned>(request.work_class) > static_cast<unsigned>(MemoryFairnessWorkClass::background) ||
+      static_cast<unsigned>(request.category) > static_cast<unsigned>(MemoryCategory::test_probe)) {
+    return FailDecision(request, MemoryFairnessDecisionAction::deny,
+        StatusCode::memory_invalid_request, Severity::error,
+        "SB-MEMORY-FAIRNESS-REQUEST-INVALID", "memory.fairness.request.invalid",
+        "invalid_bytes_scope_or_profile", duplicate, false, false, false, false, false);
   }
-  if (ledger_ == nullptr) {
-    return FailDecision(request,
-                        MemoryFairnessDecisionAction::deny,
-                        StatusCode::memory_invalid_request,
-                        Severity::error,
-                        "SB-MEMORY-FAIRNESS-LEDGER-MISSING",
-                        "memory.fairness.ledger_missing",
-                        "ceic_011_ledger_required",
-                        {},
-                        false,
-                        false,
-                        false,
-                        false,
-                        false);
+  if (!ledger_ || !SafeProvenance(request.provenance, &reason)) {
+    return FailDecision(request, MemoryFairnessDecisionAction::deny,
+        StatusCode::memory_invalid_request, Severity::error,
+        !ledger_ ? "SB-MEMORY-FAIRNESS-LEDGER-MISSING" : "SB-MEMORY-FAIRNESS-REQUEST-PROVENANCE-REFUSED",
+        "memory.fairness.admission.authority_refused",
+        !ledger_ ? "ceic_011_ledger_required" : reason, {}, false, false, false, false, false);
   }
-  std::string provenance_reason;
-  if (!SafeProvenance(request.provenance, &provenance_reason)) {
-    return FailDecision(
-        request,
-        MemoryFairnessDecisionAction::deny,
-        StatusCode::memory_invalid_request,
-        Severity::error,
-        "SB-MEMORY-FAIRNESS-REQUEST-PROVENANCE-REFUSED",
-        "memory.fairness.request.provenance_refused",
-        provenance_reason,
-        {},
-        false,
-        false,
-        false,
-        false,
-        false);
-  }
-  if (IsClusterMemoryCategory(request.category)) {
-    return FailDecision(
-        request,
-        MemoryFairnessDecisionAction::deny,
-        StatusCode::memory_invalid_request,
-        Severity::error,
-        "SB-MEMORY-FAIRNESS-CLUSTER-REFUSED",
-        "memory.fairness.cluster.refused",
-        "cluster_production_memory_scheduling_blocked",
-        {},
-        false,
-        false,
-        false,
-        false,
-        false);
-  }
-  if (request.memory_class.empty()) {
-    request.memory_class = "unclassified";
-  }
-  if (request.weight == 0) {
-    request.weight = 1;
-  }
+  if (request.memory_class.empty()) request.memory_class = "unclassified";
+  if (request.weight == 0) request.weight = 1;
+  constexpr auto max = std::numeric_limits<u64>::max();
+  const auto priority = static_cast<u64>(std::max(request.priority, 0));
+  const auto overflow = [&] {
+    return FailDecision(request, MemoryFairnessDecisionAction::deny,
+        StatusCode::memory_limit_exceeded, Severity::error,
+        "SB-MEMORY-FAIRNESS-CAPACITY-EXHAUSTED", "memory.fairness.capacity.exhausted",
+        "arithmetic_or_grant_identity_exhausted", {}, true, false, false, false, false);
+  };
+  if (next_grant_id_ == 0 || request.weight > max - priority ||
+      request.requested_bytes > max - active_bytes_) return overflow();
+  const auto priority_weight = RequestPriorityWeight(request);
 
-  bool grant_uses_burst = false;
-  bool starvation_prevention_applied = false;
-  {
-    std::unique_lock<std::mutex> lock(mutex_);
-    const u64 request_priority_weight = RequestPriorityWeight(request);
-    for (const auto& scope_ref : request.scope_chain) {
-      ScopeState& state = MutableScopeStateLocked(scope_ref);
-      RefreshBurstWindowLocked(&state, request.now_ms);
-      const u64 projected = state.active_bytes + request.requested_bytes;
-      const auto& policy = state.policy;
-      const std::string key = ScopeKey(scope_ref);
-      const bool request_within_guarantee =
-          policy.guarantee_bytes != 0 &&
-          projected <= policy.guarantee_bytes &&
-          request.work_class == MemoryFairnessWorkClass::foreground;
-      const bool waited =
-          policy.starvation_prevention_ms != 0 &&
-          request.wait_started_at_ms != 0 &&
-          request.now_ms >= request.wait_started_at_ms &&
-          request.now_ms - request.wait_started_at_ms >=
-              policy.starvation_prevention_ms;
-      if (request_within_guarantee &&
-          (waited || request.prior_refusal_count != 0)) {
-        starvation_prevention_applied = true;
-      }
-
-      if (policy.hard_max_bytes != 0 && projected > policy.hard_max_bytes) {
-        lock.unlock();
-        return FailDecision(request,
-                            ReliefActionForRequest(request),
-                            StatusCode::memory_limit_exceeded,
-                            Severity::error,
-                            "SB-MEMORY-FAIRNESS-HARD-MAX-REFUSED",
-                            "memory.fairness.hard_max.refused",
-                            "hard_max_exceeded",
-                            key,
-                            true,
-                            false,
-                            false,
-                            false,
-                            starvation_prevention_applied);
-      }
-      if (policy.soft_max_bytes != 0 && projected > policy.soft_max_bytes &&
-          !request_within_guarantee) {
-        bool burst_expired = false;
-        if (ScopeCanUseBurstLocked(&state, projected, request.now_ms,
-                                   &burst_expired)) {
-          grant_uses_burst = true;
-          continue;
-        }
-        if (burst_expired) {
-          ++state.burst_refusal_count;
-          ++burst_refusal_count_;
-        }
-        lock.unlock();
-        return FailDecision(request,
-                            ReliefActionForRequest(request),
-                            StatusCode::memory_limit_exceeded,
-                            Severity::warning,
-                            "SB-MEMORY-FAIRNESS-SOFT-MAX-RELIEF",
-                            "memory.fairness.soft_max.relief",
-                            "soft_max_exceeded",
-                            key,
-                            false,
-                            true,
-                            burst_expired,
-                            false,
-                            starvation_prevention_applied);
-      }
+  // New scope nodes are private until the complete grant can be published.
+  // Node transfer preserves pointers held by existing and newly staged grants.
+  decltype(scopes_) prepared_scopes;
+  std::vector<ScopeState*> affected;
+  std::vector<bool> uses_burst;
+  affected.reserve(request.scope_chain.size());
+  uses_burst.reserve(request.scope_chain.size());
+  bool burst_used = false, starvation = false;
+  for (const auto& ref : request.scope_chain) {
+    const auto key = ScopeKey(ref);
+    const auto found = scopes_.find(key);
+    ScopeState* state = nullptr;
+    if (found != scopes_.end()) state = &found->second;
+    else {
+      ScopeState prepared;
+      prepared.policy.scope = ref;
+      state = &prepared_scopes.emplace(key, std::move(prepared)).first->second;
     }
-
-    const u64 root_hard = RootHardLimitLocked(request);
-    const u64 protected_headroom =
-        ProtectedForegroundHeadroomLocked(request, request_priority_weight);
-    if (root_hard != 0 &&
-        active_bytes_ + request.requested_bytes + protected_headroom >
-            root_hard) {
-      lock.unlock();
-      return FailDecision(
-          request,
-          ReliefActionForRequest(request),
-          StatusCode::memory_limit_exceeded,
-          Severity::warning,
-          "SB-MEMORY-FAIRNESS-FOREGROUND-PROTECTION",
-          "memory.fairness.foreground_protection",
-          "foreground_guarantee_headroom_protected",
-          {},
-          false,
-          false,
-          false,
-          true,
-          starvation_prevention_applied);
+    affected.push_back(state);
+    uses_burst.push_back(false);
+    if (request.requested_bytes > max - state->active_bytes ||
+        priority_weight > max - state->priority_weight_total) return overflow();
+    const auto projected = state->active_bytes + request.requested_bytes;
+    const auto& policy = state->policy;
+    const bool guaranteed = policy.guarantee_bytes != 0 &&
+        projected <= policy.guarantee_bytes && request.work_class == MemoryFairnessWorkClass::foreground;
+    const bool waited = policy.starvation_prevention_ms != 0 &&
+        request.wait_started_at_ms != 0 && request.now_ms >= request.wait_started_at_ms &&
+        request.now_ms - request.wait_started_at_ms >= policy.starvation_prevention_ms;
+    starvation = starvation || (guaranteed && (waited || request.prior_refusal_count != 0));
+    if (policy.hard_max_bytes && projected > policy.hard_max_bytes)
+      return FailDecision(request, ReliefActionForRequest(request),
+          StatusCode::memory_limit_exceeded, Severity::error,
+          "SB-MEMORY-FAIRNESS-HARD-MAX-REFUSED", "memory.fairness.hard_max.refused",
+          "hard_max_exceeded", key, true, false, false, false, starvation);
+    if (policy.soft_max_bytes && projected > policy.soft_max_bytes && !guaranteed) {
+      bool expired = false;
+      if (!ScopeCanUseBurstLocked(state, projected, request.now_ms, &expired))
+        return FailDecision(request, ReliefActionForRequest(request),
+            StatusCode::memory_limit_exceeded, Severity::warning,
+            "SB-MEMORY-FAIRNESS-SOFT-MAX-RELIEF", "memory.fairness.soft_max.relief",
+            "soft_max_exceeded", key, false, true, expired, false, starvation);
+      if ((state->burst_window_expires_at_ms == 0 || request.now_ms >= state->burst_window_expires_at_ms) &&
+          policy.burst_window_ms > max - request.now_ms) return overflow();
+      uses_burst.back() = true;
+      burst_used = true;
     }
   }
-
-  HierarchicalMemoryReservationRequest reservation_request;
-  reservation_request.scope_chain = request.scope_chain;
-  reservation_request.category = request.category;
-  reservation_request.memory_class = request.memory_class;
-  reservation_request.requested_bytes = request.requested_bytes;
-  reservation_request.owner_id = request.owner_id;
-  reservation_request.spillable = request.spillable;
-  reservation_request.cancelable = request.cancelable;
-  reservation_request.priority = request.priority;
-  reservation_request.weight = request.weight;
-  reservation_request.lease_expires_at_ms = request.lease_expires_at_ms;
-  reservation_request.provenance = request.provenance;
-  auto reservation = ledger_->Reserve(std::move(reservation_request));
-  if (!reservation.ok()) {
-    MemoryFairnessDecision decision;
-    decision.status = reservation.status;
-    decision.diagnostic = reservation.diagnostic;
-    switch (reservation.recommendation) {
-      case HierarchicalMemoryReservationRecommendation::spill:
-        decision.action = MemoryFairnessDecisionAction::spill;
-        break;
-      case HierarchicalMemoryReservationRecommendation::cancel:
-        decision.action = MemoryFairnessDecisionAction::cancel;
-        break;
-      case HierarchicalMemoryReservationRecommendation::degrade:
-      case HierarchicalMemoryReservationRecommendation::deny:
-      case HierarchicalMemoryReservationRecommendation::granted:
-        decision.action = ReliefActionForRequest(request);
-        break;
-    }
-    decision.dominant_scope_key = "ceic_011_ledger";
-    decision.hard_max_exceeded =
-        reservation.recommendation ==
-        HierarchicalMemoryReservationRecommendation::deny;
-    decision.soft_max_exceeded =
-        reservation.recommendation !=
-        HierarchicalMemoryReservationRecommendation::deny;
-    decision.starvation_prevention_applied = starvation_prevention_applied;
-    AttachEvidenceRows(&decision, request, "ceic_011_ledger_refused");
-    std::lock_guard<std::mutex> lock(mutex_);
-    CountDecisionLocked(decision);
-    return decision;
-  }
-
-  auto commit = ledger_->Commit(reservation.token);
-  if (!commit.ok()) {
-    (void)ledger_->Release(reservation.token);
-    MemoryFairnessDecision decision;
-    decision.status = commit.status;
-    decision.diagnostic = commit.diagnostic;
-    decision.action = MemoryFairnessDecisionAction::deny;
-    decision.dominant_scope_key = "ceic_011_ledger_commit";
-    decision.starvation_prevention_applied = starvation_prevention_applied;
-    AttachEvidenceRows(&decision, request, "ceic_011_commit_refused");
-    std::lock_guard<std::mutex> lock(mutex_);
-    CountDecisionLocked(decision);
-    return decision;
-  }
+  const auto root_hard = RootHardLimitLocked(request);
+  const auto headroom = ProtectedForegroundHeadroomLocked(request, priority_weight);
+  if (!headroom) return overflow();
+  const auto projected_total = active_bytes_ + request.requested_bytes;
+  if (root_hard && (*headroom > root_hard || projected_total > root_hard - *headroom))
+    return FailDecision(request, ReliefActionForRequest(request),
+        StatusCode::memory_limit_exceeded, Severity::warning,
+        "SB-MEMORY-FAIRNESS-FOREGROUND-PROTECTION", "memory.fairness.foreground_protection",
+        "foreground_guarantee_headroom_protected", {}, false, false, false, true, starvation);
 
   MemoryFairnessGrantToken grant;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    grant.grant_id = next_grant_id_++;
-    grant.bytes = request.requested_bytes;
-    grant.reservation = reservation.token;
-    const u64 priority_weight = RequestPriorityWeight(request);
-    for (const auto& scope_ref : request.scope_chain) {
-      ScopeState& state = MutableScopeStateLocked(scope_ref);
-      const u64 previous = state.active_bytes;
-      state.active_bytes += request.requested_bytes;
-      state.peak_bytes = std::max(state.peak_bytes, state.active_bytes);
-      ++state.active_grant_count;
-      state.priority_weight_total += priority_weight;
-      ++state.grant_count;
-      if (grant_uses_burst && state.policy.soft_max_bytes != 0 &&
-          previous + request.requested_bytes > state.policy.soft_max_bytes) {
-        if (state.burst_window_expires_at_ms == 0 &&
-            state.policy.burst_window_ms != 0) {
-          state.burst_window_expires_at_ms =
-              request.now_ms + state.policy.burst_window_ms;
-        }
-        ++state.burst_grant_count;
+  grant.grant_id = next_grant_id_;
+  grant.bytes = request.requested_bytes;
+  // All rich response/evidence and local owning metadata precede the real
+  // reservation. Neither telemetry nor optional strings can orphan a grant.
+  auto decision = GrantDecision(request, grant, burst_used, starvation);
+  GrantRecord record;
+  record.grant = grant;
+  record.scopes = affected;
+  record.priority_weight = priority_weight;
+  record.burst_used = burst_used;
+  decltype(grants_) prepared_grants;
+  prepared_grants.emplace(grant.grant_id, std::move(record));
+  auto node = prepared_grants.extract(prepared_grants.begin());
+  HierarchicalMemoryReservationRequest parent;
+  parent.scope_chain = request.scope_chain;
+  parent.category = request.category;
+  parent.memory_class = request.memory_class;
+  parent.requested_bytes = request.requested_bytes;
+  parent.owner_id = request.owner_id;
+  parent.spillable = request.spillable;
+  parent.cancelable = request.cancelable;
+  parent.priority = request.priority;
+  parent.weight = request.weight;
+  parent.lease_expires_at_ms = request.lease_expires_at_ms;
+  parent.provenance = request.provenance;
+  const auto parent_failure = [&](Status status, DiagnosticRecord diagnostic, const char* why,
+      HierarchicalMemoryReservationRecommendation recommendation = HierarchicalMemoryReservationRecommendation::deny) {
+    MemoryFairnessDecision refused;
+    refused.status = status;
+    refused.diagnostic = std::move(diagnostic);
+    refused.diagnostic.status = status;
+    refused.action = MemoryFairnessDecisionAction::deny;
+    if (status.code == StatusCode::memory_limit_exceeded) {
+      switch (recommendation) {
+        case HierarchicalMemoryReservationRecommendation::spill: refused.action = MemoryFairnessDecisionAction::spill; break;
+        case HierarchicalMemoryReservationRecommendation::cancel: refused.action = MemoryFairnessDecisionAction::cancel; break;
+        default: refused.action = ReliefActionForRequest(request); break;
       }
-      if (starvation_prevention_applied) {
-        ++state.starvation_prevention_count;
-      }
+      refused.hard_max_exceeded = recommendation == HierarchicalMemoryReservationRecommendation::deny;
+      refused.soft_max_exceeded = !refused.hard_max_exceeded;
     }
-    active_bytes_ += request.requested_bytes;
-    peak_bytes_ = std::max(peak_bytes_, active_bytes_);
-    if (grant_uses_burst) {
-      ++burst_grant_count_;
+    refused.starvation_prevention_applied = starvation;
+    refused.dominant_scope_key = "ceic_011_ledger";
+    AttachEvidenceRows(&refused, request, why);
+    CountDecisionLocked(refused, request.scope_chain);
+    return refused;
+  };
+  PendingReservation pending{ledger_, {}};
+  auto reserved = ledger_->Reserve(std::move(parent));
+  if (!reserved.ok()) return parent_failure(reserved.status, std::move(reserved.diagnostic),
+      "ceic_011_ledger_refused", reserved.recommendation);
+  pending.token = reserved.token;
+  auto committed = ledger_->Commit(reserved.token);
+  if (!committed.ok()) return parent_failure(committed.status, std::move(committed.diagnostic), "ceic_011_commit_refused");
+  auto retained = ledger_->Retain(reserved.token);
+  if (!retained.ok()) return parent_failure(retained.status, {}, "ceic_011_retain_refused");
+  node.mapped().lease = std::move(retained.lease);
+  pending.token = {};
+  auto use = node.mapped().lease.Use();
+  if (!use.live()) return parent_failure(
+      FairnessStatus(StatusCode::memory_invalid_request, Severity::error), {}, "ceic_011_parent_revoked");
+
+  // No allocation or ledger call follows this publication boundary. The
+  // retained use guard prevents parent revocation from racing final adoption.
+  grant.reservation = reserved.token;
+  node.mapped().grant = grant;
+  decision.grant = grant;
+  scopes_.merge(prepared_scopes);
+  grants_.insert(std::move(node));
+  for (usize i = 0; i < affected.size(); ++i) {
+    auto& state = *affected[i];
+    RefreshBurstWindowLocked(&state, request.now_ms);
+    state.active_bytes += request.requested_bytes;
+    state.peak_bytes = std::max(state.peak_bytes, state.active_bytes);
+    ++state.active_grant_count;
+    state.priority_weight_total += priority_weight;
+    Increment(state.grant_count);
+    if (uses_burst[i]) {
+      if (!state.burst_window_expires_at_ms)
+        state.burst_window_expires_at_ms = request.now_ms + state.policy.burst_window_ms;
+      Increment(state.burst_grant_count);
     }
-    if (starvation_prevention_applied) {
-      ++starvation_prevention_count_;
-    }
-    GrantRecord record;
-    record.grant = grant;
-    record.scope_chain = request.scope_chain;
-    record.priority_weight = priority_weight;
-    record.burst_used = grant_uses_burst;
-    grants_[grant.grant_id] = std::move(record);
+    if (starvation) Increment(state.starvation_prevention_count);
   }
-  return GrantDecision(request, grant, grant_uses_burst,
-                       starvation_prevention_applied);
+  active_bytes_ = projected_total;
+  peak_bytes_ = std::max(peak_bytes_, active_bytes_);
+  if (burst_used) Increment(burst_grant_count_);
+  if (starvation) Increment(starvation_prevention_count_);
+  next_grant_id_ = next_grant_id_ == max ? 0 : next_grant_id_ + 1;
+  CountDecisionLocked(decision, request.scope_chain);
+  static_assert(std::is_nothrow_move_constructible_v<MemoryFairnessDecision>);
+  return decision;
+} catch (const std::bad_alloc&) {
+  MemoryFairnessDecision result;
+  result.status = FairnessStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  return result;
+}
+
+Status MultiTenantMemoryFairnessScheduler::ReleaseNoAlloc(MemoryFairnessGrantToken grant) {
+  std::lock_guard lock(mutex_);
+  const auto unknown = FairnessStatus(StatusCode::memory_unknown_pointer, Severity::error);
+  if (!ledger_) return FairnessStatus(StatusCode::memory_invalid_request, Severity::error);
+  if (!grant.valid()) return unknown;
+  auto it = grants_.find(grant.grant_id);
+  if (it == grants_.end()) return unknown;
+  auto& record = it->second;
+  if (record.grant.bytes != grant.bytes ||
+      record.grant.reservation.token_id != grant.reservation.token_id ||
+      record.grant.reservation.bytes != grant.reservation.bytes) return unknown;
+  const auto status = record.lease.Reset();
+  if (!status.ok()) return status;
+  for (auto* state : record.scopes) {
+    state->active_bytes -= record.grant.bytes;
+    --state->active_grant_count;
+    state->priority_weight_total -= record.priority_weight;
+  }
+  active_bytes_ -= record.grant.bytes;
+  grants_.erase(it);
+  Increment(release_count_);
+  return OkStatus();
 }
 
 HierarchicalMemoryBudgetOperationResult
-MultiTenantMemoryFairnessScheduler::Release(MemoryFairnessGrantToken grant) {
+MultiTenantMemoryFairnessScheduler::Release(MemoryFairnessGrantToken grant) try {
   HierarchicalMemoryBudgetOperationResult result;
-  if (!grant.valid()) {
-    result.status =
-        FairnessStatus(StatusCode::memory_unknown_pointer, Severity::error);
-    result.diagnostic = MakeFairnessDiagnostic(
-        result.status,
-        "SB-MEMORY-FAIRNESS-RELEASE-UNKNOWN-GRANT",
-        "memory.fairness.release.unknown_grant",
-        {{"reason", "grant_invalid"},
-         {"grant_id", std::to_string(grant.grant_id)}});
-    return result;
-  }
-  if (ledger_ == nullptr) {
-    result.status =
-        FairnessStatus(StatusCode::memory_invalid_request, Severity::error);
-    result.diagnostic = MakeFairnessDiagnostic(
-        result.status,
-        "SB-MEMORY-FAIRNESS-LEDGER-MISSING",
-        "memory.fairness.ledger_missing",
-        {{"reason", "ceic_011_ledger_required_for_release"},
-         {"grant_id", std::to_string(grant.grant_id)}});
-    return result;
-  }
-
-  GrantRecord record;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = grants_.find(grant.grant_id);
-    if (it == grants_.end() || it->second.grant.bytes != grant.bytes) {
-      result.status =
-          FairnessStatus(StatusCode::memory_unknown_pointer, Severity::error);
-      result.diagnostic = MakeFairnessDiagnostic(
-          result.status,
-          "SB-MEMORY-FAIRNESS-RELEASE-UNKNOWN-GRANT",
-          "memory.fairness.release.unknown_grant",
-          {{"reason", it == grants_.end() ? "grant_not_found"
-                                          : "grant_bytes_mismatch"},
-           {"grant_id", std::to_string(grant.grant_id)}});
-      return result;
-    }
-    record = it->second;
-  }
-
-  auto ledger_release = ledger_->Release(record.grant.reservation);
-  if (!ledger_release.ok()) {
-    return ledger_release;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& scope_ref : record.scope_chain) {
-      ScopeState& state = MutableScopeStateLocked(scope_ref);
-      state.active_bytes = state.active_bytes >= record.grant.bytes
-                               ? state.active_bytes - record.grant.bytes
-                               : 0;
-      if (state.active_grant_count != 0) {
-        --state.active_grant_count;
-      }
-      state.priority_weight_total =
-          state.priority_weight_total >= record.priority_weight
-              ? state.priority_weight_total - record.priority_weight
-              : 0;
-    }
-    active_bytes_ = active_bytes_ >= record.grant.bytes
-                        ? active_bytes_ - record.grant.bytes
-                        : 0;
-    grants_.erase(record.grant.grant_id);
-    ++release_count_;
-  }
-
-  result.status = OkStatus();
+  result.status = ReleaseNoAlloc(grant);
+  if (!result.ok())
+    result.diagnostic = MakeFairnessDiagnostic(result.status,
+        "SB-MEMORY-FAIRNESS-RELEASE-UNKNOWN-GRANT", "memory.fairness.release.unknown_grant",
+        {{"reason", ledger_ ? "grant_identity_invalid_or_parent_release_failed" : "ceic_011_ledger_required_for_release"}});
   return result;
+} catch (const std::bad_alloc&) {
+  HierarchicalMemoryBudgetOperationResult result;
+  result.status = FairnessStatus(StatusCode::memory_allocation_failed, Severity::error);
+  result.diagnostic.status = result.status;
+  return result;
+}
+
+MultiTenantMemoryFairnessScheduler::~MultiTenantMemoryFairnessScheduler() {
+  // Callers quiesce grant users first. Destruction of each retained lease
+  // releases the actual parent charge without allocating metadata.
+  std::lock_guard lock(mutex_);
+  grants_.clear();
 }
 
 MemoryFairnessSnapshot MultiTenantMemoryFairnessScheduler::Snapshot() const {
@@ -692,8 +612,7 @@ MemoryFairnessDecision MultiTenantMemoryFairnessScheduler::FailDecision(
        {"requested_bytes", std::to_string(request.requested_bytes)},
        {"work_class", MemoryFairnessWorkClassName(request.work_class)}});
   AttachEvidenceRows(&decision, request, reason);
-  std::lock_guard<std::mutex> lock(mutex_);
-  CountDecisionLocked(decision);
+  CountDecisionLocked(decision, request.scope_chain);
   return decision;
 }
 
@@ -718,20 +637,7 @@ MemoryFairnessDecision MultiTenantMemoryFairnessScheduler::GrantDecision(
        {"grant_id", std::to_string(grant.grant_id)},
        {"work_class", MemoryFairnessWorkClassName(request.work_class)}});
   AttachEvidenceRows(&decision, request, "granted");
-  std::lock_guard<std::mutex> lock(mutex_);
-  CountDecisionLocked(decision);
   return decision;
-}
-
-MultiTenantMemoryFairnessScheduler::ScopeState&
-MultiTenantMemoryFairnessScheduler::MutableScopeStateLocked(
-    const HierarchicalMemoryScopeRef& scope) {
-  auto& state = scopes_[ScopeKey(scope)];
-  if (state.policy.scope.scope_id.empty()) {
-    state.policy.scope = scope;
-    state.policy.priority_weight = 1;
-  }
-  return state;
 }
 
 const MultiTenantMemoryFairnessScheduler::ScopeState*
@@ -764,15 +670,16 @@ bool MultiTenantMemoryFairnessScheduler::ScopeCanUseBurstLocked(
       policy.soft_max_bytes == 0) {
     return false;
   }
-  if (state->burst_window_expires_at_ms == 0 &&
+  if ((state->burst_window_expires_at_ms == 0 || now_ms >= state->burst_window_expires_at_ms) &&
       state->active_bytes > policy.soft_max_bytes) {
     *expired = true;
     return false;
   }
-  if (projected_bytes > policy.soft_max_bytes + policy.burst_bytes) {
+  if (projected_bytes > policy.soft_max_bytes &&
+      projected_bytes - policy.soft_max_bytes > policy.burst_bytes) {
     return false;
   }
-  if (state->burst_window_expires_at_ms == 0) {
+  if (state->burst_window_expires_at_ms == 0 || now_ms >= state->burst_window_expires_at_ms) {
     return true;
   }
   return now_ms < state->burst_window_expires_at_ms;
@@ -802,7 +709,7 @@ u64 MultiTenantMemoryFairnessScheduler::RootHardLimitLocked(
   return hard;
 }
 
-u64 MultiTenantMemoryFairnessScheduler::ProtectedForegroundHeadroomLocked(
+std::optional<u64> MultiTenantMemoryFairnessScheduler::ProtectedForegroundHeadroomLocked(
     const MemoryFairnessRequest& request,
     u64 request_priority_weight) const {
   u64 protected_headroom = 0;
@@ -832,7 +739,9 @@ u64 MultiTenantMemoryFairnessScheduler::ProtectedForegroundHeadroomLocked(
       continue;
     }
     if (state.active_bytes < state.policy.guarantee_bytes) {
-      protected_headroom += state.policy.guarantee_bytes - state.active_bytes;
+      const auto available = state.policy.guarantee_bytes - state.active_bytes;
+      if (available > std::numeric_limits<u64>::max() - protected_headroom) return std::nullopt;
+      protected_headroom += available;
     }
   }
   return protected_headroom;
@@ -865,57 +774,37 @@ MultiTenantMemoryFairnessScheduler::ReliefActionForRequest(
 }
 
 void MultiTenantMemoryFairnessScheduler::CountDecisionLocked(
-    const MemoryFairnessDecision& decision) {
-  ++decision_count_;
+    const MemoryFairnessDecision& decision,
+    const std::vector<HierarchicalMemoryScopeRef>& affected) noexcept {
+  // Optional evidence is not accounting authority. Match preexisting typed
+  // scope fields directly, without allocating keys or parsing strings.
+  Increment(decision_count_);
   switch (decision.action) {
-    case MemoryFairnessDecisionAction::grant:
-      ++grant_count_;
-      break;
-    case MemoryFairnessDecisionAction::spill:
-      ++spill_count_;
-      break;
-    case MemoryFairnessDecisionAction::throttle:
-      ++throttle_count_;
-      break;
-    case MemoryFairnessDecisionAction::cancel:
-      ++cancel_count_;
-      break;
-    case MemoryFairnessDecisionAction::deny:
-      ++deny_count_;
-      break;
+    case MemoryFairnessDecisionAction::grant: Increment(grant_count_); break;
+    case MemoryFairnessDecisionAction::spill: Increment(spill_count_); break;
+    case MemoryFairnessDecisionAction::throttle: Increment(throttle_count_); break;
+    case MemoryFairnessDecisionAction::cancel: Increment(cancel_count_); break;
+    case MemoryFairnessDecisionAction::deny: Increment(deny_count_); break;
   }
-  if (decision.foreground_protection_applied) {
-    ++foreground_protection_count_;
-  }
-  for (const auto& row : decision.evidence) {
-    const std::string prefix = "memory_fairness.affected_scope=";
-    if (row.find(prefix) != 0) {
-      continue;
-    }
-    const auto key = row.substr(prefix.size());
-    auto it = scopes_.find(key);
-    if (it == scopes_.end()) {
-      continue;
-    }
+  if (decision.foreground_protection_applied) Increment(foreground_protection_count_);
+  if (decision.burst_window_expired) Increment(burst_refusal_count_);
+  for (auto& [key, state] : scopes_) {
+    bool matches = false;
+    for (const auto& ref : affected)
+      if (ref.kind == state.policy.scope.kind && ref.scope_id == state.policy.scope.scope_id) {
+        matches = true; break;
+      }
+    if (!matches) continue;
     switch (decision.action) {
-      case MemoryFairnessDecisionAction::grant:
-        break;
-      case MemoryFairnessDecisionAction::spill:
-        ++it->second.spill_count;
-        break;
-      case MemoryFairnessDecisionAction::throttle:
-        ++it->second.throttle_count;
-        break;
-      case MemoryFairnessDecisionAction::cancel:
-        ++it->second.cancel_count;
-        break;
-      case MemoryFairnessDecisionAction::deny:
-        ++it->second.deny_count;
-        break;
+      case MemoryFairnessDecisionAction::grant: break;
+      case MemoryFairnessDecisionAction::spill: Increment(state.spill_count); break;
+      case MemoryFairnessDecisionAction::throttle: Increment(state.throttle_count); break;
+      case MemoryFairnessDecisionAction::cancel: Increment(state.cancel_count); break;
+      case MemoryFairnessDecisionAction::deny: Increment(state.deny_count); break;
     }
-    if (decision.foreground_protection_applied) {
-      ++it->second.foreground_protection_count;
-    }
+    if (decision.foreground_protection_applied) Increment(state.foreground_protection_count);
+    if (decision.burst_window_expired && key == decision.dominant_scope_key)
+      Increment(state.burst_refusal_count);
   }
 }
 
@@ -952,7 +841,7 @@ void MultiTenantMemoryFairnessScheduler::AttachEvidenceRows(
   decision->evidence.push_back(
       "memory_fairness.integrated_support_bundle_closure=not_claimed_ceic_091_pending");
   decision->evidence.push_back(
-      "memory_fairness.cluster_production_behavior=blocked_not_implemented");
+      "memory_fairness.cluster_category=local_accounting_only_not_cluster_authority");
   for (const auto& scope_ref : request.scope_chain) {
     decision->evidence.push_back("memory_fairness.affected_scope=" +
                                  ScopeKey(scope_ref));

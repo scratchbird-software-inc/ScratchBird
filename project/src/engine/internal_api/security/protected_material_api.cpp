@@ -1045,10 +1045,10 @@ std::uint64_t RequestTime(const EngineRequestContext& context) {
 }
 
 std::string DatabaseUuidFromRequest(const EngineApiRequest& request) {
-  if (!request.context.database_uuid.canonical.empty()) {
-    return request.context.database_uuid.canonical;
+  if (!request.context.database_uuid.is_nil()) {
+    return request.context.database_uuid;
   }
-  return request.target_database.uuid.canonical;
+  return request.target_database.uuid;
 }
 
 bool StartsWith(const std::string& value, const std::string& prefix) {
@@ -1497,7 +1497,7 @@ EngineProtectedMaterialAuditEvent AppendMaterialAuditLocked(
   event.database_uuid = database_uuid;
   event.protected_material_uuid = protected_material_uuid;
   event.protected_material_version_uuid = protected_material_version_uuid;
-  event.actor_uuid = context.principal_uuid.canonical;
+  event.actor_uuid = context.principal_uuid;
   event.event_kind = event_kind;
   event.decision = decision;
   event.diagnostic_code = diagnostic_code;
@@ -2025,8 +2025,8 @@ EngineCreateProtectedMaterialResult EngineCreateProtectedMaterial(
     material.object_class = request.object_class.empty() ? "protected_material" : request.object_class;
     material.owner_scope_uuid = !request.owner_scope_uuid.empty()
         ? request.owner_scope_uuid
-        : (!request.context.principal_uuid.canonical.empty()
-               ? request.context.principal_uuid.canonical
+        : (!request.context.principal_uuid.is_nil()
+               ? request.context.principal_uuid
                : database_uuid);
     material.purpose_class = request.purpose_class;
     material.storage_class = request.storage_class;

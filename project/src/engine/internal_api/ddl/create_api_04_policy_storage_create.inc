@@ -148,9 +148,9 @@
     return MakeCrudDiagnosticResult<EngineCreateDomainResult>(request.context, "ddl.create_domain", domain_name_appended);
   }
   auto result = MakeCrudSuccessResult<EngineCreateDomainResult>(request.context, "ddl.create_domain");
-  result.primary_object.uuid.canonical = record.domain_uuid;
+  result.primary_object.uuid = record.domain_uuid;
   result.primary_object.object_kind = "domain";
-  result.catalog_row_uuid.canonical = record.catalog_row_uuid;
+  result.catalog_row_uuid = record.catalog_row_uuid;
   result.evidence.push_back({"domain_event", "domain_create"});
   result.evidence.push_back({"validation_hook", record.validation_hook_status});
   AddApiBehaviorRow(&result, {{"object_uuid", record.domain_uuid},
@@ -163,7 +163,7 @@
                           "ddl.create_domain",
                           "domain",
                           record.domain_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "domain_event");
   return result;
 }
@@ -210,26 +210,26 @@ scratchbird::engine::sblr::SblrExecutionContext SequenceSblrContext(
     const EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.cluster_uuid = context.cluster_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid = context.statement_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.current_role_uuid = context.current_role_uuid.canonical;
-  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_uuid = context.statement_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
   out.statement_timestamp = context.statement_timestamp;
   out.transaction_timestamp = context.transaction_timestamp;
   out.current_timestamp = context.current_timestamp;
   out.current_monotonic_ns = context.current_monotonic_ns;
   out.security_context_present = context.security_context_present;
   out.transaction_context_present =
-      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+      context.local_transaction_id != 0 || !context.transaction_uuid.is_nil();
   out.cluster_authority_available = context.cluster_authority_available;
   out.read_only_mode = context.read_only_mode;
   return out;
@@ -314,7 +314,7 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
       request, "ddl.create_sequence", "sequence", true, "created");
   if (!result.ok) { return result; }
 
-  auto definition = BuildSequenceDefinition(request, result.primary_object.uuid.canonical);
+  auto definition = BuildSequenceDefinition(request, result.primary_object.uuid);
   const auto registered = scratchbird::engine::sblr::RegisterSblrSequence(
       &scratchbird::engine::sblr::ProcessSblrSequenceRegistry(),
       definition,
@@ -329,7 +329,7 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
   auto diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   const std::string lookup_key = CreateSequenceOptionValue(request, "sequence_lookup_key:");
   diagnostic = RegisterSequenceDefinitionAlias(
-      request, result.primary_object.uuid.canonical, lookup_key);
+      request, result.primary_object.uuid, lookup_key);
   if (diagnostic.error) {
     return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
         request.context, "ddl.create_sequence", diagnostic);
@@ -337,13 +337,13 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
   const std::string name = ApiBehaviorPrimaryName(request, "sequence");
   if (!name.empty() && LowerAsciiLocal(name) != LowerAsciiLocal(lookup_key)) {
     diagnostic = RegisterSequenceDefinitionAlias(
-        request, result.primary_object.uuid.canonical, name);
+        request, result.primary_object.uuid, name);
     if (diagnostic.error) {
       return MakeCrudDiagnosticResult<EngineCreateSequenceResult>(
           request.context, "ddl.create_sequence", diagnostic);
     }
   }
-  result.evidence.push_back({"sequence_runtime_definition", result.primary_object.uuid.canonical});
+  result.evidence.push_back({"sequence_runtime_definition", result.primary_object.uuid});
   if (!lookup_key.empty()) {
     result.evidence.push_back({"sequence_runtime_lookup_key", LowerAsciiLocal(lookup_key)});
   }
@@ -381,7 +381,7 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
       AddApiBehaviorEvidence(
           &result,
           "global_aggregate_view_descriptor_uuid",
-          prepared.descriptor.view_descriptor_uuid.canonical);
+          prepared.descriptor.view_descriptor_uuid);
       AddApiBehaviorEvidence(
           &result,
           "global_aggregate_view_descriptor_generation",
@@ -426,7 +426,7 @@ EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) 
       AddApiBehaviorEvidence(
           &result,
           "relation_projection_view_descriptor_uuid",
-          prepared.descriptor.view_descriptor_uuid.canonical);
+          prepared.descriptor.view_descriptor_uuid);
       AddApiBehaviorEvidence(
           &result,
           "relation_projection_view_descriptor_generation",
@@ -509,7 +509,7 @@ EngineCreateIndexTemplateResult EngineCreateIndexTemplate(const EngineCreateInde
       true,
       "created");
   if (!result.ok) { return result; }
-  AddApiBehaviorEvidence(&result, "index_template_descriptor_created", result.primary_object.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "index_template_descriptor_created", result.primary_object.uuid);
   AddApiBehaviorEvidence(&result, "index_template_kind", object_kind);
   AddApiBehaviorEvidence(&result, "template_document_bound", "descriptor_payload");
   AddApiBehaviorEvidence(&result, "ddl_catalog_route", object_kind == "component_template"
@@ -545,8 +545,8 @@ EngineCreateConstraintResult EngineCreateConstraint(const EngineCreateConstraint
     AddDdlPublicationResult(&result,
                             kOperation,
                             "constraint",
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "constraint_descriptor");
   }
   return result;
@@ -591,12 +591,12 @@ TResult AdoptCreateOrAlterLifecycleResult(
   // FillObjectResult supplies a lifecycle projection identifier in this
   // field. CREATE OR ALTER resolved to ALTER did not append a new DDL catalog
   // row, so do not expose that inherited projection as a create result.
-  result.catalog_row_uuid.canonical.clear();
-  result.primary_object.uuid.canonical =
-      lifecycle.bound_object_identity.object_uuid.canonical;
+  result.catalog_row_uuid = {};
+  result.primary_object.uuid =
+      lifecycle.bound_object_identity.object_uuid;
   result.primary_object.object_kind = object_kind;
   AddApiBehaviorEvidence(
-      &result, "executable_lifecycle", result.primary_object.uuid.canonical);
+      &result, "executable_lifecycle", result.primary_object.uuid);
   AddApiBehaviorEvidence(&result,
                          "executable_generation",
                          std::to_string(lifecycle.executable_generation));
@@ -642,9 +642,9 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
 
     bool alter_existing = false;
     bool resolved_existing_by_name = false;
-    if (!effective.target_object.uuid.canonical.empty()) {
+    if (!effective.target_object.uuid.is_nil()) {
       const auto existing =
-          find_visible_procedure(effective.target_object.uuid.canonical);
+          find_visible_procedure(effective.target_object.uuid);
       if (existing == lifecycle_state.state.objects.end()) {
         return MakeApiBehaviorDiagnostic<TResult>(
             effective.context,
@@ -675,7 +675,7 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
                   operation_id,
                   "create_or_alter_catalog_lifecycle_mismatch"));
         }
-        effective.target_object.uuid.canonical = existing->object_uuid;
+        effective.target_object.uuid = existing->object_uuid;
         alter_existing = true;
         resolved_existing_by_name = true;
       } else if (resolved.diagnostic.code != "CATALOG.NAME.NOT_FOUND") {
@@ -709,8 +709,8 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
 
     // The create half owns identity allocation. A parser may reuse an
     // engine-published UUID for ALTER, but cannot invent a procedure UUID.
-    effective.target_object.uuid.canonical = GenerateCrudEngineUuid("object");
-    if (effective.target_object.uuid.canonical.empty()) {
+    effective.target_object.uuid = GenerateCrudEngineUuid("object");
+    if (effective.target_object.uuid.is_nil()) {
       return MakeApiBehaviorDiagnostic<TResult>(
           effective.context,
           operation_id,
@@ -741,7 +741,7 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
 
   EngineCreateExecutableObjectRequest executable_request;
   static_cast<EngineApiRequest&>(executable_request) = effective;
-  executable_request.target_object.uuid.canonical = result.primary_object.uuid.canonical;
+  executable_request.target_object.uuid = result.primary_object.uuid;
   executable_request.target_object.object_kind = object_kind;
   executable_request.target_schema = effective.target_schema;
   executable_request.localized_names = effective.localized_names;
@@ -752,7 +752,7 @@ TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
     return ExecutableCreateLifecycleFailure<TResult>(
         effective.context, operation_id, lifecycle);
   }
-  AddApiBehaviorEvidence(&result, "executable_lifecycle", lifecycle.bound_object_identity.object_uuid.canonical);
+  AddApiBehaviorEvidence(&result, "executable_lifecycle", lifecycle.bound_object_identity.object_uuid);
   AddApiBehaviorEvidence(&result, "executable_generation", std::to_string(lifecycle.executable_generation));
   for (const auto& evidence : lifecycle.evidence) {
     if (evidence.evidence_kind == "create_or_alter_resolution" ||
@@ -809,22 +809,22 @@ EngineCreateTriggerResult EngineCreateTrigger(const EngineCreateTriggerRequest& 
                                            "catalog_lifecycle_create_failed")
             : catalog.diagnostics.front());
   }
-  if (catalog.primary_object.uuid.canonical !=
-          result.primary_object.uuid.canonical ||
+  if (catalog.primary_object.uuid !=
+          result.primary_object.uuid ||
       catalog.primary_object.object_kind != "trigger" ||
-      catalog.catalog_row_uuid.canonical.empty()) {
+      catalog.catalog_row_uuid.is_nil()) {
     return MakeApiBehaviorDiagnostic<EngineCreateTriggerResult>(
         request.context, kOperation,
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.create_trigger.catalog_lifecycle_identity_mismatch",
-            result.primary_object.uuid.canonical, true));
+            result.primary_object.uuid, true));
   }
   result.catalog_row_uuid = catalog.catalog_row_uuid;
   result.evidence.insert(result.evidence.end(), catalog.evidence.begin(),
                          catalog.evidence.end());
   AddApiBehaviorEvidence(&result, "trigger_catalog_lifecycle",
-                         result.primary_object.uuid.canonical);
+                         result.primary_object.uuid);
   return result;
 }
 

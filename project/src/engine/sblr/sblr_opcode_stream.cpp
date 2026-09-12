@@ -172,7 +172,7 @@ SblrOpcodeStreamResult DecodeSblrOpcodeStream(std::string_view bytes) {
   stream.registry_snapshot_uuid = FormatUuid(reinterpret_cast<const std::uint8_t*>(bytes.data() + 40));
   std::array<std::uint8_t, 16> package{}, registry{};
   if (!ParseUuid(stream.package_descriptor_uuid, &package) || !ParseUuid(stream.registry_snapshot_uuid, &registry))
-    return Fail("DATATYPE.DESCRIPTOR_INVALID", "SBOS package or registry UUID is zero");
+    return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS package or registry UUID is zero");
   std::size_t offset = 64;
   for (std::uint32_t i = 0; i != count; ++i) {
     std::uint64_t size = 0;
@@ -192,7 +192,7 @@ SblrOpcodeStreamResult DecodeSblrOpcodeStream(std::string_view bytes) {
                       std::to_string(i) + ": " + detail);
     }
     if (decoded.envelope.registry_snapshot_uuid != stream.registry_snapshot_uuid)
-      return Fail("DATATYPE.DESCRIPTOR_INVALID", "SBOS record registry generation differs");
+      return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS record registry generation differs");
     stream.operations.push_back(decoded.envelope);
     offset += static_cast<std::size_t>(size);
   }
@@ -205,7 +205,7 @@ SblrOpcodeStreamResult DecodeSblrOpcodeStream(std::string_view bytes) {
       return Fail("SBLR.OPERAND_INVALID", "SBOS contains nested package framing");
   if (!IsFrame(stream.operations.front(), true, package) ||
       !IsFrame(stream.operations.back(), false, package))
-    return Fail("DATATYPE.DESCRIPTOR_INVALID", "SBOS framing descriptor identity differs");
+    return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS framing descriptor identity differs");
   auto canonical = EncodeSblrOpcodeStream(stream);
   if (canonical.size() != bytes.size())
     return Fail("SBLR.OPERATION.NONCANONICAL", "SBOS canonical re-encoding size differs");
@@ -230,8 +230,8 @@ SblrOpcodeStreamResult AdmitSblrOpcodeStream(std::string_view bytes,
   auto result = DecodeSblrOpcodeStream(bytes);
   if (!result.ok) return result;
   if (result.stream.registry_snapshot_uuid != admission.admitted_registry_snapshot_uuid)
-    return Fail("DATATYPE.DESCRIPTOR_INVALID", "SBOS registry generation is stale");
-  if (!admission.descriptor_class_accepted) return Fail("DATATYPE.DESCRIPTOR_INVALID", "sblr.package.v1 descriptor evidence is absent");
+    return Fail("DATATYPE.DESCRIPTOR.INVALID", "SBOS registry generation is stale");
+  if (!admission.descriptor_class_accepted) return Fail("DATATYPE.DESCRIPTOR.INVALID", "sblr.package.v1 descriptor evidence is absent");
   if (!admission.authenticated) return Fail("SECURITY.ACCESS_DENIED", "authenticated package principal is absent");
   if (!admission.gateway_pass_through) return Fail("PROCESS.CLUSTER_PATH_ABSENT", "gateway did not pass through local package framing");
   if (!admission.executor_evidence_accepted) return Fail("SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING", "package framing executor evidence is absent");

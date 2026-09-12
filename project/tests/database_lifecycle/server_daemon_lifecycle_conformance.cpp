@@ -8,16 +8,21 @@
 
 #include "config.hpp"
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "server_daemon_lifecycle.hpp"
 #include "uuid.hpp"
 
 #include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <vector>
 
 namespace {
@@ -70,7 +75,7 @@ ServerLifecycleArtifacts Artifacts() {
   return artifacts;
 }
 
-ServerBootstrapConfig Config(std::string_view scope = "shared") {
+ServerBootstrapConfig Config(std::string_view scope = "dedicated") {
   ServerBootstrapConfig config;
   config.database_default_path = "/tmp/sb_dblc013e_target.sbdb";
   config.database_daemon_scope = std::string(scope);
@@ -104,7 +109,7 @@ HostedEngineState Engine(std::initializer_list<HostedDatabaseSnapshot> databases
   return state;
 }
 
-void TestSharedDaemonServiceReadyAndIsolation() {
+void TestSharedDaemonRefused() {
   auto config = Config("shared");
   const auto engine = Engine({
       Database("019e1305-0000-7000-8000-000000000001",
@@ -117,17 +122,18 @@ void TestSharedDaemonServiceReadyAndIsolation() {
                true),
   });
   const auto snapshot = EvaluateServerDaemonLifecycle(config, Artifacts(), engine);
-  Require(snapshot.service_ready, "shared daemon did not become service-ready");
-  Require(snapshot.shared_daemon_has_other_databases,
-          "shared daemon did not record unrelated database association");
+  Require(!snapshot.service_ready && snapshot.state == "failed",
+          "forbidden shared multi-database daemon became service-ready");
+  Require(HasDiagnostic(snapshot, "SERVER.DAEMON.SCOPE_INVALID"),
+          "shared daemon scope was not explicitly refused");
   Require(!ServerDaemonShouldStopForDatabaseShutdown(snapshot,
                                                      "019e1305-0000-7000-8000-000000000001"),
           "shared daemon would stop for one target database shutdown");
   const auto status = scratchbird::server::ServerDaemonLifecycleStatusJson(snapshot);
   Require(Contains(status, "\"daemon_scope\":\"shared\""),
           "server daemon status missing shared scope");
-  Require(Contains(status, "\"service_ready\":true"),
-          "server daemon status missing service-ready state");
+  Require(Contains(status, "\"service_ready\":false"),
+          "server daemon reported false readiness");
 }
 
 void TestDedicatedDaemonExclusiveStopDecision() {
@@ -170,7 +176,7 @@ void TestDedicatedDaemonRefusesAmbiguousScope() {
 }
 
 void TestHostedDatabaseFailureRequiresQuarantine() {
-  auto config = Config("shared");
+  auto config = Config();
   const auto engine = Engine({
       Database("019e1305-0000-7000-8000-000000000301",
                "/tmp/sb_dblc013e_failed.sbdb",
@@ -185,6 +191,8 @@ void TestHostedDatabaseFailureRequiresQuarantine() {
 }
 
 void TestDaemonScopeConfigurationValidation(const std::filesystem::path& dir) {
+  Require(ServerBootstrapConfig{}.database_daemon_scope == "dedicated",
+          "default server configuration permits shared database hosting");
   const auto valid_path = dir / "valid.conf";
   {
     std::ofstream out(valid_path);
@@ -199,6 +207,33 @@ void TestDaemonScopeConfigurationValidation(const std::filesystem::path& dir) {
   Require(valid.ok(), "valid daemon scope config was rejected");
   Require(valid.config.database_daemon_scope == "dedicated",
           "valid daemon scope config was not applied");
+  Require(valid.config.control_dir.filename() == valid.config.database_runtime_scope_id &&
+              valid.config.data_dir.filename() == valid.config.database_runtime_scope_id,
+          "compiled runtime defaults were not scoped to the database instance");
+  valid_cli.control_dir = (dir / "explicit-control").string();
+  valid_cli.runtime_dir = (dir / "explicit-runtime").string();
+  valid_cli.sbps_endpoint = (dir / "explicit-control" / "s.sock").string();
+  const auto explicit_paths = ResolveServerBootstrapConfig(valid_cli);
+  Require(explicit_paths.ok() && explicit_paths.config.control_dir == valid_cli.control_dir &&
+              explicit_paths.config.data_dir == valid_cli.runtime_dir &&
+              explicit_paths.config.sbps_endpoint == valid_cli.sbps_endpoint,
+          "dedicated scope rewrote explicit CLI instance directories/endpoints");
+
+  const auto scoped_path = dir / "explicit-paths.conf";
+  {
+    std::ofstream out(scoped_path);
+    out << "[config]\nformat = SBCD1\n[server.database]\ndefault_path = \""
+        << (dir / "file-paths.sbdb").generic_string() << "\"\n[server.runtime]\ncontrol_dir = \""
+        << (dir / "file-control").generic_string() << "\"\ndata_dir = \""
+        << (dir / "file-runtime").generic_string() << "\"\n";
+  }
+  ServerCliOptions file_paths_cli;
+  file_paths_cli.config_path = scoped_path.string();
+  const auto file_paths = ResolveServerBootstrapConfig(file_paths_cli);
+  Require(file_paths.ok() && file_paths.config.control_dir == dir / "file-control" &&
+              file_paths.config.data_dir == dir / "file-runtime" &&
+              file_paths.config.sbps_endpoint.parent_path() == file_paths.config.control_dir,
+          "dedicated scope rewrote file-configured instance directories");
 
   const auto invalid_path = dir / "invalid.conf";
   {
@@ -217,9 +252,27 @@ void TestDaemonScopeConfigurationValidation(const std::filesystem::path& dir) {
     if (diagnostic.code == "CONFIG.VALUE_INVALID_ENUM") found = true;
   }
   Require(found, "invalid daemon scope diagnostic mismatch");
+
+  const auto shared_path = dir / "shared.conf";
+  {
+    std::ofstream out(shared_path);
+    out << "[config]\nformat = SBCD1\n[server.database]\ndaemon_scope = shared\n";
+  }
+  invalid_cli.config_path = shared_path.string();
+  const auto shared = ResolveServerBootstrapConfig(invalid_cli);
+  Require(!shared.ok(), "explicit shared daemon config was accepted");
 }
 
-void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& dir) {
+std::string ReadBytes(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  Require(input.is_open(), "database fixture missing");
+  const std::string bytes{std::istreambuf_iterator<char>(input), {}};
+  Require(!input.bad(), "database fixture read failed");
+  return bytes;
+}
+
+void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& dir,
+                                                const char* executable) {
   const auto path = dir / "hosted_identity.sbdb";
   const auto database_uuid = uuid::GenerateEngineIdentityV7(
       scratchbird::core::platform::UuidKind::database,
@@ -242,7 +295,16 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-013E hosted identity database create failed");
 
-  auto config = Config("shared");
+  auto second_create = create;
+  const auto second_path = dir / "second_identity.sbdb";
+  second_create.path = second_path.string();
+  second_create.database_uuid = uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::database, 1779420001003).value;
+  second_create.filespace_uuid = uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::filespace, 1779420001004).value;
+  Require(db::CreateDatabaseFile(second_create).ok(), "second real database fixture failed");
+
+  auto config = Config();
   config.database_default_path = path;
   config.database_auto_create = false;
   const auto refused = scratchbird::server::StartHostedEngine(config);
@@ -252,7 +314,12 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
           "DBLC-013E public server accepted an uncredentialed fixture database");
 
   config.allow_uncredentialed_fixture_database = true;
-  const auto hosted = scratchbird::server::StartHostedEngine(config);
+  auto shared_config = config;
+  shared_config.database_daemon_scope = "shared";
+  const auto shared = scratchbird::server::StartHostedEngine(shared_config);
+  Require(!shared.ok() && shared.diagnostics.front().code == "SERVER.DAEMON.SCOPE_INVALID",
+          "direct hosted open bypassed shared-scope rejection");
+  auto hosted = scratchbird::server::StartHostedEngine(config);
   if (!hosted.ok()) {
     for (const auto& diagnostic : hosted.diagnostics) {
       std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
@@ -266,18 +333,113 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
           "hosted engine did not publish durable database UUID");
   Require(!Contains(hosted.state.databases.front().database_uuid, "engine-public-abi:"),
           "hosted engine published synthetic database UUID");
+
+  const auto status_before = scratchbird::server::HostedEngineStatusJson(hosted.state);
+  const auto first_bytes = ReadBytes(path), second_bytes = ReadBytes(second_path);
+  auto second_config = config;
+  second_config.database_default_path = second_path;
+  std::vector<scratchbird::server::HostedEngineResult> rejected(8);
+  std::vector<std::thread> contenders;
+  for (std::size_t i = 0; i != rejected.size(); ++i) {
+    contenders.emplace_back([&, i] { rejected[i] = scratchbird::server::StartHostedEngine(second_config); });
+  }
+  for (auto& contender : contenders) contender.join();
+  for (const auto& result : rejected) {
+    Require(!result.ok() && result.diagnostics.front().code == "SERVER.STARTUP.DATABASE_OPEN_FAILED",
+            "concurrent second-database attempt escaped the process owner guard");
+  }
+  Require(ReadBytes(path) == first_bytes && ReadBytes(second_path) == second_bytes &&
+              !std::filesystem::exists(second_path.string() + ".sb.route.owner.lock"),
+          "second-database attempts changed data or published route ownership");
+  second_config.database_default_path = dir / "must-not-be-created" / "second.sbdb";
+  const auto second = scratchbird::server::StartHostedEngine(second_config);
+  Require(!second.ok() && second.diagnostics.front().code == "SERVER.STARTUP.DATABASE_OPEN_FAILED",
+          "one process admitted a second hosted database attempt");
+  Require(!std::filesystem::exists(second_config.database_default_path.parent_path()),
+          "second hosted open touched another database directory before refusing");
+  Require(scratchbird::server::HostedEngineStatusJson(hosted.state) == status_before &&
+              hosted.state.database_ownership_locks.size() == 1 &&
+              hosted.state.database_ownership_locks.front()->valid(),
+          "second database refusal changed the first hosted runtime/ownership");
+
+  // Exec a fresh process: it must refuse the parent's database but may host the
+  // second real database. This is real host/lock evidence, not IPC/security E2E.
+  const auto first_text = path.string(), second_text = second_path.string();
+  const char* first_arg = first_text.c_str();
+  const char* second_arg = second_text.c_str();
+  const auto child = ::fork();
+  Require(child >= 0, "fork failed for independent server-host probe");
+  if (child == 0) {
+    ::execl(executable, executable, "--child-probe", first_arg, second_arg,
+            static_cast<char*>(nullptr));
+    ::_exit(127);
+  }
+  int child_status = 0;
+  pid_t waited;
+  do { waited = ::waitpid(child, &child_status, 0); } while (waited < 0 && errno == EINTR);
+  Require(waited == child && WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0,
+          "independent process did not enforce exclusive first/separate second ownership");
+  Require(ReadBytes(path) == first_bytes && hosted.state.database_ownership_locks.front()->valid(),
+          "separate process host changed the parent's database/owner");
+  hosted.state = {};
+  second_config.database_default_path = second_path;
+  const auto after_child = ReadBytes(second_path);
+  const auto retarget = scratchbird::server::StartHostedEngine(second_config);
+  Require(!retarget.ok() && retarget.diagnostics.front().code == "SERVER.STARTUP.DATABASE_OPEN_FAILED" &&
+              ReadBytes(second_path) == after_child,
+          "dropping a hosted snapshot permitted process-lifetime database retargeting");
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 4 && std::string_view(argv[1]) == "--child-probe") {
+    // exec discarded the parent's configured allocator. A real server installs
+    // startup memory policy before hosting; this component installs its explicit
+    // fixture policy rather than inheriting parent process runtime state.
+    const auto memory = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+        scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+        "server_instance_ownership_child");
+    Require(memory.ok() && memory.fixture_mode, "child memory policy installation failed");
+    auto config = Config();
+    config.allow_uncredentialed_fixture_database = true;
+    config.database_default_path = argv[2];
+    const auto conflict = scratchbird::server::StartHostedEngine(config);
+    Require(!conflict.ok() && conflict.diagnostics.front().code == "ARCH.DATABASE_MULTI_OWNER",
+            "second process opened an already hosted database");
+    config.database_default_path = argv[3];
+    std::vector<scratchbird::server::HostedEngineResult> outcomes(8);
+    std::vector<std::thread> racers;
+    for (std::size_t i = 0; i != outcomes.size(); ++i) {
+      racers.emplace_back([&, i] { outcomes[i] = scratchbird::server::StartHostedEngine(config); });
+    }
+    for (auto& racer : racers) racer.join();
+    unsigned admitted = 0;
+    for (const auto& own : outcomes) {
+      if (own.ok()) {
+        Require(own.state.databases.size() == 1 && own.state.databases.front().database_open,
+                "fresh process did not host a real database");
+        ++admitted;
+      } else {
+        if (own.diagnostics.front().code != "SERVER.STARTUP.DATABASE_OPEN_FAILED") {
+          for (const auto& diagnostic : own.diagnostics)
+            std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+        }
+        Require(own.diagnostics.front().code == "SERVER.STARTUP.DATABASE_OPEN_FAILED",
+                "concurrent host opening bypassed process reservation");
+      }
+    }
+    Require(admitted == 1, "fresh process must admit exactly one concurrent hosted open");
+    return EXIT_SUCCESS;
+  }
+  Require(argc == 1, "unexpected server ownership test arguments");
   const auto dir = MakeTempDir();
-  TestSharedDaemonServiceReadyAndIsolation();
+  TestSharedDaemonRefused();
   TestDedicatedDaemonExclusiveStopDecision();
   TestDedicatedDaemonRefusesAmbiguousScope();
   TestHostedDatabaseFailureRequiresQuarantine();
   TestDaemonScopeConfigurationValidation(dir);
-  TestHostedEnginePublishesDurableDatabaseUuid(dir);
+  TestHostedEnginePublishesDurableDatabaseUuid(dir, argv[0]);
   std::filesystem::remove_all(dir);
   return EXIT_SUCCESS;
 }

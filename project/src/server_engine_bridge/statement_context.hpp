@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "query/contextual_text_literal_authority.hpp"
 #include "scratchbird/engine/engine.h"
+#include "wire/diagnostic_identity_projection_codec.hpp"
 
 #include <cstdint>
 #include <array>
@@ -66,21 +67,21 @@ struct StatementParameterCoordinationBeginRequestV1 {
       engine_context = nullptr;
   StatementParameterExecutionMode mode =
       StatementParameterExecutionMode::kDirect;
-  std::string operation_uuid;
-  std::string public_prepared_uuid;
-  std::string public_dynamic_package_uuid;
+  scratchbird::engine::internal_api::EngineUuid operation_uuid;
+  scratchbird::engine::internal_api::EngineUuid public_prepared_uuid;
+  scratchbird::engine::internal_api::EngineUuid public_dynamic_package_uuid;
 };
 
 struct StatementParameterCoordinationViewV1 {
   std::uint64_t private_handle = 0;
-  std::string public_coordination_uuid;
-  std::string operation_uuid;
+  scratchbird::engine::internal_api::EngineUuid public_coordination_uuid;
+  scratchbird::engine::internal_api::EngineUuid operation_uuid;
   std::uint64_t coordinator_generation = 0;
-  std::string prepared_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation = 0;
-  std::string batch_uuid;
+  scratchbird::engine::internal_api::EngineUuid batch_uuid;
   std::uint64_t batch_generation = 0;
-  std::string dynamic_package_uuid;
+  scratchbird::engine::internal_api::EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation = 0;
 };
 
@@ -124,9 +125,9 @@ struct StatementDescriptorProfile {
   StatementDescriptorProfileKind profile_kind =
       StatementDescriptorProfileKind::kNumericNonNull;
   std::uint16_t slot = 0;
-  std::string descriptor_uuid;
-  std::string type_uuid;
-  std::string collation_uuid;
+  scratchbird::engine::internal_api::EngineUuid descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid type_uuid;
+  scratchbird::engine::internal_api::EngineUuid collation_uuid;
   bool nullable = false;
   std::uint32_t width = 0;
   std::uint32_t precision = 0;
@@ -136,14 +137,14 @@ struct StatementDescriptorProfile {
 struct StatementAggregateFunctionProfile {
   std::uint16_t abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  scratchbird::engine::internal_api::EngineUuid function_uuid;
   bool executable = false;
 };
 
 struct StatementWindowFunctionProfile {
   std::uint16_t abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  scratchbird::engine::internal_api::EngineUuid function_uuid;
   bool executable = false;
 };
 
@@ -152,7 +153,7 @@ struct StatementWindowFunctionProfile {
 // profiles must never populate it.
 struct StatementRelationOccurrenceMappingV1 {
   std::uint64_t occurrence_id = 0;
-  std::string persisted_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid persisted_descriptor_uuid;
   std::uint64_t persisted_descriptor_generation = 0;
 };
 
@@ -166,7 +167,7 @@ struct StatementBulkImportNameAtomV1 {
 };
 
 struct StatementBulkImportBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::string command_surface_id;
   std::uint64_t structural_occurrence = 0;
   std::uint32_t import_occurrence = 0;
@@ -182,8 +183,8 @@ struct StatementBulkImportBindRequestV1 {
 };
 
 struct StatementBulkImportBindAckV1 {
-  std::string authenticated_receipt_uuid;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
   std::uint64_t structural_occurrence = 0;
   std::uint32_t import_occurrence = 0;
@@ -207,24 +208,24 @@ struct StatementBulkImportAuthorityV1 {
   std::vector<std::uint8_t> exact_bind_request_bytes;
   std::vector<StatementBulkImportNameAtomV1> target_name_atoms;
   std::string admitted_command_surface_id;
-  std::string target_relation_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string row_shape_uuid;
+  scratchbird::engine::internal_api::EngineUuid row_shape_uuid;
   std::uint64_t row_shape_generation = 0;
   std::array<std::uint8_t, 32> column_descriptor_set_sha256{};
-  std::string import_policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid import_policy_snapshot_uuid;
   std::uint64_t import_policy_generation = 0;
   std::array<std::uint8_t, 32> import_policy_bundle_sha256{};
-  std::string import_route_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid import_route_snapshot_uuid;
   std::uint64_t import_route_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_grant_generation = 0;
   std::uint64_t executor_availability_generation = 0;
   std::uint64_t maximum_stream_bytes = 0;
@@ -234,7 +235,7 @@ struct StatementBulkImportAuthorityV1 {
   std::uint32_t maximum_target_columns = 0;
   bool cluster_bound = false;
   std::uint64_t cluster_epoch = 0;
-  std::string cluster_fence_uuid;
+  scratchbird::engine::internal_api::EngineUuid cluster_fence_uuid;
   scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
       authorization_observation;
 };
@@ -243,7 +244,7 @@ struct StatementBulkImportAuthorityV1 {
 // parser submission produced under this same receipt; it is re-decoded and
 // rebound by the engine before any prepared identity is issued.
 struct StatementPrepareBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string statement_name;
   bool quoted = false;
@@ -255,11 +256,11 @@ struct StatementPrepareBindRequestV1 {
 };
 
 struct StatementPrepareBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string statement_name_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_name_uuid;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
@@ -279,13 +280,13 @@ struct StatementPrepareAuthorityV1 {
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
   bool source_free_parameterized_query_template = false;
-  std::string parameter_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   // The parameter coordinator owns this UUID.  It is deliberately distinct
   // from canonical_statement_name, which is the session-visible SBsql name.
-  std::string parameter_prepared_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_set_generation = 0;
   std::uint64_t parameter_prepared_generation = 0;
-  std::string parameter_set_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_set_snapshot_uuid;
   std::uint64_t parameter_set_snapshot_generation = 0;
   std::string ordered_slot_table_sha256;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
@@ -293,7 +294,7 @@ struct StatementPrepareAuthorityV1 {
 };
 
 struct StatementExecuteDirectBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::vector<std::uint8_t> canonical_container_bytes;
   std::vector<std::uint8_t> canonical_execution_envelope_bytes;
@@ -303,11 +304,11 @@ struct StatementExecuteDirectBindRequestV1 {
 };
 
 struct StatementExecuteDirectBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string result_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_descriptor_uuid;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
@@ -323,8 +324,8 @@ struct StatementExecuteDirectAuthorityV1 {
   std::string body_operation_id;
   std::string body_operation_family;
   std::string body_result_shape;
-  std::string result_handle_uuid;
-  std::string operation_evidence_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_handle_uuid;
+  scratchbird::engine::internal_api::EngineUuid operation_evidence_uuid;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   std::vector<std::uint8_t> canonical_execution_envelope_bytes;
   std::vector<std::uint8_t> canonical_parameter_bytes;
@@ -334,7 +335,7 @@ struct StatementExecuteDirectAuthorityV1 {
 };
 
 struct StatementQueryExplainBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   bool verbose = false;
   std::uint8_t format = 1;
@@ -345,11 +346,11 @@ struct StatementQueryExplainBindRequestV1 {
 };
 
 struct StatementQueryExplainBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string explain_uuid;
+  scratchbird::engine::internal_api::EngineUuid explain_uuid;
   std::array<std::uint8_t, 32> canonical_query_sblr_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string failure_code;
@@ -379,7 +380,7 @@ struct StatementNameResolveNameAtomV1 {
 };
 
 struct StatementNameResolveBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint8_t resolution_mode = 0;
   std::uint8_t object_class = 0;
@@ -392,11 +393,11 @@ struct StatementNameResolveBindRequestV1 {
 };
 
 struct StatementNameResolveBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string resolution_uuid;
+  scratchbird::engine::internal_api::EngineUuid resolution_uuid;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::array<std::uint8_t, 32> acknowledgement_evidence_sha256{};
@@ -414,7 +415,7 @@ struct StatementNameResolveAuthorityV1 {
   std::uint8_t resolution_mode = 0;
   std::uint8_t object_class = 0;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
-  std::string redaction_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid redaction_profile_uuid;
   std::vector<std::uint8_t> canonical_terminal_result_bytes;
   bool terminal_result_published = false;
 };
@@ -429,7 +430,7 @@ struct StatementDdlCreateSchemaNameAtomV1 {
 };
 
 struct StatementDdlCreateSchemaBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t schema_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -447,25 +448,25 @@ struct StatementDdlCreateSchemaAuthorityV1 {
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_path_utf8;
   std::string leaf_name_utf8;
-  std::string schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
   std::uint64_t schema_generation = 0;
-  std::string parent_schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid parent_schema_uuid;
   std::uint64_t parent_namespace_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string owner_principal_uuid;
-  std::string binding_uuid;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t binding_generation = 0;
   std::uint64_t recovery_generation = 0;
   std::array<std::uint8_t, 32> normalized_path_sha256{};
@@ -489,7 +490,7 @@ struct StatementSecurityAlterPolicyNameAtomV1 {
 };
 
 struct StatementSecurityAlterPolicyBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t policy_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -506,27 +507,27 @@ struct StatementSecurityAlterPolicyAuthorityV1 {
   std::vector<std::uint8_t> exact_bind_request_bytes;
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_path_utf8;
-  std::string policy_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_uuid;
   std::uint64_t expected_policy_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_generation = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_snapshot_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string principal_uuid;
-  std::string binding_uuid;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t binding_generation = 0;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> normalized_path_sha256{};
   std::array<std::uint8_t, 32> authorization_evidence_sha256{};
   std::array<std::uint8_t, 32> frozen_policy_record_sha256{};
@@ -543,7 +544,7 @@ struct StatementSecurityAlterPolicyAuthorityV1 {
 // privilege selectors; every identity, generation, policy, authorization,
 // recovery, and result field remains receipt-private and engine-produced.
 struct StatementSecurityCreatePrivilegeTemplateBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t template_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -569,29 +570,29 @@ struct StatementSecurityCreatePrivilegeTemplateAuthorityV1 {
   std::string canonical_template_name_utf8;
   std::string canonical_grantee_name_utf8;
   std::string canonical_privilege;
-  std::string grantee_uuid;
+  scratchbird::engine::internal_api::EngineUuid grantee_uuid;
   std::vector<std::uint8_t> exact_bind_request_bytes;
   std::array<std::uint8_t, 32> request_evidence_sha256{};
-  std::string template_uuid;
+  scratchbird::engine::internal_api::EngineUuid template_uuid;
   std::uint64_t template_generation = 0;
-  std::string owner_principal_uuid;
-  std::string schema_uuid;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> definition_sha256{};
   std::array<std::uint8_t, 32> idempotency_sha256{};
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
@@ -612,7 +613,7 @@ struct StatementDdlCreateTriggerNameAtomV1 {
 };
 
 struct StatementDdlCreateTriggerBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t trigger_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -655,35 +656,35 @@ struct StatementDdlCreateTriggerAuthorityV1 {
   std::string canonical_trigger_path_utf8;
   std::string trigger_leaf_name_utf8;
   std::string canonical_target_path_utf8;
-  std::string trigger_uuid;
+  scratchbird::engine::internal_api::EngineUuid trigger_uuid;
   std::uint64_t trigger_generation = 0;
-  std::string target_relation_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
-  std::string target_relation_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_descriptor_uuid;
   std::uint64_t target_relation_descriptor_generation = 0;
-  std::string schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
   std::uint64_t schema_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string owner_principal_uuid;
-  std::string body_sblr_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
   std::string body_profile_name;
   std::string compiled_body_descriptor;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> authority_bundle_sha256{};
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
@@ -705,7 +706,7 @@ struct StatementProcedureNameAtomV1 {
 
 struct StatementDdlCreateProcedureBindRequestV2 {
   std::uint16_t request_version = 2;
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t procedure_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -733,38 +734,38 @@ struct StatementDdlCreateProcedureAuthorityV1 {
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_procedure_path_utf8;
   std::string procedure_leaf_name_utf8;
-  std::string procedure_uuid;
+  scratchbird::engine::internal_api::EngineUuid procedure_uuid;
   std::uint64_t procedure_generation = 0;
-  std::string schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
   std::uint64_t schema_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string owner_principal_uuid;
-  std::string body_sblr_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
   std::array<std::uint8_t, 32> body_sblr_sha256{};
   std::array<std::uint8_t, 32> effect_set_sha256{};
   std::vector<std::uint8_t> canonical_body_sblr_bytes;
-  std::string procedure_abi_uuid;
+  scratchbird::engine::internal_api::EngineUuid procedure_abi_uuid;
   std::uint64_t procedure_abi_generation = 0;
   std::vector<std::uint8_t> canonical_procedure_abi_bytes;
   std::array<std::uint8_t, 32> procedure_abi_evidence_sha256{};
   std::uint16_t parameter_count = 0;
   std::array<std::uint8_t, 32> procedure_signature_sha256{};
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
@@ -775,7 +776,7 @@ struct StatementDdlCreateProcedureAuthorityV1 {
 
 struct StatementProcedureInvokeBindRequestV2 {
   std::uint16_t request_version = 2;
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t invocation_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -799,45 +800,45 @@ struct StatementProcedureInvokeAuthorityV1 {
   std::vector<std::uint8_t> exact_bind_request_bytes;
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_procedure_path_utf8;
-  std::string procedure_uuid;
+  scratchbird::engine::internal_api::EngineUuid procedure_uuid;
   std::uint64_t procedure_generation = 0;
   std::uint64_t procedure_metadata_epoch = 0;
-  std::string schema_uuid;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string body_sblr_uuid;
+  scratchbird::engine::internal_api::EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
   std::array<std::uint8_t, 32> body_sblr_sha256{};
   std::vector<std::uint8_t> canonical_body_sblr_bytes;
-  std::string procedure_abi_uuid;
+  scratchbird::engine::internal_api::EngineUuid procedure_abi_uuid;
   std::uint64_t procedure_abi_generation = 0;
   std::vector<std::uint8_t> canonical_procedure_abi_bytes;
   std::array<std::uint8_t, 32> procedure_abi_evidence_sha256{};
-  std::string argument_vector_uuid;
+  scratchbird::engine::internal_api::EngineUuid argument_vector_uuid;
   std::uint64_t argument_vector_generation = 0;
   std::uint32_t argument_count = 0;
   std::array<std::uint8_t, 32> argument_vector_sha256{};
   std::vector<std::uint8_t> canonical_argument_vector_bytes;
-  std::string output_descriptor_vector_uuid;
+  scratchbird::engine::internal_api::EngineUuid output_descriptor_vector_uuid;
   std::uint64_t output_descriptor_vector_generation = 0;
-  std::string result_set_shape_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_set_shape_uuid;
   std::uint64_t result_set_shape_generation = 0;
   std::array<std::uint8_t, 32> effect_set_sha256{};
-  std::string invocation_uuid;
+  scratchbird::engine::internal_api::EngineUuid invocation_uuid;
   std::uint64_t invocation_generation = 0;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
@@ -853,7 +854,7 @@ struct StatementProcedureInvokeAuthorityV1 {
 using StatementDdlTriggerNameAtomV1 = StatementDdlCreateTriggerNameAtomV1;
 
 struct StatementDdlAlterTriggerBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t trigger_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -881,36 +882,36 @@ struct StatementDdlAlterTriggerAuthorityV1 {
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_trigger_path_utf8;
   std::string trigger_leaf_name_utf8;
-  std::string trigger_uuid;
+  scratchbird::engine::internal_api::EngineUuid trigger_uuid;
   std::uint64_t trigger_generation = 0;
-  std::string target_relation_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
-  std::string target_relation_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_descriptor_uuid;
   std::uint64_t target_relation_descriptor_generation = 0;
-  std::string schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
   std::uint64_t schema_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string actor_principal_uuid;
-  std::string owner_principal_uuid;
-  std::string body_sblr_uuid;
+  scratchbird::engine::internal_api::EngineUuid actor_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
   std::string compiled_body_descriptor;
   std::vector<std::string> successor_option_envelopes;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> authority_bundle_sha256{};
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
@@ -921,7 +922,7 @@ struct StatementDdlAlterTriggerAuthorityV1 {
 };
 
 struct StatementDdlDropTriggerBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint32_t trigger_occurrence = 0;
   std::uint16_t command_identity = 1;
@@ -941,35 +942,35 @@ struct StatementDdlDropTriggerAuthorityV1 {
   std::array<std::uint8_t, 32> request_evidence_sha256{};
   std::string canonical_trigger_path_utf8;
   std::string trigger_leaf_name_utf8;
-  std::string trigger_uuid;
+  scratchbird::engine::internal_api::EngineUuid trigger_uuid;
   std::uint64_t trigger_generation = 0;
-  std::string target_relation_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
-  std::string target_relation_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_relation_descriptor_uuid;
   std::uint64_t target_relation_descriptor_generation = 0;
-  std::string schema_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_uuid;
   std::uint64_t schema_generation = 0;
-  std::string database_uuid;
-  std::string owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
   std::uint64_t catalog_generation = 0;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   std::uint64_t security_epoch = 0;
-  std::string policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid policy_snapshot_uuid;
   std::uint64_t policy_generation = 0;
-  std::string resource_grant_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_grant_uuid;
   std::uint64_t resource_generation = 0;
-  std::string actor_principal_uuid;
-  std::string owner_principal_uuid;
-  std::string body_sblr_uuid;
+  scratchbird::engine::internal_api::EngineUuid actor_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid owner_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid body_sblr_uuid;
   std::uint64_t body_sblr_generation = 0;
   std::string compiled_body_descriptor;
-  std::string recovery_uuid;
+  scratchbird::engine::internal_api::EngineUuid recovery_uuid;
   std::uint64_t recovery_generation = 0;
-  std::string mutation_uuid;
-  std::string publication_barrier_uuid;
+  scratchbird::engine::internal_api::EngineUuid mutation_uuid;
+  scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
   std::array<std::uint8_t, 32> authority_bundle_sha256{};
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
@@ -989,19 +990,19 @@ struct StatementCatalogIntrospectAuthorityV1 {
   std::uint16_t object_kind = 0;
   std::uint16_t profile = 0;
   std::uint16_t flags = 0;
-  std::string object_uuid;
+  scratchbird::engine::internal_api::EngineUuid object_uuid;
   std::uint64_t object_generation = 0;
-  std::string relation_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid relation_descriptor_uuid;
   std::uint64_t relation_descriptor_generation = 0;
   std::string canonical_path_utf8;
-  std::string statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
-  std::string request_uuid;
-  std::string readable_projection_uuid;
-  std::string row_descriptor_uuid;
-  std::string result_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid request_uuid;
+  scratchbird::engine::internal_api::EngineUuid readable_projection_uuid;
+  scratchbird::engine::internal_api::EngineUuid row_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_set_uuid;
   std::array<std::uint8_t, 32> descriptor_evidence_sha256{};
   std::array<std::uint8_t, 32> row_material_sha256{};
   std::vector<std::uint8_t> canonical_descriptor_bytes;
@@ -1016,7 +1017,7 @@ struct StatementCatalogIntrospectAuthorityV1 {
 // request. The nested SBLR carriers are parser-produced and engine-validated
 // under this same receipt before SPTD is issued.
 struct StatementParseTextBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string language_profile_id;
   std::string canonical_input_utf8;
@@ -1033,11 +1034,11 @@ struct StatementParseTextBindRequestV1 {
 };
 
 struct StatementParseTextBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string parse_uuid;
+  scratchbird::engine::internal_api::EngineUuid parse_uuid;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> canonical_input_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
@@ -1069,7 +1070,7 @@ struct StatementCatalogEpochCheckNameAtomV1 {
 // database scope with no atoms or present one qualified identifier. It never
 // supplies an epoch, object UUID, schema-tree identity, or visibility result.
 struct StatementCatalogEpochCheckBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   bool object_scoped = false;
   std::vector<StatementCatalogEpochCheckNameAtomV1> target_name_atoms;
@@ -1079,14 +1080,14 @@ struct StatementCatalogEpochCheckBindRequestV1 {
 };
 
 struct StatementCatalogEpochCheckBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string check_uuid;
-  std::string object_uuid;
+  scratchbird::engine::internal_api::EngineUuid check_uuid;
+  scratchbird::engine::internal_api::EngineUuid object_uuid;
   std::uint64_t object_generation = 0;
-  std::string schema_tree_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_tree_uuid;
   std::uint64_t schema_tree_generation = 0;
   std::array<std::uint8_t, 32> visibility_scope_sha256{};
   std::array<std::uint8_t, 32> descriptor_sha256{};
@@ -1102,11 +1103,11 @@ struct StatementCatalogEpochCheckAuthorityV1 {
   StatementCatalogEpochCheckBindAckV1 acknowledgement;
   std::vector<std::uint8_t> exact_bind_request_bytes;
   std::vector<StatementCatalogEpochCheckNameAtomV1> target_name_atoms;
-  std::string object_uuid;
+  scratchbird::engine::internal_api::EngineUuid object_uuid;
   std::uint64_t object_generation = 0;
-  std::string schema_tree_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_tree_uuid;
   std::uint64_t schema_tree_generation = 0;
-  std::string redaction_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid redaction_profile_uuid;
   std::uint64_t redaction_generation = 0;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   std::vector<std::uint8_t> canonical_terminal_result_bytes;
@@ -1123,7 +1124,7 @@ struct StatementDatabaseAttachNameAtomV1 {
 // and session alias scope. Every storage, database, catalog, transaction, and
 // attachment identity is engine-issued under the same live receipt.
 struct StatementDatabaseAttachBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::uint8_t mode = 0;
   std::uint8_t alias_scope = 0;
@@ -1134,15 +1135,15 @@ struct StatementDatabaseAttachBindRequestV1 {
 };
 
 struct StatementDatabaseAttachBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string attach_uuid;
-  std::string storage_uuid;
-  std::string alias_uuid;
-  std::string database_uuid;
-  std::string catalog_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid attach_uuid;
+  scratchbird::engine::internal_api::EngineUuid storage_uuid;
+  scratchbird::engine::internal_api::EngineUuid alias_uuid;
+  scratchbird::engine::internal_api::EngineUuid database_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
@@ -1198,7 +1199,7 @@ struct StatementSourceArtifactRetentionV1 {
 // capability or plan handle.
 struct StatementOptimizerStatsReadAuthorityV1 {
   std::uint64_t occurrence = 0;
-  std::string statistics_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid statistics_snapshot_uuid;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   std::vector<std::uint8_t> canonical_terminal_result_bytes;
   bool terminal_result_published = false;
@@ -1209,14 +1210,14 @@ struct StatementOptimizerStatsReadAuthorityV1 {
 // sole key accepted by the durable statistics journal.
 struct StatementOptimizerStatsDropAuthorityV1 {
   std::uint64_t occurrence = 0;
-  std::string effect_uuid;
+  scratchbird::engine::internal_api::EngineUuid effect_uuid;
   std::vector<std::uint8_t> canonical_descriptor_bytes;
   std::vector<std::uint8_t> canonical_terminal_result_bytes;
   bool terminal_result_published = false;
 };
 
 struct StatementExecuteBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string statement_name;
   bool quoted = false;
@@ -1236,24 +1237,24 @@ struct StatementExecuteAuthorityV1 {
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
   bool source_free_parameterized_query_template = false;
-  std::string parameter_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   std::uint64_t parameter_set_generation = 0;
-  std::string parameter_set_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_set_snapshot_uuid;
   std::uint64_t parameter_set_snapshot_generation = 0;
   std::string ordered_slot_table_sha256;
-  std::string parameter_binding_receipt_uuid;
-  std::string parameter_binding_execution_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_binding_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_binding_execution_uuid;
   std::string parameter_value_sha256;
   std::vector<std::uint8_t> canonical_parameter_bytes;
-  std::string result_handle_uuid;
-  std::string operation_evidence_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_handle_uuid;
+  scratchbird::engine::internal_api::EngineUuid operation_evidence_uuid;
   std::vector<std::uint8_t> canonical_terminal_result_bytes;
   scratchbird::engine::internal_api::EngineApiResult terminal_api_result;
   bool terminal_result_published = false;
 };
 
 struct StatementFreeBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string statement_name;
   bool quoted = false;
@@ -1262,12 +1263,12 @@ struct StatementFreeBindRequestV1 {
 };
 
 struct StatementFreeBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string statement_uuid;
-  std::string statement_name_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_name_uuid;
   std::uint64_t prepared_generation = 0;
   std::array<std::uint8_t, 32> descriptor_sha256{};
   std::array<std::uint8_t, 32> request_evidence_sha256{};
@@ -1286,7 +1287,7 @@ struct StatementFreeAuthorityV1 {
 };
 
 struct StatementCancelBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string statement_name;
   bool quoted = false;
@@ -1298,15 +1299,15 @@ struct StatementCancelBindRequestV1 {
 };
 
 struct StatementCancelBindAckV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
-  std::string binding_uuid;
+  scratchbird::engine::internal_api::EngineUuid binding_uuid;
   std::uint64_t binding_generation = 0;
-  std::string target_execution_uuid;
-  std::string target_statement_uuid;
-  std::string target_statement_receipt_uuid;
-  std::string cancel_operation_uuid;
-  std::string target_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_execution_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_statement_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid cancel_operation_uuid;
+  scratchbird::engine::internal_api::EngineUuid target_transaction_uuid;
   std::uint64_t target_execution_generation = 0;
   std::uint8_t reason = 0;
   std::uint8_t mode = 0;
@@ -1331,18 +1332,18 @@ struct StatementCancelAuthorityV1 {
 };
 
 struct StatementParameterBindRequestV1 {
-  std::string authenticated_receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::uint64_t occurrence = 0;
   std::string statement_name;
   bool quoted = false;
-  std::string prepared_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation = 0;
-  std::string parameter_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_set_uuid;
   std::uint64_t parameter_set_generation = 0;
   std::array<std::uint8_t, 32> ordered_slot_table_sha256{};
-  std::string batch_uuid;
+  scratchbird::engine::internal_api::EngineUuid batch_uuid;
   std::uint64_t batch_generation = 0;
-  std::string dynamic_package_uuid;
+  scratchbird::engine::internal_api::EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation = 0;
   std::uint32_t value_count = 0;
   std::vector<std::uint8_t> canonical_value_vector;
@@ -1362,29 +1363,29 @@ struct StatementParameterBindAuthorityV1 {
 // project the bounded parser fields from this value, but the opaque receipt
 // remains the authority presented back to the engine.
 struct StatementContextReceiptView {
-  std::string receipt_uuid;
-  std::string statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid receipt_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_uuid;
   // Captured exactly once by the engine while issuing this receipt. It is a
   // statement-stable value carrier, never transaction visibility/finality.
   std::string statement_timestamp;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
+  scratchbird::engine::internal_api::EngineUuid owning_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid statement_metadata_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_context_uuid;
   // Statement-scoped engine resource-admission authority.  This is distinct
   // from optimizer resource authority and is copied only through the opaque
   // receipt bridge.
-  std::string resource_admission_uuid;
-  std::string optimizer_capability_snapshot_uuid;
-  std::string optimizer_resource_snapshot_uuid;
-  std::string optimizer_route_snapshot_uuid;
-  std::string bound_ast_uuid;
-  std::string count_function_uuid;
-  std::string sum_function_uuid;
-  std::string avg_function_uuid;
-  std::string min_function_uuid;
-  std::string max_function_uuid;
+  scratchbird::engine::internal_api::EngineUuid resource_admission_uuid;
+  scratchbird::engine::internal_api::EngineUuid optimizer_capability_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid optimizer_resource_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid optimizer_route_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid bound_ast_uuid;
+  scratchbird::engine::internal_api::EngineUuid count_function_uuid;
+  scratchbird::engine::internal_api::EngineUuid sum_function_uuid;
+  scratchbird::engine::internal_api::EngineUuid avg_function_uuid;
+  scratchbird::engine::internal_api::EngineUuid min_function_uuid;
+  scratchbird::engine::internal_api::EngineUuid max_function_uuid;
   std::vector<StatementAggregateFunctionProfile> aggregate_function_profiles;
   std::vector<StatementWindowFunctionProfile> window_function_profiles;
   std::vector<StatementDescriptorProfile> descriptor_profiles;
@@ -1393,35 +1394,27 @@ struct StatementContextReceiptView {
 
   // V11 literal prebind bootstrap. These are engine-issued receipt values;
   // the parser may echo them only in SBLN/SBLF and never selects them.
-  std::string literal_catalog_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid literal_catalog_snapshot_uuid;
   std::uint64_t literal_catalog_generation = 0;
   std::uint64_t literal_registry_generation = 0;
 
   // Engine-owned parameter execution-mode observation. Optional identity
   // pairs are immutable for the receipt and are nil exactly when generation
   // is zero. Direct mode leaves all three pairs absent.
-  std::string parameter_prepared_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_prepared_generation = 0;
-  std::string parameter_batch_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_batch_uuid;
   std::uint64_t parameter_batch_generation = 0;
-  std::string parameter_dynamic_package_uuid;
+  scratchbird::engine::internal_api::EngineUuid parameter_dynamic_package_uuid;
   std::uint64_t parameter_dynamic_generation = 0;
   std::uint64_t parameter_executor_availability_generation = 0;
-  struct DiagnosticIdentityProjectionV1 {
-    std::string diagnostic_uuid;
-    std::uint64_t diagnostic_generation = 0;
-    std::uint32_t precedence_ordinal = 0;
-    std::uint8_t severity_code = 0;
-    std::uint8_t redaction_class = 0;
-    std::uint32_t maximum_safe_field_count = 0;
-    std::string row_identity_sha256;
-  };
-  std::string diagnostic_registry_snapshot_uuid;
+  using DiagnosticIdentityProjectionV1 = wire::DiagnosticIdentityProjectionV1;
+  wire::DiagnosticRegistryUuidV1 diagnostic_registry_snapshot_uuid{};
   std::uint64_t diagnostic_registry_generation = 0;
   std::vector<DiagnosticIdentityProjectionV1> diagnostic_identity_rows;
-  std::string txn_begin_isolation_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid txn_begin_isolation_profile_uuid;
   std::uint64_t txn_begin_isolation_profile_generation = 0;
-  std::string txn_begin_policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid txn_begin_policy_snapshot_uuid;
   std::uint64_t txn_begin_policy_generation = 0;
   std::uint64_t txn_begin_executor_availability_generation = 0;
   std::uint8_t txn_begin_read_mode = 0;
@@ -1449,35 +1442,35 @@ struct StatementContextReceiptView {
   std::uint64_t stmt_cancel_executor_availability_generation = 0;
   std::uint64_t parameter_bind_executor_availability_generation = 0;
   std::uint64_t result_page_executor_availability_generation = 0;
-  std::string result_page_redaction_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_page_redaction_profile_uuid;
   std::uint64_t result_page_redaction_generation = 0;
-  std::string result_page_policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_page_policy_snapshot_uuid;
   std::uint64_t result_page_policy_generation = 0;
-  std::string result_page_resource_budget_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_page_resource_budget_uuid;
   std::uint64_t result_page_resource_budget_generation = 0;
   std::uint64_t query_explain_executor_availability_generation = 0;
-  std::string query_explain_redaction_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid query_explain_redaction_profile_uuid;
   std::uint64_t query_explain_redaction_generation = 0;
-  std::string query_explain_policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid query_explain_policy_snapshot_uuid;
   std::uint64_t query_explain_policy_generation = 0;
-  std::string query_explain_plan_policy_uuid;
-  std::string query_explain_resource_budget_uuid;
+  scratchbird::engine::internal_api::EngineUuid query_explain_plan_policy_uuid;
+  scratchbird::engine::internal_api::EngineUuid query_explain_resource_budget_uuid;
   std::uint64_t query_explain_resource_budget_generation = 0;
   // Engine-issued identity for the exact language/rendering profile selected
   // for this statement.  The human-readable identifier profile name in
   // EngineRequestContext is not a UUID and must never be copied into SBXD.
-  std::string query_explain_language_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid query_explain_language_profile_uuid;
   // PARSE TEXT has a distinct engine-issued language-profile identity. Its
   // generation is the exact session language-resource epoch captured by this
   // receipt and may not be substituted by the parser profile spelling.
-  std::string parse_text_language_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid parse_text_language_profile_uuid;
   std::uint64_t parse_text_language_profile_generation = 0;
   std::uint64_t parse_text_executor_availability_generation = 0;
   std::uint64_t catalog_epoch_check_executor_availability_generation = 0;
   std::uint64_t database_attach_executor_availability_generation = 0;
-  std::string catalog_epoch_check_redaction_profile_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_check_redaction_profile_uuid;
   std::uint64_t catalog_epoch_check_redaction_generation = 0;
-  std::string catalog_epoch_check_policy_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_epoch_check_policy_snapshot_uuid;
   std::uint64_t catalog_epoch_check_policy_generation = 0;
   std::uint64_t catalog_introspect_executor_availability_generation = 0;
   std::uint64_t name_resolve_executor_availability_generation = 0;
@@ -1555,11 +1548,11 @@ struct StatementContextReceiptView {
   std::vector<std::uint8_t> active_transaction_handle_bytes;
   std::array<std::uint8_t, 32>
       parameter_preliminary_execution_mode_binding_sha256{};
-  std::string variable_scope_uuid;
+  scratchbird::engine::internal_api::EngineUuid variable_scope_uuid;
   std::uint64_t variable_scope_generation = 0;
-  std::string variable_frame_uuid;
+  scratchbird::engine::internal_api::EngineUuid variable_frame_uuid;
   std::uint64_t variable_frame_generation = 0;
-  std::string variable_registry_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid variable_registry_snapshot_uuid;
   std::uint64_t variable_registry_generation = 0;
   std::uint64_t variable_executor_availability_generation = 0;
 
@@ -1605,12 +1598,12 @@ struct StatementContextAcquireRequest {
   // state without narrowing it through sb_engine_request_context_v1_t.
   const scratchbird::engine::internal_api::EngineRequestContext*
       engine_context = nullptr;
-  std::string_view exact_transaction_uuid;
+  scratchbird::engine::internal_api::EngineUuid exact_transaction_uuid;
   StatementParameterExecutionSelectorV1 parameter_execution_selector;
   struct VariableFrameSelectorV1 {
     std::uint16_t version = 0;
-    std::string public_coordination_uuid;
-    std::string operation_uuid;
+    scratchbird::engine::internal_api::EngineUuid public_coordination_uuid;
+    scratchbird::engine::internal_api::EngineUuid operation_uuid;
     std::uint64_t expected_coordinator_generation = 0;
   } variable_frame_selector;
 };
@@ -1635,10 +1628,10 @@ struct StatementGatewayDecisionEvidence {
       StatementGatewayDisposition::kInvalid;
   std::uint64_t provider_observation_generation = 0;
   std::array<std::uint8_t, 32> canonical_payload_sha256{};
-  std::string route_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid route_snapshot_uuid;
   std::uint64_t route_epoch = 0;
   std::uint64_t route_generation = 0;
-  std::string security_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid security_snapshot_uuid;
   std::uint64_t security_epoch = 0;
   std::uint64_t security_observation_generation = 0;
   bool cluster_context_active = false;
@@ -1649,7 +1642,7 @@ struct StatementGatewayDecisionEvidence {
 struct StatementPackageExecutorEvidence {
   std::string begin_executor_id;
   std::string end_executor_id;
-  std::string registry_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid registry_snapshot_uuid;
   std::uint64_t executor_evidence_generation = 0;
   std::array<std::uint8_t, 32> canonical_payload_sha256{};
 };
@@ -1708,17 +1701,17 @@ struct StatementPackageAdmissionReservationView {
 };
 
 struct StatementQueryExecuteResultHandleView {
-  std::string execution_uuid;
-  std::string result_set_uuid;
-  std::string row_descriptor_uuid;
-  std::string snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid execution_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid row_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid snapshot_uuid;
 };
 
 struct StatementCatalogIntrospectResultHandleView {
-  std::string request_uuid;
-  std::string result_set_uuid;
-  std::string row_descriptor_uuid;
-  std::string snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid request_uuid;
+  scratchbird::engine::internal_api::EngineUuid result_set_uuid;
+  scratchbird::engine::internal_api::EngineUuid row_descriptor_uuid;
+  scratchbird::engine::internal_api::EngineUuid snapshot_uuid;
 };
 
 // Returns only registry-validated typed command-handle metadata retained by
@@ -1757,10 +1750,10 @@ struct StatementContextDispatchRequest {
   std::array<std::uint8_t, 32> execution_envelope_sha256{};
   std::array<std::uint8_t, 32> operation_sha256{};
   std::array<std::uint8_t, 32> admission_binding_sha256{};
-  std::string authenticated_principal_uuid;
-  std::string catalog_snapshot_uuid;
-  std::string engine_mga_statement_uuid;
-  std::string engine_mga_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid authenticated_principal_uuid;
+  scratchbird::engine::internal_api::EngineUuid catalog_snapshot_uuid;
+  scratchbird::engine::internal_api::EngineUuid engine_mga_statement_uuid;
+  scratchbird::engine::internal_api::EngineUuid engine_mga_snapshot_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;

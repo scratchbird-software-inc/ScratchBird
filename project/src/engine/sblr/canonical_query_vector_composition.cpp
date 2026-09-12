@@ -287,11 +287,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
                     "vector public type identity was substituted");
     }
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+    engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
+    engine_descriptor.type_uuid = descriptor->type_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name = std::string(kOutputTypes[ordinal]);
     engine_descriptor.encoded_descriptor =
-        "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+        "nullability=non_null";
     output_descriptors.push_back(engine_descriptor);
     public_columns.push_back(
         {std::string(kOutputNames[ordinal]), engine_descriptor, false,
@@ -305,7 +306,8 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
         exec::CanonicalResultNullability::kNonNull, std::nullopt, std::nullopt};
     result_bindings.push_back(std::move(binding));
   }
-  if (output_descriptors[1].encoded_descriptor !=
+  if (output_descriptors[1].type_uuid != output_descriptors[2].type_uuid ||
+      output_descriptors[1].encoded_descriptor !=
       output_descriptors[2].encoded_descriptor) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "vector distance and score type identities differ");
@@ -350,9 +352,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted_relation = loaded_relation.descriptor;
-  if (persisted_relation.relation_uuid.canonical != object_uuid ||
-      persisted_relation.database_uuid.canonical !=
-          input.context.database_uuid.canonical ||
+  if (persisted_relation.relation_uuid != object_uuid ||
+      persisted_relation.database_uuid !=
+          input.context.database_uuid ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
       persisted_relation.descriptor_generation == 0) {
@@ -377,7 +379,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
       top_k_descriptor == dag.descriptors.end() ||
       query_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
-              .canonical ||
+               ||
       stored_embedding_type.empty() || stored_metadata_type.empty() ||
       top_k_type.empty() ||
       query_descriptor->type_uuid != stored_embedding_type ||
@@ -411,11 +413,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
     const auto value_descriptor = descriptor_for(metadata_value->result_descriptor_id);
     if (value_descriptor == dag.descriptors.end() ||
         metadata_column->bound_name_uuid !=
-            persisted_relation.columns[1].column_uuid.canonical ||
+            persisted_relation.columns[1].column_uuid ||
         metadata_column->result_descriptor_id != value_descriptor->descriptor_id ||
         value_descriptor->descriptor_uuid !=
             persisted_relation.columns[1].value_descriptor.descriptor_uuid
-                .canonical ||
+                 ||
         value_descriptor->type_uuid != stored_metadata_type ||
         value_descriptor->nullability !=
             api::RelationalNullability::kNonNull ||
@@ -430,7 +432,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   }
 
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto provider_uuid =
       DerivedCanonicalUuid(identity_scope, "vector.provider");
   const auto capability_uuid =
@@ -466,16 +468,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   planning.output_descriptor_ids = source->output_descriptor_ids;
   planning.mga_statement_context = mga;
   planning.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
-  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   planning.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   planning.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   planning.statistics_snapshot_uuid = statistics_snapshot_uuid;
   planning.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   planning.catalog_generation = generation;
   planning.current_catalog_generation = generation;
   planning.security_epoch =
@@ -520,17 +522,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
 
   api::CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      input.context.catalog_epoch_uuid.canonical;
+      input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
   planning_scope.owning_transaction_uuid =
-      input.context.transaction_uuid.canonical;
+      input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -597,11 +599,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   logical.property_catalog.mga_statement_context = current_logical_mga;
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = input.context.statement_uuid.canonical;
+  admission_context.statement_uuid = input.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = input.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       input.context.authorization_context.catalog_generation_id;
@@ -611,11 +613,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
       input.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = input.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = input.context.optimizer_route_epoch;
   admission_context.route_generation =
       input.context.optimizer_route_generation;
@@ -751,7 +753,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   vector_request.context = input.context;
   vector_request.collection_uuid = object_uuid;
   vector_request.expected_descriptor_uuid =
-      persisted_relation.descriptor_uuid.canonical;
+      persisted_relation.descriptor_uuid;
   vector_request.expected_descriptor_generation =
       persisted_relation.descriptor_generation;
   vector_request.selected_alternative_uuid = alternative_uuid;
@@ -797,9 +799,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   source_input.output_descriptor_ids = source->output_descriptor_ids;
   source_input.mga_statement_context = mga;
   source_input.catalog_epoch_uuid =
-      input.context.catalog_epoch_uuid.canonical;
+      input.context.catalog_epoch_uuid;
   source_input.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   source_input.policy_snapshot_uuid = policy_snapshot_uuid;
   source_input.resource_contract_uuid = resource_contract_uuid;
   source_input.catalog_generation = generation;
@@ -855,19 +857,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
                                 : read.diagnostic.detail;
           return provider;
         }
-        if (read.relation_descriptor.relation_uuid.canonical !=
+        if (read.relation_descriptor.relation_uuid !=
                 source_input.object_uuid ||
             read.relation_descriptor.descriptor_generation !=
                 source_input.descriptor_generation ||
             !std::ranges::equal(
                 read.output_descriptors, vector_request.output_descriptors,
                 [](const auto& left, const auto& right) {
-                  return left.descriptor_uuid.canonical ==
-                             right.descriptor_uuid.canonical &&
-                         left.descriptor_kind == right.descriptor_kind &&
-                         left.canonical_type_name ==
-                             right.canonical_type_name &&
-                         left.encoded_descriptor == right.encoded_descriptor;
+                  return left == right;
                 }) ||
             read.current_relation_base_generation == 0 ||
             read.cleanup_count != 1 || !read.execution_resource_acquired ||
@@ -929,7 +926,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   CaptureRcp079ModelLegV1(
       leg_capture, source->node_id, "vector", "physical_vector_search_v1",
       "canonical.vector.search.v1", "vector.local.v1",
-      persisted_relation.descriptor_uuid.canonical,
+      persisted_relation.descriptor_uuid,
       persisted_relation.descriptor_generation,
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       exec::PhysicalNodeKind::kScan, execution_request);
@@ -943,7 +940,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
       [execution_request, persisted_descriptor_uuid =
-                              persisted_relation.descriptor_uuid.canonical](
+                              persisted_relation.descriptor_uuid](
           const exec::TypedPhysicalNodeDag& selected_dag,
           const exec::PhysicalNodeRecord& selected_node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -1037,7 +1034,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalVectorFamilyQuery(
   selected.available_executors.push_back(std::move(registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =

@@ -49,11 +49,11 @@ std::vector<std::string> SortedUnique(std::vector<std::string> values) {
 }
 
 std::string ObjectUuidFromRequest(const EngineApiRequest& request) {
-  if (!request.target_object.uuid.canonical.empty()) {
-    return request.target_object.uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) {
+    return request.target_object.uuid;
   }
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    return request.bound_object_identity.object_uuid.canonical;
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    return request.bound_object_identity.object_uuid;
   }
   return {};
 }
@@ -214,7 +214,7 @@ EngineTypedValue TextValue(std::string value) {
 void AddSupportRow(EngineApiResult* result,
                    std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  row.requested_row_uuid = GenerateCrudEngineUuid("row");
   for (auto& field : fields) {
     row.fields.push_back({std::move(field.first), TextValue(std::move(field.second))});
   }
@@ -225,7 +225,7 @@ void AddSupportRow(EngineApiResult* result,
 std::string StageDescriptorPayload(const EngineCatalogDdlSupportRequest& request,
                                    const EngineObjectReference& object) {
   std::vector<std::string> parts;
-  parts.push_back("object_uuid=" + object.uuid.canonical);
+  parts.push_back("object_uuid=" + object.uuid);
   parts.push_back("object_kind=" + object.object_kind);
   parts.push_back("validation=complete");
   parts.push_back("construction_phase=prebuild");
@@ -249,13 +249,13 @@ std::string StageDescriptorPayload(const EngineCatalogDdlSupportRequest& request
 std::vector<CatalogDdlStagedDescriptor> BuildStagedDescriptors(
     const EngineCatalogDdlSupportRequest& request) {
   std::vector<EngineObjectReference> objects = request.stage_objects;
-  if (objects.empty() && !request.target_object.uuid.canonical.empty()) {
+  if (objects.empty() && !request.target_object.uuid.is_nil()) {
     objects.push_back(request.target_object);
   }
   std::vector<CatalogDdlStagedDescriptor> staged;
   staged.reserve(objects.size());
   for (auto object : objects) {
-    if (object.uuid.canonical.empty() || object.object_kind.empty()) {
+    if (object.uuid.is_nil() || object.object_kind.empty()) {
       continue;
     }
     CatalogDdlStagedDescriptor descriptor;
@@ -556,7 +556,7 @@ EngineCatalogDdlSupportResult EngineCatalogDdlSupportService(
     result.primary_object.object_kind =
         ObjectKindFromState(loaded.state, root_uuid, "catalog_object");
   }
-  result.primary_object.uuid.canonical = root_uuid;
+  result.primary_object.uuid = root_uuid;
   result.dependency_closure =
       GlobalCatalogDdlDependencyClosureCache().LookupOrBuild(loaded.state,
                                                              request.context,

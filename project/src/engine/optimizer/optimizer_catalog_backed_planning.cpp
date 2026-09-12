@@ -37,38 +37,11 @@ bool SourceIsDefaultOrUnavailable(StatisticSource source) {
          source == StatisticSource::kClusterMetric;
 }
 
-bool Contains(const std::vector<std::string>& values, const std::string& expected) {
+bool Contains(const std::vector<planner::CanonicalPlannerUuid>& values,
+              const planner::CanonicalPlannerUuid& expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
-bool HasUsableTableStats(const TableCardinalityStats& stats) {
-  return OptimizerStatsIdentityIsUsable(stats.identity) &&
-         SourceIsCatalogBacked(stats.identity.source) &&
-         stats.row_count != 0 &&
-         stats.visible_row_count != 0 &&
-         stats.page_count != 0 &&
-         stats.average_row_bytes != 0 &&
-         stats.visible_row_count <= stats.row_count;
-}
-
-bool HasUsableIndexStats(const IndexStats& stats,
-                         const AccessPathPlanningRequest& access_request) {
-  return OptimizerStatsIdentityIsUsable(stats.identity) &&
-         SourceIsCatalogBacked(stats.identity.source) &&
-         !stats.index_uuid.empty() &&
-         stats.relation_uuid == access_request.relation_uuid &&
-         !stats.descriptor_digest.empty() &&
-         stats.descriptor_digest == access_request.descriptor_digest &&
-         stats.height != 0 &&
-         stats.leaf_pages != 0 &&
-         stats.distinct_keys != 0 &&
-         stats.route_benchmark_clean &&
-         stats.exact_recheck_required &&
-         stats.mga_recheck_required &&
-         stats.security_recheck_required &&
-         !stats.rebuild_in_progress &&
-         !stats.family_claim_removed;
-}
 
 void ValidateProductionBuildSwitches(
     const CatalogBackedProductionPlanningRequest& request,
@@ -157,7 +130,7 @@ ValidateCatalogBackedProductionPlanningRequest(
   ValidateProductionBuildSwitches(request, access_request, &validation);
 
   if (access_request != nullptr) {
-    if (access_request->relation_uuid.empty()) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(access_request->relation_uuid)) {
       AddFailure(&validation,
                  "SB_OPT_CATALOG_BACKED_PLANNING.RELATION_UUID_REQUIRED");
     }
@@ -181,7 +154,8 @@ ValidateCatalogBackedProductionPlanningRequest(
                  "SB_OPT_CATALOG_BACKED_PLANNING.MGA_SECURITY_RECHECK_REQUIRED");
     }
     if (!access_request->table_stats ||
-        !HasUsableTableStats(*access_request->table_stats)) {
+        !OptimizerTableStatsAreUsable(*access_request->table_stats) ||
+        access_request->table_stats->identity.object_uuid != access_request->relation_uuid) {
       AddFailure(&validation,
                  "SB_OPT_CATALOG_BACKED_PLANNING.TABLE_STATS_REQUIRED");
       validation.local_or_policy_default_diagnostic_only = true;
@@ -191,7 +165,7 @@ ValidateCatalogBackedProductionPlanningRequest(
                  "SB_OPT_CATALOG_BACKED_PLANNING.INDEX_STATS_REQUIRED");
     }
     for (const auto& index : access_request->candidate_indexes) {
-      if (!HasUsableIndexStats(index, *access_request)) {
+      if (!OptimizerIndexStatsAreUsable(index, access_request->relation_uuid, access_request->descriptor_digest)) {
         AddFailure(&validation,
                    "SB_OPT_CATALOG_BACKED_PLANNING.INDEX_STATS_REQUIRED");
         if (SourceIsDefaultOrUnavailable(index.identity.source)) {

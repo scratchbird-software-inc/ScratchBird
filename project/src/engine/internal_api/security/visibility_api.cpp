@@ -28,7 +28,7 @@ std::string OperationIdOr(const EngineApiRequest& request,
 std::string ProjectionTargetUuid(
     const EngineEvaluateClusterProjectionRedactionRequest& request) {
   if (!request.target_uuid.empty()) { return request.target_uuid; }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 std::string RedactionClassFor(ClusterProjectionRedactionSensitivity sensitivity) {
@@ -126,24 +126,24 @@ EngineEvaluateVisibilityResult EngineEvaluateVisibility(const EngineEvaluateVisi
   const bool valid_right =
       request.requested_right_valid && IsKnownSecurityRight(right);
   const bool owner = request.allow_target_owner &&
-                     !request.target_owner_uuid.canonical.empty() &&
-                     !request.context.principal_uuid.canonical.empty() &&
-                     request.target_owner_uuid.canonical ==
-                         request.context.principal_uuid.canonical;
+                     !request.target_owner_uuid.is_nil() &&
+                     !request.context.principal_uuid.is_nil() &&
+                     request.target_owner_uuid ==
+                         request.context.principal_uuid;
   const bool administrator = valid_right &&
       SecurityContextHasAnyAdmin(request.context,
                                 request.administrative_rights);
   const bool granted = valid_right && request.allow_materialized_grant &&
       SecurityContextHasRight(request.context, right,
-                             request.target_object.uuid.canonical);
-  const bool visible = request.target_object.uuid.canonical.empty()
+                             request.target_object.uuid);
+  const bool visible = request.target_object.uuid.is_nil()
                            ? request.requested_right_valid
                            : valid_right && (owner || administrator || granted);
   result.visible = visible;
   AddApiBehaviorEvidence(&result, "visibility_decision", visible ? "allow" : "deny");
   AddApiBehaviorRow(&result, {{"decision", visible ? "allow" : "deny"},
                               {"right", right},
-                              {"target_uuid", request.target_object.uuid.canonical},
+                              {"target_uuid", request.target_object.uuid},
                               {"target_kind", request.target_object.object_kind},
                               {"authority", owner ? "target_owner" :
                                              (administrator ? "administrator" :

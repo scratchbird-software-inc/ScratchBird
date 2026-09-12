@@ -39,7 +39,7 @@ EngineAuthorizeResult EngineAuthorize(const EngineAuthorizeRequest& request) {
   auto decision = EvaluateMaterializedAuthorization(request.context,
                                                    request.context.authorization_context,
                                                    right,
-                                                   request.target_object.uuid.canonical);
+                                                   request.target_object.uuid);
   if (!decision.authorized) {
     auto result = SecurityFailure<EngineAuthorizeResult>(
         request.context,
@@ -52,7 +52,7 @@ EngineAuthorizeResult EngineAuthorize(const EngineAuthorizeRequest& request) {
     result.policy_recheck_reasons = std::move(decision.policy_recheck_reasons);
     AddSecurityRow(&result, {{"decision", result.decision},
                              {"right", right},
-                             {"target_uuid", request.target_object.uuid.canonical},
+                             {"target_uuid", request.target_object.uuid},
                              {"authority", "materialized_authorization_context"}});
     return result;
   }
@@ -68,7 +68,7 @@ EngineAuthorizeResult EngineAuthorize(const EngineAuthorizeRequest& request) {
   }
   AddSecurityRow(&result, {{"decision", result.decision},
                            {"right", right},
-                           {"target_uuid", request.target_object.uuid.canonical},
+                           {"target_uuid", request.target_object.uuid},
                            {"policy_recheck_required", result.policy_recheck_required ? "true" : "false"},
                            {"authority", "materialized_authorization_context"}});
   return result;

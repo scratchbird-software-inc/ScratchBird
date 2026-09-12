@@ -67,6 +67,9 @@ struct ReservationBackedMemoryResourceRequest {
   bool production_like = true;
   HierarchicalMemoryBudgetProvenance provenance;
   ReservationBackedMemoryAuthority authority;
+  // Context/owner plus the exact binary database/session/transaction/statement/
+  // query scope tuple. Diagnostic route labels are never allocator identities.
+  MemoryBinaryOwnership binary_ownership;
 };
 
 struct ReservationBackedMemoryAllocationRequest {
@@ -117,13 +120,17 @@ ReservationBackedMemoryResourceAcquireResult AcquireReservationBackedMemoryResou
 
 class ReservationBackedMemoryResource {
  public:
+  // The ledger and physical manager must outlive this owner. Payload users and
+  // PMR containers must quiesce before explicit release or owner destruction.
   ReservationBackedMemoryResource(const ReservationBackedMemoryResource&) = delete;
   ReservationBackedMemoryResource& operator=(const ReservationBackedMemoryResource&) = delete;
   ~ReservationBackedMemoryResource();
 
   AllocationResult Allocate(ReservationBackedMemoryAllocationRequest request);
   DeallocationResult Deallocate(void* pointer, usize bytes, usize alignment);
+  Status DeallocateNoAlloc(void* pointer, usize bytes, usize alignment);
   ReservationBackedMemoryResourceReleaseResult Release();
+  Status ReleaseNoAlloc();
   ReservationBackedMemoryResourceSnapshot Snapshot() const;
 
   bool active() const;
@@ -139,12 +146,19 @@ class ReservationBackedMemoryResource {
   };
 
   ReservationBackedMemoryResource(ReservationBackedMemoryResourceRequest request,
-                                  HierarchicalMemoryReservationToken token);
+                                  HierarchicalMemoryReservationToken token,
+                                  HierarchicalMemoryReservationLease lease);
 
   MemoryTag TagForAllocation(const ReservationBackedMemoryAllocationRequest& request) const;
+  bool ActiveLocked() const;
+  ReservationBackedMemoryResourceSnapshot SnapshotLocked() const;
+  Status ReleaseNoAllocLocked();
+  mutable std::mutex mutex_;
 
   ReservationBackedMemoryResourceRequest request_;
   HierarchicalMemoryReservationToken token_;
+  HierarchicalMemoryReservationLease lease_;
+  std::unique_ptr<MemoryCapacityReservation> physical_capacity_;
   std::vector<AllocationRecord> allocations_;
   u64 allocated_bytes_ = 0;
   u64 peak_allocated_bytes_ = 0;
@@ -157,6 +171,7 @@ class ReservationBackedMemoryResource {
 
 class ReservationBackedPmrMemoryResource final : public std::pmr::memory_resource {
  public:
+  // The bound resource must outlive this adapter and its allocated containers.
   ReservationBackedPmrMemoryResource(ReservationBackedMemoryResource* resource,
                                      std::string purpose_prefix);
 
@@ -171,6 +186,7 @@ class ReservationBackedPmrMemoryResource final : public std::pmr::memory_resourc
   bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
 
   ReservationBackedMemoryResource* resource_ = nullptr;
+  mutable std::mutex mutex_;
   std::string purpose_prefix_;
   u64 allocation_count_ = 0;
   u64 deallocation_count_ = 0;
@@ -179,6 +195,7 @@ class ReservationBackedPmrMemoryResource final : public std::pmr::memory_resourc
   u64 allocated_bytes_ = 0;
   u64 peak_allocated_bytes_ = 0;
   DiagnosticRecord last_failure_;
+  Status last_failure_status_;
 };
 
 struct ReservationBackedMemoryResourceAcquireResult {

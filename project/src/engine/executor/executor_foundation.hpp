@@ -64,7 +64,7 @@ enum class CanonicalWindowRankingFunction : std::uint8_t {
 struct CanonicalWindowIntegerRankValueRequest {
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::uint64_t one_based_rank = 0;
 };
@@ -77,7 +77,7 @@ struct CanonicalWindowIntegerRankValueResult {
 struct CanonicalWindowPercentRankValueRequest {
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::uint64_t one_based_rank = 0;
   std::uint64_t partition_row_count = 0;
@@ -91,7 +91,7 @@ struct CanonicalWindowPercentRankValueResult {
 struct CanonicalWindowCumeDistValueRequest {
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::uint64_t cumulative_row_count = 0;
   std::uint64_t partition_row_count = 0;
@@ -105,7 +105,7 @@ struct CanonicalWindowCumeDistValueResult {
 struct CanonicalWindowNtileValueRequest {
   std::uint16_t function_abi_version = 0;
   std::string builtin_id;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::uint64_t zero_based_partition_position = 0;
   std::uint64_t partition_row_count = 0;
@@ -121,7 +121,7 @@ struct CanonicalWindowRankingRequest {
   CanonicalWindowFrameResult frames;
   CanonicalWindowRankingFunction function =
       CanonicalWindowRankingFunction::row_number;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::optional<scratchbird::engine::internal_api::EngineTypedValue>
       ntile_bucket_count;
@@ -136,7 +136,7 @@ struct CanonicalWindowRankingResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalWindowRankingFunction function =
       CanonicalWindowRankingFunction::row_number;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
   std::optional<std::uint64_t> resolved_ntile_bucket_count;
@@ -144,13 +144,13 @@ struct CanonicalWindowRankingResult {
   bool partition_peer_metadata_consumed = false;
   bool frame_and_exclusion_validated_then_ignored = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string window_property_uuid;
-  std::string partition_property_uuid;
-  std::string ordering_property_uuid;
-  std::string term_binding_evidence_uuid;
-  std::string deterministic_tie_evidence_uuid;
-  std::string frame_property_binding_evidence_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid window_property_uuid;
+  internal_api::EngineUuid partition_property_uuid;
+  internal_api::EngineUuid ordering_property_uuid;
+  internal_api::EngineUuid term_binding_evidence_uuid;
+  internal_api::EngineUuid deterministic_tie_evidence_uuid;
+  internal_api::EngineUuid frame_property_binding_evidence_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
@@ -177,7 +177,7 @@ enum class CanonicalWindowNullTreatment : std::uint8_t {
 struct CanonicalWindowValueRequest {
   CanonicalWindowFrameResult frames;
   CanonicalWindowValueFunction function = CanonicalWindowValueFunction::lag;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::optional<
@@ -201,7 +201,7 @@ struct CanonicalWindowValueRequest {
 struct CanonicalWindowValueResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalWindowValueFunction function = CanonicalWindowValueFunction::lag;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
@@ -218,13 +218,13 @@ struct CanonicalWindowValueResult {
   bool frame_and_exclusion_validated = false;
   bool frame_and_exclusion_ignored_for_navigation = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string window_property_uuid;
-  std::string partition_property_uuid;
-  std::string ordering_property_uuid;
-  std::string term_binding_evidence_uuid;
-  std::string deterministic_tie_evidence_uuid;
-  std::string frame_property_binding_evidence_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid window_property_uuid;
+  internal_api::EngineUuid partition_property_uuid;
+  internal_api::EngineUuid ordering_property_uuid;
+  internal_api::EngineUuid term_binding_evidence_uuid;
+  internal_api::EngineUuid deterministic_tie_evidence_uuid;
+  internal_api::EngineUuid frame_property_binding_evidence_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
@@ -244,7 +244,7 @@ struct CanonicalWindowAggregateRequest {
   CanonicalWindowFrameResult frames;
   CanonicalWindowAggregateFunction function =
       CanonicalWindowAggregateFunction::int64_sum;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   bool count_star = false;
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
@@ -253,7 +253,7 @@ struct CanonicalWindowAggregateRequest {
       filter_truth_values;
   bool distinct = false;
   std::vector<CanonicalDescriptorOrderTerm> aggregate_order_terms;
-  std::string deterministic_tie_evidence_uuid;
+  internal_api::EngineUuid deterministic_tie_evidence_uuid;
   std::size_t maximum_output_rows = 1048576;
   std::size_t maximum_transition_count = 1048576;
   std::size_t maximum_distinct_value_count = 1048576;
@@ -291,8 +291,8 @@ struct CanonicalWindowAggregateResult {
   bool canonical_registry_state_frame_executor_used = false;
   bool split_runtime_bypass_forbidden = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string window_property_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid window_property_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
@@ -369,13 +369,13 @@ struct CanonicalRegistryWindowAggregateResult {
   std::string selected_state_implementation_id;
   bool shared_aggregate_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string window_property_uuid;
-  std::string partition_property_uuid;
-  std::string ordering_property_uuid;
-  std::string term_binding_evidence_uuid;
-  std::string deterministic_tie_evidence_uuid;
-  std::string frame_property_binding_evidence_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid window_property_uuid;
+  internal_api::EngineUuid partition_property_uuid;
+  internal_api::EngineUuid ordering_property_uuid;
+  internal_api::EngineUuid term_binding_evidence_uuid;
+  internal_api::EngineUuid deterministic_tie_evidence_uuid;
+  internal_api::EngineUuid frame_property_binding_evidence_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
@@ -384,7 +384,7 @@ struct CanonicalRegistryWindowAggregateResult {
 struct CanonicalRegistryWindowAggregateSpillRequest {
   CanonicalRegistryWindowAggregateRequest aggregate_request;
   std::filesystem::path spill_root;
-  std::string spill_owner_uuid;
+  internal_api::EngineUuid spill_owner_uuid;
   std::uint64_t runtime_generation = 0;
   std::uint64_t reopen_runtime_generation = 0;
   std::uint64_t memory_quota_bytes = 0;
@@ -440,7 +440,7 @@ struct CanonicalWindowRuntimeDescriptor {
   CanonicalWindowRuntimeFunction function =
       CanonicalWindowRuntimeFunction::unknown;
   std::string builtin_id;
-  std::string function_uuid;
+  internal_api::EngineUuid function_uuid;
   // Native window functions use function. Aggregate-as-window identities use
   // the QRY-011 registry enum directly and leave function as unknown, avoiding
   // a duplicate aggregate identity inventory in the window registry.
@@ -496,8 +496,8 @@ struct CanonicalWindowRuntimeResult {
   std::size_t aggregate_spilled_state_record_count = 0;
   std::vector<std::string> aggregate_spill_evidence;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string window_property_uuid;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid window_property_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
   PhysicalMgaStatementContext mga_statement_context;
@@ -521,7 +521,7 @@ struct CanonicalWindowMaterialization {
   CanonicalWindowFrameResult frames;
   ExecutorColumnDescriptor result_column;
   std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
-  std::string function_state_uuid;
+  internal_api::EngineUuid function_state_uuid;
 };
 
 struct CanonicalWindowQualifyAliasBinding {
@@ -542,7 +542,7 @@ struct CanonicalWindowCompositionRequest {
   std::optional<CanonicalWindowQualifyPredicate> qualify_predicate;
   std::vector<std::uint32_t> projection_descriptor_ids;
   std::vector<CanonicalDescriptorOrderTerm> query_order_terms;
-  std::string query_order_tie_evidence_uuid;
+  internal_api::EngineUuid query_order_tie_evidence_uuid;
   std::uint64_t offset = 0;
   std::optional<std::uint64_t> row_limit;
   std::optional<TypedPhysicalNodeDag> composition_dag;
@@ -579,7 +579,7 @@ struct CanonicalWindowCompositionResult {
   bool query_order_precedes_row_limit = false;
   bool ordinary_physical_nodes_validated = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::string selected_plan_uuid;
+  internal_api::EngineUuid selected_plan_uuid;
   PhysicalMgaStatementContext mga_statement_context;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;

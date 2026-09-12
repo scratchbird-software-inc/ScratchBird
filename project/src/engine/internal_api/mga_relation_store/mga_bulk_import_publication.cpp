@@ -381,14 +381,14 @@ bool BulkImportPublicationRecordShapeV1(
          BulkImportPublicationUuidV1(record.target_relation_uuid) &&
          record.target_relation_generation != 0 &&
          BulkImportPublicationUuidV1(record.owning_transaction_uuid) &&
-         record.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         record.owning_transaction_uuid == context.transaction_uuid &&
          record.owning_local_transaction_id != 0 &&
          record.owning_local_transaction_id == context.local_transaction_id &&
          BulkImportPublicationUuidV1(record.authenticated_receipt_uuid) &&
          record.authenticated_receipt_uuid ==
-             context.statement_receipt_uuid.canonical &&
+             context.statement_receipt_uuid &&
          BulkImportPublicationUuidV1(record.statement_uuid) &&
-         record.statement_uuid == context.statement_uuid.canonical &&
+         record.statement_uuid == context.statement_uuid &&
          record.savepoint_ordinal != 0 &&
          BulkImportPublicationUuidV1(record.mutation_uuid) &&
          BulkImportPublicationUuidV1(record.bulk_batch_uuid) &&
@@ -663,11 +663,11 @@ bool BulkImportImportedRowShapeV1(
          BulkImportPublicationUuidV1(event.mutation_uuid) &&
          BulkImportPublicationUuidV1(event.bulk_batch_uuid) &&
          BulkImportPublicationUuidV1(event.owning_transaction_uuid) &&
-         event.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         event.owning_transaction_uuid == context.transaction_uuid &&
          event.owning_local_transaction_id == context.local_transaction_id &&
          event.owning_local_transaction_id != 0 &&
          BulkImportPublicationUuidV1(event.statement_uuid) &&
-         event.statement_uuid == context.statement_uuid.canonical &&
+         event.statement_uuid == context.statement_uuid &&
          event.savepoint_ordinal != 0 &&
          BulkImportPublicationUuidV1(event.target_relation_uuid) &&
          event.target_relation_generation != 0 && event.import_ordinal != 0 &&

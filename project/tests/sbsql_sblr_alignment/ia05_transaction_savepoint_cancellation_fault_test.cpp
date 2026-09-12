@@ -3,14 +3,15 @@
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 
 #include <atomic>
+#include <iostream>
 
 namespace s = scratchbird::engine::sblr;
 
 int main() {
   s::SblrSavepointDescriptorV1 descriptor;
-  descriptor.descriptor_uuid[0]=1; descriptor.descriptor_generation=1;
-  descriptor.savepoint_uuid[0]=2; descriptor.savepoint_generation=2;
-  descriptor.transaction_uuid[0]=3; descriptor.local_transaction_id=4;
+  descriptor.descriptor_uuid[0]=1;descriptor.descriptor_uuid[6]=0x70;descriptor.descriptor_uuid[8]=0x80; descriptor.descriptor_generation=1;
+  descriptor.savepoint_uuid[0]=2;descriptor.savepoint_uuid[6]=0x70;descriptor.savepoint_uuid[8]=0x80; descriptor.savepoint_generation=2;
+  descriptor.transaction_uuid[0]=3;descriptor.transaction_uuid[6]=0x70;descriptor.transaction_uuid[8]=0x80; descriptor.local_transaction_id=4;
   descriptor.transaction_ordinal=1; descriptor.descriptor_evidence_sha256[0]=5;
   auto envelope=s::MakeSblrEnvelope("engine.op.txn_savepoint","SBLR_TXN_SAVEPOINT",
                                     "ia05.txn_savepoint.cancel");
@@ -26,9 +27,15 @@ int main() {
   if(!s::ValidateSblrEnvelope(envelope).ok)return 1;
   std::atomic<unsigned> checks{0};
   scratchbird::engine::internal_api::EngineRequestContext context;
+  // Component cancellation before any authority lookup; not live MGA proof.
+  context.transaction_uuid.canonical="03000000-0000-7000-8000-000000000000";
+  context.local_transaction_id=descriptor.local_transaction_id;
   context.security_context_present=true;
   context.query_cancellation_requested=[&]{++checks;return true;};
   const auto dispatched=s::DispatchSblrOperation({context,std::move(envelope),{},std::nullopt});
+  std::cerr << "accepted=" << dispatched.accepted << " ok=" << dispatched.api_result.ok << " cancellation_checks=" << checks << '\n';
+  for (const auto& diagnostic : dispatched.api_result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':' << diagnostic.detail << '\n';
   if(dispatched.accepted||dispatched.api_result.ok||!dispatched.api_result.evidence.empty()||
      checks!=1||dispatched.api_result.diagnostics.empty()||
      dispatched.api_result.diagnostics.front().code!="PROCESS.CANCELLED"||

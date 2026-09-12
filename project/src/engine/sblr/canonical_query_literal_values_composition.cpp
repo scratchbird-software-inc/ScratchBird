@@ -89,7 +89,7 @@ ExecuteCanonicalObjectFreeLiteralValuesQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto alternative_uuid =
       DerivedCanonicalUuid(identity_scope, "values.alternative");
   const auto capability_uuid =
@@ -300,7 +300,7 @@ ExecuteCanonicalObjectFreeLiteralValuesQuery(
   execution_request.available_executors.push_back(std::move(registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,

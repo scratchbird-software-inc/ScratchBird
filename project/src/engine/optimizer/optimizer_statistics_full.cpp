@@ -10,6 +10,9 @@
 
 #include <algorithm>
 #include <sstream>
+#include <cmath>
+#include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
@@ -30,25 +33,27 @@ StatisticsContractStatus Status(bool ok, std::string code, std::string detail) {
   return status;
 }
 
+StatisticsContractStatus Status(bool ok, std::string code, const planner::CanonicalPlannerUuid& object) {
+  auto status = Status(ok, std::move(code), std::string{});
+  status.object_uuid = object;
+  return status;
+}
+
 void ValidateIdentity(const OptimizerStatsIdentity& identity,
                       const char* family,
                       std::vector<StatisticsContractStatus>* statuses) {
-  if (identity.object_uuid.empty()) statuses->push_back(Status(false, "SB_OPT_STATS_OBJECT_UUID_REQUIRED", family));
-  if (identity.statistic_uuid.empty()) statuses->push_back(Status(false, "SB_OPT_STATS_STATISTIC_UUID_REQUIRED", family));
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.object_uuid)) statuses->push_back(Status(false, "SB_OPT_STATS_OBJECT_UUID_REQUIRED", family));
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.statistic_uuid)) statuses->push_back(Status(false, "SB_OPT_STATS_STATISTIC_UUID_REQUIRED", family));
   if (identity.stats_epoch == 0) statuses->push_back(Status(false, "SB_OPT_STATS_EPOCH_REQUIRED", family));
   if (!OptimizerStatsIdentityIsUsable(identity)) statuses->push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", family));
 }
 
-std::vector<std::string> SortedUnique(std::vector<std::string> values) {
+std::vector<planner::CanonicalPlannerUuid> SortedUnique(std::vector<planner::CanonicalPlannerUuid> values) {
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
 }
 
-void AppendSorted(std::ostringstream& out, const char* label, std::vector<std::string> values) {
-  out << '|' << label << '=';
-  for (const auto& value : SortedUnique(std::move(values))) out << value << ';';
-}
 
 OptimizerPinnedStatsLookupResult StatsRefusal(std::string code,
                                               std::string detail,
@@ -62,8 +67,8 @@ OptimizerPinnedStatsLookupResult StatsRefusal(std::string code,
   return result;
 }
 
-bool Contains(const std::vector<std::string>& values, const std::string& value) {
-  return !value.empty() &&
+bool Contains(const std::vector<planner::CanonicalPlannerUuid>& values, const planner::CanonicalPlannerUuid& value) {
+  return !value.is_nil() &&
          std::find(values.begin(), values.end(), value) != values.end();
 }
 
@@ -85,13 +90,13 @@ bool StatsEventInvalidatesAll(const StatsInvalidationEvent& event) {
 bool StatsEventInvalidatesSnapshot(const OptimizerPinnedStatsDescriptorSnapshot& snapshot,
                                    const StatsInvalidationEvent& event) {
   if (StatsEventInvalidatesAll(event)) return true;
-  if (!event.object_uuid.empty() && Contains(snapshot.key.object_uuids, event.object_uuid)) return true;
-  if (!event.index_uuid.empty() && Contains(snapshot.key.index_uuids, event.index_uuid)) return true;
-  if (!event.security_policy_identity.empty() &&
+  if (!event.object_uuid.is_nil() && Contains(snapshot.key.object_uuids, event.object_uuid)) return true;
+  if (!event.index_uuid.is_nil() && Contains(snapshot.key.index_uuids, event.index_uuid)) return true;
+  if (!event.security_policy_identity.is_nil() &&
       event.security_policy_identity == snapshot.key.security_policy_identity) {
     return true;
   }
-  if (!event.redaction_policy_identity.empty() &&
+  if (!event.redaction_policy_identity.is_nil() &&
       event.redaction_policy_identity == snapshot.key.redaction_policy_identity) {
     return true;
   }
@@ -103,15 +108,15 @@ bool StatsEventInvalidatesSnapshot(const OptimizerPinnedStatsDescriptorSnapshot&
           event.event_kind == "security_policy_change" ||
           event.event_kind == "redaction_policy_change" ||
           event.event_kind == "statistics_stale") &&
-         event.object_uuid.empty() &&
-         event.index_uuid.empty() &&
-         event.security_policy_identity.empty() &&
-         event.redaction_policy_identity.empty();
+         event.object_uuid.is_nil() &&
+         event.index_uuid.is_nil() &&
+         event.security_policy_identity.is_nil() &&
+         event.redaction_policy_identity.is_nil();
 }
 
 void InvalidateGlobalPinnedStatsCache(std::string event_kind,
-                                      std::string object_uuid,
-                                      std::string index_uuid,
+                                      planner::CanonicalPlannerUuid object_uuid,
+                                      planner::CanonicalPlannerUuid index_uuid,
                                       std::uint64_t new_catalog_epoch,
                                       std::uint64_t new_stats_epoch,
                                       std::string reason) {
@@ -138,12 +143,15 @@ const char* OptimizerStatsFreshnessStateName(OptimizerStatsFreshnessState state)
 }
 
 bool OptimizerStatsIdentityIsUsable(const OptimizerStatsIdentity& identity) {
-  return !identity.object_uuid.empty() &&
-         !identity.statistic_uuid.empty() &&
-         identity.stats_epoch != 0 &&
+  return scratchbird::core::uuid::IsEngineIdentityUuid(identity.object_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(identity.statistic_uuid) &&
+         identity.stats_epoch != 0 && identity.catalog_epoch != 0 &&
+         identity.transaction_visibility_epoch != 0 &&
          identity.freshness == OptimizerStatsFreshnessState::kFresh &&
-         identity.source != StatisticSource::kUnavailable &&
-         identity.confidence != CostConfidence::kRejected;
+         identity.source >= StatisticSource::kCatalogExact &&
+         identity.source <= StatisticSource::kClusterMetric &&
+         identity.confidence >= CostConfidence::kExact &&
+         identity.confidence <= CostConfidence::kLow;
 }
 
 const char* ExtendedOptimizerStatisticKindName(ExtendedOptimizerStatisticKind kind) {
@@ -158,6 +166,27 @@ const char* ExtendedOptimizerStatisticKindName(ExtendedOptimizerStatisticKind ki
     case ExtendedOptimizerStatisticKind::kDocumentPathBridge: return "document_path_bridge";
   }
   return "multi_column_ndv";
+}
+
+bool OptimizerTableStatsAreUsable(const TableCardinalityStats& stats) {
+  return OptimizerStatsIdentityIsUsable(stats.identity) &&
+      (stats.identity.source == StatisticSource::kCatalogExact ||
+       stats.identity.source == StatisticSource::kCatalogSample) &&
+      stats.visible_row_count <= stats.row_count &&
+      (stats.row_count == 0 || (stats.page_count != 0 && stats.average_row_bytes != 0));
+}
+
+bool OptimizerIndexStatsAreUsable(const IndexStats& stats,
+    const planner::CanonicalPlannerUuid& relation_uuid, std::string_view descriptor_digest) {
+  return OptimizerStatsIdentityIsUsable(stats.identity) &&
+      (stats.identity.source == StatisticSource::kCatalogExact ||
+       stats.identity.source == StatisticSource::kCatalogSample) &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(stats.index_uuid) &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid) &&
+      stats.relation_uuid == relation_uuid && !stats.descriptor_digest.empty() &&
+      stats.descriptor_digest == descriptor_digest && stats.route_benchmark_clean &&
+      stats.exact_recheck_required && stats.mga_recheck_required && stats.security_recheck_required &&
+      !stats.rebuild_in_progress && !stats.family_claim_removed;
 }
 
 void OptimizerStatisticsStore::UpsertTable(TableCardinalityStats stats) {
@@ -237,20 +266,20 @@ void OptimizerStatisticsStore::UpsertPageFilespace(PageFilespaceStats stats) {
   InvalidateGlobalPinnedStatsCache("stats_refresh", object_uuid, filespace_uuid, catalog_epoch, stats_epoch, "stats_refresh");
 }
 
-std::optional<TableCardinalityStats> OptimizerStatisticsStore::FindTable(const std::string& relation_uuid) const {
+std::optional<TableCardinalityStats> OptimizerStatisticsStore::FindTable(const planner::CanonicalPlannerUuid& relation_uuid) const {
   auto it = std::find_if(tables_.begin(), tables_.end(), [&](const TableCardinalityStats& stats) { return stats.identity.object_uuid == relation_uuid; });
   if (it == tables_.end()) return std::nullopt;
   return *it;
 }
 
-std::optional<ColumnStats> OptimizerStatisticsStore::FindColumn(const std::string& relation_uuid, const std::string& column_uuid) const {
+std::optional<ColumnStats> OptimizerStatisticsStore::FindColumn(const planner::CanonicalPlannerUuid& relation_uuid, const planner::CanonicalPlannerUuid& column_uuid) const {
   auto it = std::find_if(columns_.begin(), columns_.end(), [&](const ColumnStats& stats) { return stats.identity.object_uuid == relation_uuid && stats.column_uuid == column_uuid; });
   if (it == columns_.end()) return std::nullopt;
   return *it;
 }
 
 std::vector<ExtendedOptimizerStatistic> OptimizerStatisticsStore::FindExtendedStatisticsForRelation(
-    const std::string& relation_uuid) const {
+    const planner::CanonicalPlannerUuid& relation_uuid) const {
   std::vector<ExtendedOptimizerStatistic> out;
   for (const auto& stats : extended_stats_) {
     if (stats.relation_uuid == relation_uuid || stats.identity.object_uuid == relation_uuid) {
@@ -260,19 +289,19 @@ std::vector<ExtendedOptimizerStatistic> OptimizerStatisticsStore::FindExtendedSt
   return out;
 }
 
-std::optional<IndexStats> OptimizerStatisticsStore::FindIndex(const std::string& index_uuid) const {
+std::optional<IndexStats> OptimizerStatisticsStore::FindIndex(const planner::CanonicalPlannerUuid& index_uuid) const {
   auto it = std::find_if(indexes_.begin(), indexes_.end(), [&](const IndexStats& stats) { return stats.index_uuid == index_uuid; });
   if (it == indexes_.end()) return std::nullopt;
   return *it;
 }
 
-std::optional<PageFilespaceStats> OptimizerStatisticsStore::FindFilespace(const std::string& filespace_uuid, const std::string& page_family) const {
+std::optional<PageFilespaceStats> OptimizerStatisticsStore::FindFilespace(const planner::CanonicalPlannerUuid& filespace_uuid, const std::string& page_family) const {
   auto it = std::find_if(page_filespaces_.begin(), page_filespaces_.end(), [&](const PageFilespaceStats& stats) { return stats.filespace_uuid == filespace_uuid && stats.page_family == page_family; });
   if (it == page_filespaces_.end()) return std::nullopt;
   return *it;
 }
 
-void OptimizerStatisticsStore::MarkStaleByObject(const std::string& object_uuid, std::uint64_t catalog_epoch) {
+void OptimizerStatisticsStore::MarkStaleByObject(const planner::CanonicalPlannerUuid& object_uuid, std::uint64_t catalog_epoch) {
   auto mark = [&](OptimizerStatsIdentity* identity) {
     if (identity->object_uuid == object_uuid) {
       identity->freshness = OptimizerStatsFreshnessState::kStale;
@@ -293,7 +322,7 @@ void OptimizerStatisticsStore::MarkStaleByObject(const std::string& object_uuid,
   InvalidateGlobalPinnedStatsCache("statistics_stale", object_uuid, {}, catalog_epoch, 0, "statistics_stale");
 }
 
-OptimizerStatsSnapshot OptimizerStatisticsStore::Snapshot(std::string snapshot_id) const {
+OptimizerStatsSnapshot OptimizerStatisticsStore::Snapshot(planner::CanonicalPlannerUuid snapshot_id) const {
   OptimizerStatsSnapshot snapshot;
   snapshot.snapshot_id = std::move(snapshot_id);
   snapshot.tables = tables_;
@@ -340,18 +369,19 @@ OptimizerStatsSnapshot OptimizerStatisticsStore::Snapshot(std::string snapshot_i
 }
 
 std::string OptimizerPinnedStatsDescriptorCacheKeyText(const OptimizerPinnedStatsDescriptorKey& key) {
-  std::ostringstream out;
-  out << "catalog_epoch=" << key.catalog_epoch
-      << "|security_epoch=" << key.security_epoch
-      << "|resource_policy_epoch=" << key.resource_policy_epoch
-      << "|name_resolution_epoch=" << key.name_resolution_epoch
-      << "|stats_epoch=" << key.stats_epoch
-      << "|descriptor_set_digest=" << key.descriptor_set_digest
-      << "|security_policy_identity=" << key.security_policy_identity
-      << "|redaction_policy_identity=" << key.redaction_policy_identity;
-  AppendSorted(out, "object_uuids", key.object_uuids);
-  AppendSorted(out, "index_uuids", key.index_uuids);
-  return out.str();
+  // Opaque content binding bytes, not a textual UUID or issued snapshot identity.
+  planner::CanonicalPlannerBindingBytes out("optimizer-pinned-statistics-v2");
+  out.Number(key.catalog_epoch); out.Number(key.security_epoch);
+  out.Number(key.resource_policy_epoch); out.Number(key.name_resolution_epoch);
+  out.Number(key.stats_epoch); out.Text(key.descriptor_set_digest);
+  out.Identity(key.security_policy_identity); out.Identity(key.redaction_policy_identity);
+  const auto objects = SortedUnique(key.object_uuids);
+  const auto indexes = SortedUnique(key.index_uuids);
+  out.Number(objects.size());
+  for (const auto& uuid : objects) out.Identity(uuid);
+  out.Number(indexes.size());
+  for (const auto& uuid : indexes) out.Identity(uuid);
+  return std::move(out).Take();
 }
 
 OptimizerPinnedStatsLookupResult ValidateOptimizerPinnedStatsDescriptorKey(
@@ -375,15 +405,23 @@ OptimizerPinnedStatsLookupResult ValidateOptimizerPinnedStatsDescriptorKey(
   if (key.descriptor_set_digest.empty()) {
     return StatsRefusal("SB_OPT_PINNED_STATS_DIGEST_REQUIRED", "descriptor_set_digest is required", cache_key);
   }
+  const auto valid_uuid = [](const auto& uuid) { return scratchbird::core::uuid::IsEngineIdentityUuid(uuid); };
+  if (!std::ranges::all_of(key.object_uuids, valid_uuid) ||
+      !std::ranges::all_of(key.index_uuids, valid_uuid) ||
+      SortedUnique(key.object_uuids).size() != key.object_uuids.size() ||
+      SortedUnique(key.index_uuids).size() != key.index_uuids.size()) {
+    return StatsRefusal("SB_OPT_PINNED_STATS_OBJECT_UUID_REQUIRED",
+                        "invalid or duplicate binary object/index identity", cache_key);
+  }
   if (key.object_uuids.empty()) {
     return StatsRefusal("SB_OPT_PINNED_STATS_OBJECT_UUID_REQUIRED", "object UUID is required", cache_key);
   }
-  if (key.security_policy_identity.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(key.security_policy_identity)) {
     return StatsRefusal("SB_OPT_PINNED_STATS_SECURITY_POLICY_REQUIRED",
                         "security policy identity is required",
                         cache_key);
   }
-  if (key.redaction_policy_identity.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(key.redaction_policy_identity)) {
     return StatsRefusal("SB_OPT_PINNED_STATS_REDACTION_POLICY_REQUIRED",
                         "redaction policy identity is required",
                         cache_key);
@@ -465,24 +503,24 @@ OptimizerPinnedStatsDescriptorCache& GlobalOptimizerPinnedStatsDescriptorCache()
   return cache;
 }
 
-OptimizerStatisticsCatalog OptimizerStatisticsStore::ToLegacyCatalog() const {
+std::optional<OptimizerStatisticsCatalog> OptimizerStatisticsStore::ToLegacyCatalog() const try {
   OptimizerStatisticsCatalog catalog;
   for (const auto& table : tables_) {
-    catalog.Add(MakeStatistic("row_count", "relation", table.identity.object_uuid, static_cast<double>(table.row_count), table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)));
-    catalog.Add(MakeStatistic("visible_row_count", "relation", table.identity.object_uuid, static_cast<double>(table.visible_row_count), table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)));
-    catalog.Add(MakeStatistic("relation_visible_version_count", "relation", table.identity.object_uuid, static_cast<double>(table.visible_row_count), table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)));
-    catalog.Add(MakeStatistic("page_count", "relation", table.identity.object_uuid, static_cast<double>(table.page_count), table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)));
-    catalog.Add(MakeStatistic("average_row_bytes", "relation", table.identity.object_uuid, static_cast<double>(table.average_row_bytes), table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)));
+    if (!catalog.Add(MakeUnsignedStatistic("row_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("visible_row_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.visible_row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("relation_visible_version_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.visible_row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("page_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.page_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("average_row_bytes", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.average_row_bytes, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
   }
   for (const auto& column : columns_) {
     const bool usable = OptimizerStatsIdentityIsUsable(column.identity);
-    catalog.Add(MakeStatistic("column_ndv", "column", column.column_uuid, static_cast<double>(column.distinct_count), column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_null_fraction", "column", column.column_uuid, column.null_fraction, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_average_width_bytes", "column", column.column_uuid, static_cast<double>(column.average_width_bytes), column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_correlation", "column", column.column_uuid, column.correlation, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_sample_rows", "column", column.column_uuid, static_cast<double>(column.sample_rows), column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_hll_estimated_distinct", "column", column.column_uuid, static_cast<double>(column.hyperloglog_estimated_distinct), column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
-    catalog.Add(MakeStatistic("column_hll_relative_error_ppm", "column", column.column_uuid, column.hyperloglog_relative_error * 1000000.0, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable));
+    if (!catalog.Add(MakeUnsignedStatistic("column_ndv", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.distinct_count, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("column_null_fraction", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.null_fraction, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("column_average_width_bytes", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.average_width_bytes, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("column_correlation", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.correlation, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable, false, OptimizerStatisticValueDomain::kSignedCorrelation))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("column_sample_rows", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.sample_rows, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("column_hll_estimated_distinct", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_estimated_distinct, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("column_hll_relative_error_ppm", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_relative_error * 1000000.0, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
   }
   for (const auto& histogram : histograms_) {
     const bool usable = OptimizerStatsIdentityIsUsable(histogram.identity);
@@ -490,53 +528,63 @@ OptimizerStatisticsCatalog OptimizerStatisticsStore::ToLegacyCatalog() const {
     std::uint64_t rows = 0;
     for (const auto& bucket : histogram.buckets) {
       fraction += bucket.fraction;
+      if (bucket.row_count > std::numeric_limits<std::uint64_t>::max() - rows) return std::nullopt;
       rows += bucket.row_count;
     }
-    catalog.Add(MakeStatistic("histogram_bucket_count", "histogram", histogram.column_uuid, static_cast<double>(histogram.buckets.size()), histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable));
-    catalog.Add(MakeStatistic("histogram_covered_fraction", "histogram", histogram.column_uuid, fraction, histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable));
-    catalog.Add(MakeStatistic("histogram_row_count", "histogram", histogram.column_uuid, static_cast<double>(rows), histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable));
+    if (!catalog.Add(MakeUnsignedStatistic("histogram_bucket_count", "histogram", OptimizerStatisticTarget::Object(histogram.column_uuid), histogram.buckets.size(), histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("histogram_covered_fraction", "histogram", OptimizerStatisticTarget::Object(histogram.column_uuid), fraction, histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("histogram_row_count", "histogram", OptimizerStatisticTarget::Object(histogram.column_uuid), rows, histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable))) return std::nullopt;
   }
   for (const auto& mcv_value : mcv_) {
-    catalog.Add(MakeStatistic("mcv_frequency", "mcv", mcv_value.column_uuid, mcv_value.frequency, mcv_value.identity.source, mcv_value.identity.stats_epoch, 0, mcv_value.identity.confidence, OptimizerStatsIdentityIsUsable(mcv_value.identity)));
+    if (!catalog.Add(MakeStatistic("mcv_frequency", "mcv", OptimizerStatisticTarget::Object(mcv_value.column_uuid), mcv_value.frequency, mcv_value.identity.source, mcv_value.identity.stats_epoch, 0, mcv_value.identity.confidence, OptimizerStatsIdentityIsUsable(mcv_value.identity)))) return std::nullopt;
   }
   for (const auto& stats : extended_stats_) {
     const bool usable = OptimizerStatsIdentityIsUsable(stats.identity);
-    catalog.Add(MakeStatistic("extended_multi_column_distinct_count", "extended_stats", stats.identity.statistic_uuid, static_cast<double>(stats.multi_column_distinct_count), stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable));
-    catalog.Add(MakeStatistic("extended_functional_dependency_strength", "extended_stats", stats.identity.statistic_uuid, stats.functional_dependency_strength, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable));
-    catalog.Add(MakeStatistic("extended_correlation_coefficient", "extended_stats", stats.identity.statistic_uuid, stats.correlation_coefficient, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable));
-    catalog.Add(MakeStatistic("extended_histogram_selectivity", "extended_stats", stats.identity.statistic_uuid, stats.histogram_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable));
-    catalog.Add(MakeStatistic("extended_sampled_dependency_selectivity", "extended_stats", stats.identity.statistic_uuid, stats.sampled_dependency_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable));
+    if (!catalog.Add(MakeUnsignedStatistic("extended_multi_column_distinct_count", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.multi_column_distinct_count, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("extended_functional_dependency_strength", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.functional_dependency_strength, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("extended_correlation_coefficient", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.correlation_coefficient, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable, false, OptimizerStatisticValueDomain::kSignedCorrelation))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("extended_histogram_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.histogram_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("extended_sampled_dependency_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.sampled_dependency_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
   }
   for (const auto& index : indexes_) {
-    catalog.Add(MakeStatistic("index_height", "index", index.index_uuid, static_cast<double>(index.height), index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_depth", "index", index.index_uuid, static_cast<double>(index.height), index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_leaf_pages", "index", index.index_uuid, static_cast<double>(index.leaf_pages), index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_distinct_keys", "index", index.index_uuid, static_cast<double>(index.distinct_keys), index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_clustering_factor", "index", index.index_uuid, index.clustering_factor, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_fragmentation_ratio", "index", index.index_uuid, index.fragmentation_ratio, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_visibility_coverage", "index", index.index_uuid, index.rebuild_in_progress ? 0.0 : index.visibility_coverage, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_predicate_coverage", "index", index.index_uuid, index.predicate_coverage, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_false_positive_ratio", "index", index.index_uuid, index.false_positive_ratio, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
-    catalog.Add(MakeStatistic("index_route_benchmark_clean", "index", index.index_uuid, index.route_benchmark_clean ? 1.0 : 0.0, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)));
+    if (!catalog.Add(MakeUnsignedStatistic("index_height", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.height, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("index_depth", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.height, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("index_leaf_pages", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.leaf_pages, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("index_distinct_keys", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.distinct_keys, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_clustering_factor", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.clustering_factor, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_fragmentation_ratio", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.fragmentation_ratio, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_visibility_coverage", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.rebuild_in_progress ? 0.0 : index.visibility_coverage, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_predicate_coverage", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.predicate_coverage, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_false_positive_ratio", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.false_positive_ratio, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("index_route_benchmark_clean", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.route_benchmark_clean ? 1.0 : 0.0, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
   }
   for (const auto& filespace : page_filespaces_) {
     const bool usable = OptimizerStatsIdentityIsUsable(filespace.identity);
-    catalog.Add(MakeStatistic("filespace_available_pages", "filespace", filespace.filespace_uuid, static_cast<double>(filespace.free_pages), filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable));
-    catalog.Add(MakeStatistic("page_family_read_latency_microseconds", "page_family", filespace.filespace_uuid, filespace.sequential_latency_score * 1000.0, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable));
-    catalog.Add(MakeStatistic("io_latency_multiplier", "page_family", filespace.filespace_uuid, filespace.sequential_latency_score, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable));
+    if (!catalog.Add(MakeUnsignedStatistic("filespace_available_pages", "filespace", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.free_pages, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("page_family_read_latency_microseconds", "page_family", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.sequential_latency_score * 1000.0, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("io_latency_multiplier", "page_family", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.sequential_latency_score, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
   }
   for (const auto& expression : expressions_) {
     const bool usable = OptimizerStatsIdentityIsUsable(expression.identity);
-    catalog.Add(MakeStatistic("expression_distinct_count", "expression", expression.expression_digest, static_cast<double>(expression.distinct_count), expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable));
-    catalog.Add(MakeStatistic("expression_null_fraction", "expression", expression.expression_digest, expression.null_fraction, expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable));
+    if (!catalog.Add(MakeUnsignedStatistic("expression_distinct_count", "expression", OptimizerStatisticTarget::Object(expression.identity.statistic_uuid), expression.distinct_count, expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("expression_null_fraction", "expression", OptimizerStatisticTarget::Object(expression.identity.statistic_uuid), expression.null_fraction, expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable))) return std::nullopt;
   }
   return catalog;
+} catch (const std::bad_alloc&) {
+  return std::nullopt;
+} catch (const std::length_error&) {
+  return std::nullopt;
 }
 
-TableCardinalityStats BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput& input) {
+std::optional<TableCardinalityStats> BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput& input) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(input.relation_uuid) ||
+      input.stats_epoch == 0 || input.catalog_epoch == 0 ||
+      input.sampled_rows > input.total_rows_estimate) return std::nullopt;
+  const auto issued = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!issued) return std::nullopt;
   TableCardinalityStats stats;
   stats.identity.object_uuid = input.relation_uuid;
-  stats.identity.statistic_uuid = input.relation_uuid + ":table_stats";
+  stats.identity.statistic_uuid = *issued;
   stats.identity.stats_epoch = input.stats_epoch;
   stats.identity.catalog_epoch = input.catalog_epoch;
   stats.identity.transaction_visibility_epoch = input.stats_epoch;
@@ -552,11 +600,11 @@ TableCardinalityStats BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput&
 
 std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const OptimizerStatsSnapshot& snapshot) {
   std::vector<StatisticsContractStatus> statuses;
-  if (snapshot.snapshot_id.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_SNAPSHOT_ID_REQUIRED", "snapshot"));
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(snapshot.snapshot_id)) statuses.push_back(Status(false, "SB_OPT_STATS_SNAPSHOT_ID_REQUIRED", "snapshot"));
   for (const auto& table : snapshot.tables) ValidateIdentity(table.identity, "table", &statuses);
   for (const auto& column : snapshot.columns) {
     ValidateIdentity(column.identity, "column", &statuses);
-    if (column.column_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_UUID_REQUIRED", column.identity.object_uuid));
+    if (column.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_UUID_REQUIRED", column.identity.object_uuid));
     if (column.null_fraction < 0.0 || column.null_fraction > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_NULL_FRACTION_INVALID", column.column_uuid));
     if (column.correlation < -1.0 || column.correlation > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_COLUMN_CORRELATION_INVALID", column.column_uuid));
     if (column.sample_rows != 0 && column.sample_method.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_SAMPLE_METHOD_REQUIRED", column.column_uuid));
@@ -566,17 +614,17 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& histogram : snapshot.histograms) {
     ValidateIdentity(histogram.identity, "histogram", &statuses);
-    if (histogram.column_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_COLUMN_UUID_REQUIRED", histogram.identity.object_uuid));
+    if (histogram.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_COLUMN_UUID_REQUIRED", histogram.identity.object_uuid));
     if (histogram.buckets.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_HISTOGRAM_BUCKET_REQUIRED", histogram.column_uuid));
   }
   for (const auto& mcv_value : snapshot.mcv) {
     ValidateIdentity(mcv_value.identity, "mcv", &statuses);
-    if (mcv_value.column_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_COLUMN_UUID_REQUIRED", mcv_value.identity.object_uuid));
+    if (mcv_value.column_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_COLUMN_UUID_REQUIRED", mcv_value.identity.object_uuid));
     if (mcv_value.frequency < 0.0 || mcv_value.frequency > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_MCV_FREQUENCY_INVALID", mcv_value.column_uuid));
   }
   for (const auto& stats : snapshot.extended_stats) {
     ValidateIdentity(stats.identity, "extended_stats", &statuses);
-    if (stats.relation_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_RELATION_UUID_REQUIRED", stats.identity.statistic_uuid));
+    if (stats.relation_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_RELATION_UUID_REQUIRED", stats.identity.statistic_uuid));
     if (stats.column_uuids.empty() && stats.document_path_digests.empty()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_SHAPE_REQUIRED", stats.identity.statistic_uuid));
     if (stats.functional_dependency_strength < 0.0 || stats.functional_dependency_strength > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_DEPENDENCY_INVALID", stats.identity.statistic_uuid));
     if (stats.correlation_coefficient < -1.0 || stats.correlation_coefficient > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_CORRELATION_INVALID", stats.identity.statistic_uuid));
@@ -592,7 +640,7 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& index : snapshot.indexes) {
     ValidateIdentity(index.identity, "index", &statuses);
-    if (index.index_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_UUID_REQUIRED", index.identity.object_uuid));
+    if (index.index_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_UUID_REQUIRED", index.identity.object_uuid));
     if (index.index_family.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_FAMILY_REQUIRED", index.index_uuid));
     if (index.visibility_coverage < 0.0 || index.visibility_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_VISIBILITY_COVERAGE_INVALID", index.index_uuid));
     if (index.predicate_coverage < 0.0 || index.predicate_coverage > 1.0) statuses.push_back(Status(false, "SB_OPT_STATS_INDEX_PREDICATE_COVERAGE_INVALID", index.index_uuid));
@@ -611,7 +659,7 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& filespace : snapshot.page_filespaces) {
     ValidateIdentity(filespace.identity, "page_filespace", &statuses);
-    if (filespace.filespace_uuid.empty()) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_UUID_REQUIRED", filespace.identity.object_uuid));
+    if (filespace.filespace_uuid.is_nil()) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_UUID_REQUIRED", filespace.identity.object_uuid));
     if (filespace.degraded) statuses.push_back(Status(false, "SB_OPT_STATS_FILESPACE_DEGRADED", filespace.filespace_uuid));
   }
   if (statuses.empty()) statuses.push_back(Status(true, "SB_OPT_STATS_OK", snapshot.snapshot_id));
@@ -658,7 +706,7 @@ std::vector<StatisticsContractStatus> ValidateIndexFamilyCostCoverage(
       statuses.push_back(Status(true, "SB_OPT_INDEX_FAMILY_CLAIM_REMOVED", index.index_family));
       continue;
     }
-    if (index.index_family.empty() || index.index_uuid.empty()) {
+    if (index.index_family.empty() || index.index_uuid.is_nil()) {
       statuses.push_back(Status(false, "SB_OPT_INDEX_FAMILY_IDENTITY_REQUIRED", index.index_uuid));
       continue;
     }

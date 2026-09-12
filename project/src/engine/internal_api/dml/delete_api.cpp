@@ -29,10 +29,10 @@ EngineDeleteRowsResult EngineDeleteRows(const EngineDeleteRowsRequest& request) 
       result.evidence.push_back(
           {"relation_projection_view_marker", view.marker});
       result.evidence.push_back(
-          {"relation_projection_view_uuid", view.view_uuid.canonical});
+          {"relation_projection_view_uuid", view.view_uuid});
       result.evidence.push_back(
           {"relation_projection_view_descriptor_uuid",
-           view.view_descriptor_uuid.canonical});
+           view.view_descriptor_uuid});
       result.evidence.push_back(
           {"relation_projection_view_descriptor_generation",
            std::to_string(view.view_descriptor_generation)});
@@ -41,7 +41,7 @@ EngineDeleteRowsResult EngineDeleteRows(const EngineDeleteRowsRequest& request) 
            std::to_string(view.source_resource_epoch)});
       result.evidence.push_back(
           {"relation_projection_view_source_relation_uuid",
-           view.source_relation_uuid.canonical});
+           view.source_relation_uuid});
       result.evidence.push_back(
           {"relation_projection_view_delete_expansion",
            "engine_owned_sql_free"});

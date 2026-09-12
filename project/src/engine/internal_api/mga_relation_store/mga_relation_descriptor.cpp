@@ -287,10 +287,10 @@ bool EncodedDescriptorSupportsLargeObjectTextResources(
 }  // namespace
 
 EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorageDescriptor& descriptor) {
-  if (descriptor.descriptor_uuid.canonical.empty()) {
+  if (descriptor.descriptor_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "descriptor_uuid_required");
   }
-  if (descriptor.relation_uuid.canonical.empty()) {
+  if (descriptor.relation_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "relation_uuid_required");
   }
   if (descriptor.relation_generation == 0 ||
@@ -312,7 +312,7 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
     return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "at_least_one_column_required");
   }
   for (const auto& column : descriptor.columns) {
-    if (column.column_uuid.canonical.empty()) {
+    if (column.column_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "column_uuid_required");
     }
     if (column.column_generation == 0) {
@@ -359,7 +359,7 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
     }
   }
   for (const auto& index : descriptor.indexes) {
-    if (index.index_uuid.canonical.empty()) {
+    if (index.index_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "index_uuid_required");
     }
     if (index.family.empty()) {
@@ -372,12 +372,12 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
 std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDescriptor(
     const MgaRelationStorageDescriptor& descriptor) {
   std::vector<std::pair<std::string, std::string>> fields;
-  fields.push_back({"descriptor_uuid", descriptor.descriptor_uuid.canonical});
-  fields.push_back({"database_uuid", descriptor.database_uuid.canonical});
-  fields.push_back({"schema_uuid", descriptor.schema_uuid.canonical});
-  fields.push_back({"relation_uuid", descriptor.relation_uuid.canonical});
+  fields.push_back({"descriptor_uuid", descriptor.descriptor_uuid});
+  fields.push_back({"database_uuid", descriptor.database_uuid});
+  fields.push_back({"schema_uuid", descriptor.schema_uuid});
+  fields.push_back({"relation_uuid", descriptor.relation_uuid});
   PushU64(&fields, "relation_generation", descriptor.relation_generation);
-  fields.push_back({"primary_filespace_uuid", descriptor.primary_filespace_uuid.canonical});
+  fields.push_back({"primary_filespace_uuid", descriptor.primary_filespace_uuid});
   fields.push_back({"relation_kind", descriptor.relation_kind});
   fields.push_back({"storage_profile", descriptor.storage_profile});
   PushU64(&fields, "descriptor_generation", descriptor.descriptor_generation);
@@ -395,11 +395,11 @@ std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDesc
   for (std::size_t i = 0; i < descriptor.columns.size(); ++i) {
     const std::string prefix = "column." + std::to_string(i) + ".";
     const auto& column = descriptor.columns[i];
-    fields.push_back({prefix + "uuid", column.column_uuid.canonical});
+    fields.push_back({prefix + "uuid", column.column_uuid});
     PushU64(&fields, prefix + "generation", column.column_generation);
     PushU64(&fields, prefix + "ordinal", column.ordinal);
     fields.push_back({prefix + "name_key", column.canonical_name_key});
-    fields.push_back({prefix + "descriptor_uuid", column.value_descriptor.descriptor_uuid.canonical});
+    fields.push_back({prefix + "descriptor_uuid", column.value_descriptor.descriptor_uuid});
     fields.push_back({prefix + "descriptor_kind", column.value_descriptor.descriptor_kind});
     fields.push_back({prefix + "type_name", column.value_descriptor.canonical_type_name});
     fields.push_back({prefix + "encoded_descriptor", column.value_descriptor.encoded_descriptor});
@@ -417,7 +417,7 @@ std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDesc
   for (std::size_t i = 0; i < descriptor.indexes.size(); ++i) {
     const std::string prefix = "index." + std::to_string(i) + ".";
     const auto& index = descriptor.indexes[i];
-    fields.push_back({prefix + "uuid", index.index_uuid.canonical});
+    fields.push_back({prefix + "uuid", index.index_uuid});
     fields.push_back({prefix + "family", index.family});
     fields.push_back({prefix + "profile", index.profile});
     PushBool(&fields, prefix + "unique", index.unique);
@@ -438,13 +438,13 @@ std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDesc
 MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(
     const std::vector<std::pair<std::string, std::string>>& fields) {
   MgaRelationStorageDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = FieldValue(fields, "descriptor_uuid");
-  descriptor.database_uuid.canonical = FieldValue(fields, "database_uuid");
-  descriptor.schema_uuid.canonical = FieldValue(fields, "schema_uuid");
-  descriptor.relation_uuid.canonical = FieldValue(fields, "relation_uuid");
+  descriptor.descriptor_uuid = FieldValue(fields, "descriptor_uuid");
+  descriptor.database_uuid = FieldValue(fields, "database_uuid");
+  descriptor.schema_uuid = FieldValue(fields, "schema_uuid");
+  descriptor.relation_uuid = FieldValue(fields, "relation_uuid");
   descriptor.relation_generation =
       FieldU64(fields, "relation_generation", descriptor.descriptor_generation);
-  descriptor.primary_filespace_uuid.canonical = FieldValue(fields, "primary_filespace_uuid");
+  descriptor.primary_filespace_uuid = FieldValue(fields, "primary_filespace_uuid");
   descriptor.relation_kind = FieldValue(fields, "relation_kind", descriptor.relation_kind);
   descriptor.storage_profile = FieldValue(fields, "storage_profile", descriptor.storage_profile);
   descriptor.descriptor_generation = FieldU64(fields, "descriptor_generation", descriptor.descriptor_generation);
@@ -462,13 +462,13 @@ MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(
   for (std::size_t i = 0; i < column_count; ++i) {
     const std::string prefix = "column." + std::to_string(i) + ".";
     MgaRelationColumnStorageDescriptor column;
-    column.column_uuid.canonical = FieldValue(fields, prefix + "uuid");
+    column.column_uuid = FieldValue(fields, prefix + "uuid");
     column.column_generation =
         FieldU64(fields, prefix + "generation",
                  descriptor.relation_generation);
     column.ordinal = FieldU32(fields, prefix + "ordinal", static_cast<std::uint32_t>(i));
     column.canonical_name_key = FieldValue(fields, prefix + "name_key");
-    column.value_descriptor.descriptor_uuid.canonical = FieldValue(fields, prefix + "descriptor_uuid");
+    column.value_descriptor.descriptor_uuid = FieldValue(fields, prefix + "descriptor_uuid");
     column.value_descriptor.descriptor_kind = FieldValue(fields, prefix + "descriptor_kind");
     column.value_descriptor.canonical_type_name = FieldValue(fields, prefix + "type_name");
     column.value_descriptor.encoded_descriptor = FieldValue(fields, prefix + "encoded_descriptor");
@@ -488,7 +488,7 @@ MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(
   for (std::size_t i = 0; i < index_count; ++i) {
     const std::string prefix = "index." + std::to_string(i) + ".";
     MgaRelationIndexStorageDescriptor index;
-    index.index_uuid.canonical = FieldValue(fields, prefix + "uuid");
+    index.index_uuid = FieldValue(fields, prefix + "uuid");
     index.family = FieldValue(fields, prefix + "family");
     index.profile = FieldValue(fields, prefix + "profile");
     index.unique = FieldBool(fields, prefix + "unique", false);
@@ -524,13 +524,13 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
     const CrudTableRecord& table,
     const std::vector<CrudIndexRecord>& indexes) {
   MgaRelationStorageDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = GeneratedIdentity("object");
+  descriptor.descriptor_uuid = GeneratedIdentity("object");
   descriptor.database_uuid = context.database_uuid;
   descriptor.schema_uuid = context.current_schema_uuid;
-  descriptor.relation_uuid.canonical = table.table_uuid;
+  descriptor.relation_uuid = table.table_uuid;
   descriptor.relation_generation =
       table.event_sequence == 0 ? 1 : table.event_sequence;
-  descriptor.primary_filespace_uuid.canonical = context.default_root_uuid.canonical;
+  descriptor.primary_filespace_uuid = context.default_root_uuid;
   descriptor.page_size = 0;
   descriptor.root_page_number = 0;
   descriptor.allocation_root_page_number = 0;
@@ -538,7 +538,7 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
   descriptor.required_evidence_kinds = {"relation_descriptor", "row_version", "transaction_inventory", "dirty_manifest"};
   for (std::size_t i = 0; i < table.columns.size(); ++i) {
     MgaRelationColumnStorageDescriptor column;
-    column.column_uuid.canonical = GeneratedIdentity("object");
+    column.column_uuid = GeneratedIdentity("object");
     column.column_generation = descriptor.relation_generation;
     column.ordinal = static_cast<std::uint32_t>(i);
     column.canonical_name_key = table.columns[i].first;
@@ -549,7 +549,7 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
       std::string bound_text_descriptor;
       if (BindFreshMinimalTextDescriptor(
               column.value_descriptor.encoded_descriptor,
-              column.column_uuid.canonical, &bound_text_descriptor)) {
+              column.column_uuid, &bound_text_descriptor)) {
         column.value_descriptor.encoded_descriptor =
             std::move(bound_text_descriptor);
       } else if (column.value_descriptor.encoded_descriptor.find(
@@ -557,7 +557,7 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
         if (!column.value_descriptor.encoded_descriptor.empty())
           column.value_descriptor.encoded_descriptor.push_back(';');
         column.value_descriptor.encoded_descriptor +=
-            "column_uuid=" + column.column_uuid.canonical;
+            "column_uuid=" + column.column_uuid;
       }
     }
     // A rich datatype-bound column already has an exact column occurrence and
@@ -566,12 +566,12 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
     // Legacy/minimal columns have no such datatype binding, so they still need
     // a separate engine-issued descriptor identity; reusing a shared type UUID
     // (or the column UUID) would collapse catalog identities.
-    column.value_descriptor.descriptor_uuid.canonical =
+    column.value_descriptor.descriptor_uuid =
         EncodedDescriptorField(column.value_descriptor.encoded_descriptor,
                                "datatype_descriptor_uuid")
                 .empty()
             ? GeneratedIdentity("object")
-            : column.column_uuid.canonical;
+            : column.column_uuid;
     column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
     column.nullable =
         EncodedDescriptorBool(table.columns[i].second, "nullable", true);
@@ -589,7 +589,7 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
   }
   for (const auto& crud_index : indexes) {
     MgaRelationIndexStorageDescriptor index;
-    index.index_uuid.canonical = crud_index.index_uuid;
+    index.index_uuid = crud_index.index_uuid;
     index.family = crud_index.family.empty() ? CrudIndexFamilyForProfile(crud_index.profile) : crud_index.family;
     index.profile = crud_index.profile;
     index.unique = crud_index.unique;

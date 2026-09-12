@@ -129,7 +129,7 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
                                             const CrudRowVersionRecord& row,
                                             const EngineRequestContext& context) {
   if (!row.temporary_session_uuid.empty() &&
-      row.temporary_session_uuid != context.session_uuid.canonical) {
+      row.temporary_session_uuid != context.session_uuid) {
     return false;
   }
   const std::uint64_t observer_tx = context.local_transaction_id;
@@ -148,7 +148,7 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
 }
 
 std::string SessionUuidOrEmpty(const EngineRequestContext& context) {
-  return context.session_uuid.canonical;
+  return context.session_uuid;
 }
 
 EngineApiDiagnostic DiagnosticFromTransactionAuthority(const scratchbird::core::platform::DiagnosticRecord& diagnostic,

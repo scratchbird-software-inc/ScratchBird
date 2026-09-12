@@ -712,12 +712,52 @@ LocalSblrGatewayDecision Refuse(const LocalSblrGatewayRequest& request,
 
 }  // namespace
 
+std::optional<std::size_t> SelectServerSblrCommandIndex(
+    const scratchbird::engine::sblr::SblrOpcodeStream& stream) {
+  namespace sblr = scratchbird::engine::sblr;
+  if (stream.operations.size() == 3) return 1;
+  if (stream.operations.size() != 4) return std::nullopt;
+  const auto source_index = stream.operations[1].opcode_code == 6 ? 1U : 2U;
+  const auto command_index = 3U - source_index;
+  const auto& source = stream.operations[source_index];
+  const auto& command = stream.operations[command_index];
+  const auto* command_entry = sblr::LookupSblrOpcodeCode(command.opcode_code);
+  if (source.operation_id != "engine.op.source_map" ||
+      source.opcode != "SBLR_SOURCE_MAP" || source.opcode_code != 6 ||
+      source.operation_version_major != 1 || source.operation_version_minor != 0 ||
+      source.result_shape != "void" || source.diagnostic_shape != "diagnostic_vector" ||
+      source.operands.size() != 1 || command_entry == nullptr ||
+      command_entry->family == "core-envelope" ||
+      source.parser_package_uuid != command.parser_package_uuid ||
+      source.parser_package_version_major != command.parser_package_version_major ||
+      source.parser_package_version_minor != command.parser_package_version_minor ||
+      source.parser_package_version_patch != command.parser_package_version_patch)
+    return std::nullopt;
+  const auto& operand = source.operands.front();
+  const auto& body = operand.value_body;
+  if (operand.ordinal != 1 || operand.type != "source_map.vector" ||
+      operand.name != "source_map" || operand.value_flags != 0 ||
+      operand.value_kind != sblr::SblrValueKind::descriptor_ref || body.size() != 24 ||
+      (body[6] & 0xf0u) != 0x70u || (body[8] & 0xc0u) != 0x80u ||
+      std::none_of(body.begin() + 16, body.end(), [](std::uint8_t b) { return b != 0; }))
+    return std::nullopt;
+  return command_index;
+}
+
 LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
     const LocalSblrGatewayRequest& request) {
   const std::string_view encoded(
       reinterpret_cast<const char*>(request.canonical_sbos.data()),
       request.canonical_sbos.size());
-  const auto stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(encoded);
+  auto stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(encoded);
+  if (stream.ok && stream.stream.operations.size() == 4) {
+    const auto command_index = SelectServerSblrCommandIndex(stream.stream);
+    if (!command_index) return Refuse(request, "SBLR.OPERAND_INVALID");
+    // Routing view only. Immutable request/canonical_bytes still include the
+    // companion and bind every evidence hash. Never forward/re-encode this view.
+    stream.stream.operations.erase(
+        stream.stream.operations.begin() + (3U - *command_index));
+  }
   const bool exact_query = (request.root_opcode_code == 0x1207u &&
       request.root_opcode == "SBLR_QUERY_EXECUTE" &&
       request.root_operation_id == "query.execute") ||
@@ -1293,11 +1333,14 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
   const bool exact_cluster_inspect_provider = request.root_opcode_code == 2877 &&
       request.root_opcode == "SBLR_CLUSTER_INSPECT_PROVIDER" &&
       request.root_operation_id == "cluster.inspect_provider";
+  // Inspection is always cluster-required, including on a standalone node.
+  // Absence of cluster context is a provider dependency response, not a
+  // language/profile exclusion. Keep its exact no-operand contract here;
+  // common package identity and engine route/security gates still follow.
   if (exact_cluster_inspect_provider &&
       (!stream.ok || stream.stream.operations.size() != 3 ||
-       !request.cluster_context_active || request.cluster_transaction_active ||
        !stream.stream.operations[1].operands.empty())) {
-    return Refuse(request, "CLUSTER.GATEWAY.CLUSTER_CONTEXT_REQUIRED");
+    return Refuse(request, "SBLR.OPERAND_INVALID");
   }
   const bool exact_stmt_prepare = request.root_opcode_code == 4608 &&
       request.root_opcode == "SBLR_STMT_PREPARE" &&

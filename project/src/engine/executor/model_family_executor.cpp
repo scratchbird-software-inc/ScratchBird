@@ -3,6 +3,7 @@
 
 #include "model_family_executor.hpp"
 #include "temp_spill_executor.hpp"
+#include "runtime_identity.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -21,44 +22,22 @@
 namespace scratchbird::engine::executor {
 namespace {
 
-bool CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
+bool CanonicalUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-std::string RuntimeDerivedUuid(const std::string_view seed) {
-  std::uint64_t high = 1469598103934665603ULL;
-  std::uint64_t low = 1099511628211ULL;
-  for (const auto ch : seed) {
-    high = (high ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
-    low = (low + static_cast<unsigned char>(ch)) * 1469598103934665603ULL;
+std::optional<internal_api::EngineUuid> CanonicalSystemIdentityValue(
+    const internal_api::EngineTypedValue& value) {
+  if (!internal_api::QowCanonicalDescriptorIdentityV1(value.descriptor) ||
+      value.descriptor.canonical_type_name != "uuid" ||
+      value.state != internal_api::EngineValueState::value || value.is_null ||
+      !value.encoded_value.empty() || value.binary_value.size() != 16) {
+    return std::nullopt;
   }
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string raw(32, '0');
-  for (std::size_t index = 0; index < 16; ++index) {
-    raw[index] = kHex[(high >> ((15 - index) * 4)) & 0xf];
-    raw[16 + index] = kHex[(low >> ((15 - index) * 4)) & 0xf];
-  }
-  raw[12] = '7';
-  raw[16] = kHex[(static_cast<unsigned>(raw[16] <= '9'
-                                            ? raw[16] - '0'
-                                            : raw[16] - 'a' + 10) &
-                  0x3) |
-                 0x8];
-  return raw.substr(0, 8) + "-" + raw.substr(8, 4) + "-" +
-         raw.substr(12, 4) + "-" + raw.substr(16, 4) + "-" +
-         raw.substr(20, 12);
+  internal_api::EngineUuid identity;
+  std::copy(value.binary_value.begin(), value.binary_value.end(),
+            identity.bytes.begin());
+  return CanonicalUuid(identity) ? std::optional(identity) : std::nullopt;
 }
 
 bool CheckedAsofAdd(const std::uint64_t value, std::uint64_t* total) {
@@ -85,7 +64,7 @@ class TempOperationCleanupGuard {
  public:
   void Arm(
       scratchbird::core::memory::TempWorkspaceLifecycleManager* manager,
-      const std::string* operation_id) noexcept {
+      const internal_api::EngineUuid* operation_id) noexcept {
     manager_ = manager;
     operation_id_ = operation_id;
     armed_ = manager_ != nullptr && operation_id_ != nullptr;
@@ -104,7 +83,7 @@ class TempOperationCleanupGuard {
  private:
   scratchbird::core::memory::TempWorkspaceLifecycleManager* manager_ =
       nullptr;
-  const std::string* operation_id_ = nullptr;
+  const internal_api::EngineUuid* operation_id_ = nullptr;
   bool armed_ = false;
 };
 
@@ -162,9 +141,7 @@ bool AccountAsofDescriptor(
     const internal_api::EngineDescriptor& descriptor,
     const std::uint64_t limit,
     std::uint64_t* total) {
-  return AccountAsofString(descriptor.descriptor_uuid.canonical, limit,
-                           total) &&
-         AccountAsofString(descriptor.descriptor_kind, limit, total) &&
+  return AccountAsofString(descriptor.descriptor_kind, limit, total) &&
          AccountAsofString(descriptor.canonical_type_name, limit, total) &&
          AccountAsofString(descriptor.encoded_descriptor, limit, total);
 }
@@ -615,6 +592,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     }
     return complete;
   };
+  bool cleanup_failure_observed = false;
   const auto finish_cleanup = [&]() noexcept {
     const bool consumers = cleanup_consumers_once();
     const bool exchanges = cleanup_exchanges_once();
@@ -622,8 +600,9 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     result.total_cleanup_count =
         result.provider_cleanup_count + result.exchange_cleanup_count +
         result.relational_consumer_cleanup_count + result.spill_cleanup_count;
+    cleanup_failure_observed = cleanup_failure_observed || !consumers || !exchanges || !temp;
     result.cleanup_complete =
-        consumers && exchanges && temp &&
+        !cleanup_failure_observed &&
         result.provider_cleanup_count == result.started_leg_ordinals.size();
     receipt("COORD-021-V1", result.cleanup_complete);
     return result.cleanup_complete;
@@ -639,7 +618,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     result.root_published = false;
     result.no_partial_root = true;
     result.root_output_batch = {};
-    result.root_publication_receipt_uuid.clear();
+    result.root_publication_receipt_uuid = {};
     result.diagnostic_id = std::move(diagnostic);
     result.detail = std::move(detail);
     finish_cleanup();
@@ -682,7 +661,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
   }
   std::vector<const scratchbird::engine::optimizer::ModelFamilyScheduledLegV1*>
       schedule_by_ordinal(request.legs.size(), nullptr);
-  std::set<std::string> result_handle_uuids;
+  std::set<internal_api::EngineUuid> result_handle_uuids;
   for (const auto& scheduled : request.admitted_plan.stable_schedule) {
     if (scheduled.leg.lexical_source_ordinal >= schedule_by_ordinal.size() ||
         schedule_by_ordinal[scheduled.leg.lexical_source_ordinal] != nullptr) {
@@ -905,7 +884,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     spill_directory = reserved.record->path.parent_path();
   }
 
-  std::map<std::string, DescriptorBatch> node_outputs;
+  std::map<internal_api::EngineUuid, DescriptorBatch> node_outputs;
   std::vector<std::uint64_t> received_row_ordinals;
   std::uint64_t next_received_ordinal = 0;
   bool lateral_first_consumer_executed = false;
@@ -1041,7 +1020,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
         for (std::size_t column = 0;
              column < executed.output.batch.columns.size(); ++column) {
           if (executed.output.batch.columns[column]
-                  .descriptor.descriptor_uuid.canonical !=
+                  .descriptor.descriptor_uuid !=
               right_bound.output_descriptor_uuids[column]) {
             return refuse(kModelTypedExchangeInvalid,
                           "correlated right descriptor lineage changed");
@@ -1157,13 +1136,13 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
         for (std::size_t column = 0;
              column < consumed.output_batch.columns.size(); ++column) {
           if (consumed.output_batch.columns[column]
-                  .descriptor.descriptor_uuid.canonical !=
+                  .descriptor.descriptor_uuid !=
                   first_consumer->output_descriptor_uuids[column] ||
               (have_correlated_output &&
                correlated_output.columns[column]
-                       .descriptor.descriptor_uuid.canonical !=
+                       .descriptor.descriptor_uuid !=
                    consumed.output_batch.columns[column]
-                       .descriptor.descriptor_uuid.canonical)) {
+                       .descriptor.descriptor_uuid)) {
             return refuse(kModelTypedExchangeInvalid,
                           "correlated consumer descriptor lineage changed");
           }
@@ -1173,9 +1152,6 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
                                 &prospective_memory) ||
                 !CheckedAsofAdd(descriptor.stable_name.size(),
                                 &prospective_memory) ||
-                !CheckedAsofAdd(
-                    descriptor.descriptor.descriptor_uuid.canonical.size(),
-                    &prospective_memory) ||
                 !CheckedAsofAdd(descriptor.descriptor.descriptor_kind.size(),
                                 &prospective_memory) ||
                 !CheckedAsofAdd(
@@ -1219,9 +1195,6 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
           for (const auto& value : row.values) {
             if (!CheckedAsofAdd(sizeof(internal_api::EngineTypedValue),
                                 &prospective_memory) ||
-                !CheckedAsofAdd(
-                    value.descriptor.descriptor_uuid.canonical.size(),
-                    &prospective_memory) ||
                 !CheckedAsofAdd(value.descriptor.descriptor_kind.size(),
                                 &prospective_memory) ||
                 !CheckedAsofAdd(
@@ -1483,7 +1456,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       for (std::size_t column = 0;
            column < executed.output.batch.columns.size(); ++column) {
         if (executed.output.batch.columns[column]
-                .descriptor.descriptor_uuid.canonical !=
+                .descriptor.descriptor_uuid !=
             bounds.output_descriptor_uuids[column]) {
           return refuse(kModelTypedExchangeInvalid,
                         "family exchange descriptor UUID lineage was substituted");
@@ -1555,9 +1528,9 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
            ++column) {
         if (node->second.columns[column].stable_name !=
                 executed.output.batch.columns[column].stable_name ||
-            node->second.columns[column].descriptor.descriptor_uuid.canonical !=
+            node->second.columns[column].descriptor.descriptor_uuid !=
                 executed.output.batch.columns[column]
-                    .descriptor.descriptor_uuid.canonical) {
+                    .descriptor.descriptor_uuid) {
           return refuse(kModelTypedExchangeInvalid,
                         "correlated lateral invocation descriptor lineage changed");
         }
@@ -1611,7 +1584,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
   if (request.admitted_plan.spill_reservation_required) {
     TempSpillRequest spill;
     spill.route_kind = TempSpillRouteKind::kSort;
-    spill.route_label = "rcp080.multimodel." + request.spill_operation_uuid;
+    spill.route_label = "rcp080.multimodel";
     spill.spill_directory = spill_directory;
     spill.runtime_generation = request.spill_runtime_generation;
     spill.memory_quota_bytes = 1;
@@ -1727,12 +1700,10 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
          ++column) {
       const auto& descriptor = consumed.output_batch.columns[column];
       bounded_consumer =
-          descriptor.descriptor.descriptor_uuid.canonical ==
+          descriptor.descriptor.descriptor_uuid ==
               consumer.output_descriptor_uuids[column] &&
           CheckedAsofAdd(sizeof(ExecutorColumnDescriptor), &consumer_memory) &&
           CheckedAsofAdd(descriptor.stable_name.size(), &consumer_memory) &&
-          CheckedAsofAdd(descriptor.descriptor.descriptor_uuid.canonical.size(),
-              &consumer_memory) &&
           CheckedAsofAdd(descriptor.descriptor.descriptor_kind.size(), &consumer_memory) &&
           CheckedAsofAdd(descriptor.descriptor.canonical_type_name.size(),
               &consumer_memory) &&
@@ -1751,8 +1722,6 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
       consumer_cells += row.values.size();
       for (const auto& value : row.values) {
         if (!CheckedAsofAdd(sizeof(internal_api::EngineTypedValue), &consumer_memory) ||
-            !CheckedAsofAdd(value.descriptor.descriptor_uuid.canonical.size(),
-                 &consumer_memory) ||
             !CheckedAsofAdd(value.descriptor.descriptor_kind.size(), &consumer_memory) ||
             !CheckedAsofAdd(value.descriptor.canonical_type_name.size(),
                  &consumer_memory) ||
@@ -1798,81 +1767,76 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
                   "composition was cancelled before root publication");
   }
-  ModelFamilyCompositionPublicationStateV1 publication;
-  try {
-    publication = request.revalidate_publication_state();
-  } catch (...) {
-    return refuse("SB_MODEL_ROOT_PUBLICATION_REFUSED_V1",
-                  "final publication authority revalidation failed");
-  }
-  const auto exact_vector_sizes = [&](const auto& values) {
-    return values.size() == request.legs.size();
+  const auto publication_is_current = [&]() {
+    ModelFamilyCompositionPublicationStateV1 publication;
+    try {
+      publication = request.revalidate_publication_state();
+    } catch (...) {
+      return false;
+    }
+    const auto exact_vector_sizes = [&](const auto& values) {
+      return values.size() == request.legs.size();
+    };
+    bool publication_current =
+        publication.current_selected_plan_generation ==
+            request.admitted_plan.selected_plan_generation &&
+        publication.security_admitted &&
+        PhysicalMgaStatementContextEqual(
+            publication.current_mga_statement_context,
+            request.current_mga_statement_context) &&
+        exact_vector_sizes(publication.current_catalog_generations) &&
+        exact_vector_sizes(publication.current_descriptor_generations) &&
+        exact_vector_sizes(publication.current_security_generations) &&
+        exact_vector_sizes(publication.current_policy_generations) &&
+        exact_vector_sizes(publication.current_resource_generations) &&
+        exact_vector_sizes(publication.current_provider_generations) &&
+        exact_vector_sizes(publication.current_capability_generations) &&
+        exact_vector_sizes(publication.current_catalog_snapshot_uuids) &&
+        exact_vector_sizes(publication.current_descriptor_snapshot_uuids) &&
+        exact_vector_sizes(publication.current_security_context_uuids) &&
+        exact_vector_sizes(publication.current_policy_snapshot_uuids) &&
+        exact_vector_sizes(publication.current_resource_contract_uuids) &&
+        exact_vector_sizes(publication.current_provider_uuids) &&
+        exact_vector_sizes(publication.current_capability_uuids);
+    for (std::size_t ordinal = 0;
+         publication_current && ordinal < request.legs.size(); ++ordinal) {
+      const auto& leg = schedule_by_ordinal[ordinal]->leg;
+      publication_current =
+          publication.current_catalog_generations[ordinal] ==
+              leg.current_catalog_generation &&
+          publication.current_descriptor_generations[ordinal] ==
+              leg.current_descriptor_generation &&
+          publication.current_security_generations[ordinal] ==
+              leg.current_security_generation &&
+          publication.current_policy_generations[ordinal] ==
+              leg.current_policy_generation &&
+          publication.current_resource_generations[ordinal] ==
+              leg.current_resource_generation &&
+          publication.current_provider_generations[ordinal] ==
+              leg.current_provider_generation &&
+          publication.current_capability_generations[ordinal] ==
+              leg.current_capability_generation &&
+          publication.current_catalog_snapshot_uuids[ordinal] ==
+              leg.current_catalog_snapshot_uuid &&
+          publication.current_descriptor_snapshot_uuids[ordinal] ==
+              leg.current_descriptor_snapshot_uuid &&
+          publication.current_security_context_uuids[ordinal] ==
+              leg.current_security_context_uuid &&
+          publication.current_policy_snapshot_uuids[ordinal] ==
+              leg.current_policy_snapshot_uuid &&
+          publication.current_resource_contract_uuids[ordinal] ==
+              leg.current_resource_contract_uuid &&
+          publication.current_provider_uuids[ordinal] == leg.provider_uuid &&
+          publication.current_capability_uuids[ordinal] == leg.capability_uuid &&
+          PhysicalMgaStatementContextEqual(leg.mga_statement_context,
+                                           request.current_mga_statement_context);
+    }
+    return publication_current;
   };
-  bool publication_current =
-      publication.current_selected_plan_generation ==
-          request.admitted_plan.selected_plan_generation &&
-      publication.security_admitted &&
-      PhysicalMgaStatementContextEqual(
-          publication.current_mga_statement_context,
-          request.current_mga_statement_context) &&
-      exact_vector_sizes(publication.current_catalog_generations) &&
-      exact_vector_sizes(publication.current_descriptor_generations) &&
-      exact_vector_sizes(publication.current_security_generations) &&
-      exact_vector_sizes(publication.current_policy_generations) &&
-      exact_vector_sizes(publication.current_resource_generations) &&
-      exact_vector_sizes(publication.current_provider_generations) &&
-      exact_vector_sizes(publication.current_capability_generations) &&
-      exact_vector_sizes(publication.current_catalog_snapshot_uuids) &&
-      exact_vector_sizes(publication.current_descriptor_snapshot_uuids) &&
-      exact_vector_sizes(publication.current_security_context_uuids) &&
-      exact_vector_sizes(publication.current_policy_snapshot_uuids) &&
-      exact_vector_sizes(publication.current_resource_contract_uuids) &&
-      exact_vector_sizes(publication.current_provider_uuids) &&
-      exact_vector_sizes(publication.current_capability_uuids);
-  for (std::size_t ordinal = 0;
-       publication_current && ordinal < request.legs.size(); ++ordinal) {
-    const auto& leg = schedule_by_ordinal[ordinal]->leg;
-    publication_current =
-        publication.current_catalog_generations[ordinal] ==
-            leg.current_catalog_generation &&
-        publication.current_descriptor_generations[ordinal] ==
-            leg.current_descriptor_generation &&
-        publication.current_security_generations[ordinal] ==
-            leg.current_security_generation &&
-        publication.current_policy_generations[ordinal] ==
-            leg.current_policy_generation &&
-        publication.current_resource_generations[ordinal] ==
-            leg.current_resource_generation &&
-        publication.current_provider_generations[ordinal] ==
-            leg.current_provider_generation &&
-        publication.current_capability_generations[ordinal] ==
-            leg.current_capability_generation &&
-        publication.current_catalog_snapshot_uuids[ordinal] ==
-            leg.current_catalog_snapshot_uuid &&
-        publication.current_descriptor_snapshot_uuids[ordinal] ==
-            leg.current_descriptor_snapshot_uuid &&
-        publication.current_security_context_uuids[ordinal] ==
-            leg.current_security_context_uuid &&
-        publication.current_policy_snapshot_uuids[ordinal] ==
-            leg.current_policy_snapshot_uuid &&
-        publication.current_resource_contract_uuids[ordinal] ==
-            leg.current_resource_contract_uuid &&
-        publication.current_provider_uuids[ordinal] == leg.provider_uuid &&
-        publication.current_capability_uuids[ordinal] == leg.capability_uuid &&
-        PhysicalMgaStatementContextEqual(leg.mga_statement_context,
-                                         request.current_mga_statement_context);
-  }
-  if (!publication_current) {
+  if (!publication_is_current()) {
     return refuse("SB_MODEL_ROOT_PUBLICATION_REFUSED_V1",
                   "final generation, UUID snapshot, MGA, security, descriptor, provider, or capability identity drifted");
   }
-  result.rows_published = result.root_output_batch.rows.size();
-  result.root_publication_receipt_uuid = RuntimeDerivedUuid(
-      request.admitted_plan.dependency_dag_receipt_uuid + "|root|" +
-      std::to_string(result.rows_published));
-  result.root_published = true;
-  result.accepted = true;
-  result.no_partial_root = true;
   receipt("COORD-019-V1", true);
   receipt("COORD-020-V1", true);
   receipt("COORD-022-V1", true);
@@ -1880,7 +1844,7 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     result.accepted = false;
     result.root_published = false;
     result.root_output_batch = {};
-    result.root_publication_receipt_uuid.clear();
+    result.root_publication_receipt_uuid = {};
     result.diagnostic_id = "SB_MODEL_CLEANUP_INCOMPLETE_V1";
     result.detail = "composition cleanup cardinality is incomplete";
     return result;
@@ -1906,13 +1870,31 @@ ModelFamilyCompositionExecutionResultV1 ExecuteModelFamilyCompositionV1(
     result.accepted = false;
     result.root_published = false;
     result.root_output_batch = {};
-    result.root_publication_receipt_uuid.clear();
+    result.root_publication_receipt_uuid = {};
     result.cleanup_complete = false;
     receipt("COORD-021-V1", false);
     result.diagnostic_id = "SB_MODEL_CLEANUP_INCOMPLETE_V1";
     result.detail = "composition cleanup count differs from admitted plan";
     return result;
   }
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "composition was cancelled during final cleanup");
+  }
+  const auto publication_identity = IssueRuntimeIdentityV7();
+  if (!publication_identity || !publication_is_current()) {
+    return refuse("SB_MODEL_ROOT_PUBLICATION_REFUSED_V1",
+                  "final publication identity issuance or owner revalidation failed");
+  }
+  if (cancelled()) {
+    return refuse("SB_MODEL_EXECUTION_CANCELLED_V1",
+                  "composition was cancelled during final publication revalidation");
+  }
+  result.rows_published = result.root_output_batch.rows.size();
+  result.root_publication_receipt_uuid = *publication_identity;
+  result.root_published = true;
+  result.accepted = true;
+  result.no_partial_root = true;
   result.diagnostic_id = "SB_EXECUTOR_OK";
   return result;
 }
@@ -2098,8 +2080,6 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     for (const auto& key : keys) {
       key_preflight_ok =
           key_preflight_ok &&
-          AccountAsofString(key.metric_uuid, request.maximum_memory_bytes,
-                            &key_preflight_memory) &&
           AccountAsofString(key.canonical_tags,
                             request.maximum_memory_bytes,
                             &key_preflight_memory);
@@ -2107,12 +2087,11 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
   };
   account_keys(request.left_keys);
   account_keys(request.right_keys);
-  for (const auto& tie : request.right_tie_break_row_uuids) {
-    key_preflight_ok =
-        key_preflight_ok &&
-        AccountAsofString(tie, request.maximum_memory_bytes,
-                          &key_preflight_memory);
-  }
+  key_preflight_ok = key_preflight_ok &&
+      CheckedAsofMultiply(request.right_tie_break_row_uuids.size(),
+                          sizeof(internal_api::EngineUuid), &key_vector_bytes) &&
+      AccountAsofBytes(key_vector_bytes, request.maximum_memory_bytes,
+                       &key_preflight_memory);
   const auto account_bound_key_cells =
       [&](const DescriptorBatch& batch,
           const CanonicalTimeSeriesAsofInputBindingV1& binding) {
@@ -2237,11 +2216,16 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
       };
       bool tag_cancellation = false;
       std::int64_t timestamp_ns = 0;
-      if (!exact_value(binding.metric_column_ordinal) ||
+      if (binding.metric_column_ordinal >= row.values.size() ||
+          (binding.raw_time_series && binding.row_uuid_column_ordinal >= row.values.size())) {
+        return false;
+      }
+      const auto metric_identity = CanonicalSystemIdentityValue(
+          row.values[binding.metric_column_ordinal]);
+      if (!metric_identity.has_value() ||
+          *metric_identity != keys[ordinal].metric_uuid ||
           !exact_value(binding.tags_column_ordinal) ||
           !exact_value(binding.timestamp_column_ordinal) ||
-          row.values[binding.metric_column_ordinal].encoded_value !=
-              keys[ordinal].metric_uuid ||
           row.values[binding.tags_column_ordinal].encoded_value !=
               keys[ordinal].canonical_tags ||
           !CanonicalUuid(keys[ordinal].metric_uuid) ||
@@ -2255,14 +2239,13 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
           timestamp_ns != keys[ordinal].timestamp_ns) {
         return false;
       }
-      if (binding.raw_time_series &&
-          (!exact_value(binding.row_uuid_column_ordinal) ||
-           !CanonicalUuid(
-               row.values[binding.row_uuid_column_ordinal].encoded_value) ||
-           (right_input &&
-            row.values[binding.row_uuid_column_ordinal].encoded_value !=
-                request.right_tie_break_row_uuids[ordinal]))) {
-        return false;
+      if (binding.raw_time_series) {
+        const auto row_identity = CanonicalSystemIdentityValue(
+            row.values[binding.row_uuid_column_ordinal]);
+        if (!row_identity.has_value() ||
+            (right_input && *row_identity != request.right_tie_break_row_uuids[ordinal])) {
+          return false;
+        }
       }
     }
     return true;
@@ -2413,17 +2396,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
   const auto& result_mga = request.mga_authority.statement_context;
   if (memory_ok) {
     memory_ok =
-      AccountAsofString(request.physical_dag.selected_plan_uuid,
-                        request.maximum_memory_bytes, &retained_memory) &&
-      AccountAsofString(result_mga.statement_uuid,
-                        request.maximum_memory_bytes, &retained_memory) &&
       AccountAsofString(result_mga.statement_timestamp,
-                        request.maximum_memory_bytes, &retained_memory) &&
-      AccountAsofString(result_mga.owning_transaction_uuid,
-                        request.maximum_memory_bytes, &retained_memory) &&
-      AccountAsofString(result_mga.statement_snapshot_uuid,
-                        request.maximum_memory_bytes, &retained_memory) &&
-      AccountAsofString(result_mga.statement_metadata_snapshot_uuid,
                         request.maximum_memory_bytes, &retained_memory) &&
       AccountAsofString(result_mga.snapshot_kind,
                         request.maximum_memory_bytes, &retained_memory);
@@ -2607,7 +2580,7 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
     if (duplicate_descriptor_id ||
         bound.descriptor_id != root->output_descriptor_ids[column] ||
         bound.descriptor_id == 0 || bound.stable_name.empty() ||
-        !CanonicalUuid(bound.descriptor.descriptor_uuid.canonical) ||
+        !internal_api::QowCanonicalDescriptorIdentityV1(bound.descriptor) ||
         bound.descriptor.descriptor_kind != "scalar" ||
         bound.descriptor.canonical_type_name.empty() ||
         bound.descriptor.encoded_descriptor.empty()) {
@@ -2628,8 +2601,8 @@ CanonicalTimeSeriesAsofJoinResultV1 ExecuteCanonicalTimeSeriesAsofJoinV1(
       const auto& value = row.values[column];
       const auto& bound = result.output_batch.columns[column];
       const bool exact_descriptor =
-          value.descriptor.descriptor_uuid.canonical ==
-              bound.descriptor.descriptor_uuid.canonical &&
+          value.descriptor.descriptor_uuid ==
+              bound.descriptor.descriptor_uuid &&
           value.descriptor.descriptor_kind ==
               bound.descriptor.descriptor_kind &&
           value.descriptor.canonical_type_name ==

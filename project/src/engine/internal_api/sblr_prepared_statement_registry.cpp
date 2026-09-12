@@ -308,14 +308,14 @@ bool ReadBool(CanonicalReader* reader, bool* value) {
 }
 
 void WriteDescriptor(CanonicalWriter* writer, const EngineDescriptor& value) {
-  writer->Text(value.descriptor_uuid.canonical);
+  writer->Text(value.descriptor_uuid);
   writer->Text(value.descriptor_kind);
   writer->Text(value.canonical_type_name);
   writer->Text(value.encoded_descriptor);
 }
 
 bool ReadDescriptor(CanonicalReader* reader, EngineDescriptor* value) {
-  return value != nullptr && reader->Text(&value->descriptor_uuid.canonical) &&
+  return value != nullptr && reader->Text(&value->descriptor_uuid) &&
          reader->Text(&value->descriptor_kind) &&
          reader->Text(&value->canonical_type_name) &&
          reader->Text(&value->encoded_descriptor);
@@ -379,7 +379,7 @@ void WriteResultShape(CanonicalWriter* writer,
   for (const auto& column : value.columns) WriteDescriptor(writer, column);
   writer->Count(value.rows.size());
   for (const auto& row : value.rows) {
-    writer->Text(row.requested_row_uuid.canonical);
+    writer->Text(row.requested_row_uuid);
     writer->Count(row.fields.size());
     for (const auto& field : row.fields) {
       writer->Text(field.first);
@@ -408,7 +408,7 @@ bool ReadResultShape(CanonicalReader* reader, EngineResultShape* value) {
   for (std::size_t row_index = 0; row_index != row_count; ++row_index) {
     EngineRowValue row;
     std::size_t field_count = 0;
-    if (!reader->Text(&row.requested_row_uuid.canonical) ||
+    if (!reader->Text(&row.requested_row_uuid) ||
         !reader->Count(&field_count)) {
       return false;
     }
@@ -448,10 +448,10 @@ std::vector<std::uint8_t> EncodeApiResult(const EngineApiResult& value) {
     writer.Text(evidence.evidence_id);
   }
   WriteResultShape(&writer, value.result_shape);
-  writer.Text(value.primary_object.uuid.canonical);
+  writer.Text(value.primary_object.uuid);
   writer.Text(value.primary_object.object_kind);
-  writer.Text(value.catalog_row_uuid.canonical);
-  writer.Text(value.transaction_uuid.canonical);
+  writer.Text(value.catalog_row_uuid);
+  writer.Text(value.transaction_uuid);
   writer.U64(value.local_transaction_id);
   const auto& counters = value.dml_summary;
   writer.U64(counters.rows_changed);
@@ -517,10 +517,10 @@ bool DecodeApiResult(const std::vector<std::uint8_t>& bytes,
   }
   auto& counters = value.dml_summary;
   if (!ReadResultShape(&reader, &value.result_shape) ||
-      !reader.Text(&value.primary_object.uuid.canonical) ||
+      !reader.Text(&value.primary_object.uuid) ||
       !reader.Text(&value.primary_object.object_kind) ||
-      !reader.Text(&value.catalog_row_uuid.canonical) ||
-      !reader.Text(&value.transaction_uuid.canonical) ||
+      !reader.Text(&value.catalog_row_uuid) ||
+      !reader.Text(&value.transaction_uuid) ||
       !reader.U64(&value.local_transaction_id) ||
       !reader.U64(&counters.rows_changed) ||
       !reader.U64(&counters.visible_rows_scanned) ||
@@ -767,15 +767,15 @@ bool HasAuthority(const EngineRequestContext& context) {
   SblrPreparedStatementRegistryUuidV1 principal{};
   return authorized && context.security_context_present &&
          !context.database_path.empty() &&
-         CanonicalUuidBytes(context.database_uuid.canonical, &database) &&
-         CanonicalUuidBytes(context.session_uuid.canonical, &session) &&
-         CanonicalUuidBytes(context.principal_uuid.canonical, &principal);
+         CanonicalUuidBytes(context.database_uuid, &database) &&
+         CanonicalUuidBytes(context.session_uuid, &session) &&
+         CanonicalUuidBytes(context.principal_uuid, &principal);
 }
 
 std::string RegistryPath(const EngineRequestContext& context) {
   return context.database_path +
          ".sb.sblr_prepared_statement_registry.v1." +
-         context.session_uuid.canonical;
+         context.session_uuid;
 }
 
 bool ParameterStateValid(
@@ -1324,9 +1324,9 @@ SblrPreparedStatementRegistryResultV1 LoadExact(
   SblrPreparedStatementRegistryUuidV1 database{};
   SblrPreparedStatementRegistryUuidV1 session{};
   SblrPreparedStatementRegistryUuidV1 principal{};
-  if (!CanonicalUuidBytes(context.database_uuid.canonical, &database) ||
-      !CanonicalUuidBytes(context.session_uuid.canonical, &session) ||
-      !CanonicalUuidBytes(context.principal_uuid.canonical, &principal) ||
+  if (!CanonicalUuidBytes(context.database_uuid, &database) ||
+      !CanonicalUuidBytes(context.session_uuid, &session) ||
+      !CanonicalUuidBytes(context.principal_uuid, &principal) ||
       snapshot.database_uuid != database || snapshot.session_uuid != session ||
       snapshot.principal_uuid != principal) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -1559,11 +1559,11 @@ SblrPreparedStatementRegistryResultV1 PublishSblrPreparedStatementV1(
   if (!loaded.ok) return loaded;
   auto snapshot = std::move(loaded.snapshot);
   if (!loaded.found) {
-    if (!CanonicalUuidBytes(context.database_uuid.canonical,
+    if (!CanonicalUuidBytes(context.database_uuid,
                             &snapshot.database_uuid) ||
-        !CanonicalUuidBytes(context.session_uuid.canonical,
+        !CanonicalUuidBytes(context.session_uuid,
                             &snapshot.session_uuid) ||
-        !CanonicalUuidBytes(context.principal_uuid.canonical,
+        !CanonicalUuidBytes(context.principal_uuid,
                             &snapshot.principal_uuid)) {
       return Refused("SBLR.OPERAND.INVALID",
                      "sblr.prepared_statement_registry.context_invalid");

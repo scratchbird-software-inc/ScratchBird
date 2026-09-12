@@ -13,6 +13,7 @@
 #include "ipc/sbps_client.hpp"
 #include "metrics/parser_metrics.hpp"
 #include "engine/sblr/sblr_variable_runtime.hpp"
+#include "wire/cursor_response_state.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -145,6 +146,9 @@ class SbsqlTestWireSession {
  public:
   SbsqlTestWireSession(ParserConfig config, ParserMetrics* metrics, SblrTemplateCache* cache);
   ~SbsqlTestWireSession();
+  // Explicit owners must await server cleanup before handing work to a new
+  // session. Destruction only closes the transport; it is not a cleanup ack.
+  bool DisconnectExecutionRoute(MessageVectorSet* messages);
   WireResponse HandleLine(std::string_view line);
   int ServeFd(std::intptr_t fd);
   PipelineResult RunPipeline(std::string_view sql,
@@ -623,11 +627,11 @@ class SbsqlTestWireSession {
   std::vector<std::uint8_t> admitted_savepoint_descriptor_;
   std::vector<std::uint8_t> retired_savepoint_descriptor_;
   std::vector<std::uint8_t> admitted_savepoint_handle_;
+  CursorResponseState cursor_response_state_;
   // Name-resolution cache only. Values are engine-issued binary handles;
   // engine validation remains authoritative for lifetime and rollback.
   std::map<std::string, std::vector<std::uint8_t>> named_savepoint_handles_;
   bool testing_savepoint_handle_override_{false};
-  std::vector<std::uint8_t> admitted_cursor_handle_;
   std::vector<std::uint8_t> parent_savepoint_handle_;
   std::vector<std::uint8_t> descendant_savepoint_handle_;
   std::map<std::string,
@@ -717,7 +721,6 @@ class SbsqlTestWireSession {
       std::string_view statement_name,
       bool statement_name_quoted,
       const std::vector<PreparedParameterWireValue>& values);
-  bool DisconnectExecutionRoute(MessageVectorSet* messages);
   PipelineResult RunServerManagementCommand(const ServerManagementCommand& command);
   int ServeSbwp(std::intptr_t fd);
 };

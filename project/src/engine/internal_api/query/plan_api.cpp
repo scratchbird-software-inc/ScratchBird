@@ -7849,7 +7849,7 @@ struct PlanCacheBinding {
 };
 
 std::string DescriptorDigest(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid.canonical + ":" + descriptor.descriptor_kind + ":" +
+  return descriptor.descriptor_uuid + ":" + descriptor.descriptor_kind + ":" +
          descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
 }
 
@@ -7860,7 +7860,7 @@ void AddDescriptorBinding(PlanCacheBinding* binding,
   if (binding == nullptr || object_uuid.empty()) return;
   EngineGetDescriptorRequest descriptor_request;
   descriptor_request.context = request.context;
-  descriptor_request.target_object.uuid.canonical = object_uuid;
+  descriptor_request.target_object.uuid = object_uuid;
   descriptor_request.target_object.object_kind = object_kind.empty() ? "table" : object_kind;
   descriptor_request.option_envelopes.push_back("descriptor_cache:enabled");
   const auto descriptor = EngineGetDescriptor(descriptor_request);
@@ -7878,10 +7878,10 @@ PlanCacheBinding BindPlanCacheRelations(const EnginePlanOperationRequest& reques
                                         const std::vector<EngineQueryRelation>& relations) {
   PlanCacheBinding binding;
   for (const auto& relation : relations) {
-    if (!relation.source_object.uuid.canonical.empty()) {
+    if (!relation.source_object.uuid.is_nil()) {
       AddDescriptorBinding(&binding,
                            request,
-                           relation.source_object.uuid.canonical,
+                           relation.source_object.uuid,
                            relation.source_object.object_kind);
       continue;
     }
@@ -7894,11 +7894,11 @@ PlanCacheBinding BindPlanCacheRelations(const EnginePlanOperationRequest& reques
                                               : relation.source_object.object_kind;
       resolve.localized_names.push_back(NameForPlanCacheResolution(request, relation.relation_name));
       const auto resolved = EngineResolveName(resolve);
-      if (resolved.ok && !resolved.bound_object_identity.object_uuid.canonical.empty()) {
-        binding.evidence.push_back("resolver:" + resolved.bound_object_identity.object_uuid.canonical);
+      if (resolved.ok && !resolved.bound_object_identity.object_uuid.is_nil()) {
+        binding.evidence.push_back("resolver:" + resolved.bound_object_identity.object_uuid);
         AddDescriptorBinding(&binding,
                              request,
-                             resolved.bound_object_identity.object_uuid.canonical,
+                             resolved.bound_object_identity.object_uuid,
                              resolved.bound_object_identity.resolved_object_type);
         continue;
       }
@@ -7960,7 +7960,7 @@ std::string PlanCacheParameterShapeDigest(const EnginePlanOperationRequest& requ
   std::uint64_t ordinal = 0;
   for (const auto& value : request.predicate.bound_values) {
     out << ordinal++ << ':'
-        << value.descriptor.descriptor_uuid.canonical << ':'
+        << value.descriptor.descriptor_uuid << ':'
         << value.descriptor.canonical_type_name << ':'
         << value.descriptor.descriptor_kind << ':'
         << (value.is_null ? "null" : "not_null") << ':'
@@ -8047,24 +8047,24 @@ opt::OptimizerPlanCacheKeyInput BuildLiveOptimizerPlanCacheKeyInput(
                                     request.context.resource_epoch);
   input.object_uuids = binding.object_uuids;
   for (const auto& object : request.related_objects) {
-    if (object.uuid.canonical.empty()) continue;
+    if (object.uuid.is_nil()) continue;
     const std::string kind = LowerAscii(object.object_kind);
     if (kind.find("function") != std::string::npos || kind.find("udr") != std::string::npos) {
-      input.function_uuids.push_back(object.uuid.canonical);
+      input.function_uuids.push_back(object.uuid);
     } else if (kind.find("index") != std::string::npos) {
-      input.index_uuids.push_back(object.uuid.canonical);
+      input.index_uuids.push_back(object.uuid);
     } else if (kind.find("filespace") != std::string::npos) {
-      input.filespace_uuids.push_back(object.uuid.canonical);
+      input.filespace_uuids.push_back(object.uuid);
     } else {
-      input.object_uuids.push_back(object.uuid.canonical);
+      input.object_uuids.push_back(object.uuid);
     }
   }
-  if (!request.target_object.uuid.canonical.empty()) {
-    input.object_uuids.push_back(request.target_object.uuid.canonical);
+  if (!request.target_object.uuid.is_nil()) {
+    input.object_uuids.push_back(request.target_object.uuid);
   }
   for (const auto& index : request.indexes) {
-    if (!index.requested_index_uuid.canonical.empty()) {
-      input.index_uuids.push_back(index.requested_index_uuid.canonical);
+    if (!index.requested_index_uuid.is_nil()) {
+      input.index_uuids.push_back(index.requested_index_uuid);
     }
   }
   const std::string function_dependency = OptionValue(request, "function_dependency_uuid:");
@@ -8149,8 +8149,8 @@ opt::OptimizerStatisticsCatalog BuildLegacyPreAccessOptimizerStatistics(
   // a pre-access estimate. Record unavailable object-scoped statistics and let
   // the legacy cost layer use its explicitly non-benchmark policy defaults.
   for (const auto& relation : relations) {
-    const std::string object_uuid = !relation.source_object.uuid.canonical.empty()
-        ? relation.source_object.uuid.canonical
+    const std::string object_uuid = !relation.source_object.uuid.is_nil()
+        ? relation.source_object.uuid
         : (relation.descriptor_digest.empty() ? relation.relation_name : relation.descriptor_digest);
     for (const auto statistic_name : {"row_count", "page_count"}) {
       catalog.Add(opt::MakeStatistic(statistic_name,
@@ -8189,8 +8189,8 @@ bool StatisticUsable(const opt::OptimizerStatisticsCatalog& statistics,
 }
 
 std::string RelationObjectUuid(const EngineQueryRelation& relation) {
-  if (!relation.source_object.uuid.canonical.empty()) {
-    return relation.source_object.uuid.canonical;
+  if (!relation.source_object.uuid.is_nil()) {
+    return relation.source_object.uuid;
   }
   if (!relation.descriptor_digest.empty()) return relation.descriptor_digest;
   if (!relation.relation_name.empty()) return relation.relation_name;
@@ -10013,7 +10013,7 @@ EngineResultShape CountScalarResultShape(std::uint64_t count, std::string column
 bool CountFastPathCanUseTargetRows(const EnginePlanOperationRequest& request,
                                    const std::string& operation) {
   if (!(operation == "count" || operation == "count_all")) return false;
-  if (request.target_object.uuid.canonical.empty()) return false;
+  if (request.target_object.uuid.is_nil()) return false;
   if (!request.relations.empty() || !request.rows.empty() ||
       !request.related_objects.empty()) {
     return false;
@@ -10050,7 +10050,7 @@ EnginePlanOperationResult ExecuteFastCrudCount(
   }
   const auto loaded = LoadMgaRelationStoreRowsOnlyForMutationTarget(
       request.context,
-      request.target_object.uuid.canonical);
+      request.target_object.uuid);
   if (!loaded.ok) {
     return QueryFailure<EnginePlanOperationResult>(
         request.context,
@@ -10059,7 +10059,7 @@ EnginePlanOperationResult ExecuteFastCrudCount(
   }
   const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto table = FindVisibleCrudTable(state,
-                                          request.target_object.uuid.canonical,
+                                          request.target_object.uuid,
                                           request.context.local_transaction_id);
   if (!table) {
     return QueryFailure<EnginePlanOperationResult>(
@@ -10087,7 +10087,7 @@ EnginePlanOperationResult ExecuteFastCrudCount(
   std::uint64_t count = 0;
   for (const auto& row : VisibleCrudRowsForContext(
            state,
-           request.target_object.uuid.canonical,
+           request.target_object.uuid,
            request.context)) {
     if (!CrudRowMatchesPredicate(row, request.predicate)) continue;
     if (count_all || CrudRowFieldIsNotNull(row, value_field)) {
@@ -11547,7 +11547,7 @@ EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
   EngineQueryRelation relation;
   relation.relation_name = "crud:" + table_uuid;
   relation.descriptor_digest = relation.relation_name;
-  relation.source_object.uuid.canonical = table_uuid;
+  relation.source_object.uuid = table_uuid;
   relation.source_object.object_kind = "table";
   auto rows = VisibleCrudRowsForContext(state, table_uuid, context);
   if (!predicate.predicate_kind.empty()) {
@@ -11574,7 +11574,7 @@ EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
         values_by_name.emplace(field, &value);
       }
       EngineRowValue out_row;
-      out_row.requested_row_uuid.canonical = row.row_uuid;
+      out_row.requested_row_uuid = row.row_uuid;
       out_row.fields.reserve(row.values.size());
       for (const auto& [field, encoded] : table->columns) {
         (void)encoded;
@@ -11604,7 +11604,7 @@ EngineQueryRelation CrudRelation(const RelationReadSnapshot& state,
     relation.rows.reserve(rows.size());
     for (const auto& row : rows) {
       EngineRowValue out_row;
-      out_row.requested_row_uuid.canonical = row.row_uuid;
+      out_row.requested_row_uuid = row.row_uuid;
       out_row.fields.reserve(row.values.size());
       for (const auto& [field, value] : row.values) {
         out_row.fields.push_back({field, CrudRelationTypedValue(value, nullptr)});
@@ -11894,13 +11894,13 @@ SysInformationProjectionContext ProjectionContextFromRequest(
   context.default_language = request.context.language_context.default_language_tag.empty()
                                  ? "en"
                                  : request.context.language_context.default_language_tag;
-  context.session_uuid = request.context.session_uuid.canonical;
-  context.principal_uuid = request.context.principal_uuid.canonical;
+  context.session_uuid = request.context.session_uuid;
+  context.principal_uuid = request.context.principal_uuid;
   context.principal_name = OptionValue(request, "principal_name:");
   context.requested_role_name = OptionValue(request, "requested_role_name:");
   context.active_role_name = OptionValue(request, "active_role_name:");
   if (context.active_role_name.empty()) context.active_role_name = context.requested_role_name;
-  context.active_role_uuid = request.context.current_role_uuid.canonical;
+  context.active_role_uuid = request.context.current_role_uuid;
   if (context.active_role_uuid.empty()) {
     context.active_role_uuid = OptionValue(request, "current_role_uuid:");
   }
@@ -12160,6 +12160,7 @@ std::string QueryProjectionPayloadField(const std::string& payload,
 }
 
 struct QuerySysProjectionSources {
+  EngineApiDiagnostic diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   std::vector<SysInformationCatalogObjectSource> objects;
   std::vector<SysInformationResolverNameSource> resolver_names;
   std::vector<SysInformationColumnSource> columns;
@@ -12178,7 +12179,8 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
   std::set<std::string> object_uuids_in_projection;
   std::set<std::string> column_keys_in_projection;
 
-  const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx);
+  const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx, sources.diagnostic);
+  if (sources.diagnostic.error) return sources;
   for (const auto& schema : schemas) {
     if (schema.schema_uuid.empty()) { continue; }
     const std::string schema_path =
@@ -12615,6 +12617,10 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
   const std::string projection = OptionValue(request, "catalog_projection:");
   if (projection.empty()) return std::nullopt;
   const auto sources = BuildQuerySysProjectionSources(request);
+  if (sources.diagnostic.error) {
+    if (error_detail) *error_detail = sources.diagnostic.code + ":" + sources.diagnostic.detail;
+    return std::nullopt;
+  }
   const auto projection_result = BuildSysInformationProjection(
       projection,
       ProjectionContextFromRequest(request),
@@ -12696,7 +12702,7 @@ std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanO
   }
 
   const bool has_crud_sources =
-      (!has_projection_source && !request.target_object.uuid.canonical.empty()) ||
+      (!has_projection_source && !request.target_object.uuid.is_nil()) ||
       !request.related_objects.empty();
   if (has_crud_sources) {
     if (request.context.local_transaction_id == 0) {
@@ -12708,15 +12714,15 @@ std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanO
       *error_detail = loaded.diagnostic.detail.empty() ? loaded.diagnostic.code : loaded.diagnostic.detail;
       return std::nullopt;
     }
-    if (!has_projection_source && !request.target_object.uuid.canonical.empty()) {
+    if (!has_projection_source && !request.target_object.uuid.is_nil()) {
       relations.push_back(CrudRelation(loaded.state,
-                                       request.target_object.uuid.canonical,
+                                       request.target_object.uuid,
                                        request.context,
                                        request.predicate));
     }
     for (const auto& object : request.related_objects) {
-      if (!object.uuid.canonical.empty()) {
-        relations.push_back(CrudRelation(loaded.state, object.uuid.canonical, request.context, {}));
+      if (!object.uuid.is_nil()) {
+        relations.push_back(CrudRelation(loaded.state, object.uuid, request.context, {}));
       }
     }
   }
@@ -12739,10 +12745,7 @@ bool RelationsHaveResolvedTypedValues(
   };
   const auto same_descriptor = [](const EngineDescriptor& left,
                                   const EngineDescriptor& right) {
-    return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
-           left.descriptor_kind == right.descriptor_kind &&
-           left.canonical_type_name == right.canonical_type_name &&
-           left.encoded_descriptor == right.encoded_descriptor;
+    return left == right;
   };
 
   for (const auto& relation : relations) {
@@ -13097,17 +13100,17 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
                               operation == "equi_join" || operation == "left_join" ||
                               operation == "left_outer_join" || operation == "semi_join" ||
                               operation == "join_group_all_equality";
-  if (!join_operation && !request.target_object.uuid.canonical.empty()) {
-    node.required_object_uuids.push_back(request.target_object.uuid.canonical);
+  if (!join_operation && !request.target_object.uuid.is_nil()) {
+    node.required_object_uuids.push_back(request.target_object.uuid);
   }
   for (const auto& object : request.related_objects) {
     if (join_operation) break;
-    if (!object.uuid.canonical.empty()) { node.required_object_uuids.push_back(object.uuid.canonical); }
+    if (!object.uuid.is_nil()) { node.required_object_uuids.push_back(object.uuid); }
   }
   for (const auto& relation : relations) {
     if (!relation.descriptor_digest.empty()) { node.required_descriptors.push_back(relation.descriptor_digest); }
-    if (!relation.source_object.uuid.canonical.empty()) {
-      node.required_object_uuids.push_back(relation.source_object.uuid.canonical);
+    if (!relation.source_object.uuid.is_nil()) {
+      node.required_object_uuids.push_back(relation.source_object.uuid);
     }
   }
   if (IsExecutableUpperAccessKind(access_kind)) {
@@ -13123,8 +13126,8 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
           stable_name);
       input.required_descriptors.push_back(
           relation.descriptor_digest.empty() ? stable_name : relation.descriptor_digest);
-      if (!relation.source_object.uuid.canonical.empty()) {
-        input.required_object_uuids.push_back(relation.source_object.uuid.canonical);
+      if (!relation.source_object.uuid.is_nil()) {
+        input.required_object_uuids.push_back(relation.source_object.uuid);
       }
       logical.nodes.push_back(std::move(input));
       ++relation_index;
@@ -14758,13 +14761,13 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     return result;
   }
   std::string plan_name = "scan";
-  if (!request.target_object.uuid.canonical.empty() && request.context.local_transaction_id != 0) {
+  if (!request.target_object.uuid.is_nil() && request.context.local_transaction_id != 0) {
     const auto loaded = LoadQueryCrudCompatibilityState(request.context);
     if (loaded.ok) {
       // DPC_SECONDARY_INDEX_DELTA_OVERLAY_LOOKUP
       const auto lookup = IndexedMgaRowsForPredicateForContext(
           loaded.state,
-          request.target_object.uuid.canonical,
+          request.target_object.uuid,
           request.predicate,
           request.context,
           1);
@@ -14782,7 +14785,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   }
   std::vector<EngineQueryRelation> planned_relations;
   EngineQueryRelation planned_relation;
-  planned_relation.relation_name = request.target_object.uuid.canonical.empty() ? "request_rows" : "crud:" + request.target_object.uuid.canonical;
+  planned_relation.relation_name = request.target_object.uuid.is_nil() ? "request_rows" : "crud:" + request.target_object.uuid;
   planned_relation.descriptor_digest = planned_relation.relation_name;
   planned_relation.source_object = request.target_object;
   planned_relations.push_back(std::move(planned_relation));

@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_CONFIG_POLICY_SECURITY_LIFECYCLE
 
 #include "config_policy_security_lifecycle.hpp"
+#include "../core/uuid/uuid.hpp"
 
 #include "security/auth_provider_model.hpp"
 
@@ -189,12 +190,12 @@ SecurityProviderLifecycleState ParseSecurityProviderLifecycleState(const std::st
 ConfigPolicySecurityLifecycleInput BuildConfigPolicySecurityLifecycleInput(
     const ServerBootstrapConfig& config,
     std::string database_path,
-    std::string database_uuid,
+    scratchbird::core::platform::Uuid database_uuid,
     bool database_open,
     bool cluster_authority_required) {
   ConfigPolicySecurityLifecycleInput input;
   input.database_path = std::move(database_path);
-  input.database_uuid = std::move(database_uuid);
+  input.database_uuid = database_uuid;
   input.database_open = database_open;
   input.cluster_authority_required =
       cluster_authority_required || config.security_authority_mode == "cluster";
@@ -214,7 +215,9 @@ ConfigPolicySecurityLifecycleInput BuildConfigPolicySecurityLifecycleInput(
 
 ConfigPolicySecurityLifecycleResult StartConfigPolicySecurityLifecycle(
     const ConfigPolicySecurityLifecycleInput& input) {
-  if (!input.database_open || input.database_uuid.empty() || input.database_path.empty()) {
+  if (!input.database_open ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(input.database_uuid) ||
+      input.database_path.empty()) {
     return Failure("ENGINE.DBLC_CONFIG_POLICY_SECURITY_NOT_READY", "database_not_open");
   }
   if (input.descriptor_version < kConfigPolicySecurityLifecycleDescriptorMinSupported) {
@@ -591,7 +594,9 @@ std::string SerializeConfigPolicySecurityLifecycleJson(
   std::ostringstream out;
   out << "{\"config_policy_security_lifecycle\":{"
       << "\"descriptor_version\":" << lifecycle.descriptor_version << ","
-      << "\"database_uuid\":\"" << JsonEscape(lifecycle.database_uuid) << "\","
+      << "\"database_uuid\":\""
+      << JsonEscape(scratchbird::core::uuid::UuidToString(lifecycle.database_uuid))
+      << "\","
       << "\"config_source\":\"" << JsonEscape(lifecycle.config_source) << "\","
       << "\"config_source_epoch\":" << lifecycle.config_source_epoch << ","
       << "\"config_reload_generation\":" << lifecycle.config_reload_generation << ","

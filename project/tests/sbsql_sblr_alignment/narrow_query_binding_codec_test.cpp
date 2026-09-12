@@ -660,7 +660,7 @@ void ContextAndAuthorityPrecedence() {
       };
   ExpectDecodeError(encoded, context,
                     NarrowQueryBindingErrorCode::output_datatype_invalid,
-                    "DATATYPE.DESCRIPTOR_INVALID");
+                    "DATATYPE.DESCRIPTOR.INVALID");
 
   context = Context(binding);
   context.validate_collation = [](const NarrowQueryOrderingTerm&) {

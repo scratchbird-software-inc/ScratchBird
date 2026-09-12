@@ -32,7 +32,7 @@ CompileSblrDdlCreatePublicationDescriptor(const EngineRequestContext& c,
   SblrDdlCreatePublicationCoordinationResult out;
   if (!HasTag(c, "private_ddl_create_publication_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      publication != c.statement_uuid.canonical || !occurrence ||
+      publication != c.statement_uuid || !occurrence ||
       !domain_occurrence || !availability) {
     out.diagnostic = Diagnostic("SBLR.OPERAND_INVALID",
                                 "sblr.ddl_create_publication.coordination_invalid");

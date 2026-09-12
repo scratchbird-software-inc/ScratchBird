@@ -528,11 +528,11 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
           !materialized_type_uuid.has_value() ||
           !CanonicalUuidText(
               expression.materialized_column.descriptor.descriptor_uuid
-                  .canonical) ||
+                  ) ||
           !CanonicalUuidText(*materialized_type_uuid) ||
           deterministic_tie_evidence_uuid ==
               expression.materialized_column.descriptor.descriptor_uuid
-                  .canonical ||
+                   ||
           deterministic_tie_evidence_uuid == *materialized_type_uuid ||
           (!property_term.collation_uuid.empty() &&
            deterministic_tie_evidence_uuid ==
@@ -722,7 +722,7 @@ MakeLiveExpressionSortRegistration(
         !account_array(expression.row_binding.slots.capacity(),
                        sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
         !account_string(column.stable_name) ||
-        !account_string(column.descriptor.descriptor_uuid.canonical) ||
+        !account_string(column.descriptor.descriptor_uuid) ||
         !account_string(column.descriptor.descriptor_kind) ||
         !account_string(column.descriptor.canonical_type_name) ||
         !account_string(column.descriptor.encoded_descriptor)) {
@@ -731,7 +731,7 @@ MakeLiveExpressionSortRegistration(
     }
     if (expression.row_independent_value.has_value()) {
       const auto& value = *expression.row_independent_value;
-      if (!account_string(value.descriptor.descriptor_uuid.canonical) ||
+      if (!account_string(value.descriptor.descriptor_uuid) ||
           !account_string(value.descriptor.descriptor_kind) ||
           !account_string(value.descriptor.canonical_type_name) ||
           !account_string(value.descriptor.encoded_descriptor) ||

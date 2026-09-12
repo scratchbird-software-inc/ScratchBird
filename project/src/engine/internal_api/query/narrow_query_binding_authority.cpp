@@ -27,6 +27,7 @@
 #include <optional>
 #include <set>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -238,16 +239,16 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context,
       !context.statement_metadata_snapshot_engine_owned ||
       context.cluster_transaction_active || context.route_fence_present ||
       context.local_transaction_id == 0 ||
-      !ExactUuid(context.database_uuid.canonical) ||
-      !ExactUuid(context.transaction_uuid.canonical) ||
-      !ExactUuid(context.statement_receipt_uuid.canonical) ||
-      !ExactUuid(context.statement_snapshot_uuid.canonical) ||
-      !ExactUuid(context.datatype_catalog_snapshot_uuid.canonical) ||
+      !ExactUuid(context.database_uuid) ||
+      !ExactUuid(context.transaction_uuid) ||
+      !ExactUuid(context.statement_receipt_uuid) ||
+      !ExactUuid(context.statement_snapshot_uuid) ||
+      !ExactUuid(context.datatype_catalog_snapshot_uuid) ||
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0 ||
       !ValidMgaRelationDecodedBytesPerPass(
           context.maximum_mga_relation_decoded_bytes_per_pass) ||
-      !ExactUuid(context.authorization_context.authority_uuid.canonical) ||
+      !ExactUuid(context.authorization_context.authority_uuid) ||
       context.authorization_context.security_context_generation == 0) {
     return Diagnostic("SECURITY.ACCESS_DENIED",
                       "sblr.query_execute.narrow_context_denied",
@@ -263,22 +264,22 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context,
 
 bool SameContext(const EngineRequestContext& expected,
                  const EngineRequestContext& observed) {
-  return expected.database_uuid.canonical == observed.database_uuid.canonical &&
-         expected.statement_receipt_uuid.canonical ==
-             observed.statement_receipt_uuid.canonical &&
-         expected.transaction_uuid.canonical ==
-             observed.transaction_uuid.canonical &&
+  return expected.database_uuid == observed.database_uuid &&
+         expected.statement_receipt_uuid ==
+             observed.statement_receipt_uuid &&
+         expected.transaction_uuid ==
+             observed.transaction_uuid &&
          expected.local_transaction_id == observed.local_transaction_id &&
-         expected.statement_snapshot_uuid.canonical ==
-             observed.statement_snapshot_uuid.canonical &&
-         expected.datatype_catalog_snapshot_uuid.canonical ==
-             observed.datatype_catalog_snapshot_uuid.canonical &&
+         expected.statement_snapshot_uuid ==
+             observed.statement_snapshot_uuid &&
+         expected.datatype_catalog_snapshot_uuid ==
+             observed.datatype_catalog_snapshot_uuid &&
          expected.datatype_catalog_generation ==
              observed.datatype_catalog_generation &&
          expected.datatype_registry_generation ==
              observed.datatype_registry_generation &&
-         expected.authorization_context.authority_uuid.canonical ==
-             observed.authorization_context.authority_uuid.canonical &&
+         expected.authorization_context.authority_uuid ==
+             observed.authorization_context.authority_uuid &&
          expected.authorization_context.security_context_generation ==
              observed.authorization_context.security_context_generation &&
          expected.authorization_context.security_epoch ==
@@ -306,11 +307,11 @@ std::string RelationCanonicalName(const EngineRequestContext& context,
                                   std::string_view relation_uuid) {
   EngineMapUuidToNameRequest request;
   request.context = context;
-  request.target_object.uuid.canonical = std::string(relation_uuid);
+  request.target_object.uuid = std::string(relation_uuid);
   request.target_object.object_kind = "relation";
   const auto result = EngineMapUuidToName(request);
   if (!result.ok ||
-      result.primary_object.uuid.canonical != relation_uuid ||
+      result.primary_object.uuid != relation_uuid ||
       result.primary_object.object_kind != "relation") {
     return {};
   }
@@ -347,10 +348,10 @@ bool BuildProjectedSource(const EngineRequestContext& context,
     }
     return false;
   }
-  const auto& relation_uuid = descriptor.relation_uuid.canonical;
+  const auto& relation_uuid = descriptor.relation_uuid;
   if (!ExactUuid(relation_uuid) ||
-      descriptor.database_uuid.canonical !=
-          context.database_uuid.canonical ||
+      descriptor.database_uuid !=
+          context.database_uuid ||
       descriptor.relation_kind != "table" ||
       descriptor.storage_profile != "local_mga_rowstore_v1" ||
       descriptor.descriptor_generation == 0 || descriptor.columns.empty()) {
@@ -368,9 +369,9 @@ bool BuildProjectedSource(const EngineRequestContext& context,
 
   std::vector<std::uint8_t> projection;
   if (!AppendUuid(&projection,
-                  descriptor.descriptor_uuid.canonical) ||
+                  descriptor.descriptor_uuid) ||
       !AppendUuid(&projection, relation_uuid) ||
-      !AppendUuid(&projection, descriptor.schema_uuid.canonical)) {
+      !AppendUuid(&projection, descriptor.schema_uuid)) {
     *diagnostic = Diagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
                              "sblr.query_execute.source_identity_invalid");
     return false;
@@ -378,8 +379,8 @@ bool BuildProjectedSource(const EngineRequestContext& context,
   AppendU64(&projection, descriptor.descriptor_generation);
   AppendU64(&projection, context.resource_epoch);
   if (!AppendUuid(&projection,
-                  context.datatype_catalog_snapshot_uuid.canonical)) {
-    *diagnostic = Diagnostic("DATATYPE.DESCRIPTOR_INVALID",
+                  context.datatype_catalog_snapshot_uuid)) {
+    *diagnostic = Diagnostic("DATATYPE.DESCRIPTOR.INVALID",
                              "sblr.query_execute.datatype_snapshot_invalid");
     return false;
   }
@@ -405,9 +406,9 @@ bool BuildProjectedSource(const EngineRequestContext& context,
     const std::string& canonical_datatype_descriptor_uuid =
         embedded_datatype_descriptor.present
             ? embedded_datatype_descriptor.value
-            : column.value_descriptor.descriptor_uuid.canonical;
+            : column.value_descriptor.descriptor_uuid;
     const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
-        context.datatype_catalog_snapshot_uuid.canonical,
+        context.datatype_catalog_snapshot_uuid,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,
         canonical_datatype_descriptor_uuid, 1);
@@ -421,7 +422,7 @@ bool BuildProjectedSource(const EngineRequestContext& context,
       const auto charset = LookupEngineResourceDescriptorByUuid(
           context, uuid, "charset");
       if (!charset.ok || !charset.resource_descriptor.present ||
-          charset.resource_descriptor.resource_uuid.canonical !=
+          charset.resource_descriptor.resource_uuid !=
               column.charset_uuid ||
           charset.resource_descriptor.resource_epoch !=
               context.resource_epoch) {
@@ -440,9 +441,9 @@ bool BuildProjectedSource(const EngineRequestContext& context,
       const auto collation = LookupEngineResourceDescriptorByUuid(
           context, uuid, "collation");
       if (!collation.ok || !collation.resource_descriptor.present ||
-          collation.resource_descriptor.resource_uuid.canonical !=
+          collation.resource_descriptor.resource_uuid !=
               column.collation_uuid ||
-          collation.resource_descriptor.parent_resource_uuid.canonical !=
+          collation.resource_descriptor.parent_resource_uuid !=
               column.charset_uuid ||
           collation.resource_descriptor.resource_epoch !=
               context.resource_epoch ||
@@ -462,7 +463,7 @@ bool BuildProjectedSource(const EngineRequestContext& context,
     if (column.generated) attributes |= 0x02u;
     if (column.identity_column) attributes |= 0x04u;
     if (projected.charset_variable_width) attributes |= 0x08u;
-    if (!AppendUuid(&projection, column.column_uuid.canonical)) {
+    if (!AppendUuid(&projection, column.column_uuid)) {
       *diagnostic = Diagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
                                "sblr.query_execute.column_projection_invalid");
       return false;
@@ -470,7 +471,7 @@ bool BuildProjectedSource(const EngineRequestContext& context,
     AppendU32(&projection, column.ordinal);
     if (!AppendString(&projection, column.canonical_name_key) ||
         !AppendUuid(&projection,
-                    column.value_descriptor.descriptor_uuid.canonical) ||
+                    column.value_descriptor.descriptor_uuid) ||
         !AppendString(&projection,
                       column.value_descriptor.descriptor_kind) ||
         !AppendString(&projection,
@@ -525,7 +526,7 @@ bool ResolveProjectedSource(const EngineRequestContext& context,
   }
   const auto relation_uuid = UuidText(demand.relation_object_uuid_hint);
   const auto loaded = LoadMgaRelationStorageDescriptor(context, relation_uuid);
-  if (!loaded.ok || loaded.descriptor.relation_uuid.canonical != relation_uuid) {
+  if (!loaded.ok || loaded.descriptor.relation_uuid != relation_uuid) {
     *diagnostic = loaded.ok
                       ? Diagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
                                    "sblr.query_execute.source_invalid")
@@ -791,8 +792,7 @@ class NarrowQueryTypedResultResourceGrantReceiptHandleV1 final
         authority_->binding.resource_grant_receipt_uuid !=
             grant_receipt_uuid_ ||
         authority_->binding.resource_grant_generation != grant_generation_ ||
-        authority_->grant.grant_receipt_uuid.canonical !=
-            UuidText(grant_receipt_uuid_) ||
+        authority_->grant.grant_receipt_uuid != grant_receipt_uuid_ ||
         authority_->grant.grant_generation != grant_generation_ ||
         receipt_uuid != grant_receipt_uuid_ ||
         receipt_generation != grant_generation_ ||
@@ -832,9 +832,9 @@ IssueNarrowQueryBindingAuthorityV1(
   EngineNarrowQueryBindingAuthorityIssueResultV1 result;
   result.diagnostic = ValidateContext(request.context, kBinderTag);
   if (result.diagnostic.error) return result;
-  if (!ExactUuid(request.policy_snapshot_uuid.canonical) ||
+  if (!ExactUuid(request.policy_snapshot_uuid) ||
       request.policy_generation == 0 ||
-      request.context.statement_receipt_uuid.canonical !=
+      request.context.statement_receipt_uuid !=
           UuidText(request.demand.statement_receipt_uuid) ||
       request.demand.exact_bytes.empty()) {
     result.diagnostic = Diagnostic(
@@ -900,17 +900,17 @@ IssueNarrowQueryBindingAuthorityV1(
   binding.row_offset = decoded_demand.row_offset;
   binding.maximum_mga_relation_decoded_bytes_per_pass =
       decoded_demand.maximum_mga_relation_decoded_bytes_per_pass;
-  if (!ToWireUuid(request.context.statement_receipt_uuid.canonical,
+  if (!ToWireUuid(request.context.statement_receipt_uuid,
                   &binding.statement_receipt_uuid) ||
-      !ToWireUuid(request.context.transaction_uuid.canonical,
+      !ToWireUuid(request.context.transaction_uuid,
                   &binding.owning_transaction_uuid) ||
-      !ToWireUuid(request.context.statement_snapshot_uuid.canonical,
+      !ToWireUuid(request.context.statement_snapshot_uuid,
                   &binding.statement_snapshot_uuid) ||
-      !ToWireUuid(request.context.datatype_catalog_snapshot_uuid.canonical,
+      !ToWireUuid(request.context.datatype_catalog_snapshot_uuid,
                   &binding.datatype_catalog_snapshot_uuid) ||
-      !ToWireUuid(request.context.authorization_context.authority_uuid.canonical,
+      !ToWireUuid(request.context.authorization_context.authority_uuid,
                   &binding.security_context_uuid) ||
-      !ToWireUuid(request.policy_snapshot_uuid.canonical,
+      !ToWireUuid(request.policy_snapshot_uuid,
                   &binding.policy_snapshot_uuid)) {
     result.diagnostic = Diagnostic(
         "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -954,11 +954,11 @@ IssueNarrowQueryBindingAuthorityV1(
     wire::NarrowQuerySourceOccurrence source;
     source.source_ordinal = static_cast<std::uint32_t>(index);
     if (!issue(&source.source_occurrence_uuid) ||
-        !ToWireUuid(sources[index].descriptor.descriptor_uuid.canonical,
+        !ToWireUuid(sources[index].descriptor.descriptor_uuid,
                     &source.relation_descriptor_uuid) ||
-        !ToWireUuid(sources[index].descriptor.relation_uuid.canonical,
+        !ToWireUuid(sources[index].descriptor.relation_uuid,
                     &source.relation_object_uuid) ||
-        !ToWireUuid(sources[index].descriptor.schema_uuid.canonical,
+        !ToWireUuid(sources[index].descriptor.schema_uuid,
                     &source.schema_uuid)) {
       result.diagnostic = Diagnostic(
           "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -988,7 +988,7 @@ IssueNarrowQueryBindingAuthorityV1(
                    demand.source_column_spelling);
     if (column == nullptr || !column->datatype.has_value()) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.query_execute.output_datatype_unavailable");
       return result;
     }
@@ -1001,13 +1001,13 @@ IssueNarrowQueryBindingAuthorityV1(
     output.name_occurrence = name_occurrences[output.name]++;
     if (!issue(&output.output_occurrence_uuid) ||
         !issue(&output.output_descriptor_uuid) ||
-        !ToWireUuid(column->descriptor.column_uuid.canonical,
+        !ToWireUuid(column->descriptor.column_uuid,
                     &output.source_column_uuid) ||
         !ToWireUuid(datatype.descriptor_uuid,
                     &output.datatype_descriptor_uuid) ||
         !ToWireUuid(datatype.type_uuid, &output.datatype_type_uuid)) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.query_execute.output_identity_invalid");
       return result;
     }
@@ -1049,7 +1049,7 @@ IssueNarrowQueryBindingAuthorityV1(
     wire::NarrowQueryOrderingTerm term;
     term.term_ordinal = demand.term_ordinal;
     if (!issue(&term.ordering_term_uuid) ||
-        !ToWireUuid(column->descriptor.column_uuid.canonical,
+        !ToWireUuid(column->descriptor.column_uuid,
                     &term.source_column_uuid) ||
         (!column->descriptor.collation_uuid.empty() &&
          !ToWireUuid(column->descriptor.collation_uuid,
@@ -1093,8 +1093,8 @@ IssueNarrowQueryBindingAuthorityV1(
   authority->pinned_context = request.context;
   authority->binding = decoded_binding;
   authority->exact_binding_bytes = exact_binding;
-  authority->grant.grant_receipt_uuid.canonical =
-      UuidText(decoded_binding.resource_grant_receipt_uuid);
+  authority->grant.grant_receipt_uuid =
+      decoded_binding.resource_grant_receipt_uuid;
   authority->grant.grant_generation =
       decoded_binding.resource_grant_generation;
   authority->grant.maximum_source_rows_per_occurrence =
@@ -1116,7 +1116,7 @@ IssueNarrowQueryBindingAuthorityV1(
       decoded_binding.sources.size(), 0);
   {
     std::lock_guard lock(g_authority_mutex);
-    const auto& receipt = request.context.statement_receipt_uuid.canonical;
+    const auto& receipt = request.context.statement_receipt_uuid;
     if (g_authorities_by_receipt.contains(receipt)) {
       result.diagnostic = Diagnostic(
           "MGA.TRANSACTION.STALE",
@@ -1143,7 +1143,7 @@ ConsumeNarrowQueryBindingAuthorityV1(
   {
     std::lock_guard lock(g_authority_mutex);
     const auto found = g_authorities_by_receipt.find(
-        request.context.statement_receipt_uuid.canonical);
+        request.context.statement_receipt_uuid);
     if (found == g_authorities_by_receipt.end()) {
       result.diagnostic = Diagnostic(
           "SECURITY.ACCESS_DENIED",
@@ -1213,7 +1213,7 @@ bool CopyNarrowQueryBindingAuthoritySnapshotV1(
 EngineNarrowQueryTypedResultResourceGrantRetentionResultV1
 RetainNarrowQueryTypedResultResourceGrantReceiptV1(
     const EngineNarrowQueryBindingAuthorityHandleV1& handle,
-    const EngineRequestContext& context) {
+    const EngineRequestContext& context) try {
   EngineNarrowQueryTypedResultResourceGrantRetentionResultV1 result;
   if (!handle.authority_) {
     result.diagnostic = Diagnostic(
@@ -1242,10 +1242,9 @@ RetainNarrowQueryTypedResultResourceGrantReceiptV1(
 
   const auto& grant = authority.grant;
   const auto& binding = authority.binding;
-  const auto grant_receipt_text =
-      UuidText(binding.resource_grant_receipt_uuid);
-  if (grant_receipt_text.empty() ||
-      grant.grant_receipt_uuid.canonical != grant_receipt_text ||
+  if ((binding.resource_grant_receipt_uuid[6] & 0xf0u) != 0x70u ||
+      (binding.resource_grant_receipt_uuid[8] & 0xc0u) != 0x80u ||
+      grant.grant_receipt_uuid != binding.resource_grant_receipt_uuid ||
       binding.resource_grant_generation == 0 ||
       grant.grant_generation != binding.resource_grant_generation ||
       !ValidTypedResultTransportBytesPerPacket(
@@ -1258,28 +1257,27 @@ RetainNarrowQueryTypedResultResourceGrantReceiptV1(
     return result;
   }
 
-  std::unique_ptr<TypedResultResourceGrantReceiptHandleV1> receipt_handle;
-  try {
-    receipt_handle =
-        std::make_unique<NarrowQueryTypedResultResourceGrantReceiptHandleV1>(
-            handle.authority_, binding.resource_grant_receipt_uuid,
-            binding.resource_grant_generation, context.resource_epoch,
-            grant.maximum_typed_result_transport_bytes_per_packet);
-  } catch (const std::bad_alloc&) {
-    result.diagnostic = Diagnostic(
-        "RESOURCE.BUDGET_EXCEEDED",
-        "sblr.query_execute.typed_result_grant_retention_allocation_failed");
-    return result;
-  }
-
-  authority.typed_result_resource_grant_retained = true;
-  result.ok = true;
+  auto receipt_handle =
+      std::make_unique<NarrowQueryTypedResultResourceGrantReceiptHandleV1>(
+          handle.authority_, binding.resource_grant_receipt_uuid,
+          binding.resource_grant_generation, context.resource_epoch,
+          grant.maximum_typed_result_transport_bytes_per_packet);
+  // Prepare all allocating response state before consuming the sole owner.
   result.diagnostic = OkDiagnostic();
   result.grant_receipt_uuid = binding.resource_grant_receipt_uuid;
   result.grant_generation = binding.resource_grant_generation;
   result.maximum_typed_result_transport_bytes_per_packet =
       grant.maximum_typed_result_transport_bytes_per_packet;
   result.receipt_handle = std::move(receipt_handle);
+  static_assert(std::is_nothrow_move_constructible_v<
+      EngineNarrowQueryTypedResultResourceGrantRetentionResultV1>);
+  authority.typed_result_resource_grant_retained = true;
+  result.status = EngineNarrowQueryTypedResultResourceGrantRetentionStatusV1::retained;
+  result.ok = true;
+  return result;
+} catch (const std::bad_alloc&) {
+  EngineNarrowQueryTypedResultResourceGrantRetentionResultV1 result;
+  result.status = EngineNarrowQueryTypedResultResourceGrantRetentionStatusV1::resource_exhausted;
   return result;
 }
 
@@ -1340,13 +1338,13 @@ RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
   if (retained.source_ordinal != source_ordinal ||
       retained.validated_resource_epoch != context.resource_epoch ||
       UuidText(retained.relation_descriptor_uuid) !=
-          current.descriptor.descriptor_uuid.canonical ||
+          current.descriptor.descriptor_uuid ||
       retained.relation_descriptor_generation !=
           current.descriptor.descriptor_generation ||
       UuidText(retained.relation_object_uuid) !=
-          current.descriptor.relation_uuid.canonical ||
+          current.descriptor.relation_uuid ||
       UuidText(retained.schema_uuid) !=
-          current.descriptor.schema_uuid.canonical ||
+          current.descriptor.schema_uuid ||
       retained.relation_projection_sha256 != current.projection_hash) {
     result.stale = true;
     result.diagnostic = Diagnostic(
@@ -1509,20 +1507,26 @@ CommitNarrowQueryPublicationChargeV1(
 
 EngineApiDiagnostic ReleaseNarrowQueryBindingAuthorityV1(
     EngineNarrowQueryBindingAuthorityHandleV1* handle) {
-  if (handle == nullptr || !handle->authority_) return OkDiagnostic();
+  auto result = OkDiagnostic();
+  ReleaseNarrowQueryBindingAuthorityNoAllocV1(handle);
+  return result;
+}
+
+void ReleaseNarrowQueryBindingAuthorityNoAllocV1(
+    EngineNarrowQueryBindingAuthorityHandleV1* handle) noexcept {
+  if (handle == nullptr || !handle->authority_) return;
   auto authority = std::move(handle->authority_);
   {
     std::lock_guard lock(authority->mutex);
     authority->released = true;
   }
   std::lock_guard registry_lock(g_authority_mutex);
-  const auto& receipt = authority->pinned_context.statement_receipt_uuid.canonical;
+  const auto& receipt = authority->pinned_context.statement_receipt_uuid;
   const auto found = g_authorities_by_receipt.find(receipt);
   if (found != g_authorities_by_receipt.end() &&
       found->second == authority) {
     g_authorities_by_receipt.erase(found);
   }
-  return OkDiagnostic();
 }
 
 void RevokeNarrowQueryBindingAuthorityForReceiptV1(

@@ -74,15 +74,15 @@ page::HotColdRowSplitRequest BuildStorageRequest(
   page::HotColdRowSplitRequest storage;
   storage.large_payload_store = request.large_payload_store;
   storage.database_uuid = ParseUuid(platform::UuidKind::database,
-                                    request.context.database_uuid.canonical);
+                                    request.context.database_uuid);
   storage.filespace_uuid = ParseUuid(platform::UuidKind::filespace,
-                                     request.filespace_uuid.canonical);
+                                     request.filespace_uuid);
   storage.owner_object_uuid = ParseUuid(platform::UuidKind::object,
-                                        request.owner_object_uuid.canonical);
+                                        request.owner_object_uuid);
   storage.row_uuid = ParseUuid(platform::UuidKind::row,
-                               request.row.requested_row_uuid.canonical);
+                               request.row.requested_row_uuid);
   storage.transaction_uuid = ParseUuid(platform::UuidKind::transaction,
-                                       request.context.transaction_uuid.canonical);
+                                       request.context.transaction_uuid);
   storage.chunk_policy_uuid = storage.owner_object_uuid;
   storage.local_transaction_id = request.context.local_transaction_id;
   storage.family = page::LargePayloadFamily::blob;
@@ -140,7 +140,7 @@ EngineDmlHotColdMaterializeResult EngineDmlMaterializeColdFields(
       request.context.snapshot_visible_through_local_transaction_id;
   storage.transaction_context_present =
       request.context.local_transaction_id != 0 &&
-      !request.context.transaction_uuid.canonical.empty();
+      !request.context.transaction_uuid.is_nil();
   storage.engine_storage_admission_authorized =
       request.engine_storage_admission_authorized;
   storage.use_cache = request.use_cache;

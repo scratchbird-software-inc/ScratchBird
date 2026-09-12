@@ -109,12 +109,22 @@ struct CopyOnWriteMutationResult {
   }
 };
 
+// Inventory-state admission only; this does not validate mutation operands,
+// publish a plan, change inventory, or grant permission to commit/reclaim.
+struct CopyOnWriteTransactionStateResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  bool ok() const { return status.ok(); }
+};
+
 struct CleanupEligibilityResult {
   Status status;
   CleanupEligibilityDecision decision = CleanupEligibilityDecision::unknown;
   CleanupHoldKind blocking_hold = CleanupHoldKind::unknown;
   DiagnosticRecord diagnostic;
 
+  // Successful assessment is never permission to reclaim. Consult the explicit
+  // decision and obtain the owning inventory/horizon/fence cleanup authority.
   bool ok() const {
     return status.ok();
   }
@@ -125,6 +135,7 @@ const char* CopyOnWriteMutationPhaseName(CopyOnWriteMutationPhase phase);
 const char* CleanupHoldKindName(CleanupHoldKind kind);
 const char* CleanupEligibilityDecisionName(CleanupEligibilityDecision decision);
 CopyOnWriteMutationResult PlanCopyOnWriteMutation(const CopyOnWriteMutationIntent& intent);
+CopyOnWriteTransactionStateResult ValidateCopyOnWriteTransactionState(const TransactionInventoryEntry& entry);
 CopyOnWriteMutationResult PlanLocalCopyOnWriteMutationForTransaction(const TransactionInventoryEntry& entry,
                                                                      RowIdentity row,
                                                                      CopyOnWriteMutationKind kind,
@@ -136,9 +147,4 @@ CopyOnWriteMutationResult AdvanceCopyOnWriteMutationPhase(const CopyOnWriteMutat
 CleanupEligibilityResult EvaluateCleanupEligibility(
     const RowVersionMetadata& metadata,
     const CleanupHorizonVector& horizons);
-DiagnosticRecord MakeCopyOnWriteDiagnostic(Status status,
-                                           std::string diagnostic_code,
-                                           std::string message_key,
-                                           std::string detail = {});
-
 }  // namespace scratchbird::transaction::mga

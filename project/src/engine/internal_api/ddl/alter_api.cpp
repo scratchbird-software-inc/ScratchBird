@@ -265,7 +265,7 @@ const MgaRelationColumnStorageDescriptor* RelationColumnByUuid(
     std::string_view column_uuid) {
   const MgaRelationColumnStorageDescriptor* matched = nullptr;
   for (const auto& column : descriptor.columns) {
-    if (column.column_uuid.canonical != column_uuid) continue;
+    if (column.column_uuid != column_uuid) continue;
     if (matched != nullptr) return nullptr;
     matched = &column;
   }
@@ -277,7 +277,7 @@ bool RelationDescriptorContainsIndex(
     std::string_view index_uuid) {
   return std::any_of(descriptor.indexes.begin(), descriptor.indexes.end(),
                      [&](const auto& index) {
-                       return index.index_uuid.canonical == index_uuid;
+                       return index.index_uuid == index_uuid;
                      });
 }
 
@@ -369,26 +369,26 @@ scratchbird::engine::sblr::SblrExecutionContext AlterSblrContext(
     const EngineRequestContext& context) {
   scratchbird::engine::sblr::SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.cluster_uuid = context.cluster_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid = context.statement_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.current_role_uuid = context.current_role_uuid.canonical;
-  out.current_schema_uuid = context.current_schema_uuid.canonical;
+  out.statement_uuid = context.statement_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
   out.statement_timestamp = context.statement_timestamp;
   out.transaction_timestamp = context.transaction_timestamp;
   out.current_timestamp = context.current_timestamp;
   out.current_monotonic_ns = context.current_monotonic_ns;
   out.security_context_present = context.security_context_present;
   out.transaction_context_present =
-      context.local_transaction_id != 0 || !context.transaction_uuid.canonical.empty();
+      context.local_transaction_id != 0 || !context.transaction_uuid.is_nil();
   out.cluster_authority_available = context.cluster_authority_available;
   out.read_only_mode = context.read_only_mode;
   return out;
@@ -420,15 +420,17 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     if (context_status.error) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", context_status);
     }
-    if (request.target_object.uuid.canonical.empty()) {
+    if (request.target_object.uuid.is_nil()) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
           request.context,
           "ddl.alter_object",
           MakeInvalidRequestDiagnostic("ddl.alter_object", "target_schema_uuid_required"));
     }
-    auto existing = FindVisibleSchemaTreeRecord(request.context,
-                                                request.target_object.uuid.canonical,
-                                                request.context.local_transaction_id);
+    EngineApiDiagnostic schema_diagnostic;
+    auto existing = FindVisibleSchemaTreeRecord(request.context, request.target_object.uuid,
+        request.context.local_transaction_id, schema_diagnostic);
+    if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+        request.context, "ddl.alter_object", schema_diagnostic);
     if (!existing) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
           request.context,
@@ -437,23 +439,28 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     }
     EngineSchemaTreeRecord updated = *existing;
     updated.creator_tx = request.context.local_transaction_id;
-    if (!request.target_schema.uuid.canonical.empty()) {
-      if (!FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid.canonical, request.context.local_transaction_id)) {
+    if (!request.target_schema.uuid.is_nil()) {
+      const auto parent = FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid,
+          request.context.local_transaction_id, schema_diagnostic);
+      if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+          request.context, "ddl.alter_object", schema_diagnostic);
+      if (!parent) {
         return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
             MakeInvalidRequestDiagnostic("ddl.alter_object", "parent_schema_not_visible"));
       }
-      if (SchemaTreeWouldCreateCycle(request.context,
-                                     request.target_object.uuid.canonical,
-                                     request.target_schema.uuid.canonical,
-                                     request.context.local_transaction_id)) {
+      const bool cycle = SchemaTreeWouldCreateCycle(request.context, request.target_object.uuid,
+          request.target_schema.uuid, request.context.local_transaction_id, schema_diagnostic);
+      if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+          request.context, "ddl.alter_object", schema_diagnostic);
+      if (cycle) {
         return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
             MakeInvalidRequestDiagnostic("ddl.alter_object", "schema_move_cycle_detected"));
       }
-      updated.parent_schema_uuid = request.target_schema.uuid.canonical;
+      updated.parent_schema_uuid = request.target_schema.uuid;
     }
     if (!request.localized_names.empty()) {
       updated.localized_names = request.localized_names;
@@ -496,11 +503,11 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
             UnsupportedCrudFeatureDiagnostic("ddl.alter_object", "unsupported_schema_alter_option"));
       }
     }
-    if (const auto conflict = SchemaTreePathConflict(request.context,
-                                                    updated.schema_uuid,
-                                                    updated.parent_schema_uuid,
-                                                    updated.localized_names,
-                                                    request.context.local_transaction_id)) {
+    const auto conflict = SchemaTreePathConflict(request.context, updated.schema_uuid, updated.parent_schema_uuid,
+        updated.localized_names, request.context.local_transaction_id, schema_diagnostic);
+    if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+        request.context, "ddl.alter_object", schema_diagnostic);
+    if (conflict) {
       return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
           request.context,
           "ddl.alter_object",
@@ -535,7 +542,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     }
     auto result = MakeApiBehaviorSuccess<EngineAlterObjectResult>(request.context, "ddl.alter_object");
     result.primary_object = request.target_object;
-    result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+    result.catalog_row_uuid = GenerateCrudEngineUuid("row");
     AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.alter_schema");
     AddApiBehaviorEvidence(&result, "schema_identity_preserved", updated.schema_uuid);
     for (const auto& extension : schema_extension_payload) {
@@ -552,7 +559,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
                             "ddl.alter_object",
                             "schema",
                             updated.schema_uuid,
-                            result.catalog_row_uuid.canonical,
+                            result.catalog_row_uuid,
                             "schema_tree");
     return result;
   }
@@ -566,9 +573,9 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     const std::string lookup_key = SecurityOptionValue(request, "sequence_lookup_key:");
     std::vector<std::string> runtime_keys;
     if (!lookup_key.empty()) runtime_keys.push_back(lookup_key);
-    if (!request.target_object.uuid.canonical.empty() &&
-        request.target_object.uuid.canonical != lookup_key) {
-      runtime_keys.push_back(request.target_object.uuid.canonical);
+    if (!request.target_object.uuid.is_nil() &&
+        request.target_object.uuid != lookup_key) {
+      runtime_keys.push_back(request.target_object.uuid);
     }
     if (runtime_keys.empty()) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -662,8 +669,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     AddDdlPublicationResult(&result,
                             "ddl.alter_object",
                             "sequence",
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "sequence_runtime");
     return result;
   }
@@ -674,14 +681,14 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           "ddl.alter_object",
           MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
     }
-    if (request.target_object.uuid.canonical.empty()) {
+    if (request.target_object.uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
           request.context,
           "ddl.alter_object",
           MakeInvalidRequestDiagnostic("ddl.alter_object", "target_domain_uuid_required"));
     }
     auto domain = FindVisibleDomain(request.context,
-                                    request.target_object.uuid.canonical,
+                                    request.target_object.uuid,
                                     request.context.local_transaction_id);
     if (!domain) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -845,9 +852,9 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               "ddl.alter_object",
               MakeInvalidRequestDiagnostic("ddl.alter_object", "base_canonical_type_name_required"));
         }
-        updated.base_descriptor_uuid = descriptor.descriptor_uuid.canonical.empty()
+        updated.base_descriptor_uuid = descriptor.descriptor_uuid.is_nil()
                                            ? GenerateCrudEngineUuid("object")
-                                           : descriptor.descriptor_uuid.canonical;
+                                           : descriptor.descriptor_uuid;
         updated.base_descriptor_kind = descriptor.descriptor_kind.empty() ? "scalar" : descriptor.descriptor_kind;
         updated.base_canonical_type_name = descriptor.canonical_type_name;
         updated.base_encoded_descriptor = descriptor.encoded_descriptor;
@@ -879,13 +886,13 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
     }
     auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(request.context, "ddl.alter_object");
     result.primary_object = request.target_object;
-    result.catalog_row_uuid.canonical = updated.catalog_row_uuid;
+    result.catalog_row_uuid = updated.catalog_row_uuid;
     result.evidence.push_back({"domain_event", "domain_alter"});
     AddDdlPublicationResult(&result,
                             "ddl.alter_object",
                             "domain",
                             updated.domain_uuid,
-                            result.catalog_row_uuid.canonical,
+                            result.catalog_row_uuid,
                             "domain_event");
     return result;
   }
@@ -896,7 +903,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           "ddl.alter_object",
           MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
     }
-    if (request.target_object.uuid.canonical.empty()) {
+    if (request.target_object.uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
           request.context,
           "ddl.alter_object",
@@ -914,7 +921,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       }
       const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
       auto visible = FindVisibleCrudTable(state,
-                                          request.target_object.uuid.canonical,
+                                          request.target_object.uuid,
                                           request.context.local_transaction_id);
       if (!visible) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -1055,7 +1062,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       }
       auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(request.context, "ddl.alter_object");
       result.primary_object = request.target_object;
-      result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+      result.catalog_row_uuid = GenerateCrudEngineUuid("row");
       AddApiBehaviorEvidence(&result, "table_alter_action", action);
       if (!row_versions.empty()) {
         AddApiBehaviorEvidence(&result,
@@ -1065,8 +1072,8 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       AddDdlPublicationResult(&result,
                               "ddl.alter_object",
                               "table",
-                              request.target_object.uuid.canonical,
-                              result.catalog_row_uuid.canonical,
+                              request.target_object.uuid,
+                              result.catalog_row_uuid,
                               "mga_relation_metadata");
       return result;
     }
@@ -1080,7 +1087,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       }
       const RelationReadSnapshot state = BuildCrudCompatibilityStateFromMga(loaded.state);
       auto visible = FindVisibleCrudTable(state,
-                                          request.target_object.uuid.canonical,
+                                          request.target_object.uuid,
                                           request.context.local_transaction_id);
       if (!visible) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
@@ -1104,23 +1111,23 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       name_lookup_request.context = request.context;
       const auto existing_name = MapNameRegistryUuidToNamePublic(
           name_lookup_request,
-          request.target_object.uuid.canonical,
+          request.target_object.uuid,
           "table");
       const std::string existing_scope_uuid =
           existing_name.ok ? existing_name.entry.scope_uuid : std::string{};
 
       const auto retired = RetireNameRegistryEntriesForObject(request.context,
                                                              "ddl.alter_object",
-                                                             request.target_object.uuid.canonical);
+                                                             request.target_object.uuid);
       if (retired.error) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
             request.context,
             "ddl.alter_object",
             retired);
       }
-      std::string scope_uuid = request.target_schema.uuid.canonical;
+      std::string scope_uuid = request.target_schema.uuid;
       if (scope_uuid.empty()) scope_uuid = existing_scope_uuid;
-      if (scope_uuid.empty()) scope_uuid = request.context.current_schema_uuid.canonical;
+      if (scope_uuid.empty()) scope_uuid = request.context.current_schema_uuid;
       if (scope_uuid.empty()) {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
             request.context,
@@ -1130,7 +1137,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       const auto names_appended = PersistNameRegistryEntriesForObject(
           request.context,
           "ddl.alter_object",
-          request.target_object.uuid.canonical,
+          request.target_object.uuid,
           "table",
           scope_uuid,
           request.localized_names,
@@ -1146,26 +1153,26 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           request.context,
           "ddl.alter_object");
       result.primary_object = request.target_object;
-      result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+      result.catalog_row_uuid = GenerateCrudEngineUuid("row");
       AddApiBehaviorEvidence(&result, "table_alter_action", "rename_table");
       AddApiBehaviorEvidence(&result,
                              "table_identity_preserved",
-                             request.target_object.uuid.canonical);
+                             request.target_object.uuid);
       AddApiBehaviorEvidence(&result, "table_default_name", updated.default_name);
       AddDdlPublicationResult(&result,
                               "ddl.alter_object",
                               "table",
-                              request.target_object.uuid.canonical,
-                              result.catalog_row_uuid.canonical,
+                              request.target_object.uuid,
+                              result.catalog_row_uuid,
                               "mga_relation_metadata");
       return result;
     }
   }
   auto result = PersistedRecordResult<EngineAlterObjectResult>(request, "ddl.alter_object", "object_alteration", true, "altered");
-  if (!result.ok || request.localized_names.empty() || request.target_object.uuid.canonical.empty()) { return result; }
+  if (!result.ok || request.localized_names.empty() || request.target_object.uuid.is_nil()) { return result; }
   const auto retired = RetireNameRegistryEntriesForObject(request.context,
                                                          "ddl.alter_object",
-                                                         request.target_object.uuid.canonical);
+                                                         request.target_object.uuid);
   if (retired.error) {
     return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", retired);
   }
@@ -1173,20 +1180,20 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
   const std::string fallback_name = request.localized_names.front().name.empty() ? object_kind : request.localized_names.front().name;
   const auto names_appended = PersistNameRegistryEntriesForObject(request.context,
                                                                  "ddl.alter_object",
-                                                                 request.target_object.uuid.canonical,
+                                                                 request.target_object.uuid,
                                                                  object_kind,
-                                                                 request.target_schema.uuid.canonical,
+                                                                 request.target_schema.uuid,
                                                                  request.localized_names,
                                                                  fallback_name);
   if (names_appended.error) {
     return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", names_appended);
   }
-  AddApiBehaviorEvidence(&result, "name_registry", request.target_object.uuid.canonical);
+  AddApiBehaviorEvidence(&result, "name_registry", request.target_object.uuid);
   AddDdlPublicationResult(&result,
                           "ddl.alter_object",
                           object_kind,
-                          request.target_object.uuid.canonical,
-                          result.catalog_row_uuid.canonical,
+                          request.target_object.uuid,
+                          result.catalog_row_uuid,
                           object_kind);
   return result;
 }
@@ -1201,10 +1208,10 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
         MakeInvalidRequestDiagnostic(kOperation, std::move(detail)));
   };
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return fail("exact_active_mga_transaction_required");
   }
-  if (request.target_object.uuid.canonical.empty() ||
+  if (request.target_object.uuid.is_nil() ||
       request.target_object.object_kind != "table") {
     return fail("target_child_table_uuid_required");
   }
@@ -1215,7 +1222,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
   if (LowerAscii(definition.constraint_kind) != "foreign_key") {
     return fail("foreign_key_definition_required");
   }
-  if (!definition.requested_constraint_uuid.canonical.empty()) {
+  if (!definition.requested_constraint_uuid.is_nil()) {
     return fail("constraint_identity_must_be_engine_allocated");
   }
   const auto fields = ConstraintEnvelopeFields(
@@ -1258,7 +1265,7 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
       ConstraintField(fields, "parent_table_uuid");
   const std::string parent_column_uuid =
       ConstraintField(fields, "parent_column_uuid");
-  if (child_table_uuid != request.target_object.uuid.canonical ||
+  if (child_table_uuid != request.target_object.uuid ||
       ConstraintField(fields, "referenced_table_uuid") != parent_table_uuid ||
       ConstraintField(fields, "referenced_column_uuid") != parent_column_uuid ||
       child_column_uuid.empty() || parent_table_uuid.empty() ||
@@ -1311,9 +1318,9 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
   const auto expected_parent_descriptor_generation = ParseU64(
       ConstraintField(fields, "parent_relation_descriptor_generation"));
   if (ConstraintField(fields, "child_relation_descriptor_uuid") !=
-          child_storage.descriptor.descriptor_uuid.canonical ||
+          child_storage.descriptor.descriptor_uuid ||
       ConstraintField(fields, "parent_relation_descriptor_uuid") !=
-          parent_storage.descriptor.descriptor_uuid.canonical ||
+          parent_storage.descriptor.descriptor_uuid ||
       !expected_child_descriptor_generation ||
       !expected_parent_descriptor_generation ||
       *expected_child_descriptor_generation !=
@@ -1523,21 +1530,21 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
   MgaConstraintMutationBatch batch;
   batch.batch_uuid = mutation_batch_uuid;
   batch.mutation_count = 1;
-  batch.database_uuid = request.context.database_uuid.canonical;
+  batch.database_uuid = request.context.database_uuid;
   batch.constraint_uuid = constraint_uuid;
   batch.owner_table_uuid = child_table_uuid;
   batch.child_schema_uuid =
-      child_storage.descriptor.schema_uuid.canonical;
+      child_storage.descriptor.schema_uuid;
   batch.child_relation_descriptor_uuid =
-      child_storage.descriptor.descriptor_uuid.canonical;
+      child_storage.descriptor.descriptor_uuid;
   batch.child_relation_descriptor_generation =
       child_storage.descriptor.descriptor_generation;
   batch.child_column_uuid = child_column_uuid;
   batch.parent_table_uuid = parent_table_uuid;
   batch.parent_schema_uuid =
-      parent_storage.descriptor.schema_uuid.canonical;
+      parent_storage.descriptor.schema_uuid;
   batch.parent_relation_descriptor_uuid =
-      parent_storage.descriptor.descriptor_uuid.canonical;
+      parent_storage.descriptor.descriptor_uuid;
   batch.parent_relation_descriptor_generation =
       parent_storage.descriptor.descriptor_generation;
   batch.parent_column_uuid = parent_column_uuid;
@@ -1566,12 +1573,12 @@ EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
 
   auto result = MakeCrudSuccessResult<EngineAlterConstraintResult>(
       request.context, kOperation);
-  result.primary_object.uuid.canonical = constraint_uuid;
+  result.primary_object.uuid = constraint_uuid;
   result.primary_object.object_kind = "constraint";
-  result.catalog_row_uuid.canonical = mutation_batch_uuid;
-  result.bound_object_identity.object_uuid.canonical = constraint_uuid;
+  result.catalog_row_uuid = mutation_batch_uuid;
+  result.bound_object_identity.object_uuid = constraint_uuid;
   result.bound_object_identity.resolved_object_type = "constraint";
-  result.bound_object_identity.parent_object_uuid.canonical = child_table_uuid;
+  result.bound_object_identity.parent_object_uuid = child_table_uuid;
   result.bound_object_identity.catalog_generation_id =
       request.context.catalog_generation_id;
   result.bound_object_identity.security_epoch = request.context.security_epoch;
@@ -1635,8 +1642,8 @@ EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintReq
     AddDdlPublicationResult(&result,
                             kOperation,
                             "constraint",
-                            result.primary_object.uuid.canonical,
-                            result.catalog_row_uuid.canonical,
+                            result.primary_object.uuid,
+                            result.catalog_row_uuid,
                             "constraint_descriptor");
   }
   return result;
@@ -1646,7 +1653,7 @@ EngineAlterTriggerResult EngineAlterTrigger(
     const EngineAlterTriggerRequest& request) {
   constexpr const char* kOperation = "ddl.alter_trigger";
   if (request.target_object.object_kind != "trigger" ||
-      request.target_object.uuid.canonical.empty() ||
+      request.target_object.uuid.is_nil() ||
       request.expected_executable_generation == 0) {
     return MakeCrudDiagnosticResult<EngineAlterTriggerResult>(
         request.context, kOperation,
@@ -1663,7 +1670,7 @@ EngineAlterTriggerResult EngineAlterTrigger(
   const auto executable = std::find_if(
       executable_state.state.objects.begin(),
       executable_state.state.objects.end(), [&](const auto& object) {
-        return object.object_uuid == request.target_object.uuid.canonical;
+        return object.object_uuid == request.target_object.uuid;
       });
   if (executable == executable_state.state.objects.end() ||
       executable->object_kind != "trigger" || executable->deleted ||
@@ -1675,7 +1682,7 @@ EngineAlterTriggerResult EngineAlterTrigger(
         MakeEngineApiDiagnostic(
             "MGA.AUTHORITY_MISMATCH",
             "ddl.alter_trigger.executable_generation_mismatch",
-            request.target_object.uuid.canonical, true));
+            request.target_object.uuid, true));
   }
 
   EngineCatalogAlterObjectRequest catalog_request;
@@ -1723,8 +1730,8 @@ EngineAlterTriggerResult EngineAlterTrigger(
   AddApiBehaviorEvidence(&result, "trigger_successor_generation",
                          std::to_string(result.executable_generation));
   AddDdlPublicationResult(&result, kOperation, "trigger",
-                          result.primary_object.uuid.canonical,
-                          result.catalog_row_uuid.canonical,
+                          result.primary_object.uuid,
+                          result.catalog_row_uuid,
                           "trigger_successor_descriptor");
   return result;
 }

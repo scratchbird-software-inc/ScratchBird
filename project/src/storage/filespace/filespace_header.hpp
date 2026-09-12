@@ -11,6 +11,8 @@
 // SB-PHYSICAL-FILESPACE-HEADER-ANCHOR
 #include "filespace_lifecycle.hpp"
 
+namespace scratchbird::storage::disk { class FileDevice; }
+
 namespace scratchbird::storage::filespace {
 
 struct PhysicalFilespaceHeader {
@@ -78,6 +80,8 @@ PhysicalFilespaceWriteResult CreatePhysicalFilespaceFile(const std::string& path
                                                          const PhysicalFilespaceHeader& header,
                                                          bool allow_overwrite = false);
 PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(const std::string& path);
+// Read through the caller's already-owned native file; ownership stays with it.
+PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeader(scratchbird::storage::disk::FileDevice& device);
 PhysicalFilespaceHeaderResult ReadPhysicalFilespaceHeaderOffline(const std::string& path);
 PhysicalFilespaceHeaderResult ValidatePhysicalFilespaceHeader(const PhysicalFilespaceHeader& expected,
                                                               const PhysicalFilespaceHeader& actual);

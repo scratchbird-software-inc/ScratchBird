@@ -454,7 +454,7 @@ AuthProviderDescriptor AuthProviderDescriptorFromRequest(const EngineApiRequest&
   descriptor.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider:"));
   if (descriptor.provider_family.empty()) { descriptor.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider_family:")); }
   if (descriptor.provider_family.empty()) { descriptor.provider_family = "local_password"; }
-  if (descriptor.provider_uuid.canonical.empty()) { descriptor.provider_uuid.canonical = GenerateCrudEngineUuid("auth_provider"); }
+  if (descriptor.provider_uuid.is_nil()) { descriptor.provider_uuid = GenerateCrudEngineUuid("auth_provider"); }
   descriptor.provider_version = AuthProviderOptionValue(request, "provider_version:");
   if (descriptor.provider_version.empty()) { descriptor.provider_version = "1"; }
   descriptor.implementation_version = AuthProviderOptionValue(request, "implementation_version:");
@@ -480,9 +480,9 @@ AuthProviderPolicy AuthProviderPolicyFromRequest(const EngineApiRequest& request
   policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider:"));
   if (policy.provider_family.empty()) { policy.provider_family = CanonicalAuthProviderFamily(AuthProviderOptionValue(request, "provider_family:")); }
   policy.provider_uuid = request.target_object.uuid;
-  if (policy.provider_uuid.canonical.empty()) { policy.provider_uuid.canonical = AuthProviderOptionValue(request, "provider_uuid:"); }
-  policy.policy_uuid.canonical = AuthProviderOptionValue(request, "policy_uuid:");
-  if (policy.policy_uuid.canonical.empty()) { policy.policy_uuid.canonical = GenerateCrudEngineUuid("policy"); }
+  if (policy.provider_uuid.is_nil()) { policy.provider_uuid = AuthProviderOptionValue(request, "provider_uuid:"); }
+  policy.policy_uuid = AuthProviderOptionValue(request, "policy_uuid:");
+  if (policy.policy_uuid.is_nil()) { policy.policy_uuid = GenerateCrudEngineUuid("policy"); }
   policy.enabled = AuthProviderOptionBool(request, "provider_enabled:", true) && !AuthProviderOptionPresent(request, "provider:disabled");
   policy.allow_password_compat = AuthProviderOptionBool(request, "allow_password_compat:", false);
   policy.require_mfa = AuthProviderOptionBool(request, "mfa_required:", false);
@@ -570,8 +570,8 @@ AuthProviderDecision AdmitAuthProvider(const EngineApiRequest& request) {
   auto decision = Ok(request, "admit_provider");
   decision.admitted = true;
   decision.provider_family = descriptor.provider_family;
-  decision.evidence.push_back({"auth_provider_admitted", descriptor.provider_uuid.canonical});
-  AddRow(&decision, "provider_uuid", descriptor.provider_uuid.canonical);
+  decision.evidence.push_back({"auth_provider_admitted", descriptor.provider_uuid});
+  AddRow(&decision, "provider_uuid", descriptor.provider_uuid);
   AddRow(&decision, "provider_family", descriptor.provider_family);
   AddRow(&decision, "trust_state", descriptor.trust_state);
   AddRow(&decision, "rollout_state", descriptor.rollout_state);
@@ -628,7 +628,7 @@ AuthProviderDecision EvaluateAuthProviderPolicy(const EngineApiRequest& request)
   auto decision = Ok(request, "allow_provider_policy");
   decision.admitted = true;
   decision.provider_family = policy.provider_family;
-  decision.evidence.push_back({"auth_provider_policy", policy.policy_uuid.canonical});
+  decision.evidence.push_back({"auth_provider_policy", policy.policy_uuid});
   AddRow(&decision, "provider_family", policy.provider_family);
   AddRow(&decision, "stale_behavior", policy.stale_behavior);
   AddRow(&decision, "group_behavior", policy.group_behavior);

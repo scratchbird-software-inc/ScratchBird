@@ -27,11 +27,27 @@ enum class ShardedMemoryAccountingTokenState {
   released
 };
 
+using ShardedMemoryScopeKey = std::variant<std::string, MemoryBinaryScopeKey>;
+struct ShardedMemoryScopeHash {
+  usize operator()(const ShardedMemoryScopeKey& key) const noexcept {
+    if (const auto* text = std::get_if<std::string>(&key))
+      return std::hash<std::string>{}(*text);
+    const auto& binary = std::get<MemoryBinaryScopeKey>(key);
+    u64 hash = 1469598103934665603ull;
+    hash = (hash ^ static_cast<u64>(binary.kind)) * 1099511628211ull;
+    for (auto byte : binary.uuid) hash = (hash ^ byte) * 1099511628211ull;
+    return static_cast<usize>(hash);
+  }
+};
+template<class T>
+using ShardedMemoryScopeMap = std::unordered_map<ShardedMemoryScopeKey, T, ShardedMemoryScopeHash>;
+
 struct ShardedMemoryAccountingEvent {
   u64 bytes = 0;
   MemoryTag tag;
   std::vector<std::string> scope_ids;
   bool page_buffer_bytes = false;
+  std::vector<MemoryBinaryScopeKey> binary_scope_ids;
 };
 
 struct ShardedMemoryAccountingToken {
@@ -65,6 +81,7 @@ struct ShardedMemoryAccountingOperationResult {
 
 struct ShardedMemoryAccountingScopeSnapshot {
   std::string scope_id;
+  std::optional<MemoryBinaryScopeKey> binary_scope;
   u64 current_bytes = 0;
   u64 peak_bytes = 0;
   u64 allocation_count = 0;
@@ -97,6 +114,7 @@ struct ShardedMemoryAccountingShardSnapshot {
 
 struct ShardedMemoryAccountingSnapshot {
   std::string context_filter;
+  std::optional<MemoryBinaryScopeKey> binary_context_filter;
   u64 shard_count = 0;
   u64 reserved_bytes = 0;
   u64 current_bytes = 0;
@@ -128,9 +146,12 @@ class ShardedMemoryAccountingLedger {
   ShardedMemoryAccountingResult Reserve(ShardedMemoryAccountingEvent event);
   ShardedMemoryAccountingOperationResult Commit(ShardedMemoryAccountingToken token);
   ShardedMemoryAccountingOperationResult Release(ShardedMemoryAccountingToken token);
+  // Typed terminal outcome even for stale handles; never materializes strings.
+  Status ReleaseNoAlloc(ShardedMemoryAccountingToken token);
 
   ShardedMemoryAccountingSnapshot Snapshot() const;
   ShardedMemoryAccountingSnapshot SnapshotForContext(std::string context_id) const;
+  ShardedMemoryAccountingSnapshot SnapshotForContext(MemoryBinaryScopeKey context) const;
 
   struct ScopeAccounting {
     u64 current_bytes = 0;
@@ -151,9 +172,10 @@ class ShardedMemoryAccountingLedger {
   struct TokenRecord {
     u64 bytes = 0;
     MemoryTag tag;
-    std::vector<std::string> scope_ids;
+    std::vector<ShardedMemoryScopeKey> scope_ids;
     bool page_buffer_bytes = false;
     ShardedMemoryAccountingTokenState state = ShardedMemoryAccountingTokenState::reserved;
+    std::optional<ShardedMemoryScopeKey> owner_key;
   };
 
   struct Shard {
@@ -171,14 +193,17 @@ class ShardedMemoryAccountingLedger {
     u64 page_buffer_peak_bytes = 0;
     std::unordered_map<u64, TokenRecord> active_tokens;
     std::map<MemoryCategory, CategoryAccounting> categories;
-    std::unordered_map<std::string, ScopeAccounting> contexts;
-    std::unordered_map<std::string, ScopeAccounting> owners;
-    std::unordered_map<std::string, std::map<MemoryCategory, CategoryAccounting>> context_categories;
-    std::unordered_map<std::string, std::unordered_map<std::string, ScopeAccounting>> context_owners;
-    std::unordered_map<std::string, ScopeAccounting> context_page_buffers;
+    ShardedMemoryScopeMap<ScopeAccounting> contexts;
+    ShardedMemoryScopeMap<ScopeAccounting> owners;
+    ShardedMemoryScopeMap<std::map<MemoryCategory, CategoryAccounting>> context_categories;
+    ShardedMemoryScopeMap<ShardedMemoryScopeMap<ScopeAccounting>> context_owners;
+    ShardedMemoryScopeMap<ScopeAccounting> context_page_buffers;
   };
 
  private:
+  ShardedMemoryAccountingSnapshot SnapshotForScope(ShardedMemoryScopeKey context) const;
+  ShardedMemoryAccountingOperationResult ReleaseImpl(
+      ShardedMemoryAccountingToken token, bool materialize_diagnostic);
   Shard& ShardForIndex(usize shard_index);
   const Shard& ShardForIndex(usize shard_index) const;
   ShardedMemoryAccountingOperationResult TokenFailure(Shard& shard,
@@ -190,6 +215,9 @@ class ShardedMemoryAccountingLedger {
 
   std::vector<std::unique_ptr<Shard>> shards_;
   std::atomic<u64> next_token_id_{1};
+  // All live reservations, committed or not. CAS admission prevents overflow
+  // even when callers use disjoint accounting shards.
+  std::atomic<u64> global_outstanding_bytes_{0};
   std::atomic<u64> global_current_bytes_{0};
   std::atomic<u64> global_peak_bytes_{0};
   std::atomic<u64> global_page_buffer_current_bytes_{0};

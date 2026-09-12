@@ -150,7 +150,7 @@ EngineApiDiagnostic ValidateCommon(const EngineMemoryManagementRequest& request)
       request.context.local_transaction_id == 0) {
     return MakeInvalidRequestDiagnostic(operation, "local_transaction_id_required");
   }
-  if (request.context.database_uuid.canonical.empty()) {
+  if (request.context.database_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(operation, "database_uuid_required");
   }
   if (request.cluster_scoped && !request.context.cluster_authority_available) {
@@ -187,7 +187,7 @@ EngineApiDiagnostic ValidateGovernance(const EngineMemoryManagementRequest& requ
                                        mem::MemorySupportBundleResult* support_bundle) {
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto& descriptor = request.governance;
-  if (!descriptor.profile_resolved || descriptor.profile_uuid.canonical.empty()) {
+  if (!descriptor.profile_resolved || descriptor.profile_uuid.is_nil()) {
     return MakeInvalidRequestDiagnostic(operation, "memory_profile_required");
   }
   if (auto diagnostic = ValidatePolicyGeneration(
@@ -288,7 +288,7 @@ EngineApiDiagnostic ValidateAutomation(const EngineMemoryManagementRequest& requ
   }
   if ((request.memory_operation == EngineMemoryManagementOperation::review_recommendation ||
        request.memory_operation == EngineMemoryManagementOperation::apply_safe_recommendation) &&
-      (descriptor.recommendation_uuid.canonical.empty() ||
+      (descriptor.recommendation_uuid.is_nil() ||
        !descriptor.recommendation_explainable)) {
     return MakeInvalidRequestDiagnostic(operation, "explainable_recommendation_required");
   }
@@ -362,7 +362,7 @@ EngineApiDiagnostic ValidateObjectResidency(
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto& descriptor = request.object_residency;
   if (!descriptor.profile_resolved ||
-      descriptor.object_uuid.canonical.empty() ||
+      descriptor.object_uuid.is_nil() ||
       descriptor.object_kind.empty() ||
       !descriptor.object_resolved) {
     return MakeInvalidRequestDiagnostic(operation, "resolved_object_residency_policy_required");
@@ -509,8 +509,8 @@ EngineApiDiagnostic ValidatePolicyMigration(
     const EngineMemoryManagementRequest& request) {
   const char* operation = EngineMemoryManagementOperationName(request.memory_operation);
   const auto& descriptor = request.migration;
-  if (descriptor.profile_uuid.canonical.empty() ||
-      descriptor.policy_uuid.canonical.empty() ||
+  if (descriptor.profile_uuid.is_nil() ||
+      descriptor.policy_uuid.is_nil() ||
       descriptor.source_policy_version == 0 ||
       descriptor.target_policy_version == 0 ||
       descriptor.source_schema_version == 0 ||
@@ -689,7 +689,7 @@ void AddSuccessRows(EngineMemoryManagementResult* result,
     AddApiBehaviorRow(
         result,
         {{"memory_safe_automation_executor", "direct_engine_bounded"},
-         {"recommendation_uuid", request.automation.recommendation_uuid.canonical},
+         {"recommendation_uuid", request.automation.recommendation_uuid},
          {"recommendation_generation",
           std::to_string(request.automation.recommendation_generation)},
          {"maintenance_window_bound",
@@ -703,9 +703,9 @@ void AddSuccessRows(EngineMemoryManagementResult* result,
     AddApiBehaviorRow(
         result,
         {{"memory_catalog", kObjectResidencyCatalogName},
-         {"object_uuid", request.object_residency.object_uuid.canonical},
+         {"object_uuid", request.object_residency.object_uuid},
          {"object_kind", request.object_residency.object_kind},
-         {"filespace_uuid", request.object_residency.filespace_uuid.canonical},
+         {"filespace_uuid", request.object_residency.filespace_uuid},
          {"residency_class",
           EngineMemoryObjectResidencyClassName(
               request.object_residency.residency_class)},
@@ -750,8 +750,8 @@ void AddSuccessRows(EngineMemoryManagementResult* result,
     AddApiBehaviorRow(
         result,
         {{"memory_catalog", kPolicyMigrationCatalogName},
-         {"profile_uuid", request.migration.profile_uuid.canonical},
-         {"policy_uuid", request.migration.policy_uuid.canonical},
+         {"profile_uuid", request.migration.profile_uuid},
+         {"policy_uuid", request.migration.policy_uuid},
          {"source_policy_version",
           std::to_string(request.migration.source_policy_version)},
          {"target_policy_version",
@@ -1139,12 +1139,12 @@ EngineApiDiagnostic PersistObjectResidencyPolicy(
   const auto path = MemoryCatalogPath(request.context, kObjectResidencyCatalogName);
   const std::string key =
       std::string("catalog=") + kObjectResidencyCatalogName +
-      "|database_uuid=" + request.context.database_uuid.canonical +
-      "|object_uuid=" + descriptor.object_uuid.canonical + "|";
+      "|database_uuid=" + request.context.database_uuid +
+      "|object_uuid=" + descriptor.object_uuid + "|";
   std::ostringstream line;
   line << key
        << "object_kind=" << descriptor.object_kind
-       << "|filespace_uuid=" << descriptor.filespace_uuid.canonical
+       << "|filespace_uuid=" << descriptor.filespace_uuid
        << "|residency_class="
        << EngineMemoryObjectResidencyClassName(descriptor.residency_class)
        << "|page_types=" << JoinPageTypes(descriptor.page_types)
@@ -1190,11 +1190,11 @@ EngineApiDiagnostic PersistAutomationReportCatalog(
   const auto path = MemoryCatalogPath(request.context, kReportCatalogName);
   const std::string key =
       std::string("catalog=") + kReportCatalogName +
-      "|database_uuid=" + request.context.database_uuid.canonical +
+      "|database_uuid=" + request.context.database_uuid +
       "|report_generation=" + std::to_string(descriptor.report_generation) + "|";
   std::ostringstream line;
   line << key
-       << "recommendation_uuid=" << descriptor.recommendation_uuid.canonical
+       << "recommendation_uuid=" << descriptor.recommendation_uuid
        << "|recommendation_generation=" << descriptor.recommendation_generation
        << "|report_bounded=" << (descriptor.report_bounded ? "true" : "false")
        << "|report_redaction_validated="
@@ -1232,7 +1232,7 @@ EngineApiDiagnostic PersistRateLimitPolicy(
   const auto path = MemoryCatalogPath(request.context, kRateLimitCatalogName);
   const std::string key =
       std::string("catalog=") + kRateLimitCatalogName +
-      "|database_uuid=" + request.context.database_uuid.canonical +
+      "|database_uuid=" + request.context.database_uuid +
       "|limit_class=" + EngineMemoryRateLimitClassName(descriptor.limit_class) + "|";
   std::ostringstream line;
   line << key
@@ -1270,13 +1270,13 @@ EngineApiDiagnostic PersistPolicyMigrationCatalog(
   const auto path = MemoryCatalogPath(request.context, kPolicyMigrationCatalogName);
   const std::string key =
       std::string("catalog=") + kPolicyMigrationCatalogName +
-      "|database_uuid=" + request.context.database_uuid.canonical +
-      "|policy_uuid=" + descriptor.policy_uuid.canonical +
+      "|database_uuid=" + request.context.database_uuid +
+      "|policy_uuid=" + descriptor.policy_uuid +
       "|target_policy_version=" + std::to_string(descriptor.target_policy_version) +
       "|target_schema_version=" + std::to_string(descriptor.target_schema_version) + "|";
   std::ostringstream line;
   line << key
-       << "profile_uuid=" << descriptor.profile_uuid.canonical
+       << "profile_uuid=" << descriptor.profile_uuid
        << "|source_policy_version=" << descriptor.source_policy_version
        << "|source_schema_version=" << descriptor.source_schema_version
        << "|policy_schema_validated="

@@ -9,9 +9,9 @@
 #include "descriptor_value_runtime.hpp"
 
 #include "datatype_operations.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <limits>
@@ -39,17 +39,8 @@ DescriptorRuntimeDiagnostic Refusal(std::string detail) {
   return diagnostic;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const api::EngineUuid& value) noexcept {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 const DescriptorBatch& ComparisonBatch(
@@ -662,14 +653,14 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       !input.authority.engine_mga_snapshot_bound ||
       !PhysicalMgaStatementContextValid(input.mga_statement_context) ||
       !IsCanonicalUuid(input.window_property_uuid) ||
-      (input.partition_terms.empty() != input.partition_property_uuid.empty()) ||
+      (input.partition_terms.empty() != input.partition_property_uuid.is_nil()) ||
       (!input.partition_terms.empty() &&
        !IsCanonicalUuid(input.partition_property_uuid)) ||
-      (input.order_terms.empty() != input.ordering_property_uuid.empty()) ||
+      (input.order_terms.empty() != input.ordering_property_uuid.is_nil()) ||
       (!input.order_terms.empty() &&
        !IsCanonicalUuid(input.ordering_property_uuid)) ||
       ((!input.partition_terms.empty() || !input.order_terms.empty()) !=
-       !input.term_binding_evidence_uuid.empty()) ||
+       !input.term_binding_evidence_uuid.is_nil()) ||
       ((!input.partition_terms.empty() || !input.order_terms.empty()) &&
        !IsCanonicalUuid(input.term_binding_evidence_uuid)) ||
       !IsCanonicalUuid(input.deterministic_tie_evidence_uuid) ||
@@ -680,7 +671,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
           input.partition_property_uuid ||
       input.deterministic_tie_evidence_uuid ==
           input.ordering_property_uuid ||
-      (!input.term_binding_evidence_uuid.empty() &&
+      (!input.term_binding_evidence_uuid.is_nil() &&
        (input.term_binding_evidence_uuid == input.window_property_uuid ||
         input.term_binding_evidence_uuid == input.partition_property_uuid ||
         input.term_binding_evidence_uuid == input.ordering_property_uuid)) ||

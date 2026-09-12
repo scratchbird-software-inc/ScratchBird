@@ -871,7 +871,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  source_descriptor != dag.descriptors.end() &&
                  *source_index < bounded_signed_source_type_uuids.size() &&
                  source_descriptor->descriptor_uuid ==
-                     source_column.descriptor.descriptor_uuid.canonical &&
+                     source_column.descriptor.descriptor_uuid &&
                  source_descriptor->descriptor_uuid !=
                      source_descriptor->type_uuid &&
                  source_descriptor->descriptor_uuid !=
@@ -908,7 +908,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                  !core_boolean_type_uuid.empty() &&
                  source_descriptor != dag.descriptors.end() &&
                  source_descriptor->descriptor_uuid ==
-                     source_column.descriptor.descriptor_uuid.canonical &&
+                     source_column.descriptor.descriptor_uuid &&
                  source_descriptor->descriptor_uuid !=
                      source_descriptor->type_uuid &&
                  source_descriptor->descriptor_uuid !=
@@ -1479,7 +1479,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       {aggregate->abi_version, aggregate->function, aggregate->builtin_id,
        aggregate->function_uuid, count_star};
   api::EngineDescriptor engine_descriptor;
-  engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+  engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
+  engine_descriptor.type_uuid = descriptor->type_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   if (is_array_agg) {
     engine_descriptor.canonical_type_name = "list<text nullable>";
@@ -1499,7 +1500,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     engine_descriptor.canonical_type_name = "int64";
   }
   engine_descriptor.encoded_descriptor =
-      "type_uuid=" + descriptor->type_uuid + ";nullability=" +
+      std::string("nullability=") +
       (result_nullable ? "nullable" : "non_null");
   result.result_column = {output->output_name_utf8, engine_descriptor,
                           result_nullable, descriptor->descriptor_id};

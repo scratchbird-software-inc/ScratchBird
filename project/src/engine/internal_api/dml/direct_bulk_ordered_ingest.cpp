@@ -269,7 +269,7 @@ DirectOrderedIngestSelection ApplyDirectOrderedIngestPlan(
 
   scratchbird::storage::page::OrderedIngestPhysicalClusteringRequest clustering;
   clustering.current_descriptor.relation_uuid =
-      request.target_table.uuid.canonical;
+      request.target_table.uuid;
   clustering.current_descriptor.placement_key_column =
       DirectOptionValue(request, "physical_clustering.current_key");
   clustering.current_descriptor.policy_uuid =

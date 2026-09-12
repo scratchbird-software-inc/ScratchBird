@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "model_family_coordinator.hpp"
+#include "../executor/runtime_identity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,54 +13,21 @@
 #include <sstream>
 #include <tuple>
 #include <unordered_set>
+#include "../../core/uuid/uuid.hpp"
 
 namespace scratchbird::engine::optimizer {
 namespace {
 
 struct ActiveMultilegDescriptorDispatchV1 {
-  std::string statement_uuid;
+  internal_api::EngineUuid statement_uuid;
   std::vector<MultilegDescriptorProfileV1> profiles;
 };
 
 thread_local std::optional<ActiveMultilegDescriptorDispatchV1>
     g_active_multileg_descriptor_dispatch_v1;
 
-bool CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
-
-std::string DerivedUuid(const std::string_view seed) {
-  std::uint64_t high = 1469598103934665603ULL;
-  std::uint64_t low = 1099511628211ULL;
-  for (const auto ch : seed) {
-    high = (high ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
-    low = (low + static_cast<unsigned char>(ch)) * 1469598103934665603ULL;
-  }
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string raw(32, '0');
-  for (std::size_t index = 0; index < 16; ++index) {
-    raw[index] = kHex[(high >> ((15 - index) * 4)) & 0xf];
-    raw[16 + index] = kHex[(low >> ((15 - index) * 4)) & 0xf];
-  }
-  raw[12] = '7';
-  raw[16] = kHex[(static_cast<unsigned>(raw[16] <= '9'
-                                            ? raw[16] - '0'
-                                            : raw[16] - 'a' + 10) &
-                  0x3) |
-                 0x8];
-  return raw.substr(0, 8) + "-" + raw.substr(8, 4) + "-" +
-         raw.substr(12, 4) + "-" + raw.substr(16, 4) + "-" +
-         raw.substr(20, 12);
+bool CanonicalUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool Add(std::uint64_t value, std::uint64_t* total) {
@@ -68,23 +36,13 @@ bool Add(std::uint64_t value, std::uint64_t* total) {
   return true;
 }
 
-std::string JsonEscape(const std::string_view value) {
-  std::string escaped;
-  escaped.reserve(value.size());
-  for (const char ch : value) {
-    if (ch == '\\' || ch == '"') escaped.push_back('\\');
-    escaped.push_back(ch);
-  }
-  return escaped;
-}
-
 bool CandidateScore(const ModelFamilyCandidateV1& candidate,
                     std::uint64_t* score) {
   const auto scalar_score = ScalarizeModelFamilyCostVectorV1(candidate.cost);
   if (!scalar_score.has_value()) return false;
   *score = *scalar_score;
   const bool optimizer_owned =
-      !candidate.candidate_inventory_receipt_uuid.empty();
+      !candidate.candidate_inventory_receipt_uuid.is_nil();
   return !optimizer_owned ||
           (candidate.cost.scalarization_policy_id ==
                "model-family.complete-unit-sum-minus-cache-benefit.v1" &&
@@ -283,15 +241,15 @@ bool CheckedMultiply(const std::uint64_t left,
 
 bool CanonicalDescriptorLineage(
     const std::vector<std::uint32_t>& descriptor_ids,
-    const std::vector<std::string>& descriptor_uuids) {
+    const std::vector<internal_api::EngineUuid>& descriptor_uuids) {
   if (descriptor_ids.empty() || descriptor_ids.size() != descriptor_uuids.size()) {
     return false;
   }
   std::set<std::uint32_t> ids;
-  std::set<std::string> uuids;
+  std::set<internal_api::EngineUuid> uuids;
   for (std::size_t index = 0; index < descriptor_ids.size(); ++index) {
     if (descriptor_ids[index] == 0 || !ids.insert(descriptor_ids[index]).second ||
-        !CanonicalUuid(descriptor_uuids[index]) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuids[index]) ||
         !uuids.insert(descriptor_uuids[index]).second) {
       return false;
     }
@@ -486,96 +444,6 @@ std::optional<std::uint64_t> ScalarizeModelFamilyCostVectorV1(
   return score;
 }
 
-std::string SerializeModelFamilyCostVectorToJsonV1(
-    const ModelFamilyCostVectorV1& cost) {
-  std::ostringstream out;
-  out << "{\"cost_vector_uuid\":\"" << JsonEscape(cost.cost_vector_uuid)
-      << "\",\"provenance_uuid\":\"" << JsonEscape(cost.provenance_uuid)
-      << "\",\"property_snapshot_uuid\":\""
-      << JsonEscape(cost.property_snapshot_uuid)
-      << "\",\"calibration_profile_uuid\":\""
-      << JsonEscape(cost.calibration_profile_uuid)
-      << "\",\"scalarization_policy_id\":\""
-      << JsonEscape(cost.scalarization_policy_id)
-      << "\",\"provenance_generation\":" << cost.provenance_generation
-      << ",\"confidence_basis_points\":" << cost.confidence_basis_points
-      << ",\"scalar_score\":" << cost.scalar_score
-      << ",\"startup_units\":" << cost.startup_units
-      << ",\"cpu_units\":" << cost.cpu_units
-      << ",\"sequential_read_units\":" << cost.sequential_read_units
-      << ",\"random_read_units\":" << cost.random_read_units
-      << ",\"page_write_units\":" << cost.page_write_units
-      << ",\"cache_units\":" << cost.cache_units
-      << ",\"memory_bytes_required\":" << cost.memory_bytes_required
-      << ",\"memory_grant_units\":" << cost.memory_grant_units
-      << ",\"spill_units\":" << cost.spill_units
-      << ",\"network_units\":" << cost.network_units
-      << ",\"compression_units\":" << cost.compression_units
-      << ",\"encryption_units\":" << cost.encryption_units
-      << ",\"predicate_evaluation_units\":"
-      << cost.predicate_evaluation_units
-      << ",\"vector_distance_units\":" << cost.vector_distance_units
-      << ",\"text_scoring_units\":" << cost.text_scoring_units
-      << ",\"spatial_evaluation_units\":" << cost.spatial_evaluation_units
-      << ",\"udr_invocation_units\":" << cost.udr_invocation_units
-      << ",\"mga_units\":" << cost.mga_units
-      << ",\"index_maintenance_units\":"
-      << cost.index_maintenance_units
-      << ",\"cache_miss_units\":" << cost.cache_miss_units
-      << ",\"cache_residency_benefit_units\":"
-      << cost.cache_residency_benefit_units
-      << ",\"memory_allocation_units\":"
-      << cost.memory_allocation_units
-      << ",\"memory_grant_opportunity_units\":"
-      << cost.memory_grant_opportunity_units
-      << ",\"spill_write_units\":" << cost.spill_write_units
-      << ",\"spill_read_units\":" << cost.spill_read_units
-      << ",\"temp_space_pressure_units\":"
-      << cost.temp_space_pressure_units
-      << ",\"decompression_units\":" << cost.decompression_units
-      << ",\"decryption_units\":" << cost.decryption_units
-      << ",\"expression_evaluation_units\":"
-      << cost.expression_evaluation_units
-      << ",\"domain_cast_units\":" << cost.domain_cast_units
-      << ",\"datatype_conversion_units\":"
-      << cost.datatype_conversion_units
-      << ",\"collation_comparison_units\":"
-      << cost.collation_comparison_units
-      << ",\"mga_version_traversal_units\":"
-      << cost.mga_version_traversal_units
-      << ",\"mga_visibility_check_units\":"
-      << cost.mga_visibility_check_units
-      << ",\"archive_fetch_units\":" << cost.archive_fetch_units
-      << ",\"garbage_retention_pressure_units\":"
-      << cost.garbage_retention_pressure_units
-      << ",\"lock_latch_wait_risk_units\":"
-      << cost.lock_latch_wait_risk_units
-      << ",\"network_latency_units\":" << cost.network_latency_units
-      << ",\"network_bandwidth_units\":"
-      << cost.network_bandwidth_units
-      << ",\"remote_execution_startup_units\":"
-      << cost.remote_execution_startup_units
-      << ",\"cluster_coordination_units\":"
-      << cost.cluster_coordination_units
-      << ",\"repartition_units\":" << cost.repartition_units
-      << ",\"broadcast_units\":" << cost.broadcast_units
-      << ",\"replica_staleness_risk_units\":"
-      << cost.replica_staleness_risk_units
-      << ",\"quorum_availability_risk_units\":"
-      << cost.quorum_availability_risk_units
-      << ",\"donor_compatibility_enforcement_units\":"
-      << cost.donor_compatibility_enforcement_units
-      << ",\"result_ordering_enforcement_units\":"
-      << cost.result_ordering_enforcement_units
-      << ",\"uncertainty_penalty\":" << cost.uncertainty_penalty
-      << ",\"risk_penalty\":" << cost.risk_penalty
-      << ",\"plan_instability_penalty\":"
-      << cost.plan_instability_penalty
-      << ",\"complete_dimension_vector\":"
-      << (cost.complete_dimension_vector ? "true" : "false") << '}';
-  return out.str();
-}
-
 ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const ModelFamilyCoordinatorRequestV1& request) {
   // QOW-SOURCE-RCP-074-COMMON-MODEL-COORDINATOR-V1
@@ -705,7 +573,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
       request.logical_operator_id != expected_logical_operator ||
       request.logical_node_id == 0 || request.output_descriptor_ids.empty() ||
       (!unnest && !CanonicalUuid(request.object_uuid)) ||
-      (unnest && !request.object_uuid.empty()) ||
+      (unnest && !request.object_uuid.is_nil()) ||
       !CanonicalUuid(request.bound_sblr_tree_uuid) ||
       !CanonicalUuid(request.catalog_epoch_uuid) ||
       !CanonicalUuid(request.security_context_uuid) ||
@@ -733,16 +601,16 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
                   "model-family source security admission was refused");
   }
 
-  std::unordered_set<std::string> alternative_ids;
+  std::set<internal_api::EngineUuid> alternative_ids;
   const ModelFamilyCandidateV1* selected = nullptr;
   std::uint64_t selected_score = 0;
   bool fallback_seen = false;
   bool memory_refusal_observed = false;
-  std::string optimizer_inventory_receipt_uuid;
+  internal_api::EngineUuid optimizer_inventory_receipt_uuid;
   for (const auto& candidate : request.candidates) {
     std::uint64_t score = 0;
     const bool optimizer_owned_candidate =
-        !candidate.candidate_inventory_receipt_uuid.empty();
+        !candidate.candidate_inventory_receipt_uuid.is_nil();
     const bool route_class_consistent =
         !optimizer_owned_candidate ||
         (candidate.exact_collection_fallback ==
@@ -751,7 +619,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     const bool inventory_receipt_consistent =
         !optimizer_owned_candidate ||
         (CanonicalUuid(candidate.candidate_inventory_receipt_uuid) &&
-         (optimizer_inventory_receipt_uuid.empty() ||
+         (optimizer_inventory_receipt_uuid.is_nil() ||
           optimizer_inventory_receipt_uuid ==
               candidate.candidate_inventory_receipt_uuid));
     if (!CanonicalUuid(candidate.alternative_uuid) ||
@@ -775,7 +643,7 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
       return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                     "model-family candidate domain is incomplete or duplicated");
     }
-    if (optimizer_owned_candidate && optimizer_inventory_receipt_uuid.empty()) {
+    if (optimizer_owned_candidate && optimizer_inventory_receipt_uuid.is_nil()) {
       optimizer_inventory_receipt_uuid =
           candidate.candidate_inventory_receipt_uuid;
     }
@@ -826,8 +694,12 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   using namespace scratchbird::engine::executor;
   TypedPhysicalNodeDag dag;
   dag.abi_version = 1;
-  dag.selected_plan_uuid = DerivedUuid(
-      request.bound_sblr_tree_uuid + "|" + selected->alternative_uuid);
+  const auto plan_identity = IssueRuntimeIdentityV7();
+  if (!plan_identity) {
+    return refuse("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+                  "engine plan identity issuance failed");
+  }
+  dag.selected_plan_uuid = *plan_identity;
   dag.root_physical_node_id = request.logical_node_id;
   dag.local_transaction_id =
       request.mga_statement_context.owning_local_transaction_id;
@@ -902,13 +774,12 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
   result.deterministic = true;
   result.exact_fallback_selected = selected->exact_collection_fallback;
   result.optimizer_owned_enumeration =
-      !selected->candidate_inventory_receipt_uuid.empty();
+      !selected->candidate_inventory_receipt_uuid.is_nil();
   result.selected_candidate = *selected;
   result.physical_dag = std::move(dag);
   result.candidate_inventory_receipt_uuid =
       selected->candidate_inventory_receipt_uuid;
-  result.selected_cost_explain_json =
-      SerializeModelFamilyCostVectorToJsonV1(selected->cost);
+  result.selected_cost_explain = selected->cost;
   return result;
 }
 
@@ -936,8 +807,8 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
     return refuse("SB_MODEL_RESULT_DESCRIPTOR_COHORT_INVALID_V1",
                   "multileg descriptor suffix must contain exactly 320 profiles");
   }
-  std::array<std::string, 24> kind_type_uuids;
-  std::set<std::string> descriptor_uuids;
+  std::array<internal_api::EngineUuid, 24> kind_type_uuids;
+  std::set<internal_api::EngineUuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < profiles.size(); ++ordinal) {
     const auto& profile = profiles[ordinal];
     const auto expected_kind = static_cast<std::uint8_t>(14 + ordinal / 32);
@@ -947,14 +818,13 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
         profile.slot != expected_slot ||
         profile.nullable != expected_nullable ||
         !CanonicalUuid(profile.descriptor_uuid) ||
-        profile.descriptor_uuid[14] != '7' ||
         !CanonicalUuid(profile.type_uuid) ||
         !descriptor_uuids.insert(profile.descriptor_uuid).second) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_COHORT_INVALID_V1",
                     "multileg descriptor suffix identity or order drifted");
     }
     auto& type_uuid = kind_type_uuids[profile.profile_kind];
-    if (type_uuid.empty()) {
+    if (type_uuid.is_nil()) {
       type_uuid = profile.type_uuid;
     } else if (type_uuid != profile.type_uuid) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_COHORT_INVALID_V1",
@@ -962,9 +832,9 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
     }
   }
   const std::array<std::uint8_t, 5> nonnull_kinds = {14, 16, 18, 20, 22};
-  std::set<std::string> distinct_type_uuids;
+  std::set<internal_api::EngineUuid> distinct_type_uuids;
   for (const auto kind : nonnull_kinds) {
-    if (kind_type_uuids[kind].empty() ||
+    if (kind_type_uuids[kind].is_nil() ||
         kind_type_uuids[kind] != kind_type_uuids[kind + 1] ||
         !distinct_type_uuids.insert(kind_type_uuids[kind]).second) {
       return refuse("SB_MODEL_RESULT_DESCRIPTOR_COHORT_INVALID_V1",
@@ -1045,8 +915,8 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
     allocation.slot = profile.slot;
     result.allocations.push_back(std::move(allocation));
   }
-  std::set<std::string> allocated_descriptor_uuids;
-  std::set<std::string> allocated_type_uuids;
+  std::set<internal_api::EngineUuid> allocated_descriptor_uuids;
+  std::set<internal_api::EngineUuid> allocated_type_uuids;
   for (const auto& allocation : result.allocations) {
     allocated_descriptor_uuids.insert(allocation.descriptor_uuid);
     allocated_type_uuids.insert(allocation.type_uuid);
@@ -1065,7 +935,7 @@ MultilegDescriptorAllocationResultV1 AllocateMultilegResultDescriptorsV1(
 }
 
 MultilegDescriptorDispatchScopeV1::MultilegDescriptorDispatchScopeV1(
-    const std::string& statement_uuid,
+    const internal_api::EngineUuid& statement_uuid,
     const std::vector<MultilegDescriptorProfileV1>& profiles)
     : statement_uuid_(statement_uuid) {
   if (!CanonicalUuid(statement_uuid)) {
@@ -1103,7 +973,7 @@ MultilegDescriptorDispatchScopeV1::~MultilegDescriptorDispatchScopeV1() {
 }
 
 MultilegDescriptorDispatchLookupV1 LookupMultilegDescriptorDispatchScopeV1(
-    const std::string& exact_statement_uuid) {
+    const internal_api::EngineUuid& exact_statement_uuid) {
   MultilegDescriptorDispatchLookupV1 result;
   if (!CanonicalUuid(exact_statement_uuid)) {
     result.diagnostic_id = "SB_MODEL_RESULT_DESCRIPTOR_SCOPE_INVALID_V1";
@@ -1135,7 +1005,7 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
     result.root_publication_allowed = false;
     result.no_partial_root = true;
     result.lexical_legs.clear();
-    result.composition_receipt_uuid.clear();
+    result.composition_receipt_uuid = {};
     result.diagnostic_id = std::move(diagnostic);
     result.detail = std::move(detail);
     return result;
@@ -1175,7 +1045,6 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
   }
   std::set<std::uint16_t> source_ordinals;
   const auto& statement_context = request.legs.front().mga_statement_context;
-  std::string receipt_seed = request.composition_profile_id;
   for (const auto& leg : request.legs) {
     if (!family_ids.contains(leg.family_id) ||
         !source_ordinals.insert(leg.lexical_source_ordinal).second ||
@@ -1191,7 +1060,6 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
       return refuse("SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
                     "composition leg is invalid or does not share one statement context");
     }
-    receipt_seed += "|" + leg.family_id + "|" + leg.selected_plan_uuid;
   }
   if (request.composition_profile_id == "COMP-4-MIXED-V1") {
     const std::array<std::string, 4> expected = {
@@ -1241,13 +1109,18 @@ ModelFamilyCompositionResultV1 CoordinateModelFamilyCompositionV1(
     return refuse("SB_MODEL_COORDINATOR_LEG_FAILED_V1",
                   "the named failed leg blocks dependents and partial root publication");
   }
+  const auto composition_identity = executor::IssueRuntimeIdentityV7();
+  if (!composition_identity) {
+    return refuse("SB_MODEL_COMPOSITION_PROFILE_REFUSED_V1",
+                  "engine composition identity issuance failed");
+  }
   result.accepted = true;
   result.deterministic = true;
   result.root_publication_allowed = true;
   result.no_partial_root = true;
   result.empty_root_required =
       request.composition_profile_id == "COMP-3-SHORT-CIRCUIT-V1";
-  result.composition_receipt_uuid = DerivedUuid(receipt_seed);
+  result.composition_receipt_uuid = *composition_identity;
   result.diagnostic_id = "SB_EXECUTOR_OK";
   return result;
 }
@@ -1268,8 +1141,8 @@ CoordinateModelFamilyDependencyDagValidatedV1(
     result.dependency_edges.clear();
     result.relational_consumers.clear();
     result.rule_receipts.clear();
-    result.dependency_dag_receipt_uuid.clear();
-    result.composition_admission_receipt_uuid.clear();
+    result.dependency_dag_receipt_uuid = {};
+    result.composition_admission_receipt_uuid = {};
     result.diagnostic_id = std::move(diagnostic);
     result.detail = std::move(detail);
     return result;
@@ -1352,7 +1225,7 @@ CoordinateModelFamilyDependencyDagValidatedV1(
                   "COMP-9-FULL-UNIVERSE dependency family order drifted");
   }
 
-  std::set<std::string> node_uuids;
+  std::set<internal_api::EngineUuid> node_uuids;
   std::set<std::uint64_t> root_node_ids;
   std::set<std::uint32_t> result_descriptor_ids;
   const auto& statement_context = request.legs.front().mga_statement_context;
@@ -1463,8 +1336,8 @@ CoordinateModelFamilyDependencyDagValidatedV1(
     return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
                   "typed relational consumer cardinality differs from the signed composition profile");
   }
-  std::map<std::string, std::vector<std::uint32_t>> node_descriptors;
-  std::map<std::string, std::uint64_t> node_parent_counts;
+  std::map<internal_api::EngineUuid, std::vector<std::uint32_t>> node_descriptors;
+  std::map<internal_api::EngineUuid, std::uint64_t> node_parent_counts;
   for (const auto& leg : request.legs) {
     node_descriptors.emplace(leg.physical_node_uuid,
                              leg.output_descriptor_ids);
@@ -1627,7 +1500,7 @@ CoordinateModelFamilyDependencyDagValidatedV1(
                   "runtime feedback attempted to mutate the current plan or cross a generation boundary");
   }
 
-  std::set<std::string> edge_uuids;
+  std::set<internal_api::EngineUuid> edge_uuids;
   std::set<EdgePair> actual_edge_pairs;
   std::vector<std::vector<std::uint16_t>> outgoing(request.legs.size());
   std::vector<std::vector<std::uint16_t>> incoming(request.legs.size());
@@ -1682,11 +1555,13 @@ CoordinateModelFamilyDependencyDagValidatedV1(
   std::uint32_t stable_start_ordinal = 0;
   std::uint64_t causal_counter = 0;
   std::uint64_t peak_memory = 0;
-  std::string dag_seed = request.composition_profile_id + "|" +
-                         request.bound_sblr_tree_uuid + "|" +
-                         std::to_string(request.selected_plan_generation);
-  const auto composition_admission_receipt_uuid = DerivedUuid(
-      dag_seed + "|composition-admission.v1");
+  const auto composition_admission_identity = executor::IssueRuntimeIdentityV7();
+  const auto dependency_identity = executor::IssueRuntimeIdentityV7();
+  if (!composition_admission_identity || !dependency_identity) {
+    return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                  "engine dependency/admission identity issuance failed");
+  }
+  const auto composition_admission_receipt_uuid = *composition_admission_identity;
   while (result.stable_schedule.size() < request.legs.size()) {
     std::vector<std::uint16_t> ready;
     for (std::uint16_t ordinal = 0; ordinal < request.legs.size(); ++ordinal) {
@@ -1738,8 +1613,6 @@ CoordinateModelFamilyDependencyDagValidatedV1(
       scheduled_leg.schedule_wave = wave;
       scheduled_leg.stable_start_ordinal = stable_start_ordinal++;
       scheduled_leg.causal_counter_id = ++causal_counter;
-      dag_seed += "|" + scheduled_leg.leg.physical_node_uuid + ":" +
-                  std::to_string(scheduled_leg.causal_counter_id);
       result.stable_schedule.push_back(std::move(scheduled_leg));
     }
     for (const auto ordinal : ready) {
@@ -1781,10 +1654,11 @@ CoordinateModelFamilyDependencyDagValidatedV1(
     receipt.evidence_id = evidence_id;
     receipt.causal_counter_id = ++causal_counter;
     receipt.complete = complete;
-    receipt.receipt_uuid = DerivedUuid(
-        dag_seed + "|" + receipt.rule_id + "|" + receipt.evidence_id + "|" +
-        std::to_string(receipt.causal_counter_id));
+    const auto identity = executor::IssueRuntimeIdentityV7();
+    if (!identity) return false;
+    receipt.receipt_uuid = *identity;
     result.rule_receipts.push_back(std::move(receipt));
+    return true;
   };
   static constexpr std::array<std::string_view, 24> kEvidence = {
       "bound_object_uuid_receipt",
@@ -1820,7 +1694,10 @@ CoordinateModelFamilyDependencyDagValidatedV1(
     const bool admission_complete =
         index <= 10 || index == 13 || index == 22 ||
         (index == 23 && feedback_later);
-    add_receipt(rule, kEvidence[index], admission_complete);
+    if (!add_receipt(rule, kEvidence[index], admission_complete)) {
+      return refuse("SB_MODEL_DEPENDENCY_DAG_INVALID_V1",
+                    "engine rule receipt identity issuance failed");
+    }
   }
 
   result.accepted = true;
@@ -1837,7 +1714,7 @@ CoordinateModelFamilyDependencyDagValidatedV1(
       static_cast<std::uint64_t>(request.relational_consumers.size()) +
       (request.spill_required ? 2 : 0);
   result.dependency_edges = request.edges;
-  result.dependency_dag_receipt_uuid = DerivedUuid(dag_seed);
+  result.dependency_dag_receipt_uuid = *dependency_identity;
   result.composition_admission_receipt_uuid =
       composition_admission_receipt_uuid;
   result.diagnostic_id = "SB_EXECUTOR_OK";
@@ -1880,9 +1757,9 @@ CoordinateModelFamilyDependencyDagV1(
                   "dependency coordinator request is structurally invalid");
   }
 
-  std::set<std::string> bound_node_uuids;
+  std::set<internal_api::EngineUuid> bound_node_uuids;
   std::set<std::uint64_t> bound_node_ids;
-  std::set<std::string> bound_descriptor_uuids;
+  std::set<internal_api::EngineUuid> bound_descriptor_uuids;
   std::set<std::uint32_t> bound_descriptor_ids;
   for (std::size_t index = 0; index < request.legs.size(); ++index) {
     const auto& leg = request.legs[index];
@@ -1981,7 +1858,7 @@ CoordinateModelFamilyDependencyDagV1(
       return refuse("SB_MODEL_CANDIDATE_SEMANTICS_MISSING_V1",
                     "COORD-006 family-local candidate inventory is absent");
     }
-    std::set<std::string> alternatives;
+    std::set<internal_api::EngineUuid> alternatives;
     for (const auto& candidate : leg.candidate_alternatives) {
       if (!CanonicalUuid(candidate.alternative_uuid) ||
           !alternatives.insert(candidate.alternative_uuid).second ||
@@ -2101,7 +1978,7 @@ CoordinateModelFamilyDependencyDagV1(
     }
   }
 
-  std::set<std::string> edge_uuids;
+  std::set<internal_api::EngineUuid> edge_uuids;
   for (const auto& edge : request.edges) {
     if (edge.abi_version != 1 || !CanonicalUuid(edge.edge_uuid) ||
         !edge_uuids.insert(edge.edge_uuid).second ||
@@ -2135,9 +2012,9 @@ CoordinateModelFamilyDependencyDagV1(
     }
   }
 
-  std::set<std::string> consumer_uuids;
+  std::set<internal_api::EngineUuid> consumer_uuids;
   std::set<std::uint64_t> consumer_causal_counters;
-  std::map<std::string, std::uint64_t> consumer_causal_by_node;
+  std::map<internal_api::EngineUuid, std::uint64_t> consumer_causal_by_node;
   std::size_t canonical_root_count = 0;
   for (const auto& consumer : request.relational_consumers) {
     const bool shared_root_projection =
@@ -2149,11 +2026,11 @@ CoordinateModelFamilyDependencyDagV1(
               consumer.input_descriptor_uuids.size()) {
         return false;
       }
-      std::map<std::uint32_t, std::string> lineage;
+      std::map<std::uint32_t, internal_api::EngineUuid> lineage;
       for (std::size_t index = 0;
            index < consumer.input_descriptor_ids.size(); ++index) {
         if (consumer.input_descriptor_ids[index] == 0 ||
-            !CanonicalUuid(consumer.input_descriptor_uuids[index])) {
+            !scratchbird::core::uuid::IsEngineIdentityUuid(consumer.input_descriptor_uuids[index])) {
           return false;
         }
         const auto [found, inserted] = lineage.emplace(
@@ -2184,7 +2061,7 @@ CoordinateModelFamilyDependencyDagV1(
                     "COORD-008 typed relational consumer identity is invalid");
     }
     std::vector<std::uint32_t> projected_input_ids;
-    std::vector<std::string> projected_input_uuids;
+    std::vector<internal_api::EngineUuid> projected_input_uuids;
     if (shared_root_projection) {
       std::set<std::uint32_t> seen;
       for (std::size_t index = 0;

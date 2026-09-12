@@ -7,11 +7,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_snapshot.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -55,6 +57,8 @@ u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory
 struct PublishedSnapshotVector {
   SnapshotVectorDescriptor descriptor;
   bool revoked = false;
+  bool publication_released = false;
+  std::size_t pins = 0;
 };
 
 std::mutex& SnapshotVectorRegistryMutex() {
@@ -62,8 +66,11 @@ std::mutex& SnapshotVectorRegistryMutex() {
   return mutex;
 }
 
-std::map<std::string, PublishedSnapshotVector>& SnapshotVectorRegistry() {
-  static std::map<std::string, PublishedSnapshotVector> registry;
+using SnapshotIdentity = std::array<scratchbird::core::platform::byte, 16>;
+static_assert(sizeof(SnapshotIdentity) == 16);
+using SnapshotRegistry = std::map<SnapshotIdentity, std::shared_ptr<PublishedSnapshotVector>>;
+SnapshotRegistry& SnapshotVectorRegistry() {
+  static SnapshotRegistry registry;
   return registry;
 }
 
@@ -112,8 +119,10 @@ bool SnapshotVectorStructurallyComplete(
     const SnapshotVectorDescriptor& descriptor) {
   if (!descriptor.snapshot_uuid.valid() ||
       descriptor.snapshot_uuid.kind != UuidKind::object ||
+      scratchbird::core::uuid::UuidVersion(descriptor.snapshot_uuid.value) != 7 ||
       !descriptor.owning_transaction_uuid.valid() ||
       descriptor.owning_transaction_uuid.kind != UuidKind::transaction ||
+      scratchbird::core::uuid::UuidVersion(descriptor.owning_transaction_uuid.value) != 7 ||
       !descriptor.owning_transaction.valid() ||
       descriptor.snapshot_kind != SnapshotVectorKind::statement_stable ||
       descriptor.publication_inventory_next_local_transaction_id == 0 ||
@@ -163,9 +172,102 @@ bool SnapshotVectorStructurallyComplete(
 
 }  // namespace
 
+struct PublishedSnapshotPin::Lease {
+  explicit Lease(std::shared_ptr<PublishedSnapshotVector> published)
+      : published(std::move(published)) {}
+  std::shared_ptr<PublishedSnapshotVector> published;
+  ~Lease() {
+    std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+    --published->pins;
+    if (published->publication_released && published->pins == 0)
+      SnapshotVectorRegistry().erase(published->descriptor.snapshot_uuid.value.bytes);
+  }
+};
+
+PublishedSnapshotPin RetainPublishedSnapshotVector(const TypedUuid& snapshot_uuid) {
+  if (!snapshot_uuid.valid() || snapshot_uuid.kind != UuidKind::object) return {};
+  std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+  const auto found = SnapshotVectorRegistry().find(snapshot_uuid.value.bytes);
+  if (found == SnapshotVectorRegistry().end() || found->second->revoked ||
+      found->second->publication_released ||
+      found->second->pins == std::numeric_limits<std::size_t>::max() ||
+      !SnapshotVectorStructurallyComplete(found->second->descriptor)) return {};
+  auto lease = std::make_shared<PublishedSnapshotPin::Lease>(found->second);
+  ++found->second->pins;
+  return PublishedSnapshotPin(std::move(lease));
+}
+
+SnapshotVectorResult PublishedSnapshotPin::Resolve() const {
+  if (!lease_) return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-UNKNOWN",
+                                         "transaction.snapshot_vector.unknown");
+  std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+  const auto& published = *lease_->published;
+  if (published.revoked)
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-REVOKED",
+                               "transaction.snapshot_vector.revoked");
+  SnapshotVectorResult result;
+  result.status = SnapshotOkStatus();
+  result.descriptor = published.descriptor;
+  return result;
+}
+
+void ReleasePublishedSnapshotVector(const TypedUuid& snapshot_uuid) {
+  if (!snapshot_uuid.valid() || snapshot_uuid.kind != UuidKind::object) return;
+  std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+  const auto found = SnapshotVectorRegistry().find(snapshot_uuid.value.bytes);
+  if (found == SnapshotVectorRegistry().end()) return;
+  found->second->publication_released = true;
+  if (found->second->pins == 0) SnapshotVectorRegistry().erase(found);
+}
+
+PublishedSnapshotHorizonResult PublishedSnapshotRetentionHorizons(
+    const LocalTransactionInventory& inventory) {
+  PublishedSnapshotHorizonResult result;
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    const auto invalid = SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                                             "transaction.snapshot_vector.inventory_invalid", reason);
+    result.status = invalid.status;
+    result.diagnostic = invalid.diagnostic;
+    return result;
+  }
+  result.status = SnapshotOkStatus();
+  std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
+  for (const auto& [identity, published] : SnapshotVectorRegistry()) {
+    (void)identity;
+    if (published->revoked) continue;
+    const auto& descriptor = published->descriptor;
+    // Local transaction numbers repeat across nodes. Only an exact UUID and
+    // local-number match binds this snapshot to the supplied inventory.
+    const auto owner = std::find_if(inventory.entries.begin(), inventory.entries.end(),
+        [&](const auto& entry) {
+          return entry.identity.local_id.value == descriptor.owning_transaction.value &&
+                 entry.identity.transaction_uuid.kind == UuidKind::transaction &&
+                 entry.identity.transaction_uuid.value == descriptor.owning_transaction_uuid.value;
+        });
+    if (owner == inventory.entries.end()) continue;
+    if (inventory.next_local_transaction_id < descriptor.publication_inventory_next_local_transaction_id) {
+      const auto stale = SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-STALE",
+                                             "transaction.snapshot_vector.stale_inventory_generation");
+      result.status = stale.status;
+      result.diagnostic = stale.diagnostic;
+      result.horizons.clear();
+      return result;
+    }
+    result.horizons.push_back(descriptor.retention_horizon_transaction);
+  }
+  return result;
+}
+
 TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionInventory& inventory,
                                                          LocalTransactionId reader_transaction) {
   TransactionSnapshotResult result;
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    const auto invalid = SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                                             "transaction.snapshot_vector.inventory_invalid", reason);
+    result.status = invalid.status;
+    result.diagnostic = invalid.diagnostic;
+    return result;
+  }
   result.status = SnapshotOkStatus();
   const auto lookup = LookupLocalTransaction(inventory, reader_transaction);
   if (!lookup.ok()) {
@@ -252,6 +354,10 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
     const LocalTransactionInventory& inventory,
     const LocalTransactionId owning_transaction,
     const u64 publication_unix_epoch_millis) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                               "transaction.snapshot_vector.inventory_invalid", reason);
+  }
   if (publication_unix_epoch_millis == 0 ||
       inventory.next_local_transaction_id == 0) {
     return SnapshotVectorError(
@@ -268,6 +374,7 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
   }
   if (owner.entry.identity.transaction_uuid.kind != UuidKind::transaction ||
       !owner.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidVersion(owner.entry.identity.transaction_uuid.value) != 7 ||
       inventory.next_local_transaction_id <= owning_transaction.value) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-OWNER-MISMATCH",
@@ -309,16 +416,6 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
       inventory.next_local_transaction_id;
 
   for (const auto& entry : inventory.entries) {
-    if (!entry.identity.valid() ||
-        entry.identity.local_id.value >
-            descriptor.publication_inventory_next_local_transaction_id - 1) {
-      if (!entry.identity.valid()) {
-        return SnapshotVectorError(
-            "SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
-            "transaction.snapshot_vector.inventory_entry_invalid");
-      }
-      continue;
-    }
     if (IsActiveSnapshotExclusion(entry.state)) {
       descriptor.active_excluded_local_transaction_ids.push_back(
           entry.identity.local_id.value);
@@ -342,7 +439,7 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
       result.diagnostic = generated.diagnostic;
       return result;
     }
-    const std::string key = UuidToString(generated.value.value);
+    const auto key = generated.value.value.bytes;
     std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
     if (SnapshotVectorRegistry().find(key) != SnapshotVectorRegistry().end()) {
       continue;
@@ -356,7 +453,7 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
           "transaction.snapshot_vector.incomplete");
     }
     SnapshotVectorRegistry().emplace(
-        key, PublishedSnapshotVector{descriptor, false});
+        key, std::make_shared<PublishedSnapshotVector>(PublishedSnapshotVector{descriptor}));
     SnapshotVectorResult result;
     result.status = SnapshotOkStatus();
     result.descriptor = std::move(descriptor);
@@ -374,27 +471,27 @@ SnapshotVectorResult ResolvePublishedSnapshotVector(
         "SB-MGA-SNAPSHOT-VECTOR-UUID-INVALID",
         "transaction.snapshot_vector.uuid_invalid");
   }
-  const std::string key = UuidToString(snapshot_uuid.value);
+  const auto key = snapshot_uuid.value.bytes;
   std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
   const auto found = SnapshotVectorRegistry().find(key);
   if (found == SnapshotVectorRegistry().end()) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-UNKNOWN",
-        "transaction.snapshot_vector.unknown", key);
+        "transaction.snapshot_vector.unknown", UuidToString(snapshot_uuid.value));
   }
-  if (found->second.revoked) {
+  if (found->second->revoked || found->second->publication_released) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-REVOKED",
-        "transaction.snapshot_vector.revoked", key);
+        "transaction.snapshot_vector.revoked", UuidToString(snapshot_uuid.value));
   }
-  if (!SnapshotVectorStructurallyComplete(found->second.descriptor)) {
+  if (!SnapshotVectorStructurallyComplete(found->second->descriptor)) {
     return SnapshotVectorError(
         "SB-MGA-SNAPSHOT-VECTOR-INCOMPLETE",
-        "transaction.snapshot_vector.incomplete", key);
+        "transaction.snapshot_vector.incomplete", UuidToString(snapshot_uuid.value));
   }
   SnapshotVectorResult result;
   result.status = SnapshotOkStatus();
-  result.descriptor = found->second.descriptor;
+  result.descriptor = found->second->descriptor;
   return result;
 }
 
@@ -403,6 +500,10 @@ SnapshotVectorResult ResolveCurrentStatementStableSnapshotVector(
     const TypedUuid& snapshot_uuid,
     const TypedUuid& expected_owning_transaction_uuid,
     const LocalTransactionId expected_owning_transaction) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    return SnapshotVectorError("SB-MGA-SNAPSHOT-VECTOR-INVENTORY-INVALID",
+                               "transaction.snapshot_vector.inventory_invalid", reason);
+  }
   auto resolved = ResolvePublishedSnapshotVector(snapshot_uuid);
   if (!resolved.ok()) return resolved;
   const auto& descriptor = resolved.descriptor;
@@ -449,11 +550,11 @@ void RevokePublishedSnapshotVectorsForTransaction(
   std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
   for (auto& [key, published] : SnapshotVectorRegistry()) {
     (void)key;
-    if (published.descriptor.owning_transaction.value ==
+    if (published->descriptor.owning_transaction.value ==
             owning_transaction.value &&
-        published.descriptor.owning_transaction_uuid.value ==
+        published->descriptor.owning_transaction_uuid.value ==
             owning_transaction_uuid.value) {
-      published.revoked = true;
+      published->revoked = true;
     }
   }
 }
@@ -464,9 +565,9 @@ void RevokePublishedSnapshotVector(const TypedUuid& snapshot_uuid) {
   }
   std::lock_guard<std::mutex> guard(SnapshotVectorRegistryMutex());
   const auto found = SnapshotVectorRegistry().find(
-      UuidToString(snapshot_uuid.value));
+      snapshot_uuid.value.bytes);
   if (found != SnapshotVectorRegistry().end()) {
-    found->second.revoked = true;
+    found->second->revoked = true;
   }
 }
 

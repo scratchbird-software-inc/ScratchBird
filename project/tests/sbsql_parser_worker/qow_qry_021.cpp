@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "uuid.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -14,13 +15,50 @@
 #include <memory>
 #include <string_view>
 #include <vector>
+#include <new>
+
+namespace allocation_fault {
+thread_local long remaining = -1;
+thread_local bool hit = false;
+}
+void* operator new(std::size_t size) {
+  if (allocation_fault::remaining >= 0 && allocation_fault::remaining-- == 0) {
+    allocation_fault::remaining = 0;
+    allocation_fault::hit = true;
+    throw std::bad_alloc();
+  }
+  if (void* p = std::malloc(size ? size : 1)) return p;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+api::EngineUuid BinaryUuid(const std::string& text) {
+  api::EngineUuid value;
+  unsigned nibble = 0;
+  for (const char ch : text) {
+    if (ch == '-') continue;
+    const unsigned digit = ch >= '0' && ch <= '9' ? ch - '0' :
+                           ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : 16;
+    if (digit == 16 || nibble >= 32) std::abort();
+    value.bytes[nibble / 2] |= digit << (nibble % 2 ? 0 : 4);
+    ++nibble;
+  }
+  if (nibble != 32) std::abort();
+  return value;
+}
+
+std::size_t checks = 0;
 bool Require(const bool condition, const std::string_view detail) {
+  ++checks;
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-021-V1: " << detail << '\n';
   }
@@ -33,10 +71,15 @@ std::string LengthFieldToken(const std::string_view key,
          value + "\n";
 }
 
+std::string LengthFieldToken(const std::string_view key, const api::EngineUuid& value) {
+  return std::string(key) + "=16:" +
+      std::string(reinterpret_cast<const char*>(value.bytes.data()), 16) + "\n";
+}
+
 bool ContainsExactStatementIdentityBytes(
     const std::string& bytes,
     const exec::PhysicalMgaStatementContext& context,
-    const std::string& catalog_epoch_uuid) {
+    const api::EngineUuid& catalog_epoch_uuid) {
   const auto number = [](const std::uint64_t value) {
     return std::to_string(value);
   };
@@ -83,17 +126,18 @@ bool ContainsExactStatementIdentityBytes(
   return true;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
+                                 const api::EngineUuid& type_uuid,
                                  const std::string& canonical_type,
                                  const std::string& nullability,
-                                 const std::string& extra = {}) {
+                                 const api::EngineUuid& collation = {}) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = canonical_type;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=" + nullability + extra;
+  descriptor.type_uuid = type_uuid;
+  descriptor.collation_uuid = collation;
+  descriptor.encoded_descriptor = "nullability=" + nullability;
   return descriptor;
 }
 
@@ -117,13 +161,13 @@ exec::PhysicalMgaStatementContext StatementContext(
     const bool zero_high_water = false,
     const bool maximum_inventory_local_transaction_number = false) {
   exec::PhysicalMgaStatementContext context;
-  context.statement_uuid = "019f0000-0000-7100-8000-000000002101";
+  context.statement_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002101");
   context.owning_transaction_uuid =
-      "019f0000-0000-7100-8000-000000002104";
+      BinaryUuid("019f0000-0000-7100-8000-000000002104");
   context.statement_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000002105";
+      BinaryUuid("019f0000-0000-7100-8000-000000002105");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000002106";
+      BinaryUuid("019f0000-0000-7100-8000-000000002106");
   context.owning_local_transaction_id = 7;
   context.visible_committed_high_watermark = zero_high_water ? 0 : 6;
   context.oldest_active_transaction_id = 7;
@@ -147,21 +191,21 @@ exec::TypedPhysicalNodeDag SelectedDag(
     const exec::PhysicalMgaStatementContext& context) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
-  dag.selected_plan_uuid = "019f0000-0000-7100-8000-000000002130";
+  dag.selected_plan_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002130");
   dag.root_physical_node_id = 1;
   dag.local_transaction_id = context.owning_local_transaction_id;
   dag.statement_snapshot_id = context.visible_committed_high_watermark;
   dag.mga_statement_context = context;
-  dag.bound_sblr_tree_uuid = "019f0000-0000-7100-8000-000000002131";
-  dag.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000002132";
-  dag.security_context_uuid = "019f0000-0000-7100-8000-000000002133";
+  dag.bound_sblr_tree_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002131");
+  dag.catalog_epoch_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002132");
+  dag.security_context_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002133");
   dag.capability_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000002134";
+      BinaryUuid("019f0000-0000-7100-8000-000000002134");
   dag.resource_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000002135";
+      BinaryUuid("019f0000-0000-7100-8000-000000002135");
   dag.statistics_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000002136";
-  dag.route_snapshot_uuid = "019f0000-0000-7100-8000-000000002137";
+      BinaryUuid("019f0000-0000-7100-8000-000000002136");
+  dag.route_snapshot_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002137");
   dag.catalog_generation = 1;
   dag.security_epoch = 1;
   dag.policy_epoch = 1;
@@ -173,7 +217,7 @@ exec::TypedPhysicalNodeDag SelectedDag(
   dag.optimizer_published = true;
   dag.immutable_node_identity_validated = true;
   dag.capability_validated_before_access = true;
-  const std::vector<std::string> evidence{
+  const std::vector<api::EngineUuid> evidence{
       dag.bound_sblr_tree_uuid,
       dag.catalog_epoch_uuid,
       dag.security_context_uuid,
@@ -196,11 +240,11 @@ exec::TypedPhysicalNodeDag SelectedDag(
   node.output_descriptor_ids = {2101, 2102, 2103};
   node.causal_counter_id = 1;
   node.selected_alternative_uuid =
-      "019f0000-0000-7100-8000-000000002140";
+      BinaryUuid("019f0000-0000-7100-8000-000000002140");
   node.executor_capability_uuid =
-      "019f0000-0000-7100-8000-000000002141";
+      BinaryUuid("019f0000-0000-7100-8000-000000002141");
   node.executor_capability_abi_version = 1;
-  node.cost_vector_uuid = "019f0000-0000-7100-8000-000000002142";
+  node.cost_vector_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002142");
   node.memory_bytes_required = 1;
   node.engine_capability_validated = true;
   node.mga_statement_context = context;
@@ -223,15 +267,15 @@ exec::CanonicalResultPublicationRequest RowsRequest(
     const bool zero_high_water = false,
     const bool maximum_inventory_local_transaction_number = false) {
   const auto id = Descriptor(
-      "019f0000-0000-7200-8000-000000002101",
-      "019f0000-0000-7300-8000-000000002101", "int64", "non_null");
+      BinaryUuid("019f0000-0000-7200-8000-000000002101"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002101"), "int64", "non_null");
   const auto hidden = Descriptor(
-      "019f0000-0000-7200-8000-000000002102",
-      "019f0000-0000-7300-8000-000000002102", "text", "non_null");
+      BinaryUuid("019f0000-0000-7200-8000-000000002102"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002102"), "text", "non_null");
   const auto label = Descriptor(
-      "019f0000-0000-7200-8000-000000002103",
-      "019f0000-0000-7300-8000-000000002103", "text", "nullable",
-      ";collation_uuid=019f0000-0000-7400-8000-000000002103");
+      BinaryUuid("019f0000-0000-7200-8000-000000002103"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002103"), "text", "nullable",
+      BinaryUuid("019f0000-0000-7400-8000-000000002103"));
 
   exec::CanonicalResultPublicationRequest request;
   const auto statement_context = StatementContext(
@@ -252,9 +296,9 @@ exec::CanonicalResultPublicationRequest RowsRequest(
     return resolution;
   };
   request.execution_attempt_uuid =
-      "019f0000-0000-7110-8000-000000002101";
+      BinaryUuid("019f0000-0000-7110-8000-000000002101");
   request.transaction_effect_evidence_uuid =
-      "019f0000-0000-7120-8000-000000002101";
+      BinaryUuid("019f0000-0000-7120-8000-000000002101");
   request.maximum_rows_per_batch = 1;
   request.result_kind = exec::CanonicalResultKind::kRows;
   request.physical_output_batch = exec::MakeDescriptorBatch(
@@ -267,18 +311,18 @@ exec::CanonicalResultPublicationRequest RowsRequest(
       {0,
        true,
        exec::CanonicalResultColumnDescriptor{
-           0, "dup", id.descriptor_uuid.canonical,
-           "019f0000-0000-7300-8000-000000002101",
+           0, "dup", id.descriptor_uuid,
+           BinaryUuid("019f0000-0000-7300-8000-000000002101"),
            exec::CanonicalResultNullability::kNonNull, std::nullopt,
            std::nullopt}},
       {1, false, std::nullopt},
       {2,
        true,
        exec::CanonicalResultColumnDescriptor{
-           1, "dup", label.descriptor_uuid.canonical,
-           "019f0000-0000-7300-8000-000000002103",
+           1, "dup", label.descriptor_uuid,
+           BinaryUuid("019f0000-0000-7300-8000-000000002103"),
            exec::CanonicalResultNullability::kNullable,
-           "019f0000-0000-7400-8000-000000002103", std::nullopt}},
+           BinaryUuid("019f0000-0000-7400-8000-000000002103"), std::nullopt}},
   };
   return request;
 }
@@ -308,7 +352,7 @@ void ConfigureInitialCursor(
         exec::CanonicalResultCursorState::kOpen) {
   request->result_kind = exec::CanonicalResultKind::kCursor;
   request->cursor_state = state;
-  request->cursor_uuid = "019f0000-0000-7140-8000-000000002101";
+  request->cursor_uuid = BinaryUuid("019f0000-0000-7140-8000-000000002101");
   request->cursor_cancellation_requested = [lifecycle] {
     return lifecycle->cancelled;
   };
@@ -356,12 +400,12 @@ bool ValidateRowsEmptyCursorAndParity() {
   const auto direct = exec::PublishCanonicalResultEnvelope(RowsRequest());
   passed &= Require(
       direct.diagnostic.ok && direct.published &&
-          direct.envelope.abi_version == 1 &&
+          direct.envelope.abi_version == 2 &&
           exec::PhysicalMgaStatementContextEqual(
               direct.envelope.mga_statement_context,
               StatementContext()) &&
           direct.envelope.catalog_epoch_uuid ==
-              "019f0000-0000-7100-8000-000000002132" &&
+              BinaryUuid("019f0000-0000-7100-8000-000000002132") &&
           direct.envelope.result_kind == exec::CanonicalResultKind::kRows &&
           direct.envelope.row_count == 2 &&
           direct.envelope.column_descriptors.size() == 2 &&
@@ -397,10 +441,10 @@ bool ValidateRowsEmptyCursorAndParity() {
       direct.canonical_envelope_bytes.find("internal_sort_key") ==
               std::string::npos &&
           direct.canonical_envelope_bytes.find(
-              "QOW-RESULT-DIAGNOSTIC-ABI-V1") != std::string::npos &&
+              "QOW-RESULT-DIAGNOSTIC-ABI-V2") != std::string::npos &&
           ContainsExactStatementIdentityBytes(
               direct.canonical_envelope_bytes, StatementContext(),
-              "019f0000-0000-7100-8000-000000002132"),
+              BinaryUuid("019f0000-0000-7100-8000-000000002132")),
       "canonical envelope leaked a hidden column or omitted statement identity");
 
   auto prepared_request = RowsRequest();
@@ -545,10 +589,10 @@ bool RefusedAtomically(const exec::CanonicalResultPublicationRequest& request) {
   const auto result = exec::PublishCanonicalResultEnvelope(request);
   return !result.diagnostic.ok && !result.published &&
          !result.diagnostic.diagnostic_code.empty() &&
-         result.envelope.statement_uuid.empty() &&
-         result.envelope.mga_statement_context.statement_uuid.empty() &&
-         result.envelope.catalog_epoch_uuid.empty() &&
-         result.envelope.execution_attempt_uuid.empty() &&
+         result.envelope.statement_uuid.is_nil() &&
+         result.envelope.mga_statement_context.statement_uuid.is_nil() &&
+         result.envelope.catalog_epoch_uuid.is_nil() &&
+         result.envelope.execution_attempt_uuid.is_nil() &&
          result.envelope.column_descriptors.empty() &&
          result.envelope.row_stream_format_id.empty() &&
          !result.envelope.row_count.has_value() &&
@@ -558,7 +602,7 @@ bool RefusedAtomically(const exec::CanonicalResultPublicationRequest& request) {
          result.row_stream.columns.empty() && result.row_stream.rows.empty() &&
          result.delivery_records.empty() && result.delivery_batches.empty() &&
          result.canonical_envelope_bytes.empty() &&
-         !result.cursor_session && result.cursor_uuid.empty() &&
+         !result.cursor_session && result.cursor_uuid.is_nil() &&
          result.cursor_batch_ordinal == 0 &&
          result.cursor_first_row_ordinal == 0 &&
          result.cursor_next_batch_ordinal == 0 &&
@@ -633,7 +677,7 @@ bool ValidateCursorCancellationAndCleanup() {
   auto plan_drift = CursorContinuation(
       plan_stable, exec::CanonicalResultCursorState::kClosed, 1);
   plan_drift.selected_physical_dag.selected_plan_uuid =
-      "019f0000-0000-7100-8000-000000002199";
+      BinaryUuid("019f0000-0000-7100-8000-000000002199");
   passed &= Require(
       RefusedAtomically(plan_drift) &&
           plan_drift_lifecycle->release_reasons ==
@@ -664,12 +708,12 @@ bool ValidateCursorCancellationAndCleanup() {
 bool ValidateAtomicRefusals() {
   bool passed = true;
   auto request = RowsRequest();
-  request.abi_version = 2;
+  request.abi_version = 1;
   passed &= Require(RefusedAtomically(request),
                     "unknown ABI version was published");
 
   request = RowsRequest();
-  request.transaction_effect_evidence_uuid.clear();
+  request.transaction_effect_evidence_uuid = {};
   passed &= Require(RefusedAtomically(request),
                     "missing engine transaction-effect evidence was accepted");
 
@@ -681,7 +725,7 @@ bool ValidateAtomicRefusals() {
 
   request = RowsRequest();
   request.column_bindings[2].published_descriptor->type_uuid =
-      "019f0000-0000-7300-8000-000000002199";
+      BinaryUuid("019f0000-0000-7300-8000-000000002199");
   passed &= Require(RefusedAtomically(request),
                     "result descriptor drifted from physical authority");
 
@@ -758,12 +802,12 @@ bool ValidateStatementAuthorityPublicationBoundary() {
 
   request = RowsRequest();
   request.mga_authority.statement_context.owning_transaction_uuid =
-      "019f0000-0000-7100-8000-000000002199";
+      BinaryUuid("019f0000-0000-7100-8000-000000002199");
   passed &= Require(RefusedAtomically(request),
                     "wrong owning transaction published output");
 
   request = RowsRequest();
-  request.statement_uuid = "019f0000-0000-7100-8000-000000002198";
+  request.statement_uuid = BinaryUuid("019f0000-0000-7100-8000-000000002198");
   passed &= Require(RefusedAtomically(request),
                     "cross-statement scalar identity published output");
 
@@ -803,7 +847,7 @@ bool ValidateStatementAuthorityPublicationBoundary() {
 
   request = RowsRequest();
   request.selected_catalog_epoch_uuid =
-      "019f0000-0000-7100-8000-000000002197";
+      BinaryUuid("019f0000-0000-7100-8000-000000002197");
   passed &= Require(RefusedAtomically(request),
                     "conflicting selected catalog epoch published output");
 
@@ -820,21 +864,29 @@ bool ValidateStatementAuthorityPublicationBoundary() {
 
 bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
   bool passed = true;
+#if defined(SCRATCHBIRD_QOW_RESULT_PUBLISHER_CLOSURE_TEST_ONLY) && \
+    SCRATCHBIRD_QOW_RESULT_PUBLISHER_CLOSURE_TEST_ONLY == 1
+  constexpr bool closure_enabled = true;
+#else
+  constexpr bool closure_enabled = false;
+#endif
 
   const auto exact =
       exec::PublishCanonicalResultEnvelope(ClosureRowsRequest());
   passed &= Require(
+      !closure_enabled ? (!exact.diagnostic.ok && !exact.published) :
       exact.diagnostic.ok && exact.published &&
           exec::PhysicalMgaStatementContextEqual(
               exact.envelope.mga_statement_context, StatementContext()) &&
           ContainsExactStatementIdentityBytes(
               exact.canonical_envelope_bytes, StatementContext(),
-              "019f0000-0000-7100-8000-000000002132"),
+              BinaryUuid("019f0000-0000-7100-8000-000000002132")),
       "exact immutable closure authority did not publish its full context");
 
   const auto zero =
       exec::PublishCanonicalResultEnvelope(ClosureRowsRequest(true));
   passed &= Require(
+      !closure_enabled ? (!zero.diagnostic.ok && !zero.published) :
       zero.diagnostic.ok && zero.published &&
           zero.envelope.mga_statement_context
                   .visible_committed_high_watermark == 0 &&
@@ -848,6 +900,7 @@ bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
   const auto maximum_local_transaction_number =
       std::numeric_limits<std::uint64_t>::max();
   passed &= Require(
+      !closure_enabled ? (!maximum.diagnostic.ok && !maximum.published) :
       maximum.diagnostic.ok && maximum.published &&
           maximum.envelope.mga_statement_context
                   .publication_inventory_next_local_transaction_id ==
@@ -866,7 +919,7 @@ bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
 
   request = ClosureRowsRequest();
   request.mga_authority.statement_context.statement_metadata_snapshot_uuid =
-      "00000000-0000-0000-0000-000000000000";
+      BinaryUuid("00000000-0000-0000-0000-000000000000");
   passed &= Require(RefusedAtomically(request),
                     "closure origin with a nil context identity published output");
 
@@ -883,7 +936,7 @@ bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
   request.mga_authority.origin =
       exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
   state->statement_context.owning_transaction_uuid =
-      "019f0000-0000-7100-8000-000000002199";
+      BinaryUuid("019f0000-0000-7100-8000-000000002199");
   passed &= Require(RefusedAtomically(request),
                     "closure resolver identity mismatch published output");
 
@@ -900,6 +953,113 @@ bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
   return passed;
 }
 
+bool ValidateBinaryDescriptorBindingAndCursorStaging() {
+  bool passed = true;
+  for (const auto member : {&api::EngineDescriptor::descriptor_uuid,
+                           &api::EngineDescriptor::type_uuid,
+                           &api::EngineDescriptor::collation_uuid}) {
+    for (unsigned bit = 0; bit != 128; ++bit) {
+      auto request = RowsRequest();
+      auto& descriptor = request.physical_output_batch.columns[2].descriptor;
+      (descriptor.*member).bytes[bit / 8] ^= 1u << (bit % 8);
+      for (auto& row : request.physical_output_batch.rows) row.values[2].descriptor = descriptor;
+      // An unchanged published descriptor must reject every binary difference.
+      passed &= Require(RefusedAtomically(request),
+                        "published descriptor comparison lost an identity bit");
+      auto& published = *request.column_bindings[2].published_descriptor;
+      published.descriptor_uuid = descriptor.descriptor_uuid;
+      published.type_uuid = descriptor.type_uuid;
+      published.collation_uuid = descriptor.collation_uuid;
+      const bool shape_bit = (bit >= 52 && bit <= 55) || (bit >= 70 && bit <= 71);
+      if (shape_bit) {
+        passed &= Require(RefusedAtomically(request), "non-v7 published identity admitted");
+      } else {
+        const auto result = exec::PublishCanonicalResultEnvelope(request);
+        const auto key = member == &api::EngineDescriptor::descriptor_uuid
+                             ? "column.descriptor_uuid"
+                             : member == &api::EngineDescriptor::type_uuid
+                                   ? "column.type_uuid" : "column.collation_uuid";
+        passed &= Require(result.published &&
+            result.canonical_envelope_bytes.find(LengthFieldToken(key, descriptor.*member))
+                != std::string::npos, "binary envelope omitted exact identity bytes");
+      }
+    }
+  }
+  for (const auto field : {"descriptor_uuid", "datatype_descriptor_uuid",
+                           "type_uuid", "collation_uuid"}) {
+    auto request = RowsRequest();
+    auto& descriptor = request.physical_output_batch.columns[2].descriptor;
+    descriptor.encoded_descriptor += std::string(";") + field +
+        "=019f0000-0000-7400-8000-000000002103";
+    for (auto& row : request.physical_output_batch.rows) row.values[2].descriptor = descriptor;
+    passed &= Require(RefusedAtomically(request), "text descriptor authority admitted");
+  }
+  // Hidden physical descriptors still bind a cursor's continuation identity.
+  for (const auto member : {&api::EngineDescriptor::type_uuid,
+                           &api::EngineDescriptor::collation_uuid}) {
+    auto lifecycle = std::make_shared<CursorLifecycleState>();
+    auto initial = RowsRequest();
+    initial.physical_output_batch.rows.resize(1);
+    ConfigureInitialCursor(&initial, lifecycle);
+    const auto first = exec::PublishCanonicalResultEnvelope(initial);
+    auto continuation = CursorContinuation(first, exec::CanonicalResultCursorState::kOpen, 1);
+    auto& descriptor = continuation.physical_output_batch.columns[1].descriptor;
+    descriptor.*member = BinaryUuid("019f0000-0000-7400-8000-000000002199");
+    for (auto& row : continuation.physical_output_batch.rows) row.values[1].descriptor = descriptor;
+    passed &= Require(RefusedAtomically(continuation),
+                      "cursor ignored hidden physical type/collation drift");
+  }
+  unsigned fault_count = 0;
+  bool reached_success = false;
+  for (long point = 0; point != 4096; ++point) {
+    auto lifecycle = std::make_shared<CursorLifecycleState>();
+    auto initial = RowsRequest();
+    initial.physical_output_batch.rows.resize(1);
+    ConfigureInitialCursor(&initial, lifecycle);
+    const auto first = exec::PublishCanonicalResultEnvelope(initial);
+    auto continuation = CursorContinuation(first, exec::CanonicalResultCursorState::kOpen, 1);
+    allocation_fault::hit = false;
+    allocation_fault::remaining = point;
+    bool published = false;
+    try {
+      const auto result = exec::PublishCanonicalResultEnvelope(continuation);
+      published = result.published;
+    } catch (const std::exception&) {
+      // The component API may propagate allocation/stream errors; no result
+      // or sequence is committed. Public translation remains separately scoped.
+    }
+    allocation_fault::remaining = -1;
+    if (!allocation_fault::hit) {
+      passed &= Require(published, "allocation sweep ended without publication");
+      reached_success = true;
+      break;
+    }
+    ++fault_count;
+    passed &= Require(!published && lifecycle->release_reasons.empty(),
+                      "allocation failure published or retired an open cursor");
+    const auto retried = exec::PublishCanonicalResultEnvelope(continuation);
+    passed &= Require(retried.published && !retried.cursor_metadata_delivered &&
+                          retried.cursor_batch_ordinal == 1 &&
+                          retried.cursor_next_batch_ordinal == 2 &&
+                          retried.cursor_first_row_ordinal == 1 &&
+                          retried.cursor_next_row_ordinal == 2,
+                      "failed construction advanced cursor sequence");
+  }
+  passed &= Require(reached_success && fault_count > 0, "cursor fault sweep incomplete");
+  auto state = std::make_shared<CurrentAuthorityState>();
+  auto request = RowsRequest(state);
+  const auto current = request.mga_authority.statement_context;
+  request.mga_authority.resolve_current = [current, calls = 0]() mutable {
+    exec::CanonicalMgaCurrentResolution result;
+    result.statement_context = current;
+    if (++calls > 1) result.statement_context.current = false;
+    return result;
+  };
+  passed &= Require(RefusedAtomically(request), "final MGA drift published a result");
+  std::cout << "cursor persistent allocation failures=" << fault_count << '\n';
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-021-V1
@@ -912,5 +1072,8 @@ int main() {
   passed &= ValidateAtomicRefusals();
   passed &= ValidateStatementAuthorityPublicationBoundary();
   passed &= ValidateCompileBoundedClosureAuthorityPublicationBoundary();
+  passed &= ValidateBinaryDescriptorBindingAndCursorStaging();
+  std::cout << "QOW-TEST-QRY-021 binary result checks=" << checks
+            << " passed=" << passed << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

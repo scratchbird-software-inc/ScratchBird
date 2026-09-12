@@ -101,11 +101,11 @@ bool PrepareCanonicalSortOrderTerm(
     return false;
 #else
     api::EngineUuid collation_uuid;
-    collation_uuid.canonical = term->collation_uuid;
+    collation_uuid = term->collation_uuid;
     const auto resolved = api::LookupEngineResourceDescriptorByUuid(
         context, collation_uuid, "collation");
     if (!resolved.ok || !resolved.resource_descriptor.present ||
-        resolved.resource_descriptor.resource_uuid.canonical !=
+        resolved.resource_descriptor.resource_uuid !=
             term->collation_uuid) {
       *term = {};
       *detail =
@@ -330,11 +330,11 @@ PreparedDistinctRoot PrepareQueryDistinctRoot(
       return result;
 #else
       api::EngineUuid collation_uuid;
-      collation_uuid.canonical = term.collation_uuid;
+      collation_uuid = term.collation_uuid;
       const auto resolved = api::LookupEngineResourceDescriptorByUuid(
           context, collation_uuid, "collation");
       if (!resolved.ok || !resolved.resource_descriptor.present ||
-          resolved.resource_descriptor.resource_uuid.canonical !=
+          resolved.resource_descriptor.resource_uuid !=
               term.collation_uuid) {
         result.equality_terms.clear();
         result.detail =
@@ -888,19 +888,17 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
       output_descriptor = std::move(first_value.descriptor);
     } else {
       const auto& source = *descriptor->second;
-      output_descriptor.descriptor_uuid.canonical = source.descriptor_uuid;
+      output_descriptor.descriptor_uuid = source.descriptor_uuid;
+      output_descriptor.type_uuid = source.type_uuid;
       output_descriptor.descriptor_kind = "scalar";
       output_descriptor.canonical_type_name =
           prepared_expression.expected_type;
       output_descriptor.encoded_descriptor =
-          "type_uuid=" + source.type_uuid + ";nullability=" +
+          std::string("nullability=") +
           (source.nullability == api::RelationalNullability::kNullable
                ? "nullable"
                : "non_null");
-      if (source.collation_uuid.has_value()) {
-        output_descriptor.encoded_descriptor +=
-            ";collation_uuid=" + *source.collation_uuid;
-      }
+      output_descriptor.collation_uuid = source.collation_uuid.value_or(api::EngineUuid{});
       if (source.timezone_profile_id.has_value()) {
         output_descriptor.encoded_descriptor +=
             ";timezone_profile_id=" + *source.timezone_profile_id;

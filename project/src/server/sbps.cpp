@@ -9,12 +9,13 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_SBPS
 
 #include "sbps.hpp"
+#include "core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <random>
+#include <stdexcept>
 
 namespace scratchbird::server::sbps {
 
@@ -182,30 +183,22 @@ std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size) {
 }
 
 std::array<std::uint8_t, 16> MakeUuidV7Bytes() {
-  static std::random_device rd;
-  static std::mt19937_64 rng(rd());
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::system_clock::now().time_since_epoch())
                        .count();
-  std::array<std::uint8_t, 16> uuid{};
-  const auto timestamp = static_cast<std::uint64_t>(now);
-  uuid[0] = static_cast<std::uint8_t>((timestamp >> 40u) & 0xffu);
-  uuid[1] = static_cast<std::uint8_t>((timestamp >> 32u) & 0xffu);
-  uuid[2] = static_cast<std::uint8_t>((timestamp >> 24u) & 0xffu);
-  uuid[3] = static_cast<std::uint8_t>((timestamp >> 16u) & 0xffu);
-  uuid[4] = static_cast<std::uint8_t>((timestamp >> 8u) & 0xffu);
-  uuid[5] = static_cast<std::uint8_t>(timestamp & 0xffu);
-  const auto r1 = rng();
-  const auto r2 = rng();
-  for (int i = 6; i < 14; ++i) {
-    uuid[static_cast<std::size_t>(i)] =
-        static_cast<std::uint8_t>((r1 >> ((i - 6) * 8)) & 0xffu);
+  if (now < 0 || static_cast<std::uint64_t>(now) > 0x0000ffffffffffffULL) {
+    throw std::runtime_error("Server UUIDv7 clock is outside the canonical time range.");
   }
-  uuid[14] = static_cast<std::uint8_t>(r2 & 0xffu);
-  uuid[15] = static_cast<std::uint8_t>((r2 >> 8u) & 0xffu);
-  uuid[6] = static_cast<std::uint8_t>((uuid[6] & 0x0fu) | 0x70u);
-  uuid[8] = static_cast<std::uint8_t>((uuid[8] & 0x3fu) | 0x80u);
-  return uuid;
+  // Core owns the generator state: thread-local, and reseeded in a forked
+  // process. A separate shared PRNG raced across channels and cloned its
+  // stream into children, producing duplicate real message/session identities.
+  const auto generated = core::uuid::GenerateEngineIdentityV7(
+      core::platform::UuidKind::object, static_cast<std::uint64_t>(now));
+  if (!generated.ok()) {
+    // Generation failures remain failures; never publish an all-zero identity.
+    throw std::runtime_error("Server UUIDv7 generation failed.");
+  }
+  return generated.value.value.bytes;
 }
 
 bool IsZeroUuid(const std::array<std::uint8_t, 16>& uuid) {
@@ -974,6 +967,8 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
                  diagnostic.severity == ServerDiagnosticSeverity::kInfo ? 0 : 2;
     const auto vector_uuid = MakeUuidV7Bytes();
     std::memcpy(record.data() + 16, vector_uuid.data(), vector_uuid.size());
+    std::memcpy(record.data() + 32, diagnostic.occurrence_uuid.data(),
+                diagnostic.occurrence_uuid.size());
     std::memcpy(record.data() + 48, request_uuid.data(), request_uuid.size());
     PutAtU32(&record, 88, 0x52565253u);
     const std::string language = "en";

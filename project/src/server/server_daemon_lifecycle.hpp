@@ -32,7 +32,7 @@ struct ServerDaemonDatabaseAssociation {
 
 struct ServerDaemonLifecycleSnapshot {
   std::uint64_t lifecycle_generation = 0;
-  std::string daemon_scope = "shared";
+  std::string daemon_scope = "dedicated";
   std::string state = "initializing";
   bool service_ready = false;
   bool scope_ambiguous = false;

@@ -4,11 +4,23 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+namespace scratchbird::engine::sblr {
+struct SblrOpcodeStream;
+}
+
 namespace scratchbird::server {
+
+// Requires a successfully decoded canonical stream. Selects the single command
+// with an optional validated SOURCE_MAP companion; does not alter any bytes or
+// grant descriptor, receipt, executor, or routing authority.
+std::optional<std::size_t> SelectServerSblrCommandIndex(
+    const scratchbird::engine::sblr::SblrOpcodeStream& stream);
 
 enum class LocalSblrGatewayDisposition : std::uint8_t {
   kPassThrough = 1,

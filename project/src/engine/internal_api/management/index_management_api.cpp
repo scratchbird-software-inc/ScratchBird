@@ -209,7 +209,7 @@ std::string AuthorizationTargetUuid(const EngineIndexManagementRequest& request)
   return FirstNonEmpty({OptionValue(request, "index_uuid:"),
                         OptionValue(request, "index_object_uuid:"),
                         OptionValue(request, "target_object_uuid:"),
-                        request.target_object.uuid.canonical});
+                        request.target_object.uuid});
 }
 
 IndexAuthorizationDecision AuthorizeIndexOperation(
@@ -224,7 +224,7 @@ IndexAuthorizationDecision AuthorizeIndexOperation(
     authorize_base = request;
     authorize.operation_id = "security.authorize";
     authorize.required_right = right;
-    authorize.target_object.uuid.canonical = target_uuid;
+    authorize.target_object.uuid = target_uuid;
     authorize.target_object.object_kind = "index";
     const auto authorized = EngineAuthorize(authorize);
     if (authorized.ok && authorized.authorized) {
@@ -295,8 +295,8 @@ idx::IndexValidationRepairRequest ValidationRequestFrom(
   out.target.database_uuid = ParseTyped(
       platform::UuidKind::database,
       FirstNonEmpty({OptionValue(request, "database_uuid:"),
-                     request.target_database.uuid.canonical,
-                     request.context.database_uuid.canonical}));
+                     request.target_database.uuid,
+                     request.context.database_uuid}));
   out.target.table_uuid = ParseTyped(
       platform::UuidKind::object,
       FirstNonEmpty({OptionValue(request, "table_uuid:"),
@@ -306,7 +306,7 @@ idx::IndexValidationRepairRequest ValidationRequestFrom(
       FirstNonEmpty({OptionValue(request, "index_uuid:"),
                      OptionValue(request, "index_object_uuid:"),
                      OptionValue(request, "target_object_uuid:"),
-                     request.target_object.uuid.canonical}));
+                     request.target_object.uuid}));
   out.target.generation_uuid = ParseTyped(
       platform::UuidKind::object,
       FirstNonEmpty({OptionValue(request, "generation_uuid:"),
@@ -344,7 +344,7 @@ EngineIndexManagementResult ResultFromValidation(
   auto result = MakeApiBehaviorSuccess<EngineIndexManagementResult>(
       request.context, operation_id);
   result.result_shape.result_kind = "index.management.route_surface.v1";
-  result.primary_object.uuid.canonical = OptionValue(request, "index_uuid:");
+  result.primary_object.uuid = OptionValue(request, "index_uuid:");
   result.primary_object.object_kind = "index";
   AddApiBehaviorEvidence(&result, "route_surface", "sblr");
   AddApiBehaviorEvidence(&result, "engine_api_function",
@@ -384,7 +384,7 @@ EngineIndexManagementResult ResultFromManagementPlan(
   auto result = MakeApiBehaviorSuccess<EngineIndexManagementResult>(
       request.context, operation_id);
   result.result_shape.result_kind = "index.management.route_surface.v1";
-  result.primary_object.uuid.canonical = OptionValue(request, "index_uuid:");
+  result.primary_object.uuid = OptionValue(request, "index_uuid:");
   result.primary_object.object_kind = "index";
   AddApiBehaviorEvidence(&result, "route_surface", "sblr");
   AddApiBehaviorEvidence(&result, "engine_api_function",
@@ -446,7 +446,7 @@ EngineIndexManagementResult EngineIndexManagementOperation(
       FirstNonEmpty({OptionValue(request, "index_uuid:"),
                      OptionValue(request, "index_object_uuid:"),
                      OptionValue(request, "target_object_uuid:"),
-                     request.target_object.uuid.canonical}));
+                     request.target_object.uuid}));
   management_request.family = IndexFamilyForRequest(request);
   management_request.caller = idx::IndexSubsystemOwner::management_api;
   management_request.policy_allows_mutation =

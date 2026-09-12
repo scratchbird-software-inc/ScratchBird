@@ -3,12 +3,15 @@
 
 #include "engine/internal_api/typed_result_producer_cursor.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <barrier>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -342,7 +345,7 @@ api::TypedResultProducerOpenRequestV1 OpenRequest(
     wire::TypedResultDescriptorAuthorityDecision decision;
     decision.accepted = authority->descriptor_live;
     if (!decision.accepted) {
-      decision.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+      decision.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
       decision.detail = "test_descriptor_authority_refused";
     }
     return decision;
@@ -484,7 +487,7 @@ void OpenAndPullRefusalPrecedence() {
     const auto refused =
         api::OpenTypedResultProducerCursorV1(std::move(request));
     Require(!refused.ok() &&
-                refused.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+                refused.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
                 authority->descriptor_calls == 0,
             "open admitted a query-handle/descriptor identity mismatch");
   }
@@ -533,7 +536,7 @@ void OpenAndPullRefusalPrecedence() {
     const auto result =
         api::PullTypedResultProducerCursorV1(*fixture.carrier, request);
     Require(!result.ok() &&
-                result.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+                result.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
                 fixture.producer->stage_calls == 0,
             "descriptor refusal did not precede cursor refusal");
     RequireReleasedOnce(fixture, "descriptor revocation");
@@ -612,7 +615,7 @@ void PostStageRefusalPrecedence() {
     const auto result = api::PullTypedResultProducerCursorV1(
         *fixture.carrier, PullRequest());
     Require(!result.ok() &&
-                result.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID",
+                result.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID",
             "post-stage descriptor invalidation lost refusal precedence");
     RequireReleasedOnce(fixture, "post-stage descriptor invalidation");
   }
@@ -718,7 +721,7 @@ void BoundedPullAtomicPublicationAndEos() {
       *malformed.carrier, PullRequest());
   const auto malformed_snapshot = malformed.carrier->Snapshot();
   Require(!first_refusal.ok() && !second_refusal.ok() &&
-              first_refusal.diagnostic_code == "DATATYPE.DESCRIPTOR_INVALID" &&
+              first_refusal.diagnostic_code == "DATATYPE.DESCRIPTOR.INVALID" &&
               second_refusal.diagnostic_code == first_refusal.diagnostic_code &&
               malformed.producer->stage_calls == 2 &&
               malformed.producer->next == 0 &&
@@ -809,6 +812,47 @@ void EmptyEosAndCancellationBarriers() {
                 fixture.carrier->Snapshot().row_position == 0,
             "producer safe-point cancellation did not discard staged state");
     RequireReleasedOnce(fixture, "safe-point cancellation");
+  }
+}
+
+void BatchIdentityUsesUnixTimeV7() {
+  static_assert(sizeof(wire::TypedResultUuid) == 16);
+  const auto unix_millis = [] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch()).count();
+  };
+  std::set<wire::TypedResultUuid> identities;
+  // Independent byte-level oracle: do not use the generator's own UUID parser.
+  // Repeated fixture handle values deliberately must not determine batch IDs.
+  for (unsigned run = 0; run != 64; ++run) {
+    auto fixture = Opened();
+    fixture.producer->staged.push_back(Batch({Row(0, "first")}));
+    fixture.producer->staged.push_back(Batch({Row(0, "last")}, true));
+    for (std::uint64_t ordinal = 0; ordinal != 2; ++ordinal) {
+      const auto before = unix_millis();
+      const auto pulled = api::PullTypedResultProducerCursorV1(
+          *fixture.carrier, PullRequest(ordinal));
+      const auto after = unix_millis();
+      Require(pulled.ok() && pulled.batch.batch_ordinal == ordinal &&
+                  pulled.row_count == 1 && pulled.end_of_cursor == (ordinal == 1),
+              "UUID generation changed batch publication semantics");
+      const auto& uuid = pulled.batch.batch_uuid;
+      std::uint64_t timestamp = 0;
+      for (unsigned i = 0; i != 6; ++i) timestamp = (timestamp << 8) | uuid[i];
+      Require((uuid[6] & 0xf0u) == 0x70u && (uuid[8] & 0xc0u) == 0x80u,
+              "batch identity lacks UUIDv7 version or variant");
+      Require(before >= 0 && after >= before &&
+                  timestamp >= static_cast<std::uint64_t>(before) &&
+                  timestamp <= static_cast<std::uint64_t>(after),
+              "batch UUIDv7 timestamp is not the generation Unix time");
+      Require(identities.insert(uuid).second,
+              "batch identity reused across ordinals or carrier lifetimes");
+      Require(pulled.row_data_packet.size() >= 72 &&
+                  std::equal(uuid.begin(), uuid.end(),
+                             pulled.row_data_packet.begin() + 56),
+              "batch UUID was not carried as the exact 16 binary bytes");
+    }
+    RequireReleasedOnce(fixture, "UUID batch sequence EOS");
   }
 }
 
@@ -1014,6 +1058,70 @@ void SourceCommitRefusalTransitions() {
   }
 }
 
+void UnknownSourceCommitCannotPublish() {
+  // Fault injection at the real carrier's private source-commit seam. These
+  // fixture authorities are component evidence, not public SBsql execution.
+  for (unsigned raw = 4; raw <= 255; ++raw) {
+    for (bool eos : {false, true}) {
+      auto fixture = Opened();
+      if (eos) {
+        api::TypedResultProducerStageResultV1 terminal;
+        terminal.outcome = api::TypedResultProducerStageOutcomeV1::empty_eos;
+        terminal.end_of_cursor = true;
+        fixture.producer->staged.push_back(std::move(terminal));
+      } else {
+        fixture.producer->staged.push_back(Batch({Row(0, "uncommitted-row")}));
+      }
+      fixture.producer->next_commit_status =
+          static_cast<api::TypedResultProducerStageCommitStatusV1>(raw);
+      const auto refused = api::PullTypedResultProducerCursorV1(
+          *fixture.carrier, PullRequest());
+      const auto before_retry = fixture.carrier->Snapshot();
+      Require(!refused.ok() &&
+                  refused.diagnostic_code == "CURSOR.FETCH_FAILED" &&
+                  refused.row_data_packet.empty() && refused.batch.rows.empty() &&
+                  refused.row_count == 0 && !refused.end_of_cursor &&
+                  fixture.producer->next == 0 &&
+                  fixture.producer->stage_commits == 0 &&
+                  fixture.producer->stage_aborts == 1 &&
+                  before_retry.row_position == 0 &&
+                  before_retry.next_batch_ordinal == 0 &&
+                  before_retry.lifecycle == api::TypedResultProducerCursorLifecycleV1::open &&
+                  !before_retry.retained_authority_released,
+              "unknown source commit status published rows or terminal state");
+      fixture.producer->next_commit_status =
+          api::TypedResultProducerStageCommitStatusV1::committed;
+      const auto retried = api::PullTypedResultProducerCursorV1(
+          *fixture.carrier, PullRequest());
+      Require(retried.ok() && fixture.producer->next == 1 &&
+                  fixture.producer->stage_commits == 1 &&
+                  fixture.producer->stage_aborts == 1,
+              "unknown commit refusal consumed the staged source");
+      if (eos) {
+        Require(retried.end_of_cursor && retried.row_count == 0 &&
+                    fixture.carrier->Snapshot().lifecycle ==
+                        api::TypedResultProducerCursorLifecycleV1::eos,
+                "empty EOS retry did not terminalize exactly once");
+      } else {
+        const std::string expected = "uncommitted-row";
+        Require(retried.row_count == 1 && !retried.row_data_packet.empty() &&
+                    retried.batch.rows.size() == 1 &&
+                    retried.batch.rows[0].cells.size() == 1 &&
+                    retried.batch.rows[0].cells[0].canonical_payload ==
+                        std::vector<byte>(expected.begin(), expected.end()) &&
+                    fixture.carrier->Snapshot().row_position == 1 &&
+                    fixture.carrier->Snapshot().next_batch_ordinal == 1,
+                "retry did not publish the exact staged row once");
+        Require(api::CloseTypedResultProducerCursorV1(
+                    *fixture.carrier,
+                    api::TypedResultProducerCloseReasonV1::explicit_close).ok(),
+                "close after successful retry");
+      }
+      RequireReleasedOnce(fixture, "unknown source commit retry cleanup");
+    }
+  }
+}
+
 void RecoveryAndTerminalRace() {
   {
     auto fixture = Opened();
@@ -1085,9 +1193,11 @@ int main() {
     PostStageRefusalPrecedence();
     BoundedPullAtomicPublicationAndEos();
     EmptyEosAndCancellationBarriers();
+    BatchIdentityUsesUnixTimeV7();
     PrecommitGateAbortAndRetry();
     StageLeaseShapeValidation();
     SourceCommitRefusalTransitions();
+    UnknownSourceCommitCannotPublish();
     RecoveryAndTerminalRace();
     std::cout << "typed result producer cursor runtime conformance passed\n";
     return 0;

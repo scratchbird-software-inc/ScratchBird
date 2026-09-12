@@ -144,7 +144,7 @@ void RequireProviderVector(const api::EngineApiResult& result,
             "compile-link stub emitted mutable result rows");
     Require(HasApiDiagnostic(
                 result,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub diagnostic missing");
     Require(HasEvidence(result, "cluster_provider_type", "compile_link_stub"),
             "compile-link stub provider-type evidence missing");
@@ -162,7 +162,7 @@ void RequireProviderVector(const api::EngineApiResult& result,
     Require(!result.ok, "no-cluster build accepted cluster.sys.agents");
     Require(result.cluster_authority_required,
             "no-cluster result did not require cluster authority");
-    Require(HasApiDiagnostic(result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasApiDiagnostic(result, "PROCESS.CLUSTER_PATH_ABSENT"),
             "no-cluster diagnostic missing");
     Require(!HasApiDiagnostic(
                 result,
@@ -204,10 +204,10 @@ void TestSblrProviderBoundary() {
   if (provider.provider_type == std::string_view("compile_link_stub")) {
     Require(HasDispatchDiagnostic(
                 dispatch,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "SBLR compile-link stub dispatch diagnostic missing");
   } else if (!provider.supports_execution) {
-    Require(HasDispatchDiagnostic(dispatch, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDispatchDiagnostic(dispatch, "PROCESS.CLUSTER_PATH_ABSENT"),
             "SBLR no-cluster dispatch diagnostic missing");
   }
 }

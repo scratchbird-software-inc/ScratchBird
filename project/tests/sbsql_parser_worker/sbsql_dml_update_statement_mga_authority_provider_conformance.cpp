@@ -333,9 +333,9 @@ void TestRollbackAndRecovery(const std::filesystem::path& database_path) {
               Nonzero(rolled_back.authority.durable_presence_sha256),
           "rollback did not publish exact durable terminal authority");
   const auto active = engine_api::ActiveMgaSavepointNames(request.context);
-  Require(std::find(active.begin(), active.end(),
+  Require(!active.diagnostic.error && std::find(active.names.begin(), active.names.end(),
                     PrivateMarker(opened.authority.savepoint_uuid)) ==
-              active.end(),
+              active.names.end(),
           "rolled-back statement savepoint remained active");
 
   const auto reopened = engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(
@@ -382,9 +382,9 @@ void TestReleaseBarrierRecoveryAndContradiction(
               Nonzero(released.authority.durable_presence_sha256),
           "release did not issue exact durable publication-barrier authority");
   const auto active = engine_api::ActiveMgaSavepointNames(request.context);
-  Require(std::find(active.begin(), active.end(),
+  Require(!active.diagnostic.error && std::find(active.names.begin(), active.names.end(),
                     PrivateMarker(opened.authority.savepoint_uuid)) ==
-              active.end(),
+              active.names.end(),
           "released statement savepoint remained active");
 
   const auto reopened = engine_api::RecoverDmlUpdateStatementMgaAuthorityV1(

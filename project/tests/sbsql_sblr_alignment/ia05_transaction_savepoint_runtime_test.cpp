@@ -12,6 +12,10 @@ void Seed(Array& value, std::uint8_t seed) {
     for (std::size_t i = 0; i < value.size(); ++i) {
         value[i] = static_cast<std::uint8_t>(seed + i);
     }
+    if constexpr (std::tuple_size_v<Array> == 16) {
+        value[6] = (value[6] & 15) | 0x70;
+        value[8] = (value[8] & 63) | 0x80;
+    }
 }
 
 template <class Value, class Decode>

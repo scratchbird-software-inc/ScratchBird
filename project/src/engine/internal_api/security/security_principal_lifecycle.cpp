@@ -236,7 +236,7 @@ EngineTypedValue Value(std::string value) {
 
 void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical =
+  row.requested_row_uuid =
       "security-row-" + std::to_string(result->result_shape.rows.size() + 1);
   for (auto& field : fields) {
     row.fields.push_back({std::move(field.first), Value(std::move(field.second))});
@@ -431,17 +431,17 @@ bool PlaintextCredentialRefused(const EngineSecurityAlterPrincipalRequest& reque
 
 std::string PrincipalUuid(const EngineSecurityCreatePrincipalRequest& request) {
   if (!request.principal_uuid.empty()) { return request.principal_uuid; }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 std::string PrincipalUuid(const EngineSecurityAlterPrincipalRequest& request) {
   if (!request.principal_uuid.empty()) { return request.principal_uuid; }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 std::string RoleUuid(const EngineSecurityCreateRoleRequest& request) {
   if (!request.role_uuid.empty()) { return request.role_uuid; }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 bool IsEngineOwnedSysarchRoleUuid(const std::string& uuid) {
@@ -459,7 +459,7 @@ bool IsEngineOwnedBootstrapPrincipal(const EngineRequestContext& context,
 
 std::string GroupUuid(const EngineSecurityCreateGroupRequest& request) {
   if (!request.group_uuid.empty()) { return request.group_uuid; }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 std::string PrimaryName(const EngineApiRequest& request, const std::string& explicit_name) {
@@ -835,7 +835,7 @@ void ApplyNativeRowPolicyAuthority(
   record->source_expression_evidence_sha256 =
       authority.source_expression_evidence_sha256;
   record->source_catalog_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   record->source_catalog_generation = context.catalog_generation_id;
   record->source_security_generation = policy_event_generation;
 }
@@ -950,7 +950,7 @@ EngineSecurityAuditRecord MakeAudit(const EngineRequestContext& context,
                                      std::to_string(context.local_transaction_id) + "|" +
                                      std::to_string(generation));
   audit.operation_id = operation_id;
-  audit.actor_principal_uuid = context.principal_uuid.canonical;
+  audit.actor_principal_uuid = context.principal_uuid;
   audit.target_uuid = target_uuid;
   audit.outcome = "success";
   audit.redacted_detail = RedactSecurityPrincipalProtectedMaterialForDiagnostics(std::move(detail));
@@ -1742,10 +1742,10 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
     EngineSecurityPolicySnapshotAuthorityV1* snapshot) {
   if (snapshot == nullptr || !context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
-      !ExactNonzeroUuid(context.statement_receipt_uuid.canonical) ||
+      !ExactNonzeroUuid(context.statement_receipt_uuid) ||
       !ExactNonzeroUuid(target_relation_uuid) ||
       !context.authorization_context.present ||
-      !ExactNonzeroUuid(context.authorization_context.authority_uuid.canonical) ||
+      !ExactNonzeroUuid(context.authorization_context.authority_uuid) ||
       context.authorization_context.security_context_generation == 0 ||
       context.security_epoch == 0 || context.catalog_generation_id == 0 ||
       context.authorization_context.security_epoch != context.security_epoch ||
@@ -1775,8 +1775,8 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
   // rejects current contexts whenever grants or policies have been changed.
   std::vector<EngineSecurityPolicyCatalogRowIdentityV1> admitted;
   for (const auto& policy : context.authorization_context.policies) {
-    if (policy.target_uuid.canonical != target_relation_uuid) continue;
-    if (!ExactNonzeroUuid(policy.policy_uuid.canonical) ||
+    if (policy.target_uuid != target_relation_uuid) continue;
+    if (!ExactNonzeroUuid(policy.policy_uuid) ||
         policy.source_policy_generation == 0 ||
         policy.policy_epoch !=
             context.authorization_context.policy_epoch) {
@@ -1785,7 +1785,7 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
     }
     const EngineSecurityRowPolicyRecord* durable = nullptr;
     for (const auto& candidate : loaded.state.row_policies) {
-      if (candidate.policy_uuid != policy.policy_uuid.canonical) continue;
+      if (candidate.policy_uuid != policy.policy_uuid) continue;
       if (durable != nullptr) {
         return PrincipalDiagnostic(kSecurityPrincipalDiagnosticPolicyDuplicate,
                                    "durable_policy_identity_duplicate");
@@ -1806,11 +1806,11 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
         durable->effective_expression_generation == 0 ||
         !NonzeroSha256(durable->effective_expression_evidence_sha256) ||
         policy.update_policy_phase != durable->update_policy_phase ||
-        policy.effective_policy_uuid.canonical !=
+        policy.effective_policy_uuid !=
             durable->effective_policy_uuid ||
         policy.effective_policy_generation !=
             durable->effective_policy_generation ||
-        policy.effective_expression_uuid.canonical !=
+        policy.effective_expression_uuid !=
             durable->effective_expression_uuid ||
         policy.effective_expression_generation !=
             durable->effective_expression_generation ||
@@ -1871,7 +1871,7 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
     // DUSR binds the UPDATE statement's current catalog/security snapshot,
     // not the policy-creation statement's historical provenance fields.
     identity.catalog_snapshot_uuid =
-        context.statement_metadata_snapshot_uuid.canonical;
+        context.statement_metadata_snapshot_uuid;
     identity.catalog_generation = context.catalog_generation_id;
     identity.security_generation = loaded.state.security_generation;
     admitted.push_back(std::move(identity));
@@ -1886,9 +1886,9 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
   }
 
   snapshot->authenticated_statement_receipt_uuid =
-      context.statement_receipt_uuid.canonical;
+      context.statement_receipt_uuid;
   snapshot->security_context_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   snapshot->security_context_generation =
       context.authorization_context.security_context_generation;
   snapshot->security_generation = loaded.state.security_generation;
@@ -2263,7 +2263,7 @@ EngineSecurityCreatePrincipalResult EngineSecurityCreatePrincipal(
   result.protected_material_redacted = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = principal_uuid;
+  result.primary_object.uuid = principal_uuid;
   result.primary_object.object_kind = "security_principal";
   FillMutationEvidence(&result, kOperation, principal_uuid, generation);
   AddRow(&result,
@@ -2377,7 +2377,7 @@ EngineSecurityAlterPrincipalResult EngineSecurityAlterPrincipal(
   result.protected_material_redacted = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = principal_uuid;
+  result.primary_object.uuid = principal_uuid;
   result.primary_object.object_kind = "security_principal";
   FillMutationEvidence(&result, kOperation, principal_uuid, generation);
   AddRow(&result,
@@ -2430,7 +2430,7 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
   record.creator_tx = request.context.local_transaction_id;
   record.role_uuid = role_uuid;
   record.role_name = role_name;
-  record.owner_principal_uuid = request.context.principal_uuid.canonical;
+  record.owner_principal_uuid = request.context.principal_uuid;
   record.security_generation = generation;
   const auto audit = MakeAudit(request.context, kOperation, role_uuid, generation, "role=" + role_name);
   const auto appended = AppendEvents(
@@ -2456,7 +2456,7 @@ EngineSecurityCreateRoleResult EngineSecurityCreateRole(
   result.role_created = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = role_uuid;
+  result.primary_object.uuid = role_uuid;
   result.primary_object.object_kind = "security_role";
   FillMutationEvidence(&result, kOperation, role_uuid, generation);
   AddRow(&result,
@@ -2531,7 +2531,7 @@ EngineSecurityCreateGroupResult EngineSecurityCreateGroup(
   result.group_created = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = group_uuid;
+  result.primary_object.uuid = group_uuid;
   result.primary_object.object_kind = "security_group";
   FillMutationEvidence(&result, kOperation, group_uuid, generation);
   AddRow(&result,
@@ -2552,7 +2552,7 @@ EngineSecurityDropRoleResult EngineSecurityDropRole(
   if (!preflight.ok) { return preflight; }
   const std::string role_uuid = !request.role_uuid.empty()
       ? request.role_uuid
-      : request.target_object.uuid.canonical;
+      : request.target_object.uuid;
   if (role_uuid.empty()) {
     return DiagnosticResult<EngineSecurityDropRoleResult>(
         request.context,
@@ -2614,7 +2614,7 @@ EngineSecurityDropRoleResult EngineSecurityDropRole(
   result.role_dropped = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = role_uuid;
+  result.primary_object.uuid = role_uuid;
   result.primary_object.object_kind = "security_role";
   FillMutationEvidence(&result, kOperation, role_uuid, generation);
   AddRow(&result,
@@ -2636,7 +2636,7 @@ EngineSecurityDropGroupResult EngineSecurityDropGroup(
   if (!preflight.ok) { return preflight; }
   const std::string group_uuid = !request.group_uuid.empty()
       ? request.group_uuid
-      : request.target_object.uuid.canonical;
+      : request.target_object.uuid;
   if (group_uuid.empty()) {
     return DiagnosticResult<EngineSecurityDropGroupResult>(
         request.context,
@@ -2691,7 +2691,7 @@ EngineSecurityDropGroupResult EngineSecurityDropGroup(
   result.group_dropped = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = group_uuid;
+  result.primary_object.uuid = group_uuid;
   result.primary_object.object_kind = "security_group";
   FillMutationEvidence(&result, kOperation, group_uuid, generation);
   AddRow(&result,
@@ -2764,7 +2764,7 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
   record.member_principal_uuid = request.member_principal_uuid;
   record.container_uuid = request.container_uuid;
   record.container_kind = container_kind;
-  record.grantor_principal_uuid = request.context.principal_uuid.canonical;
+  record.grantor_principal_uuid = request.context.principal_uuid;
   record.security_generation = generation;
   const auto audit = MakeAudit(request.context,
                               kOperation,
@@ -2787,7 +2787,7 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
   result.membership_granted = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = record.membership_uuid;
+  result.primary_object.uuid = record.membership_uuid;
   result.primary_object.object_kind = "security_membership";
   FillMutationEvidence(&result, kOperation, record.membership_uuid, generation);
   AddRow(&result,
@@ -2859,7 +2859,7 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
   record.member_principal_uuid = request.member_principal_uuid;
   record.container_uuid = request.container_uuid;
   record.container_kind = container_kind;
-  record.grantor_principal_uuid = request.context.principal_uuid.canonical;
+  record.grantor_principal_uuid = request.context.principal_uuid;
   record.security_generation = generation;
   record.revoked = true;
   const auto audit = MakeAudit(request.context,
@@ -2883,7 +2883,7 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
   result.membership_revoked = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = record.membership_uuid;
+  result.primary_object.uuid = record.membership_uuid;
   result.primary_object.object_kind = "security_membership";
   FillMutationEvidence(&result, kOperation, record.membership_uuid, generation);
   AddRow(&result,
@@ -2941,7 +2941,7 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
   record.target_object_uuid = request.target_object_uuid;
   record.target_object_kind = request.target_object_kind;
   record.privilege = privilege;
-  record.grantor_principal_uuid = request.context.principal_uuid.canonical;
+  record.grantor_principal_uuid = request.context.principal_uuid;
   record.grant_effect = effect;
   record.security_generation = generation;
   const auto audit = MakeAudit(request.context,
@@ -2966,7 +2966,7 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
   result.privilege_granted = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = record.grant_uuid;
+  result.primary_object.uuid = record.grant_uuid;
   result.primary_object.object_kind = "security_privilege_grant";
   FillMutationEvidence(&result, kOperation, record.grant_uuid, generation);
   AddRow(&result,
@@ -3021,7 +3021,7 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
                    request.grantee_uuid,
                    request.target_object_uuid,
                    privilege,
-                   request.context.principal_uuid.canonical,
+                   request.context.principal_uuid,
                    generation),
        AuditEvent(audit),
        CacheInvalidationEvent(request.context, kOperation, request.target_object_uuid, generation)});
@@ -3035,10 +3035,10 @@ EngineSecurityRevokePrivilegeResult EngineSecurityRevokePrivilege(
   result.privilege_revoked = true;
   result.security_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical =
+  result.primary_object.uuid =
       StableToken("security-revoke", request.grantee_uuid + "|" + request.target_object_uuid + "|" + privilege);
   result.primary_object.object_kind = "security_privilege_revoke";
-  FillMutationEvidence(&result, kOperation, result.primary_object.uuid.canonical, generation);
+  FillMutationEvidence(&result, kOperation, result.primary_object.uuid, generation);
   AddRow(&result,
          {{"grantee_uuid", request.grantee_uuid},
           {"target_object_uuid", request.target_object_uuid},
@@ -3071,7 +3071,7 @@ EngineSecurityCreatePrivilegeTemplate(
     return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
         request.context, kOperation, context);
   }
-  if (!request.context.cluster_uuid.canonical.empty() ||
+  if (!request.context.cluster_uuid.is_nil() ||
       request.context.cluster_transaction_active ||
       request.context.route_fence_present) {
     return DiagnosticResult<EngineSecurityCreatePrivilegeTemplateResult>(
@@ -3084,7 +3084,7 @@ EngineSecurityCreatePrivilegeTemplate(
       request.template_name.find('\0') != std::string::npos ||
       !CanonicalOptionalUuid(request.owner_principal_uuid) ||
       !CanonicalOptionalUuid(request.schema_uuid) ||
-      !CanonicalNonzeroUuid(request.context.transaction_uuid.canonical) ||
+      !CanonicalNonzeroUuid(request.context.transaction_uuid) ||
       request.context.catalog_generation_id == 0 ||
       request.context.security_epoch == 0 ||
       request.idempotency_key.empty() || request.idempotency_key.size() > 1024 ||
@@ -3179,7 +3179,7 @@ EngineSecurityCreatePrivilegeTemplate(
     result.template_generation = existing_uuid->template_generation;
     result.cache_invalidation_epoch = existing_uuid->template_generation;
     result.privilege_template = *existing_uuid;
-    result.primary_object.uuid.canonical = existing_uuid->template_uuid;
+    result.primary_object.uuid = existing_uuid->template_uuid;
     result.primary_object.object_kind = "security_privilege_template";
     FillMutationEvidence(&result, kOperation, existing_uuid->template_uuid,
                          existing_uuid->template_generation);
@@ -3217,7 +3217,7 @@ EngineSecurityCreatePrivilegeTemplate(
   record.grant_option_privileges = std::move(grant_option_privileges);
   record.enabled = request.enabled;
   record.template_generation = generation;
-  record.creation_transaction_uuid = request.context.transaction_uuid.canonical;
+  record.creation_transaction_uuid = request.context.transaction_uuid;
   record.idempotency_key = request.idempotency_key;
   record.source_policy_generation = loaded.state.policy_generation;
   record.source_catalog_generation = request.context.catalog_generation_id;
@@ -3251,7 +3251,7 @@ EngineSecurityCreatePrivilegeTemplate(
   result.template_generation = generation;
   result.cache_invalidation_epoch = generation;
   result.privilege_template = record;
-  result.primary_object.uuid.canonical = record.template_uuid;
+  result.primary_object.uuid = record.template_uuid;
   result.primary_object.object_kind = "security_privilege_template";
   FillMutationEvidence(&result, kOperation, record.template_uuid, generation);
   AddEvidence(&result, "privilege_template_catalog",
@@ -3319,7 +3319,7 @@ EngineSecuritySetRoleResult EngineSecuritySetRole(
         PrincipalDiagnostic(kSecurityPrincipalDiagnosticRoleInvalid, request.role_uuid));
   }
   const auto grantees =
-      EffectiveGranteeSet(loaded.state, request.context.principal_uuid.canonical);
+      EffectiveGranteeSet(loaded.state, request.context.principal_uuid);
   if (grantees.count(request.role_uuid) == 0) {
     return DiagnosticResult<EngineSecuritySetRoleResult>(
         request.context,
@@ -3332,7 +3332,7 @@ EngineSecuritySetRoleResult EngineSecuritySetRole(
   result.role_set = true;
   result.active_role_uuid = request.role_uuid;
   result.security_generation = security_generation;
-  result.primary_object.uuid.canonical = request.role_uuid;
+  result.primary_object.uuid = request.role_uuid;
   result.primary_object.object_kind = "security_role";
   AddEvidence(&result, "active_role", request.role_uuid);
   AddEvidence(&result, "security_generation", std::to_string(security_generation));
@@ -3352,10 +3352,10 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   const std::string target_uuid = request.target_object_uuid.empty()
-      ? request.target_schema.uuid.canonical
+      ? request.target_schema.uuid
       : request.target_object_uuid;
   if (policy_uuid.empty() || target_uuid.empty()) {
     return DiagnosticResult<EngineSecurityAttachPolicyResult>(
@@ -3381,7 +3381,7 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
   record.predicate_envelope =
       RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
   record.definer_principal_uuid = request.definer_principal_uuid.empty()
-      ? request.context.principal_uuid.canonical
+      ? request.context.principal_uuid
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
   record.policy_generation = generation;
@@ -3419,7 +3419,7 @@ EngineSecurityAttachPolicyResult EngineSecurityAttachPolicy(
   result.policy_attached = true;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -3441,10 +3441,10 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   const std::string target_uuid = request.target_object_uuid.empty()
-      ? request.target_schema.uuid.canonical
+      ? request.target_schema.uuid
       : request.target_object_uuid;
   const std::string policy_name = PrimaryName(request, request.policy_name);
   if (policy_uuid.empty() || target_uuid.empty()) {
@@ -3479,7 +3479,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
       ? "predicate:true"
       : RedactSecurityPrincipalProtectedMaterialForDiagnostics(request.predicate_envelope);
   record.definer_principal_uuid = request.definer_principal_uuid.empty()
-      ? request.context.principal_uuid.canonical
+      ? request.context.principal_uuid
       : request.definer_principal_uuid;
   record.lifecycle_state = "active";
   record.policy_generation = generation;
@@ -3522,7 +3522,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   }
   std::string policy_name_scope_uuid = request.target_schema_uuid;
   if (policy_name_scope_uuid.empty()) {
-    policy_name_scope_uuid = request.context.current_schema_uuid.canonical;
+    policy_name_scope_uuid = request.context.current_schema_uuid;
   }
   const auto resolver = PersistSecurityNameAliases(
       request.context,
@@ -3542,7 +3542,7 @@ EngineSecurityCreatePolicyResult EngineSecurityCreatePolicy(
   result.policy_created = true;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -3567,7 +3567,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
                                                             "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   if (policy_uuid.empty()) {
     return DiagnosticResult<EngineSecurityAlterPolicyResult>(
@@ -3666,7 +3666,7 @@ EngineSecurityAlterPolicyResult EngineSecurityAlterPolicy(
   result.previous_policy_generation = existing->policy_generation;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -3694,7 +3694,7 @@ TResult DropPolicyLike(const EngineApiRequest& request,
       MutatingSetupFailure<TResult>(request, operation_id, "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   if (policy_uuid.empty()) {
-    policy_uuid = request.target_object.uuid.canonical;
+    policy_uuid = request.target_object.uuid;
   }
   if (policy_uuid.empty()) {
     return DiagnosticResult<TResult>(
@@ -3752,7 +3752,7 @@ TResult DropPolicyLike(const EngineApiRequest& request,
   mark_dropped(&result);
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = std::move(object_kind);
   FillMutationEvidence(&result, operation_id, policy_uuid, generation);
   AddRow(&result,
@@ -3810,7 +3810,7 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
                                                                "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   if (policy_uuid.empty()) {
     return DiagnosticResult<EngineSecurityActivatePolicyResult>(
@@ -3836,7 +3836,7 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
   record.policy_effect = existing == nullptr ? "activate" : existing->policy_effect;
   record.predicate_envelope = existing == nullptr ? "" : existing->predicate_envelope;
   record.definer_principal_uuid = existing == nullptr
-      ? request.context.principal_uuid.canonical
+      ? request.context.principal_uuid
       : existing->definer_principal_uuid;
   record.lifecycle_state = "active";
   record.policy_generation = generation;
@@ -3855,7 +3855,7 @@ EngineSecurityActivatePolicyResult EngineSecurityActivatePolicy(
   result.policy_activated = true;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -3874,7 +3874,7 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
                                                                  "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   if (policy_uuid.empty()) {
     return DiagnosticResult<EngineSecurityDeactivatePolicyResult>(
@@ -3900,7 +3900,7 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
   record.policy_effect = existing == nullptr ? "deactivate" : existing->policy_effect;
   record.predicate_envelope = existing == nullptr ? "" : existing->predicate_envelope;
   record.definer_principal_uuid = existing == nullptr
-      ? request.context.principal_uuid.canonical
+      ? request.context.principal_uuid
       : existing->definer_principal_uuid;
   record.lifecycle_state = "inactive";
   record.policy_generation = generation;
@@ -3919,7 +3919,7 @@ EngineSecurityDeactivatePolicyResult EngineSecurityDeactivatePolicy(
   result.policy_deactivated = true;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -3939,7 +3939,7 @@ EngineSecurityValidatePolicyResult EngineSecurityValidatePolicy(
                                                                authority);
   }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   if (policy_uuid.empty()) {
     return DiagnosticResult<EngineSecurityValidatePolicyResult>(
@@ -3980,7 +3980,7 @@ EngineSecurityValidatePolicyResult EngineSecurityValidatePolicy(
   result.policy_valid = true;
   result.current_policy_generation = loaded.state.policy_generation;
   result.current_cache_invalidation_epoch = loaded.state.cache_invalidation_epoch;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   AddEvidence(&result, "security_policy_valid", policy_uuid);
   AddEvidence(&result, "policy_generation", std::to_string(loaded.state.policy_generation));
@@ -4003,7 +4003,7 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
                                                            authority);
   }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   if (policy_uuid.empty()) {
     return DiagnosticResult<EngineSecurityShowPolicyResult>(
@@ -4038,7 +4038,7 @@ EngineSecurityShowPolicyResult EngineSecurityShowPolicy(
   result.policy = *policy;
   result.current_policy_generation = loaded.state.policy_generation;
   result.current_cache_invalidation_epoch = loaded.state.cache_invalidation_epoch;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_policy";
   AddEvidence(&result, "security_policy", policy_uuid);
   AddEvidence(&result, "policy_generation", std::to_string(loaded.state.policy_generation));
@@ -4083,10 +4083,10 @@ EngineSecurityEvaluatePrivilegeResult EngineSecurityEvaluatePrivilege(
   }
   const std::string principal_uuid = !request.principal_uuid.empty()
       ? request.principal_uuid
-      : request.context.principal_uuid.canonical;
+      : request.context.principal_uuid;
   const std::string target_uuid = !request.target_object_uuid.empty()
       ? request.target_object_uuid
-      : request.target_object.uuid.canonical;
+      : request.target_object.uuid;
   const std::string privilege = NormalizePrivilege(request.privilege);
   if (principal_uuid.empty() || target_uuid.empty() || privilege.empty()) {
     return DiagnosticResult<EngineSecurityEvaluatePrivilegeResult>(
@@ -4175,10 +4175,10 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
                                                              "POLICY_ADMIN");
   if (!preflight.ok) { return preflight; }
   const std::string policy_uuid = request.policy_uuid.empty()
-      ? request.target_object.uuid.canonical
+      ? request.target_object.uuid
       : request.policy_uuid;
   const std::string target_uuid = request.target_object_uuid.empty()
-      ? request.target_schema.uuid.canonical
+      ? request.target_schema.uuid
       : request.target_object_uuid;
   if (policy_uuid.empty() || target_uuid.empty()) {
     return DiagnosticResult<EngineSecurityPutRowPolicyResult>(
@@ -4237,7 +4237,7 @@ EngineSecurityPutRowPolicyResult EngineSecurityPutRowPolicy(
   result.policy_persisted = true;
   result.policy_generation = generation;
   result.cache_invalidation_epoch = generation;
-  result.primary_object.uuid.canonical = policy_uuid;
+  result.primary_object.uuid = policy_uuid;
   result.primary_object.object_kind = "security_row_policy";
   FillMutationEvidence(&result, kOperation, policy_uuid, generation);
   AddRow(&result,
@@ -4285,10 +4285,10 @@ EngineSecurityEvaluateRowPolicyResult EngineSecurityEvaluateRowPolicy(
   }
   const std::string principal_uuid = !request.principal_uuid.empty()
       ? request.principal_uuid
-      : request.context.principal_uuid.canonical;
+      : request.context.principal_uuid;
   const std::string target_uuid = !request.target_object_uuid.empty()
       ? request.target_object_uuid
-      : request.target_object.uuid.canonical;
+      : request.target_object.uuid;
   for (const auto& policy : loaded.state.row_policies) {
     if (policy.deleted || policy.lifecycle_state != "active") { continue; }
     if (policy.target_object_uuid != target_uuid) { continue; }

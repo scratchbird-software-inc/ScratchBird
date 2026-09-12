@@ -98,7 +98,7 @@ bool AccountString(const std::string& value, std::uint64_t* bytes) {
 
 bool AccountDescriptor(const EngineDescriptor& descriptor,
                        std::uint64_t* bytes) {
-  return AccountString(descriptor.descriptor_uuid.canonical, bytes) &&
+  return AccountString(descriptor.descriptor_uuid, bytes) &&
          AccountString(descriptor.descriptor_kind, bytes) &&
          AccountString(descriptor.canonical_type_name, bytes) &&
          AccountString(descriptor.encoded_descriptor, bytes);

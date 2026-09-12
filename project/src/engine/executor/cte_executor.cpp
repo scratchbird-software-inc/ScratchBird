@@ -62,44 +62,11 @@ bool RecursiveCteHasDistinctBinaryInputs(const PhysicalNodeRecord& node) {
              node.input_physical_node_ids[1];
 }
 
-bool IsCanonicalCteEvidenceUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalCteEvidenceUuid(const internal_api::EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-std::optional<std::string_view> RecursiveCteDescriptorField(
-    const internal_api::EngineDescriptor& descriptor,
-    const std::string_view key) {
-  const auto prefix = std::string(key) + "=";
-  std::optional<std::string_view> value;
-  std::size_t begin = 0;
-  while (begin <= descriptor.encoded_descriptor.size()) {
-    const auto end = descriptor.encoded_descriptor.find(';', begin);
-    const auto field =
-        std::string_view(descriptor.encoded_descriptor)
-            .substr(begin, end == std::string::npos ? std::string::npos
-                                                    : end - begin);
-    if (field.starts_with(prefix)) {
-      if (value.has_value() || field.size() == prefix.size()) {
-        return std::nullopt;
-      }
-      value = field.substr(prefix.size());
-    }
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  return value;
-}
-
-std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
+internal_api::EngineUuid CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
   static const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
@@ -113,14 +80,13 @@ std::string CanonicalCoreDatatypeUuid(const std::string_view stable_name) {
       !found->descriptor_uuid.valid()) {
     return {};
   }
-  const auto descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      found->descriptor_uuid.value);
+  const auto descriptor_uuid = found->descriptor_uuid.value;
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          internal_api::EngineUuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x01}},
           manifest.manifest.catalog_epoch, 1, descriptor_uuid,
           found->descriptor_epoch);
-  return identity.ok ? identity.row.type_uuid : descriptor_uuid;
+  return identity.ok ? identity.row.type_uuid : internal_api::EngineUuid{};
 }
 
 struct RecursiveCteCancellationPoll {
@@ -242,15 +208,15 @@ RecursiveCteBatchValidation ValidateRecursiveCteBatch(
 bool RecursiveCteCancellationEvidenceBound(
     const TypedPhysicalNodeDag& dag,
     const CanonicalRecursiveCteCancellationProbe& probe,
-    const std::string& evidence_uuid) {
-  if (!probe) return evidence_uuid.empty();
+    const internal_api::EngineUuid& evidence_uuid) {
+  if (!probe) return evidence_uuid.is_nil();
   const PhysicalAdmissionEvidence* policy_evidence = nullptr;
   for (const auto& evidence : dag.admission_evidence) {
     if (evidence.stage != PhysicalAdmissionStage::kPolicyCapability) continue;
     if (policy_evidence != nullptr) return false;
     policy_evidence = &evidence;
   }
-  return !evidence_uuid.empty() && policy_evidence != nullptr &&
+  return IsCanonicalCteEvidenceUuid(evidence_uuid) && policy_evidence != nullptr &&
          policy_evidence->evidence_uuid == evidence_uuid;
 }
 
@@ -264,14 +230,7 @@ bool SameCanonicalCteColumns(
     if (left_column.descriptor_id != right_column.descriptor_id ||
         left_column.stable_name != right_column.stable_name ||
         left_column.nullable != right_column.nullable ||
-        left_column.descriptor.descriptor_uuid.canonical !=
-            right_column.descriptor.descriptor_uuid.canonical ||
-        left_column.descriptor.descriptor_kind !=
-            right_column.descriptor.descriptor_kind ||
-        left_column.descriptor.canonical_type_name !=
-            right_column.descriptor.canonical_type_name ||
-        left_column.descriptor.encoded_descriptor !=
-            right_column.descriptor.encoded_descriptor) {
+        left_column.descriptor != right_column.descriptor) {
       return false;
     }
   }
@@ -807,7 +766,7 @@ DescriptorRuntimeDiagnostic BindRecursiveCteMemoryState(
     resource_evidence = &evidence;
   }
   if (resource_evidence == nullptr ||
-      resource_evidence->evidence_uuid.empty()) {
+      !IsCanonicalCteEvidenceUuid(resource_evidence->evidence_uuid)) {
     return RecursiveCteMemoryRefusal(
         "recursive CTE resource evidence is absent");
   }
@@ -983,8 +942,7 @@ bool BoundCanonicalRecursiveCteStructuralBytes(
                                       std::size_t* bytes) {
     return (!include_stable_name ||
             string_storage(column.stable_name, bytes)) &&
-           string_storage(column.descriptor.descriptor_uuid.canonical,
-                          bytes) &&
+           // UUID bytes are inline in sizeof(ExecutorColumnDescriptor).
            string_storage(column.descriptor.descriptor_kind, bytes) &&
            string_storage(column.descriptor.canonical_type_name, bytes) &&
            string_storage(column.descriptor.encoded_descriptor, bytes);
@@ -996,8 +954,7 @@ bool BoundCanonicalRecursiveCteStructuralBytes(
       return std::optional<std::size_t>{};
     }
     for (const auto& term : *equality_terms) {
-      if (!string_storage(term.collation_uuid, &bytes) ||
-          !string_storage(term.text_seed.seed_pack_name, &bytes) ||
+      if (!string_storage(term.text_seed.seed_pack_name, &bytes) ||
           !string_storage(term.text_seed.seed_pack_version, &bytes) ||
           !string_storage(term.text_seed.charset_name, &bytes) ||
           !string_storage(term.text_seed.collation_name, &bytes) ||
@@ -1431,29 +1388,22 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorkingBound(
   }
   const auto count_anchor_int64_type_uuid =
       materialized_count_anchor ? CanonicalCoreDatatypeUuid("int64")
-                                : std::string{};
-  const auto count_anchor_type_uuid =
-      materialized_count_anchor && anchor_batch.columns.size() == 1
-          ? RecursiveCteDescriptorField(
-                anchor_batch.columns.front().descriptor, "type_uuid")
-          : std::optional<std::string_view>{};
+                                : internal_api::EngineUuid{};
   if (materialized_count_anchor &&
       (anchor_batch.columns.size() != 1 ||
-       !IsCanonicalCteEvidenceUuid(count_anchor_int64_type_uuid) ||
-       !count_anchor_type_uuid.has_value() ||
-       *count_anchor_type_uuid != count_anchor_int64_type_uuid ||
+       !scratchbird::core::uuid::IsEngineIdentityUuid(count_anchor_int64_type_uuid) ||
+       anchor_batch.columns.front().descriptor.type_uuid != count_anchor_int64_type_uuid ||
        !internal_api::QowCanonicalDescriptorIdentityV1(
            anchor_batch.columns.front().descriptor) ||
-       !IsCanonicalCteEvidenceUuid(
+       !scratchbird::core::uuid::IsEngineIdentityUuid(
            anchor_batch.columns.front()
-               .descriptor.descriptor_uuid.canonical) ||
-       anchor_batch.columns.front().descriptor.descriptor_uuid.canonical ==
+               .descriptor.descriptor_uuid) ||
+       anchor_batch.columns.front().descriptor.descriptor_uuid ==
            count_anchor_int64_type_uuid ||
        anchor_batch.columns.front().descriptor.descriptor_kind != "scalar" ||
        anchor_batch.columns.front().descriptor.canonical_type_name != "int64" ||
        anchor_batch.columns.front().descriptor.encoded_descriptor !=
-           "type_uuid=" + count_anchor_int64_type_uuid +
-               ";nullability=non_null" ||
+           "nullability=non_null" ||
        anchor_batch.columns.front().nullable ||
        anchor_batch.rows.size() != 1 ||
        anchor_batch.rows.front().values.size() != 1 ||
@@ -2741,39 +2691,36 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
   }
   const auto int64_type_uuid = CanonicalCoreDatatypeUuid("int64");
   const auto boolean_type_uuid = CanonicalCoreDatatypeUuid("boolean");
-  std::unordered_set<std::string> anchor_descriptor_uuids;
-  std::unordered_set<std::string> generated_type_uuids;
-  if (!IsCanonicalCteEvidenceUuid(int64_type_uuid) ||
-      !IsCanonicalCteEvidenceUuid(boolean_type_uuid)) {
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> anchor_descriptor_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> generated_type_uuids;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(int64_type_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(boolean_type_uuid)) {
     return refuse("recursive CTE SEARCH/CYCLE core type identity is unresolved");
   }
   generated_type_uuids.insert(int64_type_uuid);
   generated_type_uuids.insert(boolean_type_uuid);
   for (const auto& anchor_column : request.anchor_batch.columns) {
-    const auto anchor_type_uuid =
-        RecursiveCteDescriptorField(anchor_column.descriptor, "type_uuid");
     if (!api::QowCanonicalDescriptorIdentityV1(anchor_column.descriptor) ||
-        !anchor_type_uuid.has_value() ||
-        !IsCanonicalCteEvidenceUuid(*anchor_type_uuid)) {
+        !scratchbird::core::uuid::IsEngineIdentityUuid(anchor_column.descriptor.type_uuid)) {
       return refuse(
           "recursive CTE SEARCH/CYCLE anchor identity is unresolved");
     }
     anchor_descriptor_uuids.insert(
-        anchor_column.descriptor.descriptor_uuid.canonical);
-    generated_type_uuids.insert(std::string(*anchor_type_uuid));
+        anchor_column.descriptor.descriptor_uuid);
+    generated_type_uuids.insert(anchor_column.descriptor.type_uuid);
   }
   const auto exact_generated_descriptor = [](
                                               const ExecutorColumnDescriptor&
                                                   column,
                                               const std::string_view type_name,
-                                              const std::string& type_uuid) {
-    return !type_uuid.empty() && !column.nullable &&
+                                              const internal_api::EngineUuid& type_uuid) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(type_uuid) && !column.nullable &&
            internal_api::QowCanonicalDescriptorIdentityV1(
                column.descriptor) &&
            column.descriptor.descriptor_kind == "scalar" &&
            column.descriptor.canonical_type_name == type_name &&
-           column.descriptor.encoded_descriptor ==
-               "type_uuid=" + type_uuid + ";nullability=non_null";
+           column.descriptor.type_uuid == type_uuid &&
+           column.descriptor.encoded_descriptor == "nullability=non_null";
   };
   if (selected_node->output_descriptor_ids != output_descriptor_ids ||
       request.search_sequence_column.descriptor_id == 0 ||
@@ -2793,9 +2740,9 @@ ExecuteCanonicalRecursiveCteSearchCycleBound(
     return refuse("recursive CTE SEARCH/CYCLE descriptors are not exact");
   }
   const auto& sequence_descriptor_uuid =
-      request.search_sequence_column.descriptor.descriptor_uuid.canonical;
+      request.search_sequence_column.descriptor.descriptor_uuid;
   const auto& cycle_descriptor_uuid =
-      request.cycle_mark_column.descriptor.descriptor_uuid.canonical;
+      request.cycle_mark_column.descriptor.descriptor_uuid;
   if (sequence_descriptor_uuid == cycle_descriptor_uuid ||
       anchor_descriptor_uuids.contains(sequence_descriptor_uuid) ||
       anchor_descriptor_uuids.contains(cycle_descriptor_uuid) ||
@@ -3596,7 +3543,7 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
         return evidence.stage == PhysicalAdmissionStage::kResource;
       });
   if (request.maximum_materialized_value_bytes == 0 ||
-      request.memory_grant_evidence_uuid.empty() ||
+      !IsCanonicalCteEvidenceUuid(request.memory_grant_evidence_uuid) ||
       resource_evidence ==
           request.working_request.physical_dag.admission_evidence.end() ||
       resource_evidence->evidence_uuid !=
@@ -3778,7 +3725,7 @@ ExecuteCanonicalRecursiveCteCancellation(
         return evidence.stage == PhysicalAdmissionStage::kPolicyCapability;
       });
   if (!request.cancellation_requested ||
-      request.cancellation_evidence_uuid.empty() ||
+      request.cancellation_evidence_uuid.is_nil() ||
       policy_evidence ==
           request.working_request.physical_dag.admission_evidence.end() ||
       policy_evidence->evidence_uuid !=
@@ -3954,7 +3901,7 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
     return refuse("recursive CTE MGA boundary recheck contract is invalid");
   }
 
-  std::unordered_set<std::string> evidence_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> evidence_uuids;
   evidence_uuids.insert(request.transaction_inventory_evidence_uuid);
   for (std::size_t index = 0; index < request.iteration_evidence.size();
        ++index) {

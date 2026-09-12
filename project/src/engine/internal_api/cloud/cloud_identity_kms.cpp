@@ -345,7 +345,7 @@ CloudProtectedReference MakeIdentityReference(const EngineApiRequest& request, c
   ref.protected_material_uuid = FirstPresentValue(request, {"identity_protected_material_uuid:", "protected_material_uuid:"});
   ref.protected_material_version_uuid = version;
   ref.redacted_external_reference = RedactedReference(subject.empty() ? OptionValue(request, "static_secret_policy_uuid:") : subject);
-  ref.reference_uuid.canonical = SyntheticUuid(ref.reference_kind, mode + ":" + ref.provider_profile_uuid + ":" +
+  ref.reference_uuid = SyntheticUuid(ref.reference_kind, mode + ":" + ref.provider_profile_uuid + ":" +
                                                                   ref.protected_material_version_uuid + ":" +
                                                                   ref.redacted_external_reference);
   return ref;
@@ -367,7 +367,7 @@ CloudProtectedReference MakeKmsReference(const EngineApiRequest& request, const 
   ref.protected_material_uuid = FirstPresentValue(request, {"protected_material_uuid:", "kms_protected_material_uuid:"});
   ref.protected_material_version_uuid = FirstPresentValue(request, {"protected_material_version_uuid:", "kms_protected_material_version_uuid:"});
   ref.redacted_external_reference = RedactedReference(kms_mode + ":" + key_ref);
-  ref.reference_uuid.canonical = SyntheticUuid(ref.reference_kind, kms_mode + ":" + OptionValue(request, "kms_profile_uuid:") +
+  ref.reference_uuid = SyntheticUuid(ref.reference_kind, kms_mode + ":" + OptionValue(request, "kms_profile_uuid:") +
                                                                   ":" + ref.protected_material_version_uuid + ":" +
                                                                   ref.redacted_external_reference);
   return ref;
@@ -384,7 +384,7 @@ CloudKmsEnvelopeMetadata MakeEnvelope(const EngineApiRequest& request,
   envelope.envelope_version = OptionValue(request, "envelope_version:");
   if (envelope.envelope_version.empty()) { envelope.envelope_version = "1"; }
   envelope.wrapping_reference_uuid = kms_reference.reference_uuid;
-  envelope.envelope_uuid.canonical = SyntheticUuid("cloud_kms_envelope",
+  envelope.envelope_uuid = SyntheticUuid("cloud_kms_envelope",
                                                    envelope.kms_profile_uuid + ":" +
                                                        kms_reference.protected_material_version_uuid + ":" +
                                                        envelope.envelope_version);
@@ -401,7 +401,7 @@ EngineTypedValue RowValue(std::string value) {
 
 void AddResultRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical = SyntheticUuid("cloud_identity_kms_row", std::to_string(result->result_shape.rows.size()));
+  row.requested_row_uuid = SyntheticUuid("cloud_identity_kms_row", std::to_string(result->result_shape.rows.size()));
   for (auto& field : fields) { row.fields.push_back({std::move(field.first), RowValue(std::move(field.second))}); }
   result->result_shape.result_kind = "cloud_identity_kms_policy_rows";
   result->result_shape.rows.push_back(std::move(row));
@@ -507,15 +507,15 @@ CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest
 
   const bool static_exception = identity_mode == "static_secret";
   const bool local_emulator = identity_mode == "local_emulator_identity" || kms_mode == "local_emulator";
-  validation.evidence.push_back({"cloud_identity_kms_policy_validated", validation.envelope.envelope_uuid.canonical});
-  validation.evidence.push_back({"cloud_identity_binding_reference", validation.identity_reference.reference_uuid.canonical});
-  validation.evidence.push_back({"cloud_kms_wrapping_reference", validation.kms_reference.reference_uuid.canonical});
+  validation.evidence.push_back({"cloud_identity_kms_policy_validated", validation.envelope.envelope_uuid});
+  validation.evidence.push_back({"cloud_identity_binding_reference", validation.identity_reference.reference_uuid});
+  validation.evidence.push_back({"cloud_kms_wrapping_reference", validation.kms_reference.reference_uuid});
   validation.evidence.push_back({"cloud_identity_kms_audit", OptionValue(request, "audit_policy_uuid:")});
   if (static_exception) {
     validation.evidence.push_back({"cloud_static_secret_policy_exception", OptionValue(request, "static_secret_audit_evidence_uuid:")});
   }
   if (local_emulator) {
-    validation.evidence.push_back({"cloud_local_emulator_fixture", validation.envelope.envelope_uuid.canonical});
+    validation.evidence.push_back({"cloud_local_emulator_fixture", validation.envelope.envelope_uuid});
   }
 
   validation.rows.push_back({"decision", "allow"});
@@ -524,14 +524,14 @@ CloudIdentityKmsValidation ValidateCloudIdentityKmsPolicy(const EngineApiRequest
   validation.rows.push_back({"static_secret_policy_exception", static_exception ? "true" : "false"});
   validation.rows.push_back({"kms_mode", kms_mode});
   validation.rows.push_back({"provider_profile_uuid", OptionValue(request, "provider_profile_uuid:")});
-  validation.rows.push_back({"identity_reference_uuid", validation.identity_reference.reference_uuid.canonical});
+  validation.rows.push_back({"identity_reference_uuid", validation.identity_reference.reference_uuid});
   validation.rows.push_back({"identity_external_subject_ref", validation.identity_reference.redacted_external_reference});
-  validation.rows.push_back({"kms_reference_uuid", validation.kms_reference.reference_uuid.canonical});
+  validation.rows.push_back({"kms_reference_uuid", validation.kms_reference.reference_uuid});
   validation.rows.push_back({"kms_key_reference", validation.kms_reference.redacted_external_reference});
   validation.rows.push_back({"protected_material_uuid", validation.kms_reference.protected_material_uuid});
   validation.rows.push_back({"protected_material_version_uuid", validation.kms_reference.protected_material_version_uuid});
-  validation.rows.push_back({"envelope_uuid", validation.envelope.envelope_uuid.canonical});
-  validation.rows.push_back({"wrapping_reference_uuid", validation.envelope.wrapping_reference_uuid.canonical});
+  validation.rows.push_back({"envelope_uuid", validation.envelope.envelope_uuid});
+  validation.rows.push_back({"wrapping_reference_uuid", validation.envelope.wrapping_reference_uuid});
   validation.rows.push_back({"envelope_version", validation.envelope.envelope_version});
   validation.rows.push_back({"rotation_policy_uuid", validation.envelope.rotation_policy_uuid});
   validation.rows.push_back({"audit_policy_uuid", validation.envelope.audit_policy_uuid});

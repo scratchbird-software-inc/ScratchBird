@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "descriptor_value_runtime.hpp"
+#include "selected_index_storage_access.hpp"
 #include "indexed_physical_operator.hpp"
 
 #include "index_key_encoding.hpp"
@@ -18,69 +18,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-namespace scratchbird::engine::executor {
-
-struct CanonicalIndexStorageResolvedRowV1 {
-  DescriptorRuntimeDiagnostic diagnostic;
-  CanonicalScanCandidateEvidence candidate;
-  std::string version_uuid;
-  bool engine_mga_visibility_rechecked = false;
-  bool engine_security_rechecked = false;
-  bool engine_residual_rechecked = false;
-};
-
-struct CanonicalSelectedIndexStorageRequestV1 {
-  TypedPhysicalNodeDag physical_dag;
-  std::uint64_t selected_physical_node_id = 0;
-  std::string selected_alternative_uuid;
-  std::string selected_index_uuid;
-  std::string available_implementation_id;
-  std::string relation_uuid;
-  CanonicalExecutionMgaAuthority mga_authority;
-  std::uint64_t selected_descriptor_generation = 0;
-  std::uint64_t current_descriptor_generation = 0;
-  std::vector<std::string> selected_key_descriptor_uuids;
-  std::string selected_key_profile_id;
-  std::vector<scratchbird::core::index::IndexKeyEncodingComponent>
-      point_key_components;
-  scratchbird::core::index::IndexKeySemanticProfile key_profile;
-  const scratchbird::storage::page::IndexBtreePhysicalTree* physical_tree =
-      nullptr;
-  std::size_t maximum_candidate_count = 0;
-  std::function<bool()> cancellation_requested;
-  std::function<CanonicalIndexStorageResolvedRowV1(
-      const IndexedPhysicalOperatorLocator&)>
-      resolve_engine_row_version;
-  std::string heap_fallback_alternative_uuid;
-  bool physical_tree_engine_owned = false;
-  bool resolver_engine_owned = false;
-  bool selected_index_is_approximate = false;
-  bool exact_fallback_recheck_authorized = false;
-};
-
-struct CanonicalSelectedIndexStorageResultV1 {
-  DescriptorRuntimeDiagnostic diagnostic;
-  CanonicalScanAccessResult scan_result;
-  std::vector<scratchbird::core::platform::byte> encoded_point_key;
-  std::string selected_alternative_uuid;
-  std::string selected_index_uuid;
-  std::size_t physical_locator_count = 0;
-  std::size_t resolved_row_version_count = 0;
-  bool exact_key_encoded = false;
-  bool exact_selected_index_bound = false;
-  bool data_access_observation_known = false;
-  bool data_access_observed = false;
-  bool exact_fallback_recheck_applied = false;
-  bool governed_heap_replan_required = false;
-  std::string governed_heap_fallback_alternative_uuid;
-};
-
-CanonicalSelectedIndexStorageResultV1
-ExecuteCanonicalSelectedIndexStorageAccessV1(
-    const CanonicalSelectedIndexStorageRequestV1& request);
-
-}  // namespace scratchbird::engine::executor
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
@@ -95,18 +32,22 @@ constexpr std::uint64_t kCommittedHighWater =
     0xffff'ffff'ffff'fec8ULL;
 constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
+std::size_t checks = 0;
 bool Require(const bool condition, const std::string_view detail) {
+  ++checks;
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-004-ACCESS-V1: " << detail << '\n';
   }
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7400-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+api::EngineUuid Uuid(const std::uint64_t suffix) {
+  api::EngineUuid value;
+  value.bytes[0] = 1;
+  value.bytes[6] = 0x74;
+  value.bytes[8] = 0x80;
+  for (unsigned i = 0; i != 6; ++i) value.bytes[15-i] = suffix >> (i*8);
+  return value;
 }
 
 exec::CanonicalExecutionMgaAuthority ClosureAuthority(
@@ -236,7 +177,7 @@ bool EmptyFailureResult(
   return !result.diagnostic.ok && result.accepted_record_uuids.empty() &&
          result.accepted_row_version_ids.empty() &&
          result.counters.emitted_count == 0 &&
-         result.selected_plan_uuid.empty() &&
+         result.selected_plan_uuid.is_nil() &&
          result.executed_physical_node_id == 0 &&
          !exec::PhysicalMgaStatementContextValid(
              result.mga_statement_context);
@@ -271,7 +212,7 @@ bool ValidateIndexAccessRechecks() {
   passed &= Require(result.diagnostic.ok && !result.replan_required,
                     "valid selected index access was refused");
   passed &= Require(result.accepted_record_uuids ==
-                            std::vector<std::string>{Uuid(601)} &&
+                            std::vector<api::EngineUuid>{Uuid(601)} &&
                         result.accepted_row_version_ids ==
                             std::vector<std::uint64_t>{801},
                     "index access published a candidate before all rechecks");
@@ -479,7 +420,7 @@ bool ValidateCompleteAuthorityRefusalMatrix() {
       "missing current resolver reached scan access");
   passed &= expect_refusal(
       [](auto& request) {
-        request.mga_authority.statement_context.statement_uuid.clear();
+        request.mga_authority.statement_context.statement_uuid = {};
       },
       "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
       "malformed carried context reached scan access");
@@ -587,12 +528,10 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 idx::IndexKeyEncodingComponent IndexKeyComponent(
-    const std::string& descriptor_uuid,
+    const api::EngineUuid& descriptor_uuid,
     const std::string_view payload) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(
-      platform::UuidKind::object, descriptor_uuid);
   idx::IndexKeyEncodingComponent component;
-  if (parsed.ok()) component.type_descriptor_uuid = parsed.value;
+  component.type_descriptor_uuid = {platform::UuidKind::object, descriptor_uuid};
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
   component.payload.assign(payload.begin(), payload.end());
@@ -600,51 +539,44 @@ idx::IndexKeyEncodingComponent IndexKeyComponent(
 }
 
 std::vector<platform::byte> EncodedIndexKey(
-    const std::string& descriptor_uuid,
+    const api::EngineUuid& descriptor_uuid,
     const std::string_view payload) {
   const auto encoded =
       idx::EncodeIndexKey({IndexKeyComponent(descriptor_uuid, payload)}, {});
   return encoded.ok() ? encoded.encoded : std::vector<platform::byte>{};
 }
 
-page::IndexBtreePhysicalTree PhysicalTree(const std::string& index_uuid) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(
-      platform::UuidKind::object, index_uuid);
-  if (!parsed.ok()) return {};
-  auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 768);
+page::IndexBtreePhysicalTree PhysicalTree(const api::EngineUuid& index_uuid) {
+  auto initialized = page::InitializeIndexBtreePhysicalTree(
+      {platform::UuidKind::object, index_uuid}, 768);
   return initialized.ok() ? std::move(initialized.tree)
                           : page::IndexBtreePhysicalTree{};
 }
 
 void AddIndexCell(page::IndexBtreePhysicalTree* tree,
-                  const std::string& descriptor_uuid,
+                  const api::EngineUuid& descriptor_uuid,
                   const std::string_view key,
-                  const std::string& row_uuid,
-                  const std::string& version_uuid) {
+                  const api::EngineUuid& row_uuid,
+                  const api::EngineUuid& version_uuid) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedIndexKey(descriptor_uuid, key);
-  const auto row = uuid::ParseDurableEngineIdentityUuid(
-      platform::UuidKind::row, row_uuid);
-  const auto version = uuid::ParseDurableEngineIdentityUuid(
-      platform::UuidKind::row, version_uuid);
-  if (!row.ok() || !version.ok()) return;
-  cell.row_uuid = row.value;
-  cell.version_uuid = version.value;
+  cell.row_uuid = {platform::UuidKind::row, row_uuid};
+  cell.version_uuid = {platform::UuidKind::row, version_uuid};
   page::IndexBtreePhysicalInsertRequest insert;
   insert.cell = std::move(cell);
   (void)page::InsertIndexBtreeCell(tree, insert);
 }
 
 struct IndexStorageFixture {
-  std::string index_uuid = Uuid(1201);
-  std::string key_descriptor_uuid = Uuid(1202);
-  std::string row_visible = Uuid(1211);
-  std::string row_invisible = Uuid(1212);
-  std::string row_residual = Uuid(1213);
-  std::string version_visible = Uuid(1221);
-  std::string version_invisible = Uuid(1222);
-  std::string version_residual = Uuid(1223);
+  api::EngineUuid index_uuid = Uuid(1201);
+  api::EngineUuid key_descriptor_uuid = Uuid(1202);
+  api::EngineUuid row_visible = Uuid(1211);
+  api::EngineUuid row_invisible = Uuid(1212);
+  api::EngineUuid row_residual = Uuid(1213);
+  api::EngineUuid version_visible = Uuid(1221);
+  api::EngineUuid version_invisible = Uuid(1222);
+  api::EngineUuid version_residual = Uuid(1223);
   page::IndexBtreePhysicalTree tree = PhysicalTree(index_uuid);
 
   IndexStorageFixture() {
@@ -759,7 +691,7 @@ bool ValidatePhysicalIndexStorageAcquisition() {
                             1 &&
                         result.scan_result.counters.emitted_count == 1 &&
                         result.scan_result.accepted_record_uuids ==
-                            std::vector<std::string>{fixture.row_visible},
+                            std::vector<api::EngineUuid>{fixture.row_visible},
                     "physical locators bypassed MGA or residual rechecks");
 
   auto empty = request;
@@ -898,6 +830,121 @@ bool ValidatePhysicalIndexRefusalAndFallbackTruth() {
   return passed;
 }
 
+bool ValidateBinaryScanIdentity() {
+  bool passed = true;
+  const auto candidate = Candidate(
+      1, exec::CanonicalMgaVisibilityDecision::kVisible,
+      exec::CanonicalMgaSecurityDecision::kAllowed,
+      api::EngineSqlTruthValue::true_value);
+  const auto request_with_candidate = [&] {
+    auto request = Request();
+    request.maximum_candidate_count = 2;
+    request.candidates = {candidate};
+    return request;
+  };
+  // The fixture's shape oracle is independent of the production validator.
+  for (const auto member : {
+           &exec::CanonicalScanCandidateEvidence::candidate_uuid,
+           &exec::CanonicalScanCandidateEvidence::record_uuid,
+           &exec::CanonicalScanCandidateEvidence::relation_uuid,
+           &exec::CanonicalScanCandidateEvidence::visibility_decision_uuid}) {
+    for (unsigned version = 0; version != 16; ++version) {
+      for (unsigned variant = 0; variant != 4; ++variant) {
+        auto request = request_with_candidate();
+        auto& id = request.candidates.front().*member;
+        id.bytes[6] = (id.bytes[6] & 15) | (version << 4);
+        id.bytes[8] = (id.bytes[8] & 63) | (variant << 6);
+        const auto result = exec::ExecuteCanonicalSelectedScanAccess(request);
+        const bool valid = version == 7 && variant == 2;
+        passed &= Require(valid ? result.diagnostic.ok : EmptyFailureResult(result),
+                          "candidate system UUID version/variant admission");
+      }
+    }
+    auto nil = request_with_candidate();
+    nil.candidates.front().*member = {};
+    passed &= Require(EmptyFailureResult(
+        exec::ExecuteCanonicalSelectedScanAccess(nil)), "nil scan identity admitted");
+  }
+  auto duplicate = request_with_candidate();
+  duplicate.candidates.push_back(candidate);
+  passed &= Require(EmptyFailureResult(exec::ExecuteCanonicalSelectedScanAccess(duplicate)),
+                    "duplicate binary candidate admitted");
+  for (unsigned bit = 0; bit != 128; ++bit) {
+    auto distinct = duplicate;
+    auto& id = distinct.candidates.back().candidate_uuid;
+    id.bytes[bit / 8] ^= 1u << (bit % 8);
+    const bool identity_shape = (id.bytes[6] >> 4) == 7 &&
+                               (id.bytes[8] >> 6) == 2;
+    const auto result = exec::ExecuteCanonicalSelectedScanAccess(distinct);
+    passed &= Require(identity_shape
+                          ? result.diagnostic.ok && result.counters.emitted_count == 2
+                          : EmptyFailureResult(result),
+                      "binary candidate equality lost a UUID bit");
+    auto swapped_relation = request_with_candidate();
+    swapped_relation.candidates.front().relation_uuid.bytes[bit / 8] ^=
+        1u << (bit % 8);
+    passed &= Require(EmptyFailureResult(
+        exec::ExecuteCanonicalSelectedScanAccess(swapped_relation)),
+        "candidate relation substitution lost a UUID bit");
+  }
+  IndexStorageFixture fixture;
+  for (unsigned version = 0; version != 16; ++version) {
+    for (unsigned variant = 0; variant != 4; ++variant) {
+      auto request = IndexStorageRequest(fixture);
+      request.relation_uuid.bytes[6] = 4 | (version << 4);
+      request.relation_uuid.bytes[8] = variant << 6;
+      const auto result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+      const bool valid = version == 7 && variant == 2;
+      passed &= Require(valid ? result.diagnostic.ok :
+          !result.diagnostic.ok && !result.data_access_observed,
+          "invalid selected relation reached physical read");
+    }
+  }
+  for (unsigned bit = 0; bit != 128; ++bit) {
+    auto request = IndexStorageRequest(fixture);
+    request.selected_index_uuid.bytes[bit / 8] ^= 1u << (bit % 8);
+    auto result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+    passed &= Require(!result.diagnostic.ok && !result.data_access_observed,
+                      "selected index substitution lost a UUID bit");
+    request = IndexStorageRequest(fixture);
+    request.selected_key_descriptor_uuids.front().bytes[bit / 8] ^=
+        1u << (bit % 8);
+    result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+    passed &= Require(!result.diagnostic.ok && !result.data_access_observed,
+                      "key descriptor substitution lost a UUID bit");
+    for (bool mutate_version : {false, true}) {
+      request = IndexStorageRequest(fixture);
+      const auto resolve = request.resolve_engine_row_version;
+      request.resolve_engine_row_version = [resolve, bit, mutate_version](const auto& locator) {
+        auto resolved = resolve(locator);
+        auto& id = mutate_version ? resolved.version_uuid : resolved.candidate.record_uuid;
+        id.bytes[bit / 8] ^= 1u << (bit % 8);
+        return resolved;
+      };
+      result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+      passed &= Require(!result.diagnostic.ok && result.data_access_observed &&
+                            result.scan_result.accepted_record_uuids.empty(),
+                        "resolver row/version substitution lost a UUID bit");
+    }
+  }
+  for (const auto kind : {platform::UuidKind::row, platform::UuidKind::unknown,
+                         platform::UuidKind::database}) {
+    auto request = IndexStorageRequest(fixture);
+    request.point_key_components.front().type_descriptor_uuid.kind = kind;
+    auto result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+    passed &= Require(!result.diagnostic.ok && !result.data_access_observed,
+                      "wrong key descriptor kind reached access");
+    auto tree = fixture.tree;
+    tree.index_uuid.kind = kind;
+    request = IndexStorageRequest(fixture);
+    request.physical_tree = &tree;
+    result = exec::ExecuteCanonicalSelectedIndexStorageAccessV1(request);
+    passed &= Require(!result.diagnostic.ok && !result.data_access_observed,
+                      "wrong physical index kind reached access");
+  }
+  return passed;
+}
+
 }  // namespace
 
 int main() {
@@ -907,9 +954,10 @@ int main() {
       !ValidateCompleteAuthorityRefusalMatrix() ||
       !ValidateAllOrNothingRefusal() ||
       !ValidatePhysicalIndexStorageAcquisition() ||
-      !ValidatePhysicalIndexRefusalAndFallbackTruth()) {
+      !ValidatePhysicalIndexRefusalAndFallbackTruth() ||
+      !ValidateBinaryScanIdentity()) {
     return 1;
   }
-  std::cout << "QOW-TEST-QRY-004-ACCESS-V1: PASS\n";
+  std::cout << "QOW-TEST-QRY-004-ACCESS-V1: PASS checks=" << checks << '\n';
   return 0;
 }

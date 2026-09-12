@@ -34,7 +34,7 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 EngineObjectReference MergeTarget(const EngineMergeRowsRequest& request) {
-  return !request.target_table.uuid.canonical.empty() ? request.target_table : request.target_object;
+  return !request.target_table.uuid.is_nil() ? request.target_table : request.target_object;
 }
 
 std::vector<EngineRowValue> MergeRows(const EngineMergeRowsRequest& request) {
@@ -127,8 +127,8 @@ EnginePredicateEnvelope MergePredicateForRow(const EngineMergeRowsRequest& reque
   EnginePredicateEnvelope predicate = !request.match_predicate.predicate_kind.empty() ? request.match_predicate
                                                                                      : request.predicate;
   if (predicate.predicate_kind == "row_uuid_match" && predicate.canonical_predicate_envelope.empty() &&
-      !row.requested_row_uuid.canonical.empty()) {
-    predicate.canonical_predicate_envelope = row.requested_row_uuid.canonical;
+      !row.requested_row_uuid.is_nil()) {
+    predicate.canonical_predicate_envelope = row.requested_row_uuid;
   }
   if (predicate.predicate_kind == "column_equals" && predicate.bound_values.empty() &&
       !predicate.canonical_predicate_envelope.empty()) {
@@ -206,20 +206,20 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
 
   DmlTargetAccessPlanRequest plan_request;
   plan_request.mutation_kind = "dml.merge_rows";
-  plan_request.database_uuid = request.context.database_uuid.canonical;
+  plan_request.database_uuid = request.context.database_uuid;
   plan_request.relation_uuid = table.table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = predicate.predicate_kind;
   plan_request.predicate_descriptor_digest = PredicateDigest(predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
-      request.context.principal_uuid.canonical + ":" +
-      request.context.current_role_uuid.canonical + ":" +
+      request.context.principal_uuid + ":" +
+      request.context.current_role_uuid + ":" +
       std::to_string(request.context.security_epoch);
   plan_request.redaction_policy_digest =
       "resource_epoch:" + std::to_string(request.context.resource_epoch);
   plan_request.access_policy_digest =
-      request.context.session_uuid.canonical + ":" +
+      request.context.session_uuid + ":" +
       std::to_string(request.context.resource_epoch);
   plan_request.collation_profile_digest =
       request.context.identifier_profile_uuid + ":" +
@@ -670,8 +670,8 @@ using MergeReturningRowsByOrdinal = std::map<std::size_t, EngineRowValue>;
 void AddRowsByUuid(const EngineResultShape& shape,
                    std::unordered_map<std::string, EngineRowValue>* rows_by_uuid) {
   for (const auto& row : shape.rows) {
-    if (!row.requested_row_uuid.canonical.empty()) {
-      (*rows_by_uuid)[row.requested_row_uuid.canonical] = row;
+    if (!row.requested_row_uuid.is_nil()) {
+      (*rows_by_uuid)[row.requested_row_uuid] = row;
     }
   }
 }
@@ -760,7 +760,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   const EngineObjectReference target = MergeTarget(request);
   std::vector<EngineRowValue> source_rows = MergeRows(request);
   const std::string merge_surface_variant = MergeSurfaceVariant(request);
-  if (target.uuid.canonical.empty()) {
+  if (target.uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_uuid_required"));
   }
   if (merge_surface_variant != "merge" &&
@@ -786,14 +786,14 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "no_merge_action_enabled"));
   }
   const std::string source_table_uuid = MergeOptionValue(request, "source_uuid:");
-  std::vector<std::string> relation_scope_targets{target.uuid.canonical};
+  std::vector<std::string> relation_scope_targets{target.uuid};
   if (!source_table_uuid.empty() &&
-      source_table_uuid != target.uuid.canonical) {
+      source_table_uuid != target.uuid) {
     relation_scope_targets.push_back(source_table_uuid);
   }
   TransactionalRelationStore relation_store(request.context);
   auto loaded = relation_scope_targets.size() == 1
-                    ? relation_store.LoadConstraintScope(target.uuid.canonical)
+                    ? relation_store.LoadConstraintScope(target.uuid)
                     : relation_store.LoadConstraintScopes(relation_scope_targets);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
   MgaRelationReadView state = relation_store.BuildReadView(&loaded);
@@ -809,7 +809,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
           MakeInvalidRequestDiagnostic("dml.merge_rows",
                                        "source_table_not_visible"));
     }
-    if (source_table->temporary && request.context.session_uuid.canonical.empty()) {
+    if (source_table->temporary && request.context.session_uuid.is_nil()) {
       return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
           request.context,
           "dml.merge_rows",
@@ -821,12 +821,12 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   if (source_rows.empty()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
   }
-  const std::string table_uuid = target.uuid.canonical;
+  const std::string table_uuid = target.uuid;
   const auto table = FindVisibleMgaTable(state, table_uuid, request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_not_visible"));
   }
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
         request.context,
         "dml.merge_rows",

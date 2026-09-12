@@ -46,13 +46,13 @@ enum class CanonicalOptimizerStatisticSource : std::uint8_t {
 
 struct CanonicalOptimizerNodeEstimate {
   std::uint32_t logical_node_id{0};
-  std::string object_uuid;
+  planner::CanonicalPlannerUuid object_uuid;
   CanonicalOptimizerStatisticState state{
       CanonicalOptimizerStatisticState::kUnknown};
   CanonicalOptimizerStatisticSource source{
       CanonicalOptimizerStatisticSource::kUnavailable};
-  std::string catalog_epoch_uuid;
-  std::string statistics_snapshot_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::uint64_t collected_at_monotonic_ns{0};
   std::uint64_t admitted_at_monotonic_ns{0};
@@ -68,8 +68,8 @@ struct CanonicalOptimizerNodeEstimate {
 
 struct CanonicalOptimizerStatisticsSnapshot {
   std::uint16_t abi_version{1};
-  std::string statistics_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid statistics_snapshot_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
   std::uint64_t statistics_generation{0};
   std::uint64_t admitted_at_monotonic_ns{0};
   std::vector<CanonicalOptimizerNodeEstimate> node_estimates;
@@ -103,8 +103,8 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
     const CanonicalOptimizerStatisticsSnapshot& snapshot);
 
 struct CanonicalOptimizerCostTerms {
-  std::string cost_vector_uuid;
-  std::string calibration_profile_uuid;
+  planner::CanonicalPlannerUuid cost_vector_uuid;
+  planner::CanonicalPlannerUuid calibration_profile_uuid;
   std::string scalarization_policy_id;
   std::uint64_t cpu_units{0};
   std::uint64_t page_read_sequential_units{0};
@@ -164,16 +164,16 @@ struct CanonicalOptimizerCostTerms {
 };
 
 struct CanonicalOptimizerSearchCandidateInput {
-  std::string alternative_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
   std::uint32_t logical_node_id{0};
   std::string semantic_variant_id;
-  std::string transformation_uuid;
+  planner::CanonicalPlannerUuid transformation_uuid;
   std::string transformation_rule_id;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
-  std::vector<std::string> enforced_property_uuids;
-  std::string bound_sblr_tree_uuid;
-  std::string statistics_snapshot_uuid;
+  std::vector<planner::CanonicalPlannerUuid> required_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> delivered_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> enforced_property_uuids;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::string model_family_id;
   CanonicalOptimizerCostTerms cost_terms;
@@ -209,8 +209,8 @@ struct CanonicalOptimizerRankedCostVector {
 };
 
 struct CanonicalOptimizerMemoCandidate {
-  std::string alternative_uuid;
-  std::string transformation_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid transformation_uuid;
   std::string transformation_rule_id;
   CanonicalOptimizerRankedCostVector cost;
 };
@@ -231,8 +231,8 @@ struct CanonicalOptimizerSearchTraceRecord {
 
 struct CanonicalOptimizerSelectedAlternative {
   std::uint32_t logical_node_id{0};
-  std::string alternative_uuid;
-  std::string transformation_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid transformation_uuid;
   std::string transformation_rule_id;
   CanonicalOptimizerRankedCostVector cost;
 };
@@ -240,7 +240,7 @@ struct CanonicalOptimizerSelectedAlternative {
 struct CanonicalOptimizerSearchIssue {
   std::string diagnostic_id;
   std::uint32_t logical_node_id{0};
-  std::string alternative_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
   std::string field_id;
 };
 
@@ -252,8 +252,8 @@ struct CanonicalOptimizerLogicalDependencyReceipt {
   std::vector<std::uint32_t> input_logical_node_ids;
   std::vector<std::uint32_t> output_descriptor_ids;
   std::string semantic_variant_id;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> required_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> delivered_property_uuids;
 };
 
 // A statement-bound, finite view of every physical implementation the engine
@@ -261,8 +261,8 @@ struct CanonicalOptimizerLogicalDependencyReceipt {
 // logical semantics before memo search; they are not parser hints or selected
 // plans.
 struct CanonicalOptimizerAlternativeDomainRecord {
-  std::string alternative_uuid;
-  std::string capability_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid capability_uuid;
   std::uint32_t logical_node_id{0};
   scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind
       logical_node_kind{
@@ -294,10 +294,10 @@ struct CanonicalOptimizerAlternativeDomainRecord {
 
 struct CanonicalOptimizerAlternativeDomainSnapshot {
   std::uint16_t abi_version{1};
-  std::string capability_snapshot_uuid;
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
+  planner::CanonicalPlannerUuid capability_snapshot_uuid;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
   scratchbird::engine::planner::CanonicalMgaStatementContext
@@ -311,15 +311,15 @@ struct CanonicalOptimizerAlternativeDomainSnapshot {
 };
 
 struct CanonicalOptimizerAlternativeInventoryReceipt {
-  std::string alternative_uuid;
-  std::string capability_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid capability_uuid;
   std::uint32_t logical_node_id{0};
   std::string semantic_variant_id;
   std::string implementation_id;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
-  std::vector<std::string> enforced_property_uuids;
-  std::vector<std::string> missing_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> required_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> delivered_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> enforced_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> missing_property_uuids;
   std::uint64_t memory_bytes_required{0};
   bool spill_supported{false};
   bool spill_required{false};
@@ -337,7 +337,7 @@ struct CanonicalOptimizerAlternativeInventoryReceipt {
 struct CanonicalOptimizerAlternativeInventoryIssue {
   std::string diagnostic_id;
   std::uint32_t logical_node_id{0};
-  std::string alternative_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
   std::string field_id;
 };
 
@@ -396,14 +396,14 @@ struct CanonicalOptimizerSearchResult {
   std::uint64_t timeout_fallback_memo_group_count{0};
   std::uint64_t deterministic_tie_break_count{0};
   std::uint64_t selected_scalar_score{0};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid catalog_epoch_uuid;
   scratchbird::engine::planner::CanonicalMgaStatementContext
       mga_statement_context;
-  std::string statistics_snapshot_uuid;
+  planner::CanonicalPlannerUuid statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::string model_family_id;
-  std::string calibration_profile_uuid;
+  planner::CanonicalPlannerUuid calibration_profile_uuid;
   std::string selected_plan_signature;
   std::string timeout_degradation_reason_id;
   std::vector<CanonicalOptimizerMemoGroup> memo_groups;
@@ -425,7 +425,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     const CanonicalOptimizerSearchPolicy& policy);
 
 struct CanonicalExecutorCapabilityRecord {
-  std::string capability_uuid;
+  planner::CanonicalPlannerUuid capability_uuid;
   std::uint32_t capability_abi_version{0};
   std::string implementation_id;
   scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind
@@ -452,7 +452,7 @@ struct CanonicalExecutorCapabilityRecord {
 
 struct CanonicalExecutorCapabilityCatalog {
   std::uint16_t abi_version{1};
-  std::string capability_snapshot_uuid;
+  planner::CanonicalPlannerUuid capability_snapshot_uuid;
   std::uint64_t policy_epoch{0};
   std::vector<CanonicalExecutorCapabilityRecord> capabilities;
   bool engine_owned{false};
@@ -461,7 +461,7 @@ struct CanonicalExecutorCapabilityCatalog {
 };
 
 struct CanonicalOptimizerPhysicalPublicationIdentity {
-  std::string selected_plan_uuid;
+  planner::CanonicalPlannerUuid selected_plan_uuid;
   std::uint64_t first_causal_counter_id{0};
   bool engine_owned{false};
   bool data_access_observed{false};
@@ -472,8 +472,8 @@ struct CanonicalOptimizerPhysicalPublicationIdentity {
 struct CanonicalOptimizerPhysicalPublicationIssue {
   std::string diagnostic_id;
   std::uint32_t logical_node_id{0};
-  std::string alternative_uuid;
-  std::string capability_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid capability_uuid;
   std::string field_id;
 };
 

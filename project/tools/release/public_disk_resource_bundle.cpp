@@ -8,6 +8,7 @@
 
 #include "database_dirty_manifest.hpp"
 #include "database_format.hpp"
+#include "disk_device.hpp"
 #include "filespace_header.hpp"
 #include "filespace_lifecycle.hpp"
 #include "uuid.hpp"
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -42,6 +44,47 @@ struct Args {
   std::filesystem::path work_dir;
   bool self_test = false;
 };
+
+// Own every requested input before reading any of them. The set remains live
+// through validation and report publication. It is a requested offline input
+// set, not authority to discover missing database members or open another node.
+struct OwnedBundleInputs {
+  std::unique_ptr<disk::FileDevice> primary;
+  std::vector<std::unique_ptr<disk::FileDevice>> filespaces;
+  std::unique_ptr<disk::FileDevice> registry;
+  std::unique_ptr<disk::FileDevice> dirty_manifest;
+};
+
+std::string OpenBundleInputs(const Args& args, OwnedBundleInputs* inputs) {
+  OwnedBundleInputs acquired;
+  const auto open = [](const std::filesystem::path& path,
+                       std::unique_ptr<disk::FileDevice>* file) -> std::string {
+    auto candidate = std::make_unique<disk::FileDevice>();
+    const auto result = candidate->Open(path.string(), disk::FileOpenMode::open_existing_read_only);
+    if (!result.ok()) return result.diagnostic.diagnostic_code.empty()
+        ? "SB-PUBLIC-DISK-BUNDLE-DATABASE-READ-FAILED" : result.diagnostic.diagnostic_code;
+    *file = std::move(candidate);
+    return {};
+  };
+  auto error = open(args.database_path, &acquired.primary);
+  if (!error.empty()) return error;
+  for (const auto& path : args.filespace_paths) {
+    std::unique_ptr<disk::FileDevice> file;
+    error = open(path, &file);
+    if (!error.empty()) return error;
+    acquired.filespaces.push_back(std::move(file));
+  }
+  if (!args.registry_path.empty()) {
+    error = open(args.registry_path, &acquired.registry);
+    if (!error.empty()) return error;
+  }
+  if (!args.dirty_manifest_path.empty()) {
+    error = open(args.dirty_manifest_path, &acquired.dirty_manifest);
+    if (!error.empty()) return error;
+  }
+  *inputs = std::move(acquired);
+  return {};
+}
 
 struct VerifyResult {
   bool ok = false;
@@ -75,18 +118,16 @@ TypedUuid MakeIdentity(UuidKind kind, u64 salt) {
   return generated.value;
 }
 
-bool ReadTextFile(const std::filesystem::path& path, std::string* text) {
+bool ReadTextFile(disk::FileDevice& file, std::string* text) {
   if (text == nullptr) {
     return false;
   }
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return false;
-  }
-  std::ostringstream buffer;
-  buffer << in.rdbuf();
-  *text = buffer.str();
-  return true;
+  const auto size = file.Size();
+  if (!size.ok() || size.size_bytes > text->max_size()) return false;
+  text->resize(static_cast<std::size_t>(size.size_bytes));
+  if (text->empty()) return true;
+  const auto read = file.ReadAt(0, text->data(), text->size());
+  return read.ok() && read.bytes_transferred == text->size();
 }
 
 bool WriteTextFile(const std::filesystem::path& path, std::string_view text) {
@@ -99,20 +140,18 @@ bool WriteTextFile(const std::filesystem::path& path, std::string_view text) {
   return static_cast<bool>(out);
 }
 
-OfflineFileHealth CheckOfflineFileHealth(const std::filesystem::path& path,
+OfflineFileHealth CheckOfflineFileHealth(disk::FileDevice& file,
                                          u32 page_size) {
   OfflineFileHealth health;
-  std::error_code ec;
-  health.file_present = std::filesystem::is_regular_file(path, ec);
-  if (ec) {
-    health.file_present = false;
-  }
-  health.size_bytes = std::filesystem::file_size(path, ec);
-  health.size_query_ok = !ec;
+  const auto size = file.Size();
+  health.file_present = size.ok();
+  health.size_bytes = size.size_bytes;
+  health.size_query_ok = size.ok();
   health.size_aligned = health.size_query_ok &&
                         (page_size == 0 || (health.size_bytes % page_size) == 0);
-  std::ifstream in(path, std::ios::binary);
-  health.can_read = static_cast<bool>(in);
+  unsigned char byte = 0;
+  const auto read = file.ReadAt(0, &byte, 1);
+  health.can_read = read.ok() && read.bytes_transferred == 1;
   health.health =
       health.file_present && health.size_query_ok && health.size_aligned && health.can_read
           ? "ok"
@@ -120,18 +159,25 @@ OfflineFileHealth CheckOfflineFileHealth(const std::filesystem::path& path,
   return health;
 }
 
-bool ReadDatabaseHeaderOffline(const std::filesystem::path& path,
+bool ReadDatabaseHeaderOffline(disk::FileDevice& file,
                                disk::SerializedDatabaseHeader* serialized) {
   if (serialized == nullptr) {
     return false;
   }
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return false;
-  }
-  in.read(reinterpret_cast<char*>(serialized->data()),
-          static_cast<std::streamsize>(serialized->size()));
-  return in.gcount() == static_cast<std::streamsize>(serialized->size());
+  const auto read = file.ReadAt(0, serialized->data(), serialized->size());
+  return read.ok() && read.bytes_transferred == serialized->size();
+}
+
+bool WriteBundleFile(const std::filesystem::path& path, std::string_view text) {
+  std::error_code error;
+  if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), error);
+  if (error) return false;
+  disk::FileDevice output;
+  // Never truncate an existing input, alias, report or other user file.
+  if (!output.Open(path.string(), disk::FileOpenMode::create_new).ok()) return false;
+  const auto write = output.WriteAt(0, text.data(), text.size());
+  return write.ok() && write.bytes_transferred == text.size() &&
+      output.Sync().ok() && output.Close().ok();
 }
 
 VerifyResult Failure(std::string diagnostic_code) {
@@ -256,13 +302,9 @@ bool HeaderMatchesDescriptor(const filespace::PhysicalFilespaceHeader& header,
          header.writer_identity_uuid.value == descriptor.writer_identity_uuid.value;
 }
 
-VerifyResult BuildDiskResourceBundle(const Args& args) {
-  if (args.database_path.empty() || args.filespace_paths.empty() || args.out_path.empty()) {
-    return Failure("SB-PUBLIC-DISK-BUNDLE-ARGS-INVALID");
-  }
-
+VerifyResult BuildOwnedDiskResourceBundle(const Args& args, OwnedBundleInputs& inputs) {
   disk::SerializedDatabaseHeader serialized_header{};
-  if (!ReadDatabaseHeaderOffline(args.database_path, &serialized_header)) {
+  if (!ReadDatabaseHeaderOffline(*inputs.primary, &serialized_header)) {
     return Failure("SB-PUBLIC-DISK-BUNDLE-DATABASE-READ-FAILED");
   }
   const auto database_header = disk::ParseDatabaseHeader(serialized_header);
@@ -271,7 +313,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
   }
 
   const auto database_health =
-      CheckOfflineFileHealth(args.database_path, database_header.header.page_size);
+      CheckOfflineFileHealth(*inputs.primary, database_header.header.page_size);
   if (database_health.health != "ok") {
     return Failure("SB-PUBLIC-DISK-BUNDLE-DATABASE-HEALTH-FAILED");
   }
@@ -291,7 +333,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
   bundle << "filespace.count=" << args.filespace_paths.size() << '\n';
   for (std::size_t index = 0; index < args.filespace_paths.size(); ++index) {
     const auto& path = args.filespace_paths[index];
-    const auto header = filespace::ReadPhysicalFilespaceHeaderOffline(path.string());
+    const auto header = filespace::ReadPhysicalFilespaceHeader(*inputs.filespaces[index]);
     if (!header.ok()) {
       return Failure(header.diagnostic.diagnostic_code);
     }
@@ -299,7 +341,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
       return Failure("SB-PUBLIC-DISK-BUNDLE-FILESPACE-DATABASE-UUID-MISMATCH");
     }
 
-    const auto health = CheckOfflineFileHealth(path, header.header.page_size);
+    const auto health = CheckOfflineFileHealth(*inputs.filespaces[index], header.header.page_size);
     if (health.health != "ok") {
       return Failure("SB-PUBLIC-DISK-BUNDLE-FILESPACE-HEALTH-FAILED");
     }
@@ -325,7 +367,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
   bool registry_capacity_windows_match = true;
   if (!args.registry_path.empty()) {
     std::string registry_text;
-    if (!ReadTextFile(args.registry_path, &registry_text)) {
+    if (!ReadTextFile(*inputs.registry, &registry_text)) {
       return Failure("SB-PUBLIC-DISK-BUNDLE-REGISTRY-READ-FAILED");
     }
     const auto parsed = filespace::ParseFilespaceRegistry(registry_text);
@@ -355,7 +397,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
 
   if (!args.dirty_manifest_path.empty()) {
     std::string manifest_text;
-    if (!ReadTextFile(args.dirty_manifest_path, &manifest_text)) {
+    if (!ReadTextFile(*inputs.dirty_manifest, &manifest_text)) {
       return Failure("SB-PUBLIC-DISK-BUNDLE-DIRTY-MANIFEST-READ-FAILED");
     }
     const auto parsed = database::ParseDirtyObjectManifest(manifest_text);
@@ -380,7 +422,7 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
   }
 
   const std::string text = bundle.str();
-  if (!WriteTextFile(args.out_path, text)) {
+  if (!WriteBundleFile(args.out_path, text)) {
     return Failure("SB-PUBLIC-DISK-BUNDLE-WRITE-FAILED");
   }
   VerifyResult result;
@@ -388,6 +430,16 @@ VerifyResult BuildDiskResourceBundle(const Args& args) {
   result.diagnostic_code = "SB-PUBLIC-DISK-BUNDLE-OK";
   result.bundle_text = text;
   return result;
+}
+
+VerifyResult BuildDiskResourceBundle(const Args& args) {
+  if (args.database_path.empty() || args.filespace_paths.empty() || args.out_path.empty()) {
+    return Failure("SB-PUBLIC-DISK-BUNDLE-ARGS-INVALID");
+  }
+  OwnedBundleInputs inputs;
+  const auto error = OpenBundleInputs(args, &inputs);
+  if (!error.empty()) return Failure(error);
+  return BuildOwnedDiskResourceBundle(args, inputs);
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -461,13 +513,13 @@ int RunSelfTest(const Args& requested_args) {
     std::cerr << "support bundle omitted required disk summary fields\n";
     return EXIT_FAILURE;
   }
-  for (const auto& sidecar : std::vector<std::filesystem::path>{
-           database_path.string() + ".sb.owner.lock",
-           filespace_path.string() + ".sb.owner.lock",
-           database_path.string() + ".sb.route.owner.lock",
-           filespace_path.string() + ".sb.route.owner.lock"}) {
-    if (std::filesystem::exists(sidecar)) {
-      std::cerr << "offline verifier created an ownership sidecar\n";
+  // Stable ownership sidecars are deliberately retained. Successful reacquisition
+  // proves that the bundle operation released its live native owners.
+  {
+    OwnedBundleInputs released;
+    const auto error = OpenBundleInputs(args, &released);
+    if (!error.empty()) {
+      std::cerr << error << '\n';
       return EXIT_FAILURE;
     }
   }

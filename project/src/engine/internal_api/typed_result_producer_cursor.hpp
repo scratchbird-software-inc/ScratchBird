@@ -345,6 +345,9 @@ class TypedResultProducerCursorCarrierV1 {
       TypedResultProducerCursorCarrierV1&&) = delete;
 
   [[nodiscard]] TypedResultProducerCursorSnapshotV1 Snapshot() const;
+  // Borrowed open-cursor views. The caller must exclude concurrent mutation.
+  // Terminal cleanup empties dynamic descriptor storage; Snapshot preserves
+  // the fixed binary identities and final counters after storage is released.
   [[nodiscard]] const std::vector<byte>& result_descriptor_vector() const;
   [[nodiscard]] const wire::TypedResultRowDescriptor& row_descriptor() const;
 

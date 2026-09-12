@@ -10,117 +10,187 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <new>
+#include <stdexcept>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
 namespace {
 
 constexpr std::uint64_t kBenchmarkCleanMaxFreshnessMicros = 60000000;
+using Reason = StatisticsContractReason;
 
 bool IsUsableConfidence(CostConfidence confidence) {
   return confidence == CostConfidence::kExact || confidence == CostConfidence::kHigh ||
          confidence == CostConfidence::kMedium || confidence == CostConfidence::kLow;
 }
 
-}  // namespace
-
-void OptimizerStatisticsCatalog::Add(OptimizerStatistic statistic) {
-  statistics_.push_back(std::move(statistic));
+Reason StructuralReason(const OptimizerStatistic& statistic) noexcept {
+  if (statistic.statistic_name.empty()) return Reason::kNameRequired;
+  if (statistic.scope.empty()) return Reason::kScopeRequired;
+  if (!statistic.target.Valid()) return Reason::kTargetInvalid;
+  if (statistic.source < StatisticSource::kCatalogExact ||
+      statistic.source > StatisticSource::kUnavailable) return Reason::kSourceInvalid;
+  if (!std::isfinite(statistic.value)) return Reason::kValueInvalid;
+  if (statistic.value_domain == OptimizerStatisticValueDomain::kNonNegative) {
+    if (statistic.value < 0 ||
+        (statistic.exact_unsigned_value &&
+         statistic.value != static_cast<double>(*statistic.exact_unsigned_value)))
+      return Reason::kValueInvalid;
+  } else if (statistic.value_domain == OptimizerStatisticValueDomain::kSignedCorrelation) {
+    if (statistic.value < -1 || statistic.value > 1 || statistic.exact_unsigned_value)
+      return Reason::kValueInvalid;
+  } else return Reason::kValueInvalid;
+  if (statistic.target.kind == OptimizerStatisticTargetKind::kLocalDefault &&
+      statistic.source != StatisticSource::kPolicyDefault &&
+      statistic.source != StatisticSource::kUnavailable) return Reason::kSourceInvalid;
+  if (statistic.target.kind == OptimizerStatisticTargetKind::kClusterUnavailable &&
+      (statistic.available || !statistic.cluster_only ||
+       statistic.source != StatisticSource::kUnavailable)) return Reason::kSourceInvalid;
+  if (statistic.source == StatisticSource::kClusterMetric && !statistic.cluster_only)
+    return Reason::kSourceInvalid;
+  if (statistic.available) {
+    if (statistic.source == StatisticSource::kUnavailable) return Reason::kSourceInvalid;
+    if (!IsUsableConfidence(statistic.confidence)) return Reason::kConfidenceUnusable;
+    if (statistic.stats_epoch == 0) return Reason::kEpochInvalid;
+  }
+  return Reason::kNone;
 }
 
-std::optional<OptimizerStatistic> OptimizerStatisticsCatalog::Find(const std::string& statistic_name,
-                                                                   const std::string& object_uuid) const {
-  auto it = std::find_if(statistics_.begin(), statistics_.end(), [&](const OptimizerStatistic& statistic) {
-    return statistic.statistic_name == statistic_name && (object_uuid.empty() || statistic.object_uuid == object_uuid);
+Reason UsabilityReason(const OptimizerStatistic& statistic,
+                       std::uint64_t maximum_age) noexcept {
+  const auto structural = StructuralReason(statistic);
+  if (structural != Reason::kNone) return structural;
+  if (!statistic.available) return Reason::kUnavailable;
+  if (statistic.freshness_microseconds > maximum_age) return Reason::kStale;
+  return Reason::kNone;
+}
+
+StatisticsContractStatus Status(Reason reason, const std::string& name,
+                                const OptimizerStatisticTarget& target) {
+  // Core's registered statistics diagnostic; the typed reason carries detail.
+  return {reason == Reason::kNone, reason == Reason::kNone ? "" : "SB-STAT-0001",
+          name, reason, target.object_uuid};
+}
+}  // namespace
+
+bool OptimizerStatisticsCatalog::Add(const OptimizerStatistic& statistic) noexcept {
+  if (StructuralReason(statistic) != Reason::kNone) return false;
+  if (std::ranges::any_of(statistics_, [&](const auto& current) {
+        return current.statistic_name == statistic.statistic_name &&
+               current.target == statistic.target;
+      })) return false;
+  try {
+    statistics_.push_back(statistic);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
+  }
+}
+
+std::optional<OptimizerStatistic> OptimizerStatisticsCatalog::Find(
+    const std::string& statistic_name, const OptimizerStatisticTarget& target) const {
+  if (!target.Valid()) return std::nullopt;
+  const auto it = std::ranges::find_if(statistics_, [&](const auto& statistic) {
+    return statistic.statistic_name == statistic_name && statistic.target == target;
   });
   if (it == statistics_.end()) return std::nullopt;
   return *it;
 }
 
-std::vector<StatisticsContractStatus> OptimizerStatisticsCatalog::ValidateAll(std::uint64_t max_freshness_microseconds) const {
+std::vector<StatisticsContractStatus> OptimizerStatisticsCatalog::ValidateAll(
+    std::uint64_t max_freshness_microseconds) const {
   std::vector<StatisticsContractStatus> statuses;
-  for (const auto& statistic : statistics_) {
+  for (const auto& statistic : statistics_)
     statuses.push_back(ValidateStatistic(statistic, max_freshness_microseconds));
-  }
   return statuses;
 }
 
-std::uint64_t OptimizerStatisticsCatalog::EstimateUnsigned(const std::string& statistic_name,
-                                                          const std::string& object_uuid,
-                                                          std::uint64_t fallback) const {
-  const auto statistic = Find(statistic_name, object_uuid);
-  if (!statistic || !statistic->available || statistic->value < 0.0) return fallback;
-  return static_cast<std::uint64_t>(std::llround(statistic->value));
+std::optional<std::uint64_t> CheckedOptimizerStatisticUnsigned(
+    const OptimizerStatistic& statistic) noexcept {
+  if (UsabilityReason(statistic, kBenchmarkCleanMaxFreshnessMicros) != Reason::kNone)
+    return std::nullopt;
+  if (statistic.value_domain != OptimizerStatisticValueDomain::kNonNegative) return std::nullopt;
+  if (statistic.exact_unsigned_value) return statistic.exact_unsigned_value;
+  const long double rounded = std::round(static_cast<long double>(statistic.value));
+  // Exclusive 2^64 bound also works when long double has double precision.
+  if (rounded < 0 || rounded >= std::ldexp(1.0L, 64)) return std::nullopt;
+  return static_cast<std::uint64_t>(rounded);
 }
 
-CostConfidence OptimizerStatisticsCatalog::ConfidenceFor(const std::string& statistic_name,
-                                                        const std::string& object_uuid) const {
-  const auto statistic = Find(statistic_name, object_uuid);
-  if (!statistic || !statistic->available) return CostConfidence::kUnknown;
+std::optional<std::uint64_t> OptimizerStatisticsCatalog::TryEstimateUnsigned(
+    const std::string& statistic_name, const OptimizerStatisticTarget& target) const {
+  const auto statistic = Find(statistic_name, target);
+  return statistic ? CheckedOptimizerStatisticUnsigned(*statistic) : std::nullopt;
+}
+
+std::uint64_t OptimizerStatisticsCatalog::EstimateUnsigned(
+    const std::string& statistic_name, const OptimizerStatisticTarget& target,
+    std::uint64_t fallback) const {
+  return TryEstimateUnsigned(statistic_name, target).value_or(fallback);
+}
+
+CostConfidence OptimizerStatisticsCatalog::ConfidenceFor(
+    const std::string& statistic_name, const OptimizerStatisticTarget& target) const {
+  const auto statistic = Find(statistic_name, target);
+  if (!statistic || UsabilityReason(*statistic, kBenchmarkCleanMaxFreshnessMicros) != Reason::kNone)
+    return CostConfidence::kUnknown;
   return statistic->confidence;
 }
 
-bool OptimizerStatisticsCatalog::UsesPolicyDefault(const std::string& statistic_name,
-                                                   const std::string& object_uuid) const {
-  const auto statistic = Find(statistic_name, object_uuid);
-  return statistic && statistic->available && statistic->source == StatisticSource::kPolicyDefault;
+bool OptimizerStatisticsCatalog::UsesPolicyDefault(
+    const std::string& statistic_name, const OptimizerStatisticTarget& target) const {
+  const auto statistic = Find(statistic_name, target);
+  return statistic && UsabilityReason(*statistic, kBenchmarkCleanMaxFreshnessMicros) == Reason::kNone &&
+         statistic->source == StatisticSource::kPolicyDefault;
 }
 
 std::vector<StatisticsContractStatus> OptimizerStatisticsCatalog::ValidateBenchmarkCleanInputs(
     const std::vector<std::string>& statistic_names,
-    const std::string& object_uuid) const {
+    const OptimizerStatisticTarget& target) const {
   std::vector<StatisticsContractStatus> statuses;
-  for (const auto& statistic_name : statistic_names) {
-    const auto exact = Find(statistic_name, object_uuid);
-    if (exact && exact->available && exact->object_uuid == "local.default") {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.LOCAL_DEFAULT_STATS", statistic_name});
-      continue;
+  for (const auto& name : statistic_names) {
+    const auto exact = Find(name, target);
+    Reason reason = Reason::kNone;
+    if (!target.Valid()) reason = Reason::kTargetInvalid;
+    else if (exact) {
+      reason = UsabilityReason(*exact, kBenchmarkCleanMaxFreshnessMicros);
+      if (reason == Reason::kNone) {
+        if (exact->target.kind == OptimizerStatisticTargetKind::kLocalDefault)
+          reason = Reason::kLocalDefault;
+        else if (exact->source == StatisticSource::kPolicyDefault)
+          reason = Reason::kPolicyDefault;
+        else if (exact->cluster_only) reason = Reason::kClusterOnly;
+        else if (exact->source != StatisticSource::kCatalogExact &&
+                 exact->source != StatisticSource::kCatalogSample)
+          reason = Reason::kSourceInvalid;
+      }
+    } else {
+      const auto local = Find(name, OptimizerStatisticTarget::LocalDefault());
+      reason = local && UsabilityReason(*local, kBenchmarkCleanMaxFreshnessMicros) == Reason::kNone
+          ? Reason::kLocalDefault : Reason::kMissing;
     }
-    if (exact && exact->available && exact->source == StatisticSource::kPolicyDefault) {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.POLICY_DEFAULT_STATS", statistic_name});
-      continue;
-    }
-    if (exact && exact->cluster_only) {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.CLUSTER_ONLY_STATS", statistic_name});
-      continue;
-    }
-    if (exact && (!exact->available || exact->source == StatisticSource::kUnavailable ||
-                  !IsUsableConfidence(exact->confidence) || exact->stats_epoch == 0)) {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.UNSUPPORTED_STATS", statistic_name});
-      continue;
-    }
-    if (exact && exact->freshness_microseconds > kBenchmarkCleanMaxFreshnessMicros) {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.STALE_STATS", statistic_name});
-      continue;
-    }
-    if (exact && exact->available) {
-      continue;
-    }
-    const auto local_default = Find(statistic_name, "local.default");
-    if (local_default && local_default->available) {
-      statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.LOCAL_DEFAULT_STATS", statistic_name});
-      continue;
-    }
-    statuses.push_back({false, "SB_OPTIMIZER_BENCHMARK_CLEAN.STATS_MISSING", statistic_name});
+    if (reason != Reason::kNone) statuses.push_back(Status(reason, name, target));
   }
-  if (statuses.empty()) statuses.push_back({true, "SB_OPTIMIZER_BENCHMARK_CLEAN.OK", object_uuid});
+  if (statuses.empty()) {
+    statuses.push_back(Status(target.Valid() ? Reason::kNone : Reason::kTargetInvalid, "", target));
+  }
   return statuses;
 }
 
-OptimizerStatistic MakeStatistic(std::string statistic_name,
-                                 std::string scope,
-                                 std::string object_uuid,
-                                 double value,
-                                 StatisticSource source,
-                                 std::uint64_t stats_epoch,
+OptimizerStatistic MakeStatistic(std::string statistic_name, std::string scope,
+                                 OptimizerStatisticTarget target, double value,
+                                 StatisticSource source, std::uint64_t stats_epoch,
                                  std::uint64_t freshness_microseconds,
-                                 CostConfidence confidence,
-                                 bool available,
-                                 bool cluster_only) {
+                                 CostConfidence confidence, bool available,
+                                 bool cluster_only, OptimizerStatisticValueDomain value_domain) {
   OptimizerStatistic statistic;
   statistic.statistic_name = std::move(statistic_name);
   statistic.scope = std::move(scope);
-  statistic.object_uuid = std::move(object_uuid);
+  statistic.target = target;
   statistic.value = value;
   statistic.source = source;
   statistic.stats_epoch = stats_epoch;
@@ -128,18 +198,26 @@ OptimizerStatistic MakeStatistic(std::string statistic_name,
   statistic.confidence = confidence;
   statistic.available = available;
   statistic.cluster_only = cluster_only;
+  statistic.value_domain = value_domain;
+  return statistic;
+}
+
+OptimizerStatistic MakeUnsignedStatistic(std::string statistic_name,
+                                 std::string scope, OptimizerStatisticTarget target,
+                                 std::uint64_t value, StatisticSource source,
+                                 std::uint64_t stats_epoch, std::uint64_t freshness_microseconds,
+                                 CostConfidence confidence, bool available, bool cluster_only) {
+  auto statistic = MakeStatistic(std::move(statistic_name), std::move(scope), target,
+      static_cast<double>(value), source, stats_epoch, freshness_microseconds,
+      confidence, available, cluster_only);
+  statistic.exact_unsigned_value = value;
   return statistic;
 }
 
 StatisticsContractStatus ValidateStatistic(const OptimizerStatistic& statistic,
                                            std::uint64_t max_freshness_microseconds) {
-  if (statistic.statistic_name.empty()) return {false, "SB_OPTIMIZER_STATS.NAME_REQUIRED", "statistic_name"};
-  if (statistic.scope.empty()) return {false, "SB_OPTIMIZER_STATS.SCOPE_REQUIRED", statistic.statistic_name};
-  if (!statistic.available) return {false, "SB_OPTIMIZER_STATS.UNAVAILABLE", statistic.statistic_name};
-  if (statistic.source == StatisticSource::kUnavailable) return {false, "SB_OPTIMIZER_STATS.SOURCE_UNAVAILABLE", statistic.statistic_name};
-  if (!IsUsableConfidence(statistic.confidence)) return {false, "SB_OPTIMIZER_STATS.CONFIDENCE_UNUSABLE", statistic.statistic_name};
-  if (statistic.freshness_microseconds > max_freshness_microseconds) return {false, "SB_OPTIMIZER_STATS.STALE", statistic.statistic_name};
-  return {true, "", statistic.statistic_name};
+  return Status(UsabilityReason(statistic, max_freshness_microseconds),
+                statistic.statistic_name, statistic.target);
 }
 
 const char* StatisticSourceName(StatisticSource source) {
@@ -156,24 +234,41 @@ const char* StatisticSourceName(StatisticSource source) {
 
 OptimizerStatisticsCatalog DefaultLocalStatisticsCatalog() {
   OptimizerStatisticsCatalog catalog;
-  catalog.Add(MakeStatistic("row_count", "relation", "local.default", 1000.0, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow));
-  catalog.Add(MakeStatistic("page_count", "relation", "local.default", 64.0, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow));
-  catalog.Add(MakeStatistic("visible_fraction", "relation", "local.default", 1.0, StatisticSource::kRuntimeMetric, 1, 0, CostConfidence::kMedium));
-  catalog.Add(MakeStatistic("index_depth", "index", "local.default", 3.0, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow));
-  catalog.Add(MakeStatistic("memory_budget", "session", "local.default", 1048576.0, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow));
-  catalog.Add(MakeStatistic("memory_grant_available_bytes", "session", "local.default", 1048576.0, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow));
+  const auto add = [&](const char* name, const char* scope, double value) {
+    if (!catalog.Add(MakeStatistic(name, scope, OptimizerStatisticTarget::LocalDefault(),
+                                  value, StatisticSource::kPolicyDefault, 1, 0, CostConfidence::kLow)))
+      throw std::bad_alloc();
+  };
+  add("row_count", "relation", 1000);
+  add("page_count", "relation", 64);
+  add("visible_fraction", "relation", 1);
+  add("index_depth", "index", 3);
+  add("memory_budget", "session", 1048576);
+  add("memory_grant_available_bytes", "session", 1048576);
   return catalog;
 }
 
-void AddClusterUnavailableStatistics(OptimizerStatisticsCatalog* catalog) {
-  if (catalog == nullptr) {
-    return;
+bool AddClusterUnavailableStatistics(OptimizerStatisticsCatalog* catalog) noexcept {
+  if (catalog == nullptr) return false;
+  try {
+    auto staged = *catalog;
+    for (const char* name : {"cluster_remote_stats_unavailable",
+                            "cluster_authority_unavailable",
+                            "cluster_route_generation_unavailable",
+                            "cluster_safe_execution_fence_unavailable",
+                            "cluster_remote_execution_unavailable"}) {
+      const auto statistic = MakeStatistic(name, "cluster",
+          OptimizerStatisticTarget::ClusterUnavailable(), 0, StatisticSource::kUnavailable,
+          0, 0, CostConfidence::kRejected, false, true);
+      if (!staged.Add(statistic)) return false;
+    }
+    *catalog = std::move(staged);
+    return true;
+  } catch (const std::bad_alloc&) {
+    return false;
+  } catch (const std::length_error&) {
+    return false;
   }
-  catalog->Add(MakeStatistic("cluster_remote_stats_unavailable", "cluster", "cluster.unavailable", 0.0, StatisticSource::kUnavailable, 0, 0, CostConfidence::kRejected, false, true));
-  catalog->Add(MakeStatistic("cluster_authority_unavailable", "cluster", "cluster.unavailable", 0.0, StatisticSource::kUnavailable, 0, 0, CostConfidence::kRejected, false, true));
-  catalog->Add(MakeStatistic("cluster_route_generation_unavailable", "cluster", "cluster.unavailable", 0.0, StatisticSource::kUnavailable, 0, 0, CostConfidence::kRejected, false, true));
-  catalog->Add(MakeStatistic("cluster_safe_execution_fence_unavailable", "cluster", "cluster.unavailable", 0.0, StatisticSource::kUnavailable, 0, 0, CostConfidence::kRejected, false, true));
-  catalog->Add(MakeStatistic("cluster_remote_execution_unavailable", "cluster", "cluster.unavailable", 0.0, StatisticSource::kUnavailable, 0, 0, CostConfidence::kRejected, false, true));
 }
 
 }  // namespace scratchbird::engine::optimizer

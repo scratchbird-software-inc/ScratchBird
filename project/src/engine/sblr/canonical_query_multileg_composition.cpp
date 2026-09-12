@@ -338,7 +338,7 @@ WithMultilegResultDescriptorRebindingV1(
           auto& column = batch.columns[ordinal];
           if (allocation.demand.derived) {
             api::EngineDescriptor rebound;
-            rebound.descriptor_uuid.canonical = allocation.descriptor_uuid;
+            rebound.descriptor_uuid = allocation.descriptor_uuid;
             rebound.descriptor_kind = "scalar";
             rebound.canonical_type_name =
                 allocation.demand.canonical_type_name;
@@ -347,7 +347,7 @@ WithMultilegResultDescriptorRebindingV1(
                 (allocation.demand.nullable ? "nullable" : "non_null");
             column.descriptor = std::move(rebound);
             column.nullable = allocation.demand.nullable;
-          } else if (column.descriptor.descriptor_uuid.canonical !=
+          } else if (column.descriptor.descriptor_uuid !=
                          allocation.descriptor_uuid ||
                      allocation.type_uuid.empty() ||
                      Rcp079DescriptorField(
@@ -1222,7 +1222,7 @@ Rcp079PreflightMultilegResultDescriptorsV1(
   opt::MultilegDescriptorAllocationResultV1 source_allocation;
   if (requires_derived_descriptor_pool) {
     scoped = opt::LookupMultilegDescriptorDispatchScopeV1(
-        input.context.statement_uuid.canonical);
+        input.context.statement_uuid);
     if (!scoped.accepted) {
       return refuse(scoped.diagnostic_id, scoped.detail);
     }
@@ -1612,10 +1612,10 @@ bool CaptureRcp079ModelSourceLeg(
       loaded = api::LoadMgaRelationStorageDescriptor(
           input.context, source.required_object_uuids.front());
       exact = loaded.ok &&
-              loaded.descriptor.relation_uuid.canonical ==
+              loaded.descriptor.relation_uuid ==
                   source.required_object_uuids.front() &&
-              loaded.descriptor.database_uuid.canonical ==
-                  input.context.database_uuid.canonical &&
+              loaded.descriptor.database_uuid ==
+                  input.context.database_uuid &&
               loaded.descriptor.relation_kind == "table" &&
               loaded.descriptor.storage_profile == "local_mga_rowstore_v1" &&
               loaded.descriptor.descriptor_generation != 0 &&
@@ -1648,9 +1648,9 @@ bool CaptureRcp079ModelSourceLeg(
         const auto type_uuid = Rcp079DescriptorField(
             engine_descriptor.encoded_descriptor, "type_uuid");
         return type_uuid.has_value() && CanonicalUuidText(*type_uuid) &&
-               CanonicalUuidText(engine_descriptor.descriptor_uuid.canonical) &&
+               CanonicalUuidText(engine_descriptor.descriptor_uuid) &&
                descriptor.descriptor_uuid ==
-                   engine_descriptor.descriptor_uuid.canonical &&
+                   engine_descriptor.descriptor_uuid &&
                descriptor.type_uuid == *type_uuid &&
                descriptor.nullability ==
                    api::RelationalNullability::kNonNull &&
@@ -1676,9 +1676,9 @@ bool CaptureRcp079ModelSourceLeg(
               body_descriptor->descriptor_id ==
                   query_text->result_descriptor_id &&
               CanonicalUuidText(
-                  loaded.descriptor.columns[1].column_uuid.canonical) &&
+                  loaded.descriptor.columns[1].column_uuid) &&
               CanonicalUuidText(loaded.descriptor.columns[1]
-                                    .value_descriptor.descriptor_uuid.canonical) &&
+                                    .value_descriptor.descriptor_uuid) &&
               category_type_uuid.has_value() &&
               CanonicalUuidText(*category_type_uuid);
       if (exact &&
@@ -1712,7 +1712,7 @@ bool CaptureRcp079ModelSourceLeg(
           descriptor.descriptor_id = category_descriptor_id;
           descriptor.descriptor_uuid = loaded.descriptor.columns[1]
                                            .value_descriptor.descriptor_uuid
-                                           .canonical;
+                                           ;
           descriptor.type_uuid = *category_type_uuid;
           descriptor.nullability = api::RelationalNullability::kNonNull;
           local_category_descriptor = std::move(descriptor);
@@ -1806,7 +1806,7 @@ bool CaptureRcp079ModelSourceLeg(
                     }) == 1 &&
                 local_category_descriptor_record->descriptor_uuid ==
                     loaded.descriptor.columns[1]
-                        .value_descriptor.descriptor_uuid.canonical &&
+                        .value_descriptor.descriptor_uuid &&
                 local_category_descriptor_record->type_uuid ==
                     *category_type_uuid &&
                 local_category_descriptor_record->nullability ==
@@ -1827,7 +1827,7 @@ bool CaptureRcp079ModelSourceLeg(
               api::RelationalExpressionKind::kIdentifier;
           category.result_descriptor_id = category_descriptor_id;
           category.bound_name_uuid =
-              loaded.descriptor.columns[1].column_uuid.canonical;
+              loaded.descriptor.columns[1].column_uuid;
           enriched.expressions.push_back(std::move(category));
           local_match = local_expression_for(match->expression_id);
           local_match->child_expression_ids[2] = binding_id;
@@ -2275,21 +2275,21 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   }
   const auto& context = input.context;
   const auto& authorization = context.authorization_context;
-  if (!CanonicalUuidText(context.database_uuid.canonical) ||
-      !CanonicalUuidText(context.transaction_uuid.canonical) ||
-      !CanonicalUuidText(context.statement_uuid.canonical) ||
-      !CanonicalUuidText(context.statement_snapshot_uuid.canonical) ||
+  if (!CanonicalUuidText(context.database_uuid) ||
+      !CanonicalUuidText(context.transaction_uuid) ||
+      !CanonicalUuidText(context.statement_uuid) ||
+      !CanonicalUuidText(context.statement_snapshot_uuid) ||
       !context.statement_metadata_snapshot_engine_owned ||
       !CanonicalUuidText(
-          context.statement_metadata_snapshot_uuid.canonical) ||
+          context.statement_metadata_snapshot_uuid) ||
       context.local_transaction_id == 0 || context.statement_timestamp.empty() ||
-      dag.statement_uuid != context.statement_uuid.canonical ||
+      dag.statement_uuid != context.statement_uuid ||
       dag.statement_timestamp != context.statement_timestamp ||
-      dag.owning_transaction_uuid != context.transaction_uuid.canonical ||
+      dag.owning_transaction_uuid != context.transaction_uuid ||
       dag.statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       dag.statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       dag.local_transaction_id != context.local_transaction_id ||
       dag.snapshot_visible_through_local_transaction_id !=
           context.snapshot_visible_through_local_transaction_id) {
@@ -2297,24 +2297,24 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         "SB_MODEL_MGA_CONTEXT_MISMATCH_V1",
         "bounded composition engine-issued statement/MGA cohort is absent or substituted");
   }
-  if (!CanonicalUuidText(context.catalog_epoch_uuid.canonical) ||
+  if (!CanonicalUuidText(context.catalog_epoch_uuid) ||
       context.catalog_generation_id == 0 ||
       authorization.catalog_generation_id != context.catalog_generation_id ||
-      dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical) {
+      dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid) {
     return refuse_pre_access(
         "SB_MODEL_CATALOG_GENERATION_STALE_V1",
         "bounded composition catalog epoch or generation cohort is absent or substituted");
   }
   if (!context.security_context_present || !authorization.present ||
-      !CanonicalUuidText(context.principal_uuid.canonical) ||
-      !CanonicalUuidText(authorization.authority_uuid.canonical) ||
-      authorization.principal_uuid.canonical !=
-          context.principal_uuid.canonical ||
+      !CanonicalUuidText(context.principal_uuid) ||
+      !CanonicalUuidText(authorization.authority_uuid) ||
+      authorization.principal_uuid !=
+          context.principal_uuid ||
       context.security_epoch == 0 ||
       authorization.security_epoch != context.security_epoch ||
       authorization.policy_epoch == 0 ||
       dag.bound_security_context_uuid !=
-          authorization.authority_uuid.canonical) {
+          authorization.authority_uuid) {
     return refuse_pre_access(
         "SB_MODEL_SECURITY_ADMISSION_REFUSED_V1",
         "bounded composition security or policy authority cohort is absent or substituted");
@@ -2326,10 +2326,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       admitted_at_monotonic_ns);
   if (context.resource_epoch == 0 ||
       !CanonicalUuidText(
-          context.optimizer_capability_snapshot_uuid.canonical) ||
+          context.optimizer_capability_snapshot_uuid) ||
       !CanonicalUuidText(
-          context.optimizer_resource_snapshot_uuid.canonical) ||
-      !CanonicalUuidText(context.optimizer_route_snapshot_uuid.canonical) ||
+          context.optimizer_resource_snapshot_uuid) ||
+      !CanonicalUuidText(context.optimizer_route_snapshot_uuid) ||
       context.optimizer_route_epoch == 0 ||
       context.optimizer_route_generation == 0 ||
       context.optimizer_route_generation ==
@@ -2364,7 +2364,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                   "bounded composition MGA statement context is invalid");
   }
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto generation = input.context.catalog_generation_id;
   const auto security_generation = input.context.security_epoch;
   const auto policy_generation =
@@ -2447,10 +2447,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     }
     const auto loaded = api::LoadMgaRelationStorageDescriptor(
         input.context, source->required_object_uuids.front());
-    if (!loaded.ok || loaded.descriptor.relation_uuid.canonical !=
+    if (!loaded.ok || loaded.descriptor.relation_uuid !=
                           source->required_object_uuids.front() ||
-        loaded.descriptor.database_uuid.canonical !=
-            input.context.database_uuid.canonical ||
+        loaded.descriptor.database_uuid !=
+            input.context.database_uuid ||
         loaded.descriptor.storage_profile != "local_mga_rowstore_v1" ||
         loaded.descriptor.descriptor_generation == 0) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
@@ -2569,7 +2569,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
                         "bounded derived source type UUID was substituted");
         }
         api::EngineDescriptor engine_descriptor;
-        engine_descriptor.descriptor_uuid.canonical =
+        engine_descriptor.descriptor_uuid =
             descriptor->descriptor_uuid;
         engine_descriptor.descriptor_kind = "scalar";
         engine_descriptor.canonical_type_name =
@@ -2584,10 +2584,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         const auto type_uuid = Rcp079DescriptorField(
             column.value_descriptor.encoded_descriptor, "type_uuid");
         if (expression->bound_name_uuid !=
-                std::optional<std::string>(column.column_uuid.canonical) ||
+                std::optional<std::string>(column.column_uuid) ||
             outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
             descriptor->descriptor_uuid !=
-                column.value_descriptor.descriptor_uuid.canonical ||
+                column.value_descriptor.descriptor_uuid ||
             column.ordinal != ordinal ||
             column.value_descriptor.descriptor_kind !=
                 "canonical_type_descriptor" ||
@@ -2772,23 +2772,23 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
       family_request.composition_arity =
           static_cast<std::uint16_t>(sources.size());
       family_request.logical_node_id = prepared.node->node_id;
-      family_request.object_uuid = prepared.persisted.relation_uuid.canonical;
+      family_request.object_uuid = prepared.persisted.relation_uuid;
       family_request.output_descriptor_ids =
           prepared.node->output_descriptor_ids;
       family_request.mga_statement_context = mga;
       family_request.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
       family_request.catalog_epoch_uuid =
-          input.context.catalog_epoch_uuid.canonical;
+          input.context.catalog_epoch_uuid;
       family_request.security_context_uuid =
-          input.context.authorization_context.authority_uuid.canonical;
+          input.context.authorization_context.authority_uuid;
       family_request.capability_snapshot_uuid =
-          input.context.optimizer_capability_snapshot_uuid.canonical;
+          input.context.optimizer_capability_snapshot_uuid;
       family_request.resource_snapshot_uuid =
-          input.context.optimizer_resource_snapshot_uuid.canonical;
+          input.context.optimizer_resource_snapshot_uuid;
       family_request.statistics_snapshot_uuid = DerivedCanonicalUuid(
           identity_scope, "rcp080.statistics." + suffix);
       family_request.route_snapshot_uuid =
-          input.context.optimizer_route_snapshot_uuid.canonical;
+          input.context.optimizer_route_snapshot_uuid;
       family_request.catalog_generation = generation;
       family_request.current_catalog_generation = generation;
       family_request.security_epoch = security_generation;
@@ -2867,13 +2867,13 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     leg.capability_uuid = capability_uuid;
     leg.delivered_property_uuid = DerivedCanonicalUuid(
         identity_scope, "rcp080.property." + suffix);
-    leg.bound_object_uuid = prepared.persisted.relation_uuid.canonical;
+    leg.bound_object_uuid = prepared.persisted.relation_uuid;
     leg.catalog_snapshot_uuid = leg.current_catalog_snapshot_uuid =
-        input.context.catalog_epoch_uuid.canonical;
+        input.context.catalog_epoch_uuid;
     leg.descriptor_snapshot_uuid = leg.current_descriptor_snapshot_uuid =
-        prepared.persisted.descriptor_uuid.canonical;
+        prepared.persisted.descriptor_uuid;
     leg.security_context_uuid = leg.current_security_context_uuid =
-        input.context.authorization_context.authority_uuid.canonical;
+        input.context.authorization_context.authority_uuid;
     leg.policy_snapshot_uuid = leg.current_policy_snapshot_uuid =
         DerivedCanonicalUuid(identity_scope, "rcp080.policy." + suffix);
     leg.resource_contract_uuid = leg.current_resource_contract_uuid =
@@ -3061,17 +3061,17 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   physical_dag.statement_snapshot_id = mga.visible_committed_high_watermark;
   physical_dag.mga_statement_context = mga;
   physical_dag.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
-  physical_dag.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  physical_dag.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   physical_dag.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   physical_dag.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   physical_dag.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   physical_dag.statistics_snapshot_uuid =
       DerivedCanonicalUuid(identity_scope, "rcp080.statistics-snapshot");
   physical_dag.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   physical_dag.catalog_generation = generation;
   physical_dag.security_epoch = security_generation;
   physical_dag.policy_epoch = policy_generation;
@@ -3319,7 +3319,7 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
     request.input.multimodel_common_statement_context = true;
     if (leg.family_id == "spatial") {
       request.input.spatial_geometry_descriptor_uuid =
-          prepared.columns[1].descriptor.descriptor_uuid.canonical;
+          prepared.columns[1].descriptor.descriptor_uuid;
       const auto spatial_descriptor = descriptor_for(
           prepared.node->output_descriptor_ids[1]);
       request.input.spatial_geometry_type_uuid =
@@ -3413,8 +3413,8 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           const auto current = api::LoadMgaRelationStorageDescriptor(
               context, source_input.object_uuid);
           if (!current.ok ||
-              current.descriptor.descriptor_uuid.canonical !=
-                  prepared_copy.persisted.descriptor_uuid.canonical ||
+              current.descriptor.descriptor_uuid !=
+                  prepared_copy.persisted.descriptor_uuid ||
               current.descriptor.descriptor_generation !=
                   prepared_copy.persisted.descriptor_generation) {
             return fail("SB_MODEL_CATALOG_GENERATION_STALE_V1",
@@ -3629,14 +3629,14 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
         const auto add_column = [&](const exec::ExecutorColumnDescriptor& col) {
           return add_memory(sizeof(exec::ExecutorColumnDescriptor)) &&
                  add_memory(col.stable_name.size()) &&
-                 add_memory(col.descriptor.descriptor_uuid.canonical.size()) &&
+                 add_memory(col.descriptor.descriptor_uuid.size()) &&
                  add_memory(col.descriptor.descriptor_kind.size()) &&
                  add_memory(col.descriptor.canonical_type_name.size()) &&
                  add_memory(col.descriptor.encoded_descriptor.size());
         };
         const auto add_value = [&](const api::EngineTypedValue& value) {
           return add_memory(sizeof(api::EngineTypedValue)) &&
-                 add_memory(value.descriptor.descriptor_uuid.canonical.size()) &&
+                 add_memory(value.descriptor.descriptor_uuid.size()) &&
                  add_memory(value.descriptor.descriptor_kind.size()) &&
                  add_memory(value.descriptor.canonical_type_name.size()) &&
                  add_memory(value.descriptor.encoded_descriptor.size()) &&
@@ -3744,10 +3744,10 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
               authorization.authorized && !authorization.denied &&
               !authorization.policy_recheck_required &&
               authorization.diagnostics.empty() && current.ok &&
-              current.descriptor.relation_uuid.canonical ==
+              current.descriptor.relation_uuid ==
                   leg.bound_object_uuid &&
-              current.descriptor.descriptor_uuid.canonical ==
-                  prepared.persisted.descriptor_uuid.canonical &&
+              current.descriptor.descriptor_uuid ==
+                  prepared.persisted.descriptor_uuid &&
               current.descriptor.descriptor_generation ==
                   prepared.persisted.descriptor_generation &&
               current.descriptor.columns.size() ==
@@ -3769,12 +3769,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
           publication.current_capability_generations.push_back(
               current.ok ? current.descriptor.descriptor_generation : 0);
           publication.current_catalog_snapshot_uuids.push_back(
-              context.catalog_epoch_uuid.canonical);
+              context.catalog_epoch_uuid);
           publication.current_descriptor_snapshot_uuids.push_back(
-              current.ok ? current.descriptor.descriptor_uuid.canonical
+              current.ok ? current.descriptor.descriptor_uuid
                          : std::string{});
           publication.current_security_context_uuids.push_back(
-              context.authorization_context.authority_uuid.canonical);
+              context.authorization_context.authority_uuid);
           publication.current_policy_snapshot_uuids.push_back(
               DerivedCanonicalUuid(
                   identity_scope,
@@ -3809,12 +3809,12 @@ ExecuteCanonicalBoundedModelFamilyCompositionQuery(
   }
 
   exec::CanonicalResultPublicationRequest publication;
-  publication.statement_uuid = input.context.statement_uuid.canonical;
+  publication.statement_uuid = input.context.statement_uuid;
   publication.mga_authority =
       BuildCanonicalExecutionMgaAuthority(input.context, physical_dag);
   publication.selected_physical_dag = std::move(physical_dag);
   publication.selected_catalog_epoch_uuid =
-      input.context.catalog_epoch_uuid.canonical;
+      input.context.catalog_epoch_uuid;
   publication.execution_attempt_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + input.context.current_monotonic_ns,
       "rcp080.execution-attempt");
@@ -4213,7 +4213,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   }
 
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   std::array<Rcp079CapturedModelLegV1, 2> captured;
   for (std::size_t ordinal = 0; ordinal < sources.size(); ++ordinal) {
     const auto family =
@@ -4307,16 +4307,16 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
-  planning_scope.owning_transaction_uuid = input.context.transaction_uuid.canonical;
+  planning_scope.owning_transaction_uuid = input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -4350,11 +4350,11 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
   logical.property_catalog.mga_statement_context = current_logical_mga;
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = input.context.statement_uuid.canonical;
+  admission_context.statement_uuid = input.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = input.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       input.context.authorization_context.catalog_generation_id;
@@ -4364,11 +4364,11 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
       input.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = input.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = input.context.optimizer_route_epoch;
   admission_context.route_generation = input.context.optimizer_route_generation;
   admission_context.memory_budget_bytes =
@@ -4927,7 +4927,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
               : std::function<bool()>([] { return false; })));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
@@ -5026,7 +5026,7 @@ ExecuteCanonicalCapturedModelFamilyJoinQuery(
          (!exact_type_uuid.has_value() ||
           allocation.descriptor_uuid !=
               exact_join_columns[ordinal]
-                  .descriptor.descriptor_uuid.canonical ||
+                  .descriptor.descriptor_uuid ||
           allocation.type_uuid != *exact_type_uuid ||
           allocation.demand.nullable !=
               exact_join_columns[ordinal].nullable))) {

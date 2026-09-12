@@ -100,11 +100,11 @@ std::string DescriptorEvidence(const SblrAutonomousFrameSnapshot& snapshot) {
 }
 bool Valid(const EngineRequestContext& c,
            const SblrAutonomousBodyFrameProjectionV1& a) {
-  return a.preliminary_receipt_uuid == c.statement_uuid.canonical &&
-         a.parent_transaction_uuid == c.transaction_uuid.canonical &&
-         a.database_uuid == c.database_uuid.canonical &&
-         a.session_uuid == c.session_uuid.canonical &&
-         a.principal_uuid == c.principal_uuid.canonical &&
+  return a.preliminary_receipt_uuid == c.statement_uuid &&
+         a.parent_transaction_uuid == c.transaction_uuid &&
+         a.database_uuid == c.database_uuid &&
+         a.session_uuid == c.session_uuid &&
+         a.principal_uuid == c.principal_uuid &&
          a.structural_occurrence_id && Uuid(a.parent_frame_uuid) &&
          Uuid(a.attachment_uuid) && Uuid(a.security_snapshot_uuid) &&
          Uuid(a.policy_snapshot_uuid) && a.catalog_generation &&
@@ -202,18 +202,18 @@ EngineApiDiagnostic CompileAndPublishSblrAutonomousBodyFrameProjection(
     const EngineRequestContext& c, const std::string& receipt,
     std::uint64_t occurrence) {
   if (!HasTag(c, "private_psql_autonomous_body_compiler") ||
-      !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid.canonical ||
-      !occurrence || c.transaction_uuid.canonical.empty() ||
-      c.database_uuid.canonical.empty() || c.session_uuid.canonical.empty() ||
-      c.principal_uuid.canonical.empty())
+      !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid ||
+      !occurrence || c.transaction_uuid.is_nil() ||
+      c.database_uuid.is_nil() || c.session_uuid.is_nil() ||
+      c.principal_uuid.is_nil())
     return Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.compiler_hidden");
   SblrAutonomousBodyFrameProjectionV1 a;
   a.preliminary_receipt_uuid=receipt;a.structural_occurrence_id=occurrence;
-  a.parent_transaction_uuid=c.transaction_uuid.canonical;
+  a.parent_transaction_uuid=c.transaction_uuid;
   a.parent_frame_uuid=Identity(++generation);
-  a.database_uuid=c.database_uuid.canonical;
+  a.database_uuid=c.database_uuid;
   a.attachment_uuid=Identity(++generation);
-  a.session_uuid=c.session_uuid.canonical;a.principal_uuid=c.principal_uuid.canonical;
+  a.session_uuid=c.session_uuid;a.principal_uuid=c.principal_uuid;
   a.security_snapshot_uuid=Identity(++generation);a.policy_snapshot_uuid=Identity(++generation);
   a.catalog_generation=++generation;a.capability_generation=++generation;
   a.body_sblr_uuid=Identity(++generation);a.intent=1;a.nesting_depth=1;a.effect_count=0;
@@ -298,7 +298,7 @@ SblrAutonomousFrameCoordinatorResult FinalizeSblrAutonomousFrame(
     out.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.hidden"); return out;
   }
   auto it = rows.find(id);
-  if (it == rows.end() || it->second.authority.parent_transaction_uuid != c.transaction_uuid.canonical) {
+  if (it == rows.end() || it->second.authority.parent_transaction_uuid != c.transaction_uuid) {
     out.diagnostic = Diagnostic("SECURITY.ACCESS_DENIED", "sblr.psql_autonomous.hidden"); return out;
   }
   if (it->second.frame_generation != frame_generation || it->second.state != SblrAutonomousFrameState::reserved) {

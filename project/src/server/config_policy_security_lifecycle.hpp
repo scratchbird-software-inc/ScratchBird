@@ -12,6 +12,7 @@
 
 #include "config.hpp"
 #include "diagnostics.hpp"
+#include "../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
 #include <string>
@@ -52,7 +53,7 @@ enum class DatabaseLifecycleThreatSurface {
 struct ConfigPolicySecurityLifecycleInput {
   std::uint32_t descriptor_version = kConfigPolicySecurityLifecycleDescriptorCurrent;
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   bool database_open = false;
   bool cluster_authority_required = false;
   std::string config_source = "compiled_defaults";
@@ -71,7 +72,7 @@ struct ConfigPolicySecurityLifecycleInput {
 struct ConfigPolicySecurityLifecycle {
   std::uint32_t descriptor_version = kConfigPolicySecurityLifecycleDescriptorCurrent;
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string config_source;
   std::uint64_t config_source_epoch = 1;
   std::uint64_t config_reload_generation = 1;
@@ -161,7 +162,7 @@ SecurityProviderLifecycleState ParseSecurityProviderLifecycleState(const std::st
 ConfigPolicySecurityLifecycleInput BuildConfigPolicySecurityLifecycleInput(
     const ServerBootstrapConfig& config,
     std::string database_path,
-    std::string database_uuid,
+    scratchbird::core::platform::Uuid database_uuid,
     bool database_open,
     bool cluster_authority_required);
 ConfigPolicySecurityLifecycleResult StartConfigPolicySecurityLifecycle(

@@ -100,7 +100,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         "database_path_required");
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return ResourceResolutionFailure(
         request,
         "CATALOG.RESOURCE.TRANSACTION_REQUIRED",
@@ -132,7 +132,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
 
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      request.context.transaction_uuid.canonical);
+      request.context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return ResourceResolutionFailure(
         request,
@@ -159,8 +159,8 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         "exact_active_transaction_identity_required");
   }
 
-  if (!request.context.database_uuid.canonical.empty() &&
-      request.context.database_uuid.canonical !=
+  if (!request.context.database_uuid.is_nil() &&
+      request.context.database_uuid !=
           scratchbird::core::uuid::UuidToString(
               opened.state.database_uuid.value)) {
     return ResourceResolutionFailure(
@@ -189,11 +189,25 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
   descriptor.resource_epoch = image.resource_epoch;
   const std::string& requested_name =
       request.sql_object_reference.object_name.raw_text;
+  const auto alias_ambiguity = [&](scratchbird::core::resources::ResourceSeedFamily family)
+      -> std::optional<EngineResolveNameResult> {
+    const auto alias = scratchbird::core::resources::ResolveResourceSeedAlias(
+        image, family, requested_name);
+    if (alias.ok() || alias.diagnostic.diagnostic_code != "SB_RESOURCE_ALIAS_AMBIGUOUS")
+      return std::nullopt;
+    auto failure = ResourceResolutionFailure(request, alias.diagnostic.diagnostic_code,
+                                            alias.diagnostic.message_key, {});
+    for (const auto& argument : alias.diagnostic.arguments)
+      failure.diagnostics.front().fields.push_back({argument.key, argument.value});
+    return failure;
+  };
   if (resource_class == "charset") {
     const auto* charset =
         scratchbird::core::resources::FindResourceSeedCharset(image,
                                                                requested_name);
     if (charset == nullptr) {
+      if (const auto ambiguity = alias_ambiguity(scratchbird::core::resources::ResourceSeedFamily::charset))
+        return *ambiguity;
       return ResourceResolutionFailure(
           request,
           "CATALOG.NAME.NOT_FOUND",
@@ -201,8 +215,8 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
           "charset_not_found_or_not_visible");
     }
     descriptor.canonical_name = charset->canonical_name;
-    descriptor.resource_uuid.canonical = charset->resource_uuid;
-    descriptor.default_collation_uuid.canonical =
+    descriptor.resource_uuid = charset->resource_uuid;
+    descriptor.default_collation_uuid =
         charset->default_collation_uuid;
     descriptor.default_collation_name = charset->default_collation_name;
     descriptor.family_epoch = charset->family_epoch;
@@ -215,6 +229,8 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         scratchbird::core::resources::FindResourceSeedCollation(image,
                                                                  requested_name);
     if (collation == nullptr) {
+      if (const auto ambiguity = alias_ambiguity(scratchbird::core::resources::ResourceSeedFamily::collation))
+        return *ambiguity;
       return ResourceResolutionFailure(
           request,
           "CATALOG.NAME.NOT_FOUND",
@@ -222,8 +238,8 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
           "collation_not_found_or_not_visible");
     }
     descriptor.canonical_name = collation->canonical_name;
-    descriptor.resource_uuid.canonical = collation->resource_uuid;
-    descriptor.parent_resource_uuid.canonical = collation->charset_uuid;
+    descriptor.resource_uuid = collation->resource_uuid;
+    descriptor.parent_resource_uuid = collation->charset_uuid;
     descriptor.parent_canonical_name = collation->charset_name;
     descriptor.family_epoch = collation->family_epoch;
     descriptor.family_version = collation->family_version;
@@ -232,14 +248,14 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
     descriptor.accent_insensitive = collation->accent_insensitive;
   }
 
-  if (descriptor.resource_uuid.canonical.empty() ||
+  if (descriptor.resource_uuid.is_nil() ||
       descriptor.resource_epoch == 0 || descriptor.family_epoch == 0 ||
       descriptor.family_version.empty() ||
       (resource_class == "charset" &&
        (descriptor.min_bytes == 0 ||
         descriptor.max_bytes < descriptor.min_bytes)) ||
       (resource_class == "collation" &&
-       descriptor.parent_resource_uuid.canonical.empty())) {
+       descriptor.parent_resource_uuid.is_nil())) {
     return ResourceResolutionFailure(
         request,
         "CATALOG.RESOURCE.DESCRIPTOR_INVALID",
@@ -262,14 +278,14 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
   result.resource_descriptor = descriptor;
   AddApiBehaviorRow(
       &result,
-      {{"object_uuid", descriptor.resource_uuid.canonical},
+      {{"object_uuid", descriptor.resource_uuid},
        {"object_kind", resource_class},
        {"name", descriptor.canonical_name},
        {"resource_epoch", std::to_string(descriptor.resource_epoch)},
        {"family_epoch", std::to_string(descriptor.family_epoch)},
        {"family_version", descriptor.family_version},
-       {"parent_resource_uuid", descriptor.parent_resource_uuid.canonical},
-       {"default_collation_uuid", descriptor.default_collation_uuid.canonical},
+       {"parent_resource_uuid", descriptor.parent_resource_uuid},
+       {"default_collation_uuid", descriptor.default_collation_uuid},
        {"default_collation_name", descriptor.default_collation_name},
        {"min_bytes", std::to_string(descriptor.min_bytes)},
        {"max_bytes", std::to_string(descriptor.max_bytes)}});
@@ -343,7 +359,7 @@ TemporaryNameCandidateClassification ClassifyTemporaryNameCandidate(
       IsExactCanonicalSessionUuid(
           visibility.table.temporary_session_uuid)) {
     if (!IsExactCanonicalSessionUuid(
-            request.context.session_uuid.canonical)) {
+            request.context.session_uuid)) {
       classified.diagnostic = MakeInvalidRequestDiagnostic(
           "catalog.resolve_name",
           "temporary_table_session_namespace_invalid:" + object_uuid);
@@ -351,7 +367,7 @@ TemporaryNameCandidateClassification ClassifyTemporaryNameCandidate(
     }
     classified.ok = true;
     if (visibility.table.temporary_session_uuid ==
-        request.context.session_uuid.canonical) {
+        request.context.session_uuid) {
       classified.kind = TemporaryNameCandidateKind::kOwnedPrivate;
     }
     return classified;
@@ -417,7 +433,7 @@ EngineApiDiagnostic AttachGlobalAggregateViewSemanticProjection(
         "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   }
   const auto semantic = EngineGlobalAggregateViewSemanticDescriptor(view);
-  if (semantic.descriptor_uuid.canonical.empty() ||
+  if (semantic.descriptor_uuid.is_nil() ||
       semantic.descriptor_kind != "global_aggregate_view" ||
       semantic.canonical_type_name != kEngineGlobalAggregateViewMarkerV1 ||
       semantic.encoded_descriptor.empty()) {
@@ -436,7 +452,7 @@ EngineApiDiagnostic AttachGlobalAggregateViewSemanticProjection(
   AddApiBehaviorRow(
       result,
       {{"semantic_projection_marker", kEngineGlobalAggregateViewMarkerV1},
-       {"view_descriptor_uuid", semantic.descriptor_uuid.canonical},
+       {"view_descriptor_uuid", semantic.descriptor_uuid},
        {"view_descriptor_generation",
         std::to_string(view.view_descriptor_generation)},
        {"result_alias", view.result_alias},
@@ -507,33 +523,33 @@ EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
   const bool v1 = view.marker == kEngineRelationProjectionViewMarkerV1;
   const bool v2 = view.marker == kEngineRelationProjectionViewMarkerV2;
   const std::size_t expected_output_count = v1 ? 2u : 1u;
-  if (semantic.descriptor_uuid.canonical.empty() ||
+  if (semantic.descriptor_uuid.is_nil() ||
       semantic.descriptor_kind != "relation_projection_view" ||
       (!v1 && !v2) || semantic.canonical_type_name != view.marker ||
       semantic.encoded_descriptor.empty() ||
       outputs.size() != expected_output_count ||
-      !CanonicalSemanticObjectUuid(view.view_uuid.canonical) ||
-      !CanonicalSemanticObjectUuid(semantic.descriptor_uuid.canonical)) {
+      !CanonicalSemanticObjectUuid(view.view_uuid) ||
+      !CanonicalSemanticObjectUuid(semantic.descriptor_uuid)) {
     return MakeInvalidRequestDiagnostic(
         "catalog.resolve_name",
         "relation_projection_view_semantic_descriptor_invalid");
   }
   std::set<std::string> semantic_identities = {
-      view.view_uuid.canonical, semantic.descriptor_uuid.canonical};
+      view.view_uuid, semantic.descriptor_uuid};
   for (std::size_t index = 0; index < outputs.size(); ++index) {
     const auto& output = outputs[index];
     if (output.ordinal != index ||
         !SafeSemanticOutputName(output.output_name) ||
-        !CanonicalSemanticObjectUuid(output.output_column_uuid.canonical) ||
+        !CanonicalSemanticObjectUuid(output.output_column_uuid) ||
         !CanonicalSemanticObjectUuid(
-            output.output_type.type_descriptor_uuid.canonical)) {
+            output.output_type.type_descriptor_uuid)) {
       return MakeInvalidRequestDiagnostic(
           "catalog.resolve_name",
           "relation_projection_view_semantic_descriptor_invalid");
     }
-    semantic_identities.insert(output.output_column_uuid.canonical);
+    semantic_identities.insert(output.output_column_uuid);
     semantic_identities.insert(
-        output.output_type.type_descriptor_uuid.canonical);
+        output.output_type.type_descriptor_uuid);
   }
   if (semantic_identities.size() != 2u + outputs.size() * 2u) {
     return MakeInvalidRequestDiagnostic(
@@ -551,7 +567,7 @@ EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
       result,
       {{"semantic_projection_marker",
         view.marker},
-       {"view_descriptor_uuid", semantic.descriptor_uuid.canonical},
+       {"view_descriptor_uuid", semantic.descriptor_uuid},
        {"view_descriptor_generation",
         std::to_string(view.view_descriptor_generation)},
        {"output_count", std::to_string(outputs.size())}});
@@ -562,9 +578,9 @@ EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
           std::to_string(output.ordinal)},
          {"semantic_projection_output_name", output.output_name},
          {"semantic_projection_output_column_uuid",
-          output.output_column_uuid.canonical},
+          output.output_column_uuid},
          {"semantic_projection_output_type_descriptor_uuid",
-          output.output_type.type_descriptor_uuid.canonical},
+          output.output_type.type_descriptor_uuid},
          {"semantic_projection_output_type",
           output.output_type.canonical_type_name},
          {"semantic_projection_output_nullable",
@@ -603,12 +619,12 @@ EngineResolveNameResult MakeNameRegistryResolveResult(
   auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(
       request.context,
       "catalog.resolve_name");
-  result.primary_object.uuid.canonical = match.object_uuid;
+  result.primary_object.uuid = match.object_uuid;
   result.primary_object.object_kind = match.object_class;
-  result.bound_object_identity.object_uuid.canonical = match.object_uuid;
+  result.bound_object_identity.object_uuid = match.object_uuid;
   result.bound_object_identity.resolved_object_type = match.object_class;
-  result.bound_object_identity.resolved_schema_uuid.canonical = match.scope_uuid;
-  result.bound_object_identity.parent_object_uuid.canonical = match.parent_object_uuid;
+  result.bound_object_identity.resolved_schema_uuid = match.scope_uuid;
+  result.bound_object_identity.parent_object_uuid = match.parent_object_uuid;
   // The legacy name registry has no independent object-definition generation.
   // Preserve its existing projection for registry-only objects, then enrich
   // it from the catalog lifecycle by exact UUID when that engine-owned record
@@ -621,11 +637,11 @@ EngineResolveNameResult MakeNameRegistryResolveResult(
   EngineCatalogLookupObjectRequest lifecycle_request;
   static_cast<EngineApiRequest&>(lifecycle_request) =
       static_cast<const EngineApiRequest&>(request);
-  lifecycle_request.target_object.uuid.canonical = match.object_uuid;
+  lifecycle_request.target_object.uuid = match.object_uuid;
   lifecycle_request.target_object.object_kind = match.object_class;
   const auto lifecycle = EngineCatalogLookupObjectByUuid(lifecycle_request);
   if (lifecycle.ok &&
-      lifecycle.primary_object.uuid.canonical == match.object_uuid &&
+      lifecycle.primary_object.uuid == match.object_uuid &&
       lifecycle.primary_object.object_kind == match.object_class &&
       lifecycle.bound_object_identity.object_descriptor_generation != 0) {
     result.bound_object_identity.object_descriptor_generation =
@@ -682,14 +698,14 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                 "catalog.resource.family_invalid",
                 expected_resource_family);
   }
-  if (resource_uuid.canonical.empty()) {
+  if (resource_uuid.is_nil()) {
     return fail("CATALOG.RESOURCE.UUID_REQUIRED",
                 "catalog.resource.uuid_required",
                 resource_family + "_uuid_required");
   }
   const auto parsed_resource = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::object,
-      resource_uuid.canonical);
+      resource_uuid);
   if (!parsed_resource.ok()) {
     return fail("CATALOG.RESOURCE.UUID_INVALID",
                 "catalog.resource.uuid_invalid",
@@ -704,7 +720,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                 "database_path_required");
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return fail("CATALOG.RESOURCE.TRANSACTION_REQUIRED",
                 "catalog.resource.transaction_required",
                 "exact_active_transaction_identity_required");
@@ -730,7 +746,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
 
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
                 "catalog.resource.transaction_invalid",
@@ -753,8 +769,8 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                 "exact_active_transaction_identity_required");
   }
 
-  if (!context.database_uuid.canonical.empty() &&
-      context.database_uuid.canonical !=
+  if (!context.database_uuid.is_nil() &&
+      context.database_uuid !=
           scratchbird::core::uuid::UuidToString(
               opened.state.database_uuid.value)) {
     return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
@@ -803,8 +819,8 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                   canonical_resource_uuid);
     }
     descriptor.canonical_name = matched->canonical_name;
-    descriptor.resource_uuid.canonical = matched->resource_uuid;
-    descriptor.default_collation_uuid.canonical =
+    descriptor.resource_uuid = matched->resource_uuid;
+    descriptor.default_collation_uuid =
         matched->default_collation_uuid;
     descriptor.default_collation_name = matched->default_collation_name;
     descriptor.family_epoch = matched->family_epoch;
@@ -834,8 +850,8 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                   canonical_resource_uuid);
     }
     descriptor.canonical_name = matched->canonical_name;
-    descriptor.resource_uuid.canonical = matched->resource_uuid;
-    descriptor.parent_resource_uuid.canonical = matched->charset_uuid;
+    descriptor.resource_uuid = matched->resource_uuid;
+    descriptor.parent_resource_uuid = matched->charset_uuid;
     descriptor.parent_canonical_name = matched->charset_name;
     descriptor.family_epoch = matched->family_epoch;
     descriptor.family_version = matched->family_version;
@@ -844,14 +860,14 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     descriptor.accent_insensitive = matched->accent_insensitive;
   }
 
-  if (descriptor.resource_uuid.canonical.empty() ||
+  if (descriptor.resource_uuid.is_nil() ||
       descriptor.resource_epoch == 0 || descriptor.family_epoch == 0 ||
       descriptor.family_version.empty() ||
       (resource_family == "charset" &&
        (descriptor.min_bytes == 0 ||
         descriptor.max_bytes < descriptor.min_bytes)) ||
       (resource_family == "collation" &&
-       descriptor.parent_resource_uuid.canonical.empty())) {
+       descriptor.parent_resource_uuid.is_nil())) {
     return fail("CATALOG.RESOURCE.DESCRIPTOR_INVALID",
                 "catalog.resource.descriptor_invalid",
                 descriptor.canonical_name);
@@ -881,7 +897,7 @@ EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
                 "database_path_required");
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return fail("CATALOG.RESOURCE.TRANSACTION_REQUIRED",
                 "catalog.resource.transaction_required",
                 "exact_active_transaction_identity_required");
@@ -906,7 +922,7 @@ EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
   }
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
                 "catalog.resource.transaction_invalid",
@@ -928,8 +944,8 @@ EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
                 "catalog.resource.transaction_not_active",
                 "exact_active_transaction_identity_required");
   }
-  if (!context.database_uuid.canonical.empty() &&
-      context.database_uuid.canonical != scratchbird::core::uuid::UuidToString(
+  if (!context.database_uuid.is_nil() &&
+      context.database_uuid != scratchbird::core::uuid::UuidToString(
                                              opened.state.database_uuid.value)) {
     return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
                 "catalog.resource.database_identity_mismatch",
@@ -1050,7 +1066,7 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
     if (ObjectClassCanBeTemporaryTable(catalog_resolved.primary_object.object_kind)) {
       const auto visibility = CheckMgaTemporaryTableVisibility(
           request.context,
-          catalog_resolved.primary_object.uuid.canonical);
+          catalog_resolved.primary_object.uuid);
       if (!visibility.ok) {
         return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
             request.context,
@@ -1059,7 +1075,7 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
       }
       const auto classified = ClassifyTemporaryNameCandidate(
           request,
-          catalog_resolved.primary_object.uuid.canonical,
+          catalog_resolved.primary_object.uuid,
           visibility);
       if (!classified.ok) {
         return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
@@ -1080,7 +1096,7 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
       const auto semantic = AttachViewSemanticProjection(
           request,
           result.primary_object.object_kind,
-          result.primary_object.uuid.canonical,
+          result.primary_object.uuid,
           &result);
       if (semantic.error) {
         return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
@@ -1143,7 +1159,7 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
 
 EngineMapUuidToNameResult EngineMapUuidToName(const EngineMapUuidToNameRequest& request) {
   const auto mapped = MapNameRegistryUuidToNamePublic(request,
-                                                     request.target_object.uuid.canonical,
+                                                     request.target_object.uuid,
                                                      request.target_object.object_kind);
   if (!mapped.ok) {
     return MakeApiBehaviorDiagnostic<EngineMapUuidToNameResult>(
@@ -1152,12 +1168,12 @@ EngineMapUuidToNameResult EngineMapUuidToName(const EngineMapUuidToNameRequest& 
         mapped.diagnostic);
   }
   auto result = MakeApiBehaviorSuccess<EngineMapUuidToNameResult>(request.context, "catalog.map_uuid_to_name");
-  result.primary_object.uuid.canonical = mapped.entry.object_uuid;
+  result.primary_object.uuid = mapped.entry.object_uuid;
   result.primary_object.object_kind = mapped.entry.object_class;
-  result.bound_object_identity.object_uuid.canonical = mapped.entry.object_uuid;
+  result.bound_object_identity.object_uuid = mapped.entry.object_uuid;
   result.bound_object_identity.resolved_object_type = mapped.entry.object_class;
-  result.bound_object_identity.resolved_schema_uuid.canonical = mapped.entry.scope_uuid;
-  result.bound_object_identity.parent_object_uuid.canonical = mapped.entry.parent_object_uuid;
+  result.bound_object_identity.resolved_schema_uuid = mapped.entry.scope_uuid;
+  result.bound_object_identity.parent_object_uuid = mapped.entry.parent_object_uuid;
   result.bound_object_identity.catalog_generation_id = mapped.entry.catalog_generation_id;
   result.bound_object_identity.security_epoch = request.context.security_epoch;
   result.bound_object_identity.resource_epoch = mapped.entry.resource_epoch;

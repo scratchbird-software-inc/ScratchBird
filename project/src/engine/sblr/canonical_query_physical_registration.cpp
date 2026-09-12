@@ -51,11 +51,11 @@ exec::PhysicalMgaStatementContext PhysicalMgaContextFromResolvedSnapshot(
     const api::EngineRequestContext& context,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
   exec::PhysicalMgaStatementContext expected;
-  expected.statement_uuid = context.statement_uuid.canonical;
-  expected.owning_transaction_uuid = context.transaction_uuid.canonical;
-  expected.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  expected.statement_uuid = context.statement_uuid;
+  expected.owning_transaction_uuid = context.transaction_uuid;
+  expected.statement_snapshot_uuid = context.statement_snapshot_uuid;
   expected.statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
   expected.owning_local_transaction_id = descriptor.owning_transaction.value;
   expected.visible_committed_high_watermark =
       descriptor.visible_committed_high_watermark;

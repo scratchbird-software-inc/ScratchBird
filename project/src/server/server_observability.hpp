@@ -184,7 +184,6 @@ void RecordServerLog(ServerObservabilityState* state,
                      ServerStructuredLogRecord record);
 std::string RedactSupportabilityText(std::string text);
 bool LifecycleOperationRequiresCacheInvalidation(std::string_view operation_key);
-bool LifecycleDiagnosticRetryable(std::string_view diagnostic_code);
 std::vector<std::string> CanonicalLifecycleObservabilityOperations();
 ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
     ServerObservabilityState* state,

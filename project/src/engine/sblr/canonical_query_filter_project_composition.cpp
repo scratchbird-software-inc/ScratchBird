@@ -184,7 +184,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
@@ -252,7 +252,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
       std::move(filter_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -401,7 +401,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto project_capability_uuid =
@@ -473,7 +473,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
       std::move(project_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -693,7 +693,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
@@ -782,7 +782,7 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
       std::move(project_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -969,7 +969,7 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto project_capability_uuid =
@@ -1063,7 +1063,7 @@ ExecuteCanonicalObjectFreeProjectSortQuery(
       std::move(sort_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -1326,7 +1326,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
@@ -1444,7 +1444,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
       std::move(sort_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -1745,7 +1745,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
@@ -1880,7 +1880,7 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
       std::move(limit_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
@@ -2253,7 +2253,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   }
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
-                              request.context.statement_uuid.canonical;
+                              request.context.statement_uuid;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto filter_capability_uuid =
@@ -2395,7 +2395,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       std::move(limit_registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
-      request.context.statement_uuid.canonical;
+      request.context.statement_uuid;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 
 #include <string>
 #include <vector>
@@ -50,7 +50,7 @@ struct NativeV3ParserPackageResult {
   std::string logical_envelope_json;
   std::string sblr_envelope_json;
   std::string dispatch_json;
-  scratchbird::engine::internal_api::EngineRenderedResultEnvelope rendered_result;
+  scratchbird::server::legacy_rendering::EngineRenderedResultEnvelope rendered_result;
   std::vector<std::string> diagnostics;
 };
 

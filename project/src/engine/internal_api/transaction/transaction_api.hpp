@@ -13,6 +13,8 @@
 #include "transaction_snapshot.hpp"
 
 #include <mutex>
+#include <array>
+#include <cstdint>
 
 namespace scratchbird::engine::internal_api {
 
@@ -26,11 +28,32 @@ std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuard(
     const std::string& database_path);
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_TRANSACTION_TRANSACTION_API
+enum class EngineTransactionInventoryState : std::uint8_t {
+  not_started, active, committed, rolled_back, not_applied, unknown,
+};
+
+// Engine-issued observation of a composite inventory identity. This is not a
+// bearer token or permission to execute: recovery must revalidate the exact
+// database/session and UUID/local-id pair against current engine authority.
+// In particular an attempted publication with unknown outcome is never active
+// authority merely because a nonzero candidate identity is retained here.
+// not_applied means the attempted commit/rollback did not apply; it does not
+// assert that a transaction is currently active (an inventory read may fail).
+struct EngineTransactionInventoryObservation {
+  std::array<std::uint8_t, 16> transaction_uuid{};
+  EngineApiU64 local_transaction_id = 0;
+  EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
+  std::string transaction_timestamp;
+  EngineTransactionInventoryState state = EngineTransactionInventoryState::not_started;
+  bool post_inventory_secondary_failure = false;
+};
+
 struct EngineBeginTransactionRequest : EngineApiRequest {
   std::string isolation_level;
   EngineProfileSet transaction_policy_profile;
 };
 struct EngineBeginTransactionResult : EngineApiResult {
+  EngineTransactionInventoryObservation inventory_observation;
   EngineUuid transaction_uuid;
   EngineApiU64 local_transaction_id = 0;
   std::string isolation_level;
@@ -98,6 +121,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
 
 struct EngineCleanupTemporarySessionRequest : EngineApiRequest {};
 struct EngineCleanupTemporarySessionResult : EngineApiResult {
+  EngineTransactionInventoryObservation cleanup_transaction;
   EngineApiU64 temporary_deleted_rows = 0;
   EngineApiU64 temporary_reclaimed_large_values = 0;
   EngineApiU64 temporary_retired_private_metadata = 0;

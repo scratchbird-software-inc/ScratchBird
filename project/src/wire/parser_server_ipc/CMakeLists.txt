@@ -28,9 +28,11 @@ target_link_libraries(sb_wire_statement_management_bind_codec PUBLIC
   sb_core_hash
 )
 
+include(${PROJECT_SOURCE_DIR}/src/wire/diagnostic_identity_projection_codec.cmake)
 add_library(sbl_parser_server_ipc_schema STATIC
   parser_ipc_common.cpp
   parser_server_ipc.cpp
+  sbps_disconnect_payload_codec.cpp
   sbps_execution_request_payload_codec.cpp
   sbps_narrow_statement_context_alias_codec.cpp
   typed_result_payload_codec.cpp
@@ -67,6 +69,7 @@ target_include_directories(sbl_parser_server_ipc_schema PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(sbl_parser_server_ipc_schema PUBLIC
+  sb_wire_diagnostic_identity_projection_codec
   sb_wire_bulk_import_stream_codec
   sb_wire_statement_management_bind_codec
   sb_wire_typed_result_transport_codec

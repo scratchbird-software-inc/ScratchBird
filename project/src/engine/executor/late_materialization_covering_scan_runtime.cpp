@@ -22,14 +22,12 @@ namespace {
 
 namespace idx = scratchbird::core::index;
 namespace uuid = scratchbird::core::uuid;
-using scratchbird::core::platform::TypedUuid;
 
-std::string UuidText(const TypedUuid& value) {
-  return value.valid() ? uuid::UuidToString(value.value) : std::string{};
-}
+using RowVersionKey = std::pair<internal_api::EngineUuid, internal_api::EngineUuid>;
 
-std::string BindingKey(std::string row_uuid, std::string version_uuid) {
-  return std::move(row_uuid) + "|" + std::move(version_uuid);
+RowVersionKey BindingKey(const internal_api::EngineUuid& row_uuid,
+                         const internal_api::EngineUuid& version_uuid) {
+  return {row_uuid, version_uuid};
 }
 
 void AddCommonAcceptedEvidence(const IndexedPhysicalOperatorResult& stream,
@@ -72,7 +70,8 @@ std::string LocatorFailureDetail(const IndexedPhysicalOperatorLocator& locator) 
   if (!locator.from_physical_index) {
     return "physical_index_locator_required";
   }
-  if (locator.row_uuid.empty() || locator.version_uuid.empty()) {
+  if (!uuid::IsEngineIdentityUuid(locator.row_uuid) ||
+      !uuid::IsEngineIdentityUuid(locator.version_uuid)) {
     return "physical_row_version_binding_required";
   }
   if (!locator.mga_recheck_required) {
@@ -616,9 +615,7 @@ ConsumeIndexedRowIdStreamForLateMaterialization(
                            provided.row.evidence.begin(),
                            provided.row.evidence.end());
     result.evidence.push_back("irc061.late_materialization.stream_row=" +
-                              std::to_string(ordinal) + ":" +
-                              locator.row_uuid + ":" +
-                              locator.version_uuid);
+                              std::to_string(ordinal));
     result.rows.push_back(std::move(provided.row));
   }
 
@@ -635,14 +632,22 @@ CoveringProjectionOnlyScanResult ExecuteCoveringProjectionOnlyScan(
     return FailCovering(detail);
   }
 
-  std::map<std::string, const idx::CoveringIndexPayloadAdmission*> admissions;
+  std::map<RowVersionKey, const idx::CoveringIndexPayloadAdmission*> admissions;
   for (const auto* admission : request.admissions) {
     if (admission == nullptr) {
       return FailCovering("covering_payload_missing");
     }
+    if (admission->record.row_uuid.kind !=
+            scratchbird::core::platform::UuidKind::row ||
+        admission->record.version_uuid.kind !=
+            scratchbird::core::platform::UuidKind::row ||
+        !uuid::IsEngineIdentityUuid(admission->record.row_uuid.value) ||
+        !uuid::IsEngineIdentityUuid(admission->record.version_uuid.value)) {
+      return FailCovering("physical_row_version_binding_required");
+    }
     const auto key =
-        BindingKey(UuidText(admission->record.row_uuid),
-                   UuidText(admission->record.version_uuid));
+        BindingKey(admission->record.row_uuid.value,
+                   admission->record.version_uuid.value);
     const auto inserted = admissions.emplace(key, admission);
     if (!inserted.second) {
       return FailCovering("covering_payload_duplicate");
@@ -691,9 +696,7 @@ CoveringProjectionOnlyScanResult ExecuteCoveringProjectionOnlyScan(
                            admission->evidence.begin(),
                            admission->evidence.end());
     result.evidence.push_back("irc061.covering.stream_row=" +
-                              std::to_string(ordinal) + ":" +
-                              locator.row_uuid + ":" +
-                              locator.version_uuid);
+                              std::to_string(ordinal));
     result.rows.push_back(std::move(row));
     admissions.erase(found);
   }

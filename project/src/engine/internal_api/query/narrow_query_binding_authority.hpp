@@ -29,7 +29,7 @@ struct MgaRelationStorageDescriptor;
 // identity retained by this provider.
 
 struct EngineNarrowQueryResourceGrantV1 {
-  EngineUuid grant_receipt_uuid;
+  scratchbird::wire::TypedResultUuid grant_receipt_uuid{};
   std::uint64_t grant_generation = 0;
   std::uint64_t maximum_source_rows_per_occurrence = 0;
   std::uint64_t maximum_cumulative_source_rows = 0;
@@ -139,6 +139,8 @@ class EngineNarrowQueryBindingAuthorityHandleV1 final {
       const EngineRequestContext&);
   friend EngineApiDiagnostic ReleaseNarrowQueryBindingAuthorityV1(
       EngineNarrowQueryBindingAuthorityHandleV1*);
+  friend void ReleaseNarrowQueryBindingAuthorityNoAllocV1(
+      EngineNarrowQueryBindingAuthorityHandleV1*) noexcept;
 };
 
 struct EngineNarrowQueryBindingAuthorityConsumeRequestV1 {
@@ -168,7 +170,15 @@ bool CopyNarrowQueryBindingAuthoritySnapshotV1(
     EngineNarrowQueryBindingAuthoritySnapshotV1* snapshot,
     EngineApiDiagnostic* diagnostic);
 
+enum class EngineNarrowQueryTypedResultResourceGrantRetentionStatusV1 {
+  refused,
+  retained,
+  resource_exhausted
+};
+
 struct EngineNarrowQueryTypedResultResourceGrantRetentionResultV1 {
+  EngineNarrowQueryTypedResultResourceGrantRetentionStatusV1 status =
+      EngineNarrowQueryTypedResultResourceGrantRetentionStatusV1::refused;
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   scratchbird::wire::TypedResultUuid grant_receipt_uuid{};
@@ -179,6 +189,8 @@ struct EngineNarrowQueryTypedResultResourceGrantRetentionResultV1 {
 
 // Consumer-only, retain-once adapter from the exact consumed binding grant to
 // the typed-result producer's private resource-grant handle.
+// Allocation failure leaves the retain-once state unchanged and returns
+// resource_exhausted; rich diagnostic strings may be empty under pressure.
 EngineNarrowQueryTypedResultResourceGrantRetentionResultV1
 RetainNarrowQueryTypedResultResourceGrantReceiptV1(
     const EngineNarrowQueryBindingAuthorityHandleV1& handle,
@@ -248,6 +260,11 @@ RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
 
 EngineApiDiagnostic ReleaseNarrowQueryBindingAuthorityV1(
     EngineNarrowQueryBindingAuthorityHandleV1* handle);
+
+// Actual idempotent registry/handle teardown for forced source destruction.
+// The owning execution must be quiescent; no diagnostics are allocated.
+void ReleaseNarrowQueryBindingAuthorityNoAllocV1(
+    EngineNarrowQueryBindingAuthorityHandleV1* handle) noexcept;
 
 // Session/receipt loss revokes an issued but unpublished binding without
 // decoding any parser bytes.  Missing and already-released receipts are

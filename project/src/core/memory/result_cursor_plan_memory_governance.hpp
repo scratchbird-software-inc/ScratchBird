@@ -72,20 +72,26 @@ struct ResultCursorPlanMemoryEpochs {
   u64 memory_policy_epoch = 0;
 };
 
+using ResultCursorPlanMemoryUuid = scratchbird::core::platform::Uuid;
+static_assert(sizeof(ResultCursorPlanMemoryUuid) == 16);
+
 struct ResultCursorPlanMemoryScope {
-  std::string database_id;
-  std::string tenant_id;
-  std::string user_id;
-  std::string role_id;
-  std::string session_id;
-  std::string connection_id;
-  std::string transaction_id;
-  std::string statement_id;
-  std::string query_id;
-  std::string cursor_id;
+  ResultCursorPlanMemoryUuid process_id;
+  ResultCursorPlanMemoryUuid plan_cache_entry_id;
+  ResultCursorPlanMemoryUuid database_id;
+  ResultCursorPlanMemoryUuid tenant_id;
+  ResultCursorPlanMemoryUuid user_id;
+  ResultCursorPlanMemoryUuid role_id;
+  ResultCursorPlanMemoryUuid session_id;
+  ResultCursorPlanMemoryUuid connection_id;
+  ResultCursorPlanMemoryUuid transaction_id;
+  ResultCursorPlanMemoryUuid statement_id;
+  ResultCursorPlanMemoryUuid query_id;
+  ResultCursorPlanMemoryUuid cursor_id;
+  // Content metadata only; ownership and limits use plan_cache_entry_id.
   std::string plan_cache_key;
-  std::string prepared_statement_id;
-  std::string descriptor_snapshot_id;
+  ResultCursorPlanMemoryUuid prepared_statement_id;
+  ResultCursorPlanMemoryUuid descriptor_snapshot_id;
 };
 
 struct ResultCursorPlanMemoryPolicy {
@@ -107,6 +113,8 @@ struct ResultCursorPlanMemoryPolicy {
   u64 max_prepared_statement_bytes_per_session = 4u * 1024u * 1024u;
   u64 max_descriptor_snapshot_bytes_per_database = 16u * 1024u * 1024u;
   u64 max_descriptor_snapshot_bytes_per_session = 2u * 1024u * 1024u;
+  // V1 requires both. Requests attempting to disable either are refused;
+  // these policy fields cannot authorize unversioned or unbacked leases.
   bool require_epoch_evidence = true;
   bool require_ledger_reservation = true;
   bool cluster_surfaces_external_only = true;
@@ -123,7 +131,7 @@ struct ResultCursorPlanMemoryLeaseRequest {
   HierarchicalMemoryBudgetProvenance provenance;
   MemoryCategory category = MemoryCategory::executor_query_reserved;
   std::string memory_class = "ceic_020.result_cursor_plan";
-  std::string owner_id;
+  ResultCursorPlanMemoryUuid owner_id;
   std::string route_label;
   u64 requested_bytes = 0;
   u64 lease_expires_at_ms = 0;
@@ -135,7 +143,7 @@ struct ResultCursorPlanMemoryLeaseRequest {
 };
 
 struct ResultCursorPlanMemoryLeaseRecord {
-  std::string lease_id;
+  ResultCursorPlanMemoryUuid lease_id;
   ResultCursorPlanMemorySurface surface =
       ResultCursorPlanMemorySurface::streaming_result;
   ResultCursorPlanMemoryScope scope;
@@ -145,7 +153,7 @@ struct ResultCursorPlanMemoryLeaseRecord {
   u64 reserved_bytes = 0;
   u64 acquired_sequence = 0;
   std::string memory_class;
-  std::string owner_id;
+  ResultCursorPlanMemoryUuid owner_id;
   std::string route_label;
   u64 lease_expires_at_ms = 0;
   bool active = false;
@@ -159,7 +167,9 @@ struct ResultCursorPlanMemoryDecision {
   bool accepted = false;
   bool backpressure_required = false;
   bool forced_close_required = false;
-  std::string lease_id;
+  ResultCursorPlanMemoryUuid lease_id;
+  // Appended only after the corresponding real lease is successfully retired.
+  std::vector<ResultCursorPlanMemoryUuid> released_lease_ids;
   ResultCursorPlanMemoryReleaseReason release_reason =
       ResultCursorPlanMemoryReleaseReason::explicit_release;
   u64 released_lease_count = 0;
@@ -172,6 +182,7 @@ struct ResultCursorPlanMemoryDecision {
 };
 
 struct ResultCursorPlanMemorySnapshot {
+  u64 quota_counter_count = 0;
   u64 active_lease_count = 0;
   u64 active_bytes = 0;
   u64 result_frame_count = 0;
@@ -199,6 +210,8 @@ const char* ResultCursorPlanMemoryReleaseReasonName(
 class ResultCursorPlanMemoryGovernor {
  public:
   ResultCursorPlanMemoryGovernor() = default;
+  // Every supplied ledger must outlive this governor and its live leases.
+  ~ResultCursorPlanMemoryGovernor();
   ResultCursorPlanMemoryGovernor(const ResultCursorPlanMemoryGovernor&) = delete;
   ResultCursorPlanMemoryGovernor& operator=(
       const ResultCursorPlanMemoryGovernor&) = delete;
@@ -206,33 +219,36 @@ class ResultCursorPlanMemoryGovernor {
   ResultCursorPlanMemoryDecision Acquire(
       ResultCursorPlanMemoryLeaseRequest request);
   ResultCursorPlanMemoryDecision Release(
-      const std::string& lease_id,
+      const ResultCursorPlanMemoryUuid& lease_id,
       ResultCursorPlanMemoryReleaseReason reason);
+  // Actual owner teardown without diagnostic/evidence allocation. A stale
+  // handle is a typed refusal, not proof that this invocation released it.
+  Status ReleaseNoAlloc(const ResultCursorPlanMemoryUuid& lease_id);
   ResultCursorPlanMemoryDecision ReleaseByCursor(
-      const std::string& cursor_id,
+      const ResultCursorPlanMemoryUuid& cursor_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision ReleaseResultFramesByCursor(
-      const std::string& cursor_id,
+      const ResultCursorPlanMemoryUuid& cursor_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision ReleaseBySession(
-      const std::string& session_id,
+      const ResultCursorPlanMemoryUuid& session_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision ReleaseByConnection(
-      const std::string& connection_id,
+      const ResultCursorPlanMemoryUuid& connection_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision ReleaseByQuery(
-      const std::string& query_id,
+      const ResultCursorPlanMemoryUuid& query_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision ReleaseByTransaction(
-      const std::string& transaction_id,
+      const ResultCursorPlanMemoryUuid& transaction_id,
       ResultCursorPlanMemoryReleaseReason reason);
   ResultCursorPlanMemoryDecision InvalidateByEpoch(
       ResultCursorPlanMemoryEpochs current_epochs);
   ResultCursorPlanMemoryDecision ShrinkPlanCache(
-      const std::string& database_id,
+      const ResultCursorPlanMemoryUuid& database_id,
       u64 target_bytes);
   ResultCursorPlanMemoryDecision ForceCloseCursorUnderPressure(
-      const std::string& cursor_id);
+      const ResultCursorPlanMemoryUuid& cursor_id);
   ResultCursorPlanMemoryDecision CleanupExpiredLeases(u64 now_ms);
   ResultCursorPlanMemorySnapshot Snapshot() const;
 
@@ -243,18 +259,37 @@ class ResultCursorPlanMemoryGovernor {
     u64 frames = 0;
   };
 
-  void AddCountersLocked(const ResultCursorPlanMemoryLeaseRecord& record);
-  void RemoveCountersLocked(const ResultCursorPlanMemoryLeaseRecord& record);
+  struct CounterKey {
+    ResultCursorPlanMemorySurface surface;
+    std::string dimension;  // Internal fixed dimension tag, never an owner.
+    ResultCursorPlanMemoryUuid owner;
+    bool operator<(const CounterKey& other) const {
+      if (surface != other.surface) return surface < other.surface;
+      if (dimension != other.dimension) return dimension < other.dimension;
+      return owner < other.owner;
+    }
+  };
+  struct OwnedLease : ResultCursorPlanMemoryLeaseRecord {
+    std::vector<CounterKey> counter_keys;
+  };
+  using LeaseMap = std::map<ResultCursorPlanMemoryUuid, OwnedLease>;
+  bool PrepareCountersLocked(OwnedLease& record);
+  void AddCountersLocked(const OwnedLease& record);
+  void RemoveCountersLocked(const OwnedLease& record);
+  ResultCursorPlanMemoryDecision DrainLocked(
+      const std::vector<LeaseMap::iterator>& selected,
+      ResultCursorPlanMemoryDecision aggregate);
   Counter CounterForLocked(ResultCursorPlanMemorySurface surface,
                            const std::string& dimension,
-                           const std::string& value) const;
+                           const ResultCursorPlanMemoryUuid& value) const;
   std::vector<HierarchicalMemoryScopeRef> BuildScopeChain(
       const ResultCursorPlanMemoryLeaseRequest& request) const;
 
   mutable std::mutex mutex_;
-  std::map<std::string, ResultCursorPlanMemoryLeaseRecord> leases_;
-  std::map<std::string, Counter> counters_;
+  LeaseMap leases_;
+  std::map<CounterKey, Counter> counters_;
   u64 next_sequence_ = 1;
+  u64 active_bytes_ = 0;
   u64 backpressure_count_ = 0;
   u64 forced_close_count_ = 0;
   u64 release_count_ = 0;

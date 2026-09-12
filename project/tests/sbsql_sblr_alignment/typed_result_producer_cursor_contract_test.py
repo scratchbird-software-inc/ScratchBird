@@ -104,7 +104,7 @@ class ProducerCursorOracle:
         if not self.statement_receipt_live or not self.snapshot_live:
             return self._refuse("MGA.TRANSACTION.STALE", revoke=True)
         if not self.descriptor_live:
-            return self._refuse("DATATYPE.DESCRIPTOR_INVALID", revoke=True)
+            return self._refuse("DATATYPE.DESCRIPTOR.INVALID", revoke=True)
         if (
             request.cursor_uuid != self.cursor_uuid
             or request.carrier_generation != self.carrier_generation
@@ -176,7 +176,7 @@ class ProducerCursorOracle:
             self.position = old_position
             self.next_batch_ordinal = old_ordinal
             self.state = "open"
-            return PullResult(False, "DATATYPE.DESCRIPTOR_INVALID")
+            return PullResult(False, "DATATYPE.DESCRIPTOR.INVALID")
 
         # This is the sole publication barrier in the independent model.
         self.position = old_position + outcome.row_count
@@ -326,7 +326,7 @@ def bounded_pull_and_atomicity() -> None:
     )
     require(
         not malformed.ok
-        and malformed.diagnostic == "DATATYPE.DESCRIPTOR_INVALID"
+        and malformed.diagnostic == "DATATYPE.DESCRIPTOR.INVALID"
         and cursor.position == 2
         and cursor.next_batch_ordinal == 1
         and cursor.state == "open",
@@ -453,7 +453,7 @@ def immutable_authority_refusals() -> None:
     result = stale_descriptor.pull(PullRequest(), ProducerOutcome("empty_open"))
     require(
         not result.ok
-        and result.diagnostic == "DATATYPE.DESCRIPTOR_INVALID"
+        and result.diagnostic == "DATATYPE.DESCRIPTOR.INVALID"
         and stale_descriptor.state == "revoked"
         and stale_descriptor.release_count == 1,
         "stale descriptor did not revoke the producer carrier",

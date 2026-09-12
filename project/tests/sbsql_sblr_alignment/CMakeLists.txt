@@ -10,6 +10,864 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+# Canonical outer layout coverage does not establish endpoint admission.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
+  add_executable(sbsql_sblr_alignment_cte_clause_structure cte_clause_structure_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cte_clause_structure PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_cte_clause_structure PRIVATE sbl_sbsql_parser_pipeline)
+  add_test(NAME sbsql_sblr_alignment_cte_clause_structure
+    COMMAND sbsql_sblr_alignment_cte_clause_structure)
+  set_tests_properties(sbsql_sblr_alignment_cte_clause_structure PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-04;parser_component;not_runtime_acceptance"
+    TIMEOUT 60)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_fairness_grant_ownership fairness_grant_ownership_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_fairness_grant_ownership PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_fairness_grant_ownership PRIVATE sb_core_memory Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_fairness_grant_ownership COMMAND sbsql_sblr_alignment_fairness_grant_ownership)
+  set_tests_properties(sbsql_sblr_alignment_fairness_grant_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;memory;fairness;allocation_failure;ownership;concurrency" TIMEOUT 180)
+  add_executable(sbsql_sblr_alignment_query_result_values
+    query_result_values_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_query_result_values PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_query_result_values PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_query_result_values
+    COMMAND sbsql_sblr_alignment_query_result_values)
+  set_tests_properties(sbsql_sblr_alignment_query_result_values PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-06;component_regression;binary_result_values;not_runtime_acceptance"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_native_descriptor_authority
+    native_descriptor_authority_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_descriptor_authority PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_descriptor_authority PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker
+    ${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc)
+  target_link_libraries(sbsql_sblr_alignment_native_descriptor_authority PRIVATE sb_core_datatypes)
+  add_test(NAME sbsql_sblr_alignment_native_descriptor_authority
+    COMMAND sbsql_sblr_alignment_native_descriptor_authority)
+  set_tests_properties(sbsql_sblr_alignment_native_descriptor_authority PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-04;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_query_result_metadata
+    query_result_metadata_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_query_result_metadata PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_query_result_metadata PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_query_result_metadata
+    COMMAND sbsql_sblr_alignment_query_result_metadata)
+  set_tests_properties(sbsql_sblr_alignment_query_result_metadata PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-06;component_regression;binary_result_schema;not_runtime_acceptance"
+    TIMEOUT 60)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_executable(sbsql_sblr_alignment_diagnostic_json_producer
+    diagnostic_json_roundtrip_producer.cpp)
+  target_compile_features(sbsql_sblr_alignment_diagnostic_json_producer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_diagnostic_json_producer PRIVATE sb_server_core)
+  add_test(NAME sbsql_sblr_alignment_diagnostic_json_roundtrip
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/diagnostic_json_roundtrip_test.py
+      --producer $<TARGET_FILE:sbsql_sblr_alignment_diagnostic_json_producer>)
+  set_tests_properties(sbsql_sblr_alignment_diagnostic_json_roundtrip PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;independent_json_oracle"
+    TIMEOUT 90)
+  if(NOT TARGET sb_server_legacy_diagnostic_rendering)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
+                     ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
+  endif()
+  add_executable(sbsql_sblr_alignment_legacy_rendering_probe
+    ../../tools/sb_sbsql_v3_diagnostic_rendering_probe/main.cpp)
+  target_link_libraries(sbsql_sblr_alignment_legacy_rendering_probe PRIVATE
+    sb_server_legacy_diagnostic_rendering)
+  add_executable(sbsql_sblr_alignment_legacy_rendering_attestation
+    legacy_rendering_attestation_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_legacy_rendering_attestation PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_legacy_rendering_attestation PRIVATE
+    sb_server_legacy_diagnostic_rendering)
+  add_test(NAME sbsql_sblr_alignment_legacy_rendering_attestation
+    COMMAND sbsql_sblr_alignment_legacy_rendering_attestation)
+  set_tests_properties(sbsql_sblr_alignment_legacy_rendering_attestation PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;not_runtime_acceptance")
+  add_test(NAME sbsql_sblr_alignment_legacy_renderer_placement
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/legacy_renderer_placement_test.py
+      --source-root ${CMAKE_SOURCE_DIR}
+      --engine-archive $<TARGET_FILE:sb_engine_internal_api>
+      --renderer-archive $<TARGET_FILE:sb_server_legacy_diagnostic_rendering>
+      --nm ${CMAKE_NM})
+  set_tests_properties(sbsql_sblr_alignment_legacy_renderer_placement PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;binary_placement;not_runtime_acceptance")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_cow_diagnostic cow_diagnostic_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cow_diagnostic PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_cow_diagnostic PRIVATE
+    sb_transaction_mga sb_core_diagnostic_catalog)
+  add_test(NAME sbsql_sblr_alignment_cow_diagnostic COMMAND sbsql_sblr_alignment_cow_diagnostic)
+  set_tests_properties(sbsql_sblr_alignment_cow_diagnostic PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;COW_diagnostics;binary_uuid"
+    TIMEOUT 60)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_cow_phase_transition cow_phase_transition_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cow_phase_transition PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_cow_phase_transition PRIVATE sb_transaction_mga)
+  add_test(NAME sbsql_sblr_alignment_cow_phase_transition COMMAND sbsql_sblr_alignment_cow_phase_transition)
+  set_tests_properties(sbsql_sblr_alignment_cow_phase_transition PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;COW_publication_barrier"
+    TIMEOUT 60)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(OpenSSL REQUIRED)
+  add_executable(sbsql_sblr_alignment_native_common_page_header native_common_page_header_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_common_page_header PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_common_page_header PRIVATE sb_storage_disk)
+  target_link_options(sbsql_sblr_alignment_native_common_page_header PRIVATE "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_native_common_page_header COMMAND sbsql_sblr_alignment_native_common_page_header)
+  set_tests_properties(sbsql_sblr_alignment_native_common_page_header PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_disk OpenSSL::Crypto)
+  target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
+    "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+    "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
+  set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;binary_uuid;node_ownership"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_filespace_bootstrap filespace_bootstrap_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_filespace_bootstrap PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_filespace_bootstrap PRIVATE sb_storage_disk OpenSSL::Crypto)
+  target_link_options(sbsql_sblr_alignment_filespace_bootstrap PRIVATE
+    "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_filespace_bootstrap COMMAND sbsql_sblr_alignment_filespace_bootstrap)
+  set_tests_properties(sbsql_sblr_alignment_filespace_bootstrap PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_bootstrap;binary_uuid;node_ownership"
+    TIMEOUT 60)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_physical_mga_owned_device physical_mga_owned_device_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
+    sb_transaction_mga sb_storage_database sb_core_uuid)
+  target_link_options(sbsql_sblr_alignment_physical_mga_owned_device PRIVATE
+    "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+  add_test(NAME sbsql_sblr_alignment_physical_mga_owned_device COMMAND sbsql_sblr_alignment_physical_mga_owned_device)
+  set_tests_properties(sbsql_sblr_alignment_physical_mga_owned_device PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-07;component_regression;physical_MGA;node_ownership"
+    TIMEOUT 60)
+endif()
+if(UNIX)
+  add_executable(sbsql_sblr_alignment_table_content_generation table_content_generation_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_table_content_generation PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_table_content_generation PRIVATE
+    sb_transaction_mga sb_storage_database sb_core_uuid)
+  add_test(NAME sbsql_sblr_alignment_table_content_generation COMMAND sbsql_sblr_alignment_table_content_generation)
+  set_tests_properties(sbsql_sblr_alignment_table_content_generation PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-07;component_regression;content_generation;binary_uuid;MGA_visibility"
+    TIMEOUT 60)
+endif()
+if(UNIX)
+  add_executable(sbsql_sblr_alignment_security_event_store
+    ${PROJECT_SOURCE_DIR}/tests/database_lifecycle/database_local_security_event_store_conformance.cpp)
+  target_compile_features(sbsql_sblr_alignment_security_event_store PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_security_event_store PRIVATE
+    sb_core_uuid sb_engine_internal_api sb_storage_database sb_storage_disk
+    sb_storage_page sb_transaction_mga)
+  add_test(NAME sbsql_sblr_alignment_security_event_store
+    COMMAND sbsql_sblr_alignment_security_event_store)
+  set_tests_properties(sbsql_sblr_alignment_security_event_store PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;security;node_ownership;real_storage;recovery"
+    TIMEOUT 120)
+endif()
+
+if(NOT TARGET sb_core_diagnostic_catalog)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/core/diagnostics
+                   ${CMAKE_CURRENT_BINARY_DIR}/core_diagnostics)
+endif()
+add_executable(sbsql_sblr_alignment_canonical_diagnostic_catalog canonical_diagnostic_catalog_test.cpp)
+target_compile_features(sbsql_sblr_alignment_canonical_diagnostic_catalog PRIVATE cxx_std_17)
+target_link_libraries(sbsql_sblr_alignment_canonical_diagnostic_catalog PRIVATE sb_core_diagnostic_catalog)
+add_test(NAME sbsql_sblr_alignment_canonical_diagnostic_catalog
+  COMMAND sbsql_sblr_alignment_canonical_diagnostic_catalog)
+set_tests_properties(sbsql_sblr_alignment_canonical_diagnostic_catalog PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;diagnostic_registry;metadata;no_allocation")
+
+add_executable(sbsql_sblr_alignment_diagnostic_identity_projection diagnostic_identity_projection_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_diagnostic_identity_projection PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_diagnostic_identity_projection PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_diagnostic_identity_projection PRIVATE sb_sblr_parameter_wire_codec)
+add_test(NAME sbsql_sblr_alignment_diagnostic_identity_projection COMMAND sbsql_sblr_alignment_diagnostic_identity_projection)
+set_tests_properties(sbsql_sblr_alignment_diagnostic_identity_projection PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;diagnostic_registry;binary_uuid;malformed_input")
+
+add_executable(sbsql_sblr_alignment_diagnostic_identity_registry diagnostic_identity_registry_test.cpp)
+target_compile_features(sbsql_sblr_alignment_diagnostic_identity_registry PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_diagnostic_identity_registry PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_diagnostic_identity_registry PRIVATE sb_engine_internal_api sb_core_diagnostic_catalog sb_sblr_parameter_wire_codec sb_core_uuid Threads::Threads)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(sbsql_sblr_alignment_diagnostic_identity_registry PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync)
+endif()
+add_test(NAME sbsql_sblr_alignment_diagnostic_identity_registry COMMAND sbsql_sblr_alignment_diagnostic_identity_registry)
+set_tests_properties(sbsql_sblr_alignment_diagnostic_identity_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;diagnostic_registry;binary_uuid;recovery;concurrency" TIMEOUT 180)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_embedded_disconnect_disabled embedded_disconnect_conformance.cpp)
+  target_compile_features(sbsql_sblr_alignment_embedded_disconnect_disabled PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_embedded_disconnect_disabled PRIVATE sbl_sbsql_parser_worker_core)
+  add_test(NAME sbsql_sblr_alignment_embedded_disconnect_disabled
+    COMMAND sbsql_sblr_alignment_embedded_disconnect_disabled)
+  set_tests_properties(sbsql_sblr_alignment_embedded_disconnect_disabled PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;embedded;disconnect" TIMEOUT 60)
+  function(sbsql_sblr_alignment_register_embedded_disconnect_enabled)
+    if(TARGET sbl_sbsql_embedded_client_bridge)
+      add_executable(sbsql_sblr_alignment_embedded_disconnect_enabled
+        ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment/embedded_disconnect_conformance.cpp)
+      target_compile_features(sbsql_sblr_alignment_embedded_disconnect_enabled PRIVATE cxx_std_23)
+      target_link_libraries(sbsql_sblr_alignment_embedded_disconnect_enabled PRIVATE
+        sbl_sbsql_embedded_client_bridge sb_storage_database sb_transaction_mga)
+      add_test(NAME sbsql_sblr_alignment_embedded_disconnect_enabled
+        COMMAND sbsql_sblr_alignment_embedded_disconnect_enabled)
+      set_tests_properties(sbsql_sblr_alignment_embedded_disconnect_enabled PROPERTIES
+        LABELS "sbsql_sblr_alignment;IA-01;component_regression;embedded;disconnect;fault;recovery" TIMEOUT 90)
+    endif()
+  endfunction()
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL sbsql_sblr_alignment_register_embedded_disconnect_enabled)
+  add_executable(sbsql_sblr_alignment_temporary_disconnect_cleanup
+    ${PROJECT_SOURCE_DIR}/tests/database_lifecycle/detach_cleanup_conformance.cpp)
+  target_compile_features(sbsql_sblr_alignment_temporary_disconnect_cleanup PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_temporary_disconnect_cleanup PRIVATE
+    sb_core_platform sb_core_uuid sb_server_core sb_server_event_notifications sb_engine_functions
+    sb_storage_database sb_storage_disk sb_storage_page sb_transaction_mga)
+  add_test(NAME sbsql_sblr_alignment_temporary_disconnect_cleanup
+    COMMAND sbsql_sblr_alignment_temporary_disconnect_cleanup --temporary-cleanup-failure)
+  set_tests_properties(sbsql_sblr_alignment_temporary_disconnect_cleanup PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;disconnect;fault;recovery"
+    TIMEOUT 60)
+  add_test(NAME sbsql_sblr_alignment_temporary_cleanup_identity
+    COMMAND sbsql_sblr_alignment_temporary_disconnect_cleanup --temporary-cleanup-identity)
+  set_tests_properties(sbsql_sblr_alignment_temporary_cleanup_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;disconnect;fault;recovery"
+    TIMEOUT 60)
+  add_test(NAME sbsql_sblr_alignment_metadata_cleanup_read_failure
+    COMMAND sbsql_sblr_alignment_temporary_disconnect_cleanup --metadata-read-failure)
+  set_tests_properties(sbsql_sblr_alignment_metadata_cleanup_read_failure PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;metadata;disconnect;fault;recovery"
+    TIMEOUT 60)
+  add_test(NAME sbsql_sblr_alignment_canonical_savepoint_mga_effects
+    COMMAND sbsql_sblr_alignment_temporary_disconnect_cleanup --canonical-savepoint-effects)
+  set_tests_properties(sbsql_sblr_alignment_canonical_savepoint_mga_effects PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;savepoint;real_storage"
+    TIMEOUT 60)
+endif()
+
+add_executable(sbsql_sblr_alignment_disconnect_payload_codec
+  disconnect_payload_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_disconnect_payload_codec PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_disconnect_payload_codec PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_disconnect_payload_codec PRIVATE sbl_parser_server_ipc_schema)
+add_test(NAME sbsql_sblr_alignment_disconnect_payload_codec
+  COMMAND sbsql_sblr_alignment_disconnect_payload_codec)
+set_tests_properties(sbsql_sblr_alignment_disconnect_payload_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;disconnect;binary_codec"
+  TIMEOUT 60)
+
+# Private reply validation is component evidence, not canonical1074 acceptance.
+add_executable(sbsql_sblr_alignment_disconnect_result_validation
+  disconnect_result_validation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_disconnect_result_validation PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_disconnect_result_validation PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME sbsql_sblr_alignment_disconnect_result_validation
+  COMMAND sbsql_sblr_alignment_disconnect_result_validation)
+set_tests_properties(sbsql_sblr_alignment_disconnect_result_validation PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;disconnect;exact_refusal"
+  TIMEOUT 60)
+
+# Binary-key contracts are component evidence, not public-process E2E coverage.
+add_executable(sbsql_sblr_alignment_catalog_name_envelope catalog_name_envelope_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_name_envelope PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_name_envelope PRIVATE sb_core_catalog sb_storage_page)
+add_test(NAME sbsql_sblr_alignment_catalog_name_envelope
+  COMMAND sbsql_sblr_alignment_catalog_name_envelope)
+set_tests_properties(sbsql_sblr_alignment_catalog_name_envelope PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid;catalog_codec"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_catalog_name_record_codec catalog_name_record_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_name_record_codec PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_name_record_codec PRIVATE sb_core_catalog)
+add_test(NAME sbsql_sblr_alignment_catalog_name_record_codec
+  COMMAND sbsql_sblr_alignment_catalog_name_record_codec)
+set_tests_properties(sbsql_sblr_alignment_catalog_name_record_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid;catalog_codec"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_secondary_index_merge_admission
+  ../database_lifecycle/dpc_secondary_index_delta_merge_agent_gate.cpp)
+target_compile_features(sbsql_sblr_alignment_secondary_index_merge_admission PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_secondary_index_merge_admission PRIVATE
+  sb_core_index sb_core_uuid sb_core_memory sb_engine_internal_api sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_secondary_index_merge_admission
+  COMMAND sbsql_sblr_alignment_secondary_index_merge_admission)
+set_tests_properties(sbsql_sblr_alignment_secondary_index_merge_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-10;component_regression;real_storage;index_read_admission"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_secondary_index_ledger_read secondary_index_ledger_read_test.cpp)
+target_compile_features(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_secondary_index_ledger_read COMMAND sbsql_sblr_alignment_secondary_index_ledger_read)
+set_tests_properties(sbsql_sblr_alignment_secondary_index_ledger_read PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-10;component_regression;real_storage;index_read_admission" TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_resource_record catalog_resource_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_resource_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_resource_record PRIVATE sb_core_catalog)
+add_test(NAME sbsql_sblr_alignment_catalog_resource_record COMMAND sbsql_sblr_alignment_catalog_resource_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_resource_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;catalog_payload;binary_uuid" TIMEOUT 60)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_server_uuid_emission server_uuid_emission_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_server_uuid_emission PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_server_uuid_emission PRIVATE sb_server_core)
+  add_test(NAME sbsql_sblr_alignment_server_uuid_emission
+    COMMAND sbsql_sblr_alignment_server_uuid_emission)
+  set_tests_properties(sbsql_sblr_alignment_server_uuid_emission PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;concurrency;fork")
+endif()
+
+add_executable(sbsql_sblr_alignment_engine_diagnostic_snapshot engine_diagnostic_snapshot_test.cpp)
+add_executable(sbsql_sblr_alignment_diagnostic_source diagnostic_source_test.cpp)
+target_compile_features(sbsql_sblr_alignment_diagnostic_source PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_diagnostic_source PRIVATE
+  sb_engine_internal_api sb_core_diagnostic_catalog sb_transaction_mga)
+add_test(NAME sbsql_sblr_alignment_diagnostic_source
+  COMMAND sbsql_sblr_alignment_diagnostic_source)
+set_tests_properties(sbsql_sblr_alignment_diagnostic_source PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;COW_diagnostics;allocation_failure")
+target_compile_features(sbsql_sblr_alignment_engine_diagnostic_snapshot PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_engine_diagnostic_snapshot PRIVATE
+  ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_engine_diagnostic_snapshot PRIVATE sb_engine sb_server_core)
+add_test(NAME sbsql_sblr_alignment_engine_diagnostic_snapshot
+  COMMAND sbsql_sblr_alignment_engine_diagnostic_snapshot)
+set_tests_properties(sbsql_sblr_alignment_engine_diagnostic_snapshot PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;allocation_failure")
+
+add_executable(sbsql_sblr_alignment_diagnostic_occurrence_identity diagnostic_occurrence_identity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_diagnostic_occurrence_identity PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_diagnostic_occurrence_identity PRIVATE
+  ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_diagnostic_occurrence_identity PRIVATE
+  sb_core_uuid sb_server_core sb_engine_internal_api sb_sblr_operation_wire_codec Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_diagnostic_occurrence_identity
+  COMMAND sbsql_sblr_alignment_diagnostic_occurrence_identity)
+set_tests_properties(sbsql_sblr_alignment_diagnostic_occurrence_identity PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;concurrency")
+
+add_executable(sbsql_sblr_alignment_diagnostic_retry_preservation diagnostic_retry_preservation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_diagnostic_retry_preservation PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_diagnostic_retry_preservation PRIVATE
+  sb_server_core sb_core_diagnostic_catalog)
+add_test(NAME sbsql_sblr_alignment_diagnostic_retry_preservation
+  COMMAND sbsql_sblr_alignment_diagnostic_retry_preservation)
+set_tests_properties(sbsql_sblr_alignment_diagnostic_retry_preservation PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;message_vector;retry_preservation")
+
+add_executable(sbsql_sblr_alignment_message_vector_set_codec message_vector_set_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_message_vector_set_codec PRIVATE cxx_std_20)
+target_link_libraries(sbsql_sblr_alignment_message_vector_set_codec PRIVATE sb_wire_message_vector_set_codec)
+add_test(NAME sbsql_sblr_alignment_message_vector_set_codec
+  COMMAND sbsql_sblr_alignment_message_vector_set_codec)
+set_tests_properties(sbsql_sblr_alignment_message_vector_set_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;malformed;allocation_failure")
+
+add_executable(sbsql_sblr_alignment_message_vector_value_codec message_vector_value_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_message_vector_value_codec PRIVATE cxx_std_20)
+target_link_libraries(sbsql_sblr_alignment_message_vector_value_codec PRIVATE sb_wire_message_vector_value_codec)
+add_test(NAME sbsql_sblr_alignment_message_vector_value_codec
+  COMMAND sbsql_sblr_alignment_message_vector_value_codec)
+set_tests_properties(sbsql_sblr_alignment_message_vector_value_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;malformed;allocation_failure")
+
+add_executable(sbsql_sblr_alignment_resource_alias_admission resource_alias_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_resource_alias_admission PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_resource_alias_admission PRIVATE
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+target_link_libraries(sbsql_sblr_alignment_resource_alias_admission PRIVATE sb_core_resources)
+add_test(NAME sbsql_sblr_alignment_resource_alias_admission
+  COMMAND sbsql_sblr_alignment_resource_alias_admission)
+set_tests_properties(sbsql_sblr_alignment_resource_alias_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;resource_alias" TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_catalog_resource_seed
+  ${PROJECT_SOURCE_DIR}/tests/database_lifecycle/resource_seed_conformance.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_resource_seed PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_catalog_resource_seed PRIVATE
+  SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+target_link_libraries(sbsql_sblr_alignment_catalog_resource_seed PRIVATE
+  sb_core_catalog sb_core_platform sb_core_resources sb_core_uuid sb_engine_internal_api
+  sb_storage_database sb_storage_disk sb_storage_page sb_transaction_mga)
+add_test(NAME sbsql_sblr_alignment_catalog_resource_seed COMMAND sbsql_sblr_alignment_catalog_resource_seed)
+set_tests_properties(sbsql_sblr_alignment_catalog_resource_seed PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;catalog_payload;binary_uuid;real_storage;resource_seed" TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_value_codec catalog_value_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_value_codec PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_value_codec PRIVATE sb_core_catalog)
+add_test(NAME sbsql_sblr_alignment_catalog_value_codec
+  COMMAND sbsql_sblr_alignment_catalog_value_codec)
+set_tests_properties(sbsql_sblr_alignment_catalog_value_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid;catalog_codec"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_catalog_uuid_admission catalog_uuid_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_uuid_admission PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_uuid_admission PRIVATE sb_core_catalog sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_uuid_admission
+  COMMAND sbsql_sblr_alignment_catalog_uuid_admission)
+set_tests_properties(sbsql_sblr_alignment_catalog_uuid_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid;catalog_codec"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_uuid_kind_admission uuid_kind_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_uuid_kind_admission PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_uuid_kind_admission PRIVATE sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_uuid_kind_admission
+  COMMAND sbsql_sblr_alignment_uuid_kind_admission)
+set_tests_properties(sbsql_sblr_alignment_uuid_kind_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_descriptor_binary_uuid_authority
+  descriptor_binary_uuid_authority_test.cpp)
+target_compile_features(sbsql_sblr_alignment_descriptor_binary_uuid_authority PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_descriptor_binary_uuid_authority PRIVATE
+  sb_core_datatypes sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_descriptor_binary_uuid_authority
+  COMMAND sbsql_sblr_alignment_descriptor_binary_uuid_authority)
+set_tests_properties(sbsql_sblr_alignment_descriptor_binary_uuid_authority PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_execution_descriptor_regression
+  ${CMAKE_SOURCE_DIR}/tests/database_lifecycle/execution_type_descriptor_conformance.cpp)
+target_compile_features(sbsql_sblr_alignment_execution_descriptor_regression PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_execution_descriptor_regression PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_execution_descriptor_regression
+  COMMAND sbsql_sblr_alignment_execution_descriptor_regression)
+set_tests_properties(sbsql_sblr_alignment_execution_descriptor_regression PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;execution_type_descriptor"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_transaction_binary_publication
+  ../fault_injection/transaction_inventory_publish_fault_conformance.cpp)
+target_compile_features(sbsql_sblr_alignment_transaction_binary_publication PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_transaction_binary_publication PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_transaction_binary_publication
+  COMMAND sbsql_sblr_alignment_transaction_binary_publication)
+set_tests_properties(sbsql_sblr_alignment_transaction_binary_publication PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;transaction_inventory;crash_recovery"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_database_record catalog_database_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_database_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_database_record PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_database_record
+  COMMAND sbsql_sblr_alignment_catalog_database_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_database_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_filespace_record catalog_filespace_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_filespace_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_filespace_record PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_filespace_record
+  COMMAND sbsql_sblr_alignment_catalog_filespace_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_filespace_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_schema_record catalog_schema_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_schema_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_schema_record PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_schema_record
+  COMMAND sbsql_sblr_alignment_catalog_schema_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_schema_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_localized_record catalog_localized_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_localized_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_localized_record PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_localized_record
+  COMMAND sbsql_sblr_alignment_catalog_localized_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_localized_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_read_failure catalog_read_failure_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_read_failure PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_read_failure PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_catalog_read_failure
+  COMMAND sbsql_sblr_alignment_catalog_read_failure)
+set_tests_properties(sbsql_sblr_alignment_catalog_read_failure PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;catalog_read_failure"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_schema_tree_read_failure schema_tree_read_failure_test.cpp)
+target_compile_features(sbsql_sblr_alignment_schema_tree_read_failure PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_schema_tree_read_failure PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_schema_tree_read_failure
+  COMMAND sbsql_sblr_alignment_schema_tree_read_failure)
+set_tests_properties(sbsql_sblr_alignment_schema_tree_read_failure PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;schema_tree_read_failure"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_name_registry_read_failure name_registry_read_failure_test.cpp)
+target_compile_features(sbsql_sblr_alignment_name_registry_read_failure PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_name_registry_read_failure PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_name_registry_read_failure
+  COMMAND sbsql_sblr_alignment_name_registry_read_failure)
+set_tests_properties(sbsql_sblr_alignment_name_registry_read_failure PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;component_regression;name_registry_read_failure"
+  TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_uuid_binary_key uuid_binary_key_test.cpp)
+target_sources(sbsql_sblr_alignment_uuid_binary_key PRIVATE
+  ../../src/engine/executor/canonical_aggregate_registry.cpp)
+target_compile_features(sbsql_sblr_alignment_uuid_binary_key PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_uuid_binary_key PRIVATE
+  sb_core_uuid sb_core_datatypes sb_engine_typed_scalar_descriptor_contract)
+add_test(NAME sbsql_sblr_alignment_uuid_binary_key COMMAND sbsql_sblr_alignment_uuid_binary_key)
+set_tests_properties(sbsql_sblr_alignment_uuid_binary_key PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;contract;component_regression;binary_uuid"
+  TIMEOUT 60)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Exercise the actual private spill codec in its owning translation unit.
+  # Discard unrelated executor entrypoints; this is not linked-engine or E2E
+  # qualification and must not substitute for the production executor target.
+  add_executable(sbsql_sblr_alignment_aggregate_state_binary_identity
+    aggregate_state_binary_identity_test.cpp
+    ../../src/engine/executor/join_executor.cpp
+    ../../src/engine/executor/descriptor_value_runtime.cpp
+    ../../src/engine/executor/sort_limit_executor.cpp
+    ../../src/engine/executor/canonical_aggregate_registry.cpp)
+  target_compile_features(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE
+    -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_aggregate_state_binary_identity PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_aggregate_state_binary_identity
+    COMMAND sbsql_sblr_alignment_aggregate_state_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_aggregate_state_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-02;component_regression;binary_uuid;spill_codec;not_runtime_acceptance"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_physical_dispatch_binary_accounting
+    physical_dispatch_binary_accounting_test.cpp
+    filter_default_binary_authority_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_physical_dispatch_binary_accounting PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_physical_dispatch_binary_accounting
+    COMMAND sbsql_sblr_alignment_physical_dispatch_binary_accounting)
+  set_tests_properties(sbsql_sblr_alignment_physical_dispatch_binary_accounting PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;physical_accounting;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
+  # Actual selected scan, physical B-tree lookup and MGA validation; controlled
+  # resolver inputs are component coverage, not live transaction/IPC acceptance.
+  add_executable(sbsql_sblr_alignment_scan_binary_identity
+    ../optimizer/qow_qry_004_access.cpp
+    ../../src/engine/executor/scan_executor.cpp
+    ../../src/engine/executor/indexed_physical_operator.cpp
+    ../../src/engine/executor/physical_node_dispatch.cpp)
+  target_compile_features(sbsql_sblr_alignment_scan_binary_identity PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_scan_binary_identity PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_scan_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_scan_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_scan_binary_identity PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_scan_binary_identity PRIVATE
+    sb_core_index sb_storage_page sb_core_uuid sb_core_platform sb_core_datatypes
+    sb_core_hash sb_core_metrics sbl_numeric sb_engine_typed_scalar_descriptor_contract
+    Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_scan_binary_identity
+    COMMAND sbsql_sblr_alignment_scan_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_scan_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;scan;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  foreach(scan_gate IN ITEMS indexed_physical_operator_integration late_materialization_covering_scan)
+    add_executable(sbsql_sblr_alignment_binary_${scan_gate}
+      ../performance/${scan_gate}_gate.cpp
+      ../../src/engine/executor/indexed_physical_operator.cpp
+      ../../src/engine/executor/late_materialization_covering_scan_runtime.cpp)
+    target_compile_features(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE cxx_std_23)
+    target_compile_options(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE
+      -ffunction-sections -fdata-sections)
+    target_include_directories(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE
+      $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE
+      $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+    target_link_options(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE -Wl,--gc-sections)
+    target_link_libraries(sbsql_sblr_alignment_binary_${scan_gate} PRIVATE
+      sb_core_index sb_storage_page sb_core_uuid sb_core_platform)
+    add_test(NAME sbsql_sblr_alignment_binary_${scan_gate}
+      COMMAND sbsql_sblr_alignment_binary_${scan_gate})
+    set_tests_properties(sbsql_sblr_alignment_binary_${scan_gate} PROPERTIES
+      LABELS "sbsql_sblr_alignment;binary_uuid;scan;component_regression;not_runtime_acceptance"
+      TIMEOUT 120)
+  endforeach()
+  add_executable(sbsql_sblr_alignment_result_envelope_binary_identity
+    ../sbsql_parser_worker/qow_qry_021.cpp
+    ../../src/engine/executor/result_envelope.cpp
+    ../../src/engine/executor/descriptor_value_runtime.cpp
+    ../../src/engine/executor/physical_node_dispatch.cpp)
+  target_compile_features(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_result_envelope_binary_identity PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_result_envelope_binary_identity
+    COMMAND sbsql_sblr_alignment_result_envelope_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_result_envelope_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;result_envelope;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_snapshot_cache_binary_payload
+    snapshot_cache_binary_payload_test.cpp
+    ../../src/engine/executor/snapshot_safe_result_cache.cpp
+    ../../src/engine/executor/descriptor_value_runtime.cpp
+    ../../src/engine/executor/physical_node_dispatch.cpp)
+  target_compile_features(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_snapshot_cache_binary_payload PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_snapshot_cache_binary_payload
+    COMMAND sbsql_sblr_alignment_snapshot_cache_binary_payload)
+  set_tests_properties(sbsql_sblr_alignment_snapshot_cache_binary_payload PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;result_cache;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  # Seven existing execution gates share the actual subquery/descriptor/MGA
+  # sources while the rest of the executor's binary migration is in progress.
+  add_executable(sbsql_sblr_alignment_full_statistics_binary_store
+    full_statistics_binary_store_test.cpp
+    ../../src/engine/optimizer/optimizer_statistics_full.cpp
+    ../../src/engine/optimizer/statistics_catalog.cpp)
+  target_compile_features(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE
+    ../../src/engine/planner)
+  target_link_libraries(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE sb_core_uuid)
+  add_test(NAME sbsql_sblr_alignment_full_statistics_binary_store
+    COMMAND sbsql_sblr_alignment_full_statistics_binary_store)
+  set_tests_properties(sbsql_sblr_alignment_full_statistics_binary_store PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_library(sbsql_sblr_alignment_access_statistics_component STATIC
+    ../../src/engine/optimizer/access_path.cpp
+    ../../src/engine/optimizer/statistics_catalog.cpp
+    ../../src/engine/optimizer/cost_model.cpp
+    ../../src/engine/optimizer/optimizer_cost_full.cpp
+    ../../src/engine/optimizer/optimizer_feedback.cpp
+    ../../src/engine/optimizer/selectivity_model.cpp
+    ../../src/engine/optimizer/cluster_candidate.cpp
+    ../../src/engine/optimizer/specialized_planner.cpp)
+  target_compile_features(sbsql_sblr_alignment_access_statistics_component PUBLIC cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_access_statistics_component PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_access_statistics_component PUBLIC
+    ../../src/engine/optimizer ../../src/engine/planner)
+  target_link_libraries(sbsql_sblr_alignment_access_statistics_component PUBLIC
+    sb_engine_plan_shapes sb_engine_nosql_provider_contract sb_core_uuid Threads::Threads)
+  add_executable(sbsql_sblr_alignment_access_statistics_binding access_statistics_binding_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_access_statistics_binding PRIVATE
+    sbsql_sblr_alignment_access_statistics_component)
+  target_link_options(sbsql_sblr_alignment_access_statistics_binding PRIVATE -Wl,--gc-sections)
+  add_test(NAME sbsql_sblr_alignment_access_statistics_binding
+    COMMAND sbsql_sblr_alignment_access_statistics_binding)
+  set_tests_properties(sbsql_sblr_alignment_access_statistics_binding PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_statistics_binary_target
+    statistics_binary_target_test.cpp
+    ../../src/engine/optimizer/statistics_catalog.cpp)
+  target_compile_features(sbsql_sblr_alignment_statistics_binary_target PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_statistics_binary_target PRIVATE
+    ../../src/engine/planner)
+  target_link_libraries(sbsql_sblr_alignment_statistics_binary_target PRIVATE sb_core_uuid)
+  add_test(NAME sbsql_sblr_alignment_statistics_binary_target
+    COMMAND sbsql_sblr_alignment_statistics_binary_target)
+  set_tests_properties(sbsql_sblr_alignment_statistics_binary_target PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_planner_binary_context
+    planner_binary_context_test.cpp
+    ../../src/engine/optimizer/optimizer_planning_context.cpp)
+  target_compile_features(sbsql_sblr_alignment_planner_binary_context PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_planner_binary_context PRIVATE
+    ../../src/engine/planner)
+  target_link_libraries(sbsql_sblr_alignment_planner_binary_context PRIVATE sb_engine_executor)
+  add_test(NAME sbsql_sblr_alignment_planner_binary_context
+    COMMAND sbsql_sblr_alignment_planner_binary_context)
+  set_tests_properties(sbsql_sblr_alignment_planner_binary_context PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_window_order_binding_receipt
+    window_order_binding_receipt_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_window_order_binding_receipt PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_window_order_binding_receipt PRIVATE sb_engine_executor)
+  add_test(NAME sbsql_sblr_alignment_window_order_binding_receipt
+    COMMAND sbsql_sblr_alignment_window_order_binding_receipt)
+  set_tests_properties(sbsql_sblr_alignment_window_order_binding_receipt PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;window;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  foreach(window_case IN ITEMS 003 004)
+    add_executable(sbsql_sblr_alignment_window_binary_${window_case}
+      ../sbsql_parser_worker/qow_win_${window_case}.cpp)
+    target_compile_features(sbsql_sblr_alignment_window_binary_${window_case} PRIVATE cxx_std_23)
+    target_link_libraries(sbsql_sblr_alignment_window_binary_${window_case} PRIVATE sb_engine_executor)
+    add_test(NAME sbsql_sblr_alignment_window_binary_${window_case}
+      COMMAND sbsql_sblr_alignment_window_binary_${window_case})
+    set_tests_properties(sbsql_sblr_alignment_window_binary_${window_case} PROPERTIES
+      LABELS "sbsql_sblr_alignment;binary_uuid;window;component_regression;not_runtime_acceptance"
+      TIMEOUT 120)
+  endforeach()
+  add_library(sbsql_sblr_alignment_subquery_component STATIC
+    ../../src/engine/executor/subquery_executor.cpp
+    ../../src/engine/executor/descriptor_value_runtime.cpp
+    ../../src/engine/executor/physical_node_dispatch.cpp)
+  target_compile_features(sbsql_sblr_alignment_subquery_component PUBLIC cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_subquery_component PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_subquery_component PUBLIC
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_subquery_component PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_libraries(sbsql_sblr_alignment_subquery_component PUBLIC
+    sb_core_uuid sb_core_platform sb_core_memory sb_core_datatypes sb_core_hash
+    sb_core_metrics sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  foreach(subquery_kind IN ITEMS table scalar row exists quantified correlated lateral)
+    add_executable(sbsql_sblr_alignment_subquery_binary_${subquery_kind}
+      ../sbsql_parser_worker/qow_qry_013_${subquery_kind}.cpp)
+    target_link_libraries(sbsql_sblr_alignment_subquery_binary_${subquery_kind} PRIVATE
+      sbsql_sblr_alignment_subquery_component)
+    target_link_options(sbsql_sblr_alignment_subquery_binary_${subquery_kind} PRIVATE -Wl,--gc-sections)
+    add_test(NAME sbsql_sblr_alignment_subquery_binary_${subquery_kind}
+      COMMAND sbsql_sblr_alignment_subquery_binary_${subquery_kind})
+    set_tests_properties(sbsql_sblr_alignment_subquery_binary_${subquery_kind} PROPERTIES
+      LABELS "sbsql_sblr_alignment;binary_uuid;subquery;component_regression;not_runtime_acceptance"
+      TIMEOUT 120)
+  endforeach()
+  add_executable(sbsql_sblr_alignment_prepared_descriptor_binary_digest
+    prepared_descriptor_binary_digest_test.cpp
+    ../../src/engine/executor/prepared_descriptor_digest.cpp)
+  target_compile_features(sbsql_sblr_alignment_prepared_descriptor_binary_digest PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_prepared_descriptor_binary_digest PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_prepared_descriptor_binary_digest PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_libraries(sbsql_sblr_alignment_prepared_descriptor_binary_digest PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics sbl_numeric Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_prepared_descriptor_binary_digest
+    COMMAND sbsql_sblr_alignment_prepared_descriptor_binary_digest)
+  set_tests_properties(sbsql_sblr_alignment_prepared_descriptor_binary_digest PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;prepared_descriptor;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
+  add_executable(sbsql_sblr_alignment_prepared_template_binary_authority
+    prepared_template_binary_authority_test.cpp
+    ../../src/engine/executor/prepared_execution_template.cpp
+    ../../src/engine/executor/prepared_descriptor_digest.cpp)
+  target_compile_features(sbsql_sblr_alignment_prepared_template_binary_authority PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_prepared_template_binary_authority PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_prepared_template_binary_authority PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_libraries(sbsql_sblr_alignment_prepared_template_binary_authority PRIVATE
+    sb_core_memory sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_prepared_template_binary_authority
+    COMMAND sbsql_sblr_alignment_prepared_template_binary_authority)
+  set_tests_properties(sbsql_sblr_alignment_prepared_template_binary_authority PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;prepared_metadata;allocation_failure;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_model_exchange_binary_identity
+    model_exchange_binary_identity_test.cpp
+    ../../src/engine/executor/model_family_exchange.cpp
+    ../../src/engine/optimizer/model_family_coordinator.cpp
+    ../../src/engine/executor/descriptor_value_runtime.cpp)
+  target_compile_features(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_include_directories(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,COMPILE_DEFINITIONS>)
+  target_link_options(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_model_exchange_binary_identity PRIVATE
+    sb_core_uuid sb_core_platform sb_core_datatypes sb_core_hash sb_core_metrics
+    sbl_numeric sb_engine_typed_scalar_descriptor_contract Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_model_exchange_binary_identity
+    COMMAND sbsql_sblr_alignment_model_exchange_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_model_exchange_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-02;component_regression;binary_uuid;model_exchange;not_runtime_acceptance"
+    TIMEOUT 60)
+endif()
+
+# Reuse the actual physical-page regression when the performance group is off.
+# Its page-image roundtrips are component checks, not disk recovery or SBsql E2E.
+add_executable(sbsql_sblr_alignment_uuid_btree_regression
+  ${CMAKE_SOURCE_DIR}/tests/performance/index_btree_physical_page_gate.cpp)
+target_compile_features(sbsql_sblr_alignment_uuid_btree_regression PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_uuid_btree_regression PRIVATE
+  sb_storage_page sb_core_index sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_uuid_btree_regression
+  COMMAND sbsql_sblr_alignment_uuid_btree_regression)
+set_tests_properties(sbsql_sblr_alignment_uuid_btree_regression PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;component_regression;binary_uuid;physical_btree"
+  TIMEOUT 120)
+
 # Process E2E fixtures use the same approved public database seeder as the
 # release gates. Keep the harness usable when the optional release test group
 # is disabled, without defining a duplicate target when it is enabled.
@@ -49,6 +907,184 @@ set_tests_properties(sbsql_sblr_alignment_ia01_shared_opcode_identity PROPERTIES
 
 add_executable(sbsql_sblr_alignment_cluster_root_gateway_stub
   ia01_cluster_root_gateway_stub_test.cpp)
+
+# Provider availability must never erase an engine-owned cluster requirement.
+# This is an actual dispatcher/stub boundary test, not successful query E2E.
+if(NOT SB_ENABLE_CLUSTER_PROVIDER)
+  add_executable(sbsql_sblr_alignment_source_map_companion_gateway
+    source_map_companion_gateway_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_source_map_companion_gateway PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_source_map_companion_gateway PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/server
+    ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_source_map_companion_gateway PRIVATE
+    sb_engine_sblr sb_server_sblr_local_gateway)
+  add_test(NAME sbsql_sblr_alignment_source_map_companion_gateway
+    COMMAND sbsql_sblr_alignment_source_map_companion_gateway)
+  set_tests_properties(sbsql_sblr_alignment_source_map_companion_gateway PROPERTIES
+    TIMEOUT 30 LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-01;SBLR_SOURCE_MAP;component_regression")
+  add_executable(sbsql_sblr_alignment_cluster_inspection_gateway
+    cluster_inspection_gateway_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cluster_inspection_gateway
+    PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_cluster_inspection_gateway PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/server ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_cluster_inspection_gateway
+    PRIVATE sb_engine_sblr sb_server_sblr_local_gateway)
+  add_test(NAME sbsql_sblr_alignment_cluster_inspection_gateway
+    COMMAND sbsql_sblr_alignment_cluster_inspection_gateway)
+  set_tests_properties(sbsql_sblr_alignment_cluster_inspection_gateway PROPERTIES
+    TIMEOUT 30
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;cluster_routing;cluster_not_enabled;IA-EXT-OPT")
+  # Reuse the real provider consumers in this focused configuration without
+  # enabling the entire release/lifecycle suites and their unrelated products.
+  add_library(sbsql_alignment_cluster_boundary_test_support STATIC
+    ${CMAKE_SOURCE_DIR}/src/core/agents/agent_cluster_boundary.cpp)
+  target_compile_features(sbsql_alignment_cluster_boundary_test_support
+    PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_alignment_cluster_boundary_test_support
+    PUBLIC sb_engine_sblr)
+  foreach(_cluster_compat_source IN ITEMS
+      ../release/public_cluster_provider_boundary_cleanup_gate.cpp
+      ../release/public_cluster_provider_handshake_gate.cpp
+      ../release/public_cluster_catalog_readiness_suite.cpp
+      ../agents/agent_cluster_route_api_provider_gate.cpp
+      ../agents/agent_management_authorization_policy_gate.cpp
+      ../agents/agent_zero_grey_output_contract_gate.cpp
+      ../database_lifecycle/agent_evidence_audit_redaction_retention_gate.cpp)
+    get_filename_component(_cluster_compat_name ${_cluster_compat_source} NAME_WE)
+    set(_cluster_compat_target sbsql_sblr_alignment_${_cluster_compat_name})
+    add_executable(${_cluster_compat_target} ${_cluster_compat_source})
+    target_compile_features(${_cluster_compat_target} PRIVATE cxx_std_23)
+    target_include_directories(${_cluster_compat_target} PRIVATE
+      ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src/server
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+    target_link_libraries(${_cluster_compat_target}
+      PRIVATE sbsql_alignment_cluster_boundary_test_support)
+    add_test(NAME ${_cluster_compat_target} COMMAND ${_cluster_compat_target})
+    set_tests_properties(${_cluster_compat_target} PROPERTIES TIMEOUT 60
+      LABELS "sbsql_sblr_alignment;standalone_cluster_compatibility;cluster_not_enabled;IA-EXT-OPT")
+    set(_cluster_stub_target ${_cluster_compat_target}_compile_link)
+    add_executable(${_cluster_stub_target} ${_cluster_compat_source}
+      ${CMAKE_SOURCE_DIR}/src/cluster_provider_stub/stub_cluster_provider.cpp)
+    target_compile_features(${_cluster_stub_target} PRIVATE cxx_std_23)
+    target_include_directories(${_cluster_stub_target} PRIVATE
+      ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src/server
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+    target_link_libraries(${_cluster_stub_target}
+      PRIVATE sbsql_alignment_cluster_boundary_test_support)
+    add_test(NAME ${_cluster_stub_target} COMMAND ${_cluster_stub_target})
+    set_tests_properties(${_cluster_stub_target} PROPERTIES TIMEOUT 60
+      LABELS "sbsql_sblr_alignment;compile_link_provider_component;IA-EXT-OPT")
+  endforeach()
+  function(sbsql_alignment_register_compile_link_parser_consumers)
+   if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core)
+    foreach(_cluster_parser_name IN ITEMS
+        sbsql_cluster_provider_conformance
+        sbsql_sblr_final_cleanup_b015_cluster_provider_route_conformance
+        sbsql_agent_command_surface_matrix_gate
+        agent_examples_evidence_payload_gate
+        sbsql_extension_boundary_abi_manifest_conformance)
+      set(_cluster_parser_target sbsql_sblr_alignment_${_cluster_parser_name}_compile_link)
+      add_executable(${_cluster_parser_target}
+        ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker/${_cluster_parser_name}.cpp
+        ${CMAKE_SOURCE_DIR}/src/cluster_provider_stub/stub_cluster_provider.cpp)
+      target_compile_features(${_cluster_parser_target} PRIVATE cxx_std_23)
+      target_compile_definitions(${_cluster_parser_target} PRIVATE
+        SCRATCHBIRD_PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+      target_include_directories(${_cluster_parser_target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/server)
+      target_link_libraries(${_cluster_parser_target} PRIVATE
+        sbl_sbsql_parser_pipeline sb_server_core sb_engine_sblr)
+      if(_cluster_parser_name STREQUAL "sbsql_extension_boundary_abi_manifest_conformance")
+        target_link_libraries(${_cluster_parser_target} PRIVATE
+          sbu_sbsql_parser_support sb_udr_runtime)
+      endif()
+      if(_cluster_parser_name STREQUAL "agent_examples_evidence_payload_gate")
+        add_test(NAME ${_cluster_parser_target} COMMAND ${_cluster_parser_target}
+          "${PROJECT_SOURCE_DIR}/../public_contract_snapshot"
+          "${PROJECT_SOURCE_DIR}/../docs/reference/management-ui/agent-examples-evidence-payload-pack.md")
+      else()
+        add_test(NAME ${_cluster_parser_target} COMMAND ${_cluster_parser_target})
+      endif()
+      set_tests_properties(${_cluster_parser_target} PROPERTIES TIMEOUT 60
+        LABELS "sbsql_sblr_alignment;compile_link_provider_component;IA-EXT-OPT")
+    endforeach()
+   endif()
+  endfunction()
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+    CALL sbsql_alignment_register_compile_link_parser_consumers)
+  add_executable(sbsql_sblr_alignment_standalone_cluster_refusal
+    standalone_cluster_refusal_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_standalone_cluster_refusal
+    PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_standalone_cluster_refusal
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src/server
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_standalone_cluster_refusal
+    PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_standalone_cluster_refusal
+    COMMAND sbsql_sblr_alignment_standalone_cluster_refusal)
+  set_tests_properties(sbsql_sblr_alignment_standalone_cluster_refusal PROPERTIES
+    TIMEOUT 30
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;cluster_routing;cluster_not_enabled;IA-EXT-OPT")
+  # Link the actual alternate provider translation unit into this isolated
+  # executable. Its complete symbol set means the no_cluster archive member
+  # is not extracted. No provider implementation is mocked or reimplemented;
+  # the test also asserts the real linked provider descriptor. Production
+  # provider selection and the main build configuration remain unchanged.
+  add_executable(sbsql_sblr_alignment_compile_link_cluster_refusal
+    standalone_cluster_refusal_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/cluster_provider_stub/stub_cluster_provider.cpp)
+  target_compile_features(sbsql_sblr_alignment_compile_link_cluster_refusal
+    PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_compile_link_cluster_refusal
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src/server
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_compile_link_cluster_refusal
+    PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_compile_link_cluster_refusal
+    COMMAND sbsql_sblr_alignment_compile_link_cluster_refusal compile_link_stub)
+  set_tests_properties(sbsql_sblr_alignment_compile_link_cluster_refusal PROPERTIES
+    TIMEOUT 30
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;cluster_routing;compile_link_provider_component;IA-EXT-OPT")
+  add_executable(sbsql_sblr_alignment_cluster_root_gateway_compile_link
+    ia01_cluster_root_gateway_stub_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/cluster_provider_stub/stub_cluster_provider.cpp)
+  target_compile_features(sbsql_sblr_alignment_cluster_root_gateway_compile_link
+    PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_cluster_root_gateway_compile_link PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/server ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_cluster_root_gateway_compile_link
+    PRIVATE sb_server_sblr_local_gateway sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_cluster_root_gateway_compile_link
+    COMMAND sbsql_sblr_alignment_cluster_root_gateway_compile_link
+      compile_link_stub PROCESS.CLUSTER_PATH_ABSENT)
+  set_tests_properties(sbsql_sblr_alignment_cluster_root_gateway_compile_link PROPERTIES
+    TIMEOUT 30
+    LABELS "sbsql_sblr_alignment;compile_link_provider_component;IA-EXT-OPT")
+  add_executable(sbsql_sblr_alignment_cluster_route_availability
+    cluster_route_availability_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cluster_route_availability
+    PRIVATE cxx_std_20)
+  target_include_directories(sbsql_sblr_alignment_cluster_route_availability
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src/server
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_parser_worker)
+  target_link_libraries(sbsql_sblr_alignment_cluster_route_availability
+    PRIVATE sb_engine_sblr)
+  add_test(NAME sbsql_sblr_alignment_cluster_route_availability
+    COMMAND sbsql_sblr_alignment_cluster_route_availability)
+  set_tests_properties(sbsql_sblr_alignment_cluster_route_availability PROPERTIES
+    TIMEOUT 30
+    LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;cluster_routing;cluster_not_enabled;IA-EXT-OPT")
+endif()
 target_compile_features(sbsql_sblr_alignment_cluster_root_gateway_stub
   PRIVATE cxx_std_20)
 target_include_directories(sbsql_sblr_alignment_cluster_root_gateway_stub
@@ -61,11 +1097,11 @@ target_link_libraries(sbsql_sblr_alignment_cluster_root_gateway_stub
   PRIVATE sb_server_sblr_local_gateway sb_engine_sblr)
 if(SB_ENABLE_CLUSTER_PROVIDER)
   set(_sbsql_cluster_provider_mode "compile_link_stub")
-  set(_sbsql_cluster_provider_diagnostic "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY")
+  set(_sbsql_cluster_provider_diagnostic "PROCESS.CLUSTER_PATH_ABSENT")
   set(_sbsql_cluster_provider_label "cluster_stub_refusal")
 else()
   set(_sbsql_cluster_provider_mode "no_cluster")
-  set(_sbsql_cluster_provider_diagnostic "SBLR.CLUSTER.SUPPORT_NOT_ENABLED")
+  set(_sbsql_cluster_provider_diagnostic "PROCESS.CLUSTER_PATH_ABSENT")
   set(_sbsql_cluster_provider_label "cluster_not_enabled")
 endif()
 add_test(NAME sbsql_sblr_alignment_cluster_root_gateway_stub
@@ -680,6 +1716,20 @@ set_tests_properties(
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_recovery;IA-05;SBLR_STMT_PREPARE;SBLR_STMT_FREE;CSC-TEST-003576;CSC-TEST-003588;recovery;durable_registry"
   TIMEOUT 60)
 
+add_executable(sbsql_sblr_alignment_statement_result_receipt_retention
+  statement_result_receipt_retention_test.cpp)
+target_compile_features(sbsql_sblr_alignment_statement_result_receipt_retention
+  PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_statement_result_receipt_retention
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_statement_result_receipt_retention
+  PRIVATE sb_engine sb_server_core)
+add_test(NAME sbsql_sblr_alignment_statement_result_receipt_retention
+  COMMAND sbsql_sblr_alignment_statement_result_receipt_retention)
+set_tests_properties(sbsql_sblr_alignment_statement_result_receipt_retention PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-06;typed_result;receipt_lifetime"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_ia01_package_missing_executor_integration
   ia01_package_missing_executor_integration_test.cpp)
 target_compile_features(sbsql_sblr_alignment_ia01_package_missing_executor_integration
@@ -1123,7 +2173,7 @@ function(sbsql_sblr_alignment_register_ia07_table_truncate_process_e2e)
   if(SB_ENABLE_CLUSTER_PROVIDER AND SB_CLUSTER_PROVIDER_STUB)
     set(_sbsql_cluster_provider_mode "compile_link_stub")
     set(_sbsql_cluster_provider_diagnostic
-        "SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY")
+        "PROCESS.CLUSTER_PATH_ABSENT")
     set(_sbsql_cluster_provider_label "cluster_stub_refusal")
   else()
     set(_sbsql_cluster_provider_mode "no_cluster")
@@ -1525,10 +2575,34 @@ cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL sbsql_sblr_alignment_r
 
 add_executable(sbsql_sblr_alignment_ia01_source_map_process_client
   ia01_source_map_process_client.cpp)
+# The Python process harness launches this producer separately. Keep its on-disk
+# catalog format synchronized with clients/server after storage codec changes.
+add_dependencies(sbsql_sblr_alignment_ia01_source_map_process_client public_driver_test_database_seed)
 target_compile_features(sbsql_sblr_alignment_ia01_source_map_process_client
   PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_ia01_source_map_process_client
   PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_disconnect_owner_process_client
+    disconnect_owner_process_client.cpp)
+  target_compile_features(sbsql_sblr_alignment_disconnect_owner_process_client PRIVATE cxx_std_23)
+  add_dependencies(sbsql_sblr_alignment_disconnect_owner_process_client public_driver_test_database_seed)
+  target_link_libraries(sbsql_sblr_alignment_disconnect_owner_process_client
+    PRIVATE sbl_sbsql_parser_worker_core sb_engine_sblr)
+  function(sbsql_sblr_alignment_register_disconnect_owner_process)
+    if(TARGET sb_server)
+      add_test(NAME sbsql_sblr_alignment_disconnect_owner_process
+        COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/sbsql_sblr_alignment/disconnect_owner_process_test.py
+          --server $<TARGET_FILE:sb_server>
+          --client $<TARGET_FILE:sbsql_sblr_alignment_disconnect_owner_process_client>)
+      set_tests_properties(sbsql_sblr_alignment_disconnect_owner_process PROPERTIES
+        LABELS "sbsql_sblr_alignment;IA-01;component_process;disconnect;fault"
+        TIMEOUT 180)
+    endif()
+  endfunction()
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL sbsql_sblr_alignment_register_disconnect_owner_process)
+endif()
 
 add_executable(sbsql_sblr_alignment_ia01_parameter_process_client
   ia01_parameter_process_client.cpp)
@@ -1695,12 +2769,20 @@ add_executable(sbsql_sblr_alignment_ia01_error_vector_registry ia01_error_vector
 target_compile_features(sbsql_sblr_alignment_ia01_error_vector_registry PRIVATE cxx_std_20)
 target_include_directories(sbsql_sblr_alignment_ia01_error_vector_registry PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia01_error_vector_registry PRIVATE sb_engine_internal_api sb_sblr_parameter_wire_codec)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_ia01_error_vector_registry PRIVATE SB_EV_LINUX_IO_FAULTS=1)
+  target_link_options(sbsql_sblr_alignment_ia01_error_vector_registry PRIVATE "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+endif()
 add_test(NAME sbsql_sblr_alignment_ia01_error_vector_registry COMMAND sbsql_sblr_alignment_ia01_error_vector_registry)
 set_tests_properties(sbsql_sblr_alignment_ia01_error_vector_registry PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_integration;sbsql_sblr_alignment_recovery;IA-01;SBLR_ERROR_VECTOR" TIMEOUT 60)
 add_executable(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault ia01_error_vector_cancellation_fault_test.cpp)
 target_compile_features(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PRIVATE cxx_std_20)
 target_include_directories(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PRIVATE sb_engine sb_server_core sb_sblr_parameter_wire_codec)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PRIVATE SB_EV_PUBLIC_IO_FAULTS=1)
+  target_link_options(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PRIVATE "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+endif()
 add_test(NAME sbsql_sblr_alignment_ia01_error_vector_cancellation_fault COMMAND sbsql_sblr_alignment_ia01_error_vector_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia01_error_vector_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-01;SBLR_ERROR_VECTOR;CSC-TEST-002344" TIMEOUT 60)
 add_executable(sbsql_sblr_alignment_ia05_transaction_begin_runtime ia05_transaction_begin_runtime_test.cpp)
@@ -1757,6 +2839,29 @@ target_include_directories(sbsql_sblr_alignment_ia05_transaction_rollback_cancel
 target_link_libraries(sbsql_sblr_alignment_ia05_transaction_rollback_cancellation_fault PRIVATE sb_engine_sblr sb_sblr_parameter_wire_codec)
 add_test(NAME sbsql_sblr_alignment_ia05_transaction_rollback_cancellation_fault COMMAND sbsql_sblr_alignment_ia05_transaction_rollback_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia05_transaction_rollback_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-05;SBLR_TXN_ROLLBACK;CSC-TEST-002356;cancellation_atomicity" TIMEOUT 60)
+
+add_executable(sbsql_sblr_alignment_savepoint_mga_effect_regression
+  ../release/public_transaction_savepoint_limbo_cleanup_gate.cpp)
+target_compile_features(sbsql_sblr_alignment_savepoint_mga_effect_regression PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_savepoint_mga_effect_regression PRIVATE
+  sb_engine_internal_api sb_storage_database sb_transaction_mga sb_core_memory sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_savepoint_mga_effect_regression
+  COMMAND sbsql_sblr_alignment_savepoint_mga_effect_regression
+    ${CMAKE_CURRENT_BINARY_DIR}/savepoint_mga_effect_regression_tmp)
+set_tests_properties(sbsql_sblr_alignment_savepoint_mga_effect_regression PROPERTIES
+  LABELS "sbsql_sblr_alignment;component_regression;IA-01;savepoint;real_storage"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_savepoint_wire_admission savepoint_wire_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_savepoint_wire_admission PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_savepoint_wire_admission PRIVATE
+  ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_savepoint_wire_admission PRIVATE
+  sb_sblr_parameter_wire_codec sb_core_hash)
+add_test(NAME sbsql_sblr_alignment_savepoint_wire_admission
+  COMMAND sbsql_sblr_alignment_savepoint_wire_admission)
+set_tests_properties(sbsql_sblr_alignment_savepoint_wire_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-01;component_regression;savepoint;binary_identity" TIMEOUT 60)
 
 add_executable(sbsql_sblr_alignment_ia05_transaction_savepoint_runtime
   ia05_transaction_savepoint_runtime_test.cpp)
@@ -1976,6 +3081,10 @@ set_tests_properties(sbsql_sblr_alignment_ia07_merge_cancellation_fault PROPERTI
 add_executable(sbsql_sblr_alignment_ia07_table_truncate_runtime ia07_table_truncate_runtime_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia07_table_truncate_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia07_table_truncate_runtime PRIVATE sb_sblr_parameter_wire_codec)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_ia07_table_truncate_runtime PRIVATE SB_TRUNCATE_TEST_HASH_FAULT=1)
+  target_link_options(sbsql_sblr_alignment_ia07_table_truncate_runtime PRIVATE "LINKER:--wrap=EVP_Digest")
+endif()
 add_test(NAME sbsql_sblr_alignment_ia07_table_truncate_runtime COMMAND sbsql_sblr_alignment_ia07_table_truncate_runtime)
 set_tests_properties(sbsql_sblr_alignment_ia07_table_truncate_runtime PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-07;SBLR_TABLE_TRUNCATE;CSC-TEST-002442;malformed_operand")
 add_executable(sbsql_sblr_alignment_ia07_table_truncate_availability ia07_table_truncate_availability_test.cpp)
@@ -2560,6 +3669,31 @@ target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_cancellat
 target_link_libraries(sbsql_sblr_alignment_ia08_ddl_create_schema_cancellation_fault PRIVATE sb_engine_internal_api sb_sblr_parameter_wire_codec)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_cancellation_fault COMMAND sbsql_sblr_alignment_ia08_ddl_create_schema_cancellation_fault)
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_cancellation_fault PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005783;cancellation_atomicity")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe
+  ia08_ddl_create_schema_journal_lock_probe.cpp)
+target_compile_features(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe PRIVATE cxx_std_17)
+target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe
+  PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia08_ddl_create_schema_journal_lock_test.py"
+    $<TARGET_FILE:sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe>)
+set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005783;component_regression;native_journal_lock"
+  TIMEOUT 90)
+
+add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe
+  ia08_ddl_create_schema_journal_io_probe.cpp)
+target_compile_features(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe PRIVATE cxx_std_17)
+target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe
+  PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia08_ddl_create_schema_journal_io_test.py"
+    $<TARGET_FILE:sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe>)
+set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005783;component_regression;native_journal_io"
+  TIMEOUT 90)
+
 add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery ia08_ddl_create_schema_recovery_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PRIVATE sb_engine_internal_api)
@@ -2853,6 +3987,122 @@ target_include_directories(sbsql_sblr_alignment_ia06_cursor_open_runtime PRIVATE
 target_link_libraries(sbsql_sblr_alignment_ia06_cursor_open_runtime PRIVATE sb_sblr_parameter_wire_codec)
 add_test(NAME sbsql_sblr_alignment_ia06_cursor_open_runtime COMMAND sbsql_sblr_alignment_ia06_cursor_open_runtime)
 set_tests_properties(sbsql_sblr_alignment_ia06_cursor_open_runtime PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_contract;IA-06;SBLR_CURSOR_OPEN;CSC-TEST-002382;malformed_operand")
+# Bounded IA-FIND-0049 regression, not complete cursor recovery or E2E.
+add_executable(sbsql_sblr_alignment_ia06_cursor_response_state
+  ia06_cursor_response_state_test.cpp)
+target_include_directories(sbsql_sblr_alignment_ia06_cursor_response_state
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia06_cursor_response_state
+  PRIVATE sb_sblr_parameter_wire_codec)
+add_test(NAME sbsql_sblr_alignment_ia06_cursor_response_state
+  COMMAND sbsql_sblr_alignment_ia06_cursor_response_state)
+set_tests_properties(sbsql_sblr_alignment_ia06_cursor_response_state PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-06;SBLR_CURSOR_FETCH;SBLR_CURSOR_CLOSE;CSC-TEST-005849;component_regression"
+  TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_ia06_cursor_recovery_journal_failure
+  ia06_cursor_recovery_journal_failure_test.cpp)
+target_include_directories(sbsql_sblr_alignment_ia06_cursor_recovery_journal_failure
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia06_cursor_recovery_journal_failure
+  PRIVATE sb_engine_internal_api sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia06_cursor_recovery_open_failure
+  COMMAND sbsql_sblr_alignment_ia06_cursor_recovery_journal_failure open_failure)
+set_tests_properties(sbsql_sblr_alignment_ia06_cursor_recovery_open_failure
+  PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-06;SBLR_CURSOR_CLOSE;CSC-TEST-005849;component_regression" TIMEOUT 30)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_test(NAME sbsql_sblr_alignment_ia06_cursor_recovery_flush_failure
+    COMMAND sbsql_sblr_alignment_ia06_cursor_recovery_journal_failure flush_failure)
+  set_tests_properties(sbsql_sblr_alignment_ia06_cursor_recovery_flush_failure
+    PROPERTIES LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-06;SBLR_CURSOR_CLOSE;CSC-TEST-005849;component_regression" TIMEOUT 30)
+endif()
+if(TARGET sb_server_core)
+  add_executable(sbsql_sblr_alignment_offline_bundle_tool ../../tools/release/public_disk_resource_bundle.cpp)
+  target_compile_features(sbsql_sblr_alignment_offline_bundle_tool PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_offline_bundle_tool PRIVATE sb_storage_database sb_storage_filespace)
+  add_executable(sbsql_sblr_alignment_offline_bundle_ownership_probe offline_bundle_ownership_probe.cpp)
+  target_compile_features(sbsql_sblr_alignment_offline_bundle_ownership_probe PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_offline_bundle_ownership_probe PRIVATE sb_storage_database sb_storage_filespace)
+  add_test(NAME sbsql_sblr_alignment_offline_bundle_ownership
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/offline_bundle_ownership_test.py"
+      $<TARGET_FILE:sbsql_sblr_alignment_offline_bundle_tool>
+      $<TARGET_FILE:sbsql_sblr_alignment_offline_filespace_ownership_probe>
+      $<TARGET_FILE:sbsql_sblr_alignment_offline_bundle_ownership_probe>)
+  set_tests_properties(sbsql_sblr_alignment_offline_bundle_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;offline_bundle"
+    TIMEOUT 90)
+  add_executable(sbsql_sblr_alignment_offline_filespace_ownership_probe offline_filespace_ownership_probe.cpp)
+  target_compile_features(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE sb_server_core sb_storage_filespace)
+  add_test(NAME sbsql_sblr_alignment_offline_filespace_ownership
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/offline_filespace_ownership_test.py"
+      $<TARGET_FILE:sbsql_sblr_alignment_offline_filespace_ownership_probe>)
+  set_tests_properties(sbsql_sblr_alignment_offline_filespace_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;offline_filespace"
+    TIMEOUT 90)
+  add_executable(sbsql_sblr_alignment_native_file_ownership_probe native_file_ownership_probe.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE sb_server_core sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_native_file_ownership
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/native_file_ownership_test.py"
+      $<TARGET_FILE:sbsql_sblr_alignment_native_file_ownership_probe>)
+  set_tests_properties(sbsql_sblr_alignment_native_file_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;native_file_alias"
+    TIMEOUT 90)
+endif()
+
+if(UNIX AND TARGET sb_server_core)
+  add_executable(sbsql_sblr_alignment_storage_exclusive_ownership
+    ../release/public_database_ownership_gate.cpp)
+  target_compile_features(sbsql_sblr_alignment_storage_exclusive_ownership PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_storage_exclusive_ownership
+    PRIVATE sb_core_uuid sb_server_core sb_storage_database sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_storage_exclusive_ownership
+    COMMAND sbsql_sblr_alignment_storage_exclusive_ownership)
+  set_tests_properties(sbsql_sblr_alignment_storage_exclusive_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership" TIMEOUT 90)
+  add_executable(sbsql_sblr_alignment_server_secure_defaults
+    ../release/public_secure_defaults_gate.cpp)
+  target_compile_features(sbsql_sblr_alignment_server_secure_defaults PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_server_secure_defaults PRIVATE sb_server_core)
+  add_test(NAME sbsql_sblr_alignment_server_secure_defaults
+    COMMAND sbsql_sblr_alignment_server_secure_defaults)
+  set_tests_properties(sbsql_sblr_alignment_server_secure_defaults PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;secure_defaults;component_regression" TIMEOUT 90)
+  add_executable(sbsql_sblr_alignment_server_instance_ownership
+    ../database_lifecycle/server_daemon_lifecycle_conformance.cpp)
+  target_compile_features(sbsql_sblr_alignment_server_instance_ownership PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_server_instance_ownership
+    PRIVATE sb_core_uuid sb_server_core sb_storage_database sb_storage_disk sb_storage_page sb_transaction_mga)
+  add_test(NAME sbsql_sblr_alignment_server_instance_ownership
+    COMMAND sbsql_sblr_alignment_server_instance_ownership)
+  set_tests_properties(sbsql_sblr_alignment_server_instance_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership" TIMEOUT 90)
+endif()
+add_executable(sbsql_sblr_alignment_ia06_cursor_database_ownership
+  ia06_cursor_database_ownership_test.cpp)
+target_include_directories(sbsql_sblr_alignment_ia06_cursor_database_ownership
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia06_cursor_database_ownership
+  PRIVATE sb_engine_internal_api sb_core_uuid)
+foreach(cursor_database_case access recovery invalid)
+  add_test(NAME sbsql_sblr_alignment_ia06_cursor_database_${cursor_database_case}
+    COMMAND sbsql_sblr_alignment_ia06_cursor_database_ownership ${cursor_database_case})
+  set_tests_properties(sbsql_sblr_alignment_ia06_cursor_database_${cursor_database_case}
+    PROPERTIES LABELS "sbsql_sblr_alignment;IA-06;CSC-TEST-005849;component_regression;database_ownership" TIMEOUT 30)
+endforeach()
+add_executable(sbsql_sblr_alignment_ia06_cursor_owner_visibility
+  ia06_cursor_owner_visibility_test.cpp)
+target_include_directories(sbsql_sblr_alignment_ia06_cursor_owner_visibility
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_ia06_cursor_owner_visibility
+  PRIVATE sb_engine_internal_api sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_ia06_cursor_owner_visibility
+  COMMAND sbsql_sblr_alignment_ia06_cursor_owner_visibility)
+set_tests_properties(sbsql_sblr_alignment_ia06_cursor_owner_visibility PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-06;SBLR_CURSOR_CLOSE;CSC-TEST-005849;component_regression;owner_visibility"
+  TIMEOUT 30)
 add_executable(sbsql_sblr_alignment_ia06_cursor_open_availability ia06_cursor_open_availability_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia06_cursor_open_availability PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_ia06_cursor_open_availability PRIVATE sb_engine_internal_api sb_core_uuid)
@@ -5764,8 +7014,8 @@ target_link_libraries(sbsql_sblr_alignment_ia08_bitemporal_as_of_coordinator PRI
 add_test(NAME sbsql_sblr_alignment_ia08_bitemporal_as_of_coordinator COMMAND sbsql_sblr_alignment_ia08_bitemporal_as_of_coordinator)
 set_tests_properties(sbsql_sblr_alignment_ia08_bitemporal_as_of_coordinator PROPERTIES LABELS "sbsql_sblr_alignment;IA-08;SBLR_BITEMPORAL_AS_OF;CSC-TEST-004287;availability;cancellation_fault")
 
-# Disjoint P1 result-transport codec gate. Route integration is intentionally
-# deferred until this Core-defined SHA-evidence typed-cell primitive is green.
+# P1 result-transport component gate. Complete route integration remains
+# required; passing this codec gate grants no ABI, IPC, or native acceptance.
 add_executable(sbsql_sblr_alignment_typed_result_transport_codec
   typed_result_transport_codec_test.cpp)
 target_compile_features(sbsql_sblr_alignment_typed_result_transport_codec
@@ -5779,6 +7029,63 @@ add_test(NAME sbsql_sblr_alignment_typed_result_transport_codec
 set_tests_properties(sbsql_sblr_alignment_typed_result_transport_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;result_transport;typed_cells;sha256_evidence;P1;malformed;null_empty;int128;duplicate_columns;cursor_batch_shape"
   TIMEOUT 30)
+add_executable(sbsql_sblr_alignment_typed_result_packet_view typed_result_packet_view_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_packet_view PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_typed_result_packet_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_packet_view PRIVATE sb_wire_typed_result_transport_codec)
+add_test(NAME sbsql_sblr_alignment_typed_result_packet_view COMMAND sbsql_sblr_alignment_typed_result_packet_view)
+set_tests_properties(sbsql_sblr_alignment_typed_result_packet_view PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;borrowed_packet;allocation_failure;canonical_bytes;not_SQL_E2E" TIMEOUT 90)
+add_executable(sbsql_sblr_alignment_datatype_borrowed_decode datatype_borrowed_decode_test.cpp)
+target_compile_features(sbsql_sblr_alignment_datatype_borrowed_decode PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_datatype_borrowed_decode PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_datatype_borrowed_decode PRIVATE sb_wire_typed_result_transport_codec)
+add_test(NAME sbsql_sblr_alignment_datatype_borrowed_decode COMMAND sbsql_sblr_alignment_datatype_borrowed_decode)
+set_tests_properties(sbsql_sblr_alignment_datatype_borrowed_decode PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;borrowed_decode;allocation_failure;canonical_bytes;not_SQL_E2E" TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_typed_result_resource_buffer typed_result_resource_buffer_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_resource_buffer PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_typed_result_resource_buffer PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_resource_buffer PRIVATE
+  sb_wire_typed_result_transport_codec sb_core_memory Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_typed_result_resource_buffer COMMAND sbsql_sblr_alignment_typed_result_resource_buffer)
+set_tests_properties(sbsql_sblr_alignment_typed_result_resource_buffer PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;physical_memory;allocation_failure;not_SQL_E2E" TIMEOUT 180)
+add_executable(sbsql_sblr_alignment_typed_result_segmented_hash
+  typed_result_segmented_hash_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_segmented_hash PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_typed_result_segmented_hash PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_segmented_hash PRIVATE
+  sb_wire_typed_result_transport_codec)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_typed_result_segmented_hash PRIVATE
+    SB_SEGMENTED_HASH_BACKEND_FAULTS=1)
+  target_link_options(sbsql_sblr_alignment_typed_result_segmented_hash PRIVATE
+    "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_MD_CTX_free"
+    "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+    "-Wl,--wrap=EVP_DigestFinal_ex")
+endif()
+add_test(NAME sbsql_sblr_alignment_typed_result_segmented_hash
+  COMMAND sbsql_sblr_alignment_typed_result_segmented_hash)
+set_tests_properties(sbsql_sblr_alignment_typed_result_segmented_hash PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;sha256_evidence;allocation_failure;not_SQL_E2E"
+  TIMEOUT 60)
+add_executable(sbsql_sblr_alignment_datatype_binary_borrowed_view
+  datatype_binary_borrowed_view_test.cpp)
+target_compile_features(sbsql_sblr_alignment_datatype_binary_borrowed_view PRIVATE cxx_std_20)
+target_include_directories(sbsql_sblr_alignment_datatype_binary_borrowed_view PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_datatype_binary_borrowed_view PRIVATE
+  sb_wire_typed_result_transport_codec)
+add_test(NAME sbsql_sblr_alignment_datatype_binary_borrowed_view
+  COMMAND sbsql_sblr_alignment_datatype_binary_borrowed_view)
+set_tests_properties(sbsql_sblr_alignment_datatype_binary_borrowed_view PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;typed_cells;allocation_failure;not_SQL_E2E"
+  TIMEOUT 60)
 add_executable(sbsql_sblr_alignment_typed_result_transport_carrier
   typed_result_transport_carrier_test.cpp)
 target_compile_features(sbsql_sblr_alignment_typed_result_transport_carrier
@@ -5834,6 +7141,18 @@ set_tests_properties(sbsql_sblr_alignment_narrow_query_binding_demand_codec PROP
   TIMEOUT 30)
 add_executable(sbsql_sblr_alignment_narrow_query_binding_authority_scan_bytes
   narrow_query_binding_authority_scan_bytes_test.cpp)
+add_executable(sbsql_sblr_alignment_narrow_query_grant_binary_retention
+  narrow_query_grant_binary_retention_test.cpp)
+target_compile_features(sbsql_sblr_alignment_narrow_query_grant_binary_retention PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_narrow_query_grant_binary_retention
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_narrow_query_grant_binary_retention
+  PRIVATE sb_engine_internal_api sb_storage_database sb_transaction_mga sb_core_uuid Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_narrow_query_grant_binary_retention
+  COMMAND sbsql_sblr_alignment_narrow_query_grant_binary_retention)
+set_tests_properties(sbsql_sblr_alignment_narrow_query_grant_binary_retention PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;binary_uuid;resource_grant;allocation_failure;ownership;concurrency"
+  TIMEOUT 120)
 target_compile_features(
   sbsql_sblr_alignment_narrow_query_binding_authority_scan_bytes
   PRIVATE cxx_std_20)
@@ -6124,3 +7443,194 @@ add_test(NAME sbsql_sblr_alignment_plan_import_rows_codec_v1
 set_tests_properties(sbsql_sblr_alignment_plan_import_rows_codec_v1 PROPERTIES
   LABELS "sbsql_sblr_alignment;SBLR_DML_PLAN_IMPORT_ROWS;IPLP;ISRC;IFMT;IMAP;IPOL;IPEV;opcode_793;protocol_binary;golden;malformed;exact_refusal;MGA"
   TIMEOUT 60)
+# Actual accounting and parent-budget failure ownership, including sustained OOM.
+add_executable(sbsql_sblr_alignment_memory_reservation_failure_atomicity
+  memory_reservation_failure_atomicity_test.cpp)
+target_compile_features(sbsql_sblr_alignment_memory_reservation_failure_atomicity
+  PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_memory_reservation_failure_atomicity
+  PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_memory_reservation_failure_atomicity
+  COMMAND sbsql_sblr_alignment_memory_reservation_failure_atomicity)
+set_tests_properties(sbsql_sblr_alignment_memory_reservation_failure_atomicity PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;allocation_failure;overflow;concurrency;EURQ-011;EURQ-017"
+  TIMEOUT 120)
+# Actual shared governor reservation/lease ownership, not a nominal grant.
+add_executable(sbsql_sblr_alignment_result_memory_governor_ownership
+  result_memory_governor_ownership_test.cpp)
+target_compile_features(sbsql_sblr_alignment_result_memory_governor_ownership
+  PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_result_memory_governor_ownership
+  PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_result_memory_governor_ownership
+  COMMAND sbsql_sblr_alignment_result_memory_governor_ownership)
+add_test(NAME sbsql_sblr_alignment_result_memory_governor_null_ledger
+  COMMAND sbsql_sblr_alignment_result_memory_governor_ownership null-ledger)
+set_tests_properties(sbsql_sblr_alignment_result_memory_governor_ownership
+  sbsql_sblr_alignment_result_memory_governor_null_ledger PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;governor;allocation_failure;concurrency;EURQ-011;EURQ-017"
+  TIMEOUT 120)
+# The actual configured allocator must own physical storage across failures.
+add_executable(sbsql_sblr_alignment_physical_memory_allocation_ownership
+  physical_memory_allocation_ownership_test.cpp)
+target_compile_features(sbsql_sblr_alignment_physical_memory_allocation_ownership
+  PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_physical_memory_allocation_ownership
+  PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_physical_memory_allocation_ownership
+  COMMAND sbsql_sblr_alignment_physical_memory_allocation_ownership)
+set_tests_properties(sbsql_sblr_alignment_physical_memory_allocation_ownership PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;physical_allocation;allocation_failure;ownership;EURQ-011;EURQ-017"
+  TIMEOUT 180)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_hierarchical_budget_publication hierarchical_budget_publication_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_hierarchical_budget_publication PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_hierarchical_budget_publication PRIVATE sb_core_memory Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_hierarchical_budget_publication COMMAND sbsql_sblr_alignment_hierarchical_budget_publication)
+  set_tests_properties(sbsql_sblr_alignment_hierarchical_budget_publication PROPERTIES
+    LABELS "sbsql_sblr_alignment;memory;policy_activation;allocation_failure;ownership;concurrency" TIMEOUT 180)
+  add_executable(sbsql_sblr_alignment_process_memory_configuration_atomicity
+    process_memory_configuration_atomicity_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_process_memory_configuration_atomicity PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_process_memory_configuration_atomicity PRIVATE sb_core_memory Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_process_memory_configuration_atomicity
+    COMMAND sbsql_sblr_alignment_process_memory_configuration_atomicity)
+  set_tests_properties(sbsql_sblr_alignment_process_memory_configuration_atomicity PROPERTIES
+    LABELS "sbsql_sblr_alignment;memory;startup;allocation_failure;concurrency;EURQ-011;EURQ-017"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_binary_physical_memory_scope binary_physical_memory_scope_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_binary_physical_memory_scope PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_binary_physical_memory_scope PRIVATE sb_core_memory Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_binary_physical_memory_scope COMMAND sbsql_sblr_alignment_binary_physical_memory_scope)
+  set_tests_properties(sbsql_sblr_alignment_binary_physical_memory_scope PROPERTIES
+    LABELS "sbsql_sblr_alignment;memory;binary_uuid;allocation_failure;ownership;concurrency" TIMEOUT 180)
+endif()
+
+add_executable(sbsql_sblr_alignment_typed_result_producer_failure_ownership
+  typed_result_producer_failure_ownership_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_producer_failure_ownership PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_typed_result_producer_failure_ownership
+  PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_producer_failure_ownership
+  PRIVATE sb_engine_typed_result_producer_cursor Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_typed_result_producer_failure_ownership
+  COMMAND sbsql_sblr_alignment_typed_result_producer_failure_ownership)
+set_tests_properties(sbsql_sblr_alignment_typed_result_producer_failure_ownership PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;producer_cursor;allocation_failure;ownership;atomic_batch"
+  TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_reservation_backed_resource_ownership
+  reservation_backed_resource_ownership_test.cpp)
+target_compile_features(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_reservation_backed_resource_ownership
+  COMMAND sbsql_sblr_alignment_reservation_backed_resource_ownership)
+set_tests_properties(sbsql_sblr_alignment_reservation_backed_resource_ownership PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;reservation_adapter;allocation_failure;ownership;EURQ-011;EURQ-017"
+  TIMEOUT 180)
+add_executable(sbsql_sblr_alignment_binary_result_memory_reservation
+  binary_result_memory_reservation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_binary_result_memory_reservation PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_binary_result_memory_reservation PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_binary_result_memory_reservation
+  COMMAND sbsql_sblr_alignment_binary_result_memory_reservation)
+set_tests_properties(sbsql_sblr_alignment_binary_result_memory_reservation PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;binary_ownership;reservation_adapter;allocation_failure;not_SQL_E2E"
+  TIMEOUT 180)
+add_executable(sbsql_sblr_alignment_physical_capacity_reservation
+  physical_capacity_reservation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_physical_capacity_reservation PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_physical_capacity_reservation PRIVATE sb_core_memory)
+add_test(NAME sbsql_sblr_alignment_physical_capacity_reservation
+  COMMAND sbsql_sblr_alignment_physical_capacity_reservation)
+set_tests_properties(sbsql_sblr_alignment_physical_capacity_reservation PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;reservation_adapter;allocation_failure;not_SQL_E2E"
+  TIMEOUT 180)
+add_executable(sbsql_sblr_alignment_typed_result_system_uuid
+  typed_result_system_uuid_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_system_uuid PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_typed_result_system_uuid PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_system_uuid PRIVATE
+  sb_wire_typed_result_transport_codec)
+add_test(NAME sbsql_sblr_alignment_typed_result_system_uuid
+  COMMAND sbsql_sblr_alignment_typed_result_system_uuid)
+set_tests_properties(sbsql_sblr_alignment_typed_result_system_uuid PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;UUIDv7;binary_identity;user_UUID_data;not_SQL_E2E"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_typed_result_packet_admission
+  typed_result_packet_admission_test.cpp)
+target_compile_features(sbsql_sblr_alignment_typed_result_packet_admission PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_typed_result_packet_admission PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_typed_result_packet_admission PRIVATE
+  sb_wire_typed_result_transport_codec)
+add_test(NAME sbsql_sblr_alignment_typed_result_packet_admission
+  COMMAND sbsql_sblr_alignment_typed_result_packet_admission)
+set_tests_properties(sbsql_sblr_alignment_typed_result_packet_admission PROPERTIES
+  LABELS "sbsql_sblr_alignment;result_transport;packet_budget;allocation_failure;not_SQL_E2E"
+  TIMEOUT 180)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_query_memory_allocation_failure
+    query_memory_allocation_failure_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_query_memory_allocation_failure PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_query_memory_allocation_failure PRIVATE sb_core_memory)
+  add_test(NAME sbsql_sblr_alignment_query_memory_allocation_failure
+    COMMAND sbsql_sblr_alignment_query_memory_allocation_failure)
+  set_tests_properties(sbsql_sblr_alignment_query_memory_allocation_failure PROPERTIES
+    LABELS "sbsql_sblr_alignment;query_memory;allocation_failure;atomic_ownership;not_SQL_E2E"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_query_memory_arena_binary_owner
+    query_memory_arena_binary_owner_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_query_memory_arena_binary_owner PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_query_memory_arena_binary_owner PRIVATE sb_core_memory)
+  add_test(NAME sbsql_sblr_alignment_query_memory_arena_binary_owner
+    COMMAND sbsql_sblr_alignment_query_memory_arena_binary_owner)
+  set_tests_properties(sbsql_sblr_alignment_query_memory_arena_binary_owner PROPERTIES
+    LABELS "sbsql_sblr_alignment;query_memory;binary_ownership;spill;cleanup_retry;not_SQL_E2E"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_temp_workspace_binary_owner_recovery
+    temp_workspace_binary_owner_recovery_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_temp_workspace_binary_owner_recovery PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_temp_workspace_binary_owner_recovery PRIVATE sb_core_memory)
+  add_test(NAME sbsql_sblr_alignment_temp_workspace_binary_owner_recovery
+    COMMAND sbsql_sblr_alignment_temp_workspace_binary_owner_recovery)
+  set_tests_properties(sbsql_sblr_alignment_temp_workspace_binary_owner_recovery PROPERTIES
+    LABELS "sbsql_sblr_alignment;temp_workspace;binary_ownership;recovery;not_SQL_E2E"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_temp_workspace_cleanup_crash
+    temp_workspace_cleanup_crash_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_temp_workspace_cleanup_crash PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_temp_workspace_cleanup_crash PRIVATE
+    sb_core_memory ${CMAKE_DL_LIBS})
+  add_test(NAME sbsql_sblr_alignment_temp_workspace_cleanup_crash
+    COMMAND sbsql_sblr_alignment_temp_workspace_cleanup_crash)
+  set_tests_properties(sbsql_sblr_alignment_temp_workspace_cleanup_crash PROPERTIES
+    LABELS "sbsql_sblr_alignment;temp_workspace;crash_recovery;actual_process;not_SQL_E2E"
+    TIMEOUT 120)
+endif()
+
+add_executable(sbsql_sblr_alignment_query_public_descriptor
+  query_public_descriptor_test.cpp)
+target_compile_features(sbsql_sblr_alignment_query_public_descriptor PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_query_public_descriptor PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(sbsql_sblr_alignment_query_public_descriptor PRIVATE
+  sb_server_core sb_engine_sblr)
+add_test(NAME sbsql_sblr_alignment_query_public_descriptor
+  COMMAND sbsql_sblr_alignment_query_public_descriptor)
+add_test(NAME sbsql_sblr_alignment_query_public_descriptor_empty
+  COMMAND sbsql_sblr_alignment_query_public_descriptor --empty)
+add_test(NAME sbsql_sblr_alignment_query_public_descriptor_duplicate
+  COMMAND sbsql_sblr_alignment_query_public_descriptor --duplicate)
+add_test(NAME sbsql_sblr_alignment_query_public_batch_budget
+  COMMAND sbsql_sblr_alignment_query_public_descriptor --batch-budget)
+add_test(NAME sbsql_sblr_alignment_query_public_batch_fault
+  COMMAND sbsql_sblr_alignment_query_public_descriptor --batch-fault)
+set_tests_properties(sbsql_sblr_alignment_query_public_descriptor
+  sbsql_sblr_alignment_query_public_descriptor_empty
+  sbsql_sblr_alignment_query_public_batch_budget
+  sbsql_sblr_alignment_query_public_batch_fault
+  sbsql_sblr_alignment_query_public_descriptor_duplicate PROPERTIES
+  LABELS "sbsql_sblr_alignment;public_ABI;retained_schema;actual_receipt;not_SQL_E2E"
+  TIMEOUT 120)

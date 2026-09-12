@@ -173,21 +173,21 @@ bool HasAuthority(const EngineRequestContext& context,
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          !context.database_path.empty() &&
-         context.database_uuid.canonical == UuidText(key.database_uuid) &&
-         context.session_uuid.canonical == UuidText(key.session_uuid) &&
-         context.statement_metadata_snapshot_uuid.canonical ==
+         context.database_uuid == UuidText(key.database_uuid) &&
+         context.session_uuid == UuidText(key.session_uuid) &&
+         context.statement_metadata_snapshot_uuid ==
              UuidText(key.catalog_snapshot_uuid) &&
          context.catalog_generation_id == key.catalog_generation &&
-         context.authorization_context.authority_uuid.canonical ==
+         context.authorization_context.authority_uuid ==
              UuidText(key.security_context_uuid) &&
          context.security_epoch == key.security_epoch &&
-         context.transaction_policy_snapshot_uuid.canonical ==
+         context.transaction_policy_snapshot_uuid ==
              UuidText(key.policy_snapshot_uuid) &&
          context.transaction_policy_snapshot_generation ==
              key.policy_generation &&
-         context.transaction_uuid.canonical == UuidText(key.transaction_uuid) &&
+         context.transaction_uuid == UuidText(key.transaction_uuid) &&
          context.local_transaction_id == key.transaction_generation &&
-         context.resource_admission_uuid.canonical ==
+         context.resource_admission_uuid ==
              UuidText(key.resource_admission_uuid) &&
          context.resource_epoch == key.resource_epoch &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),

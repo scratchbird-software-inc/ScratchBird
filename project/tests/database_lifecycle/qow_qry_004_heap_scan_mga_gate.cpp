@@ -4644,7 +4644,7 @@ void ValidateCanonicalInt128GroupedSumMatrix() {
                                                   malformed_descriptor);
   Require(!finalized.diagnostic.ok &&
               finalized.diagnostic.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "grouped SUM finalized through a substituted result descriptor");
 }
 

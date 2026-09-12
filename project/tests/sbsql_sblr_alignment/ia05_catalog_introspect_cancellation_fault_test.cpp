@@ -99,7 +99,7 @@ sblr::SblrOperationEnvelope CatalogIntrospectMember(
 
 }  // namespace
 
-int main() {
+void VerifyCatalogSnapshot(bool retire_owner) {
   auto fixture = CreateFixture();
   PublicSession session(fixture);
   std::atomic<bool> cancel{false};
@@ -259,6 +259,36 @@ int main() {
       fixture, view, parser_uuid,
       CatalogIntrospectMember(view, parser_uuid, descriptor_bytes));
 
+  // A later transaction publication must not replace or invalidate this
+  // statement's frozen visibility. Exercise real inventory publication, not
+  // a changed clock or fabricated receipt generation.
+  std::atomic<unsigned> sibling_probes{0};
+  const auto sibling = BeginTransaction(fixture, &sibling_probes);
+  api::EngineCommitTransactionRequest sibling_commit;
+  sibling_commit.context = sibling;
+  Require(api::EngineCommitTransaction(sibling_commit).ok,
+          "003612 independent transaction did not commit");
+
+  if (retire_owner) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto dispatch = Admit(fixture, session, view, receipt, parser_uuid,
+                          submission, &reservation);
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    Require(api::EngineRollbackTransaction(rollback).ok,
+            "003612 owning transaction did not roll back before dispatch");
+    result = nullptr;
+    const auto status = bridge::DispatchStatementContextReceipt(&dispatch, &result);
+    Require(status == SB_ENGINE_STATUS_CONFLICT && result != nullptr &&
+                DiagnosticCode(result) == "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE" &&
+                ResultPayload(result).empty(),
+            "003612 terminal owning transaction published catalog rows");
+    (void)sb_engine_result_release(result);
+    Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+            "003612 retired-owner receipt cleanup failed");
+    return;
+  }
+
   probes.store(0, std::memory_order_relaxed);
   cancel.store(true, std::memory_order_relaxed);
   bridge::StatementPackageAdmissionReservationHandle cancel_reservation;
@@ -343,19 +373,42 @@ int main() {
   auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
                                submission, &replay_reservation);
   result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  const auto replay_status = bridge::DispatchStatementContextReceipt(&replay_dispatch, &result);
+  if (replay_status != SB_ENGINE_STATUS_OK && result != nullptr) {
+    std::cerr << "003612 terminal replay: " << DiagnosticCode(result) << ':'
+              << DiagnosticKey(result) << '\n';
+  }
+  Require(replay_status == SB_ENGINE_STATUS_OK &&
               result != nullptr && ResultPayload(result) == result_bytes &&
               probes.load(std::memory_order_relaxed) == 0,
           "003612 postpublication replay was not byte-identical and cancellation-stable");
   (void)sb_engine_result_release(result);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003612 statement receipt cleanup failed");
+  // Terminal-result replay does not grant authority to use a retired
+  // transaction/statement handle. The common snapshot lifecycle gate remains
+  // mandatory even though the catalog result itself is immutable.
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,
-          "003612 fixture transaction rollback failed");
+          "003612 owning transaction rollback after publication failed");
+  bridge::StatementPackageAdmissionReservationHandle retired_reservation;
+  auto retired_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
+                                submission, &retired_reservation);
+  result = nullptr;
+  Require(bridge::DispatchStatementContextReceipt(&retired_dispatch, &result) ==
+                  SB_ENGINE_STATUS_CONFLICT && result != nullptr &&
+              DiagnosticCode(result) == "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE" &&
+              ResultPayload(result).empty(),
+          "003612 terminal result bypassed retired transaction snapshot authority");
+  (void)sb_engine_result_release(result);
+
+  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
+              SB_ENGINE_STATUS_OK,
+          "003612 statement receipt cleanup failed");
+}
+
+int main() {
+  VerifyCatalogSnapshot(false);
+  VerifyCatalogSnapshot(true);
   return EXIT_SUCCESS;
 }

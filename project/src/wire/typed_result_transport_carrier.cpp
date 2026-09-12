@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "typed_result_transport_carrier.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -18,11 +19,26 @@ constexpr const char* kFrameInvalid =
     "PARSER_SERVER_IPC.FRAME_PAYLOAD_INVALID";
 constexpr const char* kResourceLimit =
     "PARSER_SERVER_IPC.RESOURCE_LIMIT_EXCEEDED";
-constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR_INVALID";
+constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kConnectionMismatch =
     "PARSER_SERVER_IPC.CONNECTION_MISMATCH";
 constexpr const char* kSequenceInvalid =
     "PARSER_SERVER_IPC.SEQUENCE_INVALID";
+constexpr const char* kSystemUuidInvalid = "UUID.ENGINE_IDENTITY_NOT_V7";
+
+bool InvalidPresentSystemUuid(const TypedResultUuid& uuid) {
+  scratchbird::core::uuid::Uuid identity;
+  identity.bytes = uuid;
+  return !identity.is_nil() &&
+         !scratchbird::core::uuid::IsEngineIdentityUuid(identity);
+}
+
+bool InvalidQuerySystemUuid(const TypedResultQueryHandleV1& handle) {
+  return InvalidPresentSystemUuid(handle.execution_uuid) ||
+         InvalidPresentSystemUuid(handle.result_set_uuid) ||
+         InvalidPresentSystemUuid(handle.row_descriptor_uuid) ||
+         InvalidPresentSystemUuid(handle.snapshot_uuid);
+}
 
 bool UuidPresent(const TypedResultUuid& uuid) {
   return std::any_of(uuid.begin(), uuid.end(),
@@ -154,6 +170,15 @@ TypedResultCarrierValidationResult ValidateTypedResultExecuteCarrierV1(
     const TypedResultExecuteRequestAuthorityV1& request_authority,
     const TypedResultExecuteCarrierV1& carrier,
     const TypedResultDescriptorAuthorityValidator& descriptor_authority) {
+  if (InvalidPresentSystemUuid(request_authority.expected_server_request_uuid) ||
+      InvalidPresentSystemUuid(carrier.server_request_uuid) ||
+      InvalidPresentSystemUuid(carrier.transaction_uuid) ||
+      InvalidPresentSystemUuid(carrier.cursor_uuid) ||
+      InvalidPresentSystemUuid(carrier.cursor_stream_descriptor.descriptor_uuid) ||
+      InvalidQuerySystemUuid(carrier.query_handle)) {
+    return CarrierError(TypedResultCodecStatus::malformed_frame,
+                        kSystemUuidInvalid, "execute_system_uuid_invalid");
+  }
   if (!UuidPresent(request_authority.expected_server_request_uuid) ||
       !UuidPresent(carrier.server_request_uuid) ||
       request_authority.expected_server_request_uuid !=
@@ -302,6 +327,23 @@ TypedResultCarrierValidationResult ValidateTypedResultFetchCarrierV1(
                 kSequenceInvalid,
                 cursor_state.terminal ? "fetch_after_terminal_cursor"
                                       : "fetch_cursor_state_not_initialized");
+  }
+  if (InvalidPresentSystemUuid(request_authority.cursor_uuid) ||
+      InvalidPresentSystemUuid(request_authority.cursor_stream_descriptor_uuid) ||
+      InvalidPresentSystemUuid(carrier.cursor_uuid) ||
+      InvalidPresentSystemUuid(cursor_state.cursor_uuid) ||
+      InvalidPresentSystemUuid(cursor_state.cursor_stream_descriptor.descriptor_uuid) ||
+      InvalidQuerySystemUuid(cursor_state.query_handle) ||
+      InvalidPresentSystemUuid(cursor_state.row_descriptor.descriptor_uuid) ||
+      InvalidPresentSystemUuid(cursor_state.row_descriptor.datatype_catalog_snapshot_uuid)) {
+    return fail(TypedResultCodecStatus::malformed_frame,
+                kSystemUuidInvalid, "fetch_system_uuid_invalid");
+  }
+  for (const auto& column : cursor_state.row_descriptor.columns) {
+    if (InvalidPresentSystemUuid(column.descriptor_uuid) ||
+        InvalidPresentSystemUuid(column.type_uuid))
+      return fail(TypedResultCodecStatus::malformed_frame,
+                  kSystemUuidInvalid, "fetch_column_system_uuid_invalid");
   }
   if (QueryHandleShape(cursor_state.query_handle) !=
           ComponentShape::complete ||

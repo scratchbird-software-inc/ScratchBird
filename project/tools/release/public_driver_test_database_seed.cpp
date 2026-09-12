@@ -451,7 +451,12 @@ void Commit(const api::EngineRequestContext& context) {
 }
 
 std::string SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
-  for (const auto& schema : api::VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+  api::EngineApiDiagnostic diagnostic;
+  const auto schemas = api::VisibleSchemaTreeRecords(context, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) {
+    Fail("driver test database seed schema read failed: " + diagnostic.code + ":" + diagnostic.detail);
+  }
+  for (const auto& schema : schemas) {
     for (const auto& name : schema.localized_names) {
       if (name.path == path) {
         return schema.schema_uuid;

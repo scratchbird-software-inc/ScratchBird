@@ -105,7 +105,7 @@ wire::TypedResultDescriptorAuthorityValidator AuthorityFor(
         actual.columns[0].codec_generation ==
             expected.columns[0].codec_generation;
     if (!decision.accepted) {
-      decision.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+      decision.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
       decision.detail = "test_registry_tuple_mismatch";
     }
     return decision;
@@ -233,7 +233,7 @@ void ExecuteOutcomeMatrixAndAuthority() {
       ExecuteAuthority(), carrier, {});
   Require(!missing_authority.ok() &&
               missing_authority.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "cursor-open admitted an absent datatype registry validator");
 
   auto forbidden_packet = carrier;

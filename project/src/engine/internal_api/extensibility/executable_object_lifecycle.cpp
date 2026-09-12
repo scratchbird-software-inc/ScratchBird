@@ -333,7 +333,7 @@ EngineTypedValue Value(std::string value) {
 
 void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical = "exec-row-" + std::to_string(result->result_shape.rows.size() + 1);
+  row.requested_row_uuid = "exec-row-" + std::to_string(result->result_shape.rows.size() + 1);
   for (auto& field : fields) { row.fields.push_back({std::move(field.first), Value(std::move(field.second))}); }
   result->result_shape.result_kind = "executable_object_lifecycle_rows";
   result->result_shape.rows.push_back(std::move(row));
@@ -349,11 +349,11 @@ void AddPreparedMetadataEvidence(const EngineRequestContext& context,
   AddEvidence(result, "prepared_metadata_binding", "consumed");
   AddEvidence(result,
               "prepared_metadata_snapshot_uuid",
-              context.statement_metadata_snapshot_uuid.canonical);
+              context.statement_metadata_snapshot_uuid);
   AddEvidence(
       result,
       "prepared_metadata_exact_version",
-      context.prepared_metadata_required_object_uuid.canonical + ":" +
+      context.prepared_metadata_required_object_uuid + ":" +
           std::to_string(
               context.prepared_metadata_required_executable_generation) +
           ":" +
@@ -395,7 +395,7 @@ bool EventVisible(
           entry.identity.transaction_uuid.valid() &&
           scratchbird::core::uuid::UuidToString(
               entry.identity.transaction_uuid.value) ==
-              context.transaction_uuid.canonical) {
+              context.transaction_uuid) {
         return entry.state == TransactionState::active ||
                entry.state == TransactionState::read_only_active ||
                entry.state == TransactionState::preparing ||
@@ -476,16 +476,16 @@ std::string ObjectKind(const EngineApiRequest& request) {
 }
 
 std::string ObjectUuid(const EngineApiRequest& request) {
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    return request.bound_object_identity.object_uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    return request.bound_object_identity.object_uuid;
   }
   return OptionValue(request, "object_uuid:");
 }
 
 std::string PackageUuid(const EngineApiRequest& request) {
-  if (!request.context.current_package_uuid.canonical.empty()) {
-    return request.context.current_package_uuid.canonical;
+  if (!request.context.current_package_uuid.is_nil()) {
+    return request.context.current_package_uuid;
   }
   return OptionValue(request, "package_uuid:");
 }
@@ -626,14 +626,14 @@ bool RequestsExecutionBoundaryBypass(const EngineApiRequest& request) {
 bool HasManagePermission(const EngineApiRequest& request) {
   return SecurityContextHasRight(request.context,
                                  "CATALOG_MUTATE",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasInspectPermission(const EngineApiRequest& request) {
   return HasManagePermission(request) ||
          SecurityContextHasRight(request.context,
                                  "DISCOVER",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasInvokePermission(const EngineApiRequest& request, const std::string& object_uuid) {
@@ -644,13 +644,13 @@ bool HasInvokePermission(const EngineApiRequest& request, const std::string& obj
 bool HasEventTriggerManagePermission(const EngineApiRequest& request) {
   return SecurityContextHasRight(request.context,
                                  "EVENT_ADMIN",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool HasEventTriggerDispatchAuthority(const EngineApiRequest& request) {
   return SecurityContextHasRight(request.context,
                                  "EVENT_PUBLISH",
-                                 request.target_object.uuid.canonical);
+                                 request.target_object.uuid);
 }
 
 bool SideEffectAllowed(const EngineApiRequest& request, const std::string& side_effect_class) {
@@ -699,7 +699,7 @@ std::string CompiledBodyDescriptor(const EngineApiRequest& request) {
 
 EngineApiDiagnostic ValidateExactMgaSelector(const EngineRequestContext& context) {
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorRequired,
                           "local_transaction_id_and_transaction_uuid_required");
   }
@@ -718,7 +718,7 @@ EngineApiDiagnostic ValidateExactMgaSelector(const EngineRequestContext& context
     if (!entry.identity.transaction_uuid.valid() ||
         scratchbird::core::uuid::UuidToString(
             entry.identity.transaction_uuid.value) !=
-            context.transaction_uuid.canonical) {
+            context.transaction_uuid) {
       return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
                             "local_transaction_id_and_transaction_uuid_do_not_match");
     }
@@ -766,7 +766,7 @@ EngineApiDiagnostic ResolveRoutineColumnBinding(
       LoadMgaRelationStorageDescriptor(context, routine.table_uuid);
   if (!loaded.ok) { return loaded.diagnostic; }
   for (const auto& column : loaded.descriptor.columns) {
-    if (column.column_uuid.canonical != routine.column_uuid) { continue; }
+    if (column.column_uuid != routine.column_uuid) { continue; }
     if (column.canonical_name_key.empty()) {
       return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
                             "column_name_key_missing:" + routine.column_uuid);
@@ -1124,15 +1124,15 @@ EngineApiDiagnostic FindVisibleObject(const EngineApiRequest& request,
 EngineApiDiagnostic ValidateRelatedObjects(const EngineExecutableObjectLifecycleState& state,
                                            const EngineApiRequest& request) {
   for (const auto& related : request.related_objects) {
-    if (related.uuid.canonical.empty()) { continue; }
+    if (related.uuid.is_nil()) { continue; }
     const auto related_kind = LowerAscii(related.object_kind);
     if (!IsExecutableDependencyKind(related_kind)) { continue; }
-    const auto* dependency = FindObject(state, related.uuid.canonical);
+    const auto* dependency = FindObject(state, related.uuid);
     if (dependency == nullptr) {
-      return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible, related.uuid.canonical);
+      return ExecDiagnostic(kExecutableObjectDiagnosticDependencyNotVisible, related.uuid);
     }
     if (dependency->invalidated) {
-      return ExecDiagnostic(kExecutableObjectDiagnosticDependencyInvalidated, related.uuid.canonical);
+      return ExecDiagnostic(kExecutableObjectDiagnosticDependencyInvalidated, related.uuid);
     }
   }
   return OkDiagnostic();
@@ -1160,12 +1160,12 @@ EngineApiDiagnostic AppendDependencyRecords(const EngineApiRequest& request,
                                             std::uint64_t dependency_generation,
                                             std::uint64_t metadata_epoch) {
   for (const auto& related : request.related_objects) {
-    if (related.uuid.canonical.empty()) { continue; }
+    if (related.uuid.is_nil()) { continue; }
     EngineExecutableDependencyRecord dependency;
     dependency.creator_tx = request.context.local_transaction_id;
     dependency.source_uuid = source_uuid;
     dependency.source_kind = source_kind;
-    dependency.dependency_uuid = related.uuid.canonical;
+    dependency.dependency_uuid = related.uuid;
     dependency.dependency_kind = related.object_kind.empty() ? "executable_object" : LowerAscii(related.object_kind);
     dependency.dependency_generation = dependency_generation;
     dependency.metadata_epoch = metadata_epoch;
@@ -1212,16 +1212,16 @@ void FillObjectResult(EngineExecutableObjectLifecycleResult* result,
                       const EngineRequestContext& context,
                       const EngineExecutableObjectRecord& object,
                       std::uint64_t active_invocation_count) {
-  result->primary_object.uuid.canonical = object.object_uuid;
+  result->primary_object.uuid = object.object_uuid;
   result->primary_object.object_kind = object.object_kind;
-  result->bound_object_identity.object_uuid.canonical = object.object_uuid;
+  result->bound_object_identity.object_uuid = object.object_uuid;
   result->bound_object_identity.resolved_object_type = object.object_kind;
-  result->bound_object_identity.resolved_schema_uuid.canonical = object.schema_uuid;
-  result->bound_object_identity.parent_object_uuid.canonical = object.package_uuid;
+  result->bound_object_identity.resolved_schema_uuid = object.schema_uuid;
+  result->bound_object_identity.parent_object_uuid = object.package_uuid;
   result->bound_object_identity.catalog_generation_id = object.metadata_epoch;
   result->bound_object_identity.security_epoch = context.security_epoch;
   result->bound_object_identity.resource_epoch = context.resource_epoch;
-  result->catalog_row_uuid.canonical = "exec-catalog-row-" + object.object_uuid;
+  result->catalog_row_uuid = "exec-catalog-row-" + object.object_uuid;
   result->metadata_cache_epoch = object.metadata_epoch;
   result->executable_generation = object.executable_generation;
   result->active_invocation_count = active_invocation_count;
@@ -1268,8 +1268,8 @@ EngineApiDiagnostic ValidatePreparedMetadataRequiredVersion(
   if (!context.statement_metadata_snapshot_engine_owned) {
     return OkDiagnostic();
   }
-  if (context.statement_metadata_snapshot_uuid.canonical.empty() ||
-      context.prepared_metadata_required_object_uuid.canonical.empty() ||
+  if (context.statement_metadata_snapshot_uuid.is_nil() ||
+      context.prepared_metadata_required_object_uuid.is_nil() ||
       context.prepared_metadata_required_executable_generation == 0 ||
       context.prepared_metadata_required_metadata_epoch == 0) {
     return ExecDiagnostic(
@@ -1277,11 +1277,11 @@ EngineApiDiagnostic ValidatePreparedMetadataRequiredVersion(
         "engine_owned_binding_missing_exact_metadata_identity");
   }
   if (object.object_uuid !=
-      context.prepared_metadata_required_object_uuid.canonical) {
+      context.prepared_metadata_required_object_uuid) {
     return ExecDiagnostic(
         kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
         "object_uuid:" + object.object_uuid + ":required:" +
-            context.prepared_metadata_required_object_uuid.canonical);
+            context.prepared_metadata_required_object_uuid);
   }
   if (object.executable_generation !=
       context.prepared_metadata_required_executable_generation) {
@@ -1420,7 +1420,7 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   result_rows.reserve(candidates.size());
   for (const auto& task : candidates) {
     EngineRowValue row;
-    row.requested_row_uuid.canonical =
+    row.requested_row_uuid =
         "proc-process-result-row-" + std::to_string(next_result_id);
     row.fields.push_back({"result_id", ScalarValue("integer", std::to_string(next_result_id++))});
     row.fields.push_back({"task_id", ScalarValue("integer", std::to_string(task.task_id))});
@@ -1436,7 +1436,7 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   }
   EngineInsertRowsRequest insert;
   insert.context = request.context;
-  insert.target_table.uuid.canonical = result_table_uuid;
+  insert.target_table.uuid = result_table_uuid;
   insert.target_table.object_kind = "table";
   insert.input_rows = std::move(result_rows);
   insert.require_generated_row_uuid = true;
@@ -1495,7 +1495,7 @@ EngineApiDiagnostic ExecuteDeleteColumnRangeCountProcedure(
   EngineDeleteRowsRequest delete_request;
   delete_request.context = request.context;
   delete_request.operation_id = "dml.delete_rows";
-  delete_request.target_table.uuid.canonical = descriptor.table_uuid;
+  delete_request.target_table.uuid = descriptor.table_uuid;
   delete_request.target_table.object_kind = "table";
   // The routine body invokes the canonical DELETE API; its compiled-routine
   // origin is carried as evidence below, not as new compatibility-specific DML
@@ -1888,7 +1888,7 @@ EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
                           object_kind);
   }
   if (object_kind != "event_trigger" &&
-      request.target_schema.uuid.canonical.empty()) {
+      request.target_schema.uuid.is_nil()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticSchemaUuidRequired,
                           "target_schema.uuid");
   }
@@ -1984,7 +1984,7 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
         kOperationCreate,
         ExecDiagnostic(kExecutableObjectDiagnosticUnsupportedKind, object_kind));
   }
-  if (object_kind != "event_trigger" && request.target_schema.uuid.canonical.empty()) {
+  if (object_kind != "event_trigger" && request.target_schema.uuid.is_nil()) {
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
         request.context,
         kOperationCreate,
@@ -2064,8 +2064,8 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
   record.creator_tx = request.context.local_transaction_id;
   record.object_uuid = object_uuid;
   record.object_kind = object_kind;
-  record.schema_uuid = request.target_schema.uuid.canonical;
-  record.owner_principal_uuid = request.context.principal_uuid.canonical;
+  record.schema_uuid = request.target_schema.uuid;
+  record.owner_principal_uuid = request.context.principal_uuid;
   record.package_uuid = PackageUuid(request);
   record.lifecycle_state = "active";
   record.executable_generation = 1;
@@ -2526,8 +2526,8 @@ EngineInspectExecutableObjectResult EngineInspectExecutableObjects(
   auto result = SuccessResult<EngineInspectExecutableObjectResult>(request.context, kOperationInspect);
   result.metadata_cache_epoch = loaded.state.metadata_epoch;
   for (const auto& object : loaded.state.objects) {
-    if (!request.target_object.uuid.canonical.empty() &&
-        object.object_uuid != request.target_object.uuid.canonical) {
+    if (!request.target_object.uuid.is_nil() &&
+        object.object_uuid != request.target_object.uuid) {
       continue;
     }
     AddRow(&result, {{"object_uuid", object.object_uuid},

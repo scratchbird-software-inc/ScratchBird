@@ -50,7 +50,7 @@ EngineApiDiagnostic AggregateDiagnostic(std::string detail) {
 }
 
 bool DescriptorEmpty(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid.canonical.empty() &&
+  return descriptor.descriptor_uuid.is_nil() &&
          descriptor.descriptor_kind.empty() &&
          descriptor.canonical_type_name.empty() &&
          descriptor.encoded_descriptor.empty();
@@ -58,11 +58,7 @@ bool DescriptorEmpty(const EngineDescriptor& descriptor) {
 
 bool DescriptorExactlyMatches(const EngineDescriptor& left,
                               const EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical ==
-             right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool TypedValueIsEmpty(const EngineTypedValue& value) {
@@ -119,7 +115,7 @@ const MgaRelationColumnStorageDescriptor* FindColumnByUuid(
   const MgaRelationColumnStorageDescriptor* found = nullptr;
   if (duplicate != nullptr) *duplicate = false;
   for (const auto& column : descriptor.columns) {
-    if (column.column_uuid.canonical != column_uuid) continue;
+    if (column.column_uuid != column_uuid) continue;
     if (found != nullptr) {
       if (duplicate != nullptr) *duplicate = true;
       return nullptr;
@@ -287,7 +283,7 @@ bool CanonicalIntegerDistinctKey(const EngineDescriptor& descriptor,
     return false;
   }
   (void)parsed;
-  *key = descriptor.descriptor_uuid.canonical + "|" +
+  *key = descriptor.descriptor_uuid + "|" +
          std::string(dt::CanonicalTypeName(*type_id)) + "|" +
          canonical;
   if (error_detail != nullptr) error_detail->clear();
@@ -406,7 +402,7 @@ bool CanonicalReal64Value(const EngineDescriptor& descriptor,
           static_cast<unsigned>((encoded_bits.size() - index - 1u) * 4u);
       encoded_bits[index] = kHex[(bits >> shift) & 0x0fu];
     }
-    *key = descriptor.descriptor_uuid.canonical + "|real64|" +
+    *key = descriptor.descriptor_uuid + "|real64|" +
            std::string(encoded_bits.data(), encoded_bits.size());
   }
   if (error_detail != nullptr) error_detail->clear();
@@ -560,10 +556,10 @@ std::string_view EngineGlobalAggregateAvgFunctionUuid() {
 
 EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
     const EngineGlobalAggregateProjectionEnvelope& envelope) {
-  if (envelope.relation_uuid.canonical.empty()) {
+  if (envelope.relation_uuid.is_nil()) {
     return AggregateDiagnostic("global_aggregate_relation_uuid_required");
   }
-  if (envelope.relation_descriptor_uuid.canonical.empty()) {
+  if (envelope.relation_descriptor_uuid.is_nil()) {
     return AggregateDiagnostic(
         "global_aggregate_relation_descriptor_uuid_required");
   }
@@ -579,7 +575,7 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
   }
 
   const std::string& envelope_function_uuid =
-      envelope.outputs.front().aggregate_function_uuid.canonical;
+      envelope.outputs.front().aggregate_function_uuid;
   const std::string_view count_function_uuid =
       EngineGlobalAggregateCountFunctionUuid();
   const std::string_view avg_function_uuid =
@@ -594,7 +590,7 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
   }
   std::unordered_set<std::string> output_aliases;
   for (const auto& output : envelope.outputs) {
-    if (output.aggregate_function_uuid.canonical != envelope_function_uuid) {
+    if (output.aggregate_function_uuid != envelope_function_uuid) {
       return AggregateDiagnostic(
           "global_aggregate_function_uuid_mixed");
     }
@@ -639,7 +635,7 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
       }
     }
     if (output.operation == EngineGlobalAggregateOperation::count_star) {
-      if (!output.source_field.column_uuid.canonical.empty() ||
+      if (!output.source_field.column_uuid.is_nil() ||
           !DescriptorEmpty(output.source_field.value_descriptor)) {
         return AggregateDiagnostic(
             "global_aggregate_count_star_forbids_field_binding");
@@ -654,11 +650,11 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
     }
 
     if (!FieldOperation(output.operation) ||
-        output.source_field.column_uuid.canonical.empty()) {
+        output.source_field.column_uuid.is_nil()) {
       return AggregateDiagnostic(
           "global_aggregate_source_field_uuid_required");
     }
-    if (output.source_field.value_descriptor.descriptor_uuid.canonical.empty() ||
+    if (output.source_field.value_descriptor.descriptor_uuid.is_nil() ||
         output.source_field.value_descriptor.descriptor_kind.empty() ||
         output.source_field.value_descriptor.canonical_type_name.empty() ||
         output.source_field.value_descriptor.encoded_descriptor.empty()) {
@@ -700,14 +696,14 @@ EngineGlobalAggregateBindingResult BindGlobalAggregateProjectionEnvelope(
     result.diagnostic = relation_validation;
     return result;
   }
-  if (envelope.relation_uuid.canonical !=
-      relation_descriptor.relation_uuid.canonical) {
+  if (envelope.relation_uuid !=
+      relation_descriptor.relation_uuid) {
     result.diagnostic =
         AggregateDiagnostic("global_aggregate_relation_uuid_mismatch");
     return result;
   }
-  if (envelope.relation_descriptor_uuid.canonical !=
-      relation_descriptor.descriptor_uuid.canonical) {
+  if (envelope.relation_descriptor_uuid !=
+      relation_descriptor.descriptor_uuid) {
     result.diagnostic = AggregateDiagnostic(
         "global_aggregate_relation_descriptor_uuid_mismatch");
     return result;
@@ -730,7 +726,7 @@ EngineGlobalAggregateBindingResult BindGlobalAggregateProjectionEnvelope(
       bool duplicate = false;
       const auto* column = FindColumnByUuid(
           relation_descriptor,
-          output.source_field.column_uuid.canonical,
+          output.source_field.column_uuid,
           &duplicate);
       if (duplicate) {
         result.outputs.clear();
@@ -782,7 +778,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
   }
 
   const std::string& aggregate_function_uuid =
-      outputs.front().aggregate_function_uuid.canonical;
+      outputs.front().aggregate_function_uuid;
   const std::string_view count_function_uuid =
       EngineGlobalAggregateCountFunctionUuid();
   const std::string_view avg_function_uuid =
@@ -807,7 +803,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
       outputs.size());
   for (std::size_t index = 0; index < outputs.size(); ++index) {
     const auto& output = outputs[index];
-    if (output.aggregate_function_uuid.canonical != aggregate_function_uuid) {
+    if (output.aggregate_function_uuid != aggregate_function_uuid) {
       result.diagnostic = AggregateDiagnostic(
           "bound_global_aggregate_function_uuid_mixed");
       return result;
@@ -834,7 +830,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
       return result;
     }
     if (output.operation == EngineGlobalAggregateOperation::count_star) {
-      if (!output.source_field.column_uuid.canonical.empty() ||
+      if (!output.source_field.column_uuid.is_nil() ||
           !DescriptorEmpty(output.source_field.value_descriptor) ||
           !DescriptorExactlyMatches(
               output.result_descriptor,
@@ -846,7 +842,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
       continue;
     }
     if (!FieldOperation(output.operation) ||
-        output.source_field.column_uuid.canonical.empty()) {
+        output.source_field.column_uuid.is_nil()) {
       result.diagnostic = AggregateDiagnostic(
           "bound_global_aggregate_source_field_uuid_required");
       return result;
@@ -854,7 +850,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
     bool duplicate = false;
     const auto* column = FindColumnByUuid(
         relation_descriptor,
-        output.source_field.column_uuid.canonical,
+        output.source_field.column_uuid,
         &duplicate);
     if (duplicate) {
       result.diagnostic = AggregateDiagnostic(
@@ -1025,7 +1021,7 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
               (expression_int32_literals[index]
                    ? std::string("expression:int64")
                    : output.source_field.value_descriptor.descriptor_uuid
-                         .canonical +
+                          +
                          "|" +
                          output.source_field.value_descriptor
                              .canonical_type_name) +

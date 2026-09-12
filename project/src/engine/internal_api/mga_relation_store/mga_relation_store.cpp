@@ -248,22 +248,25 @@ bool FileExistsAndNotEmpty(const std::string& path) {
          std::filesystem::file_size(path, ignored) != 0;
 }
 
-std::vector<std::string> ReadScopedRelationLinesForTables(
+bool ReadScopedRelationLinesForTables(
     const EngineRequestContext& context,
     const std::set<std::string>& table_uuids,
     bool row_store,
+    std::vector<std::string>* output,
     bool* used_segments) {
+  if (output == nullptr) return false;
+  output->clear();
+  if (used_segments != nullptr) *used_segments = false;
   std::vector<std::string> lines;
   bool used = false;
   for (const auto& table_uuid : table_uuids) {
     const std::string path = row_store
                                  ? ScopedRowStorePath(context, table_uuid)
                                  : ScopedIndexStorePath(context, table_uuid);
-    if (!FileExistsAndNotEmpty(path)) {
-      continue;
-    }
+    std::vector<std::string> segment_lines;
+    if (!ReadCompleteMgaTextRecords(path, &segment_lines)) return false;
+    if (segment_lines.empty()) continue;
     used = true;
-    auto segment_lines = ReadLines(path);
     lines.reserve(lines.size() + segment_lines.size());
     lines.insert(lines.end(),
                  std::make_move_iterator(segment_lines.begin()),
@@ -272,7 +275,8 @@ std::vector<std::string> ReadScopedRelationLinesForTables(
   if (used_segments != nullptr) {
     *used_segments = used;
   }
-  return lines;
+  *output = std::move(lines);
+  return true;
 }
 
 std::set<std::string> DiscoverScopedRelationTableUuids(
@@ -305,14 +309,15 @@ std::set<std::string> DiscoverScopedRelationTableUuids(
 
 bool DecodeScopedIndexBinaryStore(
     const std::string& path,
-    std::vector<CrudIndexEntryRecord>* entries) {
+    std::vector<CrudIndexEntryRecord>* entries,
+    bool* used_segment) {
+  if (used_segment != nullptr) *used_segment = false;
   if (entries == nullptr) {
     return false;
   }
-  if (!FileExistsAndNotEmpty(path)) {
-    return true;
-  }
-  const std::vector<idx::byte> bytes = ReadBinaryFile(path);
+  std::vector<idx::byte> bytes;
+  if (!ReadCompleteMgaBinaryFile(path, &bytes)) return false;
+  std::vector<CrudIndexEntryRecord> staged;
   std::size_t offset = 0;
   while (offset < bytes.size()) {
     if (offset + kScopedIndexBinaryBatchMagic.size() > bytes.size() ||
@@ -351,7 +356,13 @@ bool DecodeScopedIndexBinaryStore(
         table_uuid.empty() || index_uuid.empty() || entry_kind.empty()) {
       return false;
     }
-    entries->reserve(entries->size() + static_cast<std::size_t>(entry_count));
+    // Four length-prefixed nonempty/optional fields consume at least sixteen
+    // framing bytes per entry. Refuse corrupt counts before allocation.
+    if (entry_count > (bytes.size() - offset) / 16 ||
+        entry_count > staged.max_size() - staged.size() ||
+        (entry_count != 0 && entry_count - 1 >
+             std::numeric_limits<std::uint64_t>::max() - first_event_sequence)) return false;
+    staged.reserve(staged.size() + static_cast<std::size_t>(entry_count));
     for (std::uint64_t index = 0; index < entry_count; ++index) {
       CrudIndexEntryRecord entry;
       entry.creator_tx = creator_tx;
@@ -370,9 +381,13 @@ bool DecodeScopedIndexBinaryStore(
           entry.version_uuid.empty()) {
         return false;
       }
-      entries->push_back(std::move(entry));
+      staged.push_back(std::move(entry));
     }
   }
+  if (staged.size() > entries->max_size() - entries->size()) return false;
+  entries->insert(entries->end(), std::make_move_iterator(staged.begin()),
+                  std::make_move_iterator(staged.end()));
+  if (used_segment != nullptr) *used_segment = !bytes.empty();
   return true;
 }
 
@@ -434,11 +449,12 @@ std::uint64_t ParseU64(const std::string& text, std::uint64_t fallback = 0) {
 ScopedRelationSummary RebuildScopedRelationSummaryFromRows(
     const std::string& scoped_row_path) {
   ScopedRelationSummary summary;
-  if (!FileExistsAndNotEmpty(scoped_row_path)) {
-    summary.trusted = true;
+  std::vector<std::string> lines;
+  if (!ReadCompleteMgaTextRecords(scoped_row_path, &lines)) {
+    summary.malformed = true;
     return summary;
   }
-  for (const auto& line : ReadLines(scoped_row_path)) {
+  for (const auto& line : lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
         fields[1] != "ROW_VERSION") {
@@ -507,18 +523,16 @@ ScopedRelationSummary LoadScopedRelationSummary(
   const std::string row_path = ScopedRowStorePath(context, table_uuid);
   const std::string binary_row_path = ScopedRowBinaryStorePath(context,
                                                               table_uuid);
-  if (!FileExistsAndNotEmpty(summary_path)) {
-    if (!FileExistsAndNotEmpty(row_path) &&
-        !FileExistsAndNotEmpty(binary_row_path)) {
-      ScopedRelationSummary empty;
-      empty.trusted = true;
-      return empty;
-    }
+  ScopedRelationSummary summary;
+  std::vector<std::string> lines;
+  if (!ReadCompleteMgaTextRecords(summary_path, &lines)) {
+    summary.malformed = true;
+    return summary;
+  }
+  if (lines.empty()) {
     return RebuildScopedRelationSummaryFromStores(context, table_uuid);
   }
-
-  ScopedRelationSummary summary;
-  for (const auto& line : ReadLines(summary_path)) {
+  for (const auto& line : lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 8 || fields[0] != "SBMGASUM1" ||
         fields[1] != "RELATION_SCOPE") {
@@ -670,18 +684,20 @@ bool LoadScopedBinaryIndexEntriesForTables(
   if (used_segment != nullptr) {
     *used_segment = false;
   }
+  std::vector<CrudIndexEntryRecord> staged;
+  bool any_segment = false;
   for (const auto& table_uuid : table_uuids) {
     const std::string path = ScopedIndexBinaryStorePath(context, table_uuid);
-    if (!FileExistsAndNotEmpty(path)) {
-      continue;
-    }
-    if (used_segment != nullptr) {
-      *used_segment = true;
-    }
-    if (!DecodeScopedIndexBinaryStore(path, entries)) {
+    bool used = false;
+    if (!DecodeScopedIndexBinaryStore(path, &staged, &used)) {
       return false;
     }
+    any_segment = any_segment || used;
   }
+  if (staged.size() > entries->max_size() - entries->size()) return false;
+  entries->insert(entries->end(), std::make_move_iterator(staged.begin()),
+                  std::make_move_iterator(staged.end()));
+  if (used_segment != nullptr) *used_segment = any_segment;
   return true;
 }
 
@@ -891,7 +907,7 @@ std::set<std::string> VisibleRetiredTemporaryTableMetadata(
     const std::string& table_uuid = fields[4];
     const std::string& session_uuid = fields[6];
     if (!session_uuid.empty() &&
-        session_uuid != context.session_uuid.canonical) {
+        session_uuid != context.session_uuid) {
       continue;
     }
     if (CrudCreatorVisible(state,
@@ -998,8 +1014,8 @@ void FilterMgaTemporaryObjectsForSession(
     const bool global_temporary_metadata =
         table.temporary && table.temporary_scope == "global";
     const bool visible = !table.temporary || global_temporary_metadata ||
-                         (!context.session_uuid.canonical.empty() &&
-                          table.temporary_session_uuid == context.session_uuid.canonical);
+                         (!context.session_uuid.is_nil() &&
+                          table.temporary_session_uuid == context.session_uuid);
     if (visible) {
       retained_tables.push_back(table);
     } else {
@@ -1134,9 +1150,9 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
   const auto descriptor_identity = ExistingFileIdentity(descriptor_path);
   result.key = MgaStatementMetadataViewKey{
       metadata.key,
-      context.database_uuid.canonical,
-      context.session_uuid.canonical,
-      context.transaction_uuid.canonical,
+      context.database_uuid,
+      context.session_uuid,
+      context.transaction_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id,
       context.catalog_generation_id,
@@ -1484,18 +1500,6 @@ EngineApiDiagnostic ValidateMgaMutatingTransactionAuthorityForStoreModule(
   return ValidateMgaMutatingTransactionAuthority(context, operation_id);
 }
 
-std::function<bool(std::uint64_t, std::uint64_t)>
-MakeMgaMetadataRollbackPredicateForStoreModule(
-    const EngineRequestContext& context) {
-  auto savepoints = ParseSavepoints(context);
-  return [savepoints = std::move(savepoints)](
-             const std::uint64_t creator_tx,
-             const std::uint64_t event_sequence) {
-    return MetadataEventRolledBackBySavepoint(
-        savepoints, creator_tx, event_sequence);
-  };
-}
-
 bool ExactTextMigrationCreatorTransactionForStoreModule(
     const EngineRequestContext& context,
     const std::uint64_t creator_tx,
@@ -1681,7 +1685,13 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     return result;
   }
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.state = {};
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
   if (savepoints.marker_authority_corrupt || savepoints.update_statement_authority_corrupt) {
+    result.state = {};
     result.diagnostic = MakeEngineApiDiagnostic("MGA.SAVEPOINT.AUTHORITY_CORRUPT",
         "mga.savepoint.authority_corrupt", "savepoint_marker_stream_invalid");
     return result;
@@ -1725,7 +1735,13 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
       ++result.row_versions_retained;
     }
   }
-  for (const auto& line : ReadLines(RowStorePath(context))) {
+  std::vector<std::string> row_lines;
+  if (!ReadCompleteMgaTextRecords(RowStorePath(context), &row_lines)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.row_store", "row_store_read_failed");
+    return result;
+  }
+  for (const auto& line : row_lines) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
         fields[1] != "ROW_VERSION") {
@@ -1771,13 +1787,22 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
         "scoped_index_binary_segment_decode_failed");
     return result;
   }
-  std::vector<std::string> index_lines =
-      ReadScopedRelationLinesForTables(context,
-                                       all_table_uuids,
-                                       false,
-                                       &scoped_index_segments_used);
+  std::vector<std::string> index_lines;
+  if (!ReadScopedRelationLinesForTables(context,
+                                        all_table_uuids,
+                                        false,
+                                        &index_lines,
+                                        &scoped_index_segments_used)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.index_store", "scoped_index_segment_read_failed");
+    return result;
+  }
   if (!scoped_index_segments_used && !scoped_binary_index_segments_used) {
-    index_lines = ReadLines(IndexStorePath(context));
+    if (!ReadCompleteMgaTextRecords(IndexStorePath(context), &index_lines)) {
+      result.diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.index_store", "index_store_read_failed");
+      return result;
+    }
   }
   result.scoped_physical_segments_used =
       !scoped_row_tables_used.empty() || scoped_index_segments_used ||
@@ -1912,6 +1937,11 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
     }
   }
   const auto savepoints = ParseSavepoints(context);
+  if (savepoints.diagnostic.error) {
+    result.state = {};
+    result.diagnostic = savepoints.diagnostic;
+    return result;
+  }
 
   if (savepoints.marker_authority_corrupt || savepoints.update_statement_authority_corrupt) {
     result.diagnostic = MakeEngineApiDiagnostic("MGA.SAVEPOINT.AUTHORITY_CORRUPT",
@@ -1934,10 +1964,15 @@ MgaRelationStoreResult LoadMgaRelationStoreStateForTargetScope(
           "scoped_index_binary_segment_decode_failed");
       return result;
     }
-    index_lines = ReadScopedRelationLinesForTables(context,
-                                                   table_scope,
-                                                   false,
-                                                   &index_segments_used);
+    if (!ReadScopedRelationLinesForTables(context,
+                                          table_scope,
+                                          false,
+                                          &index_lines,
+                                          &index_segments_used)) {
+      result.diagnostic = MakeInvalidRequestDiagnostic(
+          "mga.index_store", "scoped_index_segment_read_failed");
+      return result;
+    }
   }
 
   if (include_row_versions) {
@@ -2355,7 +2390,7 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     return result;
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load",
         "exact_active_transaction_identity_required");
@@ -2364,7 +2399,7 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
 
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load", "transaction_uuid_invalid");
@@ -2470,8 +2505,8 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
     result.diagnostic = loaded_descriptor.diagnostic;
     return result;
   }
-  if (loaded_descriptor.descriptor.relation_uuid.canonical != relation_uuid ||
-      loaded_descriptor.descriptor.descriptor_uuid.canonical !=
+  if (loaded_descriptor.descriptor.relation_uuid != relation_uuid ||
+      loaded_descriptor.descriptor.descriptor_uuid !=
           relation_descriptor_uuid ||
       loaded_descriptor.descriptor.descriptor_generation !=
           relation_descriptor_generation) {
@@ -2736,7 +2771,7 @@ EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
     }
     return OkDiagnostic();
   }
-  if (!exact_session_uuid(context.session_uuid.canonical)) {
+  if (!exact_session_uuid(context.session_uuid)) {
     return MakeInvalidRequestDiagnostic(
         "mga.heap_relation_read.prepare",
         "temporary_relation_session_authority_required");
@@ -2751,7 +2786,7 @@ EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
   }
   if (table.temporary_scope != "private" ||
       !exact_session_uuid(table.temporary_session_uuid) ||
-      table.temporary_session_uuid != context.session_uuid.canonical) {
+      table.temporary_session_uuid != context.session_uuid) {
     return MakeInvalidRequestDiagnostic(
         "mga.heap_relation_read.prepare",
         "private_temporary_relation_owner_mismatch");
@@ -2773,14 +2808,14 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
     return result;
   };
   if (relation_uuids.empty() || context.database_path.empty() ||
-      context.database_uuid.canonical.empty() ||
+      context.database_uuid.is_nil() ||
       context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
-      context.statement_uuid.canonical.empty() ||
-      context.statement_snapshot_uuid.canonical.empty() ||
+      context.transaction_uuid.is_nil() ||
+      context.statement_uuid.is_nil() ||
+      context.statement_snapshot_uuid.is_nil() ||
       !context.statement_metadata_snapshot_engine_owned ||
-      context.statement_metadata_snapshot_uuid.canonical.empty() ||
-      context.catalog_epoch_uuid.canonical.empty() ||
+      context.statement_metadata_snapshot_uuid.is_nil() ||
+      context.catalog_epoch_uuid.is_nil() ||
       !context.security_context_present ||
       !context.authorization_context.present ||
       context.catalog_generation_id == 0 || context.security_epoch == 0 ||
@@ -2861,16 +2896,16 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
           metadata.transactions);
   statement->transaction_inventory_snapshot =
       metadata_view.view->transaction_inventory_snapshot;
-  statement->database_uuid = context.database_uuid.canonical;
-  statement->statement_uuid = context.statement_uuid.canonical;
-  statement->transaction_uuid = context.transaction_uuid.canonical;
+  statement->database_uuid = context.database_uuid;
+  statement->statement_uuid = context.statement_uuid;
+  statement->transaction_uuid = context.transaction_uuid;
   statement->statement_snapshot_uuid =
-      context.statement_snapshot_uuid.canonical;
+      context.statement_snapshot_uuid;
   statement->statement_metadata_snapshot_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
-  statement->catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+      context.statement_metadata_snapshot_uuid;
+  statement->catalog_epoch_uuid = context.catalog_epoch_uuid;
   statement->authorization_authority_uuid =
-      context.authorization_context.authority_uuid.canonical;
+      context.authorization_context.authority_uuid;
   statement->catalog_generation = context.catalog_generation_id;
   statement->security_epoch = context.authorization_context.security_epoch;
   statement->policy_epoch = context.authorization_context.policy_epoch;
@@ -2950,12 +2985,12 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
     const auto validated =
         ValidateMgaRelationStorageDescriptor(relation->descriptor);
     if (validated.error ||
-        relation->descriptor.relation_uuid.canonical != relation_uuid ||
-        relation->descriptor.database_uuid.canonical !=
-            context.database_uuid.canonical ||
+        relation->descriptor.relation_uuid != relation_uuid ||
+        relation->descriptor.database_uuid !=
+            context.database_uuid ||
         relation->descriptor.relation_kind != "table" ||
         relation->descriptor.storage_profile != "local_mga_rowstore_v1" ||
-        relation->descriptor.descriptor_uuid.canonical.empty() ||
+        relation->descriptor.descriptor_uuid.is_nil() ||
         relation->descriptor.descriptor_generation == 0 ||
         relation->descriptor.descriptor_status.empty()) {
       return refuse(validated.error

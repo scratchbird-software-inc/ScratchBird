@@ -36,6 +36,7 @@ struct EngineLanguageContext;
 struct EngineMaterializedAuthorizationContext;
 struct EngineRequestContext;
 struct EngineSecurityPrincipalLifecycleState;
+struct EngineTransactionInventoryObservation;
 }
 
 namespace scratchbird::server {
@@ -111,7 +112,7 @@ enum class ServerTransactionLifecycleState {
 struct ServerTransactionState {
   std::uint64_t local_transaction_id = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
   std::string isolation_level = "read_committed";
   bool read_only = false;
@@ -145,7 +146,7 @@ struct ServerSessionRecord {
   std::string provider_family;
   std::string requested_role_name;
   std::string database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;
   std::string attach_mode = "read_write";
@@ -187,7 +188,7 @@ struct ServerSessionRecord {
   bool embedded_in_process = false;
   std::uint64_t local_transaction_id = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
   // The scalar fields above remain the V1/default projection.  V2 callers use
   // an exact entry in this map, validated under transaction_mutex.
@@ -220,6 +221,11 @@ struct ServerSessionRecord {
   std::uint32_t admitted_parser_package_version_minor = 0;
   std::uint32_t admitted_parser_package_version_patch = 0;
   bool detached_recovery_quarantined = false;
+  // Engine-issued binary identity retained separately from user transactions.
+  // An uncertain cleanup publication is never an active/default transaction;
+  // another cleanup must not overwrite it before engine recovery resolves it.
+  std::shared_ptr<const scratchbird::engine::internal_api::EngineTransactionInventoryObservation>
+      pending_temporary_cleanup_transaction;
   bool session_binding_present = false;
   std::array<std::uint8_t, 16> attachment_id{};
   std::array<std::uint8_t, 16> catalog_session_id{};
@@ -269,7 +275,7 @@ struct ServerPreparedStatementRecord {
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string statement_name;
   std::string encoded_sblr_envelope;
   std::string operation_family;
@@ -297,18 +303,18 @@ struct ServerPreparedStatementRecord {
   std::string resource_version_identity = "sbsql.resource-pack.v1";
   std::uint64_t session_object_handle_id = 0;
   std::uint64_t session_object_handle_generation = 0;
-  std::string target_object_uuid;
+  scratchbird::core::platform::Uuid target_object_uuid;
   std::string target_object_kind;
   std::string target_operation_id;
   std::string target_column_set_hash;
-  std::string authority_dependency_uuid;
+  scratchbird::core::platform::Uuid authority_dependency_uuid;
   std::string authority_dependency_kind;
   std::string authority_dependency_operation_id;
   std::string authority_dependency_column_set_hash;
   std::string authority_proof_hash_algorithm = "sha256";
   std::string authority_proof_hash;
   std::uint64_t prepare_local_transaction_id = 0;
-  std::string prepare_transaction_uuid;
+  scratchbird::core::platform::Uuid prepare_transaction_uuid;
   std::uint64_t prepare_snapshot_visible_through_local_transaction_id = 0;
   // V1 prepare records the default transaction authority context for
   // validation, but it is not a transaction-routed prepare.  Preserve the
@@ -330,9 +336,9 @@ struct ServerPreparedExecutionContextRecord {
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string operation_id;
-  std::string target_object_uuid;
+  scratchbird::core::platform::Uuid target_object_uuid;
   std::string statement_shape_hash;
   std::string authority_proof_hash;
   ServerAuthorityCacheEpochVector epoch_vector;
@@ -354,8 +360,8 @@ struct ServerSessionObjectHandleRecord {
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::string object_kind;
   std::string operation_id;
   std::string column_set_hash;
@@ -383,9 +389,9 @@ struct ServerAuthorityCacheRecord {
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::string operation_id;
-  std::string target_object_uuid;
+  scratchbird::core::platform::Uuid target_object_uuid;
   std::string statement_shape_hash;
   ServerAuthorityCacheEpochVector epoch_vector;
   std::string diagnostic_code;
@@ -409,8 +415,8 @@ struct ServerAuthorityCacheValidation {
 struct ServerPublicNameResolutionCacheRecord {
   std::string cache_key;
   std::array<std::uint8_t, 16> effective_user_uuid{};
-  std::string database_uuid;
-  std::string object_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid object_uuid;
   std::string canonical_name;
   std::string object_class;
   std::uint64_t catalog_generation = 1;
@@ -451,11 +457,11 @@ struct ServerLanguageContextIdentity {
 };
 
 struct ServerLanguageBundleRecord {
-  std::string bundle_uuid;
+  scratchbird::core::platform::Uuid bundle_uuid;
   std::string language_profile_id;
   std::string language_tag;
-  std::string dialect_profile_uuid;
-  std::string topology_profile_uuid;
+  scratchbird::core::platform::Uuid dialect_profile_uuid;
+  scratchbird::core::platform::Uuid topology_profile_uuid;
   std::string common_resource_hash;
   std::string resource_hash;
   bool loaded = false;
@@ -497,14 +503,14 @@ struct ServerCursorRecord {
   std::string finality_reason;
   std::uint64_t owning_local_transaction_id = 0;
   std::uint64_t owning_snapshot_visible_through_local_transaction_id = 0;
-  std::string owning_transaction_uuid;
+  scratchbird::core::platform::Uuid owning_transaction_uuid;
   bool holdable_after_commit = false;
   sb_engine_result_t engine_result = nullptr;
   // Non-empty only while this cursor owns the live private engine statement
   // receipt associated with its canonical execution. The receipt itself
   // remains in the server-owned statement-context registry and never crosses
   // the protocol boundary.
-  std::string statement_context_statement_uuid;
+  scratchbird::core::platform::Uuid statement_context_statement_uuid;
   std::uint64_t bulk_total_rows = 0;
   std::uint64_t bulk_rejected_rows = 0;
   std::uint64_t multi_result_count = 0;
@@ -587,9 +593,9 @@ struct ServerPublicAbiSessionContext {
 // cross SBPS; only the bounded immutable projection is returned to the parser.
 struct ServerStatementContextRecord {
   std::array<std::uint8_t, 16> session_uuid{};
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::uint64_t owning_local_transaction_id = 0;
-  std::string owning_transaction_uuid;
+  scratchbird::core::platform::Uuid owning_transaction_uuid;
   scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt;
   scratchbird::server_engine_bridge::StatementContextReceiptView view;
   bool released = false;
@@ -599,8 +605,8 @@ struct ServerStatementContextRecord {
 };
 
 struct ServerParameterExecutionCoordinationRecord {
-  std::string session_uuid;
-  std::string operation_uuid;
+  scratchbird::core::platform::Uuid session_uuid;
+  scratchbird::core::platform::Uuid operation_uuid;
   scratchbird::server_engine_bridge::StatementParameterExecutionMode mode =
       scratchbird::server_engine_bridge::StatementParameterExecutionMode::kDirect;
   std::uint64_t private_handle = 0;
@@ -878,7 +884,7 @@ struct ServerSessionBindingControlResult {
   std::uint8_t probe_flags = 0;
   std::string diagnostic_code;
   std::string detail;
-  std::string target_session_uuid;
+  scratchbird::core::platform::Uuid target_session_uuid;
   std::vector<ServerDiagnostic> diagnostics;
 };
 

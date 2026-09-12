@@ -146,19 +146,29 @@ void TestProviderInfoAndFailClosedExecution() {
   auto inspect_request =
       ProviderRequest(std::string(cluster_provider::kClusterProviderInfoOperationId));
   const auto inspect = cluster_provider::InspectClusterProvider(inspect_request);
-  Require(inspect.ok, "provider inspect route failed");
-  Require(inspect.result_shape.result_kind ==
-              std::string(cluster_provider::kClusterProviderInfoResultKind),
-          "provider inspect route used unexpected result kind");
-  Require(inspect.result_shape.rows.size() == 1,
-          "provider inspect route should return exactly one info row");
-  const auto& row = inspect.result_shape.rows.front();
-  Require(FieldValue(row, "provider_type") == provider_type,
-          "provider inspect row lost provider type");
-  Require(FieldValue(row, "support_status") == provider_support,
-          "provider inspect row lost support status");
-  Require(FieldValue(row, "supports_execution") == "false",
-          "provider inspect row claimed execution support");
+  if (info.provider_type == "no_cluster" || info.provider_type == "compile_link_stub") {
+    Require(!inspect.ok && inspect.cluster_authority_required,
+            "standalone inspection fabricated cluster success");
+    Require(inspect.result_shape.rows.empty() &&
+                inspect.result_shape.columns.empty(),
+            "standalone inspection fabricated typed identities");
+    Require(HasDiagnostic(inspect, "PROCESS.CLUSTER_PATH_ABSENT"),
+            "standalone inspection lost normative absent-path diagnostic");
+  } else {
+    Require(inspect.ok, "provider inspect route failed");
+    Require(inspect.result_shape.result_kind ==
+                std::string(cluster_provider::kClusterProviderInfoResultKind),
+            "provider inspect route used unexpected result kind");
+    Require(inspect.result_shape.rows.size() == 1,
+            "provider inspect route should return exactly one info row");
+    const auto& row = inspect.result_shape.rows.front();
+    Require(FieldValue(row, "provider_type") == provider_type,
+            "provider inspect row lost provider type");
+    Require(FieldValue(row, "support_status") == provider_support,
+            "provider inspect row lost support status");
+    Require(FieldValue(row, "supports_execution") == "false",
+            "provider inspect row claimed execution support");
+  }
 
   auto execute_request =
       ProviderRequest("cluster.public_release_boundary_cleanup");
@@ -185,7 +195,7 @@ void TestProviderInfoAndFailClosedExecution() {
   } else {
     Require(HasDiagnostic(
                 executed,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "compile-link stub did not publish compile-link-only diagnostic");
     Require(HasUnsupportedFeature(executed, "cluster.provider.stub"),
             "compile-link stub did not publish unsupported feature");

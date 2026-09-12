@@ -220,7 +220,7 @@ IparRowLayoutBuildResult BuildIparRowLayoutDescriptor(
   std::uint32_t variable_index = 0;
   for (const auto& column : columns) {
     if (column.column_uuid.empty() ||
-        column.descriptor.descriptor_uuid.canonical.empty() ||
+        column.descriptor.descriptor_uuid.is_nil() ||
         column.descriptor.canonical_type_name.empty()) {
       result.diagnostic_code = "SB_IPAR_ROW_LAYOUT.COLUMN_INVALID";
       result.detail = "column_uuid_and_descriptor_required";

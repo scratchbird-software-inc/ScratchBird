@@ -328,7 +328,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
                              : std::string_view("non_null");
     if (key_descriptor->type_uuid != core_int64_key_type_uuid ||
         key_descriptor->descriptor_uuid !=
-            runtime_key.descriptor.descriptor_uuid.canonical ||
+            runtime_key.descriptor.descriptor_uuid ||
         key_descriptor->descriptor_uuid == key_descriptor->type_uuid ||
         key_descriptor->nullability !=
             (runtime_key.nullable
@@ -499,7 +499,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
           }
 
           api::EngineDescriptor engine_descriptor;
-          engine_descriptor.descriptor_uuid.canonical =
+          engine_descriptor.descriptor_uuid =
               descriptor->descriptor_uuid;
           engine_descriptor.descriptor_kind = "scalar";
           engine_descriptor.canonical_type_name = "int64";

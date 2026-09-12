@@ -86,7 +86,7 @@ EngineApiDiagnostic CarrierDiagnostic(
     const update_wire::TypedUpdateCarrierError& error,
     std::string_view fallback) {
   return Diagnostic(error.diagnostic_code.empty()
-                        ? "DATATYPE.DESCRIPTOR_INVALID"
+                        ? "DATATYPE.DESCRIPTOR.INVALID"
                         : error.diagnostic_code,
                     std::string(fallback),
                     error.field.empty() ? error.detail
@@ -126,10 +126,10 @@ EngineApiDiagnostic ValidateProviderContext(
   }
   if (context.read_only_mode || context.cluster_transaction_active ||
       context.route_fence_present || context.local_transaction_id == 0 ||
-      !ExactUuid(context.database_uuid.canonical) ||
-      !ExactUuid(context.transaction_uuid.canonical) ||
-      !ExactUuid(context.statement_receipt_uuid.canonical) ||
-      !ExactUuid(context.datatype_catalog_snapshot_uuid.canonical) ||
+      !ExactUuid(context.database_uuid) ||
+      !ExactUuid(context.transaction_uuid) ||
+      !ExactUuid(context.statement_receipt_uuid) ||
+      !ExactUuid(context.datatype_catalog_snapshot_uuid) ||
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0) {
     return Diagnostic(
@@ -146,7 +146,7 @@ EngineApiDiagnostic ValidateRequest(
   if (diagnostic.error) return diagnostic;
   if (
       request.authenticated_statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       request.exact_descriptor_dudc.empty() ||
       request.exact_assignment_vector_duav.empty() ||
       request.exact_predicate_vector_duev.empty()) {
@@ -175,7 +175,7 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
 
   const auto boolean =
       datatype_catalog::LookupCanonicalBooleanTypeCodecIdentityV1(
-      request.context.datatype_catalog_snapshot_uuid.canonical,
+      request.context.datatype_catalog_snapshot_uuid,
       request.context.datatype_catalog_generation,
       request.context.datatype_registry_generation);
   const auto operator_snapshot =
@@ -190,7 +190,7 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
       !ExactUuid(operator_snapshot.snapshot_uuid) ||
       operator_snapshot.registry_generation == 0) {
     result.diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.boolean_operator_registry_unavailable");
     return result;
   }
@@ -219,7 +219,7 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
         !ExactUuid(request.right_type_uuid) ||
         request.right_type_generation == 0) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.equality_operand_identity_invalid");
       return result;
     }
@@ -247,7 +247,7 @@ ResolveDmlUpdateDatatypeOperatorBindingAuthorityV1(
         equality.row.result_codec_generation !=
             result.boolean_codec_generation) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.equality_operator_registry_unavailable");
       return result;
     }
@@ -288,7 +288,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
       datatype_catalog::LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
   if (!TypedUuid(request.authenticated_statement_receipt_uuid,
                  &receipt_uuid) ||
-      !TypedUuid(request.context.transaction_uuid.canonical,
+      !TypedUuid(request.context.transaction_uuid,
                  &transaction_uuid) ||
       !operator_snapshot.ok ||
       descriptor.authenticated_statement_receipt_uuid != receipt_uuid ||
@@ -338,7 +338,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
   }
   if (references.empty() || references.size() > 6) {
     result.diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.datatype_reference_count_invalid");
     return result;
   }
@@ -355,7 +355,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
     update_wire::TypedUpdateDatatypeAuthorityRecord row;
     if (!BuildDatatypeRecord(request.context, reference, &row)) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.datatype_registry_row_unavailable");
       return result;
     }
@@ -383,7 +383,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
     update_wire::TypedUpdateBuiltinOperatorAuthorityRecord row;
     if (!BuildOperatorRecord(descriptor, predicate, &row)) {
       result.diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.dml_update_rows.builtin_operator_registry_row_unavailable");
       return result;
     }
@@ -409,11 +409,11 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
 
   auto datatype_handle =
       std::make_shared<EngineDmlUpdateDatatypeSnapshotHandleV1::Authority>();
-  datatype_handle->database_uuid = request.context.database_uuid.canonical;
+  datatype_handle->database_uuid = request.context.database_uuid;
   datatype_handle->authenticated_statement_receipt_uuid =
       request.authenticated_statement_receipt_uuid;
   datatype_handle->datatype_snapshot_uuid =
-      request.context.datatype_catalog_snapshot_uuid.canonical;
+      request.context.datatype_catalog_snapshot_uuid;
   datatype_handle->datatype_catalog_generation =
       request.context.datatype_catalog_generation;
   datatype_handle->datatype_registry_generation =
@@ -427,7 +427,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
 
   auto operator_handle = std::make_shared<
       EngineDmlUpdateBuiltinOperatorSnapshotHandleV1::Authority>();
-  operator_handle->database_uuid = request.context.database_uuid.canonical;
+  operator_handle->database_uuid = request.context.database_uuid;
   operator_handle->authenticated_statement_receipt_uuid =
       request.authenticated_statement_receipt_uuid;
   operator_handle->operator_snapshot_uuid =
@@ -456,7 +456,7 @@ EngineApiDiagnostic RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
   if (!captured.ok || !captured.datatype_snapshot_handle.valid() ||
       !captured.operator_snapshot_handle.valid()) {
     return Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.dml_update_rows.datatype_operator_handle_invalid");
   }
   const auto& datatype = *captured.datatype_snapshot_handle.authority_;
@@ -482,13 +482,13 @@ EngineApiDiagnostic RevalidateDmlUpdateDatatypeOperatorAuthorityV1(
     return CarrierDiagnostic(
         error, "sblr.dml_update_rows.datatype_operator_projection_invalid");
   }
-  if (context.database_uuid.canonical != datatype.database_uuid ||
-      context.database_uuid.canonical != operation.database_uuid ||
-      context.statement_receipt_uuid.canonical !=
+  if (context.database_uuid != datatype.database_uuid ||
+      context.database_uuid != operation.database_uuid ||
+      context.statement_receipt_uuid !=
           datatype.authenticated_statement_receipt_uuid ||
-      context.statement_receipt_uuid.canonical !=
+      context.statement_receipt_uuid !=
           operation.authenticated_statement_receipt_uuid ||
-      context.datatype_catalog_snapshot_uuid.canonical !=
+      context.datatype_catalog_snapshot_uuid !=
           datatype.datatype_snapshot_uuid ||
       context.datatype_catalog_generation !=
           datatype.datatype_catalog_generation ||
@@ -571,7 +571,7 @@ EngineApiDiagnostic RevalidateRecoveredDmlUpdateDatatypeOperatorAuthorityV1(
       request.context.trace_tags.end());
   request.context.trace_tags.push_back("private_dml_update_rows_binder");
   request.authenticated_statement_receipt_uuid =
-      context.statement_receipt_uuid.canonical;
+      context.statement_receipt_uuid;
   request.exact_descriptor_dudc = descriptor.exact_bytes;
   request.exact_assignment_vector_duav = assignments.exact_bytes;
   request.exact_predicate_vector_duev = predicate.exact_bytes;

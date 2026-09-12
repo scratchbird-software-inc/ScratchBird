@@ -17,11 +17,11 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool Empty(const EngineUuid& uuid) {
-  return uuid.canonical.empty();
+  return uuid.is_nil();
 }
 
 bool Empty(const EngineObjectReference& object) {
-  return object.uuid.canonical.empty();
+  return object.uuid.is_nil();
 }
 
 bool IsKnownBoundaryKind(const std::string& kind) {
@@ -235,14 +235,14 @@ EngineReplicationBoundaryResult EngineEvaluateReplicationBoundary(
   result.evidence.push_back({"policy_snapshot_uuid", request.policy_snapshot_uuid});
   result.evidence.push_back({"route_epoch", std::to_string(request.route_epoch)});
   result.evidence.push_back({"route_generation", std::to_string(request.route_generation)});
-  if (!request.publication.uuid.canonical.empty()) {
-    result.evidence.push_back({"publication_uuid", request.publication.uuid.canonical});
+  if (!request.publication.uuid.is_nil()) {
+    result.evidence.push_back({"publication_uuid", request.publication.uuid});
   }
-  if (!request.subscription.uuid.canonical.empty()) {
-    result.evidence.push_back({"subscription_uuid", request.subscription.uuid.canonical});
+  if (!request.subscription.uuid.is_nil()) {
+    result.evidence.push_back({"subscription_uuid", request.subscription.uuid});
   }
-  if (!request.slot.uuid.canonical.empty()) {
-    result.evidence.push_back({"replication_slot_uuid", request.slot.uuid.canonical});
+  if (!request.slot.uuid.is_nil()) {
+    result.evidence.push_back({"replication_slot_uuid", request.slot.uuid});
   }
   return result;
 }

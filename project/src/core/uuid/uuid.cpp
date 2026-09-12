@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "uuid.hpp"
+#include "diagnostic_identity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 #include <functional>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -368,7 +370,7 @@ const char* UuidVersionName(u8 version) {
 }
 
 bool IsEngineIdentityKind(UuidKind kind) {
-  return kind != UuidKind::unknown;
+  return UuidKindAllowsDurableIdentity(kind) || kind == UuidKind::session;
 }
 
 bool UuidKindAllowsDurableIdentity(UuidKind kind) {
@@ -428,13 +430,10 @@ bool UuidVersionAllowed(const Uuid& uuid, const UuidVersionPolicy& policy) {
 }
 
 int CompareUuid128(const Uuid& left, const Uuid& right) {
-  if (left.bytes < right.bytes) {
-    return -1;
-  }
-  if (right.bytes < left.bytes) {
-    return 1;
-  }
-  return 0;
+  // Canonical UUID bytes are the key order, independent of host endianness,
+  // UUID version and alignment. Keep the durable representation binary16.
+  const int result = std::memcmp(left.bytes.data(), right.bytes.data(), 16);
+  return (result > 0) - (result < 0);
 }
 
 UuidV7TimePrefixResult ExtractUuidV7TimePrefix(const Uuid& uuid) {
@@ -467,7 +466,7 @@ UuidV7IndexCompareResult CompareUuidV7ForIndex(const TypedUuid& left,
                                                const TypedUuid& right,
                                                UuidKind expected_kind) {
   UuidV7IndexCompareResult result;
-  if (expected_kind == UuidKind::unknown) {
+  if (!IsEngineIdentityKind(expected_kind)) {
     result.refusal_reason = "unsupported_kind";
     result.comparison = CompareUuid128(left.value, right.value);
     return result;
@@ -507,6 +506,11 @@ std::string UuidToString(const Uuid& uuid) {
     out.push_back(kHex[value & 0x0f]);
   }
   return out;
+}
+
+std::optional<std::filesystem::path> EngineIdentityPathComponent(const Uuid& uuid) {
+  if (!IsEngineIdentityUuid(uuid)) return std::nullopt;
+  return std::filesystem::path(UuidToString(uuid));
 }
 
 UuidParseResult ParseUuid(std::string text) {
@@ -557,7 +561,7 @@ TypedUuidResult MakeTypedUuid(UuidKind kind, Uuid value) {
   result.status = UuidOkStatus();
   result.value = {kind, value};
 
-  if (kind == UuidKind::unknown) {
+  if (!IsEngineIdentityKind(kind)) {
     result.status = UuidErrorStatus();
     result.diagnostic = MakeUuidDiagnostic(result.status, "SB-UUID-TYPED-UNKNOWN-KIND", "uuid.typed.unknown_kind");
     return result;
@@ -719,6 +723,20 @@ UuidResult MakeCompatibilityUuidResult(Uuid uuid, u8 expected_version) {
 
 TypedUuidResult GenerateEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis) {
   return GenerateDurableEngineIdentityV7(kind, unix_epoch_millis);
+}
+
+std::array<std::uint8_t, 16> NewDiagnosticOccurrenceUuid() {
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  if (now < 0 || static_cast<std::uint64_t>(now) > 0x0000ffffffffffffULL) {
+    throw std::runtime_error("Diagnostic UUIDv7 clock is outside the canonical time range.");
+  }
+  const auto generated = GenerateEngineIdentityV7(
+      UuidKind::object, static_cast<std::uint64_t>(now));
+  if (!generated.ok()) {
+    throw std::runtime_error("Diagnostic UUIDv7 generation failed.");
+  }
+  return generated.value.value.bytes;
 }
 
 TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis) {

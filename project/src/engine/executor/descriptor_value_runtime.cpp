@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -314,25 +315,9 @@ bool ValidateExpandedScalarEncoding(const EngineDescriptor& descriptor,
   return true;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
-
 bool SameCanonicalDescriptor(const EngineDescriptor& left,
                              const EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
+  return left == right;
 }
 
 bool ParseInt64Strict(const std::string& text, std::int64_t* out) {
@@ -439,7 +424,12 @@ std::vector<std::string> RowKey(const DescriptorTuple& tuple) {
       }
       field.append(component);
     };
-    append(value.descriptor.descriptor_uuid.canonical);
+    append(std::string_view(
+        reinterpret_cast<const char*>(value.descriptor.descriptor_uuid.bytes.data()), 16));
+    append(std::string_view(
+        reinterpret_cast<const char*>(value.descriptor.type_uuid.bytes.data()), 16));
+    append(std::string_view(
+        reinterpret_cast<const char*>(value.descriptor.collation_uuid.bytes.data()), 16));
     append(value.descriptor.descriptor_kind);
     append(value.descriptor.canonical_type_name);
     append(value.descriptor.encoded_descriptor);
@@ -690,15 +680,13 @@ bool CanonicalDerivedDescriptorShapesMatch(
 }  // namespace
 
 bool IsCanonicalInt128DescriptorV1(const EngineDescriptor& descriptor) {
-  constexpr std::string_view kDescriptorUuid =
-      "019d0000-0000-7000-8000-00000000d714";
-  constexpr std::string_view kTypeUuid =
-      "019d0000-0000-7000-8000-00000000d715";
-  const auto type_uuid =
-      DescriptorField(descriptor.encoded_descriptor, "type_uuid");
+  constexpr scratchbird::engine::internal_api::EngineUuid kDescriptorUuid{
+      {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x14}};
+  constexpr scratchbird::engine::internal_api::EngineUuid kTypeUuid{
+      {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x15}};
   return CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
-         descriptor.descriptor_uuid.canonical == kDescriptorUuid &&
-         type_uuid.has_value() && *type_uuid == kTypeUuid;
+         descriptor.descriptor_uuid == kDescriptorUuid &&
+         descriptor.type_uuid == kTypeUuid;
 }
 
 bool IsCanonicalBoundedSignedIntegerDescriptor(
@@ -738,26 +726,36 @@ DescriptorBatch MakeDescriptorBatch(std::vector<ExecutorColumnDescriptor> column
 }
 
 std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& columns) {
-  std::ostringstream out;
-  for (std::size_t i = 0; i < columns.size(); ++i) {
-    if (i != 0) { out << '|'; }
-    out << columns[i].stable_name << ':'
-        << columns[i].descriptor.descriptor_kind << ':'
-        << columns[i].descriptor.canonical_type_name << ':'
-        << columns[i].descriptor.encoded_descriptor << ':'
-        << (columns[i].nullable ? 'N' : 'R');
+  // This is an opaque equality key, not a diagnostic or UUID presentation.
+  // Frame variable fields so embedded separators and NULs cannot alias.
+  std::string out = "scratchbird.descriptor-fingerprint.v3";
+  const auto append_u64 = [&](const std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      out.push_back(static_cast<char>(value >> shift));
+    }
+  };
+  const auto append_text = [&](const std::string_view value) {
+    append_u64(value.size());
+    out.append(value);
+  };
+  append_u64(columns.size());
+  for (const auto& column : columns) {
+    append_text(column.stable_name);
+    out.append(reinterpret_cast<const char*>(column.descriptor.descriptor_uuid.bytes.data()), 16);
+    out.append(reinterpret_cast<const char*>(column.descriptor.type_uuid.bytes.data()), 16);
+    out.append(reinterpret_cast<const char*>(column.descriptor.collation_uuid.bytes.data()), 16);
+    append_text(column.descriptor.descriptor_kind);
+    append_text(column.descriptor.canonical_type_name);
+    append_text(column.descriptor.encoded_descriptor);
+    out.push_back(column.nullable ? 1 : 0);
   }
-  return out.str();
+  return out;
 }
 
 bool DescriptorMatches(const EngineDescriptor& expected, const EngineDescriptor& actual) {
-  if (!expected.descriptor_uuid.canonical.empty() || !actual.descriptor_uuid.canonical.empty()) {
-    return expected.descriptor_uuid.canonical == actual.descriptor_uuid.canonical;
-  }
-  if (!expected.encoded_descriptor.empty() || !actual.encoded_descriptor.empty()) {
-    return expected.encoded_descriptor == actual.encoded_descriptor;
-  }
-  return LowerAscii(expected.canonical_type_name) == LowerAscii(actual.canonical_type_name);
+  return scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(expected) &&
+         scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(actual) &&
+         expected == actual;
 }
 
 bool CanonicalDerivedDescriptorTypeMatches(
@@ -765,7 +763,11 @@ bool CanonicalDerivedDescriptorTypeMatches(
     const EngineDescriptor& output, const bool expected_output_nullable) {
   bool encoded_input_nullable = false;
   bool encoded_output_nullable = false;
-  return input.descriptor_kind == output.descriptor_kind &&
+  return scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(input) &&
+         scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(output) &&
+         input.type_uuid == output.type_uuid &&
+         input.collation_uuid == output.collation_uuid &&
+         input.descriptor_kind == output.descriptor_kind &&
          input.canonical_type_name == output.canonical_type_name &&
          CanonicalDerivedDescriptorShapesMatch(
              input.encoded_descriptor, output.encoded_descriptor,
@@ -879,7 +881,7 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
     if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
         !IsCanonicalInt128DescriptorV1(descriptor)) {
       return ErrorDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "int128 result descriptor does not match the canonical datatype.int128.v1 identity",
           0, column);
     }
@@ -953,7 +955,7 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(
         if (!value.encoded_value.empty() ||
             value.binary_value.size() != 16) {
           return ErrorDiagnostic(
-              "DATATYPE.DESCRIPTOR_INVALID",
+              "DATATYPE.DESCRIPTOR.INVALID",
               "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
               row, column);
         }
@@ -1026,9 +1028,10 @@ std::optional<std::uint64_t> BoundDescriptorBatchValidationScratchMemoryBytes(
     if (cancelled()) return std::nullopt;
     const auto& descriptor = batch.columns[column].descriptor;
     const auto type_id = CanonicalDescriptorTypeId(descriptor);
-    std::uint64_t descriptor_bytes = 1;
+    std::uint64_t descriptor_bytes = 1 + sizeof(descriptor.descriptor_uuid) +
+                                     sizeof(descriptor.type_uuid) +
+                                     sizeof(descriptor.collation_uuid);
     for (const auto* carrier : {&batch.columns[column].stable_name,
-                                &descriptor.descriptor_uuid.canonical,
                                 &descriptor.descriptor_kind,
                                 &descriptor.canonical_type_name,
                                 &descriptor.encoded_descriptor}) {
@@ -1062,7 +1065,9 @@ std::optional<std::uint64_t> BoundDescriptorBatchValidationScratchMemoryBytes(
       if (!account_source(value.encoded_value.size()) ||
           !account_source(value.binary_value.size()) ||
           !account_source(batch.columns[column].stable_name.size()) ||
-          !account_source(descriptor.descriptor_uuid.canonical.size()) ||
+          !account_source(sizeof(descriptor.descriptor_uuid)) ||
+          !account_source(sizeof(descriptor.type_uuid)) ||
+          !account_source(sizeof(descriptor.collation_uuid)) ||
           !account_source(descriptor.descriptor_kind.size()) ||
           !account_source(descriptor.canonical_type_name.size()) ||
           !account_source(descriptor.encoded_descriptor.size())) {
@@ -1276,7 +1281,7 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
         bound_column.descriptor_id != output_descriptor_ids[column] ||
         duplicate_descriptor_id ||
         bound_column.stable_name.empty() ||
-        !IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
+        !scratchbird::engine::internal_api::QowCanonicalDescriptorIdentityV1(descriptor) ||
         descriptor.descriptor_kind != "scalar" ||
         descriptor.canonical_type_name.empty() ||
         descriptor.encoded_descriptor.empty() ||
@@ -1290,7 +1295,7 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     if (CanonicalDescriptorTypeId(descriptor) == CanonicalTypeId::int128 &&
         !IsCanonicalInt128DescriptorV1(descriptor)) {
       return ErrorDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "canonical output int128 descriptor is not datatype.int128.v1",
           0, column);
     }
@@ -1340,7 +1345,7 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
       if (IsCanonicalInt128DescriptorV1(bound_column.descriptor) &&
           (!value.encoded_value.empty() || value.binary_value.size() != 16)) {
         return ErrorDiagnostic(
-            "DATATYPE.DESCRIPTOR_INVALID",
+            "DATATYPE.DESCRIPTOR.INVALID",
             "datatype.int128.le.v1 requires one exact 16-byte signed little-endian payload",
             row, column);
       }
@@ -2568,7 +2573,7 @@ CanonicalInt128SumFinalizeResultV1 FinalizeCanonicalInt128SumV1(
   CanonicalInt128SumFinalizeResultV1 result;
   if (!IsCanonicalInt128DescriptorV1(descriptor)) {
     result.diagnostic = ErrorDiagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "canonical int128 SUM result descriptor is not datatype.int128.v1");
     return result;
   }

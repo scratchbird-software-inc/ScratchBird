@@ -36,7 +36,6 @@ namespace {
 namespace datatypes = scratchbird::core::datatypes;
 namespace wire = scratchbird::wire;
 
-constexpr std::string_view kOperation = "query.narrow_profile_source";
 constexpr std::string_view kTextDescriptorUuid =
     "019d0000-0000-7000-8000-00000000d718";
 constexpr std::string_view kTextTypeUuid =
@@ -336,10 +335,10 @@ bool BindingMemory(const wire::NarrowQueryBinding& binding,
 
 bool SourceMemory(const SourceState& source, std::uint64_t* total) {
   if (!AddStringCapacity(source.occurrence.alias, total) ||
-      !AddStringCapacity(source.descriptor.descriptor_uuid.canonical, total) ||
-      !AddStringCapacity(source.descriptor.database_uuid.canonical, total) ||
-      !AddStringCapacity(source.descriptor.schema_uuid.canonical, total) ||
-      !AddStringCapacity(source.descriptor.relation_uuid.canonical, total) ||
+      !AddStringCapacity(source.descriptor.descriptor_uuid, total) ||
+      !AddStringCapacity(source.descriptor.database_uuid, total) ||
+      !AddStringCapacity(source.descriptor.schema_uuid, total) ||
+      !AddStringCapacity(source.descriptor.relation_uuid, total) ||
       !AddCapacityBytes(source.columns, total) ||
       !AddCapacityBytes(source.rows, total)) {
     return false;
@@ -347,7 +346,7 @@ bool SourceMemory(const SourceState& source, std::uint64_t* total) {
   for (const auto& column : source.columns) {
     if (!AddStringCapacity(column.column_uuid, total) ||
         !AddStringCapacity(column.storage_key, total) ||
-        !AddStringCapacity(column.descriptor.descriptor_uuid.canonical,
+        !AddStringCapacity(column.descriptor.descriptor_uuid,
                            total) ||
         !AddStringCapacity(column.descriptor.descriptor_kind, total) ||
         !AddStringCapacity(column.descriptor.canonical_type_name, total) ||
@@ -450,7 +449,7 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
   if (is_null) {
     if (!column.nullable) {
       *diagnostic = Diagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID",
+          "DATATYPE.DESCRIPTOR.INVALID",
           "sblr.query_execute.nonnull_storage_value_missing",
           column.column_uuid);
       return false;
@@ -486,7 +485,7 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
   if (type_id != datatypes::CanonicalTypeId::int32 &&
       type_id != datatypes::CanonicalTypeId::int64) {
     *diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.query_execute.narrow_datatype_unsupported",
         column.datatype.canonical_name);
     return false;
@@ -501,7 +500,7 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
   const auto canonical = datatypes::CastDatatypeValue(cast);
   if (!canonical.ok() || canonical.value.is_null) {
     *diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.query_execute.numeric_value_invalid",
         column.column_uuid);
     return false;
@@ -516,7 +515,7 @@ bool CanonicalizeStoredCell(const BoundColumn& column,
           type_id == datatypes::CanonicalTypeId::int32 ? 4u : 8u,
           &cell->canonical_payload)) {
     *diagnostic = Diagnostic(
-        "DATATYPE.DESCRIPTOR_INVALID",
+        "DATATYPE.DESCRIPTOR.INVALID",
         "sblr.query_execute.numeric_value_invalid",
         column.column_uuid);
     return false;
@@ -781,7 +780,6 @@ class NarrowQueryProfileOccurrenceSource final
     if (closed_) return;
     closed_ = true;
     publication_control_->closed = true;
-    (void)Observe(EngineNarrowQueryWorkClassV1::liveness_only, 0, 0);
     Release();
   }
 
@@ -873,7 +871,7 @@ class NarrowQueryProfileOccurrenceSource final
   void Release() noexcept {
     if (released_) return;
     released_ = true;
-    (void)ReleaseNarrowQueryBindingAuthorityV1(&authority_);
+    ReleaseNarrowQueryBindingAuthorityNoAllocV1(&authority_);
   }
 
   NarrowQueryTypedResultOccurrenceStageResultV1 CancelledStage() {
@@ -959,15 +957,15 @@ class NarrowQueryProfileOccurrenceSource final
     if (source_index >= sources_.size()) return false;
     auto& state = sources_[source_index];
     const auto& occurrence = state.occurrence;
-    if (descriptor.descriptor_uuid.canonical !=
+    if (descriptor.descriptor_uuid !=
             UuidText(occurrence.relation_descriptor_uuid) ||
         descriptor.descriptor_generation !=
             occurrence.relation_descriptor_generation ||
-        descriptor.relation_uuid.canonical !=
+        descriptor.relation_uuid !=
             UuidText(occurrence.relation_object_uuid) ||
-        descriptor.schema_uuid.canonical !=
+        descriptor.schema_uuid !=
             UuidText(occurrence.schema_uuid) ||
-        descriptor.database_uuid.canonical != context_.database_uuid.canonical ||
+        descriptor.database_uuid != context_.database_uuid ||
         occurrence.validated_resource_epoch != context_.resource_epoch ||
         descriptor.relation_kind != "table" ||
         descriptor.storage_profile != "local_mga_rowstore_v1") {
@@ -1013,13 +1011,13 @@ class NarrowQueryProfileOccurrenceSource final
     for (const auto& key : required) {
       const MgaRelationColumnStorageDescriptor* found = nullptr;
       for (const auto& column : descriptor.columns) {
-        if (column.column_uuid.canonical != key.first ||
+        if (column.column_uuid != key.first ||
             column.ordinal != key.second) {
           continue;
         }
         if (found != nullptr) {
           preparation_diagnostic_ = Diagnostic(
-              "DATATYPE.DESCRIPTOR_INVALID",
+              "DATATYPE.DESCRIPTOR.INVALID",
               "sblr.query_execute.source_column_identity_duplicated",
               key.first);
           return false;
@@ -1040,9 +1038,9 @@ class NarrowQueryProfileOccurrenceSource final
       const std::string& canonical_datatype_descriptor_uuid =
           embedded_datatype_descriptor.present
               ? embedded_datatype_descriptor.value
-              : found->value_descriptor.descriptor_uuid.canonical;
+              : found->value_descriptor.descriptor_uuid;
       const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
-          context_.datatype_catalog_snapshot_uuid.canonical,
+          context_.datatype_catalog_snapshot_uuid,
           context_.datatype_catalog_generation,
           context_.datatype_registry_generation,
           canonical_datatype_descriptor_uuid, 1);
@@ -1056,12 +1054,12 @@ class NarrowQueryProfileOccurrenceSource final
            datatype.row.canonical_binary_type_code !=
                static_cast<std::uint32_t>(datatypes::CanonicalTypeId::character))) {
         preparation_diagnostic_ = Diagnostic(
-            "DATATYPE.DESCRIPTOR_INVALID",
+            "DATATYPE.DESCRIPTOR.INVALID",
             "sblr.query_execute.source_datatype_unavailable", key.first);
         return false;
       }
       BoundColumn bound;
-      bound.column_uuid = found->column_uuid.canonical;
+      bound.column_uuid = found->column_uuid;
       bound.ordinal = found->ordinal;
       bound.storage_key = found->canonical_name_key;
       bound.descriptor = found->value_descriptor;
@@ -1086,7 +1084,7 @@ class NarrowQueryProfileOccurrenceSource final
           !OutputMatchesDatatype(output, state.columns[*cell].datatype,
                                  state.columns[*cell].nullable)) {
         preparation_diagnostic_ = Diagnostic(
-            "DATATYPE.DESCRIPTOR_INVALID",
+            "DATATYPE.DESCRIPTOR.INVALID",
             "sblr.query_execute.output_datatype_stale",
             std::to_string(output.output_ordinal));
         return false;
@@ -1142,13 +1140,13 @@ class NarrowQueryProfileOccurrenceSource final
         const auto resource = LookupEngineResourceDescriptorByUuid(
             context_, resource_uuid, "collation");
         if (!resource.ok || !resource.resource_descriptor.present ||
-            resource.resource_descriptor.resource_uuid.canonical !=
+            resource.resource_descriptor.resource_uuid !=
                 collation_uuid ||
             resource.resource_descriptor.resource_epoch !=
                 context_.resource_epoch ||
             resource.resource_descriptor.family_epoch !=
                 term.collation_generation ||
-            resource.resource_descriptor.parent_resource_uuid.canonical !=
+            resource.resource_descriptor.parent_resource_uuid !=
                 column.charset_uuid) {
           preparation_diagnostic_ = Diagnostic(
               "SORT.COLLATION_PROFILE_INVALID",
@@ -1922,7 +1920,7 @@ EngineNarrowQueryProfileSourceStatusV1 StatusForDiagnostic(
   if (diagnostic.code == "RESOURCE.BUDGET_EXCEEDED") {
     return EngineNarrowQueryProfileSourceStatusV1::resource_budget_exceeded;
   }
-  if (diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID" ||
+  if (diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID" ||
       diagnostic.code == "CTB.TEXT.INVALID_ENCODING") {
     return EngineNarrowQueryProfileSourceStatusV1::datatype_invalid;
   }

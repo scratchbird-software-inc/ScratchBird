@@ -144,7 +144,7 @@ bool HasAuthority(const EngineRequestContext& context,
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          !context.database_path.empty() &&
-         context.database_uuid.canonical == UuidText(key.database_uuid) &&
+         context.database_uuid == UuidText(key.database_uuid) &&
          std::find(context.trace_tags.begin(), context.trace_tags.end(),
                    "private_parse_text_journal") !=
              context.trace_tags.end();

@@ -42,6 +42,9 @@ sblr::SblrSourceMapUuidV1 UuidBytes(std::uint8_t seed) {
   for (std::size_t index = 0; index < value.size(); ++index) {
     value[index] = static_cast<std::uint8_t>(seed + index);
   }
+  // Source-map metadata carries system identities, not arbitrary UUID data.
+  value[6] = (value[6] & 0x0f) | 0x70;
+  value[8] = (value[8] & 0x3f) | 0x80;
   return value;
 }
 

@@ -34,7 +34,7 @@ inline bool IsEffectiveSubject(
       authorization.effective_subjects.begin(),
       authorization.effective_subjects.end(),
       [&](const EngineAuthorizationSubject& subject) {
-        return subject.subject_uuid.canonical == subject_uuid.canonical &&
+        return subject.subject_uuid == subject_uuid &&
                subject.subject_kind == subject_kind;
       });
 }
@@ -43,9 +43,9 @@ inline bool MaterializedContextMatchesRequest(
     const EngineRequestContext& request) {
   const auto& authorization = request.authorization_context;
   return request.security_context_present && authorization.present &&
-         !request.principal_uuid.canonical.empty() &&
-         authorization.principal_uuid.canonical ==
-             request.principal_uuid.canonical &&
+         !request.principal_uuid.is_nil() &&
+         authorization.principal_uuid ==
+             request.principal_uuid &&
          authorization.security_epoch != 0 &&
          authorization.policy_epoch != 0 &&
          authorization.catalog_generation_id != 0 &&
@@ -58,9 +58,9 @@ inline bool MaterializedContextMatchesRequest(
 
 inline bool GrantTargetAppliesToRequest(const EngineRequestContext& request,
                                         const EngineUuid& target_uuid) {
-  return target_uuid.canonical.empty() ||
-         target_uuid.canonical == request.database_uuid.canonical ||
-         target_uuid.canonical == request.cluster_uuid.canonical;
+  return target_uuid.is_nil() ||
+         target_uuid == request.database_uuid ||
+         target_uuid == request.cluster_uuid;
 }
 
 // Converts the engine-owned materialized authorization context into the
@@ -110,7 +110,7 @@ inline void PopulateAgentRuntimeSecurityContext(
   for (const auto& subject : authorization.effective_subjects) {
     if (subject.subject_kind == "group") {
       // UUIDs are identity; mutable display names such as ROOT are not.
-      AddUnique(&runtime->groups, subject.subject_uuid.canonical);
+      AddUnique(&runtime->groups, subject.subject_uuid);
     }
   }
 
@@ -128,12 +128,12 @@ inline void PopulateAgentRuntimeSecurityContext(
 
   for (const auto& right : candidate_rights) {
     std::vector<std::string> evaluation_targets;
-    if (!request.database_uuid.canonical.empty()) {
-      evaluation_targets.push_back(request.database_uuid.canonical);
+    if (!request.database_uuid.is_nil()) {
+      evaluation_targets.push_back(request.database_uuid);
     }
-    if (!request.cluster_uuid.canonical.empty() &&
-        request.cluster_uuid.canonical != request.database_uuid.canonical) {
-      evaluation_targets.push_back(request.cluster_uuid.canonical);
+    if (!request.cluster_uuid.is_nil() &&
+        request.cluster_uuid != request.database_uuid) {
+      evaluation_targets.push_back(request.cluster_uuid);
     }
     if (evaluation_targets.empty()) evaluation_targets.emplace_back();
 

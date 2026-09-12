@@ -9,6 +9,7 @@
 // SEARCH_KEY: SBSQL_EMBEDDED_ENGINE_CLIENT
 
 #include "embedded/embedded_engine_client.hpp"
+#include "wire/parser_server_ipc/disconnect_result_validation.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
 #include "engine/sblr/sblr_stmt_prepare_runtime.hpp"
 #include "engine/sblr/sblr_stmt_execute_direct_runtime.hpp"
@@ -254,7 +255,10 @@ void AddServerDiagnostics(const std::vector<scratchbird::server::ServerDiagnosti
     }
     messages->diagnostics.push_back(MakeDiagnostic(
         diagnostic.code.empty() ? "PARSER_SERVER_IPC.EMBEDDED_REJECTED" : diagnostic.code,
-        diagnostic.severity == scratchbird::server::ServerDiagnosticSeverity::kWarning ? "WARNING" : "ERROR",
+        diagnostic.severity == scratchbird::server::ServerDiagnosticSeverity::kInfo
+            ? "INFO"
+            : (diagnostic.severity == scratchbird::server::ServerDiagnosticSeverity::kWarning
+                   ? "WARNING" : "ERROR"),
         diagnostic.safe_message.empty() ? diagnostic.message_key : diagnostic.safe_message,
         "sbp_sbsql.embedded",
         std::move(fields)));
@@ -3964,21 +3968,64 @@ ServerManagementResult EmbeddedEngineClient::Manage(const SessionContext& sessio
 
 bool EmbeddedEngineClient::DisconnectSession(const SessionContext& session,
                                              MessageVectorSet* messages) {
+  if (!session.authenticated) return true;
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
-  if (!session.authenticated || session.session_uuid.empty()) return true;
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kDisconnectNotice),
                          session);
-  auto operation = scratchbird::server::HandleDisconnectNotice(&impl_->registry, frame);
-  if (!operation.accepted) {
-    AddServerDiagnostics(operation.diagnostics, messages);
+  const auto exact_system_uuid = [](std::string_view text, const auto& bytes) {
+    return text.size() == 36 && text[8] == '-' && text[13] == '-' &&
+           text[18] == '-' && text[23] == '-' &&
+           (bytes[6] & 0xf0) == 0x70 && (bytes[8] & 0xc0) == 0x80;
+  };
+  if (!exact_system_uuid(session.session_uuid, frame.header.session_uuid)) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.SESSION_MISMATCH",
+                  "Embedded disconnect requires the bound UUIDv7 session identity.");
     return false;
   }
-  return true;
+  if (!exact_system_uuid(session.connection_uuid, frame.header.connection_uuid)) {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.CONNECTION_MISMATCH",
+                  "Embedded disconnect requires the bound UUIDv7 connection identity.");
+    return false;
+  }
+  // Use the same current private handler request as the routed client. This
+  // bridge must migrate with both endpoints to canonical schema 1074.
+  PutUuid(&frame.payload, frame.header.session_uuid);
+  PutString(&frame.payload, "parser_disconnect_notice");
+  auto operation = scratchbird::server::HandleDisconnectNotice(&impl_->registry, frame);
+  AddServerDiagnostics(operation.diagnostics, messages);
+  if (!operation.accepted) {
+    return false;
+  }
+  // In-process results have no transport connection header; the handler has
+  // already checked the exact request connection against its session registry.
+  const auto disposition = ipc::ValidatePrivateDisconnectResult(
+      operation.response_message_type, operation.response_schema_id,
+      operation.frame_flags, frame.header.connection_uuid,
+      operation.session_uuid, frame.header.connection_uuid,
+      frame.header.session_uuid, operation.payload);
+  if (disposition == ipc::DisconnectResultDisposition::detached) return true;
+  if (disposition == ipc::DisconnectResultDisposition::recovery_quarantined) {
+    if (messages != nullptr &&
+        std::none_of(operation.diagnostics.begin(), operation.diagnostics.end(),
+                     [](const auto& diagnostic) {
+                       return diagnostic.code ==
+                              "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN";
+                     })) {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN", "WARNING",
+          "The engine retained session recovery state; embedded cleanup is not complete.",
+          "sbp_sbsql.embedded"));
+    }
+  } else {
+    AddDiagnostic(messages, "PARSER_SERVER_IPC.FRAME_PAYLOAD_INVALID",
+                  "The embedded handler did not return an exact terminal cleanup result.");
+  }
+  return false;
 #else
-  (void)session;
-  (void)messages;
-  return true;
+  AddDiagnostic(messages, "PARSER_SERVER_IPC.SESSION_NOT_BOUND",
+                "This parser build has no embedded engine route to clean up an authenticated session.");
+  return false;
 #endif
 }
 

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,6 +59,7 @@ struct MgaSavepointMarkerObservation {
 };
 
 struct SavepointParsedState {
+  EngineApiDiagnostic diagnostic;
   std::map<std::uint64_t, std::map<std::string, SavepointCutoffs>>
       active_savepoints;
   std::map<std::uint64_t, std::vector<SavepointRollbackRange>> rollback_ranges;
@@ -83,6 +85,9 @@ MgaSavepointMarkerObservation ObserveUniqueMgaSavepointMarkerV1(
     const EngineRequestContext&, const std::string& identity);
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context);
+// Parse the same admitted bytes used by metadata cache content identity.
+SavepointParsedState ParseSavepointBytes(
+    const EngineRequestContext& context, std::span<const std::uint8_t> bytes);
 EngineApiDiagnostic ValidateMgaSavepointMarkerAuthority(
     const EngineRequestContext& context);
 bool ParseSavepointsBounded(const EngineRequestContext& context,

@@ -28,6 +28,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -43,6 +44,8 @@ namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::byte;
 using scratchbird::core::platform::UuidKind;
+
+std::string test_executable;
 
 constexpr std::string_view kCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
@@ -489,6 +492,82 @@ std::vector<std::uint64_t> ConvertCurrentSecurityChainToLegacy(
   ConvertFreshEmptyLocatorToExactLegacy(path, page_size);
   return page_numbers;
 }
+void VerifyBorrowedReadOwnership(const Fixture& fixture) {
+  const auto inspected = InspectLocator(fixture.database_path);
+  Require(inspected.ok(), "borrowed read locator unavailable");
+  const auto& locator = inspected.locators[inspected.anchored_locator_slot];
+  scratchbird::core::platform::TypedUuid relation;
+  relation.kind = UuidKind::object;
+  relation.value = locator.relation_uuid;
+  const std::string database_path = fixture.database_path.string();
+  disk::FileDevice owner;
+  Require(owner.Open(fixture.database_path.string(),
+                     disk::FileOpenMode::open_existing_read_only).ok(),
+          "borrowed read owner open failed");
+  const auto require_exclusion = [&]() {
+    Require(owner.is_open() && owner.read_only() &&
+                owner.path() == fixture.database_path.string(),
+            "borrowed read changed owner device");
+    for (const auto mode : {disk::FileOpenMode::open_existing,
+                            disk::FileOpenMode::open_existing_read_only}) {
+      disk::FileDevice competing;
+      const auto refused = competing.Open(fixture.database_path.string(), mode);
+      Require(!refused.ok() && !competing.is_open() &&
+                  refused.diagnostic.diagnostic_code == "SB-STORAGE-DISK-OWNER-LOCK-HELD",
+              "borrowed read allowed a competing local open");
+    }
+    const auto child = ::fork();
+    Require(child >= 0, "borrowed read competing process fork failed");
+    if (child == 0) {
+      // A competing server is a fresh executable, not a fork using inherited
+      // engine mutexes. Do only async-signal-safe work before exec.
+      ::execl(test_executable.c_str(), test_executable.c_str(),
+              "--probe-owner", database_path.c_str(), static_cast<char*>(nullptr));
+      ::_exit(127);
+    }
+    int status = 0;
+    Require(::waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == 0,
+            "borrowed read allowed a competing process open");
+  };
+  require_exclusion();
+  const auto read = db::ReadPhysicalMgaCowRowsFromOpenDevice(
+      owner, relation, locator.head_page_number, {}, true);
+  Require(read.ok() && read.visible_rows.size() == 1 &&
+              read.rows.size() == 1 && read.rows.front().visible &&
+              read.recovery_required_count == 0 &&
+              read.visible_rows.front().cells.size() == 1 &&
+              !read.visible_rows.front().cells.front().value.payload.empty(),
+          "borrowed read failed to return actual committed security payload");
+  require_exclusion();
+  auto foreign_relation = relation;
+  foreign_relation.value.bytes.back() ^= 1;
+  Require(!db::ReadPhysicalMgaCowRowsFromOpenDevice(
+               owner, foreign_relation, locator.head_page_number, {}, true).ok(),
+          "borrowed read accepted foreign relation identity");
+  Require(!db::ReadPhysicalMgaCowRowsFromOpenDevice(
+               owner, relation, 0, {}, true).ok(),
+          "borrowed read accepted reserved page");
+  require_exclusion();
+  Require(owner.Close().ok(), "borrowed read owner close failed");
+  Require(!db::ReadPhysicalMgaCowRowsFromOpenDevice(
+               owner, relation, locator.head_page_number, {}, true).ok(),
+          "borrowed read accepted closed device");
+  db::PhysicalMgaCowReadRequest request;
+  request.database_path = fixture.database_path.string();
+  request.relation_uuid = relation;
+  request.page_number = locator.head_page_number;
+  const auto reopened = db::ReadPhysicalMgaCowRows(request);
+  Require(reopened.ok() && reopened.visible_rows.size() == 1 &&
+              reopened.visible_rows.front().row_uuid.kind ==
+                  read.visible_rows.front().row_uuid.kind &&
+              reopened.visible_rows.front().row_uuid.value ==
+                  read.visible_rows.front().row_uuid.value &&
+              reopened.visible_rows.front().cells.front().value.payload ==
+                  read.visible_rows.front().cells.front().value.payload,
+          "path-owning read disagrees with borrowed committed payload");
+}
+
 void TestPageBackedLifecycle() {
   auto temp = MakeTempDirectory();
   Fixture fixture = CreateFixture(temp.path / "authority.sbdb", 1788101001000ull);
@@ -773,6 +852,7 @@ void TestPageBackedLifecycle() {
               committed.state.security_chain_page_reads == 8 &&
               committed.state.legacy_scan_page_reads == 0,
           "private security committed page-backed state did not reload");
+  VerifyBorrowedReadOwnership(fixture);
   Require(!std::filesystem::exists(
               fixture.database_path.string() +
               ".sb.security_principal_events") &&
@@ -1223,7 +1303,21 @@ void TestSealedLegacyMigration() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--probe-owner") {
+    for (const auto mode : {disk::FileOpenMode::open_existing,
+                            disk::FileOpenMode::open_existing_read_only}) {
+      disk::FileDevice competing;
+      const auto refused = competing.Open(argv[2], mode);
+      if (refused.ok() || competing.is_open() ||
+          refused.diagnostic.diagnostic_code != "SB-STORAGE-DISK-OWNER-LOCK-HELD") {
+        return EXIT_FAILURE;
+      }
+    }
+    return EXIT_SUCCESS;
+  }
+  Require(argc == 1, "private security test unexpected arguments");
+  test_executable = std::filesystem::absolute(argv[0]).string();
   TestPageBackedLifecycle();
   TestLocatorCrashCuts();
   TestMalformedInactiveLocatorRefusal();

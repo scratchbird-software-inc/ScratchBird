@@ -46,15 +46,15 @@ std::string NativeBulkStatementSavepointName(
   std::string material;
   material.reserve(256);
   material += "ScratchBird.NativeBulkLogicalStatement.V1\n";
-  material += request.context.database_uuid.canonical;
+  material += request.context.database_uuid;
   material.push_back('\n');
   material += std::to_string(request.context.local_transaction_id);
   material.push_back('\n');
-  material += request.context.transaction_uuid.canonical;
+  material += request.context.transaction_uuid;
   material.push_back('\n');
   material += request.context.request_id;
   material.push_back('\n');
-  material += request.target_table.uuid.canonical;
+  material += request.target_table.uuid;
   material.push_back('\n');
   material += std::to_string(row_count);
   const auto* bytes = reinterpret_cast<const scratchbird::core::platform::byte*>(
@@ -289,7 +289,7 @@ EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
     result.evidence.push_back({"native_bulk_ingest_refused_by",
                                "dml.direct_physical_bulk_append"});
   }
-  if (result.primary_object.uuid.canonical.empty()) {
+  if (result.primary_object.uuid.is_nil()) {
     result.primary_object = request.target_table;
   }
   return result;
@@ -358,10 +358,10 @@ EngineExecuteNativeBulkIngestResult WrapTriggerAwareInsertResult(
     result.evidence.push_back({"native_bulk_ingest_refused_by",
                                "dml.insert_rows"});
   }
-  if (result.primary_object.uuid.canonical.empty()) {
+  if (result.primary_object.uuid.is_nil()) {
     result.primary_object = request.target_table;
   }
-  if (result.transaction_uuid.canonical.empty()) {
+  if (result.transaction_uuid.is_nil()) {
     result.transaction_uuid = request.context.transaction_uuid;
   }
   if (result.local_transaction_id == 0) {
@@ -396,7 +396,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         MakeInvalidRequestDiagnostic(kOperationId, "localized_names_not_allowed_engine_boundary"),
         true);
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return NativeFailure(
         request,
         MakeInvalidRequestDiagnostic(kOperationId, "target_table_uuid_required"),
@@ -426,7 +426,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
       !request.import_policy.strict_bulk_load_requested;
   if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
-          request.target_table.uuid.canonical)) {
+          request.target_table.uuid)) {
     if (request.canonical_rows.empty()) {
       return NativeFailure(
           request,
@@ -629,7 +629,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
 
   if (scan_scalar_fallback || dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
-          request.target_table.uuid.canonical)) {
+          request.target_table.uuid)) {
     const auto rows = std::span<const EngineRowValue>(
         request.canonical_rows.data(), request.canonical_rows.size());
     auto trigger_result = WrapTriggerAwareInsertResult(
@@ -734,10 +734,10 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
     if (result.result_shape.result_kind.empty()) {
       result.result_shape = direct.result_shape;
     }
-    if (result.catalog_row_uuid.canonical.empty()) {
+    if (result.catalog_row_uuid.is_nil()) {
       result.catalog_row_uuid = direct.catalog_row_uuid;
     }
-    if (result.primary_object.uuid.canonical.empty()) {
+    if (result.primary_object.uuid.is_nil()) {
       result.primary_object = direct.primary_object;
     }
     if (row_count <= 10000) {

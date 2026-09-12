@@ -540,12 +540,15 @@ void AuthorityDriftIsRefused() {
                          10, "cluster-job",
                          memory::MemoryFairnessWorkClass::background);
   cluster.category = memory::MemoryCategory::cluster_control_reserved;
-  auto cluster_refused = scheduler.Admit(cluster);
-  Require(cluster_refused.action == memory::MemoryFairnessDecisionAction::deny,
-          "CEIC-025 cluster memory route was not blocked");
-  Require(EvidenceHas(cluster_refused,
-                      "memory_fairness.cluster_production_behavior=blocked_not_implemented"),
-          "CEIC-025 cluster blocked evidence missing");
+  auto cluster_local = scheduler.Admit(cluster);
+  Require(cluster_local.ok(), "cluster-category storage must acquire actual local ownership");
+  Require(EvidenceHas(cluster_local,
+                      "memory_fairness.cluster_category=local_accounting_only_not_cluster_authority"),
+          "local accounting must not claim cluster operation/provider authority");
+  Require(ledger.Snapshot().current_bytes == 10, "cluster-category storage not actually charged");
+  Require(scheduler.Release(cluster_local.grant).ok(), "cluster-category local owner release failed");
+  cluster.provenance.cluster_authority = true;
+  Require(!scheduler.Admit(cluster).ok(), "memory category must not authorize cluster operations");
 }
 
 void ReleaseApiFailsClosedWithoutLedger() {

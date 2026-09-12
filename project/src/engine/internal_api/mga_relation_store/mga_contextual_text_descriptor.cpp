@@ -208,20 +208,20 @@ bool CanonicalNonNilMigrationUuid(const std::string_view value) {
 bool ExactCanonicalTextIdentityAuthorityAvailable(
     const EngineRequestContext& context) {
   if (!CanonicalNonNilMigrationUuid(
-          context.datatype_catalog_snapshot_uuid.canonical) ||
+          context.datatype_catalog_snapshot_uuid) ||
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0) {
     return false;
   }
   const auto identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation,
           context.datatype_registry_generation,
           std::string(kCanonicalTextDescriptorUuid), 1);
   return identity.ok &&
          identity.row.catalog_snapshot_uuid ==
-             context.datatype_catalog_snapshot_uuid.canonical &&
+             context.datatype_catalog_snapshot_uuid &&
          identity.row.catalog_generation ==
              context.datatype_catalog_generation &&
          identity.row.registry_generation ==
@@ -321,19 +321,19 @@ bool ExactTextDescriptorResourceShape(
       return false;
     }
     EngineUuid charset_uuid;
-    charset_uuid.canonical = charset->second;
+    charset_uuid = charset->second;
     const auto live_charset = LookupEngineResourceDescriptorByUuid(
         context, charset_uuid, "charset");
     EngineUuid collation_uuid;
-    collation_uuid.canonical = collation->second;
+    collation_uuid = collation->second;
     const auto live_collation = LookupEngineResourceDescriptorByUuid(
         context, collation_uuid, "collation");
     if (!live_charset.ok || !live_collation.ok ||
-        live_charset.resource_descriptor.resource_uuid.canonical !=
+        live_charset.resource_descriptor.resource_uuid !=
             charset->second ||
-        live_collation.resource_descriptor.resource_uuid.canonical !=
+        live_collation.resource_descriptor.resource_uuid !=
             collation->second ||
-        live_collation.resource_descriptor.parent_resource_uuid.canonical !=
+        live_collation.resource_descriptor.parent_resource_uuid !=
             charset->second ||
         live_charset.resource_descriptor.family_epoch !=
             charset_generation_value ||
@@ -531,14 +531,14 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     EngineApiDiagnostic* diagnostic) {
   if (output == nullptr || diagnostic == nullptr) return false;
   *output = {};
-  if (relation.database_uuid.canonical != context.database_uuid.canonical ||
+  if (relation.database_uuid != context.database_uuid ||
       relation.descriptor_generation == 0 || relation.columns.empty() ||
-      !CopyContextualUuidV2(relation.descriptor_uuid.canonical,
+      !CopyContextualUuidV2(relation.descriptor_uuid,
                            &output->public_projection
                                 .relation_descriptor_uuid) ||
-      !CopyContextualUuidV2(relation.relation_uuid.canonical,
+      !CopyContextualUuidV2(relation.relation_uuid,
                            &output->public_projection.relation_uuid) ||
-      !CopyContextualUuidV2(relation.schema_uuid.canonical,
+      !CopyContextualUuidV2(relation.schema_uuid,
                            &output->public_projection.schema_uuid)) {
     *diagnostic = ContextualTextMgaDiagnostic(
         "relation projection identity is invalid");
@@ -546,11 +546,11 @@ bool BuildMgaContextualTextProjectionMaterialV2(
   }
   const bool catalog_context_exact =
       CanonicalNonNilMigrationUuid(
-          context.datatype_catalog_snapshot_uuid.canonical) &&
+          context.datatype_catalog_snapshot_uuid) &&
       context.datatype_catalog_generation == 1 &&
       context.datatype_registry_generation == 1 &&
       CopyContextualUuidV2(
-          context.datatype_catalog_snapshot_uuid.canonical,
+          context.datatype_catalog_snapshot_uuid,
           &output->public_projection.catalog_snapshot_uuid);
   output->public_projection.relation_descriptor_generation =
       relation.descriptor_generation;
@@ -574,13 +574,13 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     EnginePublicRelationProjectionColumnV3 projected;
     MgaContextualTextProjectedColumnV2 contextual;
     if (!ordinals.insert(column.ordinal).second ||
-        !column_uuids.insert(column.column_uuid.canonical).second ||
-        !CopyContextualUuidV2(column.column_uuid.canonical,
+        !column_uuids.insert(column.column_uuid).second ||
+        !CopyContextualUuidV2(column.column_uuid,
                              &projected.column_uuid) ||
-        !CopyContextualUuidV2(column.column_uuid.canonical,
+        !CopyContextualUuidV2(column.column_uuid,
                              &contextual.column_uuid) ||
         !CopyContextualUuidV2(
-            column.value_descriptor.descriptor_uuid.canonical,
+            column.value_descriptor.descriptor_uuid,
             &projected.descriptor_uuid)) {
       *diagnostic = ContextualTextMgaDiagnostic(
           "projected column identity is invalid or duplicated");
@@ -612,11 +612,11 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     std::optional<EngineResolvedResourceDescriptor> collation;
     if (!column.charset_uuid.empty()) {
       EngineUuid requested;
-      requested.canonical = column.charset_uuid;
+      requested = column.charset_uuid;
       const auto live = LookupEngineResourceDescriptorByUuid(
           context, requested, "charset");
       if (!live.ok || !live.resource_descriptor.present ||
-          live.resource_descriptor.resource_uuid.canonical !=
+          live.resource_descriptor.resource_uuid !=
               column.charset_uuid ||
           live.resource_descriptor.resource_epoch != context.resource_epoch ||
           live.resource_descriptor.family_epoch == 0 ||
@@ -638,13 +638,13 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     }
     if (!column.collation_uuid.empty()) {
       EngineUuid requested;
-      requested.canonical = column.collation_uuid;
+      requested = column.collation_uuid;
       const auto live = LookupEngineResourceDescriptorByUuid(
           context, requested, "collation");
       if (!live.ok || !live.resource_descriptor.present ||
-          live.resource_descriptor.resource_uuid.canonical !=
+          live.resource_descriptor.resource_uuid !=
               column.collation_uuid ||
-          live.resource_descriptor.parent_resource_uuid.canonical !=
+          live.resource_descriptor.parent_resource_uuid !=
               column.charset_uuid ||
           live.resource_descriptor.resource_epoch != context.resource_epoch ||
           live.resource_descriptor.family_epoch == 0 ||
@@ -676,7 +676,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
                 CanonicalNonNilMigrationUuid(
                     embedded_datatype_descriptor->second)
             ? embedded_datatype_descriptor->second
-            : column.value_descriptor.descriptor_uuid.canonical;
+            : column.value_descriptor.descriptor_uuid;
     if (!CopyContextualUuidV2(
             canonical_datatype_descriptor_uuid,
             &contextual.projected_datatype_descriptor_uuid)) {
@@ -686,7 +686,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
     }
     const auto datatype = catalog_context_exact
         ? scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-              context.datatype_catalog_snapshot_uuid.canonical,
+              context.datatype_catalog_snapshot_uuid,
               context.datatype_catalog_generation,
               context.datatype_registry_generation,
               canonical_datatype_descriptor_uuid, 1)
@@ -721,7 +721,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
               IsExactCanonicalTextTypeCodecIdentityV1(datatype.row) ||
           !ExactCanonicalMigratedTextDescriptor(
               context, column.value_descriptor.encoded_descriptor,
-              column.column_uuid.canonical) ||
+              column.column_uuid) ||
           projected.canonical_type_name != "text" ||
           projected.canonical_value_width != 0 ||
           projected.null_encoding != 1) {
@@ -886,17 +886,17 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
               "fresh canonical d718 column UUID is invalid");
           return false;
         }
-        relation_column.column_uuid.canonical = carried->second;
+        relation_column.column_uuid = carried->second;
       } else {
         if (!CanonicalNonNilMigrationUuid(
-                relation_column.column_uuid.canonical)) {
+                relation_column.column_uuid)) {
           *diagnostic = ContextualTextMgaDiagnostic(
               "fresh canonical d718 generated column UUID is invalid");
           return false;
         }
         if (!table_column.second.empty()) table_column.second.push_back(';');
         table_column.second.append("column_uuid=");
-        table_column.second.append(relation_column.column_uuid.canonical);
+        table_column.second.append(relation_column.column_uuid);
       }
       relation_column.value_descriptor.encoded_descriptor =
           table_column.second;
@@ -904,13 +904,13 @@ bool BindFreshCanonicalTextColumnIdentitiesV2(
       // handle.  The canonical datatype descriptor remains embedded in the
       // exact registry suffix and is projected separately into the live DAG.
       // This is the same split retained by the canonical TEXT migration path.
-      relation_column.value_descriptor.descriptor_uuid.canonical =
-          relation_column.column_uuid.canonical;
+      relation_column.value_descriptor.descriptor_uuid =
+          relation_column.column_uuid;
       relation_column.value_descriptor.canonical_type_name = "text";
     }
     if (!CanonicalNonNilMigrationUuid(
-            relation_column.column_uuid.canonical) ||
-        !column_uuids.insert(relation_column.column_uuid.canonical).second) {
+            relation_column.column_uuid) ||
+        !column_uuids.insert(relation_column.column_uuid).second) {
       *diagnostic = ContextualTextMgaDiagnostic(
           "fresh relation column UUID is invalid or duplicated");
       return false;
@@ -930,7 +930,7 @@ bool BuildMgaSealedContextualTextDescriptorMaterialV2(
   if (output == nullptr || diagnostic == nullptr) return false;
   *output = {};
   if (table.creator_tx == 0 || table.event_sequence == 0 ||
-      relation_descriptor.relation_uuid.canonical != table.table_uuid ||
+      relation_descriptor.relation_uuid != table.table_uuid ||
       relation_descriptor.relation_generation != table.event_sequence) {
     *diagnostic = ContextualTextMgaDiagnostic(
         "sealed descriptor table or relation owner is invalid");
@@ -953,7 +953,7 @@ bool BuildMgaSealedContextualTextDescriptorMaterialV2(
       material.relation_descriptor.descriptor_generation;
   if (!CopyContextualUuidV2(table.table_uuid, &owner.relation_uuid) ||
       !CopyContextualUuidV2(
-          material.relation_descriptor.descriptor_uuid.canonical,
+          material.relation_descriptor.descriptor_uuid,
           &owner.relation_descriptor_uuid)) {
     *diagnostic = ContextualTextMgaDiagnostic(
         "sealed descriptor owner UUID is invalid");

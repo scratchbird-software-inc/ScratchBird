@@ -82,7 +82,7 @@ EngineNormalizeImportRejectModelResult RejectModelFailure(const std::string& det
 }
 
 bool RejectTargetPresent(const EngineObjectReference& target) {
-  return !target.uuid.canonical.empty();
+  return !target.uuid.is_nil();
 }
 
 bool RejectLimitPresent(const EngineImportRejectPolicyEnvelope& policy) {
@@ -122,7 +122,7 @@ EngineNormalizeImportRejectModelResult EngineNormalizeImportRejectModel(
   if (!request.localized_names.empty()) {
     return RejectModelFailure("localized_names_not_allowed_engine_boundary");
   }
-  if (request.target_table.uuid.canonical.empty()) {
+  if (request.target_table.uuid.is_nil()) {
     return RejectModelFailure("target_table_uuid_required");
   }
   if (!OneOf(policy.reject_mode, {"fail_fast", "reject_row", "reject_table", "quarantine"})) {
@@ -187,9 +187,9 @@ EngineNormalizeImportRejectModelResult EngineNormalizeImportRejectModel(
   result.evidence.push_back({"import_reject_payload_policy", policy.reject_payload_policy});
   result.evidence.push_back({"import_resume_policy", policy.resume_policy});
   result.evidence.push_back({"import_error_row_schema_version", "1"});
-  result.evidence.push_back({"target_object_uuid", request.target_table.uuid.canonical});
+  result.evidence.push_back({"target_object_uuid", request.target_table.uuid});
   if (target_present) {
-    result.evidence.push_back({"reject_target_uuid", policy.reject_target.uuid.canonical});
+    result.evidence.push_back({"reject_target_uuid", policy.reject_target.uuid});
   }
   return result;
 }

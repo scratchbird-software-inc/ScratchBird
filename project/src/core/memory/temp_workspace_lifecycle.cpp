@@ -22,6 +22,7 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -58,27 +59,20 @@ constexpr int kSecureTempWorkspaceRandomBytes = 16;
 constexpr int kSecureTempWorkspaceAllocationAttempts = 16;
 constexpr const char* kTempWorkspaceAuthorityBoundary =
     "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority";
-constexpr u64 kTempWorkspaceManifestLegacyFormatVersion = 1;
-constexpr u64 kTempWorkspaceManifestCurrentFormatVersion = 2;
-constexpr const char* kTempWorkspaceManifestVersionV1 = "SB_TEMP_WORKSPACE_MANIFEST_V1";
-constexpr const char* kTempWorkspaceManifestVersionV2 = "SB_TEMP_WORKSPACE_MANIFEST_V2";
+constexpr u64 kTempWorkspaceManifestCurrentFormatVersion = 3;
+constexpr const char* kTempWorkspaceManifestVersionV3 = "SB_TEMP_WORKSPACE_MANIFEST_V3";
 
 const char* TempWorkspaceManifestHeaderForVersion(u64 version) {
   switch (version) {
-    case kTempWorkspaceManifestLegacyFormatVersion:
-      return kTempWorkspaceManifestVersionV1;
     case kTempWorkspaceManifestCurrentFormatVersion:
-      return kTempWorkspaceManifestVersionV2;
+      return kTempWorkspaceManifestVersionV3;
     default:
       return nullptr;
   }
 }
 
 std::optional<u64> TempWorkspaceManifestVersionFromHeader(const std::string& header) {
-  if (header == kTempWorkspaceManifestVersionV1) {
-    return kTempWorkspaceManifestLegacyFormatVersion;
-  }
-  if (header == kTempWorkspaceManifestVersionV2) {
+  if (header == kTempWorkspaceManifestVersionV3) {
     return kTempWorkspaceManifestCurrentFormatVersion;
   }
   return std::nullopt;
@@ -397,6 +391,78 @@ std::filesystem::path PlatformFilesystemPath(const std::filesystem::path& path) 
 #endif
 }
 
+// Prepare native paths/handles before publication. Rollback and the final
+// directory sync must remain usable when ordinary allocation is unavailable.
+class PendingTempFile {
+ public:
+  explicit PendingTempFile(const std::filesystem::path& path)
+      : path_(PlatformFilesystemPath(path)) {}
+  PendingTempFile(const PendingTempFile&) = delete;
+  ~PendingTempFile() { if (owned) (void)Remove(); }
+  bool Remove() noexcept {
+    if (!owned) return true;
+#if defined(_WIN32)
+    const bool removed = ::DeleteFileW(path_.c_str()) != 0 ||
+                         ::GetLastError() == ERROR_FILE_NOT_FOUND;
+#else
+    const bool removed = ::unlink(path_.c_str()) == 0 || errno == ENOENT;
+#endif
+    if (removed) owned = false;
+    return removed;
+  }
+  bool owned = false;
+ private:
+  std::filesystem::path path_;
+};
+
+class PreparedTempDirectorySync {
+ public:
+  explicit PreparedTempDirectorySync(const std::filesystem::path& path) {
+    auto parent = path.parent_path();
+    if (parent.empty()) parent = ".";
+#if defined(_WIN32)
+    const auto native = WidePath(parent);
+    handle_ = ::CreateFileW(native.c_str(), GENERIC_READ | GENERIC_WRITE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+#else
+    int flags = O_RDONLY | TempWorkspaceCloexecFlag();
+#ifdef O_DIRECTORY
+    flags |= O_DIRECTORY;
+#endif
+    handle_ = ::open(parent.c_str(), flags);
+#endif
+  }
+  PreparedTempDirectorySync(const PreparedTempDirectorySync&) = delete;
+  ~PreparedTempDirectorySync() {
+#if defined(_WIN32)
+    if (valid()) ::CloseHandle(handle_);
+#else
+    if (valid()) (void)::close(handle_);
+#endif
+  }
+  bool valid() const noexcept {
+#if defined(_WIN32)
+    return handle_ != INVALID_HANDLE_VALUE;
+#else
+    return handle_ >= 0;
+#endif
+  }
+  bool Sync() noexcept {
+#if defined(_WIN32)
+    return ::FlushFileBuffers(handle_) != 0;
+#else
+    return ::fsync(handle_) == 0;
+#endif
+  }
+ private:
+#if defined(_WIN32)
+  HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+  int handle_ = -1;
+#endif
+};
+
 bool ReplaceFileAtomically(const std::filesystem::path& temp_path,
                            const std::filesystem::path& target_path,
                            std::string* detail) {
@@ -426,6 +492,7 @@ bool ReplaceFileAtomically(const std::filesystem::path& temp_path,
 }
 
 bool AddWouldExceed(u64 current, u64 add, u64 limit) {
+  if (add > std::numeric_limits<u64>::max() - current) return true;
   if (limit == 0) return false;
   return add > limit || current > limit - add;
 }
@@ -440,19 +507,99 @@ std::string SanitizePathToken(std::string value) {
   return value;
 }
 
-u64 MapValue(const std::map<std::string, u64>& values, const std::string& key) {
+
+void AppendTempU64(std::string* out, u64 value) {
+  for (unsigned shift = 0; shift != 64; shift += 8)
+    out->push_back(static_cast<char>((value >> shift) & 0xff));
+}
+
+void AppendTempString(std::string* out, const std::string& value) {
+  AppendTempU64(out, value.size());
+  out->append(value);
+}
+
+struct BinaryTempReader {
+  std::string_view input;
+  std::size_t offset = 0;
+
+  bool done() const { return offset == input.size(); }
+  bool integer(u64* value) {
+    if (input.size() - offset < 8) return false;
+    *value = 0;
+    for (unsigned shift = 0; shift != 64; shift += 8)
+      *value |= static_cast<u64>(static_cast<unsigned char>(input[offset++])) << shift;
+    return true;
+  }
+  bool string(std::string* value) {
+    u64 size = 0;
+    if (!integer(&size) || size > input.size() - offset) return false;
+    value->assign(input.substr(offset, static_cast<std::size_t>(size)));
+    offset += static_cast<std::size_t>(size);
+    return true;
+  }
+  bool identity(TempWorkspaceUuid* value) {
+    if (input.size() - offset < value->bytes.size()) return false;
+    std::memcpy(value->bytes.data(), input.data() + offset, value->bytes.size());
+    offset += value->bytes.size();
+    return value->is_nil() || MemorySystemUuidValid(value->bytes);
+  }
+  bool boolean(bool* value) {
+    if (offset == input.size()) return false;
+    const auto byte = static_cast<unsigned char>(input[offset++]);
+    if (byte > 1) return false;
+    *value = byte != 0;
+    return true;
+  }
+  template <typename Enum> bool enumeration(Enum* value, Enum maximum) {
+    u64 raw = 0;
+    if (!integer(&raw) || raw > static_cast<u64>(maximum)) return false;
+    *value = static_cast<Enum>(raw);
+    return true;
+  }
+};
+
+bool ValidTempOwner(const TempWorkspaceOwner& owner, TempWorkspaceLifetime lifetime) {
+  for (const auto& identity : {owner.temp_object_uuid, owner.database_id, owner.engine_id,
+       owner.session_id, owner.transaction_id, owner.statement_id, owner.cursor_id,
+       owner.result_set_id, owner.operation_id, owner.scheduler_task_id,
+       owner.snapshot_boundary, owner.metadata_boundary, owner.resource_budget_reference}) {
+    if (!identity.is_nil() && !MemorySystemUuidValid(identity.bytes)) return false;
+  }
+  if (owner.temp_object_uuid.is_nil() || owner.database_id.is_nil() ||
+      owner.engine_id.is_nil() || owner.resource_budget_reference.is_nil()) return false;
+  if (owner.snapshot_boundary.is_nil() != owner.metadata_boundary.is_nil()) return false;
+  const bool query_owned = !owner.statement_id.is_nil() || !owner.cursor_id.is_nil() ||
+                           !owner.result_set_id.is_nil();
+  if (query_owned && (owner.snapshot_boundary.is_nil() || owner.metadata_boundary.is_nil()))
+    return false;
+  switch (lifetime) {
+    case TempWorkspaceLifetime::statement_lifetime: return !owner.statement_id.is_nil();
+    case TempWorkspaceLifetime::cursor_lifetime: return !owner.cursor_id.is_nil();
+    case TempWorkspaceLifetime::result_set_lifetime: return !owner.result_set_id.is_nil();
+    case TempWorkspaceLifetime::savepoint_lifetime:
+    case TempWorkspaceLifetime::transaction_lifetime: return !owner.transaction_id.is_nil();
+    case TempWorkspaceLifetime::session_lifetime: return !owner.session_id.is_nil();
+    case TempWorkspaceLifetime::operation_lifetime: return !owner.operation_id.is_nil();
+    case TempWorkspaceLifetime::scheduler_task_lifetime: return !owner.scheduler_task_id.is_nil();
+    case TempWorkspaceLifetime::recovery_lifetime:
+    case TempWorkspaceLifetime::administrator_review_lifetime: return true;
+  }
+  return false;
+}
+
+u64 MapValue(const std::map<TempWorkspaceUuid, u64>& values, const TempWorkspaceUuid& key) {
   const auto it = values.find(key);
   if (it == values.end()) return 0;
   return it->second;
 }
 
-void AddMapValue(std::map<std::string, u64>* values, const std::string& key, u64 amount) {
-  if (key.empty()) return;
+void AddMapValue(std::map<TempWorkspaceUuid, u64>* values, const TempWorkspaceUuid& key, u64 amount) {
+  if (key.is_nil()) return;
   (*values)[key] += amount;
 }
 
-void RemoveMapValue(std::map<std::string, u64>* values, const std::string& key, u64 amount) {
-  if (key.empty()) return;
+void RemoveMapValue(std::map<TempWorkspaceUuid, u64>* values, const TempWorkspaceUuid& key, u64 amount) {
+  if (key.is_nil()) return;
   auto it = values->find(key);
   if (it == values->end()) return;
   it->second = amount >= it->second ? 0 : it->second - amount;
@@ -533,18 +680,6 @@ std::vector<std::string> SplitTabs(std::string_view line) {
   return fields;
 }
 
-bool ParseBool(std::string_view value) {
-  return value == "1" || value == "true";
-}
-
-u64 ParseU64OrZero(const std::string& value) {
-  try {
-    return static_cast<u64>(std::stoull(value));
-  } catch (...) {
-    return 0;
-  }
-}
-
 bool ParseStrictU64Field(const std::string& value, u64* parsed) {
   if (parsed == nullptr || value.empty()) {
     return false;
@@ -562,94 +697,6 @@ bool ParseStrictU64Field(const std::string& value, u64* parsed) {
   }
   *parsed = accumulator;
   return true;
-}
-
-TempStorageClass ParseTempStorageClassName(const std::string& value) {
-  for (TempStorageClass candidate : {
-           TempStorageClass::memory_workspace,
-           TempStorageClass::spill_file,
-           TempStorageClass::temporary_page_space,
-           TempStorageClass::temporary_relation,
-           TempStorageClass::temporary_index,
-           TempStorageClass::materialized_result,
-           TempStorageClass::cursor_backing_store,
-           TempStorageClass::sort_workspace,
-           TempStorageClass::hash_workspace,
-           TempStorageClass::bulk_dml_staging,
-           TempStorageClass::backup_restore_scratch,
-           TempStorageClass::archive_package_scratch,
-           TempStorageClass::verification_scratch,
-           TempStorageClass::udr_workspace,
-           TempStorageClass::parser_workspace}) {
-    if (value == TempStorageClassName(candidate)) {
-      return candidate;
-    }
-  }
-  return TempStorageClass::spill_file;
-}
-
-TempWorkspaceLifetime ParseTempWorkspaceLifetimeName(const std::string& value) {
-  for (TempWorkspaceLifetime candidate : {
-           TempWorkspaceLifetime::statement_lifetime,
-           TempWorkspaceLifetime::cursor_lifetime,
-           TempWorkspaceLifetime::result_set_lifetime,
-           TempWorkspaceLifetime::savepoint_lifetime,
-           TempWorkspaceLifetime::transaction_lifetime,
-           TempWorkspaceLifetime::session_lifetime,
-           TempWorkspaceLifetime::operation_lifetime,
-           TempWorkspaceLifetime::scheduler_task_lifetime,
-           TempWorkspaceLifetime::recovery_lifetime,
-           TempWorkspaceLifetime::administrator_review_lifetime}) {
-    if (value == TempWorkspaceLifetimeName(candidate)) {
-      return candidate;
-    }
-  }
-  return TempWorkspaceLifetime::statement_lifetime;
-}
-
-TempWorkspaceState ParseTempWorkspaceStateName(const std::string& value) {
-  for (TempWorkspaceState candidate : {
-           TempWorkspaceState::active,
-           TempWorkspaceState::cleaned,
-           TempWorkspaceState::cleanup_refused,
-           TempWorkspaceState::cleanup_failed,
-           TempWorkspaceState::quarantined,
-           TempWorkspaceState::review_required}) {
-    if (value == TempWorkspaceStateName(candidate)) {
-      return candidate;
-    }
-  }
-  return TempWorkspaceState::active;
-}
-
-TempRecoveryClass ParseTempRecoveryClassName(const std::string& value) {
-  for (TempRecoveryClass candidate : {
-           TempRecoveryClass::discard_safe,
-           TempRecoveryClass::discard_after_evidence,
-           TempRecoveryClass::resume_required,
-           TempRecoveryClass::operation_owned_resume,
-           TempRecoveryClass::review_required,
-           TempRecoveryClass::quarantine_required,
-           TempRecoveryClass::leaked_cleanup_required,
-           TempRecoveryClass::cleanup_refused}) {
-    if (value == TempRecoveryClassName(candidate)) {
-      return candidate;
-    }
-  }
-  return TempRecoveryClass::discard_safe;
-}
-
-TempWorkspaceDiskReservationMode ParseTempWorkspaceDiskReservationModeName(
-    const std::string& value) {
-  for (TempWorkspaceDiskReservationMode candidate : {
-           TempWorkspaceDiskReservationMode::logical_quota_only,
-           TempWorkspaceDiskReservationMode::sparse_file,
-           TempWorkspaceDiskReservationMode::physical_preallocate}) {
-    if (value == TempWorkspaceDiskReservationModeName(candidate)) {
-      return candidate;
-    }
-  }
-  return TempWorkspaceDiskReservationMode::sparse_file;
 }
 
 MemoryCategory ParseMemoryCategoryName(const std::string& value) {
@@ -684,78 +731,33 @@ MemoryCategory ParseMemoryCategoryName(const std::string& value) {
   return MemoryCategory::unknown;
 }
 
-bool BlankString(const std::string& value) {
-  return value.find_first_not_of(" \t\r\n") == std::string::npos;
-}
-
-bool ScopeAlreadyPresent(const std::vector<HierarchicalMemoryScopeRef>& scopes,
-                         HierarchicalMemoryScopeKind kind,
-                         const std::string& scope_id) {
-  for (const auto& scope : scopes) {
-    if (scope.kind == kind && scope.scope_id == scope_id) {
-      return true;
-    }
-  }
-  return false;
-}
-
 void AppendScope(std::vector<HierarchicalMemoryScopeRef>* scopes,
                  HierarchicalMemoryScopeKind kind,
-                 std::string scope_id) {
-  if (BlankString(scope_id) || ScopeAlreadyPresent(*scopes, kind, scope_id)) {
-    return;
+                 const TempWorkspaceUuid& identity) {
+  if (identity.is_nil()) return;
+  for (const auto& scope : *scopes) {
+    if (scope.kind == kind && scope.binary_scope_uuid == identity.bytes) return;
   }
-  scopes->push_back({kind, std::move(scope_id)});
-}
-
-std::string FirstNonBlank(std::initializer_list<std::string> values,
-                          std::string fallback) {
-  for (const auto& value : values) {
-    if (!BlankString(value)) {
-      return value;
-    }
-  }
-  return fallback;
+  scopes->push_back({kind, {}, identity.bytes});
 }
 
 std::vector<HierarchicalMemoryScopeRef> TempWorkspaceReservationScopeChain(
     const TempWorkspaceAllocationRequest& request,
-    TempStorageClass storage_class) {
+    TempStorageClass) {
+  const auto& owner = request.owner;
   std::vector<HierarchicalMemoryScopeRef> scopes;
-  AppendScope(&scopes,
-              HierarchicalMemoryScopeKind::process,
-              FirstNonBlank({request.owner.engine_id}, "process-temp-workspace"));
-  AppendScope(&scopes, HierarchicalMemoryScopeKind::database, request.owner.database_id);
-  AppendScope(&scopes, HierarchicalMemoryScopeKind::session, request.owner.session_id);
-  AppendScope(&scopes, HierarchicalMemoryScopeKind::transaction, request.owner.transaction_id);
-  AppendScope(&scopes, HierarchicalMemoryScopeKind::statement, request.owner.statement_id);
-  AppendScope(&scopes,
-              HierarchicalMemoryScopeKind::query,
-              FirstNonBlank({request.owner.cursor_id,
-                             request.owner.result_set_id,
-                             request.owner.temp_object_uuid},
-                            std::string("temp-") + TempStorageClassName(storage_class)));
-  AppendScope(&scopes,
-              HierarchicalMemoryScopeKind::operator_scope,
-              std::string("temp_workspace.") + TempStorageClassName(storage_class));
-  if (!request.owner.scheduler_task_id.empty() || !request.owner.operation_id.empty()) {
-    AppendScope(&scopes,
-                HierarchicalMemoryScopeKind::background,
-                FirstNonBlank({request.owner.scheduler_task_id, request.owner.operation_id},
-                              "temp-workspace-operation"));
-  }
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::process, owner.engine_id);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::database, owner.database_id);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::session, owner.session_id);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::transaction, owner.transaction_id);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::statement, owner.statement_id);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::query,
+              !owner.cursor_id.is_nil() ? owner.cursor_id :
+              !owner.result_set_id.is_nil() ? owner.result_set_id : owner.temp_object_uuid);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::operator_scope, owner.temp_object_uuid);
+  AppendScope(&scopes, HierarchicalMemoryScopeKind::background,
+              !owner.scheduler_task_id.is_nil() ? owner.scheduler_task_id : owner.operation_id);
   return scopes;
-}
-
-std::vector<std::string> ScopeEvidenceStrings(
-    const std::vector<HierarchicalMemoryScopeRef>& scopes) {
-  std::vector<std::string> evidence;
-  evidence.reserve(scopes.size());
-  for (const auto& scope : scopes) {
-    evidence.push_back(std::string(HierarchicalMemoryScopeKindName(scope.kind)) +
-                       ":" + scope.scope_id);
-  }
-  return evidence;
 }
 
 HierarchicalMemoryBudgetProvenance EffectiveReservationProvenance(
@@ -768,16 +770,6 @@ HierarchicalMemoryBudgetProvenance EffectiveReservationProvenance(
     provenance.source_label = "core.memory.temp_workspace_lifecycle";
   }
   return provenance;
-}
-
-std::string TempWorkspaceReservationOwnerId(
-    const TempWorkspaceAllocationRequest& request) {
-  return FirstNonBlank({request.owner.temp_object_uuid,
-                        request.owner.operation_id,
-                        request.owner.statement_id,
-                        request.owner.transaction_id,
-                        request.owner.session_id},
-                       "temp-workspace-owner");
 }
 
 TempWorkspaceDiskReservationMode EffectiveDiskReservationMode(
@@ -1162,7 +1154,8 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
                                                  const std::string& file_name,
                                                  u64 bytes,
                                                  TempWorkspaceDiskReservationMode reservation_mode,
-                                                 bool physical_required) {
+                                                 bool physical_required,
+                                                 bool* file_created) {
   UniqueFd root_fd;
   SecureCreateResult root = OpenSecureRootDirectory(root_path, &root_fd);
   if (!root.ok) return root;
@@ -1198,10 +1191,11 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     return result;
   }
 
+  *file_created = true;
+
   if (::fchmod(file_fd.get(), S_IRUSR | S_IWUSR) != 0) {
     result.reason = "owner_only_file_permission_failed";
     result.error = ErrnoMessage(errno);
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
 
@@ -1209,7 +1203,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
   if (::fstat(file_fd.get(), &st) != 0) {
     result.reason = "file_stat_failed_after_create";
     result.error = ErrnoMessage(errno);
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
   if (!S_ISREG(st.st_mode)) {
@@ -1218,7 +1211,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     result.message_key = "temp_workspace.secure_create.refused";
     result.reason = "created_path_is_not_regular_file";
     result.error = "created path is not a regular file";
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
   if (st.st_nlink != 1) {
@@ -1227,13 +1219,11 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     result.message_key = "temp_workspace.secure_create.refused";
     result.reason = "created_path_has_unexpected_hardlink_count";
     result.error = "created path link count is not one";
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
   if ((st.st_mode & 0777) != (S_IRUSR | S_IWUSR)) {
     result.reason = "owner_only_file_permission_unverified";
     result.error = "created file mode is not 0600 after fchmod";
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
   if (st.st_uid != ::geteuid()) {
@@ -1242,7 +1232,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     result.message_key = "temp_workspace.secure_create.refused";
     result.reason = "created_path_owner_mismatch";
     result.error = "created path owner does not match effective user";
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
 
@@ -1256,7 +1245,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     result.message_key = "temp_workspace.spill.reserve_failed";
     result.reason = "secure_file_reservation_failed";
     result.error = reservation.error;
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
 
@@ -1264,7 +1252,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
   if (!file_fd.Close(&close_error)) {
     result.reason = "secure_file_close_failed";
     result.error = close_error;
-    ::unlinkat(root_fd.get(), file_name.c_str(), 0);
     return result;
   }
 
@@ -1389,7 +1376,8 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
                                                  const std::string& file_name,
                                                  u64 bytes,
                                                  TempWorkspaceDiskReservationMode reservation_mode,
-                                                 bool physical_required) {
+                                                 bool physical_required,
+                                                 bool* file_created) {
   SecureCreateResult root = OpenSecureRootDirectory(root_path);
   if (!root.ok) return root;
 
@@ -1421,6 +1409,13 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     return result;
   }
 
+  *file_created = true;
+  struct FileHandleOwner {
+    HANDLE handle;
+    ~FileHandleOwner() {
+      if (handle != INVALID_HANDLE_VALUE) ::CloseHandle(handle);
+    }
+  } handle_owner{file};
   auto reservation = ReserveBytes(file, bytes, reservation_mode, physical_required);
   result.disk_reservation_evidence = reservation.evidence;
   if (!reservation.ok) {
@@ -1428,14 +1423,13 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
     result.message_key = "temp_workspace.spill.reserve_failed";
     result.reason = "windows_secure_file_reservation_failed";
     result.error = reservation.error;
-    ::CloseHandle(file);
-    ::DeleteFileW(file_wide.c_str());
     return result;
   }
-  if (::CloseHandle(file) == 0) {
+  const bool closed = ::CloseHandle(file) != 0;
+  handle_owner.handle = INVALID_HANDLE_VALUE;
+  if (!closed) {
     result.reason = "windows_secure_file_close_failed";
     result.error = "CloseHandle failed";
-    ::DeleteFileW(file_wide.c_str());
     return result;
   }
 
@@ -1463,6 +1457,10 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
 
 TempWorkspaceLifecycleManager::TempWorkspaceLifecycleManager(TempWorkspacePolicy policy)
     : policy_(std::move(policy)) {
+  if (!MemorySystemUuidValid(policy_.database_uuid.bytes) ||
+      !MemorySystemUuidValid(policy_.engine_uuid.bytes)) {
+    root_path_validation_error_ = "temp_workspace_node_owner_required";
+  }
   if (policy_.root_path.empty()) {
     policy_.root_path = std::filesystem::temp_directory_path() / "scratchbird-temp-workspace";
   }
@@ -1477,7 +1475,11 @@ TempWorkspaceLifecycleManager::TempWorkspaceLifecycleManager(TempWorkspacePolicy
 #endif
   manifest_generation_ = policy_.manifest_generation == 0 ? 1 : policy_.manifest_generation;
   if (root_path_validation_error_.empty()) {
-    (void)LoadManifestFromDisk();
+    if (!LoadManifestFromDisk()) {
+      active_.clear();
+      accounting_ = {};
+      root_path_validation_error_ = "temp_manifest_invalid_or_unsupported";
+    }
   }
 }
 
@@ -1504,13 +1506,15 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   result.status = OkStatus();
   request.storage_class = storage_class;
 
-  if (request.bytes == 0) {
+  if (request.bytes == 0 || !ValidTempOwner(request.owner, request.lifetime) ||
+      request.owner.database_id != policy_.database_uuid ||
+      request.owner.engine_id != policy_.engine_uuid) {
     result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeDiagnostic(result.status,
                                        "TEMP_WORKSPACE.ALLOCATION_INVALID",
                                        "temp_workspace.allocation.invalid",
                                        request.owner,
-                                       {{"reason", "zero_byte_reservation"}});
+                                       {{"reason", request.bytes == 0 ? "zero_byte_reservation" : "invalid_binary_owner"}});
     return result;
   }
   if (!root_path_validation_error_.empty()) {
@@ -1536,6 +1540,16 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
                                        {{"reason", "cluster_temp_workspace_requires_external_provider"},
                                         {"external_provider_only", "true"},
                                         {"fail_closed", "true"}});
+    return result;
+  }
+
+  if (std::any_of(active_.begin(), active_.end(), [&](const auto& entry) {
+        return entry.second.owner.temp_object_uuid == request.owner.temp_object_uuid;
+      })) {
+    result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeDiagnostic(result.status,
+        "TEMP_WORKSPACE.ALLOCATION_INVALID", "temp_workspace.allocation.invalid",
+        request.owner, {{"reason", "duplicate_temp_object_identity"}});
     return result;
   }
 
@@ -1606,6 +1620,17 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
     return result;
   }
 
+  bool retained = false;
+  struct BudgetRollback {
+    HierarchicalMemoryBudgetLedger* ledger;
+    HierarchicalMemoryReservationToken token;
+    bool& retained;
+    ~BudgetRollback() {
+      if (!retained && ledger != nullptr && token.valid())
+        (void)ledger->ReleaseNoAlloc(token);
+    }
+  } budget_rollback{policy_.reservation_ledger, budget_reservation.evidence.token, retained};
+
   TempWorkspaceRecord record;
   record.owner = request.owner;
   record.budget_reservation_evidence = budget_reservation.evidence;
@@ -1614,8 +1639,6 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   for (int attempt = 0; attempt < kSecureTempWorkspaceAllocationAttempts; ++attempt) {
     auto allocation_id = NextAllocationIdLocked(request, &random_error);
     if (!allocation_id.has_value()) {
-      DiagnosticRecord release_diagnostic;
-      (void)ReleaseBudgetReservationLocked(record, TempCleanupReason::administrator, &release_diagnostic);
       result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
       result.diagnostic = MakeDiagnostic(result.status,
                                          "TEMP_WORKSPACE.SECURE_RANDOM_FAILED",
@@ -1634,8 +1657,6 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
     break;
   }
   if (!allocated_id) {
-    DiagnosticRecord release_diagnostic;
-    (void)ReleaseBudgetReservationLocked(record, TempCleanupReason::administrator, &release_diagnostic);
     result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
     result.diagnostic = MakeDiagnostic(result.status,
                                        "TEMP_WORKSPACE.SECURE_RANDOM_FAILED",
@@ -1657,22 +1678,64 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   record.administrator_review_required = request.administrator_review_required;
   record.legal_hold = request.legal_hold;
 
-  // MMCH_SECURE_TEMP_WORKSPACE: production temp workspace files must be
-  // random, exclusive, owner-only, no-follow creations; failures are closed.
+  // Preallocate the complete quota projection and an owning map entry before
+  // acquiring the file. The entry is private while mutex_ is held.
+  auto projected = accounting_;
+  projected.active_bytes += record.reserved_bytes;
+  projected.peak_bytes = std::max(projected.peak_bytes, projected.active_bytes);
+  ++projected.allocation_count;
+  AddMapValue(&projected.session_bytes, record.owner.session_id, record.reserved_bytes);
+  AddMapValue(&projected.transaction_bytes, record.owner.transaction_id, record.reserved_bytes);
+  AddMapValue(&projected.statement_bytes, record.owner.statement_id, record.reserved_bytes);
+  AddMapValue(&projected.operation_bytes, record.owner.operation_id, record.reserved_bytes);
+  PendingTempFile pending_file(record.path);
+  const auto [inserted, unique] = active_.emplace(record.allocation_id, std::move(record));
+  if (!unique) {
+    result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
+    return result;
+  }
+  bool manifest_published = false;
+  struct AllocationRollback {
+    decltype(active_)& active;
+    decltype(active_)::iterator inserted;
+    TempWorkspaceAccountingSnapshot& accounting;
+    TempWorkspaceAccountingSnapshot& projected;
+    PendingTempFile& file;
+    bool& manifest_published;
+    bool& retained;
+    ~AllocationRollback() {
+      if (!manifest_published && file.Remove()) {
+        active.erase(inserted);
+        return;
+      }
+      // A published manifest, or an OS cleanup failure, must retain the real
+      // owner and its charge. Never erase the only record of a remaining file.
+      if (!manifest_published) inserted->second.state = TempWorkspaceState::quarantined;
+      file.owned = false;
+      retained = true;
+      accounting = std::move(projected);
+    }
+  } rollback{active_, inserted, accounting_, projected, pending_file,
+             manifest_published, retained};
+  static_assert(std::is_nothrow_move_assignable_v<TempWorkspaceAccountingSnapshot>);
+  static_assert(std::is_nothrow_move_constructible_v<TempWorkspaceResult>);
+  auto& owned_record = inserted->second;
+
+  // The create routine hands ownership to this rollback guard immediately
+  // after exclusive creation, before any fallible security evidence work.
   const auto secure_create = CreateSecureTempWorkspaceFile(policy_.root_path,
-                                                          record.path.filename().string(),
+                                                          owned_record.path.filename().string(),
                                                           request.bytes,
                                                           EffectiveDiskReservationMode(policy_),
-                                                          policy_.require_physical_disk_reservation);
+                                                          policy_.require_physical_disk_reservation,
+                                                          &pending_file.owned);
   if (!secure_create.ok) {
-    DiagnosticRecord release_diagnostic;
-    (void)ReleaseBudgetReservationLocked(record, TempCleanupReason::administrator, &release_diagnostic);
     result.status = TempStatus(secure_create.status_code, secure_create.severity);
     result.diagnostic = MakeDiagnostic(result.status,
                                        secure_create.diagnostic_code,
                                        secure_create.message_key,
                                        request.owner,
-                                       {{"path", record.path.string()},
+                                       {{"path", owned_record.path.string()},
                                         {"reason", secure_create.reason},
                                         {"error", secure_create.error},
                                         {"platform_semantics", secure_create.evidence.platform_semantics},
@@ -1683,37 +1746,24 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
                                         {"authority_boundary", kTempWorkspaceAuthorityBoundary}});
     return result;
   }
-  record.security_evidence = secure_create.evidence;
-  record.disk_reservation_evidence = secure_create.disk_reservation_evidence;
-  if (!CommitBudgetReservationLocked(&record.budget_reservation_evidence,
-                                     request.owner,
-                                     &result.diagnostic)) {
-    std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
+  owned_record.security_evidence = secure_create.evidence;
+  owned_record.disk_reservation_evidence = secure_create.disk_reservation_evidence;
+  if (!CommitBudgetReservationLocked(&owned_record.budget_reservation_evidence,
+                                     request.owner, &result.diagnostic)) {
     result.status = result.diagnostic.status;
     return result;
   }
 
-  AddAccountingLocked(record);
-  active_.emplace(record.allocation_id, record);
+  // Build the caller's complete ownership record before durable publication.
+  result.record = owned_record;
   DiagnosticRecord manifest_diagnostic;
-  if (!PersistManifestLocked(&manifest_diagnostic)) {
-    const auto inserted = active_.find(record.allocation_id);
-    if (inserted != active_.end()) {
-      DiagnosticRecord release_diagnostic;
-      if (!ReleaseBudgetReservationLocked(inserted->second,
-                                          TempCleanupReason::administrator,
-                                          &release_diagnostic)) {
-        ++accounting_.ceic_011_reservation_release_failure_count;
-      }
-      RemoveAccountingLocked(inserted->second);
-      active_.erase(inserted);
-    }
-    std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
+  if (!PersistManifestLocked(&manifest_diagnostic, &manifest_published)) {
+    if (!manifest_published) result.record.reset();
     result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
-    result.diagnostic = manifest_diagnostic;
+    result.diagnostic = std::move(manifest_diagnostic);
     return result;
   }
-  result.record = record;
+  manifest_published = true;
   return result;
 }
 
@@ -1722,25 +1772,25 @@ TempWorkspaceLifecycleManager::CheckQuotaLocked(const TempWorkspaceAllocationReq
   if (AddWouldExceed(accounting_.active_bytes, request.bytes, policy_.filespace_quota_bytes)) {
     return {false, "filespace", policy_.filespace_quota_bytes, accounting_.active_bytes};
   }
-  if (!request.owner.session_id.empty()) {
+  if (!request.owner.session_id.is_nil()) {
     const u64 current = MapValue(accounting_.session_bytes, request.owner.session_id);
     if (AddWouldExceed(current, request.bytes, policy_.session_quota_bytes)) {
       return {false, "session", policy_.session_quota_bytes, current};
     }
   }
-  if (!request.owner.transaction_id.empty()) {
+  if (!request.owner.transaction_id.is_nil()) {
     const u64 current = MapValue(accounting_.transaction_bytes, request.owner.transaction_id);
     if (AddWouldExceed(current, request.bytes, policy_.transaction_quota_bytes)) {
       return {false, "transaction", policy_.transaction_quota_bytes, current};
     }
   }
-  if (!request.owner.statement_id.empty()) {
+  if (!request.owner.statement_id.is_nil()) {
     const u64 current = MapValue(accounting_.statement_bytes, request.owner.statement_id);
     if (AddWouldExceed(current, request.bytes, policy_.statement_quota_bytes)) {
       return {false, "statement", policy_.statement_quota_bytes, current};
     }
   }
-  if (!request.owner.operation_id.empty()) {
+  if (!request.owner.operation_id.is_nil()) {
     const u64 current = MapValue(accounting_.operation_bytes, request.owner.operation_id);
     if (AddWouldExceed(current, request.bytes, policy_.operation_quota_bytes)) {
       return {false, "operation", policy_.operation_quota_bytes, current};
@@ -1788,7 +1838,7 @@ TempWorkspaceLifecycleManager::ReserveBudgetLocked(
 
   result.evidence.ceic_011_reservation_requested = true;
   result.evidence.scope_chain =
-      ScopeEvidenceStrings(TempWorkspaceReservationScopeChain(request, storage_class));
+      TempWorkspaceReservationScopeChain(request, storage_class);
 
   HierarchicalMemoryReservationRequest reservation;
   reservation.scope_chain = TempWorkspaceReservationScopeChain(request, storage_class);
@@ -1799,7 +1849,7 @@ TempWorkspaceLifecycleManager::ReserveBudgetLocked(
   }
   reservation.memory_class = result.evidence.memory_class;
   reservation.requested_bytes = request.bytes;
-  reservation.owner_id = TempWorkspaceReservationOwnerId(request);
+  reservation.binary_owner_uuid = request.owner.temp_object_uuid.bytes;
   reservation.spillable = storage_class == TempStorageClass::spill_file ||
                           storage_class == TempStorageClass::sort_workspace ||
                           storage_class == TempStorageClass::hash_workspace ||
@@ -1890,20 +1940,20 @@ bool TempWorkspaceLifecycleManager::ReleaseBudgetReservationLocked(
 }
 
 TempWorkspaceCleanupResult
-TempWorkspaceLifecycleManager::CleanupOnCommit(const std::string& transaction_id,
+TempWorkspaceLifecycleManager::CleanupOnCommit(const TempWorkspaceUuid& transaction_id,
                                                TempTransactionOutcomeEvidence evidence) {
   std::lock_guard<std::mutex> lock(mutex_);
   return CleanupWhereLocked(TempCleanupReason::commit, evidence, transaction_id);
 }
 
 TempWorkspaceCleanupResult
-TempWorkspaceLifecycleManager::CleanupOnRollback(const std::string& transaction_id,
+TempWorkspaceLifecycleManager::CleanupOnRollback(const TempWorkspaceUuid& transaction_id,
                                                  TempTransactionOutcomeEvidence evidence) {
   std::lock_guard<std::mutex> lock(mutex_);
   return CleanupWhereLocked(TempCleanupReason::rollback, evidence, transaction_id);
 }
 
-TempWorkspaceCleanupResult TempWorkspaceLifecycleManager::CleanupOnDisconnect(const std::string& session_id) {
+TempWorkspaceCleanupResult TempWorkspaceLifecycleManager::CleanupOnDisconnect(const TempWorkspaceUuid& session_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   return CleanupWhereLocked(TempCleanupReason::disconnect, TempTransactionOutcomeEvidence::none, session_id);
 }
@@ -1913,7 +1963,7 @@ TempWorkspaceCleanupResult TempWorkspaceLifecycleManager::CleanupOnShutdown() {
   return CleanupWhereLocked(TempCleanupReason::shutdown, TempTransactionOutcomeEvidence::none, {});
 }
 
-TempWorkspaceCleanupResult TempWorkspaceLifecycleManager::CleanupOperation(const std::string& operation_id) {
+TempWorkspaceCleanupResult TempWorkspaceLifecycleManager::CleanupOperation(const TempWorkspaceUuid& operation_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   return CleanupWhereLocked(TempCleanupReason::operation_complete, TempTransactionOutcomeEvidence::none, operation_id);
 }
@@ -1931,13 +1981,15 @@ TempWorkspaceLifecycleManager::CleanupRecoverySafe(const TempWorkspaceRecoveryEv
         classified.recovery_class == TempRecoveryClass::leaked_cleanup_required ||
         classified.recovery_class == TempRecoveryClass::discard_after_evidence) {
       DiagnosticRecord diagnostic;
-      if (RemoveRecordFile(it->second, &diagnostic)) {
+      if (PrepareCleanupIntentLocked(it->second, &diagnostic) &&
+          RemoveRecordFile(it->second, &diagnostic)) {
         if (!ReleaseBudgetReservationLocked(it->second,
                                             TempCleanupReason::recovery,
                                             &diagnostic)) {
           result.diagnostic = diagnostic;
           ++result.failed_count;
-          it->second.state = TempWorkspaceState::cleanup_failed;
+          if (it->second.state != TempWorkspaceState::cleanup_pending)
+            it->second.state = TempWorkspaceState::cleanup_failed;
           ++it;
           continue;
         }
@@ -1949,15 +2001,17 @@ TempWorkspaceLifecycleManager::CleanupRecoverySafe(const TempWorkspaceRecoveryEv
       }
       result.diagnostic = diagnostic;
       ++result.failed_count;
-      it->second.state = TempWorkspaceState::cleanup_failed;
+      if (it->second.state != TempWorkspaceState::cleanup_pending)
+        it->second.state = TempWorkspaceState::cleanup_failed;
       ++it;
       continue;
     }
     ++result.refused_count;
     it->second.recovery_class = classified.recovery_class;
-    it->second.state = classified.recovery_class == TempRecoveryClass::review_required
-                           ? TempWorkspaceState::review_required
-                           : TempWorkspaceState::cleanup_refused;
+    if (it->second.state != TempWorkspaceState::cleanup_pending)
+      it->second.state = classified.recovery_class == TempRecoveryClass::review_required
+                             ? TempWorkspaceState::review_required
+                             : TempWorkspaceState::cleanup_refused;
     ++it;
   }
 
@@ -1984,9 +2038,17 @@ TempWorkspaceLifecycleManager::CleanupRecoverySafe(const TempWorkspaceRecoveryEv
 TempWorkspaceCleanupResult
 TempWorkspaceLifecycleManager::CleanupWhereLocked(TempCleanupReason reason,
                                                   TempTransactionOutcomeEvidence evidence,
-                                                  const std::string& scope_id) {
+                                                  const TempWorkspaceUuid& scope_id) {
   TempWorkspaceCleanupResult result;
   result.status = OkStatus();
+
+  if (!root_path_validation_error_.empty() ||
+      (reason != TempCleanupReason::shutdown && reason != TempCleanupReason::recovery &&
+       !MemorySystemUuidValid(scope_id.bytes))) {
+    result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.failed_count = 1;
+    return result;
+  }
 
   if (CleanupRequiresOutcome(reason) && !CleanupOutcomeMatches(reason, evidence)) {
     ++accounting_.cleanup_refusal_count;
@@ -1997,7 +2059,7 @@ TempWorkspaceLifecycleManager::CleanupWhereLocked(TempCleanupReason reason,
                                        {},
                                        {{"cleanup_reason", TempCleanupReasonName(reason)},
                                         {"evidence", TempTransactionOutcomeEvidenceName(evidence)},
-                                        {"scope_id", scope_id}});
+                                        {"scope_identity", scope_id.is_nil() ? "absent" : "binary_uuid"}});
     result.refused_count = static_cast<u64>(std::count_if(active_.begin(), active_.end(), [&](const auto& entry) {
       return RecordMatchesCleanupScope(entry.second, reason, scope_id);
     }));
@@ -2011,17 +2073,20 @@ TempWorkspaceLifecycleManager::CleanupWhereLocked(TempCleanupReason reason,
     }
     if (ProtectedFromOrdinaryCleanup(it->second) && reason != TempCleanupReason::administrator) {
       ++result.refused_count;
-      it->second.state = TempWorkspaceState::review_required;
+      if (it->second.state != TempWorkspaceState::cleanup_pending)
+        it->second.state = TempWorkspaceState::review_required;
       ++it;
       continue;
     }
 
     DiagnosticRecord diagnostic;
-    if (RemoveRecordFile(it->second, &diagnostic)) {
+    if (PrepareCleanupIntentLocked(it->second, &diagnostic) &&
+        RemoveRecordFile(it->second, &diagnostic)) {
       if (!ReleaseBudgetReservationLocked(it->second, reason, &diagnostic)) {
         result.diagnostic = diagnostic;
         ++result.failed_count;
-        it->second.state = TempWorkspaceState::cleanup_failed;
+        if (it->second.state != TempWorkspaceState::cleanup_pending)
+          it->second.state = TempWorkspaceState::cleanup_failed;
         ++it;
         continue;
       }
@@ -2032,7 +2097,8 @@ TempWorkspaceLifecycleManager::CleanupWhereLocked(TempCleanupReason reason,
     } else {
       result.diagnostic = diagnostic;
       ++result.failed_count;
-      it->second.state = TempWorkspaceState::cleanup_failed;
+      if (it->second.state != TempWorkspaceState::cleanup_pending)
+        it->second.state = TempWorkspaceState::cleanup_failed;
       ++it;
     }
   }
@@ -2060,7 +2126,7 @@ TempWorkspaceLifecycleManager::CleanupWhereLocked(TempCleanupReason reason,
 
 bool TempWorkspaceLifecycleManager::RecordMatchesCleanupScope(const TempWorkspaceRecord& record,
                                                               TempCleanupReason reason,
-                                                              const std::string& scope_id) const {
+                                                              const TempWorkspaceUuid& scope_id) const {
   switch (reason) {
     case TempCleanupReason::statement_end:
       return record.owner.statement_id == scope_id &&
@@ -2079,7 +2145,7 @@ bool TempWorkspaceLifecycleManager::RecordMatchesCleanupScope(const TempWorkspac
       return record.owner.operation_id == scope_id &&
              record.lifetime == TempWorkspaceLifetime::operation_lifetime;
     case TempCleanupReason::administrator:
-      return record.allocation_id == scope_id;
+      return record.owner.temp_object_uuid == scope_id;
   }
   return false;
 }
@@ -2101,7 +2167,38 @@ bool TempWorkspaceLifecycleManager::CleanupOutcomeMatches(TempCleanupReason reas
 
 bool TempWorkspaceLifecycleManager::ProtectedFromOrdinaryCleanup(const TempWorkspaceRecord& record) const {
   return record.administrator_review_required || record.legal_hold ||
+         record.recovery_class == TempRecoveryClass::quarantine_required ||
+         record.recovery_class == TempRecoveryClass::review_required ||
          (record.durable_operation_owned && record.lifetime == TempWorkspaceLifetime::operation_lifetime);
+}
+
+bool TempWorkspaceLifecycleManager::PrepareCleanupIntentLocked(
+    TempWorkspaceRecord& record, DiagnosticRecord* diagnostic) {
+  if (record.state == TempWorkspaceState::cleanup_pending) {
+    // A prior publication may have returned a directory-sync failure. Repeat
+    // the durability barrier before unlink; do not assume in-memory state proves
+    // durability and do not consume another generation for the same intent.
+    const auto path = ManifestPath();
+    std::string detail;
+    if (DurableSyncPath(path, true, &detail) && DurableSyncParentDirectory(path, &detail))
+      return true;
+    if (diagnostic != nullptr)
+      *diagnostic = MakeTempManifestDiagnostic(
+          TempManifestStatus(StatusCode::memory_allocation_failed, Severity::error),
+          "TEMP_WORKSPACE.MANIFEST_WRITE_FAILED", "temp_workspace.manifest.write_failed",
+          policy_, "cleanup_intent_sync_failed", path, detail);
+    return false;
+  }
+  const auto before = record.state;
+  bool published = false;
+  struct RestoreUnpublishedIntent {
+    TempWorkspaceRecord& record;
+    TempWorkspaceState before;
+    bool& published;
+    ~RestoreUnpublishedIntent() { if (!published) record.state = before; }
+  } restore{record, before, published};
+  record.state = TempWorkspaceState::cleanup_pending;
+  return PersistManifestLocked(diagnostic, &published);
 }
 
 TempWorkspaceRecoveryResult
@@ -2123,13 +2220,22 @@ TempWorkspaceLifecycleManager::ClassifyForRecovery(const std::string& allocation
   auto result = ClassifyRecordForRecovery(it->second, evidence);
   ++accounting_.recovery_classification_count;
   it->second.recovery_class = result.recovery_class;
-  if (result.recovery_class == TempRecoveryClass::quarantine_required) {
-    it->second.state = TempWorkspaceState::quarantined;
-  } else if (result.recovery_class == TempRecoveryClass::review_required) {
-    it->second.state = TempWorkspaceState::review_required;
+  // Preserve the durable deletion marker even when current recovery policy
+  // requires quarantine or review; that policy still controls cleanup.
+  if (it->second.state != TempWorkspaceState::cleanup_pending) {
+    if (result.recovery_class == TempRecoveryClass::quarantine_required) {
+      it->second.state = TempWorkspaceState::quarantined;
+    } else if (result.recovery_class == TempRecoveryClass::review_required) {
+      it->second.state = TempWorkspaceState::review_required;
+    }
   }
   DiagnosticRecord manifest_diagnostic;
-  (void)PersistManifestLocked(&manifest_diagnostic);
+  if (!PersistManifestLocked(&manifest_diagnostic)) {
+    // Keep the conservative classification in memory, but never claim that
+    // its management-state publication succeeded when persistence failed.
+    result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
+    result.diagnostic = std::move(manifest_diagnostic);
+  }
   return result;
 }
 
@@ -2209,14 +2315,28 @@ const TempWorkspacePolicy& TempWorkspaceLifecycleManager::policy() const {
 
 bool TempWorkspaceLifecycleManager::RemoveRecordFile(const TempWorkspaceRecord& record,
                                                      DiagnosticRecord* diagnostic) const {
-  if (!policy_.cleanup_files_on_release) return true;
   std::error_code ec;
-  if (record.path.empty() ||
-      !std::filesystem::exists(PlatformFilesystemPath(record.path), ec)) {
-    return true;
+  std::string reason;
+  if (!policy_.cleanup_files_on_release) {
+    reason = "cleanup_disabled_owner_retained";
+  } else if (record.path.empty()) {
+    reason = "missing_owned_path";
+  } else {
+    const auto status = std::filesystem::symlink_status(PlatformFilesystemPath(record.path), ec);
+    if (status.type() == std::filesystem::file_type::not_found &&
+        (!ec || ec == std::errc::no_such_file_or_directory)) return true;
+    if (ec) {
+      reason = "owned_path_status_failed";
+    } else if (!std::filesystem::is_regular_file(status)) {
+      reason = "owned_path_not_regular_file";
+    } else if (std::filesystem::hard_link_count(PlatformFilesystemPath(record.path), ec) != 1 || ec) {
+      reason = "owned_path_has_unexpected_links";
+    } else {
+      const bool removed = std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
+      if (removed && !ec) return true;
+      reason = "owned_path_remove_failed";
+    }
   }
-  std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
-  if (!ec) return true;
   if (diagnostic != nullptr) {
     const auto status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
     *diagnostic = MakeDiagnostic(status,
@@ -2225,6 +2345,7 @@ bool TempWorkspaceLifecycleManager::RemoveRecordFile(const TempWorkspaceRecord& 
                                  record.owner,
                                  {{"allocation_id", record.allocation_id},
                                   {"path", record.path.string()},
+                                  {"reason", reason},
                                   {"error", ec.message()}});
   }
   return false;
@@ -2267,10 +2388,13 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
   const u64 configured_version = policy_.metadata_format_version == 0
                                      ? kTempWorkspaceManifestCurrentFormatVersion
                                      : policy_.metadata_format_version;
-  std::vector<u64> candidate_versions{configured_version};
-  if (configured_version != kTempWorkspaceManifestLegacyFormatVersion) {
-    candidate_versions.push_back(kTempWorkspaceManifestLegacyFormatVersion);
+  if (configured_version != kTempWorkspaceManifestCurrentFormatVersion) return false;
+  // Earlier text manifests omit visibility fences and cannot be upgraded safely.
+  for (u64 legacy : {u64{1}, u64{2}}) {
+    if (std::filesystem::exists(PlatformFilesystemPath(ManifestPathForVersion(legacy)), ec) || ec)
+      return false;
   }
+  std::vector<u64> candidate_versions{configured_version};
   for (u64 candidate_version : candidate_versions) {
     const auto path = ManifestPathForVersion(candidate_version);
     const auto tmp = TempWorkspaceManifestTempPath(path);
@@ -2284,9 +2408,14 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
         return false;
       }
     }
-    if (!std::filesystem::is_regular_file(PlatformFilesystemPath(path), ec)) {
+    const auto manifest_status = std::filesystem::symlink_status(PlatformFilesystemPath(path), ec);
+    if (manifest_status.type() == std::filesystem::file_type::not_found) {
+      ec.clear();
       continue;
     }
+    if (ec || !std::filesystem::is_regular_file(manifest_status) ||
+        std::filesystem::hard_link_count(PlatformFilesystemPath(path), ec) != 1 || ec)
+      return false;
     std::ifstream in(PlatformFilesystemPath(path), std::ios::binary);
     if (!in) {
       return false;
@@ -2339,39 +2468,98 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
         verified_manifest = true;
       }
     }
+    if (!verified_manifest) return false;
+    std::map<std::string, TempWorkspaceRecord> loaded;
+    std::vector<TempWorkspaceUuid> object_ids;
+    BinaryTempReader reader{body};
+    u64 record_count = 0;
+    if (!reader.integer(&record_count) || record_count == 0 ||
+        record_count > body.size() / 16) return false;
+    for (u64 index = 0; index != record_count; ++index) {
+      std::string bytes;
+      if (!reader.string(&bytes)) return false;
+      auto record = ParseManifestRecord(bytes);
+      if (!record || loaded.contains(record->allocation_id) ||
+          std::find(object_ids.begin(), object_ids.end(), record->owner.temp_object_uuid) !=
+              object_ids.end()) return false;
+      const auto file_status =
+          std::filesystem::symlink_status(PlatformFilesystemPath(record->path), ec);
+      const bool missing_cleanup = record->state == TempWorkspaceState::cleanup_pending &&
+          file_status.type() == std::filesystem::file_type::not_found &&
+          (!ec || ec == std::errc::no_such_file_or_directory);
+      if (!missing_cleanup &&
+          (!std::filesystem::is_regular_file(file_status) || ec ||
+           std::filesystem::hard_link_count(PlatformFilesystemPath(record->path), ec) != 1 || ec))
+        return false;
+      ec.clear();
+      object_ids.push_back(record->owner.temp_object_uuid);
+      loaded.emplace(record->allocation_id, std::move(*record));
+    }
+    if (!reader.done()) return false;
+    // Runtime reservations are process-local. Restore actual ownership before
+    // making recovered allocations available; never trust persisted grant bits.
+    std::vector<HierarchicalMemoryReservationToken> restored_tokens;
+    restored_tokens.reserve(loaded.size());
+    auto rollback_restored = [&] {
+      if (policy_.reservation_ledger != nullptr) {
+        for (const auto& token : restored_tokens)
+          (void)policy_.reservation_ledger->Release(token);
+      }
+      restored_tokens.clear();
+    };
+    struct RollbackGuard {
+      decltype(rollback_restored)& rollback;
+      bool published = false;
+      ~RollbackGuard() noexcept {
+        if (!published) {
+          try { rollback(); } catch (...) { }
+        }
+      }
+    } rollback_guard{rollback_restored};
+    u64 recovered_bytes = 0;
+    for (auto& entry : loaded) {
+      auto& record = entry.second;
+      if (record.reserved_bytes > std::numeric_limits<u64>::max() - recovered_bytes ||
+          (record.budget_reservation_evidence.ceic_011_reservation_required &&
+           policy_.reservation_ledger == nullptr)) {
+        rollback_restored();
+        return false;
+      }
+      recovered_bytes += record.reserved_bytes;
+      TempWorkspaceAllocationRequest request;
+      request.owner = record.owner;
+      request.storage_class = record.storage_class;
+      request.lifetime = record.lifetime;
+      request.bytes = record.reserved_bytes;
+      auto reservation = ReserveBudgetLocked(request, record.storage_class);
+      if (!reservation.ok) {
+        rollback_restored();
+        return false;
+      }
+      DiagnosticRecord diagnostic;
+      if (!CommitBudgetReservationLocked(&reservation.evidence, record.owner, &diagnostic)) {
+        rollback_restored();
+        return false;
+      }
+      if (reservation.evidence.token.valid())
+        restored_tokens.push_back(reservation.evidence.token);
+      record.budget_reservation_evidence = std::move(reservation.evidence);
+    }
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      std::stringstream body_stream(body);
-      std::string line;
-      while (std::getline(body_stream, line)) {
-        if (line.empty()) {
-          continue;
-        }
-        auto record = ParseManifestLine(line);
-        if (!record.has_value()) {
-          return false;
-        }
-        if (!std::filesystem::is_regular_file(
-                PlatformFilesystemPath(record->path), ec)) {
-          continue;
-        }
-        AddAccountingLocked(*record);
-        active_[record->allocation_id] = *record;
-      }
-      if (candidate_version != configured_version || !verified_manifest) {
-        DiagnosticRecord ignored;
-        if (!PersistManifestLocked(&ignored)) {
-          return false;
-        }
-        std::filesystem::remove(PlatformFilesystemPath(path), ec);
-      }
+      // Publish only a completely decoded, validated manifest.
+      active_ = std::move(loaded);
+      for (const auto& entry : active_) AddAccountingLocked(entry.second);
     }
+    rollback_guard.published = true;
     return true;
   }
   return true;
 }
 
-bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diagnostic) {
+bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diagnostic,
+                                                            bool* published) {
+  if (published != nullptr) *published = false;
   if (!root_path_validation_error_.empty()) {
     if (diagnostic != nullptr) {
       const auto status = TempManifestStatus(StatusCode::memory_invalid_request,
@@ -2537,16 +2725,35 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
   }
 
   std::string body;
+  AppendTempU64(&body, active_.size());
   for (const auto& entry : active_) {
-    body += SerializeManifestRecord(entry.second);
-    body += '\n';
+    AppendTempString(&body, SerializeManifestRecord(entry.second));
+  }
+  if (manifest_generation_ == std::numeric_limits<u64>::max()) {
+    if (diagnostic != nullptr)
+      *diagnostic = MakeTempManifestDiagnostic(
+          TempManifestStatus(StatusCode::memory_allocation_failed, Severity::error),
+          "TEMP_WORKSPACE.MANIFEST_WRITE_FAILED", "temp_workspace.manifest.write_failed",
+          policy_, "manifest_generation_exhausted", path);
+    return false;
   }
   const u64 next_generation = std::max<u64>(manifest_generation_ + 1,
                                             policy_.manifest_generation == 0
                                                 ? 1
                                                 : policy_.manifest_generation);
   const std::string checksum = TempWorkspaceManifestChecksum(body);
+  PendingTempFile pending_manifest(tmp);
+  PreparedTempDirectorySync parent_sync(path);
+  if (!parent_sync.valid()) {
+    if (diagnostic != nullptr)
+      *diagnostic = MakeTempManifestDiagnostic(
+          TempManifestStatus(StatusCode::memory_allocation_failed, Severity::error),
+          "TEMP_WORKSPACE.MANIFEST_WRITE_FAILED", "temp_workspace.manifest.write_failed",
+          policy_, "manifest_parent_open_failed", path);
+    return false;
+  }
   {
+    pending_manifest.owned = true;
     std::ofstream out(PlatformFilesystemPath(tmp),
                       std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -2614,8 +2821,12 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
     }
     return false;
   }
-  sync_error.clear();
-  if (!DurableSyncParentDirectory(path, &sync_error)) {
+  pending_manifest.owned = false;
+  if (published != nullptr) *published = true;
+  manifest_generation_ = next_generation;
+  // No path conversion, stream or allocation may follow successful rename
+  // on the success path. Keep ownership published if the OS sync itself fails.
+  if (!parent_sync.Sync()) {
     if (diagnostic != nullptr) {
       const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
                                             Severity::error);
@@ -2624,142 +2835,137 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
                                                "temp_workspace.manifest.write_failed",
                                                policy_,
                                                "manifest_parent_sync_failed",
-                                               path,
-                                               sync_error);
+                                               path);
     }
     return false;
   }
-  manifest_generation_ = next_generation;
   return true;
 }
 
 std::optional<TempWorkspaceRecord>
-TempWorkspaceLifecycleManager::ParseManifestLine(const std::string& line) const {
-  const auto fields = SplitTabs(line);
-  if (fields.size() < 31) {
-    return std::nullopt;
-  }
-  std::vector<std::string> decoded;
-  decoded.reserve(fields.size());
-  for (const auto& field : fields) {
-    auto value = UnescapeManifestField(field);
-    if (!value.has_value()) {
-      return std::nullopt;
-    }
-    decoded.push_back(std::move(*value));
-  }
-  if (decoded[0] != "record_v1") {
-    return std::nullopt;
-  }
-
+TempWorkspaceLifecycleManager::ParseManifestRecord(const std::string& bytes) const {
+  BinaryTempReader reader{bytes};
+  u64 version = 0;
+  if (!reader.integer(&version) || version != 3) return std::nullopt;
   TempWorkspaceRecord record;
-  std::size_t i = 1;
-  record.allocation_id = decoded[i++];
-  record.storage_class = ParseTempStorageClassName(decoded[i++]);
-  record.lifetime = ParseTempWorkspaceLifetimeName(decoded[i++]);
-  record.reserved_bytes = ParseU64OrZero(decoded[i++]);
-  record.path = policy_.root_path / SanitizePathToken(decoded[i++]);
-  record.state = ParseTempWorkspaceStateName(decoded[i++]);
-  record.recovery_class = ParseTempRecoveryClassName(decoded[i++]);
-  record.durable_operation_owned = ParseBool(decoded[i++]);
-  record.recovery_resume_supported = ParseBool(decoded[i++]);
-  record.evidence_required_before_discard = ParseBool(decoded[i++]);
-  record.administrator_review_required = ParseBool(decoded[i++]);
-  record.legal_hold = ParseBool(decoded[i++]);
-  record.purpose = decoded[i++];
-  record.owner.temp_object_uuid = decoded[i++];
-  record.owner.database_id = decoded[i++];
-  record.owner.engine_id = decoded[i++];
-  record.owner.session_id = decoded[i++];
-  record.owner.transaction_id = decoded[i++];
-  record.owner.statement_id = decoded[i++];
-  record.owner.cursor_id = decoded[i++];
-  record.owner.result_set_id = decoded[i++];
-  record.owner.operation_id = decoded[i++];
-  record.owner.scheduler_task_id = decoded[i++];
-  record.owner.policy_generation = ParseU64OrZero(decoded[i++]);
-  record.owner.security_generation = ParseU64OrZero(decoded[i++]);
-  record.owner.resource_budget_reference = decoded[i++];
-  record.disk_reservation_evidence.mode =
-      ParseTempWorkspaceDiskReservationModeName(decoded[i++]);
-  record.disk_reservation_evidence.requested_bytes = ParseU64OrZero(decoded[i++]);
-  record.disk_reservation_evidence.file_size_bytes = ParseU64OrZero(decoded[i++]);
-  record.disk_reservation_evidence.logical_quota_reserved = ParseBool(decoded[i++]);
+  if (!reader.identity(&record.owner.temp_object_uuid)) return std::nullopt;
+  if (!reader.identity(&record.owner.database_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.engine_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.session_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.transaction_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.statement_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.cursor_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.result_set_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.operation_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.scheduler_task_id)) return std::nullopt;
+  if (!reader.identity(&record.owner.snapshot_boundary)) return std::nullopt;
+  if (!reader.identity(&record.owner.metadata_boundary)) return std::nullopt;
+  if (!reader.identity(&record.owner.resource_budget_reference)) return std::nullopt;
+  if (!reader.integer(&record.owner.policy_generation)) return std::nullopt;
+  if (!reader.integer(&record.owner.security_generation)) return std::nullopt;
+  if (!reader.integer(&record.reserved_bytes)) return std::nullopt;
+  if (!reader.integer(&record.disk_reservation_evidence.requested_bytes)) return std::nullopt;
+  if (!reader.integer(&record.disk_reservation_evidence.file_size_bytes)) return std::nullopt;
+  if (!reader.integer(&record.budget_reservation_evidence.requested_bytes)) return std::nullopt;
+  if (!reader.enumeration(&record.storage_class, TempStorageClass::parser_workspace)) return std::nullopt;
+  if (!reader.enumeration(&record.lifetime, TempWorkspaceLifetime::administrator_review_lifetime)) return std::nullopt;
+  if (!reader.enumeration(&record.state, TempWorkspaceState::cleanup_pending)) return std::nullopt;
+  if (!reader.enumeration(&record.recovery_class, TempRecoveryClass::cleanup_refused)) return std::nullopt;
+  if (!reader.enumeration(&record.disk_reservation_evidence.mode, TempWorkspaceDiskReservationMode::physical_preallocate)) return std::nullopt;
+  if (!reader.boolean(&record.durable_operation_owned)) return std::nullopt;
+  if (!reader.boolean(&record.recovery_resume_supported)) return std::nullopt;
+  if (!reader.boolean(&record.evidence_required_before_discard)) return std::nullopt;
+  if (!reader.boolean(&record.administrator_review_required)) return std::nullopt;
+  if (!reader.boolean(&record.legal_hold)) return std::nullopt;
+  if (!reader.boolean(&record.disk_reservation_evidence.logical_quota_reserved)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.internal_logical_quota_checked)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.internal_logical_quota_reserved)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.ceic_011_reservation_applicable)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.ceic_011_reservation_required)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.ceic_011_reservation_requested)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.ceic_011_reservation_granted)) return std::nullopt;
+  if (!reader.boolean(&record.budget_reservation_evidence.ceic_011_reservation_committed)) return std::nullopt;
+  if (!reader.string(&record.allocation_id)) return std::nullopt;
+  if (!reader.string(&record.purpose)) return std::nullopt;
+  if (!reader.string(&record.budget_reservation_evidence.memory_class)) return std::nullopt;
+  if (!reader.string(&record.budget_reservation_evidence.ledger_model)) return std::nullopt;
+  std::string filename, category;
+  if (!reader.string(&filename) || !reader.string(&category) || !reader.done())
+    return std::nullopt;
+  record.budget_reservation_evidence.category = ParseMemoryCategoryName(category);
+  if (category != MemoryCategoryName(record.budget_reservation_evidence.category) ||
+      filename.empty() || filename == "." || filename == ".." ||
+      filename != SanitizePathToken(filename) ||
+      std::filesystem::path(filename).filename().string() != filename ||
+      record.allocation_id.empty() ||
+      record.allocation_id != SanitizePathToken(record.allocation_id) ||
+      !ValidTempOwner(record.owner, record.lifetime) || record.reserved_bytes == 0)
+    return std::nullopt;
+  if (record.owner.database_id != policy_.database_uuid ||
+      record.owner.engine_id != policy_.engine_uuid ||
+      filename != SanitizePathToken(record.allocation_id + "-" +
+                                   TempStorageClassName(record.storage_class) + ".spill"))
+    return std::nullopt;
+  record.path = policy_.root_path / filename;
+  if (record.disk_reservation_evidence.requested_bytes != record.reserved_bytes)
+    return std::nullopt;
   record.disk_reservation_evidence.authority_boundary = kTempWorkspaceAuthorityBoundary;
   record.security_evidence.authority_boundary = kTempWorkspaceAuthorityBoundary;
-  if (decoded.size() >= i + 9) {
-    record.budget_reservation_evidence.internal_logical_quota_checked = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.internal_logical_quota_reserved = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.ceic_011_reservation_applicable = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.ceic_011_reservation_required = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.ceic_011_reservation_requested = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.ceic_011_reservation_granted = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.ceic_011_reservation_committed = ParseBool(decoded[i++]);
-    record.budget_reservation_evidence.requested_bytes = ParseU64OrZero(decoded[i++]);
-    record.budget_reservation_evidence.category = ParseMemoryCategoryName(decoded[i++]);
-  }
-  if (decoded.size() >= i + 2) {
-    record.budget_reservation_evidence.memory_class = decoded[i++];
-    record.budget_reservation_evidence.ledger_model = decoded[i++];
-  }
   record.budget_reservation_evidence.authority_boundary = kTempWorkspaceAuthorityBoundary;
+  // A durable manifest records past reservations, never resurrects a live ledger token.
+  record.budget_reservation_evidence.scope_chain = TempWorkspaceReservationScopeChain(
+      TempWorkspaceAllocationRequest{.owner = record.owner}, record.storage_class);
   return record;
 }
 
 std::string
 TempWorkspaceLifecycleManager::SerializeManifestRecord(const TempWorkspaceRecord& record) const {
-  std::vector<std::string> fields;
-  fields.push_back("record_v1");
-  fields.push_back(record.allocation_id);
-  fields.push_back(TempStorageClassName(record.storage_class));
-  fields.push_back(TempWorkspaceLifetimeName(record.lifetime));
-  fields.push_back(std::to_string(record.reserved_bytes));
-  fields.push_back(record.path.filename().string());
-  fields.push_back(TempWorkspaceStateName(record.state));
-  fields.push_back(TempRecoveryClassName(record.recovery_class));
-  fields.push_back(record.durable_operation_owned ? "1" : "0");
-  fields.push_back(record.recovery_resume_supported ? "1" : "0");
-  fields.push_back(record.evidence_required_before_discard ? "1" : "0");
-  fields.push_back(record.administrator_review_required ? "1" : "0");
-  fields.push_back(record.legal_hold ? "1" : "0");
-  fields.push_back(record.purpose);
-  fields.push_back(record.owner.temp_object_uuid);
-  fields.push_back(record.owner.database_id);
-  fields.push_back(record.owner.engine_id);
-  fields.push_back(record.owner.session_id);
-  fields.push_back(record.owner.transaction_id);
-  fields.push_back(record.owner.statement_id);
-  fields.push_back(record.owner.cursor_id);
-  fields.push_back(record.owner.result_set_id);
-  fields.push_back(record.owner.operation_id);
-  fields.push_back(record.owner.scheduler_task_id);
-  fields.push_back(std::to_string(record.owner.policy_generation));
-  fields.push_back(std::to_string(record.owner.security_generation));
-  fields.push_back(record.owner.resource_budget_reference);
-  fields.push_back(TempWorkspaceDiskReservationModeName(record.disk_reservation_evidence.mode));
-  fields.push_back(std::to_string(record.disk_reservation_evidence.requested_bytes));
-  fields.push_back(std::to_string(record.disk_reservation_evidence.file_size_bytes));
-  fields.push_back(record.disk_reservation_evidence.logical_quota_reserved ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.internal_logical_quota_checked ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.internal_logical_quota_reserved ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.ceic_011_reservation_applicable ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.ceic_011_reservation_required ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.ceic_011_reservation_requested ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.ceic_011_reservation_granted ? "1" : "0");
-  fields.push_back(record.budget_reservation_evidence.ceic_011_reservation_committed ? "1" : "0");
-  fields.push_back(std::to_string(record.budget_reservation_evidence.requested_bytes));
-  fields.push_back(MemoryCategoryName(record.budget_reservation_evidence.category));
-  fields.push_back(record.budget_reservation_evidence.memory_class);
-  fields.push_back(record.budget_reservation_evidence.ledger_model);
-
-  std::ostringstream line;
-  for (std::size_t i = 0; i < fields.size(); ++i) {
-    if (i != 0) {
-      line << '\t';
-    }
-    line << EscapeManifestField(fields[i]);
-  }
-  return line.str();
+  std::string out;
+  AppendTempU64(&out, 3);
+  out.append(reinterpret_cast<const char*>(record.owner.temp_object_uuid.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.database_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.engine_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.session_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.transaction_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.statement_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.cursor_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.result_set_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.operation_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.scheduler_task_id.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.snapshot_boundary.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.metadata_boundary.bytes.data()), 16);
+  out.append(reinterpret_cast<const char*>(record.owner.resource_budget_reference.bytes.data()), 16);
+  AppendTempU64(&out, record.owner.policy_generation);
+  AppendTempU64(&out, record.owner.security_generation);
+  AppendTempU64(&out, record.reserved_bytes);
+  AppendTempU64(&out, record.disk_reservation_evidence.requested_bytes);
+  AppendTempU64(&out, record.disk_reservation_evidence.file_size_bytes);
+  AppendTempU64(&out, record.budget_reservation_evidence.requested_bytes);
+  AppendTempU64(&out, static_cast<u64>(record.storage_class));
+  AppendTempU64(&out, static_cast<u64>(record.lifetime));
+  AppendTempU64(&out, static_cast<u64>(record.state));
+  AppendTempU64(&out, static_cast<u64>(record.recovery_class));
+  AppendTempU64(&out, static_cast<u64>(record.disk_reservation_evidence.mode));
+  out.push_back(record.durable_operation_owned ? '\1' : '\0');
+  out.push_back(record.recovery_resume_supported ? '\1' : '\0');
+  out.push_back(record.evidence_required_before_discard ? '\1' : '\0');
+  out.push_back(record.administrator_review_required ? '\1' : '\0');
+  out.push_back(record.legal_hold ? '\1' : '\0');
+  out.push_back(record.disk_reservation_evidence.logical_quota_reserved ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.internal_logical_quota_checked ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.internal_logical_quota_reserved ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.ceic_011_reservation_applicable ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.ceic_011_reservation_required ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.ceic_011_reservation_requested ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.ceic_011_reservation_granted ? '\1' : '\0');
+  out.push_back(record.budget_reservation_evidence.ceic_011_reservation_committed ? '\1' : '\0');
+  AppendTempString(&out, record.allocation_id);
+  AppendTempString(&out, record.purpose);
+  AppendTempString(&out, record.budget_reservation_evidence.memory_class);
+  AppendTempString(&out, record.budget_reservation_evidence.ledger_model);
+  AppendTempString(&out, record.path.filename().string());
+  AppendTempString(&out, MemoryCategoryName(record.budget_reservation_evidence.category));
+  return out;
 }
 
 std::optional<std::string>
@@ -2770,7 +2976,7 @@ TempWorkspaceLifecycleManager::NextAllocationIdLocked(const TempWorkspaceAllocat
     return std::nullopt;
   }
   std::ostringstream id;
-  id << "tw-" << *token << '-' << SanitizePathToken(request.owner.temp_object_uuid);
+  id << "tw-" << *token;
   return id.str();
 }
 
@@ -2797,13 +3003,13 @@ TempWorkspaceLifecycleManager::MakeDiagnostic(Status status,
   std::vector<DiagnosticArgument> arguments;
   arguments.push_back({"policy", policy_.policy_name});
   arguments.push_back({"root_path", policy_.root_path.string()});
-  if (!owner.temp_object_uuid.empty()) arguments.push_back({"temp_object_uuid", owner.temp_object_uuid});
-  if (!owner.database_id.empty()) arguments.push_back({"database_id", owner.database_id});
-  if (!owner.engine_id.empty()) arguments.push_back({"engine_id", owner.engine_id});
-  if (!owner.session_id.empty()) arguments.push_back({"session_id", owner.session_id});
-  if (!owner.transaction_id.empty()) arguments.push_back({"transaction_id", owner.transaction_id});
-  if (!owner.statement_id.empty()) arguments.push_back({"statement_id", owner.statement_id});
-  if (!owner.operation_id.empty()) arguments.push_back({"operation_id", owner.operation_id});
+  if (!owner.temp_object_uuid.is_nil()) arguments.push_back({"temp_object_uuid_present", "true"});
+  if (!owner.database_id.is_nil()) arguments.push_back({"database_id_present", "true"});
+  if (!owner.engine_id.is_nil()) arguments.push_back({"engine_id_present", "true"});
+  if (!owner.session_id.is_nil()) arguments.push_back({"session_id_present", "true"});
+  if (!owner.transaction_id.is_nil()) arguments.push_back({"transaction_id_present", "true"});
+  if (!owner.statement_id.is_nil()) arguments.push_back({"statement_id_present", "true"});
+  if (!owner.operation_id.is_nil()) arguments.push_back({"operation_id_present", "true"});
   arguments.push_back({"policy_generation", std::to_string(owner.policy_generation)});
   arguments.push_back({"security_generation", std::to_string(owner.security_generation)});
   arguments.push_back({"disk_reservation_mode",
@@ -2907,6 +3113,7 @@ const char* TempWorkspaceStateName(TempWorkspaceState value) {
     case TempWorkspaceState::cleanup_failed: return "cleanup_failed";
     case TempWorkspaceState::quarantined: return "quarantined";
     case TempWorkspaceState::review_required: return "review_required";
+    case TempWorkspaceState::cleanup_pending: return "cleanup_pending";
   }
   return "unknown";
 }

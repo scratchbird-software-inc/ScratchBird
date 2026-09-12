@@ -18,6 +18,10 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::storage::disk {
+class FileDevice;
+}
+
 namespace scratchbird::storage::database {
 
 using scratchbird::core::platform::DiagnosticRecord;
@@ -38,8 +42,9 @@ enum class PhysicalMgaCowFinalizeDecision : u16 {
   rollback
 };
 
-struct PhysicalMgaCowMutationRequest {
-  std::string database_path;
+// Path-free mutation fields for an already-owned node device. A storage
+// operation cannot select or open a second node through this payload.
+struct PhysicalMgaCowMutation {
   TypedUuid relation_uuid;
   TypedUuid row_uuid;
   TypedUuid transaction_uuid;
@@ -53,6 +58,16 @@ struct PhysicalMgaCowMutationRequest {
   // Exact reverse-chain link installed only when this request creates a new
   // row-data page. Zero identifies the tail of the chain.
   u64 predecessor_page_number = 0;
+};
+
+struct PhysicalMgaCowMutationRequest : PhysicalMgaCowMutation {
+  std::string database_path;
+};
+
+struct PhysicalMgaCowMutationBatch {
+  std::vector<PhysicalMgaCowMutation> mutations;
+  bool sync_after_batch = true;
+  bool engine_generated_unique_insert_rows = false;
 };
 
 struct PhysicalMgaCowMutationBatchRequest {
@@ -152,10 +167,27 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
     const PhysicalMgaCowMutationRequest& request);
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
     PhysicalMgaCowMutationBatchRequest request);
+// The caller retains the device and its exclusive ownership through return,
+// including every failure. These functions neither reopen nor close it and
+// do not commit the transaction or publish catalog roots.
+PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
+    scratchbird::storage::disk::FileDevice& device,
+    const PhysicalMgaCowMutation& mutation);
+PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(
+    scratchbird::storage::disk::FileDevice& device,
+    PhysicalMgaCowMutationBatch batch);
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
     const PhysicalMgaCowFinalizeRequest& request);
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
     const PhysicalMgaCowReadRequest& request);
+// Borrow the caller's already-owned device without reopening or releasing it.
+// The device, never an independently supplied path, is the storage authority.
+PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
+    scratchbird::storage::disk::FileDevice& device,
+    const TypedUuid& relation_uuid,
+    u64 page_number,
+    const scratchbird::transaction::mga::VisibilitySnapshot& visibility_snapshot,
+    bool use_latest_committed_snapshot);
 
 DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                                               std::string diagnostic_code,

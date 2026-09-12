@@ -60,7 +60,7 @@ struct ExecutorOperatorMemoryResult {
   scratchbird::core::platform::Status status;
   bool fail_closed = false;
   ExecutorQueryMemoryResult query_memory;
-  std::string grant_id;
+  scratchbird::core::memory::QueryMemoryUuid grant_id{};
   scratchbird::core::platform::DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
 
@@ -76,6 +76,6 @@ ExecutorOperatorMemoryResult RequestExecutorOperatorMemory(
 scratchbird::core::memory::QueryMemoryArenaReleaseResult ReleaseExecutorOperatorMemory(
     scratchbird::core::memory::QueryMemoryArena* arena,
     ExecutorMemoryOperatorKind operator_kind,
-    const std::string& grant_id);
+    const scratchbird::core::memory::QueryMemoryUuid& grant_id);
 
 }  // namespace scratchbird::engine::executor

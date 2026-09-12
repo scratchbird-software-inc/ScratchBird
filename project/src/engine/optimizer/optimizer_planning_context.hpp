@@ -38,9 +38,9 @@ enum class CanonicalPlannerWhatIfHypothesisKind : std::uint8_t {
 // It is planning metadata only and deliberately carries no MGA statement
 // context, transaction handle, visibility decision, or execution authority.
 struct CanonicalPlannerContextAuthority {
-  std::string context_uuid;
+  planner::CanonicalPlannerUuid context_uuid;
   std::uint64_t generation{0};
-  std::string authority_uuid;
+  planner::CanonicalPlannerUuid authority_uuid;
   std::uint64_t authority_generation{0};
   std::uint16_t confidence_basis_points{0};
   std::string dependency_signature;
@@ -57,18 +57,18 @@ struct CanonicalPlannerContextAuthority {
 struct CanonicalPlannerContinuationContext {
   std::uint16_t abi_version{1};
   CanonicalPlannerContextAuthority authority;
-  std::string prepared_statement_uuid;
+  planner::CanonicalPlannerUuid prepared_statement_uuid;
   std::uint64_t prepared_statement_generation{0};
-  std::string cursor_uuid;
+  planner::CanonicalPlannerUuid cursor_uuid;
   std::uint64_t cursor_generation{0};
-  std::string continuation_token_uuid;
+  planner::CanonicalPlannerUuid continuation_token_uuid;
   std::uint64_t continuation_token_generation{0};
-  std::string resume_boundary_uuid;
+  planner::CanonicalPlannerUuid resume_boundary_uuid;
   std::uint64_t resume_boundary_generation{0};
-  std::string result_schema_uuid;
-  std::string required_ordering_property_uuid;
-  std::string required_materialization_property_uuid;
-  std::string required_rewindability_property_uuid;
+  planner::CanonicalPlannerUuid result_schema_uuid;
+  planner::CanonicalPlannerUuid required_ordering_property_uuid;
+  planner::CanonicalPlannerUuid required_materialization_property_uuid;
+  planner::CanonicalPlannerUuid required_rewindability_property_uuid;
   CanonicalPlannerCursorMode cursor_mode{
       CanonicalPlannerCursorMode::kForwardOnly};
   CanonicalPlannerCursorHoldability holdability{
@@ -82,7 +82,7 @@ struct CanonicalPlannerContinuationContext {
 struct CanonicalPlannerWhatIfHypothesis {
   CanonicalPlannerWhatIfHypothesisKind hypothesis_kind{
       CanonicalPlannerWhatIfHypothesisKind::kIndex};
-  std::string hypothesis_uuid;
+  planner::CanonicalPlannerUuid hypothesis_uuid;
   std::uint64_t generation{0};
   std::string definition_digest;
 
@@ -92,7 +92,7 @@ struct CanonicalPlannerWhatIfHypothesis {
 struct CanonicalPlannerWhatIfContext {
   std::uint16_t abi_version{1};
   CanonicalPlannerContextAuthority authority;
-  std::string policy_uuid;
+  planner::CanonicalPlannerUuid policy_uuid;
   std::uint64_t policy_generation{0};
   std::vector<CanonicalPlannerWhatIfHypothesis> hypotheses;
   bool enabled{false};
@@ -105,7 +105,7 @@ struct CanonicalPlannerWhatIfContext {
 struct CanonicalPlannerContinuationReceipt {
   std::uint16_t abi_version{1};
   CanonicalPlannerContinuationContext context;
-  std::string bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
   std::uint32_t root_logical_node_id{0};
   bool ordering_requirement_validated{false};
   bool materialization_requirement_validated{false};
@@ -123,7 +123,7 @@ struct CanonicalPlannerContinuationReceipt {
 struct CanonicalPlannerWhatIfReceipt {
   std::uint16_t abi_version{1};
   CanonicalPlannerWhatIfContext context;
-  std::string bound_sblr_tree_uuid;
+  planner::CanonicalPlannerUuid bound_sblr_tree_uuid;
   std::uint32_t root_logical_node_id{0};
   std::string hypothesis_set_digest;
   bool advisory_plan_only{false};
@@ -165,16 +165,17 @@ struct CanonicalPlannerContinuationReplayRequest {
 };
 
 struct CanonicalPlannerContinuationReplayReceipt {
+  // Opaque length-framed binary context binding, not a UUID or display text.
   std::string replay_identity;
-  std::string continuation_context_uuid;
+  planner::CanonicalPlannerUuid continuation_context_uuid;
   std::uint64_t continuation_generation{0};
-  std::string prepared_statement_uuid;
+  planner::CanonicalPlannerUuid prepared_statement_uuid;
   std::uint64_t prepared_statement_generation{0};
-  std::string cursor_uuid;
+  planner::CanonicalPlannerUuid cursor_uuid;
   std::uint64_t cursor_generation{0};
-  std::string continuation_token_uuid;
+  planner::CanonicalPlannerUuid continuation_token_uuid;
   std::uint64_t continuation_token_generation{0};
-  std::string resume_boundary_uuid;
+  planner::CanonicalPlannerUuid resume_boundary_uuid;
   std::uint64_t resume_boundary_generation{0};
   bool identity_revalidated{false};
   bool dependency_revalidated{false};

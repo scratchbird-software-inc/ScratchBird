@@ -6,14 +6,18 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "diagnostic_rendering.hpp"
 
 #include "api_diagnostics.hpp"
 
 #include <cctype>
 #include <utility>
 
-namespace scratchbird::engine::internal_api {
+namespace scratchbird::server::legacy_rendering {
+using engine::internal_api::EngineApiDiagnostic;
+using engine::internal_api::EngineTypedValue;
+using engine::internal_api::EngineRowValue;
+using engine::internal_api::MakeInvalidRequestDiagnostic;
 namespace {
 
 std::string SeverityForDiagnostic(const EngineApiDiagnostic& diagnostic) {
@@ -93,7 +97,7 @@ EngineRenderedField RenderField(const std::pair<std::string, EngineTypedValue>& 
 
 EngineRenderedRow RenderRow(const EngineRowValue& row) {
   EngineRenderedRow rendered;
-  rendered.row_uuid = row.requested_row_uuid.canonical;
+  rendered.row_uuid = row.requested_row_uuid;
   for (const auto& field : row.fields) { rendered.fields.push_back(RenderField(field)); }
   return rendered;
 }
@@ -118,10 +122,10 @@ EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineA
   envelope.redaction_applied = options.redact_internal_detail;
   envelope.columns = result.result_shape.columns;
   if (envelope.transaction_uuid.empty()) {
-    envelope.transaction_uuid = result.transaction_uuid.canonical;
+    envelope.transaction_uuid = result.transaction_uuid;
   }
   if (envelope.database_uuid.empty() && result.primary_object.object_kind == "database") {
-    envelope.database_uuid = result.primary_object.uuid.canonical;
+    envelope.database_uuid = result.primary_object.uuid;
   }
 
   if (envelope.parser_package_uuid.empty()) {
@@ -152,8 +156,8 @@ EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineA
   return envelope;
 }
 
-bool ValidateEngineRenderedResultEnvelope(const EngineRenderedResultEnvelope& envelope,
-                                          std::vector<std::string>* errors) {
+bool ValidateLegacyRenderedProjectionStructure(const EngineRenderedResultEnvelope& envelope,
+                                               std::vector<std::string>* errors) {
   bool ok = true;
   auto fail = [&](std::string error) {
     ok = false;
@@ -161,8 +165,6 @@ bool ValidateEngineRenderedResultEnvelope(const EngineRenderedResultEnvelope& en
   };
 
   if (!envelope.parser_package_rendering_required) { fail("parser_package_rendering_required_must_be_true"); }
-  if (!envelope.canonical_diagnostics) { fail("canonical_diagnostics_must_be_true"); }
-  if (!envelope.canonical_result_shape) { fail("canonical_result_shape_must_be_true"); }
   if (envelope.parser_finality_authority) { fail("parser_finality_authority_must_be_false"); }
   if (envelope.reference_finality_authority) { fail("reference_finality_authority_must_be_false"); }
   if (envelope.parser_package_uuid.empty()) { fail("parser_package_uuid_required"); }
@@ -191,4 +193,4 @@ bool ValidateEngineRenderedResultEnvelope(const EngineRenderedResultEnvelope& en
   return ok;
 }
 
-}  // namespace scratchbird::engine::internal_api
+}  // namespace scratchbird::server::legacy_rendering

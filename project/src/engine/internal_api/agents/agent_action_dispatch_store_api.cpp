@@ -61,8 +61,8 @@ bool RouteProofMatchesAction(
 agents::AgentRuntimeStatus ValidateEngineRequestForRegistrySeal(
     const EngineRequestContext& context) {
   if (context.request_id.empty() ||
-      context.database_uuid.canonical.empty() ||
-      context.transaction_uuid.canonical.empty() ||
+      context.database_uuid.is_nil() ||
+      context.transaction_uuid.is_nil() ||
       context.local_transaction_id == 0 ||
       !context.security_context_present) {
     return agents::AgentError(
@@ -74,8 +74,8 @@ agents::AgentRuntimeStatus ValidateEngineRequestForRegistrySeal(
 agents::AgentRuntimeStatus ValidateEngineRequestForStoreDispatch(
     const EngineRequestContext& context) {
   if (context.request_id.empty() ||
-      context.database_uuid.canonical.empty() ||
-      context.transaction_uuid.canonical.empty() ||
+      context.database_uuid.is_nil() ||
+      context.transaction_uuid.is_nil() ||
       context.local_transaction_id == 0 ||
       !context.security_context_present) {
     return agents::AgentError(
@@ -111,9 +111,9 @@ agents::DurableAgentResourceReservationRequest ResourceReservationForAction(
   reservation.reservation_uuid =
       agents::DeterministicAgentRuntimeObjectUuidFromKey(
           "agent_action_resource_reservation|" + reservation.reservation_key);
-  reservation.owner_scope = request.context.principal_uuid.canonical.empty()
+  reservation.owner_scope = request.context.principal_uuid.is_nil()
                                 ? request.authority.principal_uuid
-                                : request.context.principal_uuid.canonical;
+                                : request.context.principal_uuid;
   reservation.agent_type_id = request.action.agent_type_id;
   reservation.operation_id = request.action.operation_id;
   reservation.now_microseconds =
@@ -313,8 +313,8 @@ BuildEngineOwnedAgentActuatorRegistry(
   result.registry.evidence_uuid_ =
       agents::DeterministicAgentRuntimeObjectUuidFromKey(
           "engine_owned_agent_actuator_registry|" +
-          context.database_uuid.canonical + "|" +
-          context.transaction_uuid.canonical + "|" +
+          context.database_uuid + "|" +
+          context.transaction_uuid + "|" +
           std::to_string(context.local_transaction_id) + "|" +
           std::to_string(route_proofs.route_proofs.size()));
   result.registry.registry_ = std::move(registry);
@@ -471,9 +471,9 @@ AgentActionDispatchStoreResult DispatchAgentActionWithDurableCatalogStore(
       request.fsync_or_checkpoint_evidence;
   dispatch_request.provider_execution_context.request_id = request.context.request_id;
   dispatch_request.provider_execution_context.database_uuid =
-      request.context.database_uuid.canonical;
+      request.context.database_uuid;
   dispatch_request.provider_execution_context.transaction_uuid =
-      request.context.transaction_uuid.canonical;
+      request.context.transaction_uuid;
   dispatch_request.provider_execution_context.local_transaction_id =
       request.context.local_transaction_id;
   dispatch_request.provider_execution_context.registry_provenance =

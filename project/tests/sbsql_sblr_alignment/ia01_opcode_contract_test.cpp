@@ -710,7 +710,7 @@ int main() {
     mismatched_end.operands[0].value_body.back() ^= 1;
     auto mismatched_descriptor = EncodeUncheckedStream(
         {frame(true), mismatched_end}, package_bytes, registry_bytes);
-    expect_decode(mismatched_descriptor, "DATATYPE.DESCRIPTOR_INVALID",
+    expect_decode(mismatched_descriptor, "DATATYPE.DESCRIPTOR.INVALID",
                   "mismatched footer descriptor");
 
     auto stale_member = frame(false);
@@ -718,7 +718,7 @@ int main() {
         "018f4321-8765-7cba-8fed-ba9876543211";
     auto mismatched_registry = EncodeUncheckedStream(
         {frame(true), stale_member}, package_bytes, registry_bytes);
-    expect_decode(mismatched_registry, "DATATYPE.DESCRIPTOR_INVALID",
+    expect_decode(mismatched_registry, "DATATYPE.DESCRIPTOR.INVALID",
                   "member registry mismatch");
 
     auto descriptor_and_auth = admitted;
@@ -727,7 +727,7 @@ int main() {
     const auto descriptor_precedence =
         sblr::AdmitSblrOpcodeStream(encoded, descriptor_and_auth);
     if (descriptor_precedence.ok || descriptor_precedence.diagnostic_id !=
-                                        "DATATYPE.DESCRIPTOR_INVALID") {
+                                        "DATATYPE.DESCRIPTOR.INVALID") {
       std::cerr << "CSC-TEST-002318/CSC-TEST-002322 descriptor/security precedence changed\n";
       ++failures;
     }

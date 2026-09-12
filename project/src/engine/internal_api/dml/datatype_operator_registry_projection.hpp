@@ -66,7 +66,7 @@ inline bool BuildDatatypeRecord(
     update_wire::TypedUpdateDatatypeAuthorityRecord* record) {
   if (record == nullptr) return false;
   const auto lookup = datatype_catalog::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid.canonical,
+      context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation,
       context.datatype_registry_generation,
       UuidText(reference.descriptor_uuid), reference.descriptor_generation);

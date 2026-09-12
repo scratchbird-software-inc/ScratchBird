@@ -9,6 +9,7 @@
 # QOW-CMAKE-QRY-004-NODE-ABI-V1
 # QOW-CMAKE-OPT-016-V1
 add_library(sb_qow_physical_node_abi INTERFACE)
+target_link_libraries(sb_qow_physical_node_abi INTERFACE sb_core_uuid)
 target_compile_features(sb_qow_physical_node_abi INTERFACE cxx_std_20)
 target_include_directories(sb_qow_physical_node_abi INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -70,6 +71,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-007-AGGREGATE-V1
   aggregate_executor_internal.hpp
   aggregate_executor.cpp
+  canonical_aggregate_registry.cpp
   allocator_lifetime_hot_path.cpp
   batch_point_lookup_executor.cpp
   buffer_prefetch_route_executor.cpp
@@ -149,6 +151,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-004-CONSUMPTION-V1
   # QOW-CMAKE-OPT-008-V1
   physical_node_dispatch.cpp
+  prepared_descriptor_digest.cpp
   prepared_execution_template.cpp
   # QOW-CMAKE-QRY-007-PROJECTION-V1
   projection_executor.cpp
@@ -210,6 +213,7 @@ target_link_libraries(sb_engine_executor PUBLIC sb_storage_page)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_index)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_datatypes)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_hash)
+target_link_libraries(sb_engine_executor PUBLIC sb_core_uuid)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_memory)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_bulk_load)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_resource_governance)

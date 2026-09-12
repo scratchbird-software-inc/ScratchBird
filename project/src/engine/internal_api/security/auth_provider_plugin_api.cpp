@@ -24,8 +24,8 @@ EngineRegisterAuthProviderResult EngineRegisterAuthProvider(const EngineRegister
   if (!persisted.ok) { return persisted; }
   persisted.provider = AuthProviderDescriptorFromRequest(request);
   persisted.admitted = true;
-  AddSecurityEvidence(&persisted, "auth_provider_admitted", persisted.provider.provider_uuid.canonical);
-  AddSecurityRow(&persisted, {{"provider_uuid", persisted.provider.provider_uuid.canonical},
+  AddSecurityEvidence(&persisted, "auth_provider_admitted", persisted.provider.provider_uuid);
+  AddSecurityRow(&persisted, {{"provider_uuid", persisted.provider.provider_uuid},
                               {"provider_family", persisted.provider.provider_family},
                               {"trust_state", persisted.provider.trust_state},
                               {"rollout_state", persisted.provider.rollout_state}});
@@ -43,7 +43,7 @@ EngineInspectAuthProviderResult EngineInspectAuthProvider(const EngineInspectAut
   result.provider = AuthProviderDescriptorFromRequest(request);
   result.visible = true;
   AddSecurityEvidence(&result, "auth_provider_inspect", result.provider.provider_family);
-  AddSecurityRow(&result, {{"provider_uuid", result.provider.provider_uuid.canonical},
+  AddSecurityRow(&result, {{"provider_uuid", result.provider.provider_uuid},
                            {"provider_family", result.provider.provider_family},
                            {"authn", result.provider.capabilities.supports_authn ? "true" : "false"},
                            {"group_query", result.provider.capabilities.supports_group_query ? "true" : "false"}});
@@ -59,7 +59,7 @@ EngineDisableAuthProviderResult EngineDisableAuthProvider(const EngineDisableAut
   auto result = PersistedRecordResult<EngineDisableAuthProviderResult>(request, "security.disable_auth_provider", "security_auth_provider", true, "disabled", true);
   if (result.ok) {
     result.disabled = true;
-    AddSecurityEvidence(&result, "auth_provider_disabled", result.primary_object.uuid.canonical);
+    AddSecurityEvidence(&result, "auth_provider_disabled", result.primary_object.uuid);
     AddSecurityRow(&result, {{"disabled", "true"}});
   }
   return result;
@@ -77,17 +77,17 @@ EngineAuthenticateProviderResult EngineAuthenticateProvider(const EngineAuthenti
   auto result = SecuritySuccess<EngineAuthenticateProviderResult>(request.context, "security.authenticate_provider");
   result.authenticated = true;
   result.connection_security_context = ConnectionSecurityContextFromRequest(context_request);
-  if (result.connection_security_context.effective_user_uuid.canonical.empty()) {
-    result.connection_security_context.effective_user_uuid.canonical = GenerateCrudEngineUuid("principal");
+  if (result.connection_security_context.effective_user_uuid.is_nil()) {
+    result.connection_security_context.effective_user_uuid = GenerateCrudEngineUuid("principal");
   }
-  if (result.connection_security_context.connection_uuid.canonical.empty()) {
-    result.connection_security_context.connection_uuid.canonical = GenerateCrudEngineUuid("session");
+  if (result.connection_security_context.connection_uuid.is_nil()) {
+    result.connection_security_context.connection_uuid = GenerateCrudEngineUuid("session");
   }
   result.primary_object.uuid = result.connection_security_context.effective_user_uuid;
   result.primary_object.object_kind = "principal";
   ApplyAuthProviderDecision(&result, decision);
   result.ok = true;
-  AddSecurityEvidence(&result, "connection_security_context", result.connection_security_context.connection_uuid.canonical);
+  AddSecurityEvidence(&result, "connection_security_context", result.connection_security_context.connection_uuid);
   return result;
 }
 

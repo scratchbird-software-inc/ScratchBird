@@ -1892,8 +1892,16 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   if (opcode_stream) {
     decoded_stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(operation_bytes);
     if (decoded_stream.ok) {
+      const auto command_index = SelectServerSblrCommandIndex(decoded_stream.stream);
+      if (!command_index) {
+        return Reject("SBLR.OPERAND_INVALID",
+                      "A command package requires one root and an optional canonical SOURCE_MAP companion.",
+                      "sbos_single_command_profile_invalid");
+      }
       operation.ok = true;
-      operation.envelope = decoded_stream.stream.operations.front();
+      // The owning command supplies token/registry/operand identity. Preserve
+      // every original SBOS record for reservation, hashing and engine dispatch.
+      operation.envelope = decoded_stream.stream.operations[*command_index];
       operation.canonical_bytes.assign(operation_bytes.begin(), operation_bytes.end());
     }
   } else {
@@ -1982,25 +1990,13 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
       }
     }
     if (contains_ddl_create_index &&
-        decoded_stream.stream.operations.size() != 3) {
-      return Reject("SBLR.OPERAND_INVALID",
-                    "Canonical CREATE INDEX must be the standalone package root.",
-                    "ddl_create_index_not_standalone_package_root");
-    }
-    if (contains_ddl_create_index &&
-        !valid_ddl_create_index_operand(decoded_stream.stream.operations[1])) {
+        !valid_ddl_create_index_operand(operation.envelope)) {
       return Reject("SBLR.OPERAND_INVALID",
                     "Canonical CREATE INDEX operand structure is invalid.",
                     "ddl_create_index_operand_invalid");
     }
     if (contains_plan_import_rows &&
-        decoded_stream.stream.operations.size() != 3) {
-      return Reject("SBLR.OPERAND_INVALID",
-                    "Canonical import planning must be the standalone package root.",
-                    "dml_plan_import_rows_not_standalone_package_root");
-    }
-    if (contains_plan_import_rows &&
-        !valid_plan_import_rows_operand(decoded_stream.stream.operations[1])) {
+        !valid_plan_import_rows_operand(operation.envelope)) {
       return Reject("SBLR.OPERAND_INVALID",
                     "Canonical import planning operand structure is invalid.",
                     "dml_plan_import_rows_operand_invalid");
@@ -2135,15 +2131,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     namespace source_artifact = scratchbird::engine::sblr;
     const source_artifact::SblrOperationEnvelope* artifact_operation =
         &operation.envelope;
-    if (opcode_stream) {
-      if (decoded_stream.stream.operations.size() != 3) {
-        return Reject(
-            "SBLR.SOURCE_ARTIFACT.INVALID",
-            "The V1 opcode-stream source-map profile requires exactly one executable member.",
-            "source_artifact.opcode_stream_node_profile_unsupported");
-      }
-      artifact_operation = &decoded_stream.stream.operations[1];
-    }
+    // SOURCE_MAP is not a second executable AST root. The shared command
+    // selector above has already validated this single-command package profile.
     const auto decoded_artifact =
         source_artifact::DecodeSblrSourceArtifactMapV1(
             artifact_bytes->data(), artifact_bytes->size());
@@ -2343,10 +2332,9 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
     }
     LocalSblrGatewayRequest gateway_request;
     gateway_request.canonical_sbos = token->canonical_operation_bytes;
-    gateway_request.root_opcode_code = decoded_stream.stream.operations[1].opcode_code;
-    gateway_request.root_opcode = decoded_stream.stream.operations[1].opcode;
-    gateway_request.root_operation_id =
-        decoded_stream.stream.operations[1].operation_id;
+    gateway_request.root_opcode_code = operation.envelope.opcode_code;
+    gateway_request.root_opcode = operation.envelope.opcode;
+    gateway_request.root_operation_id = operation.envelope.operation_id;
     gateway_request.route_snapshot_uuid = request.route_snapshot_uuid;
     gateway_request.route_epoch = request.route_epoch;
     gateway_request.route_generation = request.route_generation;
@@ -2487,9 +2475,7 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
   result.requires_public_abi_dispatch =
       opcode_stream || operation.envelope.operation_id == "query.execute" ||
       RequiresEnginePublicAbiDispatch(operation.envelope.operation_id);
-  const auto& published_operation =
-      opcode_stream ? decoded_stream.stream.operations[1]
-                    : operation.envelope;
+  const auto& published_operation = operation.envelope;
   const auto published_opcode_identity =
       scratchbird::engine::sblr::ValidateSblrOpcodeIdentity(
           published_operation.opcode_code, published_operation.operation_id,

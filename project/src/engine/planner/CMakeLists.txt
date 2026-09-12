@@ -12,12 +12,17 @@
 # QOW-CMAKE-IAS-015-V1
 # QOW-CMAKE-OPT-003-V1
 # QOW-CMAKE-IAS-006-V1
+if(NOT TARGET sb_core_uuid)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/uuid ${CMAKE_CURRENT_BINARY_DIR}/core_uuid)
+endif()
+
 if(NOT TARGET sb_qow_canonical_logical_graph)
   add_library(sb_qow_canonical_logical_graph INTERFACE)
   target_compile_features(sb_qow_canonical_logical_graph INTERFACE cxx_std_20)
   target_include_directories(sb_qow_canonical_logical_graph INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
+  target_link_libraries(sb_qow_canonical_logical_graph INTERFACE sb_core_uuid)
 endif()
 
 if(NOT TARGET sb_engine_plan_shapes)
@@ -36,6 +41,7 @@ if(NOT TARGET sb_engine_plan_shapes)
   )
 
   target_compile_features(sb_engine_plan_shapes PUBLIC cxx_std_20)
+  target_link_libraries(sb_engine_plan_shapes PUBLIC sb_core_uuid)
 endif()
 
 if(NOT TARGET sb_core_memory)

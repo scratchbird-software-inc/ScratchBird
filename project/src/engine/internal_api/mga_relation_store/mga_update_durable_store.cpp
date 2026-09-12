@@ -968,13 +968,13 @@ bool DmlUpdateDurableSameReservationRequest(
     const EngineRequestContext& context,
     const MgaDmlUpdateDurableAuthorityReservationRequestV1& request,
     const MgaDmlUpdateDurableOperationIdentityV1& identity) {
-  return identity.database_uuid == context.database_uuid.canonical &&
+  return identity.database_uuid == context.database_uuid &&
          identity.owning_transaction_uuid ==
-             context.transaction_uuid.canonical &&
+             context.transaction_uuid &&
          identity.owning_local_transaction_id ==
              context.local_transaction_id &&
          identity.authenticated_statement_receipt_uuid ==
-             context.statement_receipt_uuid.canonical &&
+             context.statement_receipt_uuid &&
          identity.operation_uuid == request.operation_uuid &&
          identity.operation_generation == request.operation_generation &&
          identity.descriptor_uuid == request.descriptor_uuid &&
@@ -1721,7 +1721,9 @@ bool ApplyDmlUpdateBinarySavepointRecords(
   const std::string directory =
       DmlUpdateStatementSavepointBinaryStorePath(context);
   std::error_code error;
-  if (!std::filesystem::exists(directory, error)) return !error;
+  const auto link_status = std::filesystem::symlink_status(directory, error);
+  if (error == std::errc::no_such_file_or_directory ||
+      (!error && link_status.type() == std::filesystem::file_type::not_found)) return true;
   if (error || !std::filesystem::is_directory(directory, error) || error) {
     if (refusal_detail != nullptr) {
       *refusal_detail = "update_savepoint_store_directory_invalid";
@@ -1731,7 +1733,10 @@ bool ApplyDmlUpdateBinarySavepointRecords(
   std::vector<std::filesystem::path> paths;
   for (std::filesystem::directory_iterator iterator(directory, error), end;
        !error && iterator != end; iterator.increment(error)) {
-    if (!iterator->is_regular_file(error) || error) break;
+    if (!iterator->is_regular_file(error) || error) {
+      if (refusal_detail != nullptr) *refusal_detail = "update_savepoint_store_entry_invalid";
+      return false;
+    }
     const auto path = iterator->path();
     if (path.extension() == ".dups") paths.push_back(path);
   }
@@ -1797,15 +1802,15 @@ bool DmlUpdateStatementBindingMatchesContext(
     const MgaDmlUpdateStatementSavepointBindingV1& binding) {
   return !context.database_path.empty() &&
          DmlUpdateStatementParseUuid(binding.database_uuid) &&
-         binding.database_uuid == context.database_uuid.canonical &&
+         binding.database_uuid == context.database_uuid &&
          DmlUpdateStatementParseUuid(binding.owning_transaction_uuid) &&
-         binding.owning_transaction_uuid == context.transaction_uuid.canonical &&
+         binding.owning_transaction_uuid == context.transaction_uuid &&
          binding.owning_local_transaction_id != 0 &&
          binding.owning_local_transaction_id == context.local_transaction_id &&
          DmlUpdateStatementParseUuid(
              binding.authenticated_statement_receipt_uuid) &&
          binding.authenticated_statement_receipt_uuid ==
-             context.statement_receipt_uuid.canonical &&
+             context.statement_receipt_uuid &&
          DmlUpdateStatementParseUuid(binding.operation_uuid) &&
          DmlUpdateStatementParseUuid(binding.descriptor_uuid) &&
          binding.descriptor_generation != 0 &&
@@ -2080,7 +2085,8 @@ DmlUpdateStatementLoadSavepointAuthority(
 
   const auto& latest = chain.back();
   const auto parsed_savepoints = ParseSavepoints(context);
-  if (parsed_savepoints.update_statement_authority_corrupt ||
+  if (parsed_savepoints.diagnostic.error ||
+      parsed_savepoints.update_statement_authority_corrupt ||
       parsed_savepoints.marker_authority_corrupt) {
     return DmlUpdateStatementSavepointFailure(
         "DML.UPDATE_FAILED",
@@ -2449,11 +2455,11 @@ ReserveMgaDmlUpdateDurableOperationAuthorityV1(
     const MgaDmlUpdateDurableAuthorityReservationRequestV1& request) {
   MgaDmlUpdateDurableAuthorityReservationResultV1 result;
   MgaDmlUpdateDurableOperationIdentityV1 identity;
-  identity.database_uuid = context.database_uuid.canonical;
-  identity.owning_transaction_uuid = context.transaction_uuid.canonical;
+  identity.database_uuid = context.database_uuid;
+  identity.owning_transaction_uuid = context.transaction_uuid;
   identity.owning_local_transaction_id = context.local_transaction_id;
   identity.authenticated_statement_receipt_uuid =
-      context.statement_receipt_uuid.canonical;
+      context.statement_receipt_uuid;
   identity.operation_uuid = request.operation_uuid;
   identity.operation_generation = request.operation_generation;
   identity.descriptor_uuid = request.descriptor_uuid;
@@ -3864,6 +3870,9 @@ RollbackMgaDmlUpdateStatementSavepointAuthorityV1(
         "rollback_requires_current_active_savepoint");
   }
   const auto parsed = ParseSavepoints(context);
+  if (parsed.diagnostic.error) return DmlUpdateStatementSavepointFailure(
+      "MGA.TRANSACTION.ROLLBACK_FAILED", "sblr.dml_update_rows.statement_savepoint_rollback_failed",
+      parsed.diagnostic.detail);
   const auto tx = parsed.active_savepoints.find(
       admitted.binding.owning_local_transaction_id);
   const std::string marker =
@@ -3922,6 +3931,9 @@ ReleaseMgaDmlUpdateStatementSavepointAuthorityV1(
         "release_requires_current_active_savepoint");
   }
   const auto parsed = ParseSavepoints(context);
+  if (parsed.diagnostic.error) return DmlUpdateStatementSavepointFailure(
+      "DML.UPDATE_FAILED", "sblr.dml_update_rows.statement_savepoint_release_failed",
+      parsed.diagnostic.detail);
   const auto tx = parsed.active_savepoints.find(
       admitted.binding.owning_local_transaction_id);
   const std::string marker =

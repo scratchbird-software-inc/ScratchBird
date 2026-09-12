@@ -90,7 +90,7 @@ EngineGeneralProceduralOperationResult EngineGeneralProceduralOperation(
         MakeSecurityContextRequiredDiagnostic(operation_id));
   }
   if (request.context.local_transaction_id == 0 &&
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return MakeProceduralError<EngineGeneralProceduralOperationResult>(
         request,
         operation_id,

@@ -58,7 +58,9 @@ using scratchbird::core::platform::u64;
 
 constexpr u64 kBaseMillis = 1770000000000ull;
 
+std::size_t assertion_count = 0;
 bool Require(bool condition, std::string_view message) {
+  ++assertion_count;
   if (!condition) {
     std::cerr << message << '\n';
     return false;
@@ -127,9 +129,7 @@ std::filesystem::path TempRoot() {
 #endif
   auto root = std::filesystem::temp_directory_path() /
               ("scratchbird_txn_publish_fault_" + scope + "_" +
-               std::to_string(pid));
-  std::error_code ignored;
-  std::filesystem::remove_all(root, ignored);
+               std::to_string(pid) + "_" + UuidText(MakeUuid(UuidKind::object, 1)));
   std::filesystem::create_directories(root);
   return root;
 }
@@ -138,6 +138,7 @@ struct Fixture {
   std::filesystem::path root;
   std::filesystem::path database_path;
   u32 page_size = 0;
+  TypedUuid database_uuid;
 
   ~Fixture() {
     if (!root.empty()) {
@@ -149,13 +150,15 @@ struct Fixture {
 
 Fixture CreateFixture(std::string_view name, u64 offset) {
   Fixture fixture;
-  fixture.root = TempRoot() / std::string(name);
+  fixture.root = TempRoot();
+  (void)name;
   std::filesystem::create_directories(fixture.root);
   fixture.database_path = fixture.root / "eler022_publish.sbdb";
 
   database::DatabaseCreateConfig create;
   create.path = fixture.database_path.string();
   create.database_uuid = MakeUuid(UuidKind::database, offset);
+  fixture.database_uuid = create.database_uuid;
   create.filespace_uuid = MakeUuid(UuidKind::filespace, offset + 1);
   create.creation_unix_epoch_millis = kBaseMillis + offset + 2;
   create.require_resource_seed_pack = false;
@@ -228,56 +231,60 @@ bool SameInventory(const txn::LocalTransactionInventory& lhs,
   return true;
 }
 
-std::string Sha256Hex(std::string_view payload) {
+// Independent byte oracle: deliberately uses explicit shifts, not production
+// encoder helpers. Offsets come from Core TRANSACTION_INVENTORY_BINARY_PUBLICATION_V3.
+void Put(std::string& bytes, std::size_t offset, u64 value, std::size_t count) {
+  for (std::size_t i = 0; i < count; ++i)
+    bytes[offset + i] = static_cast<char>((value >> (8 * i)) & 255);
+}
+
+std::string WithDigest(std::string body) {
   const auto digest = hash::ComputeSha256Digest(
-      reinterpret_cast<const byte*>(payload.data()), payload.size());
-  return digest.ok() ? hash::HexLower(digest.digest) : std::string{};
+      reinterpret_cast<const byte*>(body.data()), body.size());
+  if (!digest.ok()) { std::exit(EXIT_FAILURE); }
+  body.append(reinterpret_cast<const char*>(digest.digest.data()), digest.digest.size());
+  return body;
 }
 
-std::string SerializeInventorySnapshot(std::string_view label,
-                                       const txn::LocalTransactionInventory& inventory) {
-  std::ostringstream out;
-  out << "snapshot\t" << label << '\t'
-      << inventory.next_local_transaction_id << '\t'
-      << inventory.entries.size() << '\n';
-  for (const auto& entry : inventory.entries) {
-    out << "entry\t"
-        << entry.identity.local_id.value << '\t'
-        << UuidText(entry.identity.transaction_uuid) << '\t'
-        << static_cast<u16>(entry.identity.scope) << '\t'
-        << static_cast<u16>(entry.state) << '\t'
-        << entry.begin_unix_epoch_millis << '\t'
-        << entry.final_unix_epoch_millis << '\t'
-        << entry.begin_visible_through_local_transaction_id << '\t'
-        << (entry.evidence_record_required ? "1" : "0") << '\t'
-        << (entry.evidence_record_written ? "1" : "0") << '\t'
-        << (entry.rollback_only ? "1" : "0") << '\n';
-  }
-  out << "endsnapshot\t" << label << '\n';
-  return out.str();
-}
-
-std::string BuildPublishJournalBody(std::string_view phase,
+std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view phase,
                                     const txn::LocalTransactionInventory& old_inventory,
                                     const txn::LocalTransactionInventory& new_inventory) {
-  std::ostringstream out;
-  out << "SBTXPUB002\n"
-      << "phase\t" << phase << '\n'
-      << "generation\t" << PublishGeneration(new_inventory) << '\n'
-      << "authority\tdurable_transaction_inventory\n"
-      << "checksum_algorithm\tsha256\n";
-  out << SerializeInventorySnapshot("old", old_inventory);
-  out << SerializeInventorySnapshot("new", new_inventory);
-  out << "end\n";
-  return out.str();
+  std::string bytes(80 + (old_inventory.entries.size() + new_inventory.entries.size()) * 64, '\0');
+  bytes.replace(0, 8, "SBTXP003");
+  Put(bytes, 8, 3, 2);
+  Put(bytes, 10, 80, 2);
+  Put(bytes, 12, phase == "publishing" ? 1 : 2, 4);
+  Put(bytes, 16, PublishGeneration(new_inventory), 8);
+  Put(bytes, 24, bytes.size() + 32, 8);
+  Put(bytes, 32, old_inventory.next_local_transaction_id, 8);
+  Put(bytes, 40, new_inventory.next_local_transaction_id, 8);
+  Put(bytes, 48, old_inventory.entries.size(), 8);
+  Put(bytes, 56, new_inventory.entries.size(), 8);
+  bytes.replace(64, 16, reinterpret_cast<const char*>(fixture.database_uuid.value.bytes.data()), 16);
+  std::size_t offset = 80;
+  for (const auto* inventory : {&old_inventory, &new_inventory}) {
+    for (const auto& entry : inventory->entries) {
+      Put(bytes, offset, entry.identity.local_id.value, 8);
+      bytes.replace(offset + 8, 16,
+          reinterpret_cast<const char*>(entry.identity.transaction_uuid.value.bytes.data()), 16);
+      Put(bytes, offset + 24, static_cast<u16>(entry.identity.scope), 2);
+      Put(bytes, offset + 26, static_cast<u16>(entry.state), 2);
+      Put(bytes, offset + 28, (entry.evidence_record_required ? 1 : 0) |
+                              (entry.evidence_record_written ? 2 : 0) |
+                              (entry.rollback_only ? 4 : 0), 4);
+      Put(bytes, offset + 32, entry.begin_unix_epoch_millis, 8);
+      Put(bytes, offset + 40, entry.final_unix_epoch_millis, 8);
+      Put(bytes, offset + 48, entry.begin_visible_through_local_transaction_id, 8);
+      offset += 64;
+    }
+  }
+  return bytes;
 }
 
-std::string BuildPublishJournal(std::string_view phase,
+std::string BuildPublishJournal(const Fixture& fixture, std::string_view phase,
                                 const txn::LocalTransactionInventory& old_inventory,
                                 const txn::LocalTransactionInventory& new_inventory) {
-  const std::string body =
-      BuildPublishJournalBody(phase, old_inventory, new_inventory);
-  return body + "checksum_sha256\t" + Sha256Hex(body) + '\n';
+  return WithDigest(BuildPublishJournalBody(fixture, phase, old_inventory, new_inventory));
 }
 
 std::filesystem::path JournalPath(const Fixture& fixture) {
@@ -361,8 +368,16 @@ bool PersistInventory(const Fixture& fixture,
 }
 
 database::LocalTransactionStoreResult LoadInventory(const Fixture& fixture) {
-  return database::LoadLocalTransactionInventoryFromDatabase(
-      fixture.database_path.string());
+  // Force a fresh storage read for every injected fault; no warm process cache.
+  disk::FileDevice device;
+  const auto opened = device.Open(fixture.database_path.string(), disk::FileOpenMode::open_existing);
+  if (!opened.ok()) {
+    database::LocalTransactionStoreResult result;
+    result.status = opened.status;
+    result.diagnostic = opened.diagnostic;
+    return result;
+  }
+  return database::LoadLocalTransactionInventoryFromOpenDevice(&device, fixture.page_size);
 }
 
 bool TestCommittedJournalRecoversNewSnapshot() {
@@ -401,7 +416,7 @@ bool TestPublishingJournalRecoversOldSnapshot() {
   const auto new_inventory = InventoryWithCommittedTransactions(2200, 2);
   ok = PersistInventory(fixture, old_inventory) && ok;
   WriteTextAndSync(JournalPath(fixture),
-                   BuildPublishJournal("publishing", old_inventory, new_inventory));
+                   BuildPublishJournal(fixture, "publishing", old_inventory, new_inventory));
   CorruptPrimaryInventoryRoot(fixture);
   const auto loaded = LoadInventory(fixture);
   if (!loaded.ok()) {
@@ -414,7 +429,7 @@ bool TestPublishingJournalRecoversOldSnapshot() {
   return ok;
 }
 
-bool TestCommittedJournalIgnoresStaleTail() {
+bool TestCommittedJournalRejectsStaleTail() {
   bool ok = true;
   auto fixture = CreateFixture("stale_tail", 3000);
   const auto old_inventory = InventoryWithCommittedTransactions(3100, 1);
@@ -428,10 +443,8 @@ bool TestCommittedJournalIgnoresStaleTail() {
   if (!loaded.ok()) {
     PrintDiagnostic(loaded.diagnostic);
   }
-  ok = Require(loaded.ok(),
-               "committed journal with stale tail did not recover") && ok;
-  ok = Require(SameInventory(loaded.inventory, new_inventory),
-               "committed journal stale tail changed recovered snapshot") && ok;
+  ok = Require(!loaded.ok() && loaded.inventory.entries.empty(),
+               "binary publication with trailing bytes must refuse all authority") && ok;
   return ok;
 }
 
@@ -442,7 +455,7 @@ bool TestPartialJournalRequiresRecovery() {
   const auto new_inventory = InventoryWithCommittedTransactions(4200, 2);
   ok = PersistInventory(fixture, old_inventory) && ok;
   WriteTextAndSync(JournalPath(fixture),
-                   BuildPublishJournalBody("publishing", old_inventory, new_inventory));
+                   BuildPublishJournalBody(fixture, "publishing", old_inventory, new_inventory));
   CorruptPrimaryInventoryRoot(fixture);
   const auto loaded = LoadInventory(fixture);
   ok = Require(!loaded.ok(),
@@ -461,9 +474,8 @@ bool TestChecksumTamperFailsClosed() {
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
   std::string journal = ReadText(JournalPath(fixture));
-  const std::size_t pos = journal.find("authority\tdurable_transaction_inventory");
-  Require(pos != std::string::npos, "ELER-022 journal authority row missing");
-  journal[pos + 10] = 'X';
+  Require(journal.size() > 128, "binary publication missing");
+  journal[80 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
   WriteTextAndSync(JournalPath(fixture), journal);
   CorruptPrimaryInventoryRoot(fixture);
   const auto loaded = LoadInventory(fixture);
@@ -472,6 +484,122 @@ bool TestChecksumTamperFailsClosed() {
   ok = Require(loaded.diagnostic.diagnostic_code ==
                    "SB-TXN-INVENTORY-PUBLISH-JOURNAL-CHECKSUM-MISMATCH",
                "tampered publish journal did not return checksum mismatch") && ok;
+  return ok;
+}
+
+bool TestBinaryPublicationContract() {
+  bool ok = true;
+  auto fixture = CreateFixture("binary_contract", 7000);
+  const auto old_inventory = InventoryWithCommittedTransactions(7100, 2);
+  auto new_inventory = InventoryWithCommittedTransactions(7200, 3);
+  // Preserve flags, state/scope and arbitrary timestamp bytes, not just UUIDs.
+  new_inventory.entries[1].identity.scope = txn::TransactionScope::cluster_global;
+  new_inventory.entries[1].state = txn::TransactionState::read_only_active;
+  new_inventory.entries[1].evidence_record_required = false;
+  new_inventory.entries[1].rollback_only = true;
+  new_inventory.entries[1].begin_visible_through_local_transaction_id = 1;
+  ok = PersistInventory(fixture, old_inventory) && ok;
+  ok = PersistInventory(fixture, new_inventory) && ok;
+  const auto golden = BuildPublishJournal(fixture, "committed", old_inventory, new_inventory);
+  const auto actual = ReadText(JournalPath(fixture));
+  ok = Require(actual == golden, "live writer differs from independent binary byte oracle") && ok;
+  for (const auto& entry : new_inventory.entries)
+    ok = Require(actual.find(UuidText(entry.identity.transaction_uuid)) == std::string::npos,
+                 "transaction identity leaked as canonical UUID text") && ok;
+  const auto before = ReadText(fixture.database_path);
+  const auto invalid_write = [&](txn::LocalTransactionInventory inventory) {
+    const auto result = database::PersistLocalTransactionInventoryToDatabase(
+        fixture.database_path.string(), std::move(inventory));
+    ok = Require(!result.ok(), "malformed writer inventory accepted") && ok;
+    ok = Require(ReadText(JournalPath(fixture)) == golden &&
+                 ReadText(fixture.database_path) == before,
+                 "refused writer mutated durable authority") && ok;
+  };
+  { auto bad = new_inventory; bad.entries[0].identity.transaction_uuid.kind = UuidKind::object;
+    invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[0].identity.transaction_uuid.value.bytes[6] &= 15;
+    invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[1].identity.local_id = bad.entries[0].identity.local_id;
+    invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[1].identity.transaction_uuid = bad.entries[0].identity.transaction_uuid;
+    invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[0].state = static_cast<txn::TransactionState>(65535);
+    invalid_write(bad); }
+  { auto bad = new_inventory; bad.next_local_transaction_id = 0; invalid_write(bad); }
+
+  // An unsupported journal must be refused before writing even when the
+  // primary page chain is intact; no automatic prototype conversion.
+  const std::string legacy = "SBTXPUB002\n" + std::string(150, 'x');
+  WriteTextAndSync(JournalPath(fixture), legacy);
+  const auto legacy_read = LoadInventory(fixture);
+  const auto legacy_write = database::PersistLocalTransactionInventoryToDatabase(
+      fixture.database_path.string(), new_inventory);
+  ok = Require(!legacy_read.ok() && !legacy_write.ok() &&
+               ReadText(JournalPath(fixture)) == legacy &&
+               ReadText(fixture.database_path) == before,
+               "legacy journal silently converted or used as authority") && ok;
+  WriteTextAndSync(JournalPath(fixture), golden);
+  CorruptPrimaryInventoryRoot(fixture);
+  const auto refused = [&](const std::string& bytes) {
+    WriteTextAndSync(JournalPath(fixture), bytes);
+    const auto loaded = LoadInventory(fixture);
+    ok = Require(!loaded.ok() && loaded.inventory.entries.empty(),
+                 "malformed binary recovery returned complete or partial authority") && ok;
+  };
+  for (std::size_t size = 0; size < golden.size(); ++size)
+    refused(golden.substr(0, size));
+  refused(golden + "tail");
+  refused(std::string("SBTXPUB002\n") + std::string(150, 'x'));
+  const auto mutate = [&](std::size_t offset, u64 value, std::size_t width) {
+    auto body = golden.substr(0, golden.size() - 32);
+    Put(body, offset, value, width);
+    refused(WithDigest(body)); // Valid integrity: exercise semantic admission.
+  };
+  mutate(8, 2, 2); mutate(10, 96, 2);
+  mutate(12, 0, 4); mutate(12, 3, 4);
+  mutate(16, 0, 8); mutate(16, 999, 8);
+  mutate(24, 0, 8); mutate(24, ~u64{0}, 8);
+  mutate(32, 0, 8); mutate(40, 0, 8);
+  mutate(48, ~u64{0}, 8); mutate(56, ~u64{0}, 8);
+  // Every persisted UUID slot rejects all other version/variant combinations,
+  // including the database binding and the unselected old snapshot.
+  std::vector<std::size_t> uuid_offsets{64};
+  for (std::size_t row = 80; row < golden.size() - 32; row += 64)
+    uuid_offsets.push_back(row + 8);
+  for (const auto offset : uuid_offsets) {
+    for (unsigned version = 0; version < 16; ++version)
+      for (unsigned variant = 0; variant < 4; ++variant) {
+        if (version == 7 && variant == 2) continue;
+        auto body = golden.substr(0, golden.size() - 32);
+        body[offset + 6] = static_cast<char>((static_cast<unsigned char>(body[offset + 6]) & 15) | version << 4);
+        body[offset + 8] = static_cast<char>((static_cast<unsigned char>(body[offset + 8]) & 63) | variant << 6);
+        refused(WithDigest(body));
+      }
+  }
+  for (std::size_t row = 80; row < golden.size() - 32; row += 64) {
+    mutate(row, 0, 8);
+    mutate(row + 24, 2, 2);
+    mutate(row + 26, 0, 2); mutate(row + 26, 14, 2);
+    mutate(row + 28, 8, 4);
+    mutate(row + 56, 1, 8);
+  }
+  mutate(80 + 64, 1, 8); // Duplicate local number in old snapshot.
+  {
+    auto body = golden.substr(0, golden.size() - 32);
+    body.replace(80 + 64 + 8, 16, body.substr(80 + 8, 16));
+    refused(WithDigest(body)); // Duplicate UUID with different local number.
+  }
+  {
+    auto body = golden.substr(0, golden.size() - 32);
+    const auto foreign = MakeUuid(UuidKind::database, 7999);
+    body.replace(64, 16, reinterpret_cast<const char*>(foreign.value.bytes.data()), 16);
+    refused(WithDigest(body));
+  }
+  // Refusals must not poison recovery of the valid exact payload.
+  WriteTextAndSync(JournalPath(fixture), golden);
+  const auto recovered = LoadInventory(fixture);
+  ok = Require(recovered.ok() && SameInventory(recovered.inventory, new_inventory),
+               "valid binary recovery after refusal did not preserve exact inventory") && ok;
   return ok;
 }
 
@@ -542,13 +670,14 @@ int main() {
   }
   ok = TestCommittedJournalRecoversNewSnapshot() && ok;
   ok = TestPublishingJournalRecoversOldSnapshot() && ok;
-  ok = TestCommittedJournalIgnoresStaleTail() && ok;
+  ok = TestCommittedJournalRejectsStaleTail() && ok;
   ok = TestPartialJournalRequiresRecovery() && ok;
   ok = TestChecksumTamperFailsClosed() && ok;
+  ok = TestBinaryPublicationContract() && ok;
   ok = TestStatementInventoryFenceIgnoresUnrelatedDatabaseGrowth() && ok;
   if (!ok) {
     return EXIT_FAILURE;
   }
-  std::cout << "transaction_inventory_publish_fault_conformance=passed\n";
+  std::cout << "transaction_inventory_publish_fault_conformance=passed checks=" << assertion_count << "\n";
   return EXIT_SUCCESS;
 }

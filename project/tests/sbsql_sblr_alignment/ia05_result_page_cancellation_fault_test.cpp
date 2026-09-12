@@ -119,12 +119,16 @@ sblr::SblrOperand TypedQueryOperand(std::uint32_t ordinal, std::string type,
 sblr::SblrOperationEnvelope ValuesQueryMember(
     const bridge::StatementContextReceiptView& view,
     std::string_view parser_uuid,
-    const literal_fixture::Binding& literal_binding) {
+    const literal_fixture::Binding& literal_binding,
+    const api::EngineRequestContext& admitted_context) {
   const auto descriptor_uuid = UuidText(literal_binding.descriptor_uuid);
   const std::string descriptor_record =
-      descriptor_uuid + "|019d0000-0000-7000-8000-00000000d712|" +
+      descriptor_uuid + "|" +
       std::to_string(literal_binding.descriptor_generation) +
-      "|-|-|-|-|-";
+      "|019d0000-0000-7000-8000-00000000d712|1|datatype.int64.le.v1|1|1|0|-|-|-|-|-|" +
+      view.receipt_uuid + "|" + admitted_context.datatype_catalog_snapshot_uuid.canonical +
+      "|" + std::to_string(admitted_context.datatype_catalog_generation) +
+      "|" + std::to_string(admitted_context.datatype_registry_generation);
 
   auto member = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -171,7 +175,7 @@ sblr::SblrOperationEnvelope ValuesQueryMember(
   member.operands.push_back(TypedQueryOperand(
       ordinal++, "uint32", "relational_root_node_id", "1"));
   member.operands.push_back(TypedQueryOperand(
-      ordinal++, "relational_descriptor_v1", "slot_1",
+      ordinal++, "relational_descriptor_v2", "slot_1",
       descriptor_record));
 
   const auto table_sha = scratchbird::core::hash::ComputeSha256Digest(
@@ -391,9 +395,12 @@ int main() {
   const auto parser_uuid =
       Text(NewUuid(platform::UuidKind::object, 36003));
   auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
+  api::EngineRequestContext admitted_context;
+  Require(bridge::CopyStatementContextEngineContextV1(receipt, &admitted_context, nullptr) ==
+              SB_ENGINE_STATUS_OK, "003600 current datatype cohort unavailable");
   const auto query_submission = PackageWithMember(
       fixture, view, parser_uuid,
-      ValuesQueryMember(view, parser_uuid, literal_binding));
+      ValuesQueryMember(view, parser_uuid, literal_binding, admitted_context));
   const auto query_stream_sha =
       scratchbird::core::hash::ComputeSha256Digest(query_submission.stream);
   Require(query_stream_sha.ok() && literal_binding.sbel.size() == 176,

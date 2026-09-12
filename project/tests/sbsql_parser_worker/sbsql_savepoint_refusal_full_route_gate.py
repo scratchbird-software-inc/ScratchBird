@@ -111,7 +111,7 @@ def main() -> int:
         "maintenance_unadmitted_route": (f"TRUNCATE TABLE {TABLE};",
                                          "SBSQL.PARSER.STATEMENT_FAMILY_UNKNOWN"),
         "text_predicate": (f"UPDATE {TABLE} SET payload = 'discard' WHERE payload = 'seed';",
-                        "DATATYPE.DESCRIPTOR_INVALID"),
+                        "DATATYPE.DESCRIPTOR.INVALID"),
         # Native Query carries NUL-terminated SQL; embedded U+0000 VALUE is
         # exercised by the binary-length engine binder, not by raw SQL text.
         "raw_nul_sql": (f"UPDATE {TABLE} SET payload = 'a\0b' WHERE id = 1;",

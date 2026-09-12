@@ -13,6 +13,8 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -36,9 +38,10 @@ enum class SnapshotSafeCacheAction {
 };
 
 struct SnapshotSafeCacheKey {
-  std::string normalized_operation;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
   std::string safe_parameter_digest;
-  std::string catalog_epoch_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  internal_api::EngineUuid security_context_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t statistics_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -50,18 +53,25 @@ struct SnapshotSafeCacheKey {
   std::string result_contract_identity;
   std::string result_contract_hash;
   std::string route_compatibility;
-  std::string dialect_compatibility;
+  bool operator==(const SnapshotSafeCacheKey&) const = default;
+};
+
+struct SnapshotSafeCachePayload {
+  DescriptorBatch final_result;
+  std::vector<CanonicalScanCandidateEvidence> candidates;
 };
 
 struct SnapshotSafeCacheEntry {
   SnapshotSafeCacheKey key;
   PhysicalMgaStatementContext producing_statement_context;
-  std::string catalog_epoch_uuid;
+  internal_api::EngineUuid catalog_epoch_uuid;
+  // Assigned by Store, never accepted as caller-issued cache authority.
+  internal_api::EngineUuid entry_uuid;
   SnapshotSafeCachePayloadKind payload_kind =
       SnapshotSafeCachePayloadKind::kCandidateSet;
   std::uint64_t row_count = 0;
   std::string cached_result_digest;
-  std::string cached_mga_security_digest;
+  std::optional<SnapshotSafeCachePayload> payload;
 };
 
 struct SnapshotSafeCacheStoreRequest {
@@ -69,7 +79,7 @@ struct SnapshotSafeCacheStoreRequest {
   SnapshotSafeCacheEntry entry;
   CanonicalExecutionMgaAuthority mga_authority;
   TypedPhysicalNodeDag selected_physical_dag;
-  std::string selected_catalog_epoch_uuid;
+  internal_api::EngineUuid selected_catalog_epoch_uuid;
   bool read_only_operation = true;
   bool candidate_set_snapshot_safe = false;
   bool small_final_result = false;
@@ -84,8 +94,6 @@ struct SnapshotSafeCacheStoreRequest {
   bool provider_generation_mutable = false;
   bool route_uncertain = false;
   bool route_mismatch = false;
-  bool dialect_uncertain = false;
-  bool dialect_mismatch = false;
   bool visibility_uncertain = false;
   bool volatile_function_dependency = false;
   bool uncommitted_own_transaction_visibility_dependency = false;
@@ -98,7 +106,7 @@ struct SnapshotSafeCacheLookupRequest {
   SnapshotSafeCacheKey key;
   CanonicalExecutionMgaAuthority mga_authority;
   TypedPhysicalNodeDag selected_physical_dag;
-  std::string selected_catalog_epoch_uuid;
+  internal_api::EngineUuid selected_catalog_epoch_uuid;
   SnapshotSafeCachePayloadKind payload_kind =
       SnapshotSafeCachePayloadKind::kCandidateSet;
   bool read_only_operation = true;
@@ -107,7 +115,7 @@ struct SnapshotSafeCacheLookupRequest {
   std::uint64_t row_count = 0;
   std::uint64_t max_small_result_rows = 1024;
   std::string recomputed_result_digest;
-  std::string recomputed_mga_security_digest;
+  std::optional<SnapshotSafeCachePayload> recomputed_payload;
   bool ordinary_recompute_available = true;
   bool dml_uncertain = false;
   bool ddl_uncertain = false;
@@ -119,8 +127,6 @@ struct SnapshotSafeCacheLookupRequest {
   bool provider_generation_mutable = false;
   bool route_uncertain = false;
   bool route_mismatch = false;
-  bool dialect_uncertain = false;
-  bool dialect_mismatch = false;
   bool visibility_uncertain = false;
   bool volatile_function_dependency = false;
   bool uncommitted_own_transaction_visibility_dependency = false;
@@ -137,6 +143,9 @@ struct SnapshotSafeCacheDecision {
   std::string diagnostic_code;
   std::string diagnostic_detail;
   std::vector<std::string> evidence;
+  // Only a successful hit supplies the immutable object actually stored by
+  // this cache. Its payload remains owned while the returned handle is live.
+  std::shared_ptr<const SnapshotSafeCacheEntry> retained_entry;
 };
 
 class SnapshotSafeResultCache {
@@ -149,12 +158,15 @@ class SnapshotSafeResultCache {
   std::size_t Size() const;
 
  private:
-  std::map<std::string, SnapshotSafeCacheEntry> entries_;
+  mutable std::mutex mutex_;
+  mutable std::map<std::string, std::shared_ptr<const SnapshotSafeCacheEntry>> entries_;
 };
 
 const char* SnapshotSafeCachePayloadKindName(
     SnapshotSafeCachePayloadKind kind);
 const char* SnapshotSafeCacheActionName(SnapshotSafeCacheAction action);
 std::string SnapshotSafeCacheKeyText(const SnapshotSafeCacheKey& key);
+std::string SnapshotSafeCachePayloadDigest(const SnapshotSafeCachePayload& payload,
+                                          SnapshotSafeCachePayloadKind kind);
 
 }  // namespace scratchbird::engine::executor

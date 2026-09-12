@@ -41,8 +41,8 @@ enum class HostedDatabaseState {
 struct HostedDatabaseSnapshot {
   HostedDatabaseState state = HostedDatabaseState::kNotConfigured;
   std::string database_path;
-  std::string database_uuid;
-  std::string filespace_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid filespace_uuid;
   std::uint64_t page_size_bytes = 0;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;
@@ -55,7 +55,7 @@ struct HostedDatabaseSnapshot {
   std::string startup_recovery_classification;
   std::string lifecycle_mode;
   std::string database_engine_agent_state = "not_started";
-  std::string database_engine_agent_instance_uuid;
+  scratchbird::core::platform::Uuid database_engine_agent_instance_uuid;
   std::vector<std::string> selected_agent_type_ids;
   std::uint64_t database_engine_agent_health_generation = 0;
   bool database_engine_agent_ordinary_admission_allowed = false;
@@ -81,7 +81,7 @@ struct HostedDatabaseSnapshot {
 // copied snapshots cannot acquire ownership of durable engine registries.
 struct HostedDatabaseRuntime {
   std::string canonical_database_path;
-  std::string database_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
   std::shared_ptr<engine::internal_api::SblrBulkImportStreamRegistry>
       bulk_import_stream_registry;
 };
@@ -107,7 +107,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config);
 std::string HostedEngineStatusJson(const HostedEngineState& state);
 std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
     const HostedEngineState& state,
-    std::string_view database_uuid,
+    const scratchbird::core::platform::Uuid& database_uuid,
     std::string_view canonical_database_path = {});
 
 }  // namespace scratchbird::server

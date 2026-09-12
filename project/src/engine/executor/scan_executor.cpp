@@ -6,13 +6,12 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "descriptor_value_runtime.hpp"
+#include "selected_index_storage_access.hpp"
 #include "indexed_physical_operator.hpp"
 
 #include "index_key_encoding.hpp"
 #include "uuid.hpp"
 
-#include <cctype>
 #include <functional>
 #include <string_view>
 #include <unordered_set>
@@ -20,66 +19,6 @@
 #include <vector>
 
 namespace scratchbird::engine::executor {
-
-// The RCP-017 index-storage carriers deliberately remain source-local.  The
-// direct QRY-004 proof declares the same standard-layout records, avoiding a
-// second public execution ABI before the multi-node dispatch packet owns that
-// activation surface.
-struct CanonicalIndexStorageResolvedRowV1 {
-  DescriptorRuntimeDiagnostic diagnostic;
-  CanonicalScanCandidateEvidence candidate;
-  std::string version_uuid;
-  bool engine_mga_visibility_rechecked = false;
-  bool engine_security_rechecked = false;
-  bool engine_residual_rechecked = false;
-};
-
-struct CanonicalSelectedIndexStorageRequestV1 {
-  TypedPhysicalNodeDag physical_dag;
-  std::uint64_t selected_physical_node_id = 0;
-  std::string selected_alternative_uuid;
-  std::string selected_index_uuid;
-  std::string available_implementation_id;
-  std::string relation_uuid;
-  CanonicalExecutionMgaAuthority mga_authority;
-  std::uint64_t selected_descriptor_generation = 0;
-  std::uint64_t current_descriptor_generation = 0;
-  std::vector<std::string> selected_key_descriptor_uuids;
-  std::string selected_key_profile_id;
-  std::vector<scratchbird::core::index::IndexKeyEncodingComponent>
-      point_key_components;
-  scratchbird::core::index::IndexKeySemanticProfile key_profile;
-  const scratchbird::storage::page::IndexBtreePhysicalTree* physical_tree =
-      nullptr;
-  std::size_t maximum_candidate_count = 0;
-  std::function<bool()> cancellation_requested;
-  std::function<CanonicalIndexStorageResolvedRowV1(
-      const IndexedPhysicalOperatorLocator&)>
-      resolve_engine_row_version;
-  std::string heap_fallback_alternative_uuid;
-  bool physical_tree_engine_owned = false;
-  bool resolver_engine_owned = false;
-  bool selected_index_is_approximate = false;
-  bool exact_fallback_recheck_authorized = false;
-};
-
-struct CanonicalSelectedIndexStorageResultV1 {
-  DescriptorRuntimeDiagnostic diagnostic;
-  CanonicalScanAccessResult scan_result;
-  std::vector<scratchbird::core::platform::byte> encoded_point_key;
-  std::string selected_alternative_uuid;
-  std::string selected_index_uuid;
-  std::size_t physical_locator_count = 0;
-  std::size_t resolved_row_version_count = 0;
-  bool exact_key_encoded = false;
-  bool exact_selected_index_bound = false;
-  bool data_access_observation_known = false;
-  bool data_access_observed = false;
-  bool exact_fallback_recheck_applied = false;
-  bool governed_heap_replan_required = false;
-  std::string governed_heap_fallback_alternative_uuid;
-};
-
 namespace {
 
 DescriptorRuntimeDiagnostic Refusal(std::string code,
@@ -93,17 +32,8 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   return diagnostic;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const internal_api::EngineUuid& value) noexcept {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool IsKnownSource(const CanonicalScanCandidateSource source) {
@@ -225,7 +155,8 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
   result.accepted_record_uuids.reserve(request.candidates.size());
   result.accepted_row_version_ids.reserve(request.candidates.size());
   result.counters.candidate_count = request.candidates.size();
-  std::unordered_set<std::string> candidate_uuids;
+  std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash>
+      candidate_uuids;
   for (std::size_t index = 0; index < request.candidates.size(); ++index) {
     const auto& candidate = request.candidates[index];
     if (!IsCanonicalUuid(candidate.candidate_uuid) ||
@@ -335,7 +266,6 @@ CanonicalSelectedIndexStorageResultV1
 ExecuteCanonicalSelectedIndexStorageAccessV1(
     const CanonicalSelectedIndexStorageRequestV1& request) {
   namespace idx = scratchbird::core::index;
-  namespace uuid = scratchbird::core::uuid;
 
   CanonicalSelectedIndexStorageResultV1 result;
   const auto fallback_available =
@@ -381,6 +311,10 @@ ExecuteCanonicalSelectedIndexStorageAccessV1(
     return refuse(authority_validation.diagnostic_code,
                   authority_validation.detail);
   }
+  if (!IsCanonicalUuid(request.relation_uuid)) {
+    return refuse("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                  "selected relation requires a binary system UUIDv7");
+  }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   for (const auto& node : request.physical_dag.nodes) {
@@ -406,8 +340,9 @@ ExecuteCanonicalSelectedIndexStorageAccessV1(
   if (request.available_implementation_id !=
           selected_node->implementation_id ||
       !request.physical_tree_engine_owned || request.physical_tree == nullptr ||
-      !request.physical_tree->index_uuid.valid() ||
-      uuid::UuidToString(request.physical_tree->index_uuid.value) !=
+      request.physical_tree->index_uuid.kind !=
+          scratchbird::core::platform::UuidKind::object ||
+      request.physical_tree->index_uuid.value !=
           request.selected_index_uuid) {
     return refuse(
         "QOW-DIAG-QRY-004-SCAN-IMPLEMENTATION-UNAVAILABLE-V1",
@@ -439,8 +374,9 @@ ExecuteCanonicalSelectedIndexStorageAccessV1(
        ordinal < request.point_key_components.size(); ++ordinal) {
     const auto& component = request.point_key_components[ordinal];
     if (!IsCanonicalUuid(request.selected_key_descriptor_uuids[ordinal]) ||
-        !component.type_descriptor_uuid.valid() ||
-        uuid::UuidToString(component.type_descriptor_uuid.value) !=
+        component.type_descriptor_uuid.kind !=
+            scratchbird::core::platform::UuidKind::object ||
+        component.type_descriptor_uuid.value !=
             request.selected_key_descriptor_uuids[ordinal] ||
         component.ordinal != ordinal || component.type_descriptor_epoch == 0) {
       return refuse("QOW-DIAG-QRY-004-INDEX-KEY-IDENTITY-V1",

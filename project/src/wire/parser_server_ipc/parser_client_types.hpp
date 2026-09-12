@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "../../core/platform/runtime_platform.hpp"
+
 #include <array>
 #include <cstdint>
 #include <string>
@@ -28,7 +30,7 @@ struct ParserClientConfig {
   std::string common_resource_hash;
   std::string resource_compatibility_identity;
   std::string resource_version_identity;
-  std::string dialect_profile_uuid;
+  scratchbird::core::platform::Uuid dialect_profile_uuid;
   std::vector<std::string> default_search_path{"sys", "public"};
   std::uint32_t registry_version{1};
   // Opt-in keeps the legacy hello byte-for-byte unchanged for every existing
@@ -51,10 +53,10 @@ struct ParserClientConfig {
 // either component or treat it as transaction authority.
 struct ParserTransactionSelector {
   std::uint64_t local_transaction_id{0};
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
 
   [[nodiscard]] bool present() const {
-    return local_transaction_id != 0 && !transaction_uuid.empty();
+    return local_transaction_id != 0 && !transaction_uuid.is_nil();
   }
 };
 
@@ -79,7 +81,7 @@ struct ParserTransactionRouting {
 // private receipt, complete visibility vector, resource policy, and optimizer
 // state remain server/engine-owned and are intentionally absent.
 struct PreliminaryDiagnosticIdentityV1 {
-  std::string diagnostic_uuid;
+  std::array<std::uint8_t, 16> diagnostic_uuid{};
   std::uint64_t generation{0};
   std::uint32_t precedence_ordinal{0};
   std::uint8_t severity_code{0};
@@ -92,23 +94,23 @@ struct ParserStatementContext {
   struct AggregateFunctionProfile {
     std::uint16_t abi_version{0};
     std::string builtin_id;
-    std::string function_uuid;
+    scratchbird::core::platform::Uuid function_uuid;
     bool executable{false};
   };
 
   struct WindowFunctionProfile {
     std::uint16_t abi_version{0};
     std::string builtin_id;
-    std::string function_uuid;
+    scratchbird::core::platform::Uuid function_uuid;
     bool executable{false};
   };
 
   struct DescriptorProfile {
     std::uint8_t profile_kind{0};
     std::uint16_t slot{0};
-    std::string descriptor_uuid;
-    std::string type_uuid;
-    std::string collation_uuid;
+    scratchbird::core::platform::Uuid descriptor_uuid;
+    scratchbird::core::platform::Uuid type_uuid;
+    scratchbird::core::platform::Uuid collation_uuid;
     bool nullable{false};
     std::uint32_t width{0};
     std::uint32_t precision{0};
@@ -117,19 +119,19 @@ struct ParserStatementContext {
 
   struct LiteralStatementDescriptorProfileV1 {
     std::uint16_t profile_version{0};
-    std::string profile_uuid;
+    scratchbird::core::platform::Uuid profile_uuid;
     // Statement-local relational descriptor identity issued for this literal
     // occurrence. The SBLP descriptor_uuid remains the core codec/catalog
     // identity and must not be reused as a DAG descriptor identity. SBLP v2
     // may instead project a separately authenticated persisted relation
     // descriptor handle.
-    std::string binding_descriptor_uuid;
-    std::string statement_receipt_uuid;
-    std::string catalog_snapshot_uuid;
+    scratchbird::core::platform::Uuid binding_descriptor_uuid;
+    scratchbird::core::platform::Uuid statement_receipt_uuid;
+    scratchbird::core::platform::Uuid catalog_snapshot_uuid;
     std::uint64_t catalog_generation{0};
-    std::string descriptor_uuid;
+    scratchbird::core::platform::Uuid descriptor_uuid;
     std::uint64_t descriptor_generation{0};
-    std::string type_uuid;
+    scratchbird::core::platform::Uuid type_uuid;
     std::string codec_id;
     std::uint16_t codec_version{0};
     std::uint64_t codec_generation{0};
@@ -139,26 +141,26 @@ struct ParserStatementContext {
   };
 
   bool acquired{false};
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   ParserTransactionSelector transaction;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
-  std::string catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid statement_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_metadata_snapshot_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
   // Exact statement-visible catalog generation issued with this receipt.
   // This is deliberately distinct from preliminary_catalog_generation,
   // which names the fixed datatype/literal registry generation.
   std::uint64_t preliminary_statement_catalog_generation{0};
-  std::string security_context_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   // Exact engine-issued UTC bytes from SBPS statement-context V7-V10. This
   // is a statement-stable value carrier only, never transaction finality.
   std::string statement_timestamp;
-  std::string bound_ast_uuid;
-  std::string count_function_uuid;
-  std::string sum_function_uuid;
-  std::string avg_function_uuid;
-  std::string min_function_uuid;
-  std::string max_function_uuid;
+  scratchbird::core::platform::Uuid bound_ast_uuid;
+  scratchbird::core::platform::Uuid count_function_uuid;
+  scratchbird::core::platform::Uuid sum_function_uuid;
+  scratchbird::core::platform::Uuid avg_function_uuid;
+  scratchbird::core::platform::Uuid min_function_uuid;
+  scratchbird::core::platform::Uuid max_function_uuid;
   std::vector<AggregateFunctionProfile> aggregate_function_profiles;
   std::vector<WindowFunctionProfile> window_function_profiles;
   std::vector<DescriptorProfile> descriptor_profiles;
@@ -166,8 +168,8 @@ struct ParserStatementContext {
       literal_statement_descriptor_profiles;
   // V11 preliminary statement context shared by admitted leaf negotiations.
   // Leaf-specific projections below remain compatibility storage only.
-  std::string preliminary_receipt_uuid;
-  std::string preliminary_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid preliminary_receipt_uuid;
+  scratchbird::core::platform::Uuid preliminary_catalog_snapshot_uuid;
   std::uint64_t preliminary_catalog_generation{0};
   std::uint64_t preliminary_security_epoch{0};
   std::uint64_t preliminary_resource_epoch{0};
@@ -175,32 +177,32 @@ struct ParserStatementContext {
   // resource policy.  Parsers may copy it into SBQNDR01 but may not default,
   // narrow, widen, or alias it to any other resource or result bound.
   std::uint64_t preliminary_maximum_mga_relation_decoded_bytes_per_pass{0};
-  std::string preliminary_mga_snapshot_uuid;
+  scratchbird::core::platform::Uuid preliminary_mga_snapshot_uuid;
   std::uint16_t preliminary_extension_version{0};
-  std::string preliminary_prepared_statement_uuid;
+  scratchbird::core::platform::Uuid preliminary_prepared_statement_uuid;
   std::uint64_t preliminary_prepared_generation{0};
-  std::string preliminary_batch_uuid;
+  scratchbird::core::platform::Uuid preliminary_batch_uuid;
   std::uint64_t preliminary_batch_generation{0};
-  std::string preliminary_dynamic_package_uuid;
+  scratchbird::core::platform::Uuid preliminary_dynamic_package_uuid;
   std::uint64_t preliminary_dynamic_generation{0};
   // Engine-owned generation for the exact engine.op.parameter executor row.
   // Schema 7032 v3 is the sole parser-visible source; callers copy it into
   // SBPT and never derive it from registry order or another executor family.
   std::uint64_t preliminary_parameter_executor_availability_generation{0};
   // Schema 7032 v4 copy-only variable frame projection.
-  std::string preliminary_variable_scope_uuid;
+  scratchbird::core::platform::Uuid preliminary_variable_scope_uuid;
   std::uint64_t preliminary_variable_scope_generation{0};
-  std::string preliminary_variable_frame_uuid;
+  scratchbird::core::platform::Uuid preliminary_variable_frame_uuid;
   std::uint64_t preliminary_variable_frame_generation{0};
-  std::string preliminary_variable_registry_snapshot_uuid;
+  scratchbird::core::platform::Uuid preliminary_variable_registry_snapshot_uuid;
   std::uint64_t preliminary_variable_executor_availability_generation{0};
   // Schema 7032 v5 copy-only diagnostic cohort projection.
-  std::string preliminary_diagnostic_registry_snapshot_uuid;
+  std::array<std::uint8_t, 16> preliminary_diagnostic_registry_snapshot_uuid{};
   std::uint64_t preliminary_diagnostic_registry_generation{0};
   std::vector<PreliminaryDiagnosticIdentityV1> preliminary_diagnostic_identities;
-  std::string preliminary_transaction_isolation_profile_uuid;
+  scratchbird::core::platform::Uuid preliminary_transaction_isolation_profile_uuid;
   std::uint64_t preliminary_transaction_isolation_profile_generation{0};
-  std::string preliminary_transaction_policy_snapshot_uuid;
+  scratchbird::core::platform::Uuid preliminary_transaction_policy_snapshot_uuid;
   std::uint64_t preliminary_transaction_policy_generation{0};
   std::uint64_t preliminary_transaction_executor_availability_generation{0};
   std::uint8_t preliminary_transaction_read_mode{0};
@@ -285,25 +287,25 @@ struct ParserStatementContext {
   // `transaction`.  The parser may copy these bytes into TXCO/TXRO binding;
   // possession of them is never private transaction-handle authority.
   std::vector<std::uint8_t> preliminary_active_transaction_handle;
-  std::string literal_preliminary_receipt_uuid;
-  std::string literal_catalog_snapshot_uuid;
+  scratchbird::core::platform::Uuid literal_preliminary_receipt_uuid;
+  scratchbird::core::platform::Uuid literal_catalog_snapshot_uuid;
   std::uint64_t literal_catalog_generation{0};
   std::uint64_t literal_security_epoch{0};
   std::uint64_t literal_resource_epoch{0};
-  std::string literal_mga_snapshot_uuid;
+  scratchbird::core::platform::Uuid literal_mga_snapshot_uuid;
 
   [[nodiscard]] bool complete() const {
-    return acquired && transaction.present() && !statement_uuid.empty() &&
-           !statement_snapshot_uuid.empty() &&
-           !statement_metadata_snapshot_uuid.empty() &&
-           !catalog_epoch_uuid.empty() && !security_context_uuid.empty();
+    return acquired && transaction.present() && !statement_uuid.is_nil() &&
+           !statement_snapshot_uuid.is_nil() &&
+           !statement_metadata_snapshot_uuid.is_nil() &&
+           !catalog_epoch_uuid.is_nil() && !security_context_uuid.is_nil();
   }
 
   [[nodiscard]] bool native_v7_complete() const {
     return complete() && !statement_timestamp.empty() &&
-           !bound_ast_uuid.empty() && !count_function_uuid.empty() &&
-           !sum_function_uuid.empty() && !avg_function_uuid.empty() &&
-           !min_function_uuid.empty() && !max_function_uuid.empty() &&
+           !bound_ast_uuid.is_nil() && !count_function_uuid.is_nil() &&
+           !sum_function_uuid.is_nil() && !avg_function_uuid.is_nil() &&
+           !min_function_uuid.is_nil() && !max_function_uuid.is_nil() &&
            aggregate_function_profiles.size() == 43 &&
            window_function_profiles.size() == 11 &&
            descriptor_profiles.size() == 320;
@@ -311,9 +313,9 @@ struct ParserStatementContext {
 
   [[nodiscard]] bool native_v8_complete() const {
     return complete() && !statement_timestamp.empty() &&
-           !bound_ast_uuid.empty() && !count_function_uuid.empty() &&
-           !sum_function_uuid.empty() && !avg_function_uuid.empty() &&
-           !min_function_uuid.empty() && !max_function_uuid.empty() &&
+           !bound_ast_uuid.is_nil() && !count_function_uuid.is_nil() &&
+           !sum_function_uuid.is_nil() && !avg_function_uuid.is_nil() &&
+           !min_function_uuid.is_nil() && !max_function_uuid.is_nil() &&
            aggregate_function_profiles.size() == 43 &&
            window_function_profiles.size() == 11 &&
            descriptor_profiles.size() == 322;
@@ -321,9 +323,9 @@ struct ParserStatementContext {
 
   [[nodiscard]] bool native_v9_complete() const {
     return complete() && !statement_timestamp.empty() &&
-           !bound_ast_uuid.empty() && !count_function_uuid.empty() &&
-           !sum_function_uuid.empty() && !avg_function_uuid.empty() &&
-           !min_function_uuid.empty() && !max_function_uuid.empty() &&
+           !bound_ast_uuid.is_nil() && !count_function_uuid.is_nil() &&
+           !sum_function_uuid.is_nil() && !avg_function_uuid.is_nil() &&
+           !min_function_uuid.is_nil() && !max_function_uuid.is_nil() &&
            aggregate_function_profiles.size() == 43 &&
            window_function_profiles.size() == 11 &&
            descriptor_profiles.size() == 326;
@@ -331,9 +333,9 @@ struct ParserStatementContext {
 
   [[nodiscard]] bool native_v10_complete() const {
     return complete() && !statement_timestamp.empty() &&
-           !bound_ast_uuid.empty() && !count_function_uuid.empty() &&
-           !sum_function_uuid.empty() && !avg_function_uuid.empty() &&
-           !min_function_uuid.empty() && !max_function_uuid.empty() &&
+           !bound_ast_uuid.is_nil() && !count_function_uuid.is_nil() &&
+           !sum_function_uuid.is_nil() && !avg_function_uuid.is_nil() &&
+           !min_function_uuid.is_nil() && !max_function_uuid.is_nil() &&
            aggregate_function_profiles.size() == 43 &&
            window_function_profiles.size() == 11 &&
            descriptor_profiles.size() == 646;
@@ -343,12 +345,12 @@ struct ParserStatementContext {
 // Exact canonical ingress bytes for one engine-issued statement identity.
 // The private receipt never crosses SBPS and is intentionally absent here.
 struct ParserCanonicalSblrSubmission {
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::vector<std::uint8_t> canonical_container_bytes;
   std::vector<std::uint8_t> canonical_operation_bytes;
   std::vector<std::uint8_t> canonical_execution_envelope_bytes;
-  std::string literal_final_receipt_uuid;
-  std::string literal_admission_token_uuid;
+  scratchbird::core::platform::Uuid literal_final_receipt_uuid;
+  scratchbird::core::platform::Uuid literal_admission_token_uuid;
   std::array<std::uint8_t, 32> literal_token_binding_sha256{};
   std::array<std::uint8_t, 32> literal_bound_ast_sha256{};
   std::array<std::uint8_t, 32> literal_sbxn_sha256{};
@@ -360,8 +362,8 @@ struct ParserCanonicalSblrSubmission {
   std::vector<std::uint8_t> variable_execution_extension_bytes;
 
   [[nodiscard]] bool literal_finalized() const {
-    return !literal_final_receipt_uuid.empty() &&
-           !literal_admission_token_uuid.empty();
+    return !literal_final_receipt_uuid.is_nil() &&
+           !literal_admission_token_uuid.is_nil();
   }
 
   [[nodiscard]] bool parameter_finalized() const {
@@ -374,7 +376,7 @@ struct ParserCanonicalSblrSubmission {
   }
 
   [[nodiscard]] bool complete() const {
-    return !statement_uuid.empty() && !canonical_container_bytes.empty() &&
+    return !statement_uuid.is_nil() && !canonical_container_bytes.empty() &&
            !canonical_execution_envelope_bytes.empty();
   }
 };
@@ -403,27 +405,27 @@ struct ParserSessionContext {
   // Copied from the exact HELLO bytes used on this physical parser channel.
   // These fields are identity evidence only; the server independently keeps
   // and cross-checks the admitted values.
-  std::string admitted_parser_package_uuid;
-  std::string admitted_dialect_profile_uuid;
+  scratchbird::core::platform::Uuid admitted_parser_package_uuid;
+  scratchbird::core::platform::Uuid admitted_dialect_profile_uuid;
   std::uint32_t admitted_parser_package_version_major{0};
   std::uint32_t admitted_parser_package_version_minor{0};
   std::uint32_t admitted_parser_package_version_patch{0};
-  std::string session_uuid;
-  std::string connection_uuid;
-  std::string database_uuid;
-  std::string authenticated_user_uuid;
+  scratchbird::core::platform::Uuid session_uuid;
+  scratchbird::core::platform::Uuid connection_uuid;
+  scratchbird::core::platform::Uuid database_uuid;
+  scratchbird::core::platform::Uuid authenticated_user_uuid;
   std::string principal_claim;
   std::string auth_provider_family;
-  std::vector<std::string> effective_role_uuids;
-  std::vector<std::string> effective_group_uuids;
+  std::vector<scratchbird::core::platform::Uuid> effective_role_uuids;
+  std::vector<scratchbird::core::platform::Uuid> effective_group_uuids;
   std::string default_language{"en"};
   std::string language_profile;
   std::string language_tag{"en"};
   std::string input_syntax_profile;
   std::string input_language_fallback_tag;
   std::string common_resource_hash;
-  std::string dialect_profile_uuid;
-  std::string policy_profile_uuid{"default"};
+  scratchbird::core::platform::Uuid dialect_profile_uuid;
+  scratchbird::core::platform::Uuid policy_profile_uuid;
   std::string resource_compatibility_identity;
   std::string resource_version_identity;
   std::uint64_t language_resource_epoch{0};
@@ -434,7 +436,7 @@ struct ParserSessionContext {
   std::string transaction_context;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::string transaction_timestamp;
   std::uint64_t security_policy_epoch{0};
   std::uint64_t grant_epoch{0};

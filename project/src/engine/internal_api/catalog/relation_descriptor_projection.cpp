@@ -111,12 +111,12 @@ EngineApiDiagnostic ProjectionDiagnostic(std::string detail) {
 EngineApiDiagnostic ValidateExactReadableTransaction(
     const EngineRequestContext& context) {
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     return ProjectionDiagnostic("exact_active_transaction_identity_required");
   }
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return ProjectionDiagnostic("transaction_uuid_invalid");
   }
@@ -492,12 +492,12 @@ EngineApiDiagnostic ResolveColumnResources(
   }
   if (!column.charset_uuid.empty()) {
     EngineUuid charset_uuid;
-    charset_uuid.canonical = column.charset_uuid;
+    charset_uuid = column.charset_uuid;
     const auto charset = LookupEngineResourceDescriptorByUuid(
         context, charset_uuid, "charset");
     if (!charset.ok) return charset.diagnostic;
     if (!charset.resource_descriptor.present ||
-        charset.resource_descriptor.resource_uuid.canonical !=
+        charset.resource_descriptor.resource_uuid !=
             column.charset_uuid ||
         charset.resource_descriptor.canonical_name.empty()) {
       return ProjectionDiagnostic("charset_descriptor_invalid");
@@ -507,15 +507,15 @@ EngineApiDiagnostic ResolveColumnResources(
   }
   if (!column.collation_uuid.empty()) {
     EngineUuid collation_uuid;
-    collation_uuid.canonical = column.collation_uuid;
+    collation_uuid = column.collation_uuid;
     const auto collation = LookupEngineResourceDescriptorByUuid(
         context, collation_uuid, "collation");
     if (!collation.ok) return collation.diagnostic;
     if (!collation.resource_descriptor.present ||
-        collation.resource_descriptor.resource_uuid.canonical !=
+        collation.resource_descriptor.resource_uuid !=
             column.collation_uuid ||
         collation.resource_descriptor.canonical_name.empty() ||
-        collation.resource_descriptor.parent_resource_uuid.canonical !=
+        collation.resource_descriptor.parent_resource_uuid !=
             column.charset_uuid) {
       return ProjectionDiagnostic("collation_descriptor_invalid");
     }
@@ -539,11 +539,11 @@ bool CanonicalRelationColumns(
   std::set<std::string> column_names;
   for (std::size_t i = 0; i < columns->size(); ++i) {
     const auto& column = (*columns)[i];
-    if (column.ordinal != i || column.column_uuid.canonical.empty() ||
+    if (column.ordinal != i || column.column_uuid.is_nil() ||
         column.canonical_name_key.empty() ||
         column.value_descriptor.canonical_type_name.empty() ||
         column.value_descriptor.encoded_descriptor.empty() ||
-        !column_uuids.insert(column.column_uuid.canonical).second ||
+        !column_uuids.insert(column.column_uuid).second ||
         !column_names.insert(LowerAscii(column.canonical_name_key)).second) {
       return false;
     }
@@ -578,7 +578,7 @@ EngineApiDiagnostic ValidateRelationDescriptorProjectionViewCreate(
     return ProjectionDiagnostic("projection_target_must_be_view");
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return ProjectionDiagnostic("exact_active_transaction_identity_required");
   }
   const auto exact_selector =
@@ -771,7 +771,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         request.context, ProjectionDiagnostic("projection_dispatch_invalid"));
   }
   if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("exact_active_transaction_identity_required"));
@@ -787,7 +787,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context, ProjectionDiagnostic("projection_variant_invalid"));
   }
-  const std::string view_uuid = request.target_object.uuid.canonical;
+  const std::string view_uuid = request.target_object.uuid;
   const std::string relation_uuid =
       SingleOptionValue(request, "source_uuid:");
   const std::string expected_descriptor_uuid =
@@ -857,7 +857,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         request.context, loaded_descriptor.diagnostic);
   }
   const auto& descriptor = loaded_descriptor.descriptor;
-  if (descriptor.relation_uuid.canonical != relation_uuid) {
+  if (descriptor.relation_uuid != relation_uuid) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_relation_uuid_mismatch"));
@@ -867,7 +867,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         request.context,
         ProjectionDiagnostic("projection_relation_kind_mismatch"));
   }
-  if (descriptor.descriptor_uuid.canonical != expected_descriptor_uuid) {
+  if (descriptor.descriptor_uuid != expected_descriptor_uuid) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_descriptor_uuid_mismatch"));
@@ -878,7 +878,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         request.context,
         ProjectionDiagnostic("projection_descriptor_generation_mismatch"));
   }
-  if (descriptor.schema_uuid.canonical.empty()) {
+  if (descriptor.schema_uuid.is_nil()) {
     return ProjectionFailure<EngineSelectRowsResult>(
         request.context,
         ProjectionDiagnostic("projection_relation_schema_uuid_required"));
@@ -886,7 +886,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
   const auto source_name = ValidateRegisteredName(request.context,
                                                   relation_uuid,
                                                   "table",
-                                                  descriptor.schema_uuid.canonical,
+                                                  descriptor.schema_uuid,
                                                   persisted_definition
                                                       ->source_relation_name,
                                                   "projection_source_name_not_visible");
@@ -923,7 +923,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
     row.fields.reserve(10);
     row.fields.push_back(
         {"column_uuid",
-         ScalarValue(uuid_descriptor, column.column_uuid.canonical)});
+         ScalarValue(uuid_descriptor, column.column_uuid)});
     row.fields.push_back(
         {"canonical_name_key",
          ScalarValue(text_descriptor, column.canonical_name_key)});
@@ -969,7 +969,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
 
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(
       request.context, "dml.select_rows");
-  result.primary_object.uuid.canonical = view_uuid;
+  result.primary_object.uuid = view_uuid;
   result.primary_object.object_kind = "view";
   result.visible_count = rows.size();
   result.result_shape.result_kind =
@@ -994,7 +994,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
       {"catalog_projection_relation_uuid", relation_uuid});
   result.evidence.push_back(
       {"catalog_projection_descriptor_uuid",
-       descriptor.descriptor_uuid.canonical});
+       descriptor.descriptor_uuid});
   result.evidence.push_back(
       {"catalog_projection_descriptor_generation",
        std::to_string(descriptor.descriptor_generation)});

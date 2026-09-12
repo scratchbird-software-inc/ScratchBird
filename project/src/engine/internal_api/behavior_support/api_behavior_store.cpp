@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <filesystem>
 #include <map>
 #include <sstream>
 
@@ -90,11 +91,11 @@ bool MgaCreatorVisible(
         observer.identity.local_id.value != context.local_transaction_id) {
       continue;
     }
-    if (!context.transaction_uuid.canonical.empty() &&
+    if (!context.transaction_uuid.is_nil() &&
         (!observer.identity.transaction_uuid.valid() ||
          scratchbird::core::uuid::UuidToString(
              observer.identity.transaction_uuid.value) !=
-             context.transaction_uuid.canonical)) {
+             context.transaction_uuid)) {
       observer_identity_mismatch = true;
       break;
     }
@@ -107,11 +108,11 @@ bool MgaCreatorVisible(
     if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
     using scratchbird::transaction::mga::TransactionState;
     if (creator_tx == context.local_transaction_id) {
-      if (!context.transaction_uuid.canonical.empty() &&
+      if (!context.transaction_uuid.is_nil() &&
           (!entry.identity.transaction_uuid.valid() ||
            scratchbird::core::uuid::UuidToString(
                entry.identity.transaction_uuid.value) !=
-               context.transaction_uuid.canonical)) {
+               context.transaction_uuid)) {
         return false;
       }
       return entry.state == TransactionState::active ||
@@ -177,9 +178,21 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   ApiBehaviorStoreResult result;
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.load_state", false, true);
   if (path_status.error) { result.diagnostic = path_status; return result; }
-  std::ifstream in(ApiBehaviorEventPath(context), std::ios::binary);
-  if (!in) { in.open(context.database_path, std::ios::binary); }
-  if (!in) { result.ok = true; return result; }
+  const auto path = ApiBehaviorEventPath(context);
+  std::error_code ec;
+  const auto link_status = std::filesystem::symlink_status(path, ec);
+  if (link_status.type() == std::filesystem::file_type::not_found &&
+      (!ec || ec == std::errc::no_such_file_or_directory)) { result.ok = true; return result; }
+  const auto fail = [&](const char* detail) {
+    ApiBehaviorStoreResult failed;
+    failed.diagnostic = MakeInvalidRequestDiagnostic("api_behavior.load_state", detail);
+    return failed;
+  };
+  if (ec) return fail("api_journal_status_failed");
+  const auto status = std::filesystem::status(path, ec);
+  if (ec || !std::filesystem::is_regular_file(status)) return fail("api_journal_not_regular");
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) return fail("api_journal_open_failed");
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
   if (!transaction_inventory.ok()) {
@@ -222,6 +235,7 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
     }
     latest[record.object_uuid] = std::move(record);
   }
+  if (in.bad()) return fail("api_journal_read_failed");
   for (const auto& [uuid, record] : latest) {
     if (!record.deleted) { result.state.records.push_back(record); }
   }
@@ -252,15 +266,15 @@ std::string ApiBehaviorPrimaryName(const EngineApiRequest& request, const std::s
   for (const auto& option : request.option_envelopes) {
     if (StartsWith(option, "name:")) { return option.substr(5); }
   }
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
   return fallback;
 }
 
 std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
   std::vector<std::string> payload;
-  if (!request.target_database.uuid.canonical.empty()) { payload.push_back("database=" + request.target_database.uuid.canonical); }
-  if (!request.target_schema.uuid.canonical.empty()) { payload.push_back("schema=" + request.target_schema.uuid.canonical); }
-  if (!request.target_object.uuid.canonical.empty()) { payload.push_back("target=" + request.target_object.uuid.canonical); }
+  if (!request.target_database.uuid.is_nil()) { payload.push_back("database=" + request.target_database.uuid); }
+  if (!request.target_schema.uuid.is_nil()) { payload.push_back("schema=" + request.target_schema.uuid); }
+  if (!request.target_object.uuid.is_nil()) { payload.push_back("target=" + request.target_object.uuid); }
   if (!request.localized_names.empty()) {
     payload.push_back("localized_name_count=" + std::to_string(request.localized_names.size()));
     for (const auto& localized_name : request.localized_names) {
@@ -282,8 +296,8 @@ std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
 }
 
 std::string ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind) {
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
-  if (!request.related_objects.empty() && !request.related_objects.front().uuid.canonical.empty()) { return request.related_objects.front().uuid.canonical; }
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
+  if (!request.related_objects.empty() && !request.related_objects.front().uuid.is_nil()) { return request.related_objects.front().uuid; }
   return GenerateCrudEngineUuid(kind == "database" ? "database" : (kind == "schema" ? "schema" : "object"));
 }
 
@@ -298,7 +312,7 @@ EngineTypedValue ApiBehaviorValue(std::string value) {
 
 EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  row.requested_row_uuid = GenerateCrudEngineUuid("row");
   for (auto& field : fields) { row.fields.push_back({std::move(field.first), ApiBehaviorValue(std::move(field.second))}); }
   return row;
 }
@@ -366,7 +380,7 @@ void AddDdlPublicationResult(EngineApiResult* result,
   const std::string effective_kind =
       object_kind.empty() ? result->primary_object.object_kind : object_kind;
   const std::string effective_catalog_row_uuid =
-      !catalog_row_uuid.empty() ? catalog_row_uuid : result->catalog_row_uuid.canonical;
+      !catalog_row_uuid.empty() ? catalog_row_uuid : result->catalog_row_uuid;
   const std::string effective_operation =
       !operation_id.empty() ? operation_id : result->operation_id;
   const std::string effective_invalidation_scope =
@@ -475,7 +489,7 @@ std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineReques
 
 EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record) {
   EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = record.object_uuid;
+  descriptor.descriptor_uuid = record.object_uuid;
   descriptor.descriptor_kind = record.object_kind;
   descriptor.canonical_type_name = record.default_name.empty() ? record.object_kind : record.default_name;
   descriptor.encoded_descriptor = "object_uuid=" + record.object_uuid + ";object_kind=" + record.object_kind +

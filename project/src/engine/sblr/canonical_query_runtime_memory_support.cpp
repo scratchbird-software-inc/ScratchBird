@@ -86,7 +86,7 @@ bool RuntimeTypedValueMemoryBytes(const api::EngineTypedValue& value,
   if (bytes == nullptr) return false;
   *bytes = 1;
   const std::array<std::size_t, 6> payloads{
-      value.descriptor.descriptor_uuid.canonical.size(),
+      value.descriptor.descriptor_uuid.bytes.size(),
       value.descriptor.descriptor_kind.size(),
       value.descriptor.canonical_type_name.size(),
       value.descriptor.encoded_descriptor.size(), value.encoded_value.size(),
@@ -174,7 +174,7 @@ bool AddBatchMemoryBytes(
            add(static_cast<std::uint64_t>(value.capacity()) + 1);
   };
   const auto add_descriptor = [&](const api::EngineDescriptor& descriptor) {
-    return add_string(descriptor.descriptor_uuid.canonical) &&
+    return add_string(descriptor.descriptor_uuid) &&
            add_string(descriptor.descriptor_kind) &&
            add_string(descriptor.canonical_type_name) &&
            add_string(descriptor.encoded_descriptor);
@@ -224,7 +224,7 @@ bool BoundDescriptorBatchLiveMemoryBytes(const exec::DescriptorBatch& batch,
            add(static_cast<std::uint64_t>(value.capacity()) + 1);
   };
   const auto add_descriptor = [&](const api::EngineDescriptor& descriptor) {
-    return add_string(descriptor.descriptor_uuid.canonical) &&
+    return add_string(descriptor.descriptor_uuid) &&
            add_string(descriptor.descriptor_kind) &&
            add_string(descriptor.canonical_type_name) &&
            add_string(descriptor.encoded_descriptor);

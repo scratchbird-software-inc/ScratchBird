@@ -82,9 +82,9 @@ std::string DirectBulkAppendContextCacheKey(const EngineRequestContext& context,
                                             const std::string& table_uuid) {
   return context.database_path + "\n" +
          std::to_string(context.local_transaction_id) + "\n" +
-         context.session_uuid.canonical + "\n" +
-         context.principal_uuid.canonical + "\n" +
-         context.current_role_uuid.canonical + "\n" +
+         context.session_uuid + "\n" +
+         context.principal_uuid + "\n" +
+         context.current_role_uuid + "\n" +
          std::to_string(context.catalog_generation_id) + "\n" +
          std::to_string(context.security_epoch) + "\n" +
          std::to_string(CurrentMgaSavepointAuthorityGeneration(context)) +

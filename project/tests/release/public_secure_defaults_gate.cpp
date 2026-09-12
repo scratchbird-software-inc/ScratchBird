@@ -183,8 +183,8 @@ void TestCompiledDefaults() {
           "PCR-123 uncredentialed fixture database bypass escaped into defaults");
   Require(defaults.database_open_mode == "normal",
           "PCR-123 database open mode default drifted");
-  Require(defaults.database_daemon_scope == "shared",
-          "PCR-123 daemon scope default drifted");
+  Require(defaults.database_daemon_scope == "dedicated",
+          "PCR-123 daemon scope must isolate one database per server process");
   Require(!defaults.embedded_direct_mode,
           "PCR-123 embedded direct mode default must be disabled");
   Require(defaults.listener_profiles.empty(),

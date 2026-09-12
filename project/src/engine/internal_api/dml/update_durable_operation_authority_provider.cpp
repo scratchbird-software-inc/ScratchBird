@@ -74,16 +74,16 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context,
   if (context.read_only_mode || context.cluster_transaction_active ||
       context.route_fence_present || context.database_path.empty() ||
       context.local_transaction_id == 0 ||
-      !ExactUuid(context.database_uuid.canonical) ||
-      !ExactUuid(context.transaction_uuid.canonical) ||
-      !ExactUuid(context.statement_receipt_uuid.canonical)) {
+      !ExactUuid(context.database_uuid) ||
+      !ExactUuid(context.transaction_uuid) ||
+      !ExactUuid(context.statement_receipt_uuid)) {
     return Diagnostic(kDmlUpdateDurableOperationDiagnosticInvalid,
                       "sblr.dml_update_rows.durable_operation_invalid",
                       "authenticated_context_invalid");
   }
   const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
       scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid.canonical);
+      context.transaction_uuid);
   if (!parsed_transaction.ok()) {
     return Diagnostic(kDmlUpdateDurableOperationDiagnosticInvalid,
                       "sblr.dml_update_rows.durable_operation_invalid",

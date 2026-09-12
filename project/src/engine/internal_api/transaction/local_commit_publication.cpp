@@ -274,7 +274,7 @@ LocalCommitPublicationMutation Mutation(
   mutation.precondition_sha256 = Sha256(precondition);
   mutation.postcondition_sha256 = Sha256(postcondition);
   const std::string identity_material =
-      "SBMGA_MUTATION_ID_V1\t" + context.transaction_uuid.canonical + "\t" +
+      "SBMGA_MUTATION_ID_V1\t" + context.transaction_uuid + "\t" +
       std::to_string(context.local_transaction_id) + "\t" +
       mutation.mutation_domain + "\t" + mutation.mutation_kind + "\t" +
       mutation.object_identity + "\t" + mutation.record_identity + "\t" +
@@ -400,7 +400,7 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
     const EngineRequestContext& context) {
   LocalCommitPublicationResult result;
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty()) {
+      context.transaction_uuid.is_nil()) {
     result.diagnostic = Refuse("transaction_identity_required");
     return result;
   }
@@ -497,7 +497,7 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
   result.publication_generation = context.local_transaction_id;
   std::ostringstream body;
   body << kManifestMagic << '\t' << result.publication_generation << '\t'
-       << EncodeField(context.transaction_uuid.canonical) << '\t'
+       << EncodeField(context.transaction_uuid) << '\t'
        << result.mutations.size() << '\t' << result.artifacts.size() << '\n';
   for (const auto& mutation : result.mutations) {
     body << "MUTATION\t" << mutation.mutation_identity << '\t'
@@ -600,7 +600,7 @@ LocalCommitPublicationRecoveryResult ClassifyLocalCommitPublicationForRecovery(
       !ParseU64(header[3], &declared_mutations) ||
       !ParseU64(header[4], &declared_artifacts) ||
       result.publication_generation != context.local_transaction_id ||
-      transaction_uuid != context.transaction_uuid.canonical) {
+      transaction_uuid != context.transaction_uuid) {
     result.diagnostic = Refuse("publication_manifest_header_invalid");
     result.stable_reason = "manifest identity or generation does not match the transaction";
     return result;

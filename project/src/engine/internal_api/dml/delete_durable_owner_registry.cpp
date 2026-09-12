@@ -365,9 +365,9 @@ bool PrepareDmlDeleteTransactionFinalityV1(const EngineRequestContext& context) 
       for (const auto& [key, owner] : owners) {
         if (owner->context.database_path != context.database_path ||
             owner->context.local_transaction_id != context.local_transaction_id) continue;
-        if (owner->context.transaction_uuid.canonical != context.transaction_uuid.canonical ||
-            owner->context.session_uuid.canonical != context.session_uuid.canonical ||
-            owner->context.principal_uuid.canonical != context.principal_uuid.canonical) return false;
+        if (owner->context.transaction_uuid != context.transaction_uuid ||
+            owner->context.session_uuid != context.session_uuid ||
+            owner->context.principal_uuid != context.principal_uuid) return false;
         pending.push_back(owner);
       }
     }

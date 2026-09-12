@@ -105,6 +105,21 @@ const char* StatusCodeName(StatusCode code) {
     case StatusCode::memory_allocation_failed: return "memory_allocation_failed";
     case StatusCode::memory_limit_exceeded: return "memory_limit_exceeded";
     case StatusCode::memory_unknown_pointer: return "memory_unknown_pointer";
+    case StatusCode::mga_cow_invalid_kind: return "mga_cow_invalid_kind";
+    case StatusCode::mga_cow_invalid_transaction_identity: return "mga_cow_invalid_transaction_identity";
+    case StatusCode::mga_cow_invalid_row_identity: return "mga_cow_invalid_row_identity";
+    case StatusCode::mga_cow_insert_has_base: return "mga_cow_insert_has_base";
+    case StatusCode::mga_cow_base_required: return "mga_cow_base_required";
+    case StatusCode::mga_cow_invalid_base_sequence: return "mga_cow_invalid_base_sequence";
+    case StatusCode::mga_cow_invalid_new_sequence: return "mga_cow_invalid_new_sequence";
+    case StatusCode::mga_cow_nonincreasing_sequence: return "mga_cow_nonincreasing_sequence";
+    case StatusCode::mga_cow_invalid_phase: return "mga_cow_invalid_phase";
+    case StatusCode::mga_cow_invalid_row_state: return "mga_cow_invalid_row_state";
+    case StatusCode::mga_cow_evidence_required: return "mga_cow_evidence_required";
+    case StatusCode::mga_cow_illegal_transition: return "mga_cow_illegal_transition";
+    case StatusCode::mga_cow_transaction_not_writable: return "mga_cow_transaction_not_writable";
+    case StatusCode::mga_cow_invalid_row_metadata: return "mga_cow_invalid_row_metadata";
+    case StatusCode::mga_cow_read_only_transaction: return "mga_cow_read_only_transaction";
   }
   return "unknown";
 }

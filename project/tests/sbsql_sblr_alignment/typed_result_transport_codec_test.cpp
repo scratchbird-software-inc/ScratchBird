@@ -317,7 +317,7 @@ void DescriptorEvidenceAndMalformedFrames() {
       wire::EncodeTypedResultRowDescriptor(invalid_variable_width);
   Require(!invalid_width_result.ok() &&
               invalid_width_result.diagnostic_code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "variable-width descriptor admitted a fixed payload width");
 }
 

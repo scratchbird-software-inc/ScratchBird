@@ -50,12 +50,12 @@ EngineDmlDeleteRecoveryObservationV1 ObserveDmlDeleteRecoveryAuthorityV1(
     first = false;
   }
   const auto& d = head.descriptor;
-  if (!Matches(context.database_uuid.canonical, head.database_uuid) ||
-      !Matches(context.transaction_uuid.canonical, head.owning_transaction_uuid) ||
+  if (!Matches(context.database_uuid, head.database_uuid) ||
+      !Matches(context.transaction_uuid, head.owning_transaction_uuid) ||
       context.local_transaction_id != head.owning_local_transaction_id ||
-      !Matches(context.statement_receipt_uuid.canonical, head.authenticated_statement_receipt_uuid) ||
-      !Matches(context.statement_snapshot_uuid.canonical, d.statement_snapshot_uuid) ||
-      !Matches(context.statement_metadata_snapshot_uuid.canonical, d.catalog_snapshot_uuid) ||
+      !Matches(context.statement_receipt_uuid, head.authenticated_statement_receipt_uuid) ||
+      !Matches(context.statement_snapshot_uuid, d.statement_snapshot_uuid) ||
+      !Matches(context.statement_metadata_snapshot_uuid, d.catalog_snapshot_uuid) ||
       context.catalog_generation_id != d.catalog_generation ||
       context.datatype_registry_generation != d.datatype_registry_generation)
     return refuse("durable_owner_context_mismatch", "MGA.TRANSACTION.STALE");

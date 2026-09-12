@@ -90,7 +90,7 @@ wire::TypedResultDescriptorAuthorityValidator AuthorityFor(
         actual.columns[1].name_occurrence == 1 &&
         actual.columns[2].name_occurrence == 2;
     if (!decision.accepted) {
-      decision.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+      decision.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
       decision.detail = "typed_result_sbps_test_descriptor_mismatch";
     }
     return decision;

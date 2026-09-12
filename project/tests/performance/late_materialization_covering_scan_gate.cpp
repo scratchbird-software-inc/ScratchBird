@@ -75,51 +75,47 @@ platform::TypedUuid StableTypedUuid(platform::UuidKind kind,
   return value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+platform::Uuid BinaryUuid(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-platform::TypedUuid ParseTyped(platform::UuidKind kind,
-                               const std::string& text) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, text);
-  Require(parsed.ok(), "typed uuid parse failed");
-  return parsed.value;
+platform::TypedUuid Typed(platform::UuidKind kind, const platform::Uuid& value) {
+  const auto typed = uuid::MakeTypedUuid(kind, value);
+  Require(typed.ok(), "typed binary UUID fixture invalid");
+  return typed.value;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const platform::Uuid& index_uuid,
                                        const std::string& key) {
-  const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
+
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid = descriptor_uuid.value;
+  component.type_descriptor_uuid = Typed(platform::UuidKind::object, index_uuid);
   component.payload.assign(key.begin(), key.end());
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test key encoding failed");
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
+page::IndexBtreePhysicalTree MakeTree(const platform::Uuid& index_uuid) {
   auto initialized = page::InitializeIndexBtreePhysicalTree(
-      ParseTyped(platform::UuidKind::object, index_uuid), 768);
+      Typed(platform::UuidKind::object, index_uuid), 768);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& index_uuid,
+page::IndexBtreeCell Cell(const platform::Uuid& index_uuid,
                           const std::string& key,
-                          const std::string& row_uuid,
-                          const std::string& version_uuid) {
+                          const platform::Uuid& row_uuid,
+                          const platform::Uuid& version_uuid) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(index_uuid, key);
-  cell.row_uuid = ParseTyped(platform::UuidKind::row, row_uuid);
-  cell.version_uuid = ParseTyped(platform::UuidKind::row, version_uuid);
+  cell.row_uuid = Typed(platform::UuidKind::row, row_uuid);
+  cell.version_uuid = Typed(platform::UuidKind::row, version_uuid);
   return cell;
 }
 
@@ -178,22 +174,22 @@ idx::CoveringIndexPayloadColumnValue InlineValue(
 }
 
 struct Fixture {
-  std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700610000000ull, 0x41);
-  std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700610001000ull, 0x42);
-  std::string row_c =
-      UuidText(platform::UuidKind::row, 1700610100000ull, 0x61);
-  std::string row_a =
-      UuidText(platform::UuidKind::row, 1700610101000ull, 0x62);
-  std::string row_b =
-      UuidText(platform::UuidKind::row, 1700610102000ull, 0x63);
-  std::string version_c =
-      UuidText(platform::UuidKind::row, 1700610200000ull, 0x71);
-  std::string version_a =
-      UuidText(platform::UuidKind::row, 1700610201000ull, 0x72);
-  std::string version_b =
-      UuidText(platform::UuidKind::row, 1700610202000ull, 0x73);
+  platform::Uuid index_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700610000000ull, 0x41);
+  platform::Uuid table_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700610001000ull, 0x42);
+  platform::Uuid row_c =
+      BinaryUuid(platform::UuidKind::row, 1700610100000ull, 0x61);
+  platform::Uuid row_a =
+      BinaryUuid(platform::UuidKind::row, 1700610101000ull, 0x62);
+  platform::Uuid row_b =
+      BinaryUuid(platform::UuidKind::row, 1700610102000ull, 0x63);
+  platform::Uuid version_c =
+      BinaryUuid(platform::UuidKind::row, 1700610200000ull, 0x71);
+  platform::Uuid version_a =
+      BinaryUuid(platform::UuidKind::row, 1700610201000ull, 0x72);
+  platform::Uuid version_b =
+      BinaryUuid(platform::UuidKind::row, 1700610202000ull, 0x73);
   page::IndexBtreePhysicalTree tree = MakeTree(index_uuid);
 
   Fixture() {
@@ -223,12 +219,12 @@ idx::CoveringIndexPayloadAssemblyResult AssemblePayload(
   const auto c1 = Column(1, 0);
   const auto c2 = Column(2, 1);
   idx::CoveringIndexPayloadAssemblyRequest request;
-  request.index_uuid = ParseTyped(platform::UuidKind::object,
+  request.index_uuid = Typed(platform::UuidKind::object,
                                   fixture.index_uuid);
-  request.table_uuid = ParseTyped(platform::UuidKind::object,
+  request.table_uuid = Typed(platform::UuidKind::object,
                                   fixture.table_uuid);
-  request.row_uuid = ParseTyped(platform::UuidKind::row, locator.row_uuid);
-  request.version_uuid = ParseTyped(platform::UuidKind::row,
+  request.row_uuid = Typed(platform::UuidKind::row, locator.row_uuid);
+  request.version_uuid = Typed(platform::UuidKind::row,
                                     locator.version_uuid);
   request.descriptor_result_contract_hash = "contract:irc061:v1";
   request.payload_generation = 10;
@@ -316,16 +312,16 @@ void RequireCommonAcceptedEvidence(const std::vector<std::string>& evidence) {
 void LateMaterializationConsumesPhysicalStream() {
   const Fixture fixture;
   const auto stream = PhysicalStream(fixture);
-  std::vector<std::string> provider_order;
+  std::vector<std::pair<platform::Uuid, platform::Uuid>> provider_order;
   const auto result = exec::ConsumeIndexedRowIdStreamForLateMaterialization(
       stream, {},
       [&](const exec::IndexedPhysicalOperatorLocator& locator) {
-        provider_order.push_back(locator.row_uuid + ":" + locator.version_uuid);
+        provider_order.emplace_back(locator.row_uuid, locator.version_uuid);
         exec::LateMaterializationIndexedProviderResult out;
         out.ok = true;
         out.row.row_uuid = locator.row_uuid;
         out.row.version_uuid = locator.version_uuid;
-        out.row.projected_values = {"base:" + locator.row_uuid};
+        out.row.projected_values = {"base row payload"};
         out.row.evidence = {"test.base_row_recheck=true"};
         out.evidence = {"test.provider.physical_locator_consumed=true"};
         return out;
@@ -343,8 +339,8 @@ void LateMaterializationConsumesPhysicalStream() {
             "late materialization did not preserve row order");
     Require(result.rows[i].version_uuid == stream.locators[i].version_uuid,
             "late materialization did not preserve version binding");
-    Require(provider_order[i] == stream.locators[i].row_uuid + ":" +
-                               stream.locators[i].version_uuid,
+    Require(provider_order[i] == std::pair{stream.locators[i].row_uuid,
+                                                stream.locators[i].version_uuid},
             "provider was not driven by physical row-id stream order");
   }
   RequireCommonAcceptedEvidence(result.evidence);
@@ -419,6 +415,7 @@ void ExpectLateRefusal(std::string_view detail, Mutate mutate) {
         return out;
       });
   Require(!result.ok, "late materialization refusal was not fail-closed");
+  Require(result.rows.empty(), "late materialization refusal leaked partial rows");
   Require(result.diagnostic_detail == detail,
           "late materialization refusal detail mismatch");
 }
@@ -437,11 +434,32 @@ void ExpectCoveringRefusal(std::string_view detail, Mutate mutate) {
   mutate(stream, admission, request);
   const auto result = exec::ExecuteCoveringProjectionOnlyScan(request);
   Require(!result.ok, "covering scan refusal was not fail-closed");
+  Require(result.rows.empty(), "covering scan refusal leaked partial rows");
   Require(result.diagnostic_detail == detail,
           "covering scan refusal detail mismatch");
 }
 
 void FailClosedCasesAreExact() {
+  for (const auto member : {&idx::CoveringIndexPayloadRecord::row_uuid,
+                           &idx::CoveringIndexPayloadRecord::version_uuid}) {
+    for (const auto kind : {platform::UuidKind::unknown, platform::UuidKind::object,
+                           platform::UuidKind::database}) {
+      ExpectCoveringRefusal("physical_row_version_binding_required",
+                           [member, kind](auto&, auto& admission, auto&) {
+                             (admission.record.*member).kind = kind;
+                           });
+    }
+    for (unsigned bit = 0; bit != 128; ++bit) {
+      const bool shape_bit = (bit >= 52 && bit <= 55) ||
+                             (bit >= 70 && bit <= 71);
+      ExpectCoveringRefusal(shape_bit ? "physical_row_version_binding_required"
+                                     : "covering_payload_missing",
+                           [member, bit](auto&, auto& admission, auto&) {
+                             (admission.record.*member).value.bytes[bit / 8] ^=
+                                 1u << (bit % 8);
+                           });
+    }
+  }
   ExpectLateRefusal("physical_index_tree_required",
                     [](auto&, auto& proof) {
                       proof.physical_tree_present = false;
@@ -556,9 +574,9 @@ void FailClosedCasesAreExact() {
                                   .record);
     exec::IndexedPhysicalOperatorLocator extra_locator = stream.locators[0];
     extra_locator.row_uuid =
-        UuidText(platform::UuidKind::row, 1700610300000ull, 0x74);
+        BinaryUuid(platform::UuidKind::row, 1700610300000ull, 0x74);
     extra_locator.version_uuid =
-        UuidText(platform::UuidKind::row, 1700610400000ull, 0x75);
+        BinaryUuid(platform::UuidKind::row, 1700610400000ull, 0x75);
     auto extra = AdmitPayload(AssemblePayload(fixture, extra_locator,
                                              "extra-name", "extra-city")
                                   .record);

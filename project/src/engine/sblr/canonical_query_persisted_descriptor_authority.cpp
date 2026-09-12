@@ -59,10 +59,10 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
        effective_nullability != api::RelationalNullability::kNonNull) ||
       bound.statement_receipt_uuid.empty() ||
       bound.statement_receipt_uuid !=
-          context.statement_receipt_uuid.canonical ||
+          context.statement_receipt_uuid ||
       bound.datatype_catalog_snapshot_uuid.empty() ||
       bound.datatype_catalog_snapshot_uuid !=
-          context.datatype_catalog_snapshot_uuid.canonical ||
+          context.datatype_catalog_snapshot_uuid ||
       bound.datatype_catalog_generation == 0 ||
       bound.datatype_catalog_generation !=
           context.datatype_catalog_generation ||
@@ -95,7 +95,7 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
       bound.descriptor_generation);
   if (!identity.ok ||
       !dt::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) ||
-      (bound.descriptor_uuid != persisted.descriptor_uuid.canonical &&
+      (bound.descriptor_uuid != persisted.descriptor_uuid &&
        bound.descriptor_uuid != identity.row.descriptor_uuid) ||
       bound.descriptor_generation != identity.row.descriptor_generation ||
       bound.type_uuid != identity.row.type_uuid ||
@@ -107,7 +107,7 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
     return refuse("bound canonical TEXT registry authority is stale");
   }
   if (!api::QowCanonicalDescriptorIdentityV1(persisted) ||
-      persisted.descriptor_uuid.canonical == identity.row.descriptor_uuid ||
+      persisted.descriptor_uuid == identity.row.descriptor_uuid ||
       persisted.descriptor_kind != "scalar" ||
       persisted.canonical_type_name != identity.row.canonical_name) {
     return refuse("persisted canonical TEXT outer descriptor is invalid");
@@ -234,11 +234,11 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
   }
 
   api::EngineUuid charset_uuid;
-  charset_uuid.canonical = std::string(fields.at("charset_uuid"));
+  charset_uuid = std::string(fields.at("charset_uuid"));
   const auto charset = api::LookupEngineResourceDescriptorByUuid(
       context, charset_uuid, "charset");
   api::EngineUuid collation_uuid;
-  collation_uuid.canonical = std::string(fields.at("collation_uuid"));
+  collation_uuid = std::string(fields.at("collation_uuid"));
   const auto collation = api::LookupEngineResourceDescriptorByUuid(
       context, collation_uuid, "collation");
   if (!charset.ok || !collation.ok ||
@@ -246,12 +246,12 @@ bool ValidateCanonicalPersistedTextRowDescriptorAuthorityV1(
       !collation.resource_descriptor.present ||
       charset.resource_descriptor.resource_family != "charset" ||
       collation.resource_descriptor.resource_family != "collation" ||
-      charset.resource_descriptor.resource_uuid.canonical !=
-          charset_uuid.canonical ||
-      collation.resource_descriptor.resource_uuid.canonical !=
-          collation_uuid.canonical ||
-      collation.resource_descriptor.parent_resource_uuid.canonical !=
-          charset_uuid.canonical ||
+      charset.resource_descriptor.resource_uuid !=
+          charset_uuid ||
+      collation.resource_descriptor.resource_uuid !=
+          collation_uuid ||
+      collation.resource_descriptor.parent_resource_uuid !=
+          charset_uuid ||
       charset.resource_descriptor.family_epoch != charset_generation ||
       collation.resource_descriptor.family_epoch != collation_generation ||
       charset.resource_descriptor.resource_epoch != resource_epoch ||

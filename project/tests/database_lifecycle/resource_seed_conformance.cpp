@@ -8,6 +8,7 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_resource_record_codec.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
@@ -21,6 +22,8 @@
 #include "uuid.hpp"
 
 #include <chrono>
+#include <algorithm>
+#include <functional>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -32,6 +35,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -64,7 +68,11 @@ void Require(bool condition, std::string_view message) {
 
 void RequireOk(const db::DatabaseLifecycleResult& result, std::string_view message) {
   if (!result.ok()) {
-    std::cerr << result.diagnostic.diagnostic_code << '\n';
+    std::cerr << result.diagnostic.diagnostic_code << ':' << result.diagnostic.message_key;
+    for (const auto& argument : result.diagnostic.arguments) {
+      std::cerr << ' ' << argument.key << '=' << argument.value;
+    }
+    std::cerr << '\n';
   }
   Require(result.ok(), message);
 }
@@ -163,7 +171,10 @@ std::vector<DecodedRecord> DecodeTypedRecords(const std::vector<page::CatalogPag
     }
     const auto decoded = catalog::DecodeCatalogTypedRecord(row);
     Require(decoded.ok(), "typed catalog record decode failed");
-    records.push_back({decoded.record, ParsePayloadFields(decoded.record.payload)});
+    const bool binary_resource=decoded.record.header.kind==catalog::CatalogRecordKind::charset ||
+        decoded.record.header.kind==catalog::CatalogRecordKind::collation;
+    records.push_back({decoded.record, binary_resource ? std::map<std::string,std::string>{}
+                                                     : ParsePayloadFields(decoded.record.payload)});
   }
   return records;
 }
@@ -348,30 +359,39 @@ void RequirePersistedGbkRecords(const std::vector<DecodedRecord>& records,
           "GBK descriptors are unavailable for typed-row verification");
   bool saw_charset = false;
   bool saw_collation = false;
+  std::size_t charset_count=0,collation_count=0;
+  const auto gbk_uuid=uuid::ParseTypedUuid(UuidKind::object,gbk->resource_uuid);
+  const auto collation_uuid=uuid::ParseTypedUuid(UuidKind::object,collation->resource_uuid);
+  Require(gbk_uuid.ok() && collation_uuid.ok(), "resource image identities invalid");
   for (const auto& record : records) {
-    const auto canonical = record.fields.find("canonical_name");
-    if (canonical == record.fields.end() || canonical->second != "GBK") continue;
     if (record.record.header.kind == catalog::CatalogRecordKind::charset) {
-      saw_charset = uuid::UuidToString(record.record.header.object_uuid.value) ==
-                        gbk->resource_uuid &&
-                    record.fields.at("min_bytes") == "1" &&
-                    record.fields.at("max_bytes") == "2" &&
-                    record.fields.at("default_collation_uuid") ==
-                        gbk->default_collation_uuid;
+      const auto decoded=catalog::DecodeCatalogCharsetRecord(record.record.payload);
+      Require(decoded.ok() && catalog::CatalogResourcePayloadMatchesHeader(record.record),
+              "actual charset catalog record is not a complete bound binary descriptor");
+      ++charset_count;
+      if (decoded.record->canonical_name!="GBK") continue;
+      saw_charset=decoded.record->resource_uuid.value==gbk_uuid.value.value &&
+          decoded.record->min_bytes==1 && decoded.record->max_bytes==2 &&
+          decoded.record->default_collation_uuid.has_value() &&
+          decoded.record->default_collation_uuid->value==collation_uuid.value.value &&
+          decoded.record->aliases==gbk->aliases && decoded.record->supported_by==gbk->supported_by &&
+          decoded.record->description==gbk->description;
     } else if (record.record.header.kind == catalog::CatalogRecordKind::collation) {
-      saw_collation =
-          uuid::UuidToString(record.record.header.object_uuid.value) ==
-              collation->resource_uuid &&
-          uuid::UuidToString(record.record.header.parent_uuid.value) ==
-              gbk->resource_uuid &&
-          record.fields.at("charset_uuid") == gbk->resource_uuid &&
-          record.fields.at("default_for_charset") == "1" &&
-          record.fields.at("default_authority") ==
-              "seed_pack.default_collations.v1";
+      const auto decoded=catalog::DecodeCatalogCollationRecord(record.record.payload);
+      Require(decoded.ok() && catalog::CatalogResourcePayloadMatchesHeader(record.record),
+              "actual collation catalog record is not a complete bound binary descriptor");
+      ++collation_count;
+      if (decoded.record->canonical_name!="GBK") continue;
+      saw_collation=decoded.record->resource_uuid.value==collation_uuid.value.value &&
+          decoded.record->charset_uuid.value==gbk_uuid.value.value && decoded.record->default_for_charset &&
+          decoded.record->default_authority=="seed_pack.default_collations.v1" &&
+          decoded.record->supported_by==collation->supported_by && decoded.record->description==collation->description;
     }
   }
   Require(saw_charset, "typed GBK charset descriptor record is incomplete");
   Require(saw_collation, "typed GBK collation relationship record is incomplete");
+  Require(charset_count==image.charsets.size() && collation_count==image.collations.size(),
+          "typed resource records contain summary stand-ins or omit real descriptors");
 }
 
 engine::EngineRequestContext BeginEngineTransaction(
@@ -446,6 +466,19 @@ void RequireEngineResourceResolution(const engine::EngineRequestContext& context
           "engine returned an invalid GBK collation relationship");
 
   auto stale_context = context;
+  auto ambiguous_request = charset_request;
+  ambiguous_request.sql_object_reference.object_name.raw_text = "gb2312";
+  const auto ambiguous = engine::EngineResolveName(ambiguous_request);
+  Require(!ambiguous.ok && !ambiguous.resource_descriptor.present &&
+              ambiguous.primary_object.uuid.canonical.empty() &&
+              !ambiguous.diagnostics.empty() &&
+              ambiguous.diagnostics.front().code == "SB_RESOURCE_ALIAS_AMBIGUOUS",
+          "persisted charset alias ambiguity was hidden or selected a target");
+  const auto& ambiguity = ambiguous.diagnostics.front();
+  Require(ambiguity.message_key == "resource.alias.ambiguous" && ambiguity.fields.size() == 2 &&
+              ambiguity.fields[0].key == "resource_family" && ambiguity.fields[0].value == "charset" &&
+              ambiguity.fields[1].key == "alias" && ambiguity.fields[1].value == "gb2312",
+          "engine alias ambiguity lost its registered request-only fields");
   ++stale_context.resource_epoch;
   charset_request.context = stale_context;
   const auto stale = engine::EngineResolveName(charset_request);
@@ -865,6 +898,214 @@ void RequireGbkRelationDescriptorPersistence(
                   "read-only resource relation transaction rollback failed");
 }
 
+void RequireAllResourceDescriptorValues(const resources::ResourceSeedCatalogImage& expected,
+                                       const resources::ResourceSeedCatalogImage& actual) {
+  Require(expected.charsets.size()==actual.charsets.size() &&
+          expected.collations.size()==actual.collations.size(),"resource descriptor counts changed on reopen");
+  const auto charset_values=[](const resources::ResourceSeedCharsetDescriptor& r) {
+    return std::tie(r.resource_uuid,r.canonical_name,r.description,r.aliases,r.min_bytes,r.max_bytes,
+                    r.variable_width,r.encoding_type,r.iana_name,r.supported_by,r.default_collation_name,
+                    r.default_collation_uuid,r.source_path,r.resource_epoch,r.family_epoch,r.family_version);
+  };
+  const auto collation_values=[](const resources::ResourceSeedCollationDescriptor& r) {
+    return std::tie(r.resource_uuid,r.canonical_name,r.charset_name,r.charset_uuid,r.default_for_charset,
+                    r.default_authority,r.case_insensitive,r.accent_insensitive,r.language,r.description,
+                    r.supported_by,r.source_path,r.resource_epoch,r.family_epoch,r.family_version);
+  };
+  // Expected values come from the create-time seed model, not the durable decoder.
+  for(std::size_t i=0;i<expected.charsets.size();++i)
+    Require(charset_values(expected.charsets[i])==charset_values(actual.charsets[i]),
+            "complete charset values or exact identity changed on reopen");
+  for(std::size_t i=0;i<expected.collations.size();++i)
+    Require(collation_values(expected.collations[i])==collation_values(actual.collations[i]),
+            "complete collation values or exact identity changed on reopen");
+}
+
+void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
+                                           std::uint32_t page_size,
+                                           const db::DatabaseOpenConfig& open,
+                                           const resources::ResourceSeedCatalogImage& expected) {
+  namespace p = scratchbird::core::platform;
+  struct Stored {
+    p::u64 page_number;
+    std::size_t row_offset;
+    std::vector<p::byte> body;
+    catalog::CatalogTypedRecord record;
+  };
+  std::vector<Stored> targets;
+  struct StoredAlias {
+    p::u64 page_number;
+    std::size_t row_offset;
+    std::vector<p::byte> body;
+    std::string payload;
+  };
+  std::vector<StoredAlias> alias_targets;
+  {
+    disk::FileDevice device;
+    Require(device.Open(path.string(),disk::FileOpenMode::open_existing_read_only).ok(),
+            "corruption fixture read open failed");
+    p::u64 number=db::kCatalogPageNumber;
+    std::set<p::u64> visited;
+    while(number!=0) {
+      Require(visited.insert(number).second,"corruption fixture page cycle");
+      std::vector<p::byte> body(page_size-disk::kPageHeaderSerializedBytes);
+      Require(device.ReadAt(number*page_size+disk::kPageHeaderSerializedBytes,
+                            body.data(),body.size()).ok(),"corruption fixture page read failed");
+      const auto parsed=page::ParseCatalogPageBody(body,number);
+      Require(parsed.ok(),"corruption fixture original page invalid");
+      std::size_t offset=page::kCatalogPageBodyHeaderBytes;
+      for(const auto& row:parsed.body.rows) {
+        if(row.kind==page::CatalogPageRowKind::typed_catalog_record) {
+          const auto decoded=catalog::DecodeCatalogTypedRecord(row);
+          Require(decoded.ok(),"corruption fixture original record invalid");
+          bool selected=false;
+          if(decoded.record.header.kind==catalog::CatalogRecordKind::charset) {
+            const auto resource=catalog::DecodeCatalogCharsetRecord(decoded.record.payload);
+            Require(resource.ok(),"corruption fixture original charset invalid");
+            selected=resource.record->canonical_name=="GBK";
+          } else if(decoded.record.header.kind==catalog::CatalogRecordKind::collation) {
+            const auto resource=catalog::DecodeCatalogCollationRecord(decoded.record.payload);
+            Require(resource.ok(),"corruption fixture original collation invalid");
+            selected=resource.record->charset_name=="GBK" && resource.record->default_for_charset;
+          }
+          if(selected) targets.push_back({number,offset,body,decoded.record});
+        }
+        if(row.kind==page::CatalogPageRowKind::charset_alias_record) {
+          const auto fields=ParsePayloadFields(row.payload);
+          if(fields.contains("alias") && fields.at("alias")=="GB2312" &&
+             fields.contains("canonical_name") && fields.at("canonical_name")=="GB_2312")
+            alias_targets.push_back({number,offset,body,row.payload});
+        }
+        offset+=20+row.payload.size();
+      }
+      number=parsed.body.next_page_number;
+    }
+  }
+  Require(targets.size()==2,"corruption fixture requires exact GBK charset/default pair");
+  Require(alias_targets.size()==1,"corruption fixture requires exact GB_2312 alias relationship");
+  const auto all_bytes=[&]() {
+    std::ifstream input(path,std::ios::binary);
+    Require(input.good(),"corruption fixture database snapshot open failed");
+    return std::string(std::istreambuf_iterator<char>(input),{});
+  };
+  unsigned refused_count=0;
+  for(const auto& target:targets) {
+    const auto write=[&](const std::vector<p::byte>& body) {
+      disk::FileDevice device;
+      Require(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"corruption write open failed");
+      Require(device.WriteAt(target.page_number*page_size+disk::kPageHeaderSerializedBytes,
+                             body.data(),body.size()).ok(),"corruption page write failed");
+      Require(device.Sync().ok(),"corruption page sync failed");
+    };
+    // Walk the independently specified SBCV field headers, not the resource decoder.
+    const auto field_offset=[&](p::u16 id) {
+      const auto& bytes=target.record.payload;
+      for(std::size_t at=24;at+8<=bytes.size();) {
+        const auto* raw=reinterpret_cast<const p::byte*>(bytes.data()+at);
+        const auto length=p::LoadLittle32(raw+4);
+        Require(length<=bytes.size()-at-8,"corruption fixture field length invalid");
+        if(p::LoadLittle16(raw)==id) return at+8;
+        at+=8+length;
+      }
+      Fail("corruption fixture field missing");
+    };
+    const auto mutate=[&](const std::function<void(std::string&)>& mutation) {
+      auto payload=target.record.payload;
+      mutation(payload);
+      Require(payload.size()==target.record.payload.size(),"corruption fixture changed row size");
+      auto body=target.body;
+      const auto record_start=target.row_offset+20;
+      const auto record_size=p::LoadLittle32(body.data()+target.row_offset+8);
+      Require(record_size==96+payload.size(),"corruption fixture common record size invalid");
+      std::copy(payload.begin(),payload.end(),body.begin()+record_start+96);
+      // Catalog page v1 uses this historical offset basis (not seed-artifact FNV).
+      p::u64 hash=1469598103934665603ULL;
+      for(std::size_t i=0;i<record_size;++i) { hash^=body[record_start+i]; hash*=1099511628211ULL; }
+      p::StoreLittle64(body.data()+target.row_offset+12,hash);
+      p::StoreLittle64(body.data()+40,page::ComputeCatalogPageBodyChecksum(body));
+      const auto checked=page::ParseCatalogPageBody(body,target.page_number);
+      Require(checked.ok(),"corruption fixture failed to reseal outer catalog page");
+      for(const auto& row:checked.body.rows) {
+        if(row.kind==page::CatalogPageRowKind::typed_catalog_record)
+          Require(catalog::DecodeCatalogTypedRecord(row).ok(),"corruption fixture broke common record envelope");
+      }
+      write(body);
+      const auto before=all_bytes();
+      const auto refused=db::OpenDatabaseFile(open);
+      RequireFailureCode(refused,"SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+                         "checksum-valid corrupt resource catalog admitted");
+      Require(all_bytes()==before,"refused read-only resource admission changed database");
+      ++refused_count;
+      write(target.body);
+      const auto restored=db::OpenDatabaseFile(open);
+      RequireOk(restored,"restored binary resource catalog did not reopen");
+      RequireAllResourceDescriptorValues(expected,restored.state.resource_seed_catalog);
+      RequireGbkDescriptorModel(restored.state.resource_seed_catalog,true);
+      RequirePersistedGbkRecords(DecodeTypedRecords(ReadCatalogRows(path,page_size)),
+                                restored.state.resource_seed_catalog);
+    };
+    mutate([](std::string& b){b[16]^=1;}); // Unknown owning schema with valid outer envelopes.
+    mutate([](std::string& b){const std::string legacy="creator_tx=1 family=";
+      b.assign(b.size(),'x');b.replace(0,legacy.size(),legacy);});
+    mutate([&](std::string& b){b[field_offset(2)]=static_cast<char>(0xff);});
+    mutate([&](std::string& b){b[field_offset(3)+15]^=1;}); // Payload/header identity mismatch.
+    const bool charset=target.record.header.kind==catalog::CatalogRecordKind::charset;
+    for(const auto id:charset ? std::vector<p::u16>{15,16,20,21,22} : std::vector<p::u16>{14,15,19,20,21}) {
+      mutate([&](std::string& b){b[field_offset(id)]=0;});
+    }
+    for(const auto id:charset ? std::vector<p::u16>{15,16,22} : std::vector<p::u16>{14,15,21}) {
+      mutate([&](std::string& b){b[field_offset(id)]=2;}); // Valid scalar, foreign activation/creator.
+    }
+    if(charset) {
+      mutate([&](std::string& b){b[field_offset(6)]=0;});
+      mutate([&](std::string& b){b[field_offset(8)]=0;});
+      mutate([&](std::string& b){b.replace(field_offset(13),16,b.substr(field_offset(3),16));});
+    } else {
+      mutate([&](std::string& b){b[field_offset(5)+15]^=1;});
+      mutate([&](std::string& b){b[field_offset(6)]=0;});
+    }
+  }
+  {
+    const auto& target=alias_targets.front();
+    auto body=target.body;
+    const auto label=target.payload.find("alias=GB2312");
+    Require(label!=std::string::npos,"alias corruption fixture label missing");
+    const auto record_start=target.row_offset+20;
+    const auto record_size=p::LoadLittle32(body.data()+target.row_offset+8);
+    Require(record_size==target.payload.size(),"alias corruption fixture row size invalid");
+    body[record_start+label+6]='X';
+    p::u64 hash=1469598103934665603ULL;
+    for(std::size_t i=0;i<record_size;++i) { hash^=body[record_start+i]; hash*=1099511628211ULL; }
+    p::StoreLittle64(body.data()+target.row_offset+12,hash);
+    p::StoreLittle64(body.data()+40,page::ComputeCatalogPageBodyChecksum(body));
+    Require(page::ParseCatalogPageBody(body,target.page_number).ok(),
+            "alias corruption fixture failed to reseal catalog page");
+    const auto write=[&](const std::vector<p::byte>& bytes) {
+      disk::FileDevice device;
+      Require(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),
+              "alias corruption write open failed");
+      Require(device.WriteAt(target.page_number*page_size+disk::kPageHeaderSerializedBytes,
+                             bytes.data(),bytes.size()).ok(),"alias corruption write failed");
+      Require(device.Sync().ok(),"alias corruption sync failed");
+    };
+    write(body);
+    const auto before=all_bytes();
+    const auto refused=db::OpenDatabaseFile(open);
+    const bool unchanged=all_bytes()==before;
+    write(target.body);
+    RequireFailureCode(refused,"SB_RESOURCE_SEED_INCOMPLETE",
+                       "checksum-valid catalog with missing alias relationship admitted");
+    Require(refused.diagnostic.message_key=="resource.seed_pack.alias_relationship_missing",
+            "missing persisted alias relationship used wrong message key");
+    Require(unchanged,"refused read-only alias admission changed database");
+    const auto restored=db::OpenDatabaseFile(open);
+    RequireOk(restored,"restored alias relationship did not reopen");
+    RequireAllResourceDescriptorValues(expected,restored.state.resource_seed_catalog);
+    ++refused_count;
+  }
+  std::cout << "checksum_valid_resource_corruptions_refused=" << refused_count << '\n';
+}
+
 }  // namespace
 
 int main() {
@@ -880,6 +1121,17 @@ int main() {
   const auto loaded_image = LoadSeedPack();
   RequireSeedLifecycleReady(loaded_image);
   RequireGbkDescriptorModel(loaded_image, false);
+  const auto* ucs2=resources::FindResourceSeedCharset(loaded_image,"UCS-2");
+  Require(ucs2 && ucs2->min_bytes==2 && ucs2->max_bytes==2 && !ucs2->variable_width,
+          "UCS-2 seed descriptor is not fixed two-byte BMP encoding");
+  {
+    auto invalid=loaded_image;
+    for(auto& charset:invalid.charsets) {
+      if(charset.canonical_name=="UCS-2") charset.min_bytes=1;
+    }
+    Require(!resources::ValidateResourceSeedCatalogImage(invalid,false).ok(),
+            "inconsistent fixed-width resource descriptor accepted");
+  }
   RequireRuntimeCacheInvalidation(loaded_image);
   RequireIndexDependencyEvidence(loaded_image);
 
@@ -892,6 +1144,7 @@ int main() {
           "missing required seed pack used the wrong diagnostic");
 
   const auto database_path = TestDatabasePath();
+  std::cout << "resource_seed_fixture=" << database_path.parent_path() << '\n';
   struct Cleanup {
     std::filesystem::path path;
     ~Cleanup() {
@@ -930,6 +1183,7 @@ int main() {
   RequireOk(opened, "OpenDatabaseFile read-only with matching seed failed");
   RequireSeedLifecycleReady(opened.state.resource_seed_catalog);
   RequireGbkDescriptorModel(opened.state.resource_seed_catalog, true);
+  RequireAllResourceDescriptorValues(created.state.resource_seed_catalog,opened.state.resource_seed_catalog);
   const auto* created_gbk =
       resources::FindResourceSeedCharset(created.state.resource_seed_catalog, "GBK");
   const auto* opened_gbk =
@@ -963,6 +1217,8 @@ int main() {
   Require(HasIndexDependencyEvidence(records, "index_dependency_timezone_epoch_v1"),
           "timezone index dependency evidence is missing");
   RequirePersistedGbkRecords(records, opened.state.resource_seed_catalog);
+  RequireBinaryResourceCorruptionRefusal(database_path,created.state.header.page_size,read_only_open,
+                                        created.state.resource_seed_catalog);
   RequireEngineResourceResolution(
       BeginEngineTransaction(database_path, created, now));
   RequireGbkRelationDescriptorPersistence(database_path, created, now);

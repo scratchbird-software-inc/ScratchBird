@@ -237,7 +237,7 @@ EngineTypedValue Value(std::string value) {
 
 void AddRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
   EngineRowValue row;
-  row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  row.requested_row_uuid = GenerateCrudEngineUuid("row");
   for (auto& field : fields) { row.fields.push_back({std::move(field.first), Value(std::move(field.second))}); }
   result->result_shape.result_kind = "catalog_object_lifecycle_rows";
   result->result_shape.rows.push_back(std::move(row));
@@ -451,7 +451,7 @@ bool SupportFamilyAllowedForConstraint(const std::string& constraint_class,
 }
 
 std::string RequestedOrGeneratedUuid(const EngineUuid& uuid, const std::string& kind) {
-  if (!uuid.canonical.empty()) { return uuid.canonical; }
+  if (!uuid.is_nil()) { return uuid; }
   return GenerateCrudEngineUuid(kind);
 }
 
@@ -464,9 +464,9 @@ std::string ObjectKind(const EngineApiRequest& request) {
 }
 
 std::string ObjectUuid(const EngineApiRequest& request) {
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object.uuid.canonical; }
-  if (!request.bound_object_identity.object_uuid.canonical.empty()) {
-    return request.bound_object_identity.object_uuid.canonical;
+  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
+  if (!request.bound_object_identity.object_uuid.is_nil()) {
+    return request.bound_object_identity.object_uuid;
   }
   return {};
 }
@@ -634,6 +634,27 @@ struct LoadOptions {
   bool enforce_visibility = true;
 };
 
+enum class CatalogJournalOpenStatus { opened, absent, refused };
+
+CatalogJournalOpenStatus OpenCatalogJournal(const EngineRequestContext& context,
+                                             std::ifstream& input) {
+  const auto path = EventPath(context);
+  std::error_code error;
+  const auto entry = std::filesystem::symlink_status(path, error);
+  // Only a missing journal is an empty optional journal. An existing dangling
+  // link, inaccessible path, directory or other non-file is not empty authority.
+  if (entry.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) {
+    return CatalogJournalOpenStatus::absent;
+  }
+  if (error || !std::filesystem::is_regular_file(path, error) || error) {
+    return CatalogJournalOpenStatus::refused;
+  }
+  input.open(path, std::ios::binary);
+  return input.is_open() && input.good() ? CatalogJournalOpenStatus::opened
+                                        : CatalogJournalOpenStatus::refused;
+}
+
 std::string CatalogLifecycleFileFingerprint(const std::string& path) {
   std::error_code ec;
   const std::filesystem::path fs_path(path);
@@ -721,17 +742,24 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticDatabasePathRequired, "database_path");
     return result;
   }
+  std::ifstream in;
+  const auto opened = OpenCatalogJournal(context, in);
+  if (opened == CatalogJournalOpenStatus::refused) {
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_journal_open_failed");
+    return result;
+  }
+  if (opened == CatalogJournalOpenStatus::absent) {
+    result.ok = true;
+    result.diagnostic = OkDiagnostic();
+    return result;
+  }
+  // Readability is checked even for cache hits. Never cache an open/read failure
+  // as an empty catalog: restoring access must reconstruct the real objects.
   const std::string load_cache_key =
       CatalogLifecycleLoadCacheKey(context, options);
   if (auto cached = LookupCatalogLifecycleLoadCache(load_cache_key)) {
     return *cached;
-  }
-  std::ifstream in(EventPath(context), std::ios::binary);
-  if (!in) {
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
-    StoreCatalogLifecycleLoadCache(load_cache_key, result);
-    return result;
   }
   const auto crud_state = LoadCrudState(context);
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
@@ -960,6 +988,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
       result.state.name_resolution_epoch = std::max(result.state.name_resolution_epoch, ParseU64(parts[6]));
     }
   }
+  if (in.bad() || !in.eof()) {
+    result.state = {};
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_journal_read_failed");
+    return result;
+  }
   bool pruned_child = true;
   while (pruned_child) {
     pruned_child = false;
@@ -1039,7 +1073,7 @@ bool PrincipalOwnsSchema(const EngineCatalogObjectLifecycleState& state,
   const auto* schema = FindObject(state, schema_uuid);
   if (schema == nullptr || schema->object_kind != "schema") { return true; }
   if (schema->owner_principal_uuid.empty()) { return true; }
-  return schema->owner_principal_uuid == context.principal_uuid.canonical;
+  return schema->owner_principal_uuid == context.principal_uuid;
 }
 
 EngineApiDiagnostic ValidateMutatingContext(const EngineRequestContext& context) {
@@ -1069,7 +1103,7 @@ EngineApiDiagnostic ValidateCatalogNameNamespace(
     const EngineRequestContext& context,
     const std::string& object_kind) {
   if (name_namespace.kind == EngineCatalogNameNamespaceKind::kCatalog) {
-    if (!name_namespace.owner_session_uuid.canonical.empty()) {
+    if (!name_namespace.owner_session_uuid.is_nil()) {
       return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
                                "catalog_namespace_has_session_owner");
     }
@@ -1081,11 +1115,11 @@ EngineApiDiagnostic ValidateCatalogNameNamespace(
     return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
                              "session_temporary_namespace_requires_relation");
   }
-  if (!IsExactCanonicalSessionUuid(context.session_uuid.canonical) ||
+  if (!IsExactCanonicalSessionUuid(context.session_uuid) ||
       !IsExactCanonicalSessionUuid(
-          name_namespace.owner_session_uuid.canonical) ||
-      name_namespace.owner_session_uuid.canonical !=
-          context.session_uuid.canonical) {
+          name_namespace.owner_session_uuid) ||
+      name_namespace.owner_session_uuid !=
+          context.session_uuid) {
     return CatalogDiagnostic(kCatalogObjectDiagnosticNameNamespaceInvalid,
                              "session_temporary_namespace_owner_mismatch");
   }
@@ -1130,7 +1164,7 @@ CatalogNameNamespaceClassification ClassifyExistingCatalogNameNamespace(
                  visibility.table.temporary_session_uuid)) {
     result.name_namespace.kind =
         EngineCatalogNameNamespaceKind::kSessionTemporary;
-    result.name_namespace.owner_session_uuid.canonical =
+    result.name_namespace.owner_session_uuid =
         visibility.table.temporary_session_uuid;
     return result;
   }
@@ -1159,8 +1193,8 @@ bool CatalogNameNamespacesCollide(
     return true;
   }
   if (requested_is_session && existing_is_session) {
-    return requested_namespace.owner_session_uuid.canonical ==
-           existing_namespace.owner_session_uuid.canonical;
+    return requested_namespace.owner_session_uuid ==
+           existing_namespace.owner_session_uuid;
   }
   return false;
 }
@@ -1252,18 +1286,18 @@ void FillObjectResult(TResult* result,
                       const EngineRequestContext& context,
                       const EngineCatalogObjectRecord& object,
                       std::uint64_t metadata_epoch) {
-  result->primary_object.uuid.canonical = object.object_uuid;
+  result->primary_object.uuid = object.object_uuid;
   result->primary_object.object_kind = object.object_kind;
-  result->bound_object_identity.object_uuid.canonical = object.object_uuid;
+  result->bound_object_identity.object_uuid = object.object_uuid;
   result->bound_object_identity.resolved_object_type = object.object_kind;
-  result->bound_object_identity.resolved_schema_uuid.canonical = object.schema_uuid;
-  result->bound_object_identity.parent_object_uuid.canonical = object.schema_uuid;
+  result->bound_object_identity.resolved_schema_uuid = object.schema_uuid;
+  result->bound_object_identity.parent_object_uuid = object.schema_uuid;
   result->bound_object_identity.object_descriptor_generation =
       object.definition_epoch;
   result->bound_object_identity.catalog_generation_id = metadata_epoch;
   result->bound_object_identity.security_epoch = context.security_epoch;
   result->bound_object_identity.resource_epoch = context.resource_epoch;
-  result->catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result->catalog_row_uuid = GenerateCrudEngineUuid("row");
   result->metadata_cache_epoch = metadata_epoch;
   AddEvidence(result, "catalog_metadata_epoch", std::to_string(metadata_epoch));
   AddEvidence(result, "metadata_cache_invalidation", object.object_uuid + ":" + std::to_string(metadata_epoch));
@@ -1328,7 +1362,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
           found.entry.identity.transaction_uuid.valid() &&
           scratchbird::core::uuid::UuidToString(
               found.entry.identity.transaction_uuid.value) ==
-              context.transaction_uuid.canonical;
+              context.transaction_uuid;
       return exact_transaction &&
              (found.entry.state == TransactionState::active ||
               found.entry.state == TransactionState::read_only_active ||
@@ -1347,8 +1381,14 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
            creator_tx <= context.local_transaction_id;
   };
 
-  std::ifstream in(EventPath(context), std::ios::binary);
-  if (!in) {
+  std::ifstream in;
+  const auto opened = OpenCatalogJournal(context, in);
+  if (opened == CatalogJournalOpenStatus::refused) {
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_epoch_journal_open_failed");
+    return result;
+  }
+  if (opened == CatalogJournalOpenStatus::absent) {
     result.ok = true;
     result.diagnostic = OkDiagnostic();
     return result;
@@ -1394,7 +1434,8 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
       observe_name(ParseU64(parts[6]));
     }
   }
-  if (!in.eof()) {
+  if (in.bad() || !in.eof()) {
+    result.state = {};
     result.diagnostic = CatalogDiagnostic(
         kCatalogObjectDiagnosticMgaVisibilityRefused,
         "catalog_epoch_journal_read_failed");
@@ -1559,7 +1600,7 @@ EngineApiDiagnostic PersistCatalogColumnAndConstraintMetadata(
     object.object_uuid = constraint_uuid;
     object.object_kind = "constraint";
     object.schema_uuid = owner_object_uuid;
-    object.owner_principal_uuid = request.context.principal_uuid.canonical;
+    object.owner_principal_uuid = request.context.principal_uuid;
     object.lifecycle_state = "active";
     object.definition_epoch = 1;
     object.metadata_epoch = metadata_epoch;
@@ -1746,7 +1787,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
     return DiagnosticResult<EngineCatalogCreateObjectResult>(
         request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticDuplicateName, "object_uuid:" + object_uuid));
   }
-  std::string schema_uuid = request.target_schema.uuid.canonical;
+  std::string schema_uuid = request.target_schema.uuid;
   for (const auto& segment_name : PathSegmentNames(request)) {
     const auto* parent = ResolveNamedObjectInScope(loaded.state, request.context, schema_uuid, {}, segment_name);
     if (parent == nullptr) {
@@ -1801,26 +1842,26 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   std::string synonym_target_uuid;
   std::string synonym_target_class;
   if (object_kind == "synonym") {
-    if (request.related_objects.empty() || request.related_objects.front().uuid.canonical.empty() ||
+    if (request.related_objects.empty() || request.related_objects.front().uuid.is_nil() ||
         request.related_objects.front().object_kind.empty()) {
       return DiagnosticResult<EngineCatalogCreateObjectResult>(
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticTargetMissing, "related_objects[0]"));
     }
-    synonym_target_uuid = request.related_objects.front().uuid.canonical;
+    synonym_target_uuid = request.related_objects.front().uuid;
     synonym_target_class = request.related_objects.front().object_kind;
   }
   for (const auto& related : request.related_objects) {
-    if (related.uuid.canonical.empty()) { continue; }
-    const auto* target = FindObject(loaded.state, related.uuid.canonical);
+    if (related.uuid.is_nil()) { continue; }
+    const auto* target = FindObject(loaded.state, related.uuid);
     if (target == nullptr) {
       return DiagnosticResult<EngineCatalogCreateObjectResult>(
           request.context,
           kOperation,
           CatalogDiagnostic(object_kind == "synonym" ? kCatalogSynonymDiagnosticTargetMissing
                                                      : kCatalogObjectDiagnosticDependencyTargetNotVisible,
-                            related.uuid.canonical));
+                            related.uuid));
     }
     if (object_kind == "synonym" && target->object_kind != related.object_kind) {
       return DiagnosticResult<EngineCatalogCreateObjectResult>(
@@ -1837,7 +1878,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
   record.object_uuid = object_uuid;
   record.object_kind = object_kind;
   record.schema_uuid = schema_uuid;
-  record.owner_principal_uuid = request.context.principal_uuid.canonical;
+  record.owner_principal_uuid = request.context.principal_uuid;
   record.lifecycle_state = "active";
   record.definition_epoch = 1;
   record.metadata_epoch = epoch;
@@ -1855,12 +1896,12 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
     }
   }
   for (const auto& related : request.related_objects) {
-    if (related.uuid.canonical.empty()) { continue; }
+    if (related.uuid.is_nil()) { continue; }
     EngineCatalogDependencyRecord dependency;
     dependency.creator_tx = request.context.local_transaction_id;
     dependency.source_uuid = object_uuid;
     dependency.source_kind = object_kind;
-    dependency.dependency_uuid = related.uuid.canonical;
+    dependency.dependency_uuid = related.uuid;
     dependency.dependency_kind = DependencyKindForRelatedObject(object_kind, related);
     dependency.metadata_epoch = epoch;
     appended = AppendEvent(request.context, DependencyEvent(dependency));
@@ -1884,7 +1925,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
                           kOperation,
                           object_kind,
                           object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           object_kind);
   return result;
 }
@@ -1947,7 +1988,7 @@ EngineCatalogApplyConstraintsResult EngineCatalogApplyConstraintsToObject(
                           operation_id,
                           "constraint",
                           owner_object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           "constraint_descriptor");
   return result;
 }
@@ -1977,20 +2018,20 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
   std::string synonym_target_uuid;
   std::string synonym_target_class;
   if (existing->object_kind == "synonym") {
-    if (request.related_objects.empty() || request.related_objects.front().uuid.canonical.empty() ||
+    if (request.related_objects.empty() || request.related_objects.front().uuid.is_nil() ||
         request.related_objects.front().object_kind.empty()) {
       return DiagnosticResult<EngineCatalogAlterObjectResult>(
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticTargetMissing, "related_objects[0]"));
     }
-    const auto* target = FindObject(loaded.state, request.related_objects.front().uuid.canonical);
+    const auto* target = FindObject(loaded.state, request.related_objects.front().uuid);
     if (target == nullptr) {
       return DiagnosticResult<EngineCatalogAlterObjectResult>(
           request.context,
           kOperation,
           CatalogDiagnostic(kCatalogSynonymDiagnosticTargetMissing,
-                            request.related_objects.front().uuid.canonical));
+                            request.related_objects.front().uuid));
     }
     if (target->object_kind != request.related_objects.front().object_kind) {
       return DiagnosticResult<EngineCatalogAlterObjectResult>(
@@ -2048,7 +2089,7 @@ EngineCatalogAlterObjectResult EngineCatalogAlterObject(const EngineCatalogAlter
                           kOperation,
                           replacement.object_kind,
                           object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           replacement.object_kind);
   return result;
 }
@@ -2110,7 +2151,7 @@ EngineCatalogRenameObjectResult EngineCatalogRenameObject(const EngineCatalogRen
                           kOperation,
                           replacement.object_kind,
                           object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           replacement.object_kind);
   return result;
 }
@@ -2175,9 +2216,9 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
   if (resolver.error) { return DiagnosticResult<EngineCatalogDropObjectResult>(request.context, kOperation, resolver); }
 
   auto result = SuccessResult<EngineCatalogDropObjectResult>(request.context, kOperation);
-  result.primary_object.uuid.canonical = object_uuid;
+  result.primary_object.uuid = object_uuid;
   result.primary_object.object_kind = existing->object_kind;
-  result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
   result.metadata_cache_epoch = epoch;
   AddEvidence(&result, "catalog_metadata_epoch", std::to_string(epoch));
   AddEvidence(&result, "metadata_cache_invalidation", object_uuid + ":" + std::to_string(epoch));
@@ -2190,7 +2231,7 @@ EngineCatalogDropObjectResult EngineCatalogDropObject(const EngineCatalogDropObj
                           kOperation,
                           existing->object_kind,
                           object_uuid,
-                          result.catalog_row_uuid.canonical,
+                          result.catalog_row_uuid,
                           existing->object_kind);
   return result;
 }
@@ -2232,7 +2273,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
   if (!loaded.ok) {
     return DiagnosticResult<EngineCatalogResolveObjectNameResult>(request.context, kOperation, loaded.diagnostic);
   }
-  std::string schema_uuid = request.target_schema.uuid.canonical;
+  std::string schema_uuid = request.target_schema.uuid;
   if (!schema_uuid.empty()) {
     if (const auto* parent_candidate = FindObject(loaded.state, schema_uuid)) {
       const auto remapped = ResolveCatalogSynonymChain(loaded.state, *parent_candidate, request.context, {});
@@ -2284,7 +2325,7 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
       AddEvidence(&result, "synonym_chain", synonym_uuid);
     }
     if (!schema_uuid.empty()) {
-      result.bound_object_identity.parent_object_uuid.canonical = schema_uuid;
+      result.bound_object_identity.parent_object_uuid = schema_uuid;
     }
     return result;
   }

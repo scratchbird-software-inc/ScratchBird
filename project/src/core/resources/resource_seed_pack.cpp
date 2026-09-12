@@ -109,7 +109,7 @@ std::vector<std::string> SplitSemicolon(const std::string& value) {
 
 std::string LowerAscii(std::string value) {
   for (char& ch : value) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
   }
   return value;
 }
@@ -784,7 +784,8 @@ bool AddAlias(ResourceSeedCatalogImage* image,
   alias = Trim(std::move(alias));
   canonical_name = Trim(std::move(canonical_name));
   if (image == nullptr || alias.empty() || canonical_name.empty()) {
-    return true;
+    if (conflict_detail != nullptr) *conflict_detail = "resource_alias_fields_missing";
+    return false;
   }
 
   const bool fold_case = family == ResourceSeedFamily::charset || family == ResourceSeedFamily::collation;
@@ -797,11 +798,12 @@ bool AddAlias(ResourceSeedCatalogImage* image,
     if (existing_alias != normalized_alias) {
       continue;
     }
-    if (existing.canonical_name == canonical_name) {
+    if ((fold_case ? LowerAscii(existing.canonical_name) : existing.canonical_name) ==
+        (fold_case ? LowerAscii(canonical_name) : canonical_name)) {
       return true;
     }
-    (void)conflict_detail;
-    return true;
+    // Keep every distinct provisional target. Ambiguity belongs to lookup,
+    // not loader order; publication assigns each target its catalog identity.
   }
 
   ResourceSeedAlias record;
@@ -837,7 +839,8 @@ bool AccumulateCharsetAliases(ResourceSeedCatalogImage* image,
         !JsonU32Field(object, "min_bytes", &descriptor.min_bytes) ||
         !JsonU32Field(object, "max_bytes", &descriptor.max_bytes) ||
         !JsonBoolField(object, "is_variable_width", &descriptor.variable_width) ||
-        descriptor.min_bytes == 0 || descriptor.max_bytes < descriptor.min_bytes) {
+        descriptor.min_bytes == 0 || descriptor.max_bytes < descriptor.min_bytes ||
+        descriptor.variable_width != (descriptor.min_bytes != descriptor.max_bytes)) {
       if (conflict_detail != nullptr) {
         *conflict_detail = artifact.canonical_path + ":charset_descriptor_invalid";
       }
@@ -1450,14 +1453,39 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
                     [](const ResourceSeedCollationDescriptor& descriptor) {
                       return !descriptor.resource_uuid.empty();
                     });
+    std::map<std::pair<ResourceSeedFamily, std::string>,
+             std::vector<const ResourceSeedAlias*>> alias_relations;
+    for (const auto& alias : image.aliases)
+      alias_relations[{alias.family, LowerAscii(alias.alias)}].push_back(&alias);
+    const auto has_alias_relation = [&](ResourceSeedFamily family, const std::string& label,
+                                        const std::string& canonical_name,
+                                        const std::string& identity) {
+      const auto found = alias_relations.find({family, LowerAscii(label)});
+      if (found == alias_relations.end()) return false;
+      return std::any_of(found->second.begin(), found->second.end(), [&](const auto* alias) {
+        return durable_identities_present
+            ? !identity.empty() && alias->canonical_resource_uuid == identity
+            : LowerAscii(alias->canonical_name) == LowerAscii(canonical_name);
+      });
+    };
     for (const auto& charset : image.charsets) {
       if (charset.canonical_name.empty() || charset.min_bytes == 0 ||
           charset.max_bytes < charset.min_bytes || charset.resource_epoch == 0 ||
+          charset.variable_width != (charset.min_bytes != charset.max_bytes) ||
           charset.family_epoch == 0 || charset.family_version.empty() ||
           (durable_identities_present && charset.resource_uuid.empty())) {
         return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
                                  "resource.seed_pack.charset_descriptor_invalid",
                                  charset.canonical_name);
+      }
+      if (!has_alias_relation(ResourceSeedFamily::charset, charset.canonical_name,
+                              charset.canonical_name, charset.resource_uuid) ||
+          std::any_of(charset.aliases.begin(), charset.aliases.end(), [&](const auto& label) {
+            return !has_alias_relation(ResourceSeedFamily::charset, label,
+                                       charset.canonical_name, charset.resource_uuid);
+          })) {
+        return ResourceSeedError("SB_RESOURCE_SEED_INCOMPLETE",
+                                 "resource.seed_pack.alias_relationship_missing");
       }
       if (!charset.default_collation_name.empty()) {
         const auto* default_collation = FindResourceSeedCollation(
@@ -1485,6 +1513,11 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
       }
     }
     for (const auto& collation : image.collations) {
+      if (!has_alias_relation(ResourceSeedFamily::collation, collation.canonical_name,
+                              collation.canonical_name, collation.resource_uuid)) {
+        return ResourceSeedError("SB_RESOURCE_SEED_INCOMPLETE",
+                                 "resource.seed_pack.alias_relationship_missing");
+      }
       const auto* parent_charset =
           FindResourceSeedCharset(image, collation.charset_name);
       if (collation.canonical_name.empty() || collation.charset_name.empty() ||
@@ -1717,22 +1750,40 @@ ResourceSeedAliasResolutionResult ResolveResourceSeedAlias(const ResourceSeedCat
                                                            const std::string& alias) {
   const bool fold_case = family == ResourceSeedFamily::charset || family == ResourceSeedFamily::collation;
   const std::string requested = fold_case ? LowerAscii(alias) : alias;
+  const ResourceSeedAlias* selected = nullptr;
+  const auto failure = [&](const char* code, const char* key) {
+    auto result = ResourceSeedAliasError(code, key);
+    result.diagnostic.arguments = {{"resource_family", ResourceSeedFamilyName(family)},
+                                   {"alias", alias}};
+    return result;
+  };
   for (const auto& record : image.aliases) {
     if (record.family != family) {
       continue;
     }
     const std::string candidate = fold_case ? LowerAscii(record.alias) : record.alias;
     if (candidate == requested) {
-      ResourceSeedAliasResolutionResult result;
-      result.status = ResourceSeedOkStatus();
-      result.alias = record;
-      return result;
+      if (selected == nullptr) {
+        selected = &record;
+        continue;
+      }
+      const bool bound = !selected->canonical_resource_uuid.empty() ||
+                         !record.canonical_resource_uuid.empty();
+      const bool same_target = bound
+          ? selected->canonical_resource_uuid == record.canonical_resource_uuid
+          : (fold_case ? LowerAscii(selected->canonical_name) : selected->canonical_name) ==
+            (fold_case ? LowerAscii(record.canonical_name) : record.canonical_name);
+      if (!same_target)
+        return failure("SB_RESOURCE_ALIAS_AMBIGUOUS", "resource.alias.ambiguous");
     }
   }
-
-  return ResourceSeedAliasError("SB_RESOURCE_ALIAS_NOT_FOUND",
-                                "resource.seed_pack.alias_not_found",
-                                ResourceSeedFamilyName(family) + std::string(":") + alias);
+  if (selected != nullptr) {
+    ResourceSeedAliasResolutionResult result;
+    result.status = ResourceSeedOkStatus();
+    result.alias = *selected;
+    return result;
+  }
+  return failure("SB_RESOURCE_ALIAS_NOT_FOUND", "resource.alias.not_found");
 }
 
 const ResourceSeedCharsetDescriptor* FindResourceSeedCharset(
@@ -1751,7 +1802,10 @@ const ResourceSeedCharsetDescriptor* FindResourceSeedCharset(
   }
   const std::string canonical = LowerAscii(alias.alias.canonical_name);
   for (const auto& charset : image.charsets) {
-    if (LowerAscii(charset.canonical_name) == canonical) {
+    if ((!alias.alias.canonical_resource_uuid.empty() &&
+         charset.resource_uuid == alias.alias.canonical_resource_uuid) ||
+        (alias.alias.canonical_resource_uuid.empty() &&
+         LowerAscii(charset.canonical_name) == canonical)) {
       return &charset;
     }
   }
@@ -1764,6 +1818,15 @@ const ResourceSeedCollationDescriptor* FindResourceSeedCollation(
   const std::string requested = LowerAscii(name);
   for (const auto& collation : image.collations) {
     if (LowerAscii(collation.canonical_name) == requested) {
+      return &collation;
+    }
+  }
+  const auto alias = ResolveResourceSeedAlias(image, ResourceSeedFamily::collation, name);
+  if (!alias.ok()) return nullptr;
+  for (const auto& collation : image.collations) {
+    if (!alias.alias.canonical_resource_uuid.empty()) {
+      if (collation.resource_uuid == alias.alias.canonical_resource_uuid) return &collation;
+    } else if (LowerAscii(collation.canonical_name) == LowerAscii(alias.alias.canonical_name)) {
       return &collation;
     }
   }

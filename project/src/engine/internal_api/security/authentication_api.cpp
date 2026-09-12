@@ -610,12 +610,12 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   const std::string durable_principal_uuid =
       DurablePrincipalUuid(request, credential_fields);
   if (IsDurablePrincipalUuid(durable_principal_uuid)) {
-    context.effective_user_uuid.canonical = durable_principal_uuid;
-  } else if (context.effective_user_uuid.canonical.empty()) {
-    context.effective_user_uuid.canonical = GenerateCrudEngineUuid("principal");
+    context.effective_user_uuid = durable_principal_uuid;
+  } else if (context.effective_user_uuid.is_nil()) {
+    context.effective_user_uuid = GenerateCrudEngineUuid("principal");
   }
-  if (context.connection_uuid.canonical.empty()) { context.connection_uuid.canonical = GenerateCrudEngineUuid("session"); }
-  if (context.authority_uuid.canonical.empty()) { context.authority_uuid.canonical = request.context.database_uuid.canonical; }
+  if (context.connection_uuid.is_nil()) { context.connection_uuid = GenerateCrudEngineUuid("session"); }
+  if (context.authority_uuid.is_nil()) { context.authority_uuid = request.context.database_uuid; }
   context.authorization_trace_tags = std::move(engine_authorization_tags);
 
   auto result = SecuritySuccess<EngineAuthenticateResult>(request.context, "security.authenticate");
@@ -629,12 +629,12 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
       1.0,
       provider_decision.provider_family.empty() ? "local_password" : provider_decision.provider_family,
       "self",
-      scratchbird::core::metrics::Labels({{"session_uuid", context.connection_uuid.canonical},
-                                          {"principal_uuid", context.effective_user_uuid.canonical}}));
+      scratchbird::core::metrics::Labels({{"session_uuid", context.connection_uuid},
+                                          {"principal_uuid", context.effective_user_uuid}}));
   (void)scratchbird::core::metrics::PublishIdentityUsersOnline(
       1.0,
       provider_decision.provider_family.empty() ? "local_password" : provider_decision.provider_family,
-      scratchbird::core::metrics::Labels({{"principal_uuid", context.effective_user_uuid.canonical}}));
+      scratchbird::core::metrics::Labels({{"principal_uuid", context.effective_user_uuid}}));
   ApplyAuthProviderDecision(&result, provider_decision);
   result.ok = true;
   result.authenticated = true;
@@ -650,7 +650,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   if (IsDurableSecurityStateAuthority(storage_authority)) {
     AddSecurityEvidence(&result, "security_state_authority", storage_authority);
   }
-  AddSecurityEvidence(&result, "connection_security_context", context.connection_uuid.canonical);
+  AddSecurityEvidence(&result, "connection_security_context", context.connection_uuid);
   for (const auto& tag : context.authorization_trace_tags) {
     if (tag.rfind("group:", 0) == 0) {
       AddSecurityEvidence(&result, "authorized_group", tag.substr(6));
@@ -663,8 +663,8 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
                            {"principal", provider_decision.principal.empty()
                                              ? principal
                                              : provider_decision.principal},
-                           {"connection_uuid", context.connection_uuid.canonical},
-                           {"effective_user_uuid", context.effective_user_uuid.canonical}});
+                           {"connection_uuid", context.connection_uuid},
+                           {"effective_user_uuid", context.effective_user_uuid}});
   return result;
 }
 

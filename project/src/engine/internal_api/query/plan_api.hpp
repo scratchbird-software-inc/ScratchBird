@@ -81,10 +81,10 @@ enum class RelationalLiteralKind : std::uint8_t {
 
 struct RelationalTypeDescriptor {
   std::uint32_t descriptor_id{0};
-  std::string descriptor_uuid;
-  std::string type_uuid;
+  EngineUuid descriptor_uuid;
+  EngineUuid type_uuid;
   RelationalNullability nullability{RelationalNullability::kUnknown};
-  std::optional<std::string> collation_uuid;
+  std::optional<EngineUuid> collation_uuid;
   std::optional<std::string> timezone_profile_id;
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
@@ -95,8 +95,8 @@ struct RelationalTypeDescriptor {
   std::string codec_id;
   std::uint16_t codec_version{0};
   std::uint64_t codec_generation{0};
-  std::string statement_receipt_uuid;
-  std::string datatype_catalog_snapshot_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
 };
@@ -106,13 +106,13 @@ struct RelationalExpressionRecord {
   RelationalExpressionKind expression_kind{RelationalExpressionKind::kLiteral};
   std::vector<std::uint32_t> child_expression_ids;
   std::uint32_t result_descriptor_id{0};
-  std::optional<std::string> function_uuid;
-  std::optional<std::string> bound_name_uuid;
+  std::optional<EngineUuid> function_uuid;
+  std::optional<EngineUuid> bound_name_uuid;
   std::optional<RelationalLiteralKind> literal_kind;
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
   struct LiteralTypedValueV1 {
-    std::string descriptor_uuid;
+    EngineUuid descriptor_uuid;
     std::uint64_t descriptor_generation{0};
     std::string value_state;
     std::vector<std::uint8_t> canonical_value_bytes;
@@ -120,7 +120,7 @@ struct RelationalExpressionRecord {
   };
   std::optional<LiteralTypedValueV1> literal_typed_value_v1;
   struct ParameterTypedValueV1 {
-    std::string descriptor_uuid;
+    EngineUuid descriptor_uuid;
     std::uint64_t descriptor_generation{0};
     std::string value_state;
     std::vector<std::uint8_t> canonical_value_bytes;
@@ -253,7 +253,7 @@ struct RelationalPropertyOrderingTerm {
       RelationalPropertySortDirection::kAscending};
   RelationalPropertyNullPlacement null_placement{
       RelationalPropertyNullPlacement::kNullsLast};
-  std::string collation_uuid;
+  EngineUuid collation_uuid;
 };
 
 struct RelationalWindowDefinitionRecord {
@@ -277,7 +277,7 @@ struct RelationalWindowInvocationRecord {
   std::uint32_t window_definition_id{0};
   std::uint16_t function_abi_version{0};
   std::string builtin_id;
-  std::string function_uuid;
+  EngineUuid function_uuid;
   std::uint32_t result_descriptor_id{0};
   std::string output_name_utf8;
   std::vector<std::uint32_t> argument_expression_ids;
@@ -328,13 +328,13 @@ struct RelationalPropertyRecord {
   // `relational_property_v2` appends the four specialized enum values,
   // locality UUID, security-context UUID, and visibility generation so the
   // complete optimizer property state survives the SBLR boundary.
-  std::string property_uuid;
+  EngineUuid property_uuid;
   RelationalPropertyKind property_kind{RelationalPropertyKind::kOrdering};
   std::uint32_t origin_node_id{0};
   std::vector<std::uint32_t> expression_ids;
   std::vector<RelationalPropertyOrderingTerm> ordering_terms;
-  std::vector<std::string> dependency_property_uuids;
-  std::string window_frame_descriptor_uuid;
+  std::vector<EngineUuid> dependency_property_uuids;
+  EngineUuid window_frame_descriptor_uuid;
   RelationalPropertyDistributionKind distribution_kind{
       RelationalPropertyDistributionKind::kNone};
   RelationalPropertyMaterializationKind materialization_kind{
@@ -343,8 +343,8 @@ struct RelationalPropertyRecord {
       RelationalPropertyRewindabilityKind::kNone};
   RelationalPropertyLocalityKind locality_kind{
       RelationalPropertyLocalityKind::kNone};
-  std::string locality_uuid;
-  std::string security_visibility_context_uuid;
+  EngineUuid locality_uuid;
+  EngineUuid security_visibility_context_uuid;
   std::uint64_t security_visibility_generation{0};
 };
 
@@ -357,23 +357,23 @@ struct RelationalDagNode {
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> bound_expression_ids;
   std::vector<std::uint32_t> argument_expression_ids;
-  std::vector<std::string> required_object_uuids;
+  std::vector<EngineUuid> required_object_uuids;
   std::string semantic_variant_id;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<EngineUuid> required_property_uuids;
+  std::vector<EngineUuid> delivered_property_uuids;
 };
 
 struct TypedRelationalDag {
   std::uint16_t wire_version{1};
   RelationalPackageRoot package_root{RelationalPackageRoot::kQueryExecute};
-  std::string bound_sblr_tree_uuid;
-  std::string bound_catalog_epoch_uuid;
-  std::string bound_security_context_uuid;
-  std::string statement_uuid;
+  EngineUuid bound_sblr_tree_uuid;
+  EngineUuid bound_catalog_epoch_uuid;
+  EngineUuid bound_security_context_uuid;
+  EngineUuid statement_uuid;
   std::string statement_timestamp;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  EngineUuid owning_transaction_uuid;
+  EngineUuid statement_snapshot_uuid;
+  EngineUuid statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   std::uint32_t root_node_id{0};
@@ -433,7 +433,7 @@ struct CanonicalRuntimeOptimizerNodeActual {
 struct CanonicalRuntimeOptimizerStatisticsRequest {
   std::uint16_t abi_version{1};
   scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
-  std::string pre_access_statistics_snapshot_uuid;
+  EngineUuid pre_access_statistics_snapshot_uuid;
   scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
   std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
   bool data_access_observed{false};
@@ -461,8 +461,8 @@ struct CanonicalRuntimeOptimizerStatisticsResult {
   bool planning_estimates_immutable{false};
   bool feedback_authorized{false};
   bool data_access_observed{false};
-  std::string selected_plan_uuid;
-  std::string pre_access_statistics_snapshot_uuid;
+  EngineUuid selected_plan_uuid;
+  EngineUuid pre_access_statistics_snapshot_uuid;
   std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
   std::vector<CanonicalRuntimeOptimizerStatisticsIssue> issues;
   scratchbird::engine::executor::PhysicalMgaStatementContext
@@ -476,7 +476,7 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
 struct CanonicalOptimizerSelectedExecutionRequest {
   std::uint16_t abi_version{1};
   scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
-  std::string pre_access_statistics_snapshot_uuid;
+  EngineUuid pre_access_statistics_snapshot_uuid;
   scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
   scratchbird::engine::executor::PhysicalNodeAbiLimits limits;
   scratchbird::engine::executor::CanonicalPhysicalDagRuntimeLimits
@@ -579,8 +579,8 @@ struct CanonicalHeapOptimizerSelectedExecutionRequest {
   std::size_t maximum_output_columns{0};
   std::size_t maximum_output_cells{0};
   std::function<bool()> cancellation_requested;
-  std::string execution_attempt_uuid;
-  std::string transaction_effect_evidence_uuid;
+  EngineUuid execution_attempt_uuid;
+  EngineUuid transaction_effect_evidence_uuid;
   std::shared_ptr<const PreparedMgaHeapReadAuthorityCohort> authority_cohort;
   std::optional<
       scratchbird::engine::executor::CanonicalHeapTableSampleProfile>

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include "datatype_catalog_manifest.hpp"
 #include "uuid.hpp"
@@ -22,6 +23,7 @@ namespace dt = scratchbird::core::datatypes;
 namespace uuid = scratchbird::core::uuid;
 
 namespace {
+using scratchbird::tests::BinaryUuid;
 
 constexpr std::uint64_t kOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
@@ -42,12 +44,12 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
+    const api::EngineUuid& statement_snapshot_uuid) {
   return {
-      "019f0000-0000-7200-8000-00000000e631",
-      "019f0000-0000-7200-8000-00000000e632",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e631"),
+      BinaryUuid("019f0000-0000-7200-8000-00000000e632"),
       statement_snapshot_uuid,
-      "019f0000-0000-7200-8000-00000000e633",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e633"),
       kOwnerLocalTransactionId,
       0,
       kOldestActiveLocalTransactionId,
@@ -93,12 +95,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   for (auto& node : dag->nodes) {
     node.mga_statement_context = context;
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000e634";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e634");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000e635";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e635");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000e636";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e636");
     node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
@@ -113,25 +115,25 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
+                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name,
                                  const std::string& nullability) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type_name;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=" + nullability;
+  descriptor.type_uuid = type_uuid;
+  descriptor.encoded_descriptor = "nullability=" + nullability;
   return descriptor;
 }
 
-std::string CoreTypeUuid(const std::string_view stable_name) {
+api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return {};
   for (const auto& row : manifest.manifest.descriptor_rows) {
     if (row.stable_name == stable_name && row.descriptor_uuid.valid()) {
-      return uuid::UuidToString(row.descriptor_uuid.value);
+      return row.descriptor_uuid.value;
     }
   }
   return {};
@@ -156,34 +158,34 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 
 exec::CanonicalExistsSubqueryRequest Request() {
   const auto source = Descriptor(
-      "019f0000-0000-7200-8000-000000002801",
-      "019f0000-0000-7300-8000-000000002802", "int64", "nullable");
+      BinaryUuid("019f0000-0000-7200-8000-000000002801"),
+      BinaryUuid("019f0000-0000-7300-8000-000000002802"), "int64", "nullable");
   const auto exists_result = Descriptor(
-      "019f0000-0000-7200-8000-000000002803",
+      BinaryUuid("019f0000-0000-7200-8000-000000002803"),
       CoreTypeUuid("boolean"), "boolean", "non_null");
 
   exec::CanonicalExistsSubqueryRequest request;
   auto& table = request.table_request;
   table.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000002805";
+      BinaryUuid("019f0000-0000-7200-8000-000000002805");
   table.physical_dag.root_physical_node_id = 2802;
   table.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000002811"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002811")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000002812"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002812")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000002813"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002813")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000002814"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002814")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000002815"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002815")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000002816"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002816")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000002817"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002817")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000002818"},
+       BinaryUuid("019f0000-0000-7200-8000-000000002818")},
   };
   table.physical_dag.nodes = {
       {.physical_node_id = 2801,
@@ -223,7 +225,7 @@ bool ValidateExistsSubquery() {
           result.output_batch.rows[0].values[0].encoded_value == "true" &&
           !result.output_batch.rows[0].values[0].is_null &&
           result.selected_plan_uuid ==
-              "019f0000-0000-7200-8000-000000002805" &&
+              BinaryUuid("019f0000-0000-7200-8000-000000002805") &&
           result.executed_physical_node_id == 2802 &&
           result.causal_counter_id == 28002 &&
           result.mga_statement_context.visible_committed_high_watermark == 0 &&
@@ -294,7 +296,7 @@ bool ValidateExistsSubquery() {
   result = exec::ExecuteCanonicalExistsSubquery(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
                         !result.exists && result.source_row_count == 0 &&
-                        result.selected_plan_uuid.empty() &&
+                        result.selected_plan_uuid.is_nil() &&
                         !exec::PhysicalMgaStatementContextValid(
                             result.mga_statement_context),
                     "missing engine MGA transaction was accepted");
@@ -316,8 +318,51 @@ bool ValidateExistsSubquery() {
   return passed;
 }
 
+bool ValidateBinaryDescriptorAuthority() {
+  bool passed = true;
+  // Every type-identity bit participates in binding. A matching display name
+  // cannot rescue a changed binary type, including invalid version/variant bits.
+  for (std::size_t bit = 0; bit < 128; ++bit) {
+    auto request = Request();
+    request.result_column.descriptor.type_uuid.bytes[bit / 8] ^=
+        static_cast<std::uint8_t>(1U << (bit % 8));
+    const auto result = exec::ExecuteCanonicalExistsSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                          result.selected_plan_uuid.is_nil(),
+                      "changed binary datatype identity published a result");
+  }
+  for (unsigned version = 0; version < 16; ++version) {
+    if (version == 7) continue;
+    auto request = Request();
+    auto& uuid = request.result_column.descriptor.descriptor_uuid;
+    uuid.bytes[6] = static_cast<std::uint8_t>(
+        (uuid.bytes[6] & 0x0fU) | (version << 4));
+    const auto result = exec::ExecuteCanonicalExistsSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                      "non-v7 system descriptor identity was accepted");
+  }
+  for (const auto modifier : {
+           ";type_uuid=019f0000-0000-7300-8000-000000002602",
+           ";collation_uuid=019f0000-0000-7300-8000-000000002602"}) {
+    auto request = Request();
+    request.result_column.descriptor.encoded_descriptor += modifier;
+    const auto result = exec::ExecuteCanonicalExistsSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                      "text UUID modifier supplied duplicate identity authority");
+  }
+  auto request = Request();
+  request.result_column.descriptor.collation_uuid =
+      BinaryUuid("019f0000-0000-7300-8000-000000002699");
+  const auto result = exec::ExecuteCanonicalExistsSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "unbound binary collation published a result");
+  return passed;
+}
+
 }  // namespace
 
 int main() {
-  return ValidateExistsSubquery() ? EXIT_SUCCESS : EXIT_FAILURE;
+  const bool execution = ValidateExistsSubquery();
+  const bool binary = ValidateBinaryDescriptorAuthority();
+  return execution && binary ? EXIT_SUCCESS : EXIT_FAILURE;
 }

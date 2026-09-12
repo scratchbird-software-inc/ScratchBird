@@ -9,9 +9,11 @@
 // SEARCH_KEY: SB_SERVER_SBLR_DISPATCH_RESULTS
 
 #include "sblr_dispatch_server.hpp"
+#include "../wire/parser_server_ipc/binary_identity_io.hpp"
 #include "hash_digest.hpp"
 
 #include "sblr_admission.hpp"
+#include "sblr_dispatch_command.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -850,7 +852,7 @@ struct PreparePayload {
   std::string encoded_execution_envelope;
   bool transaction_routed = false;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
 };
 
 enum class ExecuteTransactionRoute : std::uint8_t {
@@ -869,9 +871,9 @@ struct ExecutePayload {
   ExecuteTransactionRoute transaction_route =
       ExecuteTransactionRoute::kLegacyDefault;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   bool canonical_ingress = false;
-  std::string statement_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
   std::string encoded_sblr_container;
   std::string encoded_execution_envelope;
   std::vector<std::uint8_t> literal_execution_binding;
@@ -915,8 +917,9 @@ std::optional<PreparePayload> DecodePreparePayload(
     out.transaction_routed = true;
     out.local_transaction_id = GetU64(payload, offset);
     offset += 8;
-    if (!ReadString(payload, &offset, &out.transaction_uuid)) return std::nullopt;
-    if (out.local_transaction_id == 0 || out.transaction_uuid.empty()) {
+    if (!scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+            payload, &offset, &out.transaction_uuid)) return std::nullopt;
+    if (out.local_transaction_id == 0) {
       return std::nullopt;
     }
   } else if (schema_id != kSchemaPrepareSblrTestV1 &&
@@ -966,17 +969,13 @@ std::optional<ExecutePayload> DecodeExecutePayload(
     out.transaction_route = ExecuteTransactionRoute::kSelected;
     out.local_transaction_id = GetU64(payload, offset);
     offset += 8;
-    const auto transaction_uuid = GetUuid(payload, offset);
-    offset += 16;
-    const auto statement_uuid = GetUuid(payload, offset);
-    offset += 16;
     if (out.local_transaction_id == 0 ||
-        sbps::IsZeroUuid(transaction_uuid) ||
-        sbps::IsZeroUuid(statement_uuid)) {
+        !scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+            payload, &offset, &out.transaction_uuid) ||
+        !scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+            payload, &offset, &out.statement_uuid)) {
       return std::nullopt;
     }
-    out.transaction_uuid = UuidBytesToText(transaction_uuid);
-    out.statement_uuid = UuidBytesToText(statement_uuid);
     std::vector<std::uint8_t> container;
     std::vector<std::uint8_t> execution;
     if (!ReadBytes(payload, &offset, &container) ||
@@ -1074,11 +1073,12 @@ std::optional<ExecutePayload> DecodeExecutePayload(
     out.transaction_route = static_cast<ExecuteTransactionRoute>(route);
     out.local_transaction_id = GetU64(payload, offset);
     offset += 8;
-    if (!ReadString(payload, &offset, &out.transaction_uuid)) return std::nullopt;
+    if (!scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+            payload, &offset, &out.transaction_uuid, true)) return std::nullopt;
     const bool selector_present =
-        out.local_transaction_id != 0 && !out.transaction_uuid.empty();
+        out.local_transaction_id != 0 && !out.transaction_uuid.is_nil();
     const bool selector_partially_present =
-        out.local_transaction_id != 0 || !out.transaction_uuid.empty();
+        out.local_transaction_id != 0 || !out.transaction_uuid.is_nil();
     if ((out.transaction_route == ExecuteTransactionRoute::kSelected &&
          !selector_present) ||
         (out.transaction_route != ExecuteTransactionRoute::kSelected &&
@@ -1200,7 +1200,7 @@ void AppendCursorStreamDescriptor(
 void PutTransactionSelector(std::vector<std::uint8_t>* out,
                             const ServerTransactionState& transaction) {
   PutU64(out, transaction.local_transaction_id);
-  PutString(out, transaction.transaction_uuid);
+  PutUuid(out, transaction.transaction_uuid.bytes);
 }
 
 std::vector<std::uint8_t> EncodeExecuteResultV2(
@@ -1517,16 +1517,16 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = UuidBytesToText(request_uuid);
   context.database_path = session.database_path;
-  context.database_uuid.canonical =
+  context.database_uuid =
       session.database_uuid.empty() ? std::string("database:session")
                                     : session.database_uuid;
-  context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
+  context.session_uuid = UuidBytesToText(session.session_uuid);
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
   }
-  context.transaction_uuid.canonical = session.transaction_uuid;
-  context.statement_uuid.canonical = UuidBytesToText(request_uuid);
+  context.transaction_uuid = session.transaction_uuid;
+  context.statement_uuid = UuidBytesToText(request_uuid);
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -2795,55 +2795,6 @@ std::string DecodedBinaryOperationEnvelopeText(std::string_view encoded) {
   return {};
 }
 
-std::optional<scratchbird::engine::sblr::SblrTransactionCommitOptionsV1>
-CanonicalTransactionCommitOptionsFromContainer(std::string_view encoded,
-                                               std::string* detail) {
-  namespace tx = scratchbird::engine::sblr;
-  const auto container = scratchbird::engine::DecodeSblrContainerBytes(
-      reinterpret_cast<const std::uint8_t*>(encoded.data()), encoded.size());
-  if (container.status != scratchbird::engine::SblrCodecStatus::ok ||
-      container.container.operation_payload.empty()) {
-    if (detail != nullptr) *detail = "canonical_commit_container_invalid";
-    return std::nullopt;
-  }
-  const std::string_view operation_bytes(
-      reinterpret_cast<const char*>(
-          container.container.operation_payload.data()),
-      container.container.operation_payload.size());
-  const auto stream = tx::DecodeSblrOpcodeStream(operation_bytes);
-  if (!stream.ok || stream.stream.operations.size() != 3) {
-    if (detail != nullptr) *detail = "canonical_commit_stream_shape_invalid";
-    return std::nullopt;
-  }
-  const auto& operation = stream.stream.operations[1];
-  if (operation.operation_id != "engine.op.txn_commit" ||
-      operation.opcode != "SBLR_TXN_COMMIT" || operation.opcode_code != 257 ||
-      operation.operands.size() != 1) {
-    if (detail != nullptr) *detail = "canonical_commit_identity_invalid";
-    return std::nullopt;
-  }
-  const auto& operand = operation.operands.front();
-  if (operand.ordinal != 1 ||
-      operand.type != "transaction.commit.options" ||
-      operand.name != "options" ||
-      operand.value_kind != tx::SblrValueKind::transaction_commit_options) {
-    if (detail != nullptr) *detail = "canonical_commit_operand_identity_invalid";
-    return std::nullopt;
-  }
-  tx::SblrTransactionCommitOptionsV1 options;
-  std::string decode_detail;
-  if (!tx::DecodeSblrTransactionCommitOptionsV1(
-          operand.value_body.data(), operand.value_body.size(), &options,
-          &decode_detail)) {
-    if (detail != nullptr) {
-      *detail = decode_detail.empty() ? "canonical_commit_options_invalid"
-                                      : decode_detail;
-    }
-    return std::nullopt;
-  }
-  return options;
-}
-
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key) {
   std::size_t start = 0;
   while (start <= encoded.size()) {
@@ -3061,14 +3012,14 @@ std::string ResolveSchemaParentPathForDispatch(
   }
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
-  if (!resolved.ok || resolved.primary_object.uuid.canonical.empty()) {
+  if (!resolved.ok || resolved.primary_object.uuid.is_nil()) {
     return {};
   }
   if (cache.size() > 4096) {
     cache.clear();
   }
-  cache[cache_key] = resolved.primary_object.uuid.canonical;
-  return resolved.primary_object.uuid.canonical;
+  cache[cache_key] = resolved.primary_object.uuid;
+  return resolved.primary_object.uuid;
 }
 
 std::string ResolveDefaultSchemaForDispatch(const ServerSessionRecord& session) {
@@ -3132,7 +3083,7 @@ std::string ResolveDomainTypePathForDispatch(const ServerSessionRecord& session,
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
   if (!resolved.ok || resolved.primary_object.object_kind != "domain") return {};
-  return resolved.primary_object.uuid.canonical;
+  return resolved.primary_object.uuid;
 }
 
 std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
@@ -3153,7 +3104,7 @@ std::string ResolveSequencePathForDispatch(const ServerSessionRecord& session,
   request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
   const auto resolved = engine_api::EngineResolveName(request);
   if (!resolved.ok || resolved.primary_object.object_kind != "sequence") return {};
-  return resolved.primary_object.uuid.canonical;
+  return resolved.primary_object.uuid;
 }
 
 std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
@@ -3175,8 +3126,8 @@ std::string ResolveRelationPathForDispatch(const ServerSessionRecord& session,
     }
     request.sql_object_reference.object_name = DispatchIdentifierAtom(parts.back());
     const auto resolved = engine_api::EngineResolveName(request);
-    if (resolved.ok && !resolved.primary_object.uuid.canonical.empty()) {
-      return resolved.primary_object.uuid.canonical;
+    if (resolved.ok && !resolved.primary_object.uuid.is_nil()) {
+      return resolved.primary_object.uuid;
     }
   }
   return {};
@@ -3308,8 +3259,8 @@ std::string ResolveColumnDefaultForDispatch(const ServerSessionRecord& session,
 struct DispatchViewDescriptor {
   bool found = false;
   bool materialized = false;
-  std::string view_uuid;
-  std::string source_uuid;
+  scratchbird::core::platform::Uuid view_uuid;
+  scratchbird::core::platform::Uuid source_uuid;
   std::string predicate_kind;
   std::string predicate_column;
   std::string predicate_value;
@@ -4713,7 +4664,7 @@ bool ApplyBeginTransactionResultToSession(
   replacement.local_transaction_id = result.local_transaction_id;
   replacement.snapshot_visible_through_local_transaction_id =
       result.snapshot_visible_through_local_transaction_id;
-  replacement.transaction_uuid = result.transaction_uuid.canonical;
+  replacement.transaction_uuid = result.transaction_uuid;
   replacement.transaction_timestamp =
       EngineEvidenceValue(result, "transaction_timestamp");
   replacement.isolation_level = session->default_transaction_isolation_level;
@@ -4729,14 +4680,14 @@ bool ApplyAutocommitBoundaryResultToSession(
   if (session == nullptr ||
       !IsCompleteEngineTransactionIdentity(
           result.replacement_local_transaction_id,
-          result.replacement_transaction_uuid.canonical)) {
+          result.replacement_transaction_uuid)) {
     return false;
   }
   ServerTransactionState replacement;
   replacement.local_transaction_id = result.replacement_local_transaction_id;
   replacement.snapshot_visible_through_local_transaction_id =
       result.replacement_snapshot_visible_through_local_transaction_id;
-  replacement.transaction_uuid = result.replacement_transaction_uuid.canonical;
+  replacement.transaction_uuid = result.replacement_transaction_uuid;
   replacement.transaction_timestamp = result.replacement_transaction_timestamp;
   replacement.isolation_level = result.replacement_isolation_level.empty()
                                     ? session->default_transaction_isolation_level
@@ -4756,17 +4707,17 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = UuidBytesToText(request_uuid);
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
-  context.database_uuid.canonical =
+  context.database_uuid =
       session.database_uuid.empty() ? database.database_uuid : session.database_uuid;
   context.database_page_size_bytes = database.page_size_bytes;
-  context.statement_uuid.canonical = context.request_id;
+  context.statement_uuid = context.request_id;
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;
   context.current_monotonic_ns = CurrentMonotonicNsText();
-  context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
+  context.session_uuid = UuidBytesToText(session.session_uuid);
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
   }
   context.application_name = session.application_name;
   context.security_context_present = true;
@@ -4789,7 +4740,7 @@ engine_api::EngineRequestContext ActiveTransactionContext(
     const HostedDatabaseSnapshot& database,
     const std::array<std::uint8_t, 16>& request_uuid) {
   auto context = ReplacementTransactionContext(session, database, request_uuid);
-  context.transaction_uuid.canonical = session.transaction_uuid;
+  context.transaction_uuid = session.transaction_uuid;
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -4906,7 +4857,7 @@ bool BeginReplacementTransactionForSession(ServerSessionRecord* session,
   if (!replacement.ok ||
       !IsCompleteEngineTransactionIdentity(
           replacement.local_transaction_id,
-          replacement.transaction_uuid.canonical)) {
+          replacement.transaction_uuid)) {
     if (diagnostic_code != nullptr) {
       *diagnostic_code = replacement.diagnostics.empty() || replacement.diagnostics.front().code.empty()
                              ? "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED"
@@ -4985,7 +4936,7 @@ ServerTransactionState TransactionStateFromBeginResult(
   transaction.local_transaction_id = result.local_transaction_id;
   transaction.snapshot_visible_through_local_transaction_id =
       result.snapshot_visible_through_local_transaction_id;
-  transaction.transaction_uuid = result.transaction_uuid.canonical;
+  transaction.transaction_uuid = result.transaction_uuid;
   transaction.transaction_timestamp =
       EngineEvidenceValue(result, "transaction_timestamp");
   transaction.isolation_level = session.default_transaction_isolation_level;
@@ -5040,7 +4991,7 @@ bool BeginIndependentTransactionForSession(
   const auto begun = engine_api::EngineBeginTransaction(begin);
   if (!begun.ok ||
       !IsCompleteEngineTransactionIdentity(
-          begun.local_transaction_id, begun.transaction_uuid.canonical)) {
+          begun.local_transaction_id, begun.transaction_uuid)) {
     if (diagnostic_code != nullptr) {
       *diagnostic_code =
           begun.diagnostics.empty() || begun.diagnostics.front().code.empty()
@@ -6942,7 +6893,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     const std::string schema_parent_path = JsonTextField(encoded, "schema_parent_path").value_or(
         TextLineValue(encoded, "schema_parent_path").value_or(""));
     if (explicit_target_schema_uuid.empty() && explicit_schema_uuid.empty()) {
-      std::string resolved_schema_uuid;
+      scratchbird::core::platform::Uuid resolved_schema_uuid;
       if (!schema_parent_path.empty()) {
         resolved_schema_uuid = ResolveSchemaParentPathForDispatch(session, schema_parent_path);
       }
@@ -7740,16 +7691,6 @@ std::string FirstEngineDiagnosticDetail(sb_engine_result_t result) {
   return StringViewToString(diagnostics.diagnostics[0].safe_detail);
 }
 
-std::string FirstEngineDiagnosticAuditKey(sb_engine_result_t result) {
-  if (result == nullptr) return {};
-  sb_engine_diagnostic_set_view_t diagnostics{};
-  if (sb_engine_result_diagnostics(result, &diagnostics) != SB_ENGINE_STATUS_OK ||
-      diagnostics.diagnostic_count == 0 || diagnostics.diagnostics == nullptr) {
-    return {};
-  }
-  return StringViewToString(diagnostics.diagnostics[0].message_key);
-}
-
 bool IsWellFormedUtf8(std::string_view text) {
   std::size_t offset = 0;
   while (offset < text.size()) {
@@ -7840,23 +7781,6 @@ std::vector<ServerDiagnosticField> RegisteredEngineDiagnosticFields(
   return {candidate};
 }
 
-std::vector<ServerDiagnosticField> FirstRegisteredEngineDiagnosticFields(
-    sb_engine_result_t result,
-    std::string_view diagnostic_code) {
-  std::vector<scratchbird::server_engine_bridge::EngineDiagnosticField>
-      engine_fields;
-  if (!scratchbird::server_engine_bridge::CopyEngineDiagnosticFields(
-          result, 0, &engine_fields)) {
-    return {};
-  }
-  std::vector<ServerDiagnosticField> candidates;
-  candidates.reserve(engine_fields.size());
-  for (auto& field : engine_fields) {
-    candidates.push_back({std::move(field.key), std::move(field.value)});
-  }
-  return RegisteredEngineDiagnosticFields(diagnostic_code, candidates);
-}
-
 struct PublicAbiDispatchResult {
   bool attempted = false;
   bool ok = false;
@@ -7870,8 +7794,28 @@ struct PublicAbiDispatchResult {
   std::string diagnostic_detail;
   std::string audit_detail;
   std::vector<ServerDiagnosticField> diagnostic_fields;
+  std::optional<scratchbird::server_engine_bridge::EngineDiagnosticSnapshot>
+      source_diagnostic;
   sb_engine_result_t result_handle = nullptr;
 };
+
+void CapturePublicAbiFailure(sb_engine_result_t handle,
+                             PublicAbiDispatchResult* result) {
+  scratchbird::server_engine_bridge::EngineDiagnosticSnapshot snapshot;
+  if (!scratchbird::server_engine_bridge::CopyEngineDiagnosticSnapshot(
+          handle, 0, &snapshot)) return;
+  result->diagnostic_code = snapshot.code;
+  result->diagnostic_detail = snapshot.safe_detail;
+  result->audit_detail = snapshot.message_key;
+  std::vector<ServerDiagnosticField> candidates;
+  candidates.reserve(snapshot.fields.size());
+  for (const auto& field : snapshot.fields) {
+    candidates.push_back({field.key, field.value});
+  }
+  result->diagnostic_fields =
+      RegisteredEngineDiagnosticFields(snapshot.code, candidates);
+  result->source_diagnostic = std::move(snapshot);
+}
 
 ServerDiagnostic PublicAbiFailureDiagnostic(
     const PublicAbiDispatchResult& result,
@@ -7883,6 +7827,18 @@ ServerDiagnostic PublicAbiFailureDiagnostic(
           : result.diagnostic_code,
       std::move(message),
       std::move(detail));
+  if (result.source_diagnostic &&
+      result.source_diagnostic->code == diagnostic.code) {
+    if (!AdoptEngineDiagnosticSource(*result.source_diagnostic, &diagnostic)) {
+      auto failed = SblrServerDiagnostic(
+          "MESSAGE_VECTOR.CONVERSION_FAILED",
+          "The engine diagnostic could not be safely transferred.", {});
+      failed.internal_audit_key = "engine_diagnostic_source_adoption_failed";
+      return failed;
+    }
+    // The source key remains private until active template/redaction authority
+    // resolves a public rendering key; source identity grants no disclosure.
+  }
   if (diagnostic.code == "SB_DIAG_FUNCTION_CONVERSION_INPUT" ||
       diagnostic.code == "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION") {
     // These registered diagnostics have exact public shapes: either all
@@ -8295,11 +8251,7 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
       }
       mark_phase("result_payload");
       if (!dispatch_result.ok) {
-        dispatch_result.diagnostic_code = FirstEngineDiagnosticCode(abi_result);
-        dispatch_result.diagnostic_detail = FirstEngineDiagnosticDetail(abi_result);
-        dispatch_result.diagnostic_fields =
-            FirstRegisteredEngineDiagnosticFields(
-                abi_result, dispatch_result.diagnostic_code);
+        CapturePublicAbiFailure(abi_result, &dispatch_result);
       }
       mark_phase("result_diagnostics");
       if (dispatch_result.ok && retain_result_handle) {
@@ -8577,14 +8529,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     // separately paged rowset. Retaining the engine result handle must not
     // hide SBER or CIRS.
     const bool statement_execute_terminal_payload =
-        admission_token->opcode_stream &&
-        admission_token->stream.operations.size() == 3 &&
-        (admission_token->stream.operations[1].operation_id ==
-             "engine.op.stmt_execute" ||
-         admission_token->stream.operations[1].operation_id ==
-             "engine.op.stmt_execute_direct" ||
-         admission_token->stream.operations[1].operation_id ==
-             "engine.op.catalog_introspect");
+        ServerSblrHasTerminalCursorPayload(admission_token);
     if (!dispatch_result.ok || !retain_result_handle ||
         statement_execute_terminal_payload) {
       sb_engine_string_view_t payload{};
@@ -8605,15 +8550,7 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
           std::move(query_explain_material);
     }
     if (!dispatch_result.ok) {
-      dispatch_result.diagnostic_code =
-          FirstEngineDiagnosticCode(engine_result);
-      dispatch_result.diagnostic_detail =
-          FirstEngineDiagnosticDetail(engine_result);
-      dispatch_result.audit_detail =
-          FirstEngineDiagnosticAuditKey(engine_result);
-      dispatch_result.diagnostic_fields =
-          FirstRegisteredEngineDiagnosticFields(
-              engine_result, dispatch_result.diagnostic_code);
+      CapturePublicAbiFailure(engine_result, &dispatch_result);
     }
     if (dispatch_result.ok && retain_result_handle) {
       dispatch_result.result_handle = engine_result;
@@ -11496,7 +11433,7 @@ SessionOperationResult HandleExecuteSblrImpl(
       if (!begun.ok ||
           !IsCompleteEngineTransactionIdentity(
               begun.local_transaction_id,
-              begun.transaction_uuid.canonical)) {
+              begun.transaction_uuid)) {
         const std::string detail =
             begun.diagnostics.empty() || begun.diagnostics.front().detail.empty()
                 ? "transaction_begin_failed"
@@ -11635,7 +11572,7 @@ SessionOperationResult HandleExecuteSblrImpl(
       bool finality_known = false;
       bool secondary_failure = false;
       std::uint64_t engine_finalized_local_transaction_id = 0;
-      std::string engine_finalized_transaction_uuid;
+      scratchbird::core::platform::Uuid engine_finalized_transaction_uuid;
       std::string finality_detail;
       std::string finality_diagnostic_code;
       std::string finality_diagnostic_detail;
@@ -11654,7 +11591,7 @@ SessionOperationResult HandleExecuteSblrImpl(
         engine_finalized_local_transaction_id =
             committed.local_transaction_id;
         engine_finalized_transaction_uuid =
-            committed.transaction_uuid.canonical;
+            committed.transaction_uuid;
         finality_detail = committed.commit_finality_state;
         if (!committed.diagnostics.empty()) {
           finality_diagnostic_code = committed.diagnostics.front().code;
@@ -11679,7 +11616,7 @@ SessionOperationResult HandleExecuteSblrImpl(
         engine_finalized_local_transaction_id =
             rolled_back.local_transaction_id;
         engine_finalized_transaction_uuid =
-            rolled_back.transaction_uuid.canonical;
+            rolled_back.transaction_uuid;
         finality_detail = rolled_back.rollback_finality_state;
         if (!rolled_back.diagnostics.empty()) {
           finality_diagnostic_code = rolled_back.diagnostics.front().code;
@@ -12027,9 +11964,8 @@ SessionOperationResult HandleExecuteSblrImpl(
       if (canonical_ingress &&
           admission.operation_id == "engine.op.result_page") {
         std::string detail;
-        if (!admission.admission_token ||
-            !admission.admission_token->opcode_stream ||
-            admission.admission_token->stream.operations.size() != 3) {
+        const auto* command = AdmittedServerSblrCommand(admission.admission_token);
+        if (command == nullptr) {
           return Failure(
               static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
               response_schema, decoded->session_uuid,
@@ -12037,8 +11973,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               "The result-page package shape is invalid.",
               "result_page_package_invalid");
         }
-        const auto& operation =
-            admission.admission_token->stream.operations[1];
+        const auto& operation = *command;
         if (operation.operands.size() != 1 ||
             !scratchbird::engine::sblr::DecodeSblrResultPageDescriptorV1(
                 operation.operands.front().value_body.data(),
@@ -12074,9 +12009,8 @@ SessionOperationResult HandleExecuteSblrImpl(
       if (canonical_ingress &&
           admission.operation_id == "engine.op.query_explain") {
         std::string detail;
-        if (!admission.admission_token ||
-            !admission.admission_token->opcode_stream ||
-            admission.admission_token->stream.operations.size() != 3) {
+        const auto* command = AdmittedServerSblrCommand(admission.admission_token);
+        if (command == nullptr) {
           return Failure(
               static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
               response_schema, decoded->session_uuid,
@@ -12084,8 +12018,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               "The query-explain package shape is invalid.",
               "query_explain_package_invalid");
         }
-        const auto& operation =
-            admission.admission_token->stream.operations[1];
+        const auto& operation = *command;
         if (operation.operands.size() != 1 ||
             operation.operands.front().type !=
                 "query_explain_descriptor.v1" ||
@@ -12109,9 +12042,8 @@ SessionOperationResult HandleExecuteSblrImpl(
       if (canonical_ingress &&
           admission.operation_id == "engine.op.parse_text") {
         std::string detail;
-        if (!admission.admission_token ||
-            !admission.admission_token->opcode_stream ||
-            admission.admission_token->stream.operations.size() != 3) {
+        const auto* command = AdmittedServerSblrCommand(admission.admission_token);
+        if (command == nullptr) {
           return Failure(
               static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
               response_schema, decoded->session_uuid,
@@ -12119,8 +12051,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               "The parse-text package shape is invalid.",
               "parse_text_package_invalid");
         }
-        const auto& operation =
-            admission.admission_token->stream.operations[1];
+        const auto& operation = *command;
         if (operation.operands.size() != 1 ||
             operation.operands.front().type != "parse_text_descriptor" ||
             operation.operands.front().name != "text" ||
@@ -12143,9 +12074,8 @@ SessionOperationResult HandleExecuteSblrImpl(
       if (canonical_ingress &&
           admission.operation_id == "engine.op.catalog_epoch_check") {
         std::string detail;
-        if (!admission.admission_token ||
-            !admission.admission_token->opcode_stream ||
-            admission.admission_token->stream.operations.size() != 3) {
+        const auto* command = AdmittedServerSblrCommand(admission.admission_token);
+        if (command == nullptr) {
           return Failure(
               static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
               response_schema, decoded->session_uuid,
@@ -12153,8 +12083,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               "The catalog-epoch-check package shape is invalid.",
               "catalog_epoch_check_package_invalid");
         }
-        const auto& operation =
-            admission.admission_token->stream.operations[1];
+        const auto& operation = *command;
         if (operation.operands.size() != 1 ||
             operation.operands.front().type !=
                 "catalog_epoch_check_descriptor" ||

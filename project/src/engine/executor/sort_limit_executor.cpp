@@ -9,6 +9,7 @@
 #include "descriptor_value_runtime.hpp"
 #include "hash_digest.hpp"
 #include "sbl_numeric.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -46,41 +47,10 @@ bool DescriptorOrderTermsCarrierIsExactDefault(
   return order_terms.empty() && order_terms.capacity() == empty.capacity();
 }
 
-bool StringCarrierIsExactDefault(const std::string& value) {
-  const std::string empty;
-  return value.empty() && value.capacity() == empty.capacity();
+bool IdentityCarrierIsExactDefault(const PhysicalUuid& value) {
+  return value.is_nil();
 }
 
-bool CanonicalExecutionMgaAuthorityCarrierIsExactDefault(
-    const CanonicalExecutionMgaAuthority& authority) {
-  const CanonicalExecutionMgaAuthority empty;
-  const auto exact_empty_string = [](const std::string& value,
-                                     const std::string& baseline) {
-    return value.empty() && value.capacity() == baseline.capacity();
-  };
-  const auto& context = authority.statement_context;
-  const auto& empty_context = empty.statement_context;
-  return authority.origin == empty.origin && !authority.resolve_current &&
-         PhysicalMgaStatementContextEqual(context, empty_context) &&
-         exact_empty_string(context.statement_uuid,
-                            empty_context.statement_uuid) &&
-         exact_empty_string(context.owning_transaction_uuid,
-                            empty_context.owning_transaction_uuid) &&
-         exact_empty_string(context.statement_snapshot_uuid,
-                            empty_context.statement_snapshot_uuid) &&
-         exact_empty_string(context.statement_metadata_snapshot_uuid,
-                            empty_context.statement_metadata_snapshot_uuid) &&
-         exact_empty_string(context.snapshot_kind,
-                            empty_context.snapshot_kind) &&
-         exact_empty_string(context.statement_timestamp,
-                            empty_context.statement_timestamp) &&
-         context.active_excluded_local_transaction_ids.empty() &&
-         context.active_excluded_local_transaction_ids.capacity() ==
-             empty_context.active_excluded_local_transaction_ids.capacity() &&
-         context.in_doubt_excluded_local_transaction_ids.empty() &&
-         context.in_doubt_excluded_local_transaction_ids.capacity() ==
-             empty_context.in_doubt_excluded_local_transaction_ids.capacity();
-}
 
 bool SortReceiptRequestCarriersAreExactDefault(
     const CanonicalDescriptorSortRequest& request) {
@@ -90,7 +60,7 @@ bool SortReceiptRequestCarriersAreExactDefault(
              empty.selected_physical_node_id &&
          DescriptorBatchCarrierIsExactDefault(request.input_batch) &&
          DescriptorOrderTermsCarrierIsExactDefault(request.order_terms) &&
-         StringCarrierIsExactDefault(
+         IdentityCarrierIsExactDefault(
              request.deterministic_tie_evidence_uuid) &&
          request.maximum_pair_comparisons ==
              empty.maximum_pair_comparisons &&
@@ -171,19 +141,9 @@ bool CanonicalDescriptorBatchRangeMemoryBytes(
   return true;
 }
 
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
+bool IsCanonicalUuid(const PhysicalUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
-
 class OrderTermBindingEncoder {
  public:
   OrderTermBindingEncoder(
@@ -219,6 +179,13 @@ class OrderTermBindingEncoder {
     return true;
   }
 
+  bool AppendIdentity(const PhysicalUuid& identity) {
+    for (const auto byte : identity.bytes) {
+      if (!AppendByte(byte)) return false;
+    }
+    return true;
+  }
+
   std::uint64_t bytes() const { return bytes_; }
 
  private:
@@ -244,17 +211,17 @@ class OrderTermBindingEncoder {
 bool EncodeOrderTermBindingFields(
     OrderTermBindingEncoder* encoder,
     const CanonicalDescriptorOrderTerm& term,
-    const std::string_view ordering_property_uuid) {
+    const PhysicalUuid& ordering_property_uuid) {
   if (encoder == nullptr ||
       !encoder->AppendString(
-          "scratchbird.order-term-binding-evidence.v1") ||
-      !encoder->AppendString(ordering_property_uuid) ||
+          "scratchbird.order-term-binding-digest.v2") ||
+      !encoder->AppendIdentity(ordering_property_uuid) ||
       !encoder->AppendUint64(term.column) ||
       !encoder->AppendUint64(term.expression_descriptor_id) ||
       !encoder->AppendUint64(static_cast<std::uint8_t>(term.direction)) ||
       !encoder->AppendUint64(
           static_cast<std::uint8_t>(term.null_placement)) ||
-      !encoder->AppendString(term.collation_uuid) ||
+      !encoder->AppendIdentity(term.collation_uuid) ||
       !encoder->AppendUint64(term.resource_epoch) ||
       !encoder->AppendUint64(term.collation_epoch) ||
       !encoder->AppendBool(term.text_seed.active) ||
@@ -282,28 +249,6 @@ bool EncodeOrderTermBindingFields(
   return std::ranges::all_of(
       term.timezone_seed.timezone_names,
       [&](const auto& name) { return encoder->AppendString(name); });
-}
-
-std::string OrderTermBindingUuidFromSha256(
-    const scratchbird::core::hash::Digest256& digest) {
-  std::array<scratchbird::core::platform::byte, 16> bytes{};
-  std::copy_n(digest.begin(), bytes.size(), bytes.begin());
-  // UUIDv8 denotes a deterministic application-defined digest layout.
-  bytes[6] = static_cast<scratchbird::core::platform::byte>(
-      (bytes[6] & 0x0fU) | 0x80U);
-  bytes[8] = static_cast<scratchbird::core::platform::byte>(
-      (bytes[8] & 0x3fU) | 0x80U);
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string result;
-  result.reserve(36);
-  for (std::size_t index = 0; index < bytes.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      result.push_back('-');
-    }
-    result.push_back(kHex[bytes[index] >> 4]);
-    result.push_back(kHex[bytes[index] & 0x0fU]);
-  }
-  return result;
 }
 
 std::string DescriptorField(const std::string& descriptor,
@@ -808,8 +753,7 @@ static DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTermFields(
                    "order expression type is unknown");
   }
   if (type_id == dt::CanonicalTypeId::character) {
-    const auto descriptor_collation = DescriptorField(
-        descriptor.encoded_descriptor, "collation_uuid");
+    const auto descriptor_collation = descriptor.collation_uuid;
     const auto& seed = term.text_seed;
     if (!IsCanonicalUuid(term.collation_uuid) ||
         descriptor_collation != term.collation_uuid ||
@@ -839,7 +783,7 @@ static DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTermFields(
         (type_id == dt::CanonicalTypeId::time &&
          timezone_profile == "time_timezone_profile");
     const auto& seed = term.timezone_seed;
-    if (!profile_matches_type || !term.collation_uuid.empty() ||
+    if (!profile_matches_type || !term.collation_uuid.is_nil() ||
         term.resource_epoch == 0 || term.timezone_epoch == 0 ||
         term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed) ||
         !seed.active || seed.seed_pack_name.empty() ||
@@ -849,7 +793,7 @@ static DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTermFields(
           "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
           "temporal order lacks bound timezone resource authority");
     }
-  } else if (!term.collation_uuid.empty() || term.resource_epoch != 0 ||
+  } else if (!term.collation_uuid.is_nil() || term.resource_epoch != 0 ||
              term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed) ||
              term.timezone_epoch != 0 ||
              !TimezoneSeedAbsent(term.timezone_seed)) {
@@ -866,13 +810,14 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
       term, column.descriptor, column.descriptor_id);
 }
 
-bool PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+bool PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
     const CanonicalDescriptorOrderTerm& term,
-    const std::string_view ordering_property_uuid,
+    const PhysicalUuid& ordering_property_uuid,
     std::uint64_t* workspace_bytes) {
-  constexpr std::uint64_t kUuidOutputBytes = 36;
+  constexpr std::uint64_t kDigestOutputBytes = sizeof(CanonicalOrderTermBindingDigest);
   if (workspace_bytes == nullptr ||
       !IsCanonicalUuid(ordering_property_uuid) ||
+      (!term.collation_uuid.is_nil() && !IsCanonicalUuid(term.collation_uuid)) ||
       term.column > std::numeric_limits<std::uint64_t>::max()) {
     return false;
   }
@@ -882,33 +827,33 @@ bool PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
   if (!EncodeOrderTermBindingFields(&planner, term,
                                     ordering_property_uuid) ||
       planner.bytes() > std::numeric_limits<std::uint64_t>::max() -
-                            kUuidOutputBytes) {
+                            kDigestOutputBytes) {
     return false;
   }
-  *workspace_bytes = planner.bytes() + kUuidOutputBytes;
+  *workspace_bytes = planner.bytes() + kDigestOutputBytes;
   return true;
 }
 
-std::string ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
+std::optional<CanonicalOrderTermBindingDigest> ComputeCanonicalDescriptorOrderTermBindingDigest(
     const CanonicalDescriptorOrderTerm& term,
-    const std::string_view ordering_property_uuid,
+    const PhysicalUuid& ordering_property_uuid,
     const std::uint64_t maximum_workspace_bytes,
     std::uint64_t* actual_workspace_bytes) {
   namespace core_hash = scratchbird::core::hash;
   namespace platform = scratchbird::core::platform;
-  constexpr std::uint64_t kUuidOutputBytes = 36;
+  constexpr std::uint64_t kDigestOutputBytes = sizeof(CanonicalOrderTermBindingDigest);
   if (actual_workspace_bytes == nullptr) return {};
   *actual_workspace_bytes = 0;
   std::uint64_t planned_workspace_bytes = 0;
-  if (!PlanCanonicalDescriptorOrderTermBindingEvidenceWorkspace(
+  if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
           term, ordering_property_uuid, &planned_workspace_bytes) ||
       planned_workspace_bytes > maximum_workspace_bytes ||
-      planned_workspace_bytes < kUuidOutputBytes ||
-      planned_workspace_bytes - kUuidOutputBytes >
+      planned_workspace_bytes < kDigestOutputBytes ||
+      planned_workspace_bytes - kDigestOutputBytes >
           std::numeric_limits<std::size_t>::max()) {
     return {};
   }
-  const auto payload_bytes = planned_workspace_bytes - kUuidOutputBytes;
+  const auto payload_bytes = planned_workspace_bytes - kDigestOutputBytes;
   try {
     std::vector<platform::byte> payload(
         static_cast<std::size_t>(payload_bytes));
@@ -920,14 +865,123 @@ std::string ComputeCanonicalDescriptorOrderTermBindingEvidenceUuid(
     }
     const auto digest = core_hash::ComputeSha256Digest(payload);
     if (!digest.ok()) return {};
-    auto result = OrderTermBindingUuidFromSha256(digest.digest);
-    if (result.size() != kUuidOutputBytes) return {};
     *actual_workspace_bytes = planned_workspace_bytes;
-    return result;
+    return digest.digest;
   } catch (const std::bad_alloc&) {
     return {};
   } catch (const std::length_error&) {
     return {};
+  }
+}
+
+std::shared_ptr<const CanonicalWindowOrderBindingReceipt>
+CanonicalWindowOrderBindingReceipt::Issue(
+    const TypedPhysicalNodeDag& dag, const std::uint64_t physical_node_id,
+    const ExecutorColumnDescriptor& column,
+    const CanonicalDescriptorOrderTerm& term,
+    const internal_api::EngineUuid& ordering_property_uuid,
+    const CanonicalExecutionMgaAuthority& authority,
+    const std::uint64_t maximum_workspace_bytes) noexcept {
+  try {
+    if (dag.abi_version != 2 ||
+        !RevalidateCanonicalExecutionMgaAuthority(authority, dag).ok ||
+        !ValidateCanonicalDescriptorOrderTerm(term, column).ok) return {};
+    DescriptorBatch schema;
+    schema.columns.push_back(column);
+    if (!ValidateCanonicalDescriptorBatch(schema, {column.descriptor_id}).ok)
+      return {};
+    const auto node = std::ranges::find_if(dag.nodes, [&](const auto& candidate) {
+      return candidate.physical_node_id == physical_node_id;
+    });
+    if (node == dag.nodes.end() || node->node_kind != PhysicalNodeKind::kWindow ||
+        std::ranges::count(node->required_property_uuids, ordering_property_uuid) != 1 ||
+        node->input_physical_node_ids.size() != 1) return {};
+    const auto input = std::ranges::find_if(dag.nodes, [&](const auto& candidate) {
+      return candidate.physical_node_id == node->input_physical_node_ids.front();
+    });
+    if (input == dag.nodes.end() || term.column >= input->output_descriptor_ids.size() ||
+        input->output_descriptor_ids[term.column] != column.descriptor_id ||
+        std::ranges::count(input->delivered_property_uuids, ordering_property_uuid) != 1)
+      return {};
+    std::uint64_t workspace = 0;
+    if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
+            term, ordering_property_uuid, &workspace) ||
+        workspace > maximum_workspace_bytes || workspace > dag.memory_budget_bytes ||
+        workspace > node->memory_bytes_required ||
+        workspace - sizeof(CanonicalOrderTermBindingDigest) >
+            std::numeric_limits<std::size_t>::max()) return {};
+    auto receipt = std::shared_ptr<CanonicalWindowOrderBindingReceipt>(
+        new CanonicalWindowOrderBindingReceipt);
+    receipt->binding_bytes_.resize(workspace - sizeof(CanonicalOrderTermBindingDigest));
+    OrderTermBindingEncoder encoder(&receipt->binding_bytes_, receipt->binding_bytes_.size());
+    if (!EncodeOrderTermBindingFields(&encoder, term, ordering_property_uuid) ||
+        encoder.bytes() != receipt->binding_bytes_.size()) return {};
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(receipt->binding_bytes_);
+    if (!digest.ok()) return {};
+    const auto identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!identity) return {};
+    receipt->identity_ = *identity;
+    receipt->digest_ = digest.digest;
+    receipt->dag_ = dag;
+    receipt->physical_node_id_ = physical_node_id;
+    receipt->column_ = column;
+    receipt->authority_ = authority;
+    // Copying the resolver/retained state may execute caller-owned machinery.
+    // Publish only after resolving the retained authority again.
+    if (!RevalidateCanonicalExecutionMgaAuthority(receipt->authority_, receipt->dag_).ok)
+      return {};
+    return receipt;
+  } catch (...) {
+    return {};
+  }
+}
+
+bool CanonicalWindowOrderBindingReceipt::Matches(
+    const TypedPhysicalNodeDag& dag, const std::uint64_t physical_node_id,
+    const ExecutorColumnDescriptor& column,
+    const CanonicalDescriptorOrderTerm& term,
+    const internal_api::EngineUuid& ordering_property_uuid,
+    const CanonicalExecutionMgaAuthority& authority,
+    const std::uint64_t maximum_workspace_bytes,
+    std::uint64_t* actual_workspace_bytes) const noexcept {
+  if (!actual_workspace_bytes) return false;
+  *actual_workspace_bytes = 0;
+  try {
+    if (dag != dag_ || physical_node_id != physical_node_id_ ||
+        column.descriptor != column_.descriptor ||
+        column.descriptor_id != column_.descriptor_id ||
+        column.nullable != column_.nullable || column.stable_name != column_.stable_name ||
+        authority.origin != authority_.origin ||
+        !RevalidateCanonicalExecutionMgaAuthority(authority_, dag_).ok ||
+        !RevalidateCanonicalExecutionMgaAuthority(authority, dag).ok ||
+        !ValidateCanonicalDescriptorOrderTerm(term, column).ok) return false;
+    std::uint64_t workspace = 0;
+    if (!PlanCanonicalDescriptorOrderTermBindingDigestWorkspace(
+            term, ordering_property_uuid, &workspace) ||
+        workspace > maximum_workspace_bytes ||
+        workspace - sizeof(CanonicalOrderTermBindingDigest) != binding_bytes_.size())
+      return false;
+    std::vector<std::uint8_t> bytes(binding_bytes_.size());
+    OrderTermBindingEncoder encoder(&bytes, bytes.size());
+    if (!EncodeOrderTermBindingFields(&encoder, term, ordering_property_uuid) ||
+        encoder.bytes() != bytes.size() || bytes != binding_bytes_) return false;
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes);
+    if (!digest.ok() || digest.digest != digest_ ||
+        !RevalidateCanonicalExecutionMgaAuthority(authority_, dag_).ok ||
+        !RevalidateCanonicalExecutionMgaAuthority(authority, dag).ok) return false;
+    // A resolver is external execution: recheck all caller bindings after its
+    // last invocation, rather than publishing an earlier equality decision.
+    if (dag != dag_ || column.descriptor != column_.descriptor ||
+        column.descriptor_id != column_.descriptor_id ||
+        column.nullable != column_.nullable || column.stable_name != column_.stable_name ||
+        authority.origin != authority_.origin) return false;
+    OrderTermBindingEncoder final_encoder(&bytes, bytes.size());
+    if (!EncodeOrderTermBindingFields(&final_encoder, term, ordering_property_uuid) ||
+        final_encoder.bytes() != bytes.size() || bytes != binding_bytes_) return false;
+    *actual_workspace_bytes = workspace;
+    return true;
+  } catch (...) {
+    return false;
   }
 }
 
@@ -960,12 +1014,13 @@ CanonicalDescriptorEqualityKeyPlan PlanCanonicalDescriptorEqualityKey(
   };
   const auto add_exact_metadata = [&]() {
     return add_field(
-               std::string_view("scratchbird.descriptor-equality-key.v1")
+               std::string_view("scratchbird.descriptor-equality-key.v2")
                    .size()) &&
-           add_field(value.descriptor.descriptor_uuid.canonical.size()) &&
+           add_field(sizeof(value.descriptor.descriptor_uuid)) &&
+           add_field(sizeof(value.descriptor.type_uuid)) &&
            add_field(value.descriptor.canonical_type_name.size()) &&
            add_field(value.descriptor.encoded_descriptor.size()) &&
-           add_field(term.collation_uuid.size()) &&
+           add_field(sizeof(term.collation_uuid)) &&
            add_field(20) && add_field(20) && add_field(20) &&
            add_field(term.text_seed.seed_pack_name.size()) &&
            add_field(term.text_seed.seed_pack_version.size()) &&
@@ -1224,12 +1279,17 @@ CanonicalDescriptorEqualityKeyResult MakeCanonicalDescriptorEqualityKey(
 
   std::string key;
   key.reserve(plan.retained_key_bytes);
-  AppendEqualityKeyField(&key, "scratchbird.descriptor-equality-key.v1");
+  AppendEqualityKeyField(&key, "scratchbird.descriptor-equality-key.v2");
   AppendEqualityKeyField(&key,
-                         value.descriptor.descriptor_uuid.canonical);
+                         std::string_view(reinterpret_cast<const char*>(
+                             value.descriptor.descriptor_uuid.bytes.data()), 16));
+  AppendEqualityKeyField(&key,
+                         std::string_view(reinterpret_cast<const char*>(
+                             value.descriptor.type_uuid.bytes.data()), 16));
   AppendEqualityKeyField(&key, value.descriptor.canonical_type_name);
   AppendEqualityKeyField(&key, value.descriptor.encoded_descriptor);
-  AppendEqualityKeyField(&key, term.collation_uuid);
+  AppendEqualityKeyField(&key, std::string_view(
+      reinterpret_cast<const char*>(term.collation_uuid.bytes.data()), 16));
   AppendEqualityKeyField(&key, std::to_string(term.resource_epoch));
   AppendEqualityKeyField(&key, std::to_string(term.collation_epoch));
   AppendEqualityKeyField(&key, std::to_string(term.timezone_epoch));
@@ -1942,7 +2002,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     const DescriptorBatch& execution_input_batch,
     const DescriptorBatch& execution_order_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& execution_order_terms,
-    const std::string& execution_deterministic_tie_evidence_uuid,
+    const PhysicalUuid& execution_deterministic_tie_evidence_uuid,
     const bool separate_order_key_batch,
     const DescriptorCancellationProbe cancellation_requested,
     const void* cancellation_context) {
@@ -1986,7 +2046,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
   const DescriptorBatch* order_batch = &execution_order_batch;
   const std::vector<CanonicalDescriptorOrderTerm>* order_terms =
       &execution_order_terms;
-  const std::string* deterministic_tie_evidence_uuid =
+  const PhysicalUuid* deterministic_tie_evidence_uuid =
       &execution_deterministic_tie_evidence_uuid;
 
   if (const auto stopped = poll_cancellation("before validation");
@@ -2060,14 +2120,12 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     if (!order_validation.ok) return refuse(std::move(order_validation));
   }
   if (order_terms->empty() ||
-      !IsCanonicalUuid(*deterministic_tie_evidence_uuid) ||
-      *deterministic_tie_evidence_uuid ==
-          "00000000-0000-0000-0000-000000000000") {
+      !IsCanonicalUuid(*deterministic_tie_evidence_uuid)) {
     return order_refusal(
         "bound order terms and deterministic tie evidence are required");
   }
 
-  std::unordered_set<std::string> forbidden_tie_identities;
+  std::set<PhysicalUuid> forbidden_tie_identities;
   forbidden_tie_identities.insert(physical_dag->selected_plan_uuid);
   forbidden_tie_identities.insert(selected_node->selected_alternative_uuid);
   forbidden_tie_identities.insert(selected_node->executor_capability_uuid);
@@ -2098,15 +2156,14 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSortBound(
     if (!validation.ok) {
       return order_refusal(validation.detail);
     }
-    const auto type_uuid =
-        DescriptorField(column.descriptor.encoded_descriptor, "type_uuid");
+    const auto type_uuid = column.descriptor.type_uuid;
     if (!IsCanonicalUuid(type_uuid)) {
       return order_refusal("ordered column type identity is unresolved");
     }
     forbidden_tie_identities.insert(
-        column.descriptor.descriptor_uuid.canonical);
+        column.descriptor.descriptor_uuid);
     forbidden_tie_identities.insert(type_uuid);
-    if (!term.collation_uuid.empty()) {
+    if (!term.collation_uuid.is_nil()) {
       forbidden_tie_identities.insert(term.collation_uuid);
     }
   }
@@ -2337,7 +2394,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   const DescriptorBatch* order_batch = &request.input_batch;
   const std::vector<CanonicalDescriptorOrderTerm>* order_terms =
       &request.order_terms;
-  const std::string* deterministic_tie_evidence_uuid =
+  const PhysicalUuid* deterministic_tie_evidence_uuid =
       &request.deterministic_tie_evidence_uuid;
   bool separate_order_key_batch = false;
   if (request.order_key_receipt != nullptr) {
@@ -2349,7 +2406,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
         receipt.selected_physical_node_id_ == 0 ||
         receipt.maximum_pair_comparisons_ == 0 ||
         receipt.maximum_order_key_batch_bytes_ == 0 ||
-        receipt.ordering_property_uuid_.empty()) {
+        receipt.ordering_property_uuid_.is_nil()) {
       CanonicalDescriptorSortResult result;
       result.diagnostic = Refusal(
           "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
@@ -2399,7 +2456,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
         receipt.selected_physical_node_id_ == 0 ||
         receipt.maximum_pair_comparisons_ == 0 ||
         receipt.maximum_order_key_batch_bytes_ == 0 ||
-        receipt.ordering_property_uuid_.empty()) {
+        receipt.ordering_property_uuid_.is_nil()) {
       CanonicalDescriptorSortResult result;
       result.diagnostic = Refusal(
           "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
@@ -2436,7 +2493,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
-    const std::string& borrowed_deterministic_tie_evidence_uuid) {
+    const PhysicalUuid& borrowed_deterministic_tie_evidence_uuid) {
   return ExecuteCanonicalDescriptorSort(
       request, borrowed_execution_dag, borrowed_input_batch,
       borrowed_order_terms, borrowed_deterministic_tie_evidence_uuid, nullptr,
@@ -2448,13 +2505,13 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const TypedPhysicalNodeDag& borrowed_execution_dag,
     const DescriptorBatch& borrowed_input_batch,
     const std::vector<CanonicalDescriptorOrderTerm>& borrowed_order_terms,
-    const std::string& borrowed_deterministic_tie_evidence_uuid,
+    const PhysicalUuid& borrowed_deterministic_tie_evidence_uuid,
     const DescriptorCancellationProbe cancellation_requested,
     const void* cancellation_context) {
   if (!TypedPhysicalNodeDagCarrierIsExactDefault(request.physical_dag) ||
       !DescriptorBatchCarrierIsExactDefault(request.input_batch) ||
       !DescriptorOrderTermsCarrierIsExactDefault(request.order_terms) ||
-      !StringCarrierIsExactDefault(
+      !IdentityCarrierIsExactDefault(
           request.deterministic_tie_evidence_uuid) ||
       request.order_key_receipt != nullptr) {
     CanonicalDescriptorSortResult result;

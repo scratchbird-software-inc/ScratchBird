@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "canonical_query_result_metadata.hpp"
+#include "canonical_query_result_values.hpp"
 #include "sblr_event_notification.hpp"
 #include "sblr_local_backup_archive.hpp"
 #include "sblr_local_metrics_read.hpp"
@@ -596,6 +598,19 @@ bool ParseCanonicalUnsigned(std::string_view text,
   return true;
 }
 
+bool HasCanonicalSourceMapReference(const SblrOperationEnvelope& envelope) {
+  if (envelope.operands.size() != 1) return false;
+  const auto& operand = envelope.operands.front();
+  if (operand.ordinal != 1 ||
+      operand.value_kind != SblrValueKind::descriptor_ref ||
+      operand.value_body.size() != 24) return false;
+  scratchbird::core::platform::Uuid descriptor_uuid;
+  std::copy_n(operand.value_body.begin(), 16, descriptor_uuid.bytes.begin());
+  return scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuid) &&
+         std::any_of(operand.value_body.begin() + 16, operand.value_body.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
+}
+
 bool IsCanonicalNonNilUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-' ||
@@ -660,7 +675,7 @@ bool IsCanonicalStatementTimestamp(std::string_view value) {
 
 bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
   const auto object_reference_empty = [](const api::EngineObjectReference& ref) {
-    return ref.uuid.canonical.empty() && ref.object_kind.empty();
+    return ref.uuid.is_nil() && ref.object_kind.empty();
   };
   const auto identifier_atom_empty = [](const api::EngineIdentifierAtom& atom) {
     return atom.raw_text.empty() && !atom.was_quoted &&
@@ -680,10 +695,10 @@ bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
          !sql_reference.no_search_path &&
          sql_reference.path_components.empty() &&
          identifier_atom_empty(sql_reference.object_name) &&
-         bound_identity.object_uuid.canonical.empty() &&
+         bound_identity.object_uuid.is_nil() &&
          bound_identity.resolved_object_type.empty() &&
-         bound_identity.resolved_schema_uuid.canonical.empty() &&
-         bound_identity.parent_object_uuid.canonical.empty() &&
+         bound_identity.resolved_schema_uuid.is_nil() &&
+         bound_identity.parent_object_uuid.is_nil() &&
          bound_identity.catalog_generation_id == 0 &&
          bound_identity.security_epoch == 0 &&
          bound_identity.resource_epoch == 0 && request.descriptors.empty() &&
@@ -1664,43 +1679,22 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       descriptor.datatype_catalog_generation = catalog_generation;
       descriptor.datatype_registry_generation = registry_generation;
       descriptor.datatype_identity_authoritative = true;
-      static const auto canonical_descriptor_by_type_uuid = [] {
-        std::unordered_map<std::string, std::string> index;
-        const auto manifest = scratchbird::core::datatypes::
-            LoadCurrentCoreDatatypeCatalogManifest();
-        if (!manifest.ok()) return index;
-        for (const auto& row : manifest.manifest.descriptor_rows) {
-          if (!row.descriptor_uuid.valid()) continue;
-          const auto canonical_descriptor_uuid =
-              scratchbird::core::uuid::UuidToString(row.descriptor_uuid.value);
-          const auto identity = scratchbird::core::datatypes::
-              LookupDatatypeTypeCodecIdentityV1(
-                  "019d0000-0000-7000-8000-00000000d701",
-                  manifest.manifest.catalog_epoch, 1,
-                  canonical_descriptor_uuid, row.descriptor_epoch);
-          if (!identity.ok || identity.row.type_uuid.empty()) continue;
-          const auto [found, inserted] =
-              index.emplace(identity.row.type_uuid, canonical_descriptor_uuid);
-          if (!inserted && found->second != canonical_descriptor_uuid) {
-            found->second.clear();
-          }
+      scratchbird::core::datatypes::DatatypeTypeCodecIdentityLookupV1 identity;
+      for (const auto& row : scratchbird::core::datatypes::
+               CurrentDatatypeTypeCodecIdentityRowsV1()) {
+        if (row.catalog_snapshot_uuid != descriptor.datatype_catalog_snapshot_uuid ||
+            row.catalog_generation != descriptor.datatype_catalog_generation ||
+            row.registry_generation != descriptor.datatype_registry_generation ||
+            row.type_uuid != descriptor.type_uuid ||
+            row.descriptor_generation != descriptor.descriptor_generation) continue;
+        if (identity.ok) {
+          decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
+          decoded.detail = "authoritative relational datatype identity is ambiguous";
+          return decoded;
         }
-        return index;
-      }();
-      const auto canonical_descriptor =
-          canonical_descriptor_by_type_uuid.find(descriptor.type_uuid);
-      const auto identity =
-          canonical_descriptor == canonical_descriptor_by_type_uuid.end() ||
-                  canonical_descriptor->second.empty()
-              ? scratchbird::core::datatypes::
-                    DatatypeTypeCodecIdentityLookupV1{}
-              : scratchbird::core::datatypes::
-                    LookupDatatypeTypeCodecIdentityV1(
-                        descriptor.datatype_catalog_snapshot_uuid,
-                        descriptor.datatype_catalog_generation,
-                        descriptor.datatype_registry_generation,
-                        canonical_descriptor->second,
-                        descriptor.descriptor_generation);
+        identity.ok = true;
+        identity.row = row;
+      }
       const bool exact_datatype_identity =
           identity.ok && identity.row.type_uuid == descriptor.type_uuid &&
           identity.row.type_generation == descriptor.type_generation &&
@@ -1710,9 +1704,9 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       if (!IsCanonicalNonNilUuid(descriptor.statement_receipt_uuid) ||
           !IsCanonicalNonNilUuid(descriptor.datatype_catalog_snapshot_uuid) ||
           descriptor.statement_receipt_uuid !=
-              dispatch_request.context.statement_receipt_uuid.canonical ||
+              dispatch_request.context.statement_receipt_uuid ||
           descriptor.datatype_catalog_snapshot_uuid !=
-              dispatch_request.context.datatype_catalog_snapshot_uuid.canonical ||
+              dispatch_request.context.datatype_catalog_snapshot_uuid ||
           descriptor.datatype_catalog_generation !=
               dispatch_request.context.datatype_catalog_generation ||
           descriptor.datatype_registry_generation !=
@@ -2178,7 +2172,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
            descriptor->descriptor_uuid != descriptor_uuid ||
            descriptor->descriptor_generation !=
                reference.descriptor_generation))){
-        decoded.diagnostic_id="DATATYPE.DESCRIPTOR_INVALID";
+        decoded.diagnostic_id="DATATYPE.DESCRIPTOR.INVALID";
         decoded.detail="SBXN literal descriptor or canonical codec is invalid";return decoded;
       }
       if (contextual_mapping_index.has_value()) {
@@ -2203,7 +2197,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       const auto body_sha = scratchbird::core::hash::ComputeSha256Digest(
           node->literal_body);
       if (!body_sha.ok()) {
-        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
         decoded.detail = "SBXN literal canonical body hash failed";
         return decoded;
       }
@@ -2395,7 +2389,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           (exact_limit_binding && exact_limit_descriptor_count != 1) ||
           descriptor == decoded.request.relational_dag.descriptors.end() ||
           value.slot_ordinal != reference.slot_ordinal || !value_sha.ok()) {
-        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+        decoded.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
         decoded.detail = "parameter descriptor or canonical value is invalid";
         return decoded;
       }
@@ -2647,15 +2641,15 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
                            "timestamp-carrying model-source input";
     return decoded;
   }
-  if (dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||
+  if (dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid ||
       dag.bound_security_context_uuid !=
-          context.authorization_context.authority_uuid.canonical ||
-      dag.statement_uuid != context.statement_uuid.canonical ||
-      dag.owning_transaction_uuid != context.transaction_uuid.canonical ||
+          context.authorization_context.authority_uuid ||
+      dag.statement_uuid != context.statement_uuid ||
+      dag.owning_transaction_uuid != context.transaction_uuid ||
       dag.statement_snapshot_uuid !=
-          context.statement_snapshot_uuid.canonical ||
+          context.statement_snapshot_uuid ||
       dag.statement_metadata_snapshot_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.statement_metadata_snapshot_uuid ||
       dag.local_transaction_id != context.local_transaction_id ||
       context.local_transaction_id == 0 ||
       dag.snapshot_visible_through_local_transaction_id !=
@@ -2739,19 +2733,19 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
 #endif
   api::CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      request.context.catalog_epoch_uuid.canonical;
+      request.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      request.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = request.context.statement_uuid.canonical;
+      request.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = request.context.statement_uuid;
   if (!decoded.request.relational_dag.statement_timestamp.empty()) {
     planning_scope.statement_timestamp = request.context.statement_timestamp;
   }
   planning_scope.owning_transaction_uuid =
-      request.context.transaction_uuid.canonical;
+      request.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      request.context.statement_snapshot_uuid.canonical;
+      request.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id =
       request.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
@@ -2773,14 +2767,14 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   }
 #ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
   planner::CanonicalMgaStatementContext canonical_mga;
-  canonical_mga.statement_uuid = request.context.statement_uuid.canonical;
+  canonical_mga.statement_uuid = request.context.statement_uuid;
   canonical_mga.statement_timestamp = planning_scope.statement_timestamp;
   canonical_mga.owning_transaction_uuid =
-      request.context.transaction_uuid.canonical;
+      request.context.transaction_uuid;
   canonical_mga.statement_snapshot_uuid =
-      request.context.statement_snapshot_uuid.canonical;
+      request.context.statement_snapshot_uuid;
   canonical_mga.statement_metadata_snapshot_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.statement_metadata_snapshot_uuid;
   canonical_mga.owning_local_transaction_id =
       snapshot.snapshot_vector.owning_transaction.value;
   canonical_mga.visible_committed_high_watermark =
@@ -2864,6 +2858,23 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.selected_plan_uuid = heap_execution.selected_plan_uuid;
     routed.canonical_result_bytes = heap_execution.canonical_result_bytes;
     routed.api_result = heap_execution.api_result;
+    if (routed.api_result.ok && routed.canonical_result_published) {
+      std::string diagnostic_code;
+      std::string detail;
+      if (!PreserveCanonicalQueryResultMetadataV1(
+              request.context, decoded.request.relational_dag,
+              &routed.api_result.result_shape, &diagnostic_code, &detail) ||
+          !PreserveCanonicalQueryResultValuesV1(
+              request.context, &routed.api_result.result_shape,
+              &diagnostic_code, &detail)) {
+        routed.canonical_result_published = false;
+        routed.canonical_result_bytes.clear();
+        routed.api_result = QueryRouteFailure(
+            request.context, request.envelope.operation_id,
+            std::move(diagnostic_code), std::move(detail));
+        return routed;
+      }
+    }
     if (request.contextual_text_activation && routed.api_result.ok &&
         (!request.contextual_text_activation->joint_consumed ||
          !request.contextual_text_activation->lease.valid())) {
@@ -2899,11 +2910,11 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     return routed;
   }
   opt::CanonicalNativeObjectFreeAdmissionContext admission_context;
-  admission_context.statement_uuid = request.context.statement_uuid.canonical;
+  admission_context.statement_uuid = request.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      request.context.authorization_context.authority_uuid.canonical;
+      request.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = request.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       request.context.authorization_context.catalog_generation_id;
@@ -2913,11 +2924,11 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
       request.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = request.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      request.context.optimizer_capability_snapshot_uuid.canonical;
+      request.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      request.context.optimizer_resource_snapshot_uuid.canonical;
+      request.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      request.context.optimizer_route_snapshot_uuid.canonical;
+      request.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = request.context.optimizer_route_epoch;
   admission_context.route_generation =
       request.context.optimizer_route_generation;
@@ -2986,6 +2997,23 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
     routed.selected_plan_uuid = values_execution.selected_plan_uuid;
     routed.canonical_result_bytes = values_execution.canonical_result_bytes;
     routed.api_result = values_execution.api_result;
+    if (routed.api_result.ok && routed.canonical_result_published) {
+      std::string diagnostic_code;
+      std::string detail;
+      if (!PreserveCanonicalQueryResultMetadataV1(
+              request.context, decoded.request.relational_dag,
+              &routed.api_result.result_shape, &diagnostic_code, &detail) ||
+          !PreserveCanonicalQueryResultValuesV1(
+              request.context, &routed.api_result.result_shape,
+              &diagnostic_code, &detail)) {
+        routed.canonical_result_published = false;
+        routed.canonical_result_bytes.clear();
+        routed.api_result = QueryRouteFailure(
+            request.context, request.envelope.operation_id,
+            std::move(diagnostic_code), std::move(detail));
+        return routed;
+      }
+    }
     if(routed.api_result.ok&&routed.canonical_result_published){
       WriteSblrLiteralEvidenceTrace(decoded.literal_evidence,0);
       WriteSblrParameterEvidenceTrace(decoded.parameter_evidence,0);
@@ -3126,7 +3154,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
   if (request.envelope.requires_transaction_context &&
       request.context.local_transaction_id == 0 &&
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     result.api_result = QueryRouteFailure(
         request.context,
         request.envelope.operation_id,
@@ -3435,7 +3463,8 @@ void PropagateClusterApiDiagnostics(SblrDispatchResult* result) {
     return;
   }
   for (const auto& diagnostic : result->api_result.diagnostics) {
-    if (std::string_view(diagnostic.code).rfind("SBLR.CLUSTER.", 0) != 0 ||
+    if ((diagnostic.code != cluster_provider::kClusterPathAbsentCode &&
+         std::string_view(diagnostic.code).rfind("SBLR.CLUSTER.", 0) != 0) ||
         HasDispatchDiagnosticCode(*result, diagnostic.code)) {
       continue;
     }
@@ -3642,14 +3671,14 @@ void SetInvalidGlobalAggregateProjectionTransport(
     api::EngineSelectRowsRequest* typed) {
   if (typed == nullptr) return;
   typed->global_aggregate_projection = {};
-  typed->global_aggregate_projection.relation_uuid.canonical = "invalid";
-  typed->global_aggregate_projection.relation_descriptor_uuid.canonical =
+  typed->global_aggregate_projection.relation_uuid = "invalid";
+  typed->global_aggregate_projection.relation_descriptor_uuid =
       "invalid";
   typed->global_aggregate_projection.relation_descriptor_generation = 1;
   api::EngineGlobalAggregateProjection invalid;
   invalid.operation =
       static_cast<api::EngineGlobalAggregateOperation>(0);
-  invalid.aggregate_function_uuid.canonical =
+  invalid.aggregate_function_uuid =
       std::string(api::EngineGlobalAggregateCountFunctionUuid());
   invalid.output_alias = "invalid";
   invalid.result_descriptor =
@@ -3801,12 +3830,12 @@ bool DecodeGlobalAggregateProjectionTransportV1(
       return true;
     }
     if (index == 0) {
-      decoded.relation_uuid.canonical = relation_uuid;
-      decoded.relation_descriptor_uuid.canonical =
+      decoded.relation_uuid = relation_uuid;
+      decoded.relation_descriptor_uuid =
           relation_descriptor_uuid;
       decoded.relation_descriptor_generation = descriptor_generation;
-    } else if (decoded.relation_uuid.canonical != relation_uuid ||
-               decoded.relation_descriptor_uuid.canonical !=
+    } else if (decoded.relation_uuid != relation_uuid ||
+               decoded.relation_descriptor_uuid !=
                    relation_descriptor_uuid ||
                decoded.relation_descriptor_generation !=
                    descriptor_generation) {
@@ -3816,10 +3845,10 @@ bool DecodeGlobalAggregateProjectionTransportV1(
     api::EngineGlobalAggregateProjection output;
     output.operation =
         static_cast<api::EngineGlobalAggregateOperation>(operation);
-    output.aggregate_function_uuid.canonical = std::move(function_uuid);
+    output.aggregate_function_uuid = std::move(function_uuid);
     output.output_alias = std::move(output_alias);
-    output.source_field.column_uuid.canonical = std::move(column_uuid);
-    output.source_field.value_descriptor.descriptor_uuid.canonical =
+    output.source_field.column_uuid = std::move(column_uuid);
+    output.source_field.value_descriptor.descriptor_uuid =
         std::move(source_descriptor_uuid);
     output.source_field.value_descriptor.descriptor_kind =
         std::move(source_descriptor_kind);
@@ -3855,7 +3884,7 @@ bool IsAdmittedGlobalAggregateViewContextOption(std::string_view name) {
 }
 
 bool GlobalAggregateViewBaseDataEmpty(const api::EngineApiRequest& base) {
-  return base.target_database.uuid.canonical.empty() &&
+  return base.target_database.uuid.is_nil() &&
          base.target_database.object_kind.empty() &&
          base.sql_object_reference.expected_object_type.empty() &&
          base.sql_object_reference.path_type == "unqualified" &&
@@ -3869,10 +3898,10 @@ bool GlobalAggregateViewBaseDataEmpty(const api::EngineApiRequest& base) {
          base.sql_object_reference.object_name.exact_lookup_key.empty() &&
          !base.sql_object_reference.object_name.requires_exact_match &&
          base.sql_object_reference.object_name.source_span.empty() &&
-         base.bound_object_identity.object_uuid.canonical.empty() &&
+         base.bound_object_identity.object_uuid.is_nil() &&
          base.bound_object_identity.resolved_object_type.empty() &&
-         base.bound_object_identity.resolved_schema_uuid.canonical.empty() &&
-         base.bound_object_identity.parent_object_uuid.canonical.empty() &&
+         base.bound_object_identity.resolved_schema_uuid.is_nil() &&
+         base.bound_object_identity.parent_object_uuid.is_nil() &&
          base.bound_object_identity.catalog_generation_id == 0 &&
          base.bound_object_identity.security_epoch == 0 &&
          base.bound_object_identity.resource_epoch == 0 &&
@@ -3976,9 +4005,9 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
            "view_query_shape", "view_source_uuid", "view_projection_0"})) {
     return true;
   }
-  if (!base.target_object.uuid.canonical.empty() ||
+  if (!base.target_object.uuid.is_nil() ||
       base.target_object.object_kind != "view" ||
-      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4006,7 +4035,7 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
           base, "target_schema_uuid:", &target_schema_uuid) ||
       target_kind != "view" || view_name.empty() ||
       view_name != canonical_name || target_schema_uuid.empty() ||
-      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_schema.uuid != target_schema_uuid ||
       typed->target_object.object_kind != "view") {
     return true;
   }
@@ -4067,7 +4096,7 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
   }
 
   api::EngineDescriptor source_descriptor;
-  source_descriptor.descriptor_uuid.canonical =
+  source_descriptor.descriptor_uuid =
       std::move(source_column_descriptor_uuid);
   source_descriptor.descriptor_kind = std::move(source_descriptor_kind);
   source_descriptor.canonical_type_name = std::move(source_canonical_type);
@@ -4096,10 +4125,10 @@ bool DecodeGlobalAggregateViewCreateTransportV1(
       std::move(result_encoded_descriptor);
 
   api::EngineObjectReference source_relation;
-  source_relation.uuid.canonical = std::move(source_relation_uuid);
+  source_relation.uuid = std::move(source_relation_uuid);
   source_relation.object_kind = "table";
   api::EngineColumnDefinition source_column;
-  source_column.requested_column_uuid.canonical = std::move(source_column_uuid);
+  source_column.requested_column_uuid = std::move(source_column_uuid);
   source_column.descriptor = std::move(source_descriptor);
   source_column.ordinal = 0;
 
@@ -4174,7 +4203,7 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
            "projection_0"})) {
     return true;
   }
-  if (!base.target_schema.uuid.canonical.empty() ||
+  if (!base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4199,7 +4228,7 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
       !ReadExactSingleTransportOption(base, "source_kind:", &source_kind) ||
       target_uuid.empty() || target_uuid != source_uuid ||
       target_kind != "view" || source_kind != "view" ||
-      typed->source_object.uuid.canonical != target_uuid ||
+      typed->source_object.uuid != target_uuid ||
       typed->source_object.object_kind != "view") {
     return true;
   }
@@ -4257,7 +4286,7 @@ bool DecodeGlobalAggregateViewSelectTransportV1(
   }
 
   api::EngineDescriptor semantic;
-  semantic.descriptor_uuid.canonical =
+  semantic.descriptor_uuid =
       std::move(projection_descriptor_uuid);
   semantic.descriptor_kind = std::move(projection_descriptor_kind);
   semantic.canonical_type_name = std::move(projection_canonical_type);
@@ -4376,9 +4405,9 @@ bool DecodeRelationProjectionViewCreateTransportV1(
            "target_schema_uuid", "view_projection_count",
            "view_query_shape", "view_source_uuid", "view_projection_0",
            "view_projection_1"}) ||
-      !base.target_object.uuid.canonical.empty() ||
+      !base.target_object.uuid.is_nil() ||
       base.target_object.object_kind != "view" ||
-      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4410,7 +4439,7 @@ bool DecodeRelationProjectionViewCreateTransportV1(
       target_kind != "view" || !SafeTransportOutputName(view_name) ||
       view_name != canonical_name ||
       !CanonicalTransportUuid(target_schema_uuid) ||
-      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_schema.uuid != target_schema_uuid ||
       typed->target_object.object_kind != "view" ||
       typed->localized_names.size() != 1u ||
       typed->localized_names.front().name != view_name) {
@@ -4503,14 +4532,14 @@ bool DecodeRelationProjectionViewCreateTransportV1(
   if (source_identities.size() != 4u) return true;
 
   api::EngineObjectReference source_relation;
-  source_relation.uuid.canonical = decoded[0].relation_uuid;
+  source_relation.uuid = decoded[0].relation_uuid;
   source_relation.object_kind = "table";
   api::EngineColumnDefinition source_column;
-  source_column.requested_column_uuid.canonical =
+  source_column.requested_column_uuid =
       decoded[0].source_column_uuid;
   source_column.names.push_back(
       {"en", "primary", "", decoded[0].output_name, true});
-  source_column.descriptor.descriptor_uuid.canonical =
+  source_column.descriptor.descriptor_uuid =
       decoded[0].source_type_descriptor_uuid;
   source_column.descriptor.descriptor_kind =
       decoded[0].descriptor_kind;
@@ -4598,9 +4627,9 @@ bool DecodeRelationProjectionViewCreateTransportV2(
           {"target_object_kind", "view_name", "name",
            "target_schema_uuid", "view_projection_count",
            "view_query_shape", "view_source_uuid", "view_projection_0"}) ||
-      !base.target_object.uuid.canonical.empty() ||
+      !base.target_object.uuid.is_nil() ||
       base.target_object.object_kind != "view" ||
-      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4630,7 +4659,7 @@ bool DecodeRelationProjectionViewCreateTransportV2(
       target_kind != "view" || !SafeTransportOutputName(view_name) ||
       view_name != canonical_name ||
       !CanonicalTransportUuid(target_schema_uuid) ||
-      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_schema.uuid != target_schema_uuid ||
       typed->target_object.object_kind != "view" ||
       typed->localized_names.size() != 1u ||
       typed->localized_names.front().name != view_name) {
@@ -4690,13 +4719,13 @@ bool DecodeRelationProjectionViewCreateTransportV2(
   if (source_identities.size() != 4u) return true;
 
   api::EngineObjectReference source_relation;
-  source_relation.uuid.canonical = relation_uuid;
+  source_relation.uuid = relation_uuid;
   source_relation.object_kind = "table";
   api::EngineColumnDefinition source_column;
-  source_column.requested_column_uuid.canonical = source_column_uuid;
+  source_column.requested_column_uuid = source_column_uuid;
   source_column.names.push_back(
       {"en", "primary", "", output_name, true});
-  source_column.descriptor.descriptor_uuid.canonical = source_type_uuid;
+  source_column.descriptor.descriptor_uuid = source_type_uuid;
   source_column.descriptor.descriptor_kind = descriptor_kind;
   source_column.descriptor.canonical_type_name = canonical_type;
   source_column.descriptor.encoded_descriptor = encoded_descriptor;
@@ -4762,7 +4791,7 @@ bool DecodeRelationProjectionViewSelectTransportV1(
           {"target_object_uuid", "target_object_kind", "source_uuid",
            "source_kind", "result_projection", "projection_count",
            "projection_0"}) ||
-      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4787,7 +4816,7 @@ bool DecodeRelationProjectionViewSelectTransportV1(
       !ReadExactSingleTransportOption(base, "source_kind:", &source_kind) ||
       !CanonicalTransportUuid(target_uuid) || target_uuid != source_uuid ||
       target_kind != "view" || source_kind != "view" ||
-      typed->source_object.uuid.canonical != target_uuid ||
+      typed->source_object.uuid != target_uuid ||
       typed->source_object.object_kind != "view") {
     return true;
   }
@@ -4854,9 +4883,9 @@ bool DecodeRelationProjectionViewSelectTransportV1(
     }
     api::EngineRelationProjectionViewSemanticOutput output;
     output.ordinal = ordinal;
-    output.output_column_uuid.canonical = std::move(output_column_uuid);
+    output.output_column_uuid = std::move(output_column_uuid);
     output.output_name = std::move(output_name);
-    output.output_type.type_descriptor_uuid.canonical =
+    output.output_type.type_descriptor_uuid =
         std::move(type_descriptor_uuid);
     output.output_type.descriptor_kind = std::move(descriptor_kind);
     output.output_type.canonical_type_name = std::move(canonical_type);
@@ -4867,8 +4896,8 @@ bool DecodeRelationProjectionViewSelectTransportV1(
 
   typed->relation_projection_view.present = true;
   typed->relation_projection_view.marker = std::move(marker);
-  typed->relation_projection_view.view_uuid.canonical = target_uuid;
-  typed->relation_projection_view.view_descriptor_uuid.canonical =
+  typed->relation_projection_view.view_uuid = target_uuid;
+  typed->relation_projection_view.view_descriptor_uuid =
       std::move(descriptor_uuid);
   typed->relation_projection_view.view_descriptor_generation =
       descriptor_generation;
@@ -4924,7 +4953,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
            "dml_surface_variant", "projection_count", "projection_0",
            "predicate_kind", "predicate_column", "predicate_value",
            "predicate_value_type"}) ||
-      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.uuid.is_nil() ||
       !base.target_schema.object_kind.empty()) {
     return true;
   }
@@ -4964,7 +4993,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
       !SafeTransportOutputName(predicate_column) ||
       predicate_value_type != "int32" ||
       !CanonicalTransportInt32(predicate_value) ||
-      base.target_object.uuid.canonical != target_uuid ||
+      base.target_object.uuid != target_uuid ||
       base.target_object.object_kind != "view" ||
       base.predicate.predicate_kind != predicate_kind ||
       base.predicate.canonical_predicate_envelope != predicate_column ||
@@ -4972,7 +5001,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
     return true;
   }
   const auto& bound_value = base.predicate.bound_values.front();
-  if (!bound_value.descriptor.descriptor_uuid.canonical.empty() ||
+  if (!bound_value.descriptor.descriptor_uuid.is_nil() ||
       bound_value.descriptor.descriptor_kind != "scalar" ||
       bound_value.descriptor.canonical_type_name != "int32" ||
       bound_value.descriptor.encoded_descriptor != "type=int32" ||
@@ -5030,9 +5059,9 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
 
   api::EngineRelationProjectionViewSemanticOutput output;
   output.ordinal = 0;
-  output.output_column_uuid.canonical = std::move(output_column_uuid);
+  output.output_column_uuid = std::move(output_column_uuid);
   output.output_name = std::move(output_name);
-  output.output_type.type_descriptor_uuid.canonical =
+  output.output_type.type_descriptor_uuid =
       std::move(type_descriptor_uuid);
   output.output_type.descriptor_kind = std::move(descriptor_kind);
   output.output_type.canonical_type_name = std::move(canonical_type);
@@ -5040,7 +5069,7 @@ bool DecodeRelationProjectionViewDeleteTransportV2(
   output.nullable = nullable == "1";
   typed->relation_projection_view.present = true;
   typed->relation_projection_view.marker = std::move(marker);
-  typed->relation_projection_view.view_descriptor_uuid.canonical =
+  typed->relation_projection_view.view_descriptor_uuid =
       std::move(descriptor_uuid);
   typed->relation_projection_view.view_descriptor_generation =
       descriptor_generation;
@@ -5327,18 +5356,18 @@ std::vector<std::string> LoadDescriptorColumnNamesForCompactInsert(
     const api::EngineApiRequest& request,
     std::uint64_t column_count) {
   std::vector<std::string> columns;
-  if (column_count == 0 || request.target_object.uuid.canonical.empty()) {
+  if (column_count == 0 || request.target_object.uuid.is_nil()) {
     return columns;
   }
   auto loaded = api::LoadMgaRelationStoreStateForInsertTarget(
       request.context,
-      request.target_object.uuid.canonical);
+      request.target_object.uuid);
   if (!loaded.ok) return columns;
   api::RelationReadSnapshot state = api::BuildCrudCompatibilityStateFromMga(
       std::move(loaded.state));
   const auto table = api::FindVisibleCrudTable(
       state,
-      request.target_object.uuid.canonical,
+      request.target_object.uuid,
       request.context.local_transaction_id);
   if (!table) return columns;
   columns.reserve(table->columns.size());
@@ -5607,7 +5636,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                            request.envelope.operands.size() / 4);
   for (std::size_t index = 0; index < api_request.rows.size(); ++index) {
     const std::string& row_uuid =
-        api_request.rows[index].requested_row_uuid.canonical;
+        api_request.rows[index].requested_row_uuid;
     if (!row_uuid.empty()) {
       row_index_by_uuid.emplace(row_uuid, index);
     }
@@ -5634,7 +5663,7 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       if (row_index == row_index_by_uuid.end()) {
         const std::size_t appended_index = api_request.rows.size();
         api::EngineRowValue appended;
-        appended.requested_row_uuid.canonical = row_uuid;
+        appended.requested_row_uuid = row_uuid;
         api_request.rows.push_back(std::move(appended));
         row_index =
             row_index_by_uuid.emplace(row_uuid, appended_index).first;
@@ -5679,10 +5708,10 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   const std::string current_role_uuid =
       api::SecurityOptionValue(api_request, "current_role_uuid:");
   if (!current_role_uuid.empty()) {
-    api_request.context.current_role_uuid.canonical = current_role_uuid;
+    api_request.context.current_role_uuid = current_role_uuid;
   }
-  if (api_request.target_object.uuid.canonical.empty()) {
-    api_request.target_object.uuid.canonical =
+  if (api_request.target_object.uuid.is_nil()) {
+    api_request.target_object.uuid =
         api::SecurityOptionValue(api_request, "target_object_uuid:");
   }
   if (api_request.target_object.object_kind.empty()) {
@@ -6594,7 +6623,7 @@ scratchbird::core::memory::MemoryPolicyConfig DefaultMemoryPolicyConfig() {
 }
 
 void FillMemoryGovernanceDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->governance.profile_uuid.canonical = "019f1000-0000-7000-8000-000000000010";
+  request->governance.profile_uuid = "019f1000-0000-7000-8000-000000000010";
   request->governance.policy_config = DefaultMemoryPolicyConfig();
   request->governance.expected_policy_generation = 7;
   request->governance.observed_policy_generation = 7;
@@ -6629,7 +6658,7 @@ void FillMemoryGovernanceDescriptor(api::EngineMemoryManagementRequest* request)
 }
 
 void FillMemoryAutomationDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->automation.recommendation_uuid.canonical =
+  request->automation.recommendation_uuid =
       "019f1000-0000-7000-8000-000000000020";
   request->automation.report_generation = 3;
   request->automation.recommendation_generation = 4;
@@ -6645,11 +6674,11 @@ void FillMemoryAutomationDescriptor(api::EngineMemoryManagementRequest* request)
 }
 
 void FillMemoryObjectResidencyDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->object_residency.object_uuid.canonical =
-      request->target_object.uuid.canonical.empty()
+  request->object_residency.object_uuid =
+      request->target_object.uuid.is_nil()
           ? "019f1000-0000-7000-8000-000000000030"
-          : request->target_object.uuid.canonical;
-  request->object_residency.filespace_uuid.canonical =
+          : request->target_object.uuid;
+  request->object_residency.filespace_uuid =
       "019f1000-0000-7000-8000-000000000031";
   request->object_residency.object_kind =
       request->target_object.object_kind.empty() ? "table" : request->target_object.object_kind;
@@ -6680,9 +6709,9 @@ void FillMemoryRateLimitDescriptor(api::EngineMemoryManagementRequest* request) 
 }
 
 void FillMemoryPolicyMigrationDescriptor(api::EngineMemoryManagementRequest* request) {
-  request->migration.profile_uuid.canonical =
+  request->migration.profile_uuid =
       "019f1000-0000-7000-8000-000000000040";
-  request->migration.policy_uuid.canonical =
+  request->migration.policy_uuid =
       "019f1000-0000-7000-8000-000000000041";
   request->migration.source_policy_version = 2;
   request->migration.target_policy_version = 3;
@@ -6701,8 +6730,8 @@ api::EngineMemoryManagementRequest TypedMemoryManagementRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.memory_operation = MemoryOperationForSblrOperation(base.operation_id);
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical =
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid =
         "019f1000-0000-7000-8000-0000000000ff";
   }
   if (typed.target_object.object_kind.empty()) {
@@ -6750,18 +6779,18 @@ api::EngineStorageTierMigrationRequest TypedStorageTierMigrationRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.tier_operation = StorageTierOperationForSblrOperation(base.operation_id);
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical =
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid =
         "019f2000-0000-7000-8000-000000000020";
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "filespace";
   }
-  typed.descriptor.storage_tier_policy_uuid.canonical =
+  typed.descriptor.storage_tier_policy_uuid =
       "019f2000-0000-7000-8000-000000000010";
-  typed.descriptor.source_tier_uuid.canonical =
+  typed.descriptor.source_tier_uuid =
       "019f2000-0000-7000-8000-000000000011";
-  typed.descriptor.target_tier_uuid.canonical =
+  typed.descriptor.target_tier_uuid =
       "019f2000-0000-7000-8000-000000000012";
   typed.descriptor.source_tier_class = api::EngineStorageTierClass::hot;
   typed.descriptor.target_tier_class = api::EngineStorageTierClass::cold;
@@ -6905,11 +6934,11 @@ constexpr std::string_view kEncryptionRouteProtectedMaterialNextVersionUuid =
 
 void FillProtectedMaterialTargetDatabase(api::EngineApiRequest* request) {
   if (request == nullptr) return;
-  if (request->target_database.uuid.canonical.empty()) {
-    request->target_database.uuid.canonical =
-        request->context.database_uuid.canonical.empty()
+  if (request->target_database.uuid.is_nil()) {
+    request->target_database.uuid =
+        request->context.database_uuid.is_nil()
             ? std::string(kEncryptionRouteDatabaseUuid)
-            : request->context.database_uuid.canonical;
+            : request->context.database_uuid;
   }
   if (request->target_database.object_kind.empty()) {
     request->target_database.object_kind = "database";
@@ -6990,7 +7019,7 @@ api::EngineOpenEncryptedFilespaceRequest TypedOpenEncryptedFilespaceRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   FillProtectedMaterialTargetDatabase(&typed);
-  typed.database_uuid = typed.target_database.uuid.canonical;
+  typed.database_uuid = typed.target_database.uuid;
   typed.filespace_uuid = std::string(kEncryptionRouteFilespaceUuid);
   typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
   typed.encrypted_filespace = true;
@@ -7155,10 +7184,10 @@ api::EngineObjectReference DispatchTargetOfKind(const api::EngineApiRequest& req
 
 api::EngineObjectReference TargetObjectForDml(const api::EngineApiRequest& request,
                                               const std::string& default_kind) {
-  if (!request.target_object.uuid.canonical.empty()) { return request.target_object; }
+  if (!request.target_object.uuid.is_nil()) { return request.target_object; }
   api::EngineObjectReference target = DispatchTargetOfKind(request, default_kind);
-  if (!target.uuid.canonical.empty()) { return target; }
-  target.uuid.canonical = api::SecurityOptionValue(request, "target_object_uuid:");
+  if (!target.uuid.is_nil()) { return target; }
+  target.uuid = api::SecurityOptionValue(request, "target_object_uuid:");
   target.object_kind = api::SecurityOptionValue(request, "target_object_kind:");
   if (target.object_kind.empty()) target.object_kind = default_kind;
   return target;
@@ -7276,31 +7305,31 @@ api::EngineCreateSchemaRequest TypedCreateSchemaRequest(const SblrDispatchReques
   api::EngineCreateSchemaRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "schema_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "schema_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "schema";
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     }
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7323,7 +7352,7 @@ api::EngineCreateSchemaRequest TypedCreateSchemaRequest(const SblrDispatchReques
       typed.option_envelopes.push_back(option);
     }
   }
-  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.is_nil()) {
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   return typed;
@@ -7416,22 +7445,22 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     } else {
-      typed.target_schema.uuid.canonical.clear();
+      typed.target_schema.uuid = {};
       unresolved_parent_path = true;
     }
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = explicit_target_schema_uuid;
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = explicit_target_schema_uuid;
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = explicit_schema_uuid;
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = explicit_schema_uuid;
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = explicit_parent_schema_uuid;
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = explicit_parent_schema_uuid;
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   typed.option_envelopes.clear();
@@ -7440,8 +7469,8 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   typed.requested_table_uuid = base.target_object.uuid;
-  if (typed.requested_table_uuid.canonical.empty()) {
-    typed.requested_table_uuid.canonical = api::SecurityOptionValue(base, "table_object_uuid:");
+  if (typed.requested_table_uuid.is_nil()) {
+    typed.requested_table_uuid = api::SecurityOptionValue(base, "table_object_uuid:");
   }
   typed.table_names = base.localized_names;
   if (typed.table_names.empty()) {
@@ -7543,12 +7572,12 @@ api::EngineCreateStatisticsRequest TypedCreateStatisticsRequest(const SblrDispat
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.target_table = DispatchTargetOfKind(base, "table");
-  if (typed.target_table.uuid.canonical.empty()) {
-    typed.target_table.uuid.canonical = api::SecurityOptionValue(base, "statistics_target_uuid:");
+  if (typed.target_table.uuid.is_nil()) {
+    typed.target_table.uuid = api::SecurityOptionValue(base, "statistics_target_uuid:");
     typed.target_table.object_kind = api::SecurityOptionValue(base, "statistics_target_kind:");
   }
-  if (typed.target_table.uuid.canonical.empty()) {
-    typed.target_table.uuid.canonical = api::SecurityOptionValue(base, "target_table_uuid:");
+  if (typed.target_table.uuid.is_nil()) {
+    typed.target_table.uuid = api::SecurityOptionValue(base, "target_table_uuid:");
     typed.target_table.object_kind = "table";
   }
   if (typed.target_table.object_kind.empty()) { typed.target_table.object_kind = "table"; }
@@ -7575,20 +7604,20 @@ api::EngineCreateIndexRequest TypedCreateIndexRequest(const SblrDispatchRequest&
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   api::EngineObjectReference target_table = DispatchTargetOfKind(base, "table");
-  if (target_table.uuid.canonical.empty()) {
-    target_table.uuid.canonical = api::SecurityOptionValue(base, "index_target_uuid:");
+  if (target_table.uuid.is_nil()) {
+    target_table.uuid = api::SecurityOptionValue(base, "index_target_uuid:");
     target_table.object_kind = api::SecurityOptionValue(base, "index_target_kind:");
   }
-  if (target_table.uuid.canonical.empty()) {
-    target_table.uuid.canonical = api::SecurityOptionValue(base, "target_table_uuid:");
+  if (target_table.uuid.is_nil()) {
+    target_table.uuid = api::SecurityOptionValue(base, "target_table_uuid:");
     target_table.object_kind = "table";
   }
   if (target_table.object_kind.empty()) target_table.object_kind = "table";
-  if (!target_table.uuid.canonical.empty()) typed.target_object = target_table;
+  if (!target_table.uuid.is_nil()) typed.target_object = target_table;
   if (typed.indexes.empty()) {
     api::EngineIndexDefinition index;
-    index.requested_index_uuid.canonical = api::SecurityOptionValue(base, "index_object_uuid:");
-    if (index.requested_index_uuid.canonical.empty() &&
+    index.requested_index_uuid = api::SecurityOptionValue(base, "index_object_uuid:");
+    if (index.requested_index_uuid.is_nil() &&
         base.target_object.object_kind == "index") {
       index.requested_index_uuid = base.target_object.uuid;
     }
@@ -7626,8 +7655,8 @@ api::EngineCreateIndexTemplateRequest TypedCreateIndexTemplateRequest(const Sblr
   api::EngineCreateIndexTemplateRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "index_template_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "index_template_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     const std::string template_kind = api::SecurityOptionValue(base, "index_template_kind:");
@@ -7648,31 +7677,31 @@ api::EngineCreateSequenceRequest TypedCreateSequenceRequest(const SblrDispatchRe
   api::EngineCreateSequenceRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "sequence_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "sequence_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "sequence";
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     }
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7686,7 +7715,7 @@ api::EngineCreateSequenceRequest TypedCreateSequenceRequest(const SblrDispatchRe
       typed.localized_names.push_back({"en", "primary", full_path, sequence_name, true});
     }
   }
-  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.is_nil()) {
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   return typed;
@@ -7721,31 +7750,31 @@ api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchReques
   for (const auto& option : base.option_envelopes) {
     if (IsDomainRuntimeOption(option)) { typed.option_envelopes.push_back(option); }
   }
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "domain_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "domain_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "domain";
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     }
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7759,12 +7788,12 @@ api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchReques
       typed.localized_names.push_back({"en", "primary", full_path, domain_name, true});
     }
   }
-  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.is_nil()) {
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   if (typed.descriptors.empty()) {
     api::EngineDescriptor descriptor;
-    descriptor.descriptor_uuid.canonical = api::SecurityOptionValue(base, "base_descriptor_uuid:");
+    descriptor.descriptor_uuid = api::SecurityOptionValue(base, "base_descriptor_uuid:");
     descriptor.descriptor_kind = api::SecurityOptionValue(base, "base_descriptor_kind:");
     descriptor.canonical_type_name = api::SecurityOptionValue(base, "base_canonical_type_name:");
     descriptor.encoded_descriptor = api::SecurityOptionValue(base, "base_encoded_descriptor:");
@@ -7783,19 +7812,19 @@ api::EngineCreateViewRequest TypedCreateViewRequest(const SblrDispatchRequest& r
   api::EngineCreateViewRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "view_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "view_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = "view";
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7818,20 +7847,20 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
   TRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical =
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid =
         api::SecurityOptionValue(base, std::string(object_uuid_prefix) + "_object_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = std::string(object_kind);
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7852,7 +7881,7 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
     }
     if (related_uuid.empty()) continue;
     api::EngineObjectReference related;
-    related.uuid.canonical = related_uuid;
+    related.uuid = related_uuid;
     related.object_kind = api::SecurityOptionValue(base, prefix + "_kind:");
     if (related.object_kind.empty()) related.object_kind = "table";
     if (related.object_kind != "executable_object" &&
@@ -7879,25 +7908,25 @@ api::EngineCatalogDescriptorMutationRequest TypedCatalogDescriptorMutationReques
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     }
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7918,17 +7947,17 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
   api::EngineAlterObjectRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "target_object_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "target_object_uuid:");
   }
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "domain_target_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "domain_target_uuid:");
   }
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "rename_target_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "rename_target_uuid:");
   }
-  if (typed.target_object.uuid.canonical.empty()) {
-    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "sequence_target_uuid:");
+  if (typed.target_object.uuid.is_nil()) {
+    typed.target_object.uuid = api::SecurityOptionValue(base, "sequence_target_uuid:");
   }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
@@ -7937,25 +7966,25 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
     typed.target_object.object_kind = api::SecurityOptionValue(base, "rename_target_kind:");
   }
   if (typed.target_object.object_kind.empty()) typed.target_object.object_kind = "object";
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
-  if (typed.target_schema.uuid.canonical.empty()) {
-    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  if (typed.target_schema.uuid.is_nil()) {
+    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
   }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
     const auto resolved_parent =
         ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
     if (resolved_parent) {
-      typed.target_schema.uuid.canonical = *resolved_parent;
+      typed.target_schema.uuid = *resolved_parent;
     }
   }
-  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+  if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
   if (typed.localized_names.empty()) {
@@ -7981,7 +8010,7 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
       }
     }
   }
-  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.is_nil()) {
     typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
   }
   return typed;
@@ -8120,9 +8149,9 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   for (std::size_t index = 0; index < 16; ++index) {
     const std::string prefix = "related_object_" + std::to_string(index) + "_";
     api::EngineObjectReference related;
-    related.uuid.canonical = api::SecurityOptionValue(base, prefix + "uuid:");
+    related.uuid = api::SecurityOptionValue(base, prefix + "uuid:");
     related.object_kind = api::SecurityOptionValue(base, prefix + "kind:");
-    if (!related.uuid.canonical.empty()) {
+    if (!related.uuid.is_nil()) {
       if (related.object_kind.empty()) related.object_kind = "table";
       typed.related_objects.push_back(std::move(related));
     }
@@ -8161,7 +8190,7 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   for (const auto& row : base.rows) {
     std::size_t relation_index = 0;
     std::string relation_row_uuid;
-    if (!ParseRelationRowUuid(row.requested_row_uuid.canonical,
+    if (!ParseRelationRowUuid(row.requested_row_uuid,
                               &relation_index,
                               &relation_row_uuid)) {
       continue;
@@ -8173,7 +8202,7 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
     relation.relation_name = "relation-" + std::to_string(relation_index);
     relation.descriptor_digest = relation.relation_name;
     api::EngineRowValue relation_row = row;
-    relation_row.requested_row_uuid.canonical = relation_row_uuid;
+    relation_row.requested_row_uuid = relation_row_uuid;
     relation.rows.push_back(std::move(relation_row));
   }
   return typed;
@@ -8316,26 +8345,26 @@ api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
   return out;
 }
 
-std::vector<std::string> ActiveSavepointNamesForContext(
-    const api::EngineRequestContext& context);
+void PopulateSavepointContext(const api::EngineRequestContext& context,
+                              SblrExecutionContext* output);
 
 SblrExecutionContext SblrExecutionContextFromEngineContext(
     const api::EngineRequestContext& context) {
   SblrExecutionContext out;
   out.database_path = context.database_path;
-  out.database_uuid = context.database_uuid.canonical;
-  out.cluster_uuid = context.cluster_uuid.canonical;
-  out.node_uuid = context.node_uuid.canonical;
-  out.transaction_uuid = context.transaction_uuid.canonical;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid = context.statement_uuid.canonical;
-  out.session_uuid = context.session_uuid.canonical;
-  out.user_uuid = context.principal_uuid.canonical;
-  out.current_schema_uuid = context.current_schema_uuid.canonical;
-  out.current_role_uuid = context.current_role_uuid.canonical;
+  out.statement_uuid = context.statement_uuid;
+  out.session_uuid = context.session_uuid;
+  out.user_uuid = context.principal_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
+  out.current_role_uuid = context.current_role_uuid;
   out.statement_timestamp = context.statement_timestamp;
   out.transaction_timestamp = context.transaction_timestamp;
   out.current_timestamp = context.current_timestamp;
@@ -8347,8 +8376,8 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
   out.deterministic_uuid_text = context.deterministic_uuid_text;
   out.security_context_present = context.security_context_present;
   out.current_sqlstate = context.current_sqlstate;
-  out.current_diagnostic_uuid = context.current_diagnostic_uuid.canonical;
-  out.current_diagnostic_id = context.current_diagnostic_uuid.canonical;
+  out.current_diagnostic_uuid = context.current_diagnostic_uuid;
+  out.current_diagnostic_id = context.current_diagnostic_uuid;
   out.client_protocol_uuid = context.client_protocol_uuid;
   out.application_name = context.application_name;
   out.read_only_mode = context.read_only_mode;
@@ -8356,9 +8385,9 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
   out.last_row_count_present = context.last_row_count_present;
   out.transaction_context_present =
       context.local_transaction_id != 0 ||
-      !context.transaction_uuid.canonical.empty();
+      !context.transaction_uuid.is_nil();
   out.cluster_authority_available = context.cluster_authority_available;
-  out.active_savepoint_names = ActiveSavepointNamesForContext(context);
+  PopulateSavepointContext(context, &out);
   return out;
 }
 
@@ -8448,11 +8477,15 @@ api::EngineApiResult DispatchExecuteTransactionBlock(
   return result;
 }
 
-std::vector<std::string> ActiveSavepointNamesForContext(const api::EngineRequestContext& context) {
-  if (context.local_transaction_id == 0 || context.database_path.empty()) {
-    return {};
+void PopulateSavepointContext(const api::EngineRequestContext& context,
+                              SblrExecutionContext* output) {
+  const auto loaded = api::ActiveMgaSavepointNames(context);
+  output->active_savepoint_names = loaded.names;
+  if (loaded.diagnostic.error) {
+    output->savepoint_authority_diagnostic = {
+        loaded.diagnostic.code, loaded.diagnostic.message_key,
+        loaded.diagnostic.detail, SblrDiagnosticSeverity::error, {}};
   }
-  return api::ActiveMgaSavepointNames(context);
 }
 
 api::EngineApiResult EngineReadSystemVariable(
@@ -8560,7 +8593,7 @@ api::EngineApiResult EngineReadSystemVariable(
   result.result_shape.columns.push_back(value.descriptor);
 
   api::EngineRowValue row;
-  row.requested_row_uuid.canonical = "system-variable-read-row-0";
+  row.requested_row_uuid = "system-variable-read-row-0";
   row.fields.push_back({"value", std::move(value)});
   result.result_shape.rows.push_back(std::move(row));
   result.evidence.push_back({"sblr_operation",
@@ -9445,7 +9478,7 @@ api::EngineProjectionFunctionResult EvaluateUserFunction(
   api::EngineInvokeExecutableObjectRequest invocation;
   invocation.context = request.context;
   invocation.operation_id = "routine.function_invoke";
-  invocation.target_object.uuid.canonical = object_uuid;
+  invocation.target_object.uuid = object_uuid;
   invocation.target_object.object_kind = "function";
   invocation.option_envelopes.push_back("permission:invoke_executable");
   auto readiness = api::EngineInvokeExecutableObject(invocation);
@@ -9525,7 +9558,7 @@ bool EnrichCanonicalFunctionResultDescriptor(
   }
   const auto descriptor_uuid =
       scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
-  value->descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  value->descriptor.descriptor_uuid = descriptor_uuid;
   value->descriptor.descriptor_kind = "scalar";
   if (requested_type_name == "numeric.fixed" ||
       requested_type_name == "character.none" ||
@@ -9598,22 +9631,22 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
   function_request.context.policy_allowed = request.context.security_context_present;
   function_request.context.dependency_available = true;
   function_request.context.sblr_context.database_path = request.context.database_path;
-  function_request.context.sblr_context.database_uuid = request.context.database_uuid.canonical;
-  function_request.context.sblr_context.cluster_uuid = request.context.cluster_uuid.canonical;
-  function_request.context.sblr_context.node_uuid = request.context.node_uuid.canonical;
-  function_request.context.sblr_context.transaction_uuid = request.context.transaction_uuid.canonical;
+  function_request.context.sblr_context.database_uuid = request.context.database_uuid;
+  function_request.context.sblr_context.cluster_uuid = request.context.cluster_uuid;
+  function_request.context.sblr_context.node_uuid = request.context.node_uuid;
+  function_request.context.sblr_context.transaction_uuid = request.context.transaction_uuid;
   function_request.context.sblr_context.local_transaction_id = request.context.local_transaction_id;
   function_request.context.sblr_context.snapshot_visible_through_local_transaction_id =
       request.context.snapshot_visible_through_local_transaction_id;
   function_request.context.sblr_context.transaction_isolation_level =
       request.context.transaction_isolation_level;
-  function_request.context.sblr_context.statement_uuid = request.context.statement_uuid.canonical;
-  function_request.context.sblr_context.session_uuid = request.context.session_uuid.canonical;
-  function_request.context.sblr_context.user_uuid = request.context.principal_uuid.canonical;
+  function_request.context.sblr_context.statement_uuid = request.context.statement_uuid;
+  function_request.context.sblr_context.session_uuid = request.context.session_uuid;
+  function_request.context.sblr_context.user_uuid = request.context.principal_uuid;
   function_request.context.sblr_context.current_schema_uuid =
-      request.context.current_schema_uuid.canonical;
+      request.context.current_schema_uuid;
   function_request.context.sblr_context.current_role_uuid =
-      request.context.current_role_uuid.canonical;
+      request.context.current_role_uuid;
   function_request.context.sblr_context.statement_timestamp = request.context.statement_timestamp;
   function_request.context.sblr_context.transaction_timestamp =
       request.context.transaction_timestamp;
@@ -9631,7 +9664,7 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
       request.context.security_context_present;
   function_request.context.sblr_context.current_sqlstate = request.context.current_sqlstate;
   function_request.context.sblr_context.current_diagnostic_uuid =
-      request.context.current_diagnostic_uuid.canonical;
+      request.context.current_diagnostic_uuid;
   function_request.context.sblr_context.client_protocol_uuid = request.context.client_protocol_uuid;
   function_request.context.sblr_context.application_name = request.context.application_name;
   function_request.context.sblr_context.read_only_mode = request.context.read_only_mode;
@@ -9640,11 +9673,10 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
       request.context.last_row_count_present;
   function_request.context.sblr_context.transaction_context_present =
       request.context.local_transaction_id != 0 ||
-      !request.context.transaction_uuid.canonical.empty();
+      !request.context.transaction_uuid.is_nil();
   function_request.context.sblr_context.cluster_authority_available =
       request.context.cluster_authority_available;
-  function_request.context.sblr_context.active_savepoint_names =
-      ActiveSavepointNamesForContext(request.context);
+  PopulateSavepointContext(request.context, &function_request.context.sblr_context);
   for (std::size_t index = 0; index < request.arguments.size(); ++index) {
     function_request.arguments.push_back(functions::FunctionArgument{
         request.arguments[index].name.empty() ? "arg" + std::to_string(index)
@@ -9800,7 +9832,7 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
         uuid_text(value_record.datatype_descriptor_uuid);
     const auto identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            request.context.datatype_catalog_snapshot_uuid.canonical,
+            request.context.datatype_catalog_snapshot_uuid,
             request.context.datatype_catalog_generation,
             request.context.datatype_registry_generation, descriptor_uuid,
             value_record.datatype_descriptor_generation);
@@ -9827,7 +9859,7 @@ api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(
               ? static_cast<std::int64_t>(bits)
               : -1 - static_cast<std::int64_t>(~bits);
       api::EngineDescriptor descriptor;
-      descriptor.descriptor_uuid.canonical = descriptor_uuid;
+      descriptor.descriptor_uuid = descriptor_uuid;
       descriptor.descriptor_kind = "scalar";
       descriptor.canonical_type_name = "int64";
       descriptor.encoded_descriptor = "type=int64;nullability=non_null";
@@ -9991,9 +10023,9 @@ void ApplyImportRejectPolicyOptions(const api::EngineApiRequest& base,
   if (!reject_payload_policy.empty()) policy->reject_payload_policy = reject_payload_policy;
   const std::string resume_policy = api::SecurityOptionValue(base, "resume_policy:");
   if (!resume_policy.empty()) policy->resume_policy = resume_policy;
-  policy->reject_target.uuid.canonical = api::SecurityOptionValue(base, "reject_target_uuid:");
+  policy->reject_target.uuid = api::SecurityOptionValue(base, "reject_target_uuid:");
   policy->reject_target.object_kind = api::SecurityOptionValue(base, "reject_target_kind:");
-  if (!policy->reject_target.uuid.canonical.empty() && policy->reject_target.object_kind.empty()) {
+  if (!policy->reject_target.uuid.is_nil() && policy->reject_target.object_kind.empty()) {
     policy->reject_target.object_kind = "table";
   }
 }
@@ -10012,9 +10044,9 @@ void ApplyImportCheckpointPolicyOptions(const api::EngineApiRequest& base,
   if (!replay_policy.empty()) policy->replay_policy = replay_policy;
   const std::string failure_action = api::SecurityOptionValue(base, "failure_action:");
   if (!failure_action.empty()) policy->failure_action = failure_action;
-  policy->checkpoint_target.uuid.canonical = api::SecurityOptionValue(base, "checkpoint_target_uuid:");
+  policy->checkpoint_target.uuid = api::SecurityOptionValue(base, "checkpoint_target_uuid:");
   policy->checkpoint_target.object_kind = api::SecurityOptionValue(base, "checkpoint_target_kind:");
-  if (!policy->checkpoint_target.uuid.canonical.empty() &&
+  if (!policy->checkpoint_target.uuid.is_nil() &&
       policy->checkpoint_target.object_kind.empty()) {
     policy->checkpoint_target.object_kind = "table";
   }
@@ -10086,7 +10118,7 @@ api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
   typed.target_table = TargetObjectForDml(base, "table");
   typed.source.source_kind = api::SecurityOptionValue(base, "source_kind:");
   if (typed.source.source_kind.empty()) typed.source.source_kind = "native_sbsql_import";
-  typed.source.source_uuid.canonical = api::SecurityOptionValue(base, "source_uuid:");
+  typed.source.source_uuid = api::SecurityOptionValue(base, "source_uuid:");
   typed.source.source_fingerprint = api::SecurityOptionValue(base, "source_fingerprint:");
   typed.source.source_position = api::SecurityOptionValue(base, "source_position:");
   typed.source.redacted_source_handle = api::SecurityOptionValue(base, "redacted_source_handle:");
@@ -10158,8 +10190,8 @@ api::EngineSecurityGrantPrivilegeRequest TypedSecurityGrantPrivilegeRequest(
   typed.grantee_uuid = api::SecurityOptionValue(base, "grantee_uuid:");
   typed.grantee_kind = api::SecurityOptionValue(base, "grantee_kind:");
   if (typed.grantee_kind.empty()) typed.grantee_kind = "principal";
-  typed.target_object_uuid = !base.target_object.uuid.canonical.empty()
-                                 ? base.target_object.uuid.canonical
+  typed.target_object_uuid = !base.target_object.uuid.is_nil()
+                                 ? base.target_object.uuid
                                  : api::SecurityOptionValue(base, "target_object_uuid:");
   typed.target_object_kind = !base.target_object.object_kind.empty()
                                  ? base.target_object.object_kind
@@ -10199,8 +10231,8 @@ api::EngineSecurityRevokePrivilegeRequest TypedSecurityRevokePrivilegeRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.grantee_uuid = api::SecurityOptionValue(base, "grantee_uuid:");
-  typed.target_object_uuid = !base.target_object.uuid.canonical.empty()
-                                 ? base.target_object.uuid.canonical
+  typed.target_object_uuid = !base.target_object.uuid.is_nil()
+                                 ? base.target_object.uuid
                                  : api::SecurityOptionValue(base, "target_object_uuid:");
   typed.privilege = api::SecurityOptionValue(base, "privilege:");
   return typed;
@@ -10213,7 +10245,7 @@ api::EngineSecurityCreateRoleRequest TypedSecurityCreateRoleRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
   if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid.canonical; }
+  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid; }
   typed.role_name = api::SecurityOptionValue(base, "role_name:");
   if (typed.role_name.empty()) { typed.role_name = api::SecurityOptionValue(base, "name:"); }
   return typed;
@@ -10226,7 +10258,7 @@ api::EngineSecurityCreateGroupRequest TypedSecurityCreateGroupRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
   if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid.canonical; }
+  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid; }
   typed.group_name = api::SecurityOptionValue(base, "group_name:");
   if (typed.group_name.empty()) { typed.group_name = api::SecurityOptionValue(base, "name:"); }
   typed.external_authority_ref = api::SecurityOptionValue(base, "external_authority_ref:");
@@ -10244,7 +10276,7 @@ api::EngineSecurityDropRoleRequest TypedSecurityDropRoleRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.role_uuid = api::SecurityOptionValue(base, "role_uuid:");
   if (typed.role_uuid.empty()) { typed.role_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid.canonical; }
+  if (typed.role_uuid.empty()) { typed.role_uuid = base.target_object.uuid; }
   return typed;
 }
 
@@ -10255,7 +10287,7 @@ api::EngineSecurityDropGroupRequest TypedSecurityDropGroupRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.group_uuid = api::SecurityOptionValue(base, "group_uuid:");
   if (typed.group_uuid.empty()) { typed.group_uuid = api::SecurityOptionValue(base, "principal_uuid:"); }
-  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid.canonical; }
+  if (typed.group_uuid.empty()) { typed.group_uuid = base.target_object.uuid; }
   return typed;
 }
 
@@ -10264,8 +10296,8 @@ api::EngineSecurityCreatePrincipalRequest TypedSecurityCreatePrincipalRequest(
   api::EngineSecurityCreatePrincipalRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.principal_uuid = !base.target_object.uuid.canonical.empty()
-                             ? base.target_object.uuid.canonical
+  typed.principal_uuid = !base.target_object.uuid.is_nil()
+                             ? base.target_object.uuid
                              : api::SecurityOptionValue(base, "principal_uuid:");
   typed.principal_name = api::SecurityOptionValue(base, "principal_name:");
   typed.principal_kind = api::SecurityOptionValue(base, "principal_kind:");
@@ -10281,8 +10313,8 @@ api::EngineSecurityAlterPrincipalRequest TypedSecurityAlterPrincipalRequest(
   api::EngineSecurityAlterPrincipalRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.principal_uuid = !base.target_object.uuid.canonical.empty()
-                             ? base.target_object.uuid.canonical
+  typed.principal_uuid = !base.target_object.uuid.is_nil()
+                             ? base.target_object.uuid
                              : api::SecurityOptionValue(base, "principal_uuid:");
   typed.principal_name = api::SecurityOptionValue(base, "principal_name:");
   typed.principal_kind = api::SecurityOptionValue(base, "principal_kind:");
@@ -10311,7 +10343,7 @@ api::EngineSecurityCreatePolicyRequest TypedSecurityCreatePolicyRequest(
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = api::SecurityOptionValue(base, "policy_uuid:");
   if (typed.policy_uuid.empty()) {
-    typed.policy_uuid = base.target_object.uuid.canonical;
+    typed.policy_uuid = base.target_object.uuid;
   }
   typed.policy_name = api::SecurityOptionValue(base, "policy_name:");
   if (typed.policy_name.empty()) { typed.policy_name = api::SecurityOptionValue(base, "name:"); }
@@ -10320,7 +10352,7 @@ api::EngineSecurityCreatePolicyRequest TypedSecurityCreatePolicyRequest(
     typed.target_schema_uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
   typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
-  if (typed.target_object_uuid.empty()) { typed.target_object_uuid = base.target_schema.uuid.canonical; }
+  if (typed.target_object_uuid.empty()) { typed.target_object_uuid = base.target_schema.uuid; }
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   if (typed.target_object_kind.empty()) { typed.target_object_kind = "object"; }
   typed.policy_effect = api::SecurityOptionValue(base, "policy_effect:");
@@ -10335,8 +10367,8 @@ api::EngineSecurityAlterPolicyRequest TypedSecurityAlterPolicyRequest(
   api::EngineSecurityAlterPolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
+  typed.policy_uuid = !base.target_object.uuid.is_nil()
+                          ? base.target_object.uuid
                           : api::SecurityOptionValue(base, "policy_uuid:");
   typed.target_object_uuid = api::SecurityOptionValue(base, "target_object_uuid:");
   typed.target_object_kind = api::SecurityOptionValue(base, "target_object_kind:");
@@ -10352,8 +10384,8 @@ api::EngineSecurityDropPolicyRequest TypedSecurityDropPolicyRequest(
   api::EngineSecurityDropPolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
+  typed.policy_uuid = !base.target_object.uuid.is_nil()
+                          ? base.target_object.uuid
                           : api::SecurityOptionValue(base, "policy_uuid:");
   return typed;
 }
@@ -10363,8 +10395,8 @@ api::EngineSecurityDropMaskRequest TypedSecurityDropMaskRequest(
   api::EngineSecurityDropMaskRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.mask_uuid = !base.target_object.uuid.canonical.empty()
-                        ? base.target_object.uuid.canonical
+  typed.mask_uuid = !base.target_object.uuid.is_nil()
+                        ? base.target_object.uuid
                         : api::SecurityOptionValue(base, "mask_uuid:");
   if (typed.mask_uuid.empty()) { typed.mask_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
   return typed;
@@ -10375,8 +10407,8 @@ api::EngineSecurityDropRlsRequest TypedSecurityDropRlsRequest(
   api::EngineSecurityDropRlsRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.rls_uuid = !base.target_object.uuid.canonical.empty()
-                       ? base.target_object.uuid.canonical
+  typed.rls_uuid = !base.target_object.uuid.is_nil()
+                       ? base.target_object.uuid
                        : api::SecurityOptionValue(base, "rls_uuid:");
   if (typed.rls_uuid.empty()) { typed.rls_uuid = api::SecurityOptionValue(base, "policy_uuid:"); }
   return typed;
@@ -10388,8 +10420,8 @@ api::EngineSecurityAttachPolicyRequest TypedSecurityAttachPolicyRequest(
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.policy_uuid = api::SecurityOptionValue(base, "policy_uuid:");
-  typed.target_object_uuid = !base.target_object.uuid.canonical.empty()
-                                 ? base.target_object.uuid.canonical
+  typed.target_object_uuid = !base.target_object.uuid.is_nil()
+                                 ? base.target_object.uuid
                                  : api::SecurityOptionValue(base, "target_object_uuid:");
   typed.target_object_kind = !base.target_object.object_kind.empty()
                                  ? base.target_object.object_kind
@@ -10409,8 +10441,8 @@ api::EngineSecurityActivatePolicyRequest TypedSecurityActivatePolicyRequest(
   api::EngineSecurityActivatePolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
+  typed.policy_uuid = !base.target_object.uuid.is_nil()
+                          ? base.target_object.uuid
                           : api::SecurityOptionValue(base, "policy_uuid:");
   return typed;
 }
@@ -10420,8 +10452,8 @@ api::EngineSecurityDeactivatePolicyRequest TypedSecurityDeactivatePolicyRequest(
   api::EngineSecurityDeactivatePolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
+  typed.policy_uuid = !base.target_object.uuid.is_nil()
+                          ? base.target_object.uuid
                           : api::SecurityOptionValue(base, "policy_uuid:");
   return typed;
 }
@@ -10431,8 +10463,8 @@ api::EngineSecurityValidatePolicyRequest TypedSecurityValidatePolicyRequest(
   api::EngineSecurityValidatePolicyRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.policy_uuid = !base.target_object.uuid.canonical.empty()
-                          ? base.target_object.uuid.canonical
+  typed.policy_uuid = !base.target_object.uuid.is_nil()
+                          ? base.target_object.uuid
                           : api::SecurityOptionValue(base, "policy_uuid:");
   typed.observed_policy_generation =
       DispatchOptionU64(base, "observed_policy_generation:");
@@ -10481,11 +10513,11 @@ TRequest TypedAgentHookRequest(const SblrDispatchRequest& request,
   if (typed.agent_type.empty()) { typed.agent_type = default_agent_type; }
   typed.action_class = api::SecurityOptionValue(base, "action_class:");
   if (typed.action_class.empty()) { typed.action_class = default_action; }
-  typed.agent_uuid.canonical = api::SecurityOptionValue(base, "agent_uuid:");
-  if (typed.agent_uuid.canonical.empty()) { typed.agent_uuid.canonical = "agent:local:" + typed.agent_type; }
-  typed.policy_snapshot_uuid.canonical = api::SecurityOptionValue(base, "policy_snapshot_uuid:");
-  if (typed.policy_snapshot_uuid.canonical.empty()) {
-    typed.policy_snapshot_uuid.canonical = "policy:" + typed.agent_type + ":baseline";
+  typed.agent_uuid = api::SecurityOptionValue(base, "agent_uuid:");
+  if (typed.agent_uuid.is_nil()) { typed.agent_uuid = "agent:local:" + typed.agent_type; }
+  typed.policy_snapshot_uuid = api::SecurityOptionValue(base, "policy_snapshot_uuid:");
+  if (typed.policy_snapshot_uuid.is_nil()) {
+    typed.policy_snapshot_uuid = "policy:" + typed.agent_type + ":baseline";
   }
   typed.target_filespace = DispatchTargetOfKind(base, "filespace");
   typed.target_index = DispatchTargetOfKind(base, "index");
@@ -10533,6 +10565,11 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       request.envelope.operation_id == "engine.op.source_map" &&
       request.envelope.opcode == "SBLR_SOURCE_MAP" &&
       request.envelope.opcode_code == 6;
+  if (exact_source_map && !HasCanonicalSourceMapReference(request.envelope)) {
+    result.diagnostic_id = "SBLR.OPERAND_INVALID";
+    result.detail = "SOURCE_MAP requires one binary UUIDv7/generation descriptor reference";
+    return result;
+  }
   const bool exact_error_vector =
       request.envelope.operation_id == "engine.op.error_vector" &&
       request.envelope.opcode == "SBLR_ERROR_VECTOR" &&
@@ -11083,7 +11120,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
     }
     if (!request.envelope.requires_transaction_context ||
         request.context.local_transaction_id == 0 ||
-        !IsCanonicalNonNilUuid(request.context.transaction_uuid.canonical)) {
+        !IsCanonicalNonNilUuid(request.context.transaction_uuid)) {
       result.diagnostic_id = "MGA.TRANSACTION_INVALID";
       result.detail = "canonical TYPE DDL requires an exact live transaction identity";
       return result;
@@ -11119,7 +11156,7 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
       return result;
     }
     if (request.context.local_transaction_id == 0 &&
-        request.context.transaction_uuid.canonical.empty()) {
+        request.context.transaction_uuid.is_nil()) {
       result.diagnostic_id = "MGA.TRANSACTION.STALE";
       result.detail = "canonical CREATE INDEX requires a live transaction";
       return result;
@@ -11305,7 +11342,7 @@ QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
     const std::vector<QueryExecuteResultHandleFieldV1>& fields) {
   QueryExecuteResultHandleValidationV1 result;
   const auto refuse = [&](std::string detail) {
-    result.diagnostic_id = "DATATYPE.DESCRIPTOR_INVALID";
+    result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
     result.detail = std::move(detail);
     return result;
   };
@@ -11436,6 +11473,20 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
         "engine.sblr.dispatch.routed_operation_parent_mismatch",
         routed_operation.detail);
+    return result;
+  }
+  // SOURCE_MAP is local-observed even in a cluster-scoped package. Validate
+  // its reference before the executor indexes the operand or hashes evidence.
+  // Receipt ownership and availability are separately checked by public
+  // admission; this structural check does not grant either authority.
+  if (request.envelope.operation_id == "engine.op.source_map" &&
+      !HasCanonicalSourceMapReference(request.envelope)) {
+    constexpr const char* detail =
+        "SOURCE_MAP requires one binary UUIDv7/generation descriptor reference";
+    result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
+    result.api_result = FailureResult(
+        request.context, request.envelope.operation_id, "SBLR.OPERAND_INVALID",
+        "engine.sblr.source_map.descriptor_ref_invalid", detail);
     return result;
   }
   const auto savepoint_admission = api::AdmitMgaSavepointOperation(
@@ -11624,7 +11675,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     }
     if (!request.envelope.requires_transaction_context ||
         request.context.local_transaction_id == 0 ||
-        !IsCanonicalNonNilUuid(request.context.transaction_uuid.canonical)) {
+        !IsCanonicalNonNilUuid(request.context.transaction_uuid)) {
       refuse("MGA.TRANSACTION_INVALID",
              "sblr.ddl_type.transaction_invalid",
              "canonical TYPE DDL requires an exact live transaction identity");
@@ -11670,7 +11721,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       return result;
     }
     if (request.context.local_transaction_id == 0 &&
-        request.context.transaction_uuid.canonical.empty()) {
+        request.context.transaction_uuid.is_nil()) {
       refuse("MGA.TRANSACTION.STALE",
              "sblr.ddl_create_index.transaction_stale",
              "canonical CREATE INDEX requires a live transaction");
@@ -11822,8 +11873,13 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
+  // SBOP does not transport authority flags. Derive mandatory admission from
+  // the validated engine registry as well as any stricter host requirement;
+  // canonical decoding must never erase a security or transaction prerequisite.
+  const auto* admission_entry = LookupSblrOpcodeCode(request.envelope.opcode_code);
   if (request.envelope.operation_id != "dml.plan_import_rows" &&
-      request.envelope.requires_security_context &&
+      (request.envelope.requires_security_context ||
+       (admission_entry != nullptr && admission_entry->requires_security_context)) &&
       !request.context.security_context_present) {
     result.diagnostics.push_back(DispatchDiagnostic("SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED",
                                                    "SBLR operation requires engine security context"));
@@ -11836,9 +11892,10 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
 
   if (request.envelope.operation_id != "dml.plan_import_rows" &&
-      request.envelope.requires_transaction_context &&
+      (request.envelope.requires_transaction_context ||
+       (admission_entry != nullptr && admission_entry->requires_transaction_context)) &&
       request.context.local_transaction_id == 0 &&
-      request.context.transaction_uuid.canonical.empty()) {
+      request.context.transaction_uuid.is_nil()) {
     result.diagnostics.push_back(DispatchDiagnostic("SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
                                                    "SBLR operation requires engine transaction context"));
     result.api_result = FailureResult(request.context,
@@ -11853,14 +11910,27 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   // receipt carries an active cluster transaction or route fence.  This must
   // be decided before the optimizer/query branch so a canonical SBsql query
   // cannot execute locally after cluster routing has been requested.
+  // Availability affects the provider's response, never this ownership
+  // decision. Structural core-envelope records remain local-observed under
+  // the Core ownership map even when the enclosing request is cluster-scoped.
+  const auto* route_entry = LookupSblrOpcodeCode(request.envelope.opcode_code);
+  const bool structural_envelope_record =
+      route_entry != nullptr && route_entry->family == "core-envelope";
+  // Canonical SBOP transport does not carry the in-memory authority flags.
+  // Derive mandatory cluster ownership from the validated numeric opcode as
+  // well: neither absent provider state nor a cleared caller flag can make a
+  // registry-owned cluster operation local (including engine.op.* roots).
+  const bool registry_requires_cluster =
+      route_entry != nullptr &&
+      (route_entry->requires_cluster_authority || route_entry->cluster_private);
   const bool cluster_gateway_route =
       request.envelope.operation_id != "dml.plan_import_rows" &&
-      (request.envelope.requires_cluster_authority ||
+      !structural_envelope_record &&
+      (registry_requires_cluster || request.envelope.requires_cluster_authority ||
        (IsClusterOperationId(request.envelope.operation_id) &&
         request.envelope.operation_id != "cluster.profile_operation") ||
-       (request.context.cluster_authority_available &&
-        (request.context.cluster_transaction_active ||
-         request.context.route_fence_present)));
+       request.context.cluster_transaction_active ||
+       request.context.route_fence_present);
 
   if (request.contextual_text_activation && cluster_gateway_route) {
     result.api_result = FailureResult(
@@ -11946,6 +12016,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   if (op == "engine.op.source_map") {
     result.api_result.ok = true;
     result.api_result.operation_id = op;
+    result.api_result.result_shape.result_kind = "void";
     const auto digest = scratchbird::core::hash::ComputeSha256Digest(
         request.envelope.operands.front().value_body);
     if (!digest.ok()) {
@@ -12339,7 +12410,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
              std::to_string(result.api_result.result_shape.rows.size())});
         std::string result_material = result.api_result.result_shape.result_kind;
         for (const auto& row : result.api_result.result_shape.rows) {
-          result_material.append("\nrow:").append(row.requested_row_uuid.canonical);
+          result_material.append("\nrow:").append(row.requested_row_uuid);
           for (const auto& field : row.fields) {
             result_material.append("\nfield:").append(field.first).append("=")
                 .append(field.second.encoded_value);

@@ -184,8 +184,7 @@ bool MaterializedBatchLiveBytes(const DescriptorBatch& batch,
            add(static_cast<std::uint64_t>(value.capacity()) + 1);
   };
   const auto add_descriptor = [&](const auto& descriptor) {
-    return add_string(descriptor.descriptor_uuid.canonical) &&
-           add_string(descriptor.descriptor_kind) &&
+    return add_string(descriptor.descriptor_kind) &&
            add_string(descriptor.canonical_type_name) &&
            add_string(descriptor.encoded_descriptor);
   };
@@ -238,11 +237,7 @@ bool PhysicalMgaContextDynamicLiveBytes(
     return value.capacity() != std::numeric_limits<std::size_t>::max() &&
            add(static_cast<std::uint64_t>(value.capacity()) + 1);
   };
-  return add_string(context.statement_uuid) &&
-         add_string(context.owning_transaction_uuid) &&
-         add_string(context.statement_snapshot_uuid) &&
-         add_string(context.statement_metadata_snapshot_uuid) &&
-         add_array(context.active_excluded_local_transaction_ids.capacity(),
+  return add_array(context.active_excluded_local_transaction_ids.capacity(),
                    sizeof(std::uint64_t)) &&
          add_array(context.in_doubt_excluded_local_transaction_ids.capacity(),
                    sizeof(std::uint64_t)) &&
@@ -271,31 +266,21 @@ bool PhysicalNodeCopyLiveBytes(const PhysicalNodeRecord& node,
     return value.capacity() != std::numeric_limits<std::size_t>::max() &&
            add(static_cast<std::uint64_t>(value.capacity()) + 1);
   };
-  const auto add_strings = [&](const std::vector<std::string>& values) {
-    if (!add_array(values.capacity(), sizeof(std::string))) return false;
-    for (const auto& value : values) {
-      if (!add_string(value)) return false;
-    }
-    return true;
+  const auto add_uuids = [&](const std::vector<PhysicalUuid>& values) {
+    return add_array(values.capacity(), sizeof(PhysicalUuid));
   };
   return add_string(node.implementation_id) &&
          add_array(node.input_physical_node_ids.capacity(),
                    sizeof(std::uint64_t)) &&
          add_array(node.output_descriptor_ids.capacity(),
                    sizeof(std::uint32_t)) &&
-         add_string(node.selected_alternative_uuid) &&
-         add_string(node.executor_capability_uuid) &&
-         add_string(node.cost_vector_uuid) &&
-         add_strings(node.required_property_uuids) &&
-         add_strings(node.delivered_property_uuids) &&
+         add_uuids(node.required_property_uuids) &&
+         add_uuids(node.delivered_property_uuids) &&
          PhysicalMgaContextDynamicLiveBytes(node.mga_statement_context,
                                             bytes) &&
          add_string(node.logical_semantic_variant_id) &&
-         add_string(node.transformation_uuid) &&
          add_string(node.transformation_rule_id) &&
-         add_strings(node.enforced_property_uuids) &&
-         add_string(node.retained_cost.cost_vector_uuid) &&
-         add_string(node.retained_cost.calibration_profile_uuid) &&
+         add_uuids(node.enforced_property_uuids) &&
          add_string(node.retained_cost.scalarization_policy_id);
 }
 
@@ -324,21 +309,17 @@ bool DispatchStepMetadataLiveBytes(
   };
   if (!add_string(step.diagnostic.diagnostic_code) ||
       !add_string(step.diagnostic.detail) ||
-      !add_string(step.selected_plan_uuid) ||
       !add_string(step.executed_implementation_id) ||
       !add_array(step.executed_input_physical_node_ids.capacity(),
                  sizeof(std::uint64_t)) ||
       !add_array(step.output_descriptor_ids.capacity(),
                  sizeof(std::uint32_t)) ||
-      !add_string(step.cancellation_evidence_uuid) ||
-      !add_string(step.current_relation_descriptor_uuid) ||
       !PhysicalMgaContextDynamicLiveBytes(step.mga_statement_context,
                                           bytes)) {
     return false;
   }
   if (step.table_sample_actuals.has_value() &&
-      (!add_string(step.table_sample_actuals->sample_descriptor_uuid) ||
-       !add_string(step.table_sample_actuals->method_id))) {
+      !add_string(step.table_sample_actuals->method_id)) {
     return false;
   }
   return true;
@@ -573,10 +554,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       if (registration.retained_live_memory_bytes_v1 == 0 ||
           registration.implementation_id.capacity() ==
               std::numeric_limits<std::size_t>::max() ||
-          registration.executor_capability_uuid.capacity() ==
-              std::numeric_limits<std::size_t>::max() ||
           !account(registration.implementation_id.capacity() + 1) ||
-          !account(registration.executor_capability_uuid.capacity() + 1) ||
           !account(registration.retained_live_memory_bytes_v1)) {
         return refuse(Refusal(
             "SBLR.PLAN_TREE.RESOURCE_LIMIT",
@@ -633,20 +611,12 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
                         dispatcher_control_live_bytes &&
            (dispatcher_control_live_bytes += bytes, true);
   };
-  const auto account_control_string = [&](const std::string& value) {
-    return value.capacity() != std::numeric_limits<std::size_t>::max() &&
-           static_cast<std::uint64_t>(value.capacity()) + 1 <=
-               std::numeric_limits<std::uint64_t>::max() -
-                   dispatcher_control_live_bytes &&
-           (dispatcher_control_live_bytes +=
-                static_cast<std::uint64_t>(value.capacity()) + 1,
-            true);
-  };
   const auto root_node_index =
       node_index_for(physical_dag.root_physical_node_id);
   // All persistent dispatcher arrays are admitted before allocation. Linear
   // node/registration lookup avoids implementation-dependent hash buckets.
-  if (!account_control_array(node_count, sizeof(std::uint64_t)) ||
+  if (!account_control_array(1, sizeof(CanonicalPhysicalDagDispatchResult)) ||
+      !account_control_array(node_count, sizeof(std::uint64_t)) ||
       !account_control_array(node_count, sizeof(std::uint8_t)) ||
       !account_control_array(node_count, sizeof(std::size_t)) ||
       !account_control_array(node_count, sizeof(std::size_t)) ||
@@ -658,7 +628,6 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       !account_control_array(
           physical_dag.nodes[root_node_index].output_descriptor_ids.size(),
           sizeof(std::uint32_t)) ||
-      !account_control_string(physical_dag.selected_plan_uuid) ||
       !PhysicalMgaContextDynamicLiveBytes(mga_authority.statement_context,
                                           &dispatcher_control_live_bytes) ||
       dispatcher_control_live_bytes >= physical_dag.memory_budget_bytes) {

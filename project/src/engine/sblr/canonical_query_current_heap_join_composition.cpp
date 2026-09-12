@@ -1503,7 +1503,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       admission.admission};
   const auto& graph = admission.request.logical_graph;
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto scan_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "heap-join-tree-scan.capability");
   for (auto& bound : bound_joins) {
@@ -1833,7 +1833,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     };
     const auto account_descriptor = [&](const api::EngineDescriptor& descriptor,
                                         std::uint64_t* total) {
-      return account_string(descriptor.descriptor_uuid.canonical, total) &&
+      return account_string(descriptor.descriptor_uuid, total) &&
              account_string(descriptor.descriptor_kind, total) &&
              account_string(descriptor.canonical_type_name, total) &&
              account_string(descriptor.encoded_descriptor, total);
@@ -1842,11 +1842,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                                           std::uint64_t* total) {
       std::uint64_t allocation = 0;
       if (!account_string(binding.relation_uuid, total) ||
-          !account_string(binding.persisted.descriptor_uuid.canonical, total) ||
-          !account_string(binding.persisted.database_uuid.canonical, total) ||
-          !account_string(binding.persisted.schema_uuid.canonical, total) ||
-          !account_string(binding.persisted.relation_uuid.canonical, total) ||
-          !account_string(binding.persisted.primary_filespace_uuid.canonical,
+          !account_string(binding.persisted.descriptor_uuid, total) ||
+          !account_string(binding.persisted.database_uuid, total) ||
+          !account_string(binding.persisted.schema_uuid, total) ||
+          !account_string(binding.persisted.relation_uuid, total) ||
+          !account_string(binding.persisted.primary_filespace_uuid,
                           total) ||
           !account_string(binding.persisted.relation_kind, total) ||
           !account_string(binding.persisted.storage_profile, total) ||
@@ -1864,7 +1864,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         return false;
       }
       for (const auto& column : binding.persisted.columns) {
-        if (!account_string(column.column_uuid.canonical, total) ||
+        if (!account_string(column.column_uuid, total) ||
             !account_string(column.canonical_name_key, total) ||
             !account_descriptor(column.value_descriptor, total) ||
             !account_string(column.storage_class, total) ||
@@ -1953,7 +1953,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                                           std::string* detail) {
       if (binding == nullptr || detail == nullptr ||
           scan.required_object_uuids.size() != 1 ||
-          descriptor.relation_uuid.canonical !=
+          descriptor.relation_uuid !=
               scan.required_object_uuids.front() ||
           descriptor.descriptor_generation == 0 ||
           descriptor.columns.empty()) {
@@ -1995,7 +1995,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
         }
         const auto column = std::ranges::find_if(
             prepared.persisted.columns, [&](const auto& candidate) {
-              return candidate.column_uuid.canonical ==
+              return candidate.column_uuid ==
                      *expression->bound_name_uuid;
             });
         if (column == prepared.persisted.columns.end()) {
@@ -2036,7 +2036,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             (canonical_nullability && storage_nullability);
         if (column->ordinal >= prepared.persisted.columns.size() ||
             output->output_name_utf8 != column->canonical_name_key ||
-            column->value_descriptor.descriptor_uuid.canonical !=
+            column->value_descriptor.descriptor_uuid !=
                 relational_descriptor->descriptor_uuid ||
             column->value_descriptor.canonical_type_name.empty() ||
             column->nullable != nullable ||
@@ -2194,7 +2194,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
                   "streaming hash source cardinality exceeds size_t";
               return false;
             }
-            if (descriptor.relation_uuid.canonical != binding->relation_uuid ||
+            if (descriptor.relation_uuid != binding->relation_uuid ||
                 api::SerializeMgaRelationStorageDescriptor(descriptor) !=
                     *descriptor_authority) {
               stream_preparation_descriptor_refusal = true;
@@ -2513,11 +2513,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     };
     const auto publish_page = [&](const bool final_page) {
       exec::CanonicalResultPublicationRequest publication;
-      publication.statement_uuid = input.context.statement_uuid.canonical;
+      publication.statement_uuid = input.context.statement_uuid;
       publication.mga_authority = *heap_registration.mga_authority;
       publication.selected_physical_dag = physical.physical_dag;
       publication.selected_catalog_epoch_uuid =
-          input.context.catalog_epoch_uuid.canonical;
+          input.context.catalog_epoch_uuid;
       publication.execution_attempt_uuid = execution_attempt_uuid;
       publication.result_kind = exec::CanonicalResultKind::kCursor;
       publication.invocation_mode =
@@ -2685,7 +2685,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     if (!publish_page(true)) {
       return refuse(cancellation_requested()
                         ? "QOW-DIAG-QRY-012-JOIN-CANCELLED-V1"
-                        : "QOW-RESULT-DIAGNOSTIC-ABI-V1",
+                        : "QOW-RESULT-DIAGNOSTIC-ABI-V2",
                     stream_detail);
     }
     const auto result_authority =
@@ -2703,7 +2703,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     result.api_result.evidence.push_back(
         {"canonical.selected_plan", physical.physical_dag.selected_plan_uuid});
     result.api_result.evidence.push_back(
-        {"canonical.result_abi", "QOW-RESULT-DIAGNOSTIC-ABI-V1"});
+        {"canonical.result_abi", "QOW-RESULT-DIAGNOSTIC-ABI-V2"});
     result.api_result.evidence.push_back(
         {"canonical.heap_join_implementation",
          "join.hash-inner.int64-equality.v1"});
@@ -2899,7 +2899,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       executor_registration_live_bytes;
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + input.context.current_monotonic_ns,

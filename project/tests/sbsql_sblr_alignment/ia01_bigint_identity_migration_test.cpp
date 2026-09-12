@@ -1262,7 +1262,7 @@ int main(const int argc, char* argv[]) {
           "committed migration did not recover canonically");
   const auto replay = api::AppendMgaBigintIdentityMigrationBatch(
       recovered, commit_request);
-  Require(!replay.ok && replay.diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID",
+  Require(!replay.ok && replay.diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID",
           "stale migration generation did not fail closed");
   Rollback(recovered);
 
@@ -1336,7 +1336,7 @@ int main(const int argc, char* argv[]) {
   const auto int32_replay = api::AppendMgaInt32IdentityMigrationBatch(
       int32_recovered, int32_request);
   Require(!int32_replay.ok &&
-              int32_replay.diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID",
+              int32_replay.diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID",
           "stale int32 migration replay did not fail closed");
   Rollback(int32_recovered);
 
@@ -1351,7 +1351,7 @@ int main(const int argc, char* argv[]) {
       conflict_tx, conflict_request);
   Require(!conflict_result.ok &&
               conflict_result.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "contradictory int32 descriptor/type carrier was accepted");
   Rollback(conflict_tx);
   return EXIT_SUCCESS;
@@ -1370,7 +1370,7 @@ int main(const int argc, char* argv[]) {
   const auto wrong_receipt = api::AppendMgaTextIdentityMigrationBatch(
       text_wrong_receipt, text_request);
   Require(!wrong_receipt.ok &&
-              wrong_receipt.diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID",
+              wrong_receipt.diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID",
           "wrong datatype receipt admitted text migration");
   RequireRefusalArtifactsUnchanged(
       wrong_receipt_before, text_wrong_receipt, fixture,
@@ -1387,7 +1387,7 @@ int main(const int argc, char* argv[]) {
       text_missing_receipt, text_request);
   Require(!missing_receipt.ok &&
               missing_receipt.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "missing datatype receipt admitted text migration");
   RequireRefusalArtifactsUnchanged(
       missing_receipt_before, text_missing_receipt, fixture,
@@ -1405,7 +1405,7 @@ int main(const int argc, char* argv[]) {
   const auto stale_column = api::AppendMgaTextIdentityMigrationBatch(
       text_stale_column, stale_column_request);
   Require(!stale_column.ok &&
-              stale_column.diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID",
+              stale_column.diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID",
           "stale TEXT row/column generation admitted migration");
   RequireRefusalArtifactsUnchanged(
       stale_column_before, text_stale_column, fixture,
@@ -1455,7 +1455,7 @@ int main(const int argc, char* argv[]) {
       text_semantic, semantic_request);
   Require(!semantic_result.ok &&
               semantic_result.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "contradictory TEXT semantic carrier admitted migration");
   RequireRefusalArtifactsUnchanged(
       semantic_before, text_semantic, fixture,
@@ -1474,7 +1474,7 @@ int main(const int argc, char* argv[]) {
       text_resource_conflict, resource_conflict_request);
   Require(!resource_conflict.ok &&
               resource_conflict.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "missing TEXT resource generations admitted migration");
   RequireRefusalArtifactsUnchanged(
       resource_conflict_before, text_resource_conflict, fixture,
@@ -1493,7 +1493,7 @@ int main(const int argc, char* argv[]) {
       text_stale_charset, stale_charset_request);
   Require(!stale_charset.ok &&
               stale_charset.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "stale TEXT charset generation admitted migration");
   RequireRefusalArtifactsUnchanged(
       stale_charset_before, text_stale_charset, fixture,
@@ -1512,7 +1512,7 @@ int main(const int argc, char* argv[]) {
       text_stale_collation, stale_collation_request);
   Require(!stale_collation.ok &&
               stale_collation.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "stale TEXT collation generation admitted migration");
   RequireRefusalArtifactsUnchanged(
       stale_collation_before, text_stale_collation, fixture,
@@ -1536,7 +1536,7 @@ int main(const int argc, char* argv[]) {
       text_stale_resource, resource_request);
   Require(!stale_resource.ok &&
               stale_resource.diagnostic.code ==
-                  "DATATYPE.DESCRIPTOR_INVALID",
+                  "DATATYPE.DESCRIPTOR.INVALID",
           "stale TEXT resource epoch admitted migration");
   RequireRefusalArtifactsUnchanged(
       stale_resource_before, text_stale_resource, fixture,
@@ -1662,7 +1662,7 @@ int main(const int argc, char* argv[]) {
   const auto text_replay = api::AppendMgaTextIdentityMigrationBatch(
       text_recovered, text_request);
   Require(!text_replay.ok &&
-              text_replay.diagnostic.code == "DATATYPE.DESCRIPTOR_INVALID",
+              text_replay.diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID",
           "stale text migration replay did not fail closed");
   RequireRefusalArtifactsUnchanged(
       text_replay_before, text_recovered, fixture,
@@ -1759,7 +1759,7 @@ int main(const int argc, char* argv[]) {
       text_conflict, text_conflict_request);
   Require(!text_conflict_result.ok &&
               (text_conflict_result.diagnostic.code ==
-                   "DATATYPE.DESCRIPTOR_INVALID" ||
+                   "DATATYPE.DESCRIPTOR.INVALID" ||
                text_conflict_result.diagnostic.code ==
                    "CORE.AUTHORITY.CONFLICT"),
           "partially canonical text carrier was accepted for migration");

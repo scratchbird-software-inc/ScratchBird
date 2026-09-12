@@ -354,7 +354,7 @@ bool PrepareContextualTextDirectRouteAuthorityV2(
         runtime.value.state != api::EngineValueState::value ||
         runtime.value.is_null || !runtime.value.binary_value.empty() ||
         !literal_body_matches ||
-        runtime.value.descriptor.descriptor_uuid.canonical !=
+        runtime.value.descriptor.descriptor_uuid !=
             binding.exact_relational_descriptor_v2_fields[0] ||
         runtime.value.descriptor.canonical_type_name != "text") {
       *diagnostic_id = "SBLR.CONTEXTUAL_TEXT_LITERAL.TARGET_MISMATCH";
@@ -405,7 +405,7 @@ bool PrepareContextualTextDirectRouteAuthorityV2(
     const auto& persisted_descriptor =
         logical_rows.columns[target_slot->row_ordinal].descriptor;
     auto expected_live_descriptor = runtime.target_descriptor;
-    expected_live_descriptor.descriptor_uuid.canonical =
+    expected_live_descriptor.descriptor_uuid =
         target_descriptor->descriptor_uuid;
     auto expected_persisted_descriptor =
         persisted.columns[target_slot->row_ordinal].value_descriptor;
@@ -841,7 +841,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       });
 
   const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid.canonical,
+      context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation,
       context.datatype_registry_generation, descriptor_uuid,
       manifest_row.descriptor_epoch);
@@ -861,7 +861,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
         descriptor_uuid, descriptor_uuid, false};
   }
   if (identity.row.catalog_snapshot_uuid !=
-          context.datatype_catalog_snapshot_uuid.canonical ||
+          context.datatype_catalog_snapshot_uuid ||
       identity.row.catalog_generation !=
           context.datatype_catalog_generation ||
       identity.row.registry_generation !=
@@ -1015,7 +1015,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
         codec_generation != identity.row.codec_generation ||
         !parse_u64("null_encoding", &null_encoding) ||
         null_encoding != identity.row.null_encoding_code ||
-        !exact("column_uuid", persisted.column_uuid.canonical)) {
+        !exact("column_uuid", persisted.column_uuid)) {
       return std::nullopt;
     }
     std::string canonical;
@@ -1110,7 +1110,7 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       !exact("charset_uuid", persisted.charset_uuid) ||
       !exact("collation_uuid", persisted.collation_uuid) ||
       !exact("nullable", expected_nullable) ||
-      !exact("column_uuid", persisted.column_uuid.canonical) ||
+      !exact("column_uuid", persisted.column_uuid) ||
       resource_epoch != context.resource_epoch ||
       !exact("datatype_descriptor_uuid", identity.row.descriptor_uuid) ||
       descriptor_generation != identity.row.descriptor_generation ||
@@ -1127,12 +1127,12 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
   }
 
   api::EngineUuid charset_uuid;
-  charset_uuid.canonical = persisted.charset_uuid;
+  charset_uuid = persisted.charset_uuid;
   const auto charset =
       api::LookupEngineResourceDescriptorByUuid(context, charset_uuid,
                                                 "charset");
   api::EngineUuid collation_uuid;
-  collation_uuid.canonical = persisted.collation_uuid;
+  collation_uuid = persisted.collation_uuid;
   const auto collation =
       api::LookupEngineResourceDescriptorByUuid(context, collation_uuid,
                                                 "collation");
@@ -1141,11 +1141,11 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
       !collation.resource_descriptor.present ||
       charset.resource_descriptor.resource_family != "charset" ||
       collation.resource_descriptor.resource_family != "collation" ||
-      charset.resource_descriptor.resource_uuid.canonical !=
+      charset.resource_descriptor.resource_uuid !=
           persisted.charset_uuid ||
-      collation.resource_descriptor.resource_uuid.canonical !=
+      collation.resource_descriptor.resource_uuid !=
           persisted.collation_uuid ||
-      collation.resource_descriptor.parent_resource_uuid.canonical !=
+      collation.resource_descriptor.parent_resource_uuid !=
           persisted.charset_uuid ||
       charset.resource_descriptor.family_epoch != charset_generation ||
       collation.resource_descriptor.family_epoch != collation_generation ||
@@ -1192,13 +1192,13 @@ Rcp079ResolvePersistedDatatypeAuthorityV1(
 bool Rcp079ExactColumnarJoinStorageSnapshotV1(
     const api::MgaRelationStorageDescriptor& actual,
     const api::MgaRelationStorageDescriptor& expected) {
-  if (actual.descriptor_uuid.canonical !=
-          expected.descriptor_uuid.canonical ||
-      actual.database_uuid.canonical != expected.database_uuid.canonical ||
-      actual.schema_uuid.canonical != expected.schema_uuid.canonical ||
-      actual.relation_uuid.canonical != expected.relation_uuid.canonical ||
-      actual.primary_filespace_uuid.canonical !=
-          expected.primary_filespace_uuid.canonical ||
+  if (actual.descriptor_uuid !=
+          expected.descriptor_uuid ||
+      actual.database_uuid != expected.database_uuid ||
+      actual.schema_uuid != expected.schema_uuid ||
+      actual.relation_uuid != expected.relation_uuid ||
+      actual.primary_filespace_uuid !=
+          expected.primary_filespace_uuid ||
       actual.relation_kind != expected.relation_kind ||
       actual.storage_profile != expected.storage_profile ||
       actual.descriptor_generation != expected.descriptor_generation ||
@@ -1221,11 +1221,11 @@ bool Rcp079ExactColumnarJoinStorageSnapshotV1(
   for (std::size_t ordinal = 0; ordinal < actual.columns.size(); ++ordinal) {
     const auto& left = actual.columns[ordinal];
     const auto& right = expected.columns[ordinal];
-    if (left.column_uuid.canonical != right.column_uuid.canonical ||
+    if (left.column_uuid != right.column_uuid ||
         left.ordinal != right.ordinal ||
         left.canonical_name_key != right.canonical_name_key ||
-        left.value_descriptor.descriptor_uuid.canonical !=
-            right.value_descriptor.descriptor_uuid.canonical ||
+        left.value_descriptor.descriptor_uuid !=
+            right.value_descriptor.descriptor_uuid ||
         left.value_descriptor.descriptor_kind !=
             right.value_descriptor.descriptor_kind ||
         left.value_descriptor.canonical_type_name !=
@@ -1246,7 +1246,7 @@ bool Rcp079ExactColumnarJoinStorageSnapshotV1(
   for (std::size_t ordinal = 0; ordinal < actual.indexes.size(); ++ordinal) {
     const auto& left = actual.indexes[ordinal];
     const auto& right = expected.indexes[ordinal];
-    if (left.index_uuid.canonical != right.index_uuid.canonical ||
+    if (left.index_uuid != right.index_uuid ||
         left.family != right.family || left.profile != right.profile ||
         left.unique != right.unique ||
         left.approximate != right.approximate ||
@@ -1268,12 +1268,12 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
   const auto fields =
       Rcp079ExactDescriptorFieldsV1(persisted.value_descriptor);
   if (!fields.has_value() || persisted.canonical_name_key.empty() ||
-      !CanonicalUuidText(persisted.column_uuid.canonical) ||
+      !CanonicalUuidText(persisted.column_uuid) ||
       !api::QowCanonicalDescriptorIdentityV1(persisted.value_descriptor) ||
       persisted.value_descriptor.descriptor_kind !=
           "canonical_type_descriptor" ||
       !CanonicalUuidText(
-          persisted.value_descriptor.descriptor_uuid.canonical) ||
+          persisted.value_descriptor.descriptor_uuid) ||
       persisted.storage_class != "inline_row_value" ||
       persisted.max_inline_bytes != 4096 ||
       persisted.overflow_policy != "mga_large_value_locator") {
@@ -1306,7 +1306,7 @@ bool Rcp079ExactPersistedColumnDescriptorV1(
       !CanonicalUuidText(std::string(*type_uuid)) ||
       !datatype_authority.has_value() ||
       datatype_authority->type_uuid != *type_uuid ||
-      persisted.value_descriptor.descriptor_uuid.canonical == *type_uuid ||
+      persisted.value_descriptor.descriptor_uuid == *type_uuid ||
       !encoded_type_name.has_value() ||
       *encoded_type_name !=
           persisted.value_descriptor.canonical_type_name) {
@@ -1434,7 +1434,7 @@ bool Rcp079ExactColumnarJoinColumnBindingV1(
       !datatype_authority.has_value() ||
       datatype_authority->type_uuid != *type_uuid ||
       (relational.descriptor_uuid !=
-           persisted.value_descriptor.descriptor_uuid.canonical &&
+           persisted.value_descriptor.descriptor_uuid &&
        relational.descriptor_uuid != datatype_authority->descriptor_uuid) ||
       relational.type_uuid != *type_uuid ||
       relational.descriptor_uuid == relational.type_uuid) {
@@ -1546,7 +1546,7 @@ bool Rcp079ExactColumnarIdentifierBindingsV1(
   };
   if (source.required_object_uuids.size() != 1 ||
       persisted.columns.empty() ||
-      persisted.relation_uuid.canonical !=
+      persisted.relation_uuid !=
           source.required_object_uuids.front()) {
     return refuse("columnar source object or persisted relation is not exact");
   }
@@ -1677,14 +1677,14 @@ bool Rcp079ExactColumnarIdentifierBindingsV1(
     }
     const auto persisted_column_count = std::ranges::count_if(
         persisted.columns, [&](const auto& column) {
-          return column.column_uuid.canonical == *expression.bound_name_uuid;
+          return column.column_uuid == *expression.bound_name_uuid;
         });
     if (persisted_column_count != 1) {
       return refuse("columnar identifier is not uniquely bound to a persisted column");
     }
     const auto persisted_column = std::ranges::find_if(
         persisted.columns, [&](const auto& column) {
-          return column.column_uuid.canonical == *expression.bound_name_uuid;
+          return column.column_uuid == *expression.bound_name_uuid;
         });
     const auto relational_descriptor =
         descriptor_for(expression.result_descriptor_id);
@@ -1704,8 +1704,8 @@ bool Rcp079ExactExecutorColumnV1(
   return actual.stable_name == expected.stable_name &&
          actual.nullable == expected.nullable &&
          actual.descriptor_id == expected.descriptor_id &&
-         actual.descriptor.descriptor_uuid.canonical ==
-             expected.descriptor.descriptor_uuid.canonical &&
+         actual.descriptor.descriptor_uuid ==
+             expected.descriptor.descriptor_uuid &&
          actual.descriptor.descriptor_kind ==
              expected.descriptor.descriptor_kind &&
          actual.descriptor.canonical_type_name ==
@@ -1794,7 +1794,7 @@ std::optional<std::uint64_t> Rcp079DescriptorBatchLogicalMemoryBytesV1(
   }
   const auto account_descriptor = [&](const api::EngineDescriptor& descriptor) {
     return Rcp079AccountLogicalStringV1(
-               descriptor.descriptor_uuid.canonical, &bytes) &&
+               descriptor.descriptor_uuid, &bytes) &&
            Rcp079AccountLogicalStringV1(descriptor.descriptor_kind, &bytes) &&
            Rcp079AccountLogicalStringV1(descriptor.canonical_type_name,
                                         &bytes) &&
@@ -2065,7 +2065,7 @@ Rcp079ContextualExecutionLogicalMemoryPlan(
   };
   const auto account_engine_descriptor = [&](
                                              const api::EngineDescriptor& value) {
-    return account_string(value.descriptor_uuid.canonical) &&
+    return account_string(value.descriptor_uuid) &&
            account_string(value.descriptor_kind) &&
            account_string(value.canonical_type_name) &&
            account_string(value.encoded_descriptor);
@@ -2188,7 +2188,7 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
   std::uint64_t per_cell_descriptor_bytes = 0;
   for (const auto& column : persisted.columns) {
     if (!add_string(column.canonical_name_key) ||
-        !add_string(column.value_descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.value_descriptor.descriptor_uuid) ||
         !add_string(column.value_descriptor.descriptor_kind) ||
         !add_string(column.value_descriptor.canonical_type_name) ||
         !add_string(column.value_descriptor.encoded_descriptor)) {
@@ -2201,7 +2201,7 @@ Rcp079ColumnarLogicalMaterializationAdditionalBytesV1(
                         &per_cell_descriptor_bytes);
     };
     if (!account_per_cell(
-            column.value_descriptor.descriptor_uuid.canonical) ||
+            column.value_descriptor.descriptor_uuid) ||
         !account_per_cell(column.value_descriptor.descriptor_kind) ||
         !account_per_cell(column.value_descriptor.canonical_type_name) ||
         !account_per_cell(column.value_descriptor.encoded_descriptor)) {
@@ -2507,7 +2507,7 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
   std::uint64_t per_cell_descriptor_bytes = 0;
   for (const auto& column : public_columns) {
     if (!add_string(column.stable_name) ||
-        !add_string(column.descriptor.descriptor_uuid.canonical) ||
+        !add_string(column.descriptor.descriptor_uuid) ||
         !add_string(column.descriptor.descriptor_kind) ||
         !add_string(column.descriptor.canonical_type_name) ||
         !add_string(column.descriptor.encoded_descriptor)) {
@@ -2520,7 +2520,7 @@ std::optional<std::uint64_t> Rcp079SpatialProviderBuildAdditionalBytesV1(
                         &per_cell_descriptor_bytes);
     };
     if (!add_cell_descriptor_string(
-            column.descriptor.descriptor_uuid.canonical) ||
+            column.descriptor.descriptor_uuid) ||
         !add_cell_descriptor_string(column.descriptor.descriptor_kind) ||
         !add_cell_descriptor_string(column.descriptor.canonical_type_name) ||
         !add_cell_descriptor_string(column.descriptor.encoded_descriptor)) {
@@ -2724,7 +2724,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   }
 
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto shared_source_capability_uuid = DerivedCanonicalUuid(
       identity_scope, "columnar-join.source.capability");
   std::vector<Rcp079ColumnarJoinSourceV1> prepared_sources;
@@ -2761,12 +2761,12 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
                     loaded.diagnostic.detail);
     }
     prepared.persisted = loaded.descriptor;
-    if (prepared.persisted.relation_uuid.canonical != prepared.object_uuid ||
-        prepared.persisted.database_uuid.canonical !=
-            input.context.database_uuid.canonical ||
-        !CanonicalUuidText(prepared.persisted.schema_uuid.canonical) ||
+    if (prepared.persisted.relation_uuid != prepared.object_uuid ||
+        prepared.persisted.database_uuid !=
+            input.context.database_uuid ||
+        !CanonicalUuidText(prepared.persisted.schema_uuid) ||
         !CanonicalUuidText(
-            prepared.persisted.descriptor_uuid.canonical) ||
+            prepared.persisted.descriptor_uuid) ||
         prepared.persisted.relation_kind != "table" ||
         prepared.persisted.storage_profile != "local_mga_rowstore_v1" ||
         prepared.persisted.descriptor_generation == 0 ||
@@ -2802,10 +2802,10 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
               api::RelationalExpressionKind::kIdentifier ||
           expression->result_descriptor_id != descriptor->descriptor_id ||
           expression->bound_name_uuid !=
-              std::optional<std::string>(column.column_uuid.canonical) ||
+              std::optional<std::string>(column.column_uuid) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
           column.ordinal != ordinal ||
-          !column_uuids.insert(column.column_uuid.canonical).second ||
+          !column_uuids.insert(column.column_uuid).second ||
           !descriptor_uuids.insert(descriptor->descriptor_uuid).second ||
           !Rcp079ExactColumnarJoinColumnBindingV1(input.context, *descriptor,
                                                   column)) {
@@ -2856,16 +2856,16 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
-  planning_scope.owning_transaction_uuid = input.context.transaction_uuid.canonical;
+  planning_scope.owning_transaction_uuid = input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -2904,11 +2904,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   logical.property_catalog.mga_statement_context = current_logical_mga;
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = input.context.statement_uuid.canonical;
+  admission_context.statement_uuid = input.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = input.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       input.context.authorization_context.catalog_generation_id;
@@ -2918,11 +2918,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
       input.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = input.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = input.context.optimizer_route_epoch;
   admission_context.route_generation = input.context.optimizer_route_generation;
   admission_context.memory_budget_bytes =
@@ -3150,9 +3150,9 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         source_input.causal_counter_id = selected_node.causal_counter_id;
         source_input.output_descriptor_ids = source->output_descriptor_ids;
         source_input.mga_statement_context = mga;
-        source_input.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+        source_input.catalog_epoch_uuid = context.catalog_epoch_uuid;
         source_input.security_context_uuid =
-            context.authorization_context.authority_uuid.canonical;
+            context.authorization_context.authority_uuid;
         source_input.policy_snapshot_uuid = source->property_uuid;
         source_input.resource_contract_uuid = source->security_receipt_uuid;
         source_input.catalog_generation = context.catalog_generation_id;
@@ -3646,7 +3646,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         step.output_row_count = executed.output.batch.rows.size();
         step.rows_examined = executed.rows_examined;
         step.current_relation_descriptor_uuid =
-            source->persisted.descriptor_uuid.canonical;
+            source->persisted.descriptor_uuid;
         step.current_relation_descriptor_generation =
             source->persisted.descriptor_generation;
         step.materialized_output_batch = std::move(executed.output.batch);
@@ -3719,7 +3719,7 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
   selected.available_executors.push_back(std::move(join_registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =
@@ -3766,11 +3766,11 @@ ExecuteCanonicalColumnarFamilyJoinQuery(
         root_outputs[ordinal]->output_name_utf8 != base_column.stable_name ||
         descriptor->descriptor_id != base_column.descriptor_id ||
         descriptor->descriptor_uuid !=
-            base_column.descriptor.descriptor_uuid.canonical ||
+            base_column.descriptor.descriptor_uuid ||
         !Rcp079ExactColumnarJoinColumnBindingV1(
             input.context, *descriptor, persisted_column) ||
         expected_column.descriptor_id != descriptor->descriptor_id ||
-        expected_column.descriptor.descriptor_uuid.canonical !=
+        expected_column.descriptor.descriptor_uuid !=
             descriptor->descriptor_uuid) {
       return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                     "columnar join root descriptor is not source-exact");
@@ -3989,10 +3989,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted = loaded_relation.descriptor;
-  if (persisted.relation_uuid.canonical != object_uuid ||
-      persisted.database_uuid.canonical !=
-          input.context.database_uuid.canonical ||
-      !CanonicalUuidText(persisted.schema_uuid.canonical) ||
+  if (persisted.relation_uuid != object_uuid ||
+      persisted.database_uuid !=
+          input.context.database_uuid ||
+      !CanonicalUuidText(persisted.schema_uuid) ||
       persisted.relation_kind != "table" ||
       persisted.storage_profile != "local_mga_rowstore_v1" ||
       persisted.row_identity_rule != "engine_uuid_v7_only" ||
@@ -4007,7 +4007,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           std::vector<std::string>{"relation_descriptor", "row_version",
                                    "transaction_inventory",
                                    "dirty_manifest"} ||
-      !CanonicalUuidText(persisted.descriptor_uuid.canonical) ||
+      !CanonicalUuidText(persisted.descriptor_uuid) ||
       persisted.descriptor_generation == 0 || persisted.columns.empty() ||
       (persisted.descriptor_status != "production_descriptor" &&
        persisted.descriptor_status !=
@@ -4042,10 +4042,10 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       const bool ordinal_exact = column.ordinal == ordinal;
       const bool name_present = !column.canonical_name_key.empty();
       const bool column_uuid_exact =
-          CanonicalUuidText(column.column_uuid.canonical);
+          CanonicalUuidText(column.column_uuid);
       const bool column_uuid_unique =
           column_uuid_exact &&
-          column_uuids.insert(column.column_uuid.canonical).second;
+          column_uuids.insert(column.column_uuid).second;
       const bool column_name_unique =
           name_present && column_names.insert(column.canonical_name_key).second;
       const bool descriptor_identity_exact =
@@ -4057,8 +4057,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
           Rcp079ExactPersistedColumnDescriptorV1(input.context, column);
       const bool descriptor_carrier_unique =
           descriptor_carrier_identities
-              .insert(column.value_descriptor.descriptor_uuid.canonical +
-                      ":" + column.column_uuid.canonical)
+              .insert(column.value_descriptor.descriptor_uuid +
+                      ":" + column.column_uuid)
               .second;
       const auto descriptor_fields =
           Rcp079ExactDescriptorFieldsV1(column.value_descriptor);
@@ -4093,9 +4093,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                << ";descriptor_carrier_unique="
                << descriptor_carrier_unique
                << ";descriptor_fields_exact=" << descriptor_fields_exact
-               << ";column_uuid=" << column.column_uuid.canonical
+               << ";column_uuid=" << column.column_uuid
                << ";descriptor_uuid="
-               << column.value_descriptor.descriptor_uuid.canonical
+               << column.value_descriptor.descriptor_uuid
                << ";descriptor_kind="
                << column.value_descriptor.descriptor_kind
                << ";canonical_type_name="
@@ -4143,7 +4143,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     for (std::size_t ordinal = 0; ordinal < persisted.columns.size(); ++ordinal) {
       const auto& column = persisted.columns[ordinal];
       if (column.ordinal != ordinal ||
-          !CanonicalUuidText(column.column_uuid.canonical) ||
+          !CanonicalUuidText(column.column_uuid) ||
           column.value_descriptor.descriptor_kind !=
               "canonical_type_descriptor" ||
           !api::QowCanonicalDescriptorIdentityV1(column.value_descriptor) ||
@@ -4192,7 +4192,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
     if (output_expression->bound_name_uuid.has_value()) {
       const auto found = std::ranges::find_if(
           persisted.columns, [&](const auto& column) {
-            return column.column_uuid.canonical ==
+            return column.column_uuid ==
                    *output_expression->bound_name_uuid;
           });
       if (found != persisted.columns.end()) persisted_column = &*found;
@@ -4208,11 +4208,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       const bool exact_descriptor_identity =
           leg_capture == nullptr
               ? descriptor->descriptor_uuid ==
-                    column.value_descriptor.descriptor_uuid.canonical
+                    column.value_descriptor.descriptor_uuid
               : CanonicalUuidText(descriptor->descriptor_uuid) &&
                     descriptor->descriptor_uuid != descriptor->type_uuid;
       if (output_expression->bound_name_uuid !=
-              std::optional<std::string>(column.column_uuid.canonical) ||
+              std::optional<std::string>(column.column_uuid) ||
           outputs[ordinal]->output_name_utf8 != column.canonical_name_key ||
           !exact_descriptor_identity ||
           descriptor->type_uuid != spatial_type_uuids[ordinal] ||
@@ -4224,7 +4224,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       }
       engine_descriptor = column.value_descriptor;
       if (leg_capture != nullptr) {
-        engine_descriptor.descriptor_uuid.canonical =
+        engine_descriptor.descriptor_uuid =
             descriptor->descriptor_uuid;
       }
       engine_descriptor.descriptor_kind = "scalar";
@@ -4235,8 +4235,8 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               persisted_column->canonical_name_key ||
           std::ranges::count_if(
               persisted.columns, [&](const auto& candidate) {
-                return candidate.column_uuid.canonical ==
-                       persisted_column->column_uuid.canonical;
+                return candidate.column_uuid ==
+                       persisted_column->column_uuid;
               }) != 1 ||
           !Rcp079ExactColumnarJoinColumnBindingV1(
               input.context, *descriptor, *persisted_column)) {
@@ -4248,7 +4248,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       // the statement DAG carries the exact live canonical datatype descriptor
       // selected from that handle.  Execution and result publication must use
       // the latter after the persisted-column authority check above succeeds.
-      engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+      engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
     } else {
       const auto expected_name = spatial && ordinal < kSpatialNames.size()
@@ -4266,7 +4266,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
         return refuse("SB_MODEL_RESULT_DESCRIPTOR_SOURCE_BINDING_INVALID_V1",
                       "derived spatial output type identity is invalid");
       }
-      engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+      engine_descriptor.descriptor_uuid = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
       engine_descriptor.canonical_type_name = std::string(expected_type);
       engine_descriptor.encoded_descriptor =
@@ -4422,7 +4422,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       spatial ? "LOGICAL_SPATIAL_SOURCE_V1"
               : "LOGICAL_COLUMNAR_SOURCE_V1";
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto source_identity_scope =
       identity_scope + ":" + std::to_string(source->node_id) + ":" +
       object_uuid;
@@ -4462,16 +4462,16 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   planning.output_descriptor_ids = source->output_descriptor_ids;
   planning.mga_statement_context = mga;
   planning.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
-  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   planning.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   planning.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   planning.statistics_snapshot_uuid = statistics_snapshot_uuid;
   planning.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   planning.catalog_generation = generation;
   planning.current_catalog_generation = generation;
   planning.security_epoch = std::max<std::uint64_t>(1, input.context.security_epoch);
@@ -4511,16 +4511,16 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   }
 
   api::CanonicalRelationalPlanningScope planning_scope;
-  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning_scope.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
-  planning_scope.owning_transaction_uuid = input.context.transaction_uuid.canonical;
+  planning_scope.owning_transaction_uuid = input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -4558,11 +4558,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   logical.property_catalog.mga_statement_context = current_logical_mga;
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = input.context.statement_uuid.canonical;
+  admission_context.statement_uuid = input.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = input.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       input.context.authorization_context.catalog_generation_id;
@@ -4572,11 +4572,11 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       input.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = input.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = input.context.optimizer_route_epoch;
   admission_context.route_generation = input.context.optimizer_route_generation;
   admission_context.memory_budget_bytes = input.context.optimizer_memory_budget_bytes;
@@ -4713,7 +4713,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   source_input.object_uuid = object_uuid;
   if (spatial) {
     source_input.spatial_geometry_descriptor_uuid =
-        persisted.columns[1].value_descriptor.descriptor_uuid.canonical;
+        persisted.columns[1].value_descriptor.descriptor_uuid;
     source_input.spatial_geometry_type_uuid =
         spatial_type_uuids[1];
     source_input.spatial_crs_uuid = spatial_crs_uuid;
@@ -4728,9 +4728,9 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   source_input.causal_counter_id = physical_source.causal_counter_id;
   source_input.output_descriptor_ids = source->output_descriptor_ids;
   source_input.mga_statement_context = mga;
-  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   source_input.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   source_input.policy_snapshot_uuid = policy_snapshot_uuid;
   source_input.resource_contract_uuid = resource_contract_uuid;
   source_input.catalog_generation = generation;
@@ -5912,7 +5912,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
                              api::RelationalExpressionKind::kIdentifier &&
                          expression.bound_name_uuid ==
                              std::optional<std::string>(
-                                 column.column_uuid.canonical);
+                                 column.column_uuid);
                 });
             const auto descriptor_id =
                 identifier == dag.expressions.end()
@@ -6043,7 +6043,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
               }
               const auto column = std::ranges::find_if(
                   persisted.columns, [&](const auto& candidate) {
-                    return candidate.column_uuid.canonical ==
+                    return candidate.column_uuid ==
                            *expression->bound_name_uuid;
                   });
               if (column == persisted.columns.end()) {
@@ -6515,7 +6515,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       leg_capture, source->node_id, family, implementation_id,
       spatial ? "canonical.spatial.exact-scan.v1"
               : "canonical.columnar.reconstruction.v1",
-      family + ".local.v1", persisted.descriptor_uuid.canonical,
+      family + ".local.v1", persisted.descriptor_uuid,
       persisted.descriptor_generation,
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       exec::PhysicalNodeKind::kScan, execution_request);
@@ -6538,7 +6538,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
       columnar_runtime_memory_receipt != nullptr;
   registration.execute =
       [execution_request, persisted_descriptor_uuid =
-                              persisted.descriptor_uuid.canonical,
+                              persisted.descriptor_uuid,
        implementation_id, columnar_runtime_memory_receipt,
        model_cancellation_probe_failed](
           const exec::TypedPhysicalNodeDag& selected_dag,
@@ -6668,7 +6668,7 @@ ExecuteCanonicalSpatialColumnarFamilyQuery(
   selected.available_executors.push_back(std::move(registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =

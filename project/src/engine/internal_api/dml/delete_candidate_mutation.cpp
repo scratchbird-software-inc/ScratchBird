@@ -65,8 +65,8 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   };
   stream.prepare_consumer_for_visible_rows = [&](const MgaRelationStorageDescriptor& relation,
       std::uint64_t count, std::uint64_t* growth) {
-    if (relation.relation_uuid.canonical != target || relation.relation_generation != d.target_relation_generation ||
-        relation.descriptor_uuid.canonical != p::UuidText(b.effects.relation_descriptor_uuid) ||
+    if (relation.relation_uuid != target || relation.relation_generation != d.target_relation_generation ||
+        relation.descriptor_uuid != p::UuidText(b.effects.relation_descriptor_uuid) ||
         relation.descriptor_generation != b.effects.relation_descriptor_generation ||
         count > b.resource_budget.maximum_candidate_rows || count > (budget / 8) / sizeof(CrudRowVersionRecord)) {
       callback_failure = Error("visible_candidate_or_descriptor_bound"); return false;
@@ -74,14 +74,14 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
     if (!all_rows) {
       const auto& node = b.predicate.records[0]; const auto& literal = b.predicate.records[1];
       for (const auto& column : relation.columns) {
-        if (column.column_uuid.canonical != p::UuidText(node.referenced_column_uuid)) continue;
+        if (column.column_uuid != p::UuidText(node.referenced_column_uuid)) continue;
         if (!predicate_column.empty() || column.column_generation != node.referenced_column_generation) {
-          callback_failure = Error("predicate_column_generation", "DATATYPE.DESCRIPTOR_INVALID"); return false;
+          callback_failure = Error("predicate_column_generation", "DATATYPE.DESCRIPTOR.INVALID"); return false;
         }
         predicate_column = Fold(column.canonical_name_key); predicate_nullable = column.nullable;
       }
       if (predicate_column.empty() || (literal.canonical_value.size() != 4 && literal.canonical_value.size() != 8)) {
-        callback_failure = Error("predicate_column_or_fixed_width_literal", "DATATYPE.DESCRIPTOR_INVALID"); return false;
+        callback_failure = Error("predicate_column_or_fixed_width_literal", "DATATYPE.DESCRIPTOR.INVALID"); return false;
       }
       std::uint64_t bits = 0;
       for (std::size_t n = 0; n < literal.canonical_value.size(); ++n) bits |= std::uint64_t(literal.canonical_value[n]) << (8 * n);
@@ -100,10 +100,10 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
     if (!all_rows) {
       const std::string* value = nullptr;
       for (const auto& field : row.values) if (Fold(field.first) == predicate_column) {
-        if (value) { callback_failure = Error("duplicate_predicate_column", "DATATYPE.DESCRIPTOR_INVALID"); return false; }
+        if (value) { callback_failure = Error("duplicate_predicate_column", "DATATYPE.DESCRIPTOR.INVALID"); return false; }
         value = &field.second;
       }
-      if (!value) { callback_failure = Error("missing_predicate_column", "DATATYPE.DESCRIPTOR_INVALID"); return false; }
+      if (!value) { callback_failure = Error("missing_predicate_column", "DATATYPE.DESCRIPTOR.INVALID"); return false; }
       if (*value == "<NULL>" && predicate_nullable) return true; // UNKNOWN does not qualify.
       std::int64_t parsed = 0;
       const auto converted = std::from_chars(value->data(), value->data() + value->size(), parsed);
@@ -111,7 +111,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
           (b.predicate.records[1].canonical_value.size() == 4 &&
            (parsed < std::numeric_limits<std::int32_t>::min() ||
             parsed > std::numeric_limits<std::int32_t>::max()))) {
-        callback_failure = Error("noncanonical_integer_source", "DATATYPE.DESCRIPTOR_INVALID"); return false;
+        callback_failure = Error("noncanonical_integer_source", "DATATYPE.DESCRIPTOR.INVALID"); return false;
       }
       if (parsed != predicate_literal) return true;
     }
@@ -149,7 +149,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   if (!table || table->temporary) return fail(Error("target_lifetime_changed", "MGA.TRANSACTION.STALE"));
   const auto indexes = VisibleMgaIndexesForTable(view, target, context.local_transaction_id);
   if (indexes.size() != b.effects.index_count) return fail(Error("index_set_changed", "MGA.TRANSACTION.STALE"));
-  EngineDeleteRowsRequest request; request.context = context; request.target_table.uuid.canonical = target;
+  EngineDeleteRowsRequest request; request.context = context; request.target_table.uuid = target;
   const auto batch = BuildDeleteBatchContext(request, view, *table, indexes);
   std::vector<CrudRowVersionRecord> tombstones;
   tombstones.reserve(candidates.size());
@@ -194,7 +194,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
         delta.index = plan.index; delta.table_uuid = target; delta.row_uuid = row.row_uuid;
         delta.version_uuid = tombstone.version_uuid; delta.values = row.values;
         delta.delta_kind = scratchbird::core::index::SecondaryIndexDeltaKind::delete_row;
-        delta.source_evidence_reference = "engine.dml.delete.secondary_index_delta:" + context.statement_uuid.canonical;
+        delta.source_evidence_reference = "engine.dml.delete.secondary_index_delta:" + context.statement_uuid;
         deltas.push_back(std::move(delta));
       }
     }

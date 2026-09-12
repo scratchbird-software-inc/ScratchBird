@@ -39,11 +39,11 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 bool Empty(const EngineUuid& uuid) {
-  return uuid.canonical.empty();
+  return uuid.is_nil();
 }
 
 bool Empty(const EngineObjectReference& object) {
-  return object.uuid.canonical.empty();
+  return object.uuid.is_nil();
 }
 
 using scratchbird::core::agents::AgentActionClass;
@@ -108,12 +108,12 @@ platform::u64 StableSeed(const std::string& value, platform::u64 salt);
 
 std::string LedgerKey(const EngineRequestContext& context,
                       const EngineObjectReference& filespace) {
-  const std::string database = context.database_uuid.canonical.empty()
+  const std::string database = context.database_uuid.is_nil()
                                    ? std::string("database_uuid_absent")
-                                   : context.database_uuid.canonical;
+                                   : context.database_uuid;
   const std::string path = context.database_path.empty() ? std::string("database_path_absent")
                                                          : context.database_path;
-  return path + "|" + database + "|" + filespace.uuid.canonical;
+  return path + "|" + database + "|" + filespace.uuid;
 }
 
 std::string FilespaceGrowthPhysicalMemberPath(const EngineRequestContext& context,
@@ -128,7 +128,7 @@ std::string FilespaceGrowthPhysicalMemberPath(const EngineRequestContext& contex
   }
   std::error_code ignored;
   std::filesystem::create_directories(base, ignored);
-  const auto seed = StableSeed(key + "|" + filespace.uuid.canonical, 59);
+  const auto seed = StableSeed(key + "|" + filespace.uuid, 59);
   return (base / ("scratchbird_filespace_growth_" + std::to_string(seed) + ".sbfs")).string();
 }
 
@@ -190,7 +190,7 @@ bool IsKnownPageFamilyForPreallocation(const std::string& family) {
 platform::TypedUuid PolicyUuidForStorageRoute(const EngineAgentActionHookRequest& request,
                                               const std::string& key) {
   const auto parsed = ParseEngineIdentity(platform::UuidKind::object,
-                                          request.policy_snapshot_uuid.canonical);
+                                          request.policy_snapshot_uuid);
   return parsed.valid() ? parsed : GeneratedIdentity(platform::UuidKind::object, key, 17);
 }
 
@@ -309,9 +309,9 @@ AgentRuntimeContext AgentContextFromHookRequest(const EngineAgentActionHookReque
   context.backup_hold_mode = OptionPresent(request, "lifecycle:backup") ||
                              OptionPresent(request, "lifecycle:restore");
   context.archive_hold_mode = OptionPresent(request, "lifecycle:archive_hold");
-  context.principal_uuid = request.context.principal_uuid.canonical;
-  context.database_uuid = request.context.database_uuid.canonical;
-  context.cluster_uuid = request.context.cluster_uuid.canonical;
+  context.principal_uuid = request.context.principal_uuid;
+  context.database_uuid = request.context.database_uuid;
+  context.cluster_uuid = request.context.cluster_uuid;
   agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
                                                             &context);
   const auto wall = OptionValue(request, "wall_now_us:");
@@ -341,7 +341,7 @@ bool DurableResourceReservationRequiredForHook(
 bool DurableCatalogStoreContextAvailableForHook(
     const EngineAgentActionHookRequest& request) {
   return !request.context.database_path.empty() &&
-         !request.context.transaction_uuid.canonical.empty() &&
+         !request.context.transaction_uuid.is_nil() &&
          request.context.local_transaction_id != 0;
 }
 
@@ -375,7 +375,7 @@ DurableAgentResourceReservationRequest DurableResourceReservationForHook(
       DeterministicAgentRuntimeObjectUuidFromKey(
           "agent_hook_resource_reservation|" + reservation.reservation_key);
   reservation.owner_scope = context.principal_uuid.empty()
-                                ? request.context.principal_uuid.canonical
+                                ? request.context.principal_uuid
                                 : context.principal_uuid;
   reservation.agent_type_id = request.agent_type;
   reservation.operation_id = operation_id;
@@ -558,7 +558,7 @@ std::string HookActionUuid(const EngineAgentActionHookRequest& request,
   }
   const std::string key = !request.context.request_id.empty()
       ? request.context.request_id + "|agent_action|" + normalized_action
-      : request.agent_uuid.canonical + "|agent_action|" + normalized_action;
+      : request.agent_uuid + "|agent_action|" + normalized_action;
   return UuidText(GeneratedIdentity(platform::UuidKind::object, key, 19));
 }
 
@@ -567,7 +567,7 @@ std::string HookIdempotencyKey(const EngineAgentActionHookRequest& request,
   const auto explicit_key = OptionValue(request, "idempotency_key:");
   if (!explicit_key.empty()) { return explicit_key; }
   if (!request.cooldown_key.empty()) { return request.cooldown_key + ":" + normalized_action; }
-  return request.agent_uuid.canonical + ":" + request.policy_snapshot_uuid.canonical + ":" + normalized_action;
+  return request.agent_uuid + ":" + request.policy_snapshot_uuid + ":" + normalized_action;
 }
 
 EngineApiDiagnostic HookRefusalDiagnostic(const std::string& operation_id,
@@ -676,7 +676,7 @@ std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
   const auto metrics = ResolveAgentMetricDependencies(*descriptor, context);
   if (!metrics.ok) { return metrics.diagnostic_code + ":" + metrics.detail; }
   auto policy = BaselinePolicyForAgent(*descriptor);
-  policy.policy_uuid = request.policy_snapshot_uuid.canonical;
+  policy.policy_uuid = request.policy_snapshot_uuid;
   policy.activation = request.dry_run ? AgentActivationProfile::dry_run : descriptor->default_activation;
   policy.activation = EffectiveActivationForLifecycle(policy.activation, LifecycleModeFromHookRequest(request));
   if (!request.dry_run && request.policy_authorized) {
@@ -690,7 +690,7 @@ std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
   AgentActionRequest action;
   action.action_uuid = HookActionUuid(request, normalized_action);
   action.agent_type_id = descriptor->type_id;
-  action.instance_uuid = request.agent_uuid.canonical;
+  action.instance_uuid = request.agent_uuid;
   action.action_class = ActionClassForRequest(request, descriptor->authority);
   action.actuator_id = descriptor->type_id;
   action.operation_id = normalized_action;
@@ -700,7 +700,7 @@ std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
   action.inputs["action_class"] = request.action_class;
   action.inputs["page_family"] = request.page_family;
   action.inputs["page_type"] = request.page_type;
-  action.inputs["target_uuid"] = TargetForEvidence(request).uuid.canonical;
+  action.inputs["target_uuid"] = TargetForEvidence(request).uuid;
   const auto decision = EvaluateAgentAction(context, *descriptor, policy, action);
   (void)RecordAgentRuntimeMetric(*descriptor, decision, 0);
   runtime_rows->push_back({"runtime_action_class", AgentActionClassName(action.action_class)});
@@ -777,7 +777,7 @@ EngineApiDiagnostic PersistHookEvidence(const EngineAgentActionHookRequest& requ
                                         const std::string& normalized_action) {
   const auto target = TargetForEvidence(request);
   const auto event = std::string("SBAGENTHOOK1\t") + operation_id + "\t" + request.agent_type + "\t" +
-                     normalized_action + "\t" + target.uuid.canonical + "\t" + request.policy_snapshot_uuid.canonical;
+                     normalized_action + "\t" + target.uuid + "\t" + request.policy_snapshot_uuid;
   return AppendApiBehaviorEvent(request.context, event);
 }
 
@@ -799,15 +799,15 @@ TResult HookSuccess(const EngineAgentActionHookRequest& request,
   result.normalized_action = normalized_action;
   result.primary_object = TargetForEvidence(request);
   AddApiBehaviorEvidence(&result, "agent_hook", operation_id);
-  AddApiBehaviorEvidence(&result, "policy_snapshot_uuid", request.policy_snapshot_uuid.canonical);
+  AddApiBehaviorEvidence(&result, "policy_snapshot_uuid", request.policy_snapshot_uuid);
   AddApiBehaviorRow(&result,
                     {{"agent_type", request.agent_type},
                      {"action", normalized_action},
                      {"action_class", request.action_class},
                      {"dry_run", request.dry_run ? "true" : "false"},
-                     {"target_uuid", result.primary_object.uuid.canonical},
+                     {"target_uuid", result.primary_object.uuid},
                      {"target_kind", result.primary_object.object_kind},
-                     {"policy_snapshot_uuid", request.policy_snapshot_uuid.canonical},
+                     {"policy_snapshot_uuid", request.policy_snapshot_uuid},
                      {"safety_fence_result", request.safety_fence_result}});
   if (!runtime_rows.empty()) {
     AddApiBehaviorRow(&result, runtime_rows);
@@ -988,11 +988,11 @@ EngineRequestPagePreallocationResult RunPagePreallocationRoute(
 
   const std::string key = LedgerKey(request.context, request.target_filespace);
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
-                                                 request.target_filespace.uuid.canonical);
+                                                 request.target_filespace.uuid);
   const auto transaction_uuid = ParseEngineIdentity(platform::UuidKind::transaction,
-                                                   request.context.transaction_uuid.canonical);
+                                                   request.context.transaction_uuid);
   if (!database_uuid.valid()) {
     return HookFailure<EngineRequestPagePreallocationResult>(
         request, kOperation, kAction, "database_uuid_invalid_for_storage_route");
@@ -1172,11 +1172,11 @@ EngineRequestFilespaceGrowthResult RunFilespaceGrowthRoute(
 
   const std::string key = LedgerKey(request.context, request.target_filespace);
   const auto database_uuid = ParseEngineIdentity(platform::UuidKind::database,
-                                                request.context.database_uuid.canonical);
+                                                request.context.database_uuid);
   const auto filespace_uuid = ParseEngineIdentity(platform::UuidKind::filespace,
-                                                 request.target_filespace.uuid.canonical);
+                                                 request.target_filespace.uuid);
   const auto transaction_uuid = ParseEngineIdentity(platform::UuidKind::transaction,
-                                                   request.context.transaction_uuid.canonical);
+                                                   request.context.transaction_uuid);
   if (!database_uuid.valid()) {
     return HookFailure<EngineRequestFilespaceGrowthResult>(
         request, kOperation, kAction, "database_uuid_invalid_for_storage_route");

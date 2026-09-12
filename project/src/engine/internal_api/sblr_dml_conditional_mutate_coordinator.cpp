@@ -43,7 +43,7 @@ CompileSblrDmlConditionalMutateDescriptor(const EngineRequestContext& context,
   SblrDmlConditionalMutateCoordinationResult result;
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid.canonical || !structural_occurrence ||
+      receipt != context.statement_uuid || !structural_occurrence ||
       !mutation_occurrence || !availability_generation) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SBLR.OPERAND.INVALID", "sblr.dml_conditional_mutate.coordination_invalid",

@@ -38,7 +38,7 @@ SblrDdlCreateTypeCoordinationResult CompileSblrDdlCreateTypeDescriptor(
   if (!HasPrivateTag(context, "private_ddl_create_type_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
       !IsCanonicalUuid(receipt) ||
-      receipt != context.statement_uuid.canonical || !occurrence ||
+      receipt != context.statement_uuid || !occurrence ||
       !domain_occurrence || !availability) {
     result.diagnostic =
         Diagnostic("SBLR.OPERAND_INVALID",

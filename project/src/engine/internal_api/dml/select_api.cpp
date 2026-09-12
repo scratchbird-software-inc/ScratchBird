@@ -702,10 +702,10 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
           {"relation_projection_view_marker",
            kEngineRelationProjectionViewMarkerV1});
       result.evidence.push_back(
-          {"relation_projection_view_uuid", view.view_uuid.canonical});
+          {"relation_projection_view_uuid", view.view_uuid});
       result.evidence.push_back(
           {"relation_projection_view_descriptor_uuid",
-           view.view_descriptor_uuid.canonical});
+           view.view_descriptor_uuid});
       result.evidence.push_back(
           {"relation_projection_view_descriptor_generation",
            std::to_string(view.view_descriptor_generation)});
@@ -734,10 +734,10 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
           {"global_aggregate_view_marker",
            kEngineGlobalAggregateViewMarkerV1});
       result.evidence.push_back(
-          {"global_aggregate_view_uuid", view.view_uuid.canonical});
+          {"global_aggregate_view_uuid", view.view_uuid});
       result.evidence.push_back(
           {"global_aggregate_view_descriptor_uuid",
-           view.view_descriptor_uuid.canonical});
+           view.view_descriptor_uuid});
       result.evidence.push_back(
           {"global_aggregate_view_descriptor_generation",
            std::to_string(view.view_descriptor_generation)});
@@ -915,7 +915,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     write_select_trace(result.visible_count);
     return result;
   }
-  const std::string table_uuid = !request.source_object.uuid.canonical.empty() ? request.source_object.uuid.canonical : request.target_object.uuid.canonical;
+  const std::string table_uuid = !request.source_object.uuid.is_nil() ? request.source_object.uuid : request.target_object.uuid;
   if (table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
   }
@@ -981,7 +981,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (!table) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_not_visible"));
   }
-  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+  if (table->temporary && request.context.session_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
         request.context,
         "dml.select_rows",
@@ -1243,7 +1243,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     result.evidence.push_back(
         {"global_aggregate_function_uuid",
          global_aggregate_binding.outputs.front()
-             .aggregate_function_uuid.canonical});
+             .aggregate_function_uuid});
   } else if (result_projection == "count") {
     std::string error_detail;
     result.result_shape =

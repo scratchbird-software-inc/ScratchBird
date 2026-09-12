@@ -126,6 +126,12 @@
   }
 
   if (IdIs(id, {"data.scalar.savepoint_active", "sb.session.savepoint_active", "savepoint_active"})) {
+    if (!request.context.sblr_context.savepoint_authority_diagnostic.diagnostic_id.empty()) {
+      FunctionCallResult failed;
+      failed.result.status = scratchbird::engine::sblr::SblrStatusCode::execution_failed;
+      failed.result.diagnostics.push_back(request.context.sblr_context.savepoint_authority_diagnostic);
+      return failed;
+    }
     if (request.arguments.size() > 1) {
       return RefuseFunctionInvalidInput(request, "savepoint_active expects zero or one savepoint name argument");
     }

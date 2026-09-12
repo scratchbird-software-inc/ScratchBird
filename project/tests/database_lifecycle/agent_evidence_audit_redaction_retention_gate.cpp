@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agents/agent_durable_catalog_store_api.hpp"
-#include "diagnostics/diagnostic_rendering.hpp"
+#include "server/diagnostic_rendering/diagnostic_rendering.hpp"
 #include "management/support_bundle_api.hpp"
 #include "observability/agent_evidence_retention_api.hpp"
 #include "agent_commercial_evidence.hpp"
@@ -29,6 +29,7 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace rendering = scratchbird::server::legacy_rendering;
 namespace agents = scratchbird::core::agents;
 namespace db = scratchbird::storage::database;
 namespace mga = scratchbird::transaction::mga;
@@ -372,7 +373,7 @@ void TestUserRedactionAndRetentionDecision() {
           "retention decision evidence marker missing");
   RequireUuidFieldAuthority(result);
 
-  api::EngineParserPackageRenderOptions render;
+  rendering::EngineParserPackageRenderOptions render;
   render.parser_package_uuid = Id(platform::UuidKind::object, 20);
   render.parser_package_version = "sbsql.v3";
   render.client_dialect = "sbsql";
@@ -381,9 +382,9 @@ void TestUserRedactionAndRetentionDecision() {
   render.session_uuid = request.context.session_uuid.canonical;
   render.database_uuid = request.context.database_uuid.canonical;
   render.transaction_uuid = request.context.transaction_uuid.canonical;
-  const auto envelope = api::RenderEngineApiResultForParserPackage(result, std::move(render));
+  const auto envelope = rendering::RenderEngineApiResultForParserPackage(result, std::move(render));
   std::vector<std::string> errors;
-  Require(api::ValidateEngineRenderedResultEnvelope(envelope, &errors),
+  Require(rendering::ValidateLegacyRenderedProjectionStructure(envelope, &errors),
           "parser/client rendered envelope failed validation");
   Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser/client envelope claimed finality authority");
@@ -487,7 +488,7 @@ void TestExactRefusals() {
   cluster.records.front().cluster_scoped = true;
   const auto no_cluster = api::EngineEvaluateAgentEvidenceRetention(cluster);
   Require(!no_cluster.ok, "cluster-scoped evidence bypassed provider boundary");
-  Require(HasDiagnostic(no_cluster, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+  Require(HasDiagnostic(no_cluster, "PROCESS.CLUSTER_PATH_ABSENT"),
           "cluster no-provider diagnostic drifted");
 
   api::EngineEvaluateAgentEvidenceRetentionRequest missing_security;

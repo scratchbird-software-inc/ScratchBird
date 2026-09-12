@@ -27,8 +27,8 @@ OWNED_FILES = [
     "project/src/engine/internal_api/observability/metrics_api.cpp",
     "project/src/engine/internal_api/security/audit_api.hpp",
     "project/src/engine/internal_api/security/audit_api.cpp",
-    "project/src/engine/internal_api/diagnostics/diagnostic_rendering.hpp",
-    "project/src/engine/internal_api/diagnostics/diagnostic_rendering.cpp",
+    "project/src/server/diagnostic_rendering/diagnostic_rendering.hpp",
+    "project/src/server/diagnostic_rendering/diagnostic_rendering.cpp",
     "project/tests/database_lifecycle/observability_conformance.cpp",
     "project/tests/database_lifecycle/observability_static.py",
     "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_OBSERVABILITY_REPORT.md",
@@ -38,7 +38,7 @@ REQUIRED_TOKENS = {
     "project/src/server/diagnostics.cpp": [
         "ToPrivateMessageVectorJsonLine",
         "DiagnosticShapeIdForCode",
-        "IsRetryableDiagnosticCode",
+        "diagnostic.retryable",
         "parser_finality_authority",
         "reference_finality_authority",
     ],
@@ -66,7 +66,7 @@ REQUIRED_TOKENS = {
         "public_private_shape_separated",
         "lifecycle_cache_invalidation",
     ],
-    "project/src/engine/internal_api/diagnostics/diagnostic_rendering.cpp": [
+    "project/src/server/diagnostic_rendering/diagnostic_rendering.cpp": [
         "parser_finality_authority_must_be_false",
         "reference_finality_authority_must_be_false",
         "diagnostic_public_shape_required",
@@ -81,6 +81,8 @@ REQUIRED_TOKENS = {
 }
 
 FORBIDDEN = [
+    "IsRetryableDiagnosticCode",
+    "LifecycleDiagnosticRetryable",
     "sqlite3",
     "SQL PRAGMA",
     "journal_mode",

@@ -1235,7 +1235,7 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
       }
       config->database_open_mode = lower;
     } else if (key == "server.database.daemon_scope") {
-      if (!EnumAllowed(lower, {"shared","dedicated"})) {
+      if (!EnumAllowed(lower, {"dedicated"})) {
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
       }
       config->database_daemon_scope = lower;
@@ -1454,7 +1454,9 @@ void ApplyCliOverrides(const ServerCliOptions& cli,
 }
 
 void FinalizeDerivedPaths(ServerBootstrapConfig* config,
-                          const ServerConfigResolutionContext& context) {
+                          const ServerConfigResolutionContext& context,
+                          const ServerCliOptions& cli,
+                          const ParsedConfig* parsed) {
   if (config->mode == ServerMode::kForeground || config->mode == ServerMode::kValidationOnly) {
     if (config->log_file.empty()) {
       config->log_file = "stderr";
@@ -1465,8 +1467,17 @@ void FinalizeDerivedPaths(ServerBootstrapConfig* config,
   }
   if (config->database_daemon_scope == "dedicated" && !config->database_runtime_scope_id.empty()) {
     const auto scope = std::filesystem::path("databases") / config->database_runtime_scope_id;
-    config->control_dir = (config->control_dir / scope).lexically_normal();
-    config->data_dir = (config->data_dir / scope).lexically_normal();
+    // Scope compiled defaults, not explicitly configured instance directories.
+    // Rewriting a supplied control root leaves its explicit IPC endpoint outside
+    // the validated root. Ownership/endpoint checks still apply to either form.
+    if (cli.control_dir.empty() &&
+        (parsed == nullptr || parsed->values.find("server.runtime.control_dir") == parsed->values.end())) {
+      config->control_dir = (config->control_dir / scope).lexically_normal();
+    }
+    if (cli.runtime_dir.empty() &&
+        (parsed == nullptr || parsed->values.find("server.runtime.data_dir") == parsed->values.end())) {
+      config->data_dir = (config->data_dir / scope).lexically_normal();
+    }
   }
   if (config->pid_file.empty()) {
     config->pid_file = config->control_dir / "sb_server.pid";
@@ -1707,7 +1718,8 @@ ServerConfigLoadResult ResolveServerBootstrapConfig(
         "server.database.auto_create is forbidden for the public server path."));
     return result;
   }
-  FinalizeDerivedPaths(&result.config, context);
+  FinalizeDerivedPaths(&result.config, context, cli,
+                       parsed_config ? &*parsed_config : nullptr);
   const auto explicit_memory_keys =
       ExplicitServerMemoryKeys(parsed_config ? &*parsed_config : nullptr);
   if (!ApplyDefaultMemoryPolicyFromPolicyPack(&result.config,

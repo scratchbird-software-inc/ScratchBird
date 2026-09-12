@@ -45,9 +45,9 @@ internal_api::EngineRequestContext ToEngineContext(const AgentRuntimeContext& co
   internal_api::EngineRequestContext out;
   out.security_context_present = context.security_context_present;
   out.cluster_authority_available = context.cluster_authority_available;
-  out.database_uuid.canonical = context.database_uuid;
-  out.cluster_uuid.canonical = context.cluster_uuid;
-  out.principal_uuid.canonical = context.principal_uuid;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.principal_uuid = context.principal_uuid;
   out.trace_tags = context.trace_tags;
   return out;
 }

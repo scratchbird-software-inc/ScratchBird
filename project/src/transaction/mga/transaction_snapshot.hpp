@@ -13,6 +13,8 @@
 #include "transaction_horizon.hpp"
 
 #include <string>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::transaction::mga {
@@ -73,6 +75,44 @@ struct SnapshotVectorResult {
            descriptor.snapshot_uuid.valid();
   }
 };
+
+// Engine-private ownership of an already published snapshot. A pin cannot be
+// reconstructed from a descriptor or survive explicit transaction/recovery
+// revocation. It retains the cleanup horizon until its last owner releases it.
+class PublishedSnapshotPin final {
+ public:
+  PublishedSnapshotPin() noexcept = default;
+  PublishedSnapshotPin(PublishedSnapshotPin&&) noexcept = default;
+  PublishedSnapshotPin& operator=(PublishedSnapshotPin&&) noexcept = default;
+  PublishedSnapshotPin(const PublishedSnapshotPin&) = delete;
+  PublishedSnapshotPin& operator=(const PublishedSnapshotPin&) = delete;
+  // Ownership only; Resolve also checks explicit revocation.
+  bool valid() const noexcept { return lease_ != nullptr; }
+  SnapshotVectorResult Resolve() const;
+  void Release() noexcept { lease_.reset(); }
+ private:
+  struct Lease;
+  explicit PublishedSnapshotPin(std::shared_ptr<Lease> lease) noexcept
+      : lease_(std::move(lease)) {}
+  std::shared_ptr<Lease> lease_;
+  friend PublishedSnapshotPin RetainPublishedSnapshotVector(const TypedUuid&);
+};
+
+PublishedSnapshotPin RetainPublishedSnapshotVector(const TypedUuid& snapshot_uuid);
+// End the publication owner's lifetime, without revoking previously retained
+// pins. New pins cannot be acquired after this call. Explicit invalidation must
+// continue to use RevokePublishedSnapshotVector(sForTransaction).
+void ReleasePublishedSnapshotVector(const TypedUuid& snapshot_uuid);
+// Runtime cleanup input only. Do not feed this into durable inventory/page
+// validation: that pure calculation must be independent of live process state.
+struct PublishedSnapshotHorizonResult {
+  Status status;
+  std::vector<LocalTransactionId> horizons;
+  DiagnosticRecord diagnostic;
+  bool ok() const { return status.ok(); }
+};
+PublishedSnapshotHorizonResult PublishedSnapshotRetentionHorizons(
+    const LocalTransactionInventory& inventory);
 
 TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionInventory& inventory,
                                                          LocalTransactionId reader_transaction);

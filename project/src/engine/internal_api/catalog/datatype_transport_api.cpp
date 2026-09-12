@@ -95,11 +95,11 @@ EngineDatatypeTransportEncodeResult EncodeDatatypeTransportRecord(const EngineDa
       scratchbird::core::datatypes::DatatypeDescriptorIntegrityProfile::strong;
   envelope.records = {
       Record("transport_scope", record.transport_scope),
-      Record("descriptor_uuid", record.descriptor.descriptor_uuid.canonical),
+      Record("descriptor_uuid", record.descriptor.descriptor_uuid),
       Record("descriptor_kind", record.descriptor.descriptor_kind),
       Record("descriptor_canonical_type_name", record.descriptor.canonical_type_name),
       Record("descriptor_encoded_descriptor", record.descriptor.encoded_descriptor),
-      Record("value_descriptor_uuid", record.value.descriptor.descriptor_uuid.canonical),
+      Record("value_descriptor_uuid", record.value.descriptor.descriptor_uuid),
       Record("value_descriptor_kind", record.value.descriptor.descriptor_kind),
       Record("value_descriptor_canonical_type_name", record.value.descriptor.canonical_type_name),
       Record("value_descriptor_encoded_descriptor", record.value.descriptor.encoded_descriptor),
@@ -144,7 +144,7 @@ EngineDatatypeTransportDecodeResult DecodeDatatypeTransportRecord(const std::str
       !SupportedTransportScope(result.record.transport_scope)) {
     return DecodeFailure("bad_transport_scope");
   }
-  if (!ReadRecord(decoded.envelope, "descriptor_uuid", &result.record.descriptor.descriptor_uuid.canonical)) {
+  if (!ReadRecord(decoded.envelope, "descriptor_uuid", &result.record.descriptor.descriptor_uuid)) {
     return DecodeFailure("bad_descriptor_uuid");
   }
   if (!ReadRecord(decoded.envelope, "descriptor_kind", &result.record.descriptor.descriptor_kind)) {
@@ -159,7 +159,7 @@ EngineDatatypeTransportDecodeResult DecodeDatatypeTransportRecord(const std::str
     return DecodeFailure("bad_encoded_descriptor");
   }
   if (!ReadRecord(decoded.envelope, "value_descriptor_uuid",
-                  &result.record.value.descriptor.descriptor_uuid.canonical)) {
+                  &result.record.value.descriptor.descriptor_uuid)) {
     return DecodeFailure("bad_value_descriptor_uuid");
   }
   if (!ReadRecord(decoded.envelope, "value_descriptor_kind",

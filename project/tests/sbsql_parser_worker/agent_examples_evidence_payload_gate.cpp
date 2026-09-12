@@ -343,11 +343,11 @@ void RequireClusterProviderExample(const ExampleRoute& route) {
     Require(!dispatch.api_result.ok,
             "compile-link cluster stub unexpectedly executed example route");
     Require(HasDiagnostic(dispatch.api_result,
-                          cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                          "PROCESS.CLUSTER_PATH_ABSENT"),
             "cluster stub provider diagnostic missing");
     Require(HasDispatchDiagnostic(
                 dispatch,
-                cluster_provider::kClusterHandshakeStubCompileLinkOnlyCode),
+                "PROCESS.CLUSTER_PATH_ABSENT"),
             "cluster stub provider dispatch diagnostic missing");
     Require(HasEvidence(dispatch.api_result, "cluster_provider", "stub"),
             "cluster stub provider evidence missing");
@@ -355,9 +355,9 @@ void RequireClusterProviderExample(const ExampleRoute& route) {
     Require(dispatch.api_result.ok, "cluster stub provider refused example route");
   } else {
     Require(!dispatch.api_result.ok, "no-cluster build accepted cluster example route");
-    Require(HasDiagnostic(dispatch.api_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDiagnostic(dispatch.api_result, "PROCESS.CLUSTER_PATH_ABSENT"),
             "no-cluster API diagnostic missing");
-    Require(HasDispatchDiagnostic(dispatch, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"),
+    Require(HasDispatchDiagnostic(dispatch, "PROCESS.CLUSTER_PATH_ABSENT"),
             "no-cluster dispatch diagnostic missing");
   }
 }

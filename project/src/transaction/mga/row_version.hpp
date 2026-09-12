@@ -175,6 +175,11 @@ RowVersionIdentityResult ValidateRowVersionIdentity(const RowVersionIdentity& id
 RowVersionMetadataResult ValidateRowVersionMetadata(const RowVersionMetadata& metadata);
 VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,
                                     const VisibilitySnapshot& snapshot);
+// A visible delete effect suppresses older versions but is never a user row.
+// Unlike EvaluateVisibility, this evaluates delete-marker creator visibility
+// without inventing an ordinary payload or treating deletion as finality.
+VisibilityResult EvaluateVersionEffectVisibility(const RowVersionMetadata& metadata,
+                                                const VisibilitySnapshot& snapshot);
 HotStableRowHeadDecisionResult EvaluateHotStableRowHeadDecision(
     const HotStableRowHeadProofInput& input);
 DiagnosticRecord MakeRowVersionDiagnostic(Status status,

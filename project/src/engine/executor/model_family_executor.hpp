@@ -18,9 +18,9 @@ struct ModelCapabilityDescriptorV1 {
   std::uint16_t abi_version{1};
   std::string capability_descriptor_id{
       "SB_MODEL_CAPABILITY_DESCRIPTOR_V1"};
-  std::string capability_uuid;
+  scratchbird::core::platform::Uuid capability_uuid;
   std::string family_id;
-  std::string provider_uuid;
+  scratchbird::core::platform::Uuid provider_uuid;
   std::uint64_t provider_generation{0};
   std::uint64_t capability_generation{0};
   bool local_scope{true};
@@ -105,9 +105,9 @@ struct ModelFamilyRelationalConsumerExecutionResultV1 {
   std::uint64_t rows_examined{0};
   std::uint64_t executed_physical_node_id{0};
   std::uint64_t causal_counter_id{0};
-  std::string selected_implementation_uuid;
+  scratchbird::core::platform::Uuid selected_implementation_uuid;
   PhysicalMgaStatementContext mga_statement_context;
-  std::string security_receipt_uuid;
+  scratchbird::core::platform::Uuid security_receipt_uuid;
   std::string diagnostic_id;
   std::string detail;
 };
@@ -121,13 +121,13 @@ struct ModelFamilyCompositionPublicationStateV1 {
   std::vector<std::uint64_t> current_resource_generations;
   std::vector<std::uint64_t> current_provider_generations;
   std::vector<std::uint64_t> current_capability_generations;
-  std::vector<std::string> current_catalog_snapshot_uuids;
-  std::vector<std::string> current_descriptor_snapshot_uuids;
-  std::vector<std::string> current_security_context_uuids;
-  std::vector<std::string> current_policy_snapshot_uuids;
-  std::vector<std::string> current_resource_contract_uuids;
-  std::vector<std::string> current_provider_uuids;
-  std::vector<std::string> current_capability_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_catalog_snapshot_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_descriptor_snapshot_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_security_context_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_policy_snapshot_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_resource_contract_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_provider_uuids;
+  std::vector<scratchbird::core::platform::Uuid> current_capability_uuids;
   PhysicalMgaStatementContext current_mga_statement_context;
   bool security_admitted{false};
 };
@@ -151,8 +151,8 @@ struct ModelFamilyCompositionExecutionRequestV1 {
   scratchbird::core::memory::TempWorkspaceLifecycleManager*
       engine_temp_workspace{nullptr};
   scratchbird::core::memory::TempWorkspaceOwner spill_owner;
-  std::string spill_operation_uuid;
-  std::string spill_resource_contract_uuid;
+  scratchbird::core::platform::Uuid spill_operation_uuid;
+  scratchbird::core::platform::Uuid spill_resource_contract_uuid;
   std::uint64_t spill_runtime_generation{1};
   std::uint64_t backpressure_high_watermark_rows{0};
   std::uint64_t backpressure_low_watermark_rows{0};
@@ -206,7 +206,7 @@ struct ModelFamilyCompositionExecutionResultV1 {
                   ModelFamilyCoordinatorRuleReceiptV1>
       rule_receipts;
   DescriptorBatch root_output_batch;
-  std::string root_publication_receipt_uuid;
+  scratchbird::core::platform::Uuid root_publication_receipt_uuid;
   std::string spill_result_hash;
   std::string diagnostic_id;
   std::string detail;

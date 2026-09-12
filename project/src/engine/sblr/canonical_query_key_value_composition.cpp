@@ -489,13 +489,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
                       : loaded_relation.diagnostic.detail);
   }
   const auto& persisted_relation = loaded_relation.descriptor;
-  if (persisted_relation.relation_uuid.canonical != object_uuid ||
-      persisted_relation.database_uuid.canonical !=
-          input.context.database_uuid.canonical ||
-      persisted_relation.schema_uuid.canonical.empty() ||
+  if (persisted_relation.relation_uuid != object_uuid ||
+      persisted_relation.database_uuid !=
+          input.context.database_uuid ||
+      persisted_relation.schema_uuid.is_nil() ||
       persisted_relation.relation_kind != "table" ||
       persisted_relation.storage_profile != "local_mga_rowstore_v1" ||
-      persisted_relation.descriptor_uuid.canonical.empty() ||
+      persisted_relation.descriptor_uuid.is_nil() ||
       persisted_relation.descriptor_generation == 0) {
     return refuse("SB_MODEL_TYPED_EXCHANGE_INVALID_V1",
                   "persistent key/value relation descriptor is invalid");
@@ -511,13 +511,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       key_descriptor == dag.descriptors.end() ||
       value_descriptor == dag.descriptors.end() ||
       row_descriptor->descriptor_uuid !=
-          persisted_relation.descriptor_uuid.canonical ||
+          persisted_relation.descriptor_uuid ||
       key_descriptor->descriptor_uuid !=
           persisted_relation.columns[0].value_descriptor.descriptor_uuid
-              .canonical ||
+               ||
       value_descriptor->descriptor_uuid !=
           persisted_relation.columns[1].value_descriptor.descriptor_uuid
-              .canonical ||
+               ||
       row_descriptor->nullability !=
           api::RelationalNullability::kNonNull ||
       key_descriptor->nullability !=
@@ -545,7 +545,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   }
 
   const auto identity_scope =
-      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+      dag.bound_sblr_tree_uuid + ":" + input.context.statement_uuid;
   const auto physical_alternative_uuid = DerivedCanonicalUuid(
       identity_scope,
       "alternative." + std::to_string(scan->node_id) +
@@ -589,16 +589,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   planning.output_descriptor_ids = scan->output_descriptor_ids;
   planning.mga_statement_context = mga;
   planning.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
-  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  planning.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   planning.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   planning.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   planning.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   planning.statistics_snapshot_uuid = statistics_snapshot_uuid;
   planning.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   planning.catalog_generation = generation;
   planning.current_catalog_generation = generation;
   planning.security_epoch =
@@ -646,17 +646,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
 
   api::CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      input.context.catalog_epoch_uuid.canonical;
+      input.context.catalog_epoch_uuid;
   planning_scope.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
-  planning_scope.statement_uuid = input.context.statement_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
+  planning_scope.statement_uuid = input.context.statement_uuid;
   planning_scope.statement_timestamp = input.context.statement_timestamp;
   planning_scope.owning_transaction_uuid =
-      input.context.transaction_uuid.canonical;
+      input.context.transaction_uuid;
   planning_scope.statement_snapshot_uuid =
-      input.context.statement_snapshot_uuid.canonical;
+      input.context.statement_snapshot_uuid;
   planning_scope.statement_metadata_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   planning_scope.local_transaction_id = input.context.local_transaction_id;
   planning_scope.snapshot_visible_through_local_transaction_id =
       input.context.snapshot_visible_through_local_transaction_id;
@@ -728,11 +728,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   logical.property_catalog.mga_statement_context = current_logical_mga;
 
   opt::CanonicalNativeObjectAdmissionContext admission_context;
-  admission_context.statement_uuid = input.context.statement_uuid.canonical;
+  admission_context.statement_uuid = input.context.statement_uuid;
   admission_context.catalog_snapshot_uuid =
-      input.context.statement_metadata_snapshot_uuid.canonical;
+      input.context.statement_metadata_snapshot_uuid;
   admission_context.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   admission_context.catalog_generation = input.context.catalog_generation_id;
   admission_context.authorization_catalog_generation =
       input.context.authorization_context.catalog_generation_id;
@@ -742,11 +742,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       input.context.authorization_context.policy_epoch;
   admission_context.resource_epoch = input.context.resource_epoch;
   admission_context.capability_snapshot_uuid =
-      input.context.optimizer_capability_snapshot_uuid.canonical;
+      input.context.optimizer_capability_snapshot_uuid;
   admission_context.resource_snapshot_uuid =
-      input.context.optimizer_resource_snapshot_uuid.canonical;
+      input.context.optimizer_resource_snapshot_uuid;
   admission_context.route_snapshot_uuid =
-      input.context.optimizer_route_snapshot_uuid.canonical;
+      input.context.optimizer_route_snapshot_uuid;
   admission_context.route_epoch = input.context.optimizer_route_epoch;
   admission_context.route_generation =
       input.context.optimizer_route_generation;
@@ -832,17 +832,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
     const auto descriptor = descriptor_for(outputs[ordinal]->descriptor_id);
     api::EngineDescriptor engine_descriptor;
-    engine_descriptor.descriptor_uuid.canonical =
+    engine_descriptor.descriptor_uuid =
         descriptor->descriptor_uuid;
     engine_descriptor.descriptor_kind = "scalar";
     engine_descriptor.canonical_type_name =
         std::string(kOutputTypes[ordinal]);
     engine_descriptor.encoded_descriptor =
         "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
-    if (descriptor->collation_uuid.has_value()) {
-      engine_descriptor.encoded_descriptor +=
-          ";collation_uuid=" + *descriptor->collation_uuid;
-    }
+    engine_descriptor.collation_uuid = descriptor->collation_uuid.value_or(api::EngineUuid{});
     if (descriptor->timezone_profile_id.has_value()) {
       engine_descriptor.encoded_descriptor +=
           ";timezone_profile_id=" + *descriptor->timezone_profile_id;
@@ -1081,7 +1078,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       const auto* output_descriptor = row_number.result_descriptor;
       const auto& window_outputs = row_number.outputs;
       api::EngineDescriptor descriptor;
-      descriptor.descriptor_uuid.canonical =
+      descriptor.descriptor_uuid =
           output_descriptor->descriptor_uuid;
       descriptor.descriptor_kind = "scalar";
       descriptor.canonical_type_name = "int64";
@@ -1692,7 +1689,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   key_value_request.request_values = request_values;
   key_value_request.statement_timestamp = input.context.statement_timestamp;
   key_value_request.expected_descriptor_uuid =
-      persisted_relation.descriptor_uuid.canonical;
+      persisted_relation.descriptor_uuid;
   key_value_request.expected_descriptor_generation =
       persisted_relation.descriptor_generation;
   key_value_request.selected_alternative_uuid =
@@ -1756,9 +1753,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
       key_physical->causal_counter_id;
   source_input.output_descriptor_ids = scan->output_descriptor_ids;
   source_input.mga_statement_context = mga;
-  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid.canonical;
+  source_input.catalog_epoch_uuid = input.context.catalog_epoch_uuid;
   source_input.security_context_uuid =
-      input.context.authorization_context.authority_uuid.canonical;
+      input.context.authorization_context.authority_uuid;
   source_input.policy_snapshot_uuid = policy_snapshot_uuid;
   source_input.resource_contract_uuid = resource_contract_uuid;
   source_input.catalog_generation = generation;
@@ -1904,7 +1901,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   CaptureRcp079ModelLegV1(
       leg_capture, scan->node_id, "key_value", "physical_key_value_scan_v1",
       "canonical.key-value.scan.v1", "key_value.local.v1",
-      persisted_relation.descriptor_uuid.canonical,
+      persisted_relation.descriptor_uuid,
       persisted_relation.descriptor_generation,
       plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       exec::PhysicalNodeKind::kScan, execution_request);
@@ -1921,7 +1918,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   registration.execute =
       [execution_request,
        persisted_descriptor_uuid =
-           persisted_relation.descriptor_uuid.canonical](
+           persisted_relation.descriptor_uuid](
           const exec::TypedPhysicalNodeDag& selected_dag,
           const exec::PhysicalNodeRecord& selected_node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -2321,7 +2318,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalKeyValueFamilyQuery(
   }
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
-      input.context.statement_uuid.canonical;
+      input.context.statement_uuid;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
   selected.result_publication_request.execution_attempt_uuid =

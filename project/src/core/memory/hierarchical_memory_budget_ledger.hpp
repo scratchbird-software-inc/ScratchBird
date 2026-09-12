@@ -34,7 +34,12 @@ enum class HierarchicalMemoryScopeKind {
   operator_scope,
   page_cache,
   background,
-  plugin
+  plugin,
+  connection,
+  cursor,
+  plan_cache_entry,
+  prepared_statement,
+  descriptor_snapshot
 };
 
 enum class HierarchicalMemoryReservationState {
@@ -81,7 +86,11 @@ struct HierarchicalMemoryBudgetProvenance {
 struct HierarchicalMemoryScopeRef {
   HierarchicalMemoryScopeKind kind = HierarchicalMemoryScopeKind::process;
   std::string scope_id;
+  // Exactly one identity alternative. Binary identities never become strings.
+  MemoryBinaryUuid binary_scope_uuid{};
 };
+
+MemoryBinaryScopeKind HierarchicalMemoryBinaryScopeKind(HierarchicalMemoryScopeKind kind);
 
 struct HierarchicalMemoryBudget {
   HierarchicalMemoryScopeRef scope;
@@ -102,6 +111,7 @@ struct HierarchicalMemoryReservationRequest {
   u64 weight = 1;
   u64 lease_expires_at_ms = 0;
   HierarchicalMemoryBudgetProvenance provenance;
+  MemoryBinaryUuid binary_owner_uuid{};
 };
 
 struct HierarchicalMemoryReservationToken {
@@ -116,6 +126,9 @@ struct HierarchicalMemoryReservationToken {
 struct HierarchicalMemoryBudgetOperationResult {
   Status status;
   DiagnosticRecord diagnostic;
+  bool retained = false;
+  bool newly_revoked = false;
+  u64 retained_bytes = 0;
 
   bool ok() const {
     return status.ok();
@@ -140,6 +153,8 @@ struct HierarchicalMemoryCleanupResult {
   DiagnosticRecord diagnostic;
   u64 cleaned_reservation_count = 0;
   u64 cleaned_bytes = 0;
+  u64 revoked_reservation_count = 0;
+  u64 retained_bytes = 0;
 
   bool ok() const {
     return status.ok();
@@ -149,6 +164,7 @@ struct HierarchicalMemoryCleanupResult {
 struct HierarchicalMemoryScopeSnapshot {
   HierarchicalMemoryScopeKind kind = HierarchicalMemoryScopeKind::process;
   std::string scope_id;
+  MemoryBinaryUuid binary_scope_uuid{};
   u64 hard_limit_bytes = 0;
   u64 soft_limit_bytes = 0;
   u64 reserved_bytes = 0;
@@ -197,6 +213,8 @@ struct HierarchicalMemoryBudgetSnapshot {
   u64 lease_expiry_cleanup_count = 0;
   u64 active_reservation_count = 0;
   u64 active_allocation_count = 0;
+  u64 pending_revocation_count = 0;
+  u64 retained_revoked_bytes = 0;
   std::vector<HierarchicalMemoryScopeSnapshot> scopes;
   std::vector<HierarchicalMemoryClassSnapshot> classes;
 };
@@ -206,6 +224,50 @@ const char* HierarchicalMemoryReservationRecommendationName(
     HierarchicalMemoryReservationRecommendation recommendation);
 const char* HierarchicalMemoryBudgetProvenanceSourceName(
     HierarchicalMemoryBudgetProvenanceSource source);
+
+class HierarchicalMemoryBudgetLedger;
+
+// A single owning context retains the real reservation. Revocation prevents
+// new uses but never erases its charge or asynchronously frees live payloads.
+// The ledger must outlive this lease; payloads must quiesce before Reset.
+class HierarchicalMemoryReservationLease {
+  struct State;
+ public:
+  class UseGuard {
+   public:
+    UseGuard() = default;
+    UseGuard(UseGuard&&) noexcept = default;
+    UseGuard& operator=(UseGuard&&) = delete;
+    bool live() const;
+   private:
+    explicit UseGuard(std::shared_ptr<State> state);
+    std::shared_ptr<State> state_;
+    std::unique_lock<std::mutex> lock_;
+    friend class HierarchicalMemoryReservationLease;
+  };
+  HierarchicalMemoryReservationLease() = default;
+  HierarchicalMemoryReservationLease(const HierarchicalMemoryReservationLease&) = delete;
+  HierarchicalMemoryReservationLease& operator=(const HierarchicalMemoryReservationLease&) = delete;
+  HierarchicalMemoryReservationLease(HierarchicalMemoryReservationLease&& other) noexcept;
+  HierarchicalMemoryReservationLease& operator=(HierarchicalMemoryReservationLease&& other) noexcept;
+  ~HierarchicalMemoryReservationLease();
+  bool valid() const;
+  bool live() const;
+  UseGuard Use() const;
+  Status Reset();
+ private:
+  HierarchicalMemoryBudgetLedger* ledger_ = nullptr;
+  mutable std::mutex mutex_;
+  HierarchicalMemoryReservationToken token_;
+  std::shared_ptr<State> state_;
+  friend class HierarchicalMemoryBudgetLedger;
+};
+
+struct HierarchicalMemoryRetainResult {
+  Status status;
+  HierarchicalMemoryReservationLease lease;
+  bool ok() const { return status.ok() && lease.valid(); }
+};
 
 class HierarchicalMemoryBudgetLedger {
  public:
@@ -218,18 +280,28 @@ class HierarchicalMemoryBudgetLedger {
   usize scope_shard_count() const;
   usize token_shard_count() const;
 
+  // Immediate admission-policy update with explicit reject_change semantics:
+  // a nonzero hard limit cannot fall below reserved + active owned bytes,
+  // including revoked grants retained by payload owners. Existing tokens are
+  // never canceled or replaced. Soft limits govern subsequent reservations.
+  // Failure preserves the prior policy and scope/accounting publication.
   HierarchicalMemoryBudgetOperationResult SetBudget(HierarchicalMemoryBudget budget);
   HierarchicalMemoryReservationResult Reserve(HierarchicalMemoryReservationRequest request);
   HierarchicalMemoryBudgetOperationResult Commit(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryBudgetOperationResult Release(HierarchicalMemoryReservationToken token);
+  // Teardown/RAII path: invalid or competing-cleanup handles also need no allocation.
+  Status ReleaseNoAlloc(HierarchicalMemoryReservationToken token);
+  HierarchicalMemoryRetainResult Retain(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryBudgetOperationResult Cancel(HierarchicalMemoryReservationToken token);
   HierarchicalMemoryCleanupResult CleanupOwner(std::string owner_id);
+  HierarchicalMemoryCleanupResult CleanupOwner(const MemoryBinaryUuid& owner_uuid);
   HierarchicalMemoryCleanupResult CleanupExpiredLeases(u64 now_ms);
   HierarchicalMemoryBudgetSnapshot Snapshot() const;
 
   struct ScopeAccounting {
     HierarchicalMemoryScopeKind kind = HierarchicalMemoryScopeKind::process;
     std::string scope_id;
+    MemoryBinaryUuid binary_scope_uuid{};
     u64 hard_limit_bytes = 0;
     u64 soft_limit_bytes = 0;
     u64 reserved_bytes = 0;
@@ -258,7 +330,14 @@ class HierarchicalMemoryBudgetLedger {
   };
 
  private:
+  HierarchicalMemoryCleanupResult CleanupOwnerImpl(
+      std::string_view owner_id, const MemoryBinaryUuid& owner_uuid);
+  HierarchicalMemoryBudgetOperationResult ReleaseImpl(
+      HierarchicalMemoryReservationToken token, bool materialize_diagnostic,
+      const HierarchicalMemoryReservationLease::State* retained_owner = nullptr);
+  friend class HierarchicalMemoryReservationLease;
   enum class CleanupReason {
+    release,
     cancel,
     owner,
     lease_expiry
@@ -270,22 +349,44 @@ class HierarchicalMemoryBudgetLedger {
     MemoryCategory category = MemoryCategory::unknown;
     std::string memory_class;
     std::string owner_id;
+    MemoryBinaryUuid binary_owner_uuid{};
     HierarchicalMemoryReservationState state = HierarchicalMemoryReservationState::reserved;
     ShardedMemoryAccountingToken accounting_token;
     int priority = 0;
     u64 weight = 1;
     u64 lease_expires_at_ms = 0;
+    // Prepared before accounting publication; stable map-node pointers and
+    // ordered shard indexes make completion independent of allocator health.
+    std::vector<usize> scope_shard_indexes;
+    std::vector<ScopeAccounting*> scopes;
+    ClassAccounting* class_accounting = nullptr;
+    std::shared_ptr<HierarchicalMemoryReservationLease::State> retained_owner;
+    bool revocation_pending = false;
+    CleanupReason pending_reason = CleanupReason::release;
   };
 
   struct ScopeShard {
     mutable std::mutex mutex;
-    std::map<std::string, ScopeAccounting> scopes;
+    std::map<ShardedMemoryScopeKey, ScopeAccounting> scopes;
     std::map<std::string, ClassAccounting> classes;
   };
 
   struct TokenShard {
     mutable std::mutex mutex;
     std::unordered_map<u64, ReservationRecord> tokens;
+  };
+
+  class ScopeLocks {
+   public:
+    ScopeLocks(HierarchicalMemoryBudgetLedger& ledger, const std::vector<usize>& indexes);
+    ScopeLocks(const ScopeLocks&) = delete;
+    ScopeLocks& operator=(const ScopeLocks&) = delete;
+    ~ScopeLocks();
+    void Unlock() noexcept;
+   private:
+    HierarchicalMemoryBudgetLedger& ledger_;
+    const std::vector<usize>& indexes_;
+    usize locked_ = 0;
   };
 
   usize ScopeShardIndex(const HierarchicalMemoryScopeRef& scope) const;
@@ -312,9 +413,6 @@ class HierarchicalMemoryBudgetLedger {
   std::vector<std::unique_ptr<TokenShard>> token_shards_;
   ShardedMemoryAccountingLedger accounting_;
   std::atomic<u64> next_token_id_{1};
-  std::atomic<u64> global_reserved_bytes_{0};
-  std::atomic<u64> global_current_bytes_{0};
-  std::atomic<u64> global_peak_bytes_{0};
   std::atomic<u64> global_reservation_count_{0};
   std::atomic<u64> global_commit_count_{0};
   std::atomic<u64> global_release_count_{0};
@@ -323,6 +421,8 @@ class HierarchicalMemoryBudgetLedger {
   std::atomic<u64> global_lease_expiry_cleanup_count_{0};
   std::atomic<u64> global_active_reservation_count_{0};
   std::atomic<u64> global_active_allocation_count_{0};
+  std::atomic<u64> pending_revocation_count_{0};
+  std::atomic<u64> retained_revoked_bytes_{0};
   std::atomic<u64> hard_limit_refusal_count_{0};
   std::atomic<u64> soft_limit_recommendation_count_{0};
   std::atomic<u64> failed_commit_count_{0};

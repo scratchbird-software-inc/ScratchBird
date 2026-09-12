@@ -343,13 +343,13 @@ bool ExactDescriptorContext(
   }
   BulkUuid receipt{}, transaction{}, snapshot{}, catalog{}, security{}, resource{};
   const bool parsed =
-      ParseUuidText(context.statement_receipt_uuid.canonical, &receipt) &&
-      ParseUuidText(context.transaction_uuid.canonical, &transaction) &&
-      ParseUuidText(context.statement_snapshot_uuid.canonical, &snapshot) &&
-      ParseUuidText(context.catalog_epoch_uuid.canonical, &catalog) &&
-      ParseUuidText(context.authorization_context.authority_uuid.canonical,
+      ParseUuidText(context.statement_receipt_uuid, &receipt) &&
+      ParseUuidText(context.transaction_uuid, &transaction) &&
+      ParseUuidText(context.statement_snapshot_uuid, &snapshot) &&
+      ParseUuidText(context.catalog_epoch_uuid, &catalog) &&
+      ParseUuidText(context.authorization_context.authority_uuid,
                     &security) &&
-      ParseUuidText(context.resource_admission_uuid.canonical, &resource);
+      ParseUuidText(context.resource_admission_uuid, &resource);
   if (!parsed || context.local_transaction_id == 0) {
     *diagnostic = Diagnostic(
         "MGA.TRANSACTION_INVALID",
@@ -384,13 +384,13 @@ bool ExactContext(const EngineRequestContext& context,
                   EngineApiDiagnostic* diagnostic) {
   BulkUuid receipt{}, transaction{}, snapshot{}, catalog{}, security{}, resource{};
   const bool parsed =
-      ParseUuidText(context.statement_receipt_uuid.canonical, &receipt) &&
-      ParseUuidText(context.transaction_uuid.canonical, &transaction) &&
-      ParseUuidText(context.statement_snapshot_uuid.canonical, &snapshot) &&
-      ParseUuidText(context.catalog_epoch_uuid.canonical, &catalog) &&
-      ParseUuidText(context.authorization_context.authority_uuid.canonical,
+      ParseUuidText(context.statement_receipt_uuid, &receipt) &&
+      ParseUuidText(context.transaction_uuid, &transaction) &&
+      ParseUuidText(context.statement_snapshot_uuid, &snapshot) &&
+      ParseUuidText(context.catalog_epoch_uuid, &catalog) &&
+      ParseUuidText(context.authorization_context.authority_uuid,
                     &security) &&
-      ParseUuidText(context.resource_admission_uuid.canonical, &resource);
+      ParseUuidText(context.resource_admission_uuid, &resource);
   if (!parsed || context.local_transaction_id == 0) {
     *diagnostic = Diagnostic("MGA.TRANSACTION_INVALID",
                              "sblr.bulk_import_stream.execution_context_invalid",
@@ -466,25 +466,25 @@ bool ColumnDigest(const MgaRelationStorageDescriptor& descriptor,
   constexpr std::string_view domain =
       "ScratchBird.BulkImportStreamColumnDescriptorSet.V1";
   material.insert(material.end(), domain.begin(), domain.end());
-  if (!AppendUuidText(&material, descriptor.relation_uuid.canonical))
+  if (!AppendUuidText(&material, descriptor.relation_uuid))
     return false;
   AppendU64(&material, descriptor.relation_generation);
-  if (!AppendUuidText(&material, descriptor.descriptor_uuid.canonical))
+  if (!AppendUuidText(&material, descriptor.descriptor_uuid))
     return false;
   AppendU64(&material, descriptor.descriptor_generation);
   AppendU32(&material, static_cast<std::uint32_t>(columns.size()));
   for (const auto* column : columns) {
     if (!ordinals.insert(column->ordinal).second ||
-        !column_uuids.insert(column->column_uuid.canonical).second ||
+        !column_uuids.insert(column->column_uuid).second ||
         column->column_generation == 0) {
       return false;
     }
     AppendU32(&material, column->ordinal);
-    if (!AppendUuidText(&material, column->column_uuid.canonical)) return false;
+    if (!AppendUuidText(&material, column->column_uuid)) return false;
     AppendU64(&material, column->column_generation);
     if (!AppendLp16(&material, column->canonical_name_key) ||
         !AppendUuidText(&material,
-                        column->value_descriptor.descriptor_uuid.canonical) ||
+                        column->value_descriptor.descriptor_uuid) ||
         !AppendLp16(&material, column->value_descriptor.descriptor_kind) ||
         !AppendLp16(&material,
                     column->value_descriptor.canonical_type_name) ||
@@ -549,8 +549,8 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
   }
   const auto& descriptor = loaded.descriptor;
   BulkUuid relation{}, row_shape{};
-  if (!ParseUuidText(descriptor.relation_uuid.canonical, &relation) ||
-      !ParseUuidText(descriptor.descriptor_uuid.canonical, &row_shape) ||
+  if (!ParseUuidText(descriptor.relation_uuid, &relation) ||
+      !ParseUuidText(descriptor.descriptor_uuid, &row_shape) ||
       relation != allocation.target_relation_uuid ||
       descriptor.relation_generation != allocation.target_relation_generation ||
       row_shape != allocation.row_shape_uuid ||
@@ -559,7 +559,7 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
       descriptor.columns.size() > allocation.effective_maximum_target_columns ||
       !descriptor.indexes.empty() ||
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
-          context, descriptor.relation_uuid.canonical)) {
+          context, descriptor.relation_uuid)) {
     *diagnostic = Diagnostic(
         "BULK.IMPORT.TARGET_NOT_ELIGIBLE",
         "sblr.bulk_import_stream.target_authority_changed",
@@ -606,12 +606,12 @@ BulkSha ConverterEvidence(const MgaRelationColumnStorageDescriptor& column) {
     return {};
   }
   AppendU64(&material, kConverterGeneration);
-  if (!AppendUuidText(&material, column.column_uuid.canonical)) {
+  if (!AppendUuidText(&material, column.column_uuid)) {
     return {};
   }
   AppendU64(&material, column.column_generation);
   if (!AppendUuidText(&material,
-                      column.value_descriptor.descriptor_uuid.canonical) ||
+                      column.value_descriptor.descriptor_uuid) ||
       !AppendLp16(&material,
                   column.value_descriptor.canonical_type_name)) {
     return {};
@@ -665,12 +665,12 @@ BulkSha PolicyBundleDigest(const BulkImportStreamAllocation& allocation,
   for (const auto* column : target.columns) {
     const auto converter_evidence = ConverterEvidence(*column);
     if (!Nonzero(converter_evidence) ||
-        !AppendUuidText(&material, column->column_uuid.canonical)) {
+        !AppendUuidText(&material, column->column_uuid)) {
       return {};
     }
     AppendU64(&material, column->column_generation);
     if (!AppendUuidText(
-            &material, column->value_descriptor.descriptor_uuid.canonical) ||
+            &material, column->value_descriptor.descriptor_uuid) ||
         !AppendUuidText(&material, kConverterUuid)) {
       return {};
     }
@@ -726,9 +726,9 @@ BulkSha TypedFieldVectorHash(
     const auto& column = *columns[index];
     const auto& typed = row.fields[index].second;
     AppendU32(&material, column.ordinal);
-    if (!AppendUuidText(&material, column.column_uuid.canonical) ||
+    if (!AppendUuidText(&material, column.column_uuid) ||
         !AppendUuidText(&material,
-                        column.value_descriptor.descriptor_uuid.canonical)) {
+                        column.value_descriptor.descriptor_uuid)) {
       return {};
     }
     material.push_back(typed.isSqlNull() ? 1 : 0);
@@ -902,7 +902,7 @@ class CanonicalCsvDecoder final {
         "ScratchBird.BulkImportStreamRowIdentity.V1",
         row_identity_material);
     EngineRowValue row;
-    row.requested_row_uuid.canonical = UuidText(row_uuid);
+    row.requested_row_uuid = UuidText(row_uuid);
     row.fields.reserve(columns_.size());
     for (std::size_t index = 0; index < columns_.size(); ++index) {
       const auto& column = *columns_[index];
@@ -1163,8 +1163,8 @@ HistoricalRowsState ClassifyHistoricalRows(
   std::size_t exact = 0;
   for (std::size_t index = 0; index < parsed.rows.size(); ++index) {
     const auto lineage = ProbeMgaBulkImportRowIdentityLineageV1(
-        context, target.descriptor.relation_uuid.canonical,
-        parsed.rows[index].requested_row_uuid.canonical);
+        context, target.descriptor.relation_uuid,
+        parsed.rows[index].requested_row_uuid);
     if (!lineage.ok) {
       if (diagnostic != nullptr) *diagnostic = lineage.diagnostic;
       return HistoricalRowsState::conflict;
@@ -1184,7 +1184,7 @@ HistoricalRowsState ClassifyHistoricalRows(
         found->creator_tx != context.local_transaction_id ||
         !ExactRowValues(*found, parsed.rows[index]) ||
         event.import_ordinal != index + 1 ||
-        event.row_uuid != parsed.rows[index].requested_row_uuid.canonical ||
+        event.row_uuid != parsed.rows[index].requested_row_uuid ||
         event.row_image_metadata_generation !=
             target.descriptor.descriptor_generation ||
         event.row_image_domain_hash !=
@@ -1325,7 +1325,7 @@ MgaBulkImportPublicationRecordV1 BuildPublicationRecord(
       entry.allocation.owning_local_transaction_id;
   record.authenticated_receipt_uuid =
       UuidText(entry.allocation.authenticated_receipt_uuid);
-  record.statement_uuid = context.statement_uuid.canonical;
+  record.statement_uuid = context.statement_uuid;
   record.savepoint_ordinal = 1;
   record.mutation_uuid = UuidText(mutation_uuid);
   record.bulk_batch_uuid = UuidText(batch_uuid);
@@ -1378,7 +1378,7 @@ std::vector<MgaBulkImportImportedRowEventV1> BuildImportedRowEvents(
   std::vector<MgaBulkImportImportedRowEventV1> events;
   events.reserve(parsed.rows.size());
   for (std::size_t index = 0; index < parsed.rows.size(); ++index) {
-    if (row_uuids[index] != parsed.rows[index].requested_row_uuid.canonical) {
+    if (row_uuids[index] != parsed.rows[index].requested_row_uuid) {
       return {};
     }
     MgaBulkImportImportedRowEventV1 event;
@@ -1391,9 +1391,9 @@ std::vector<MgaBulkImportImportedRowEventV1> BuildImportedRowEvents(
         UuidText(entry.allocation.owning_transaction_uuid);
     event.owning_local_transaction_id =
         entry.allocation.owning_local_transaction_id;
-    event.statement_uuid = context.statement_uuid.canonical;
+    event.statement_uuid = context.statement_uuid;
     event.savepoint_ordinal = 1;
-    event.target_relation_uuid = target.descriptor.relation_uuid.canonical;
+    event.target_relation_uuid = target.descriptor.relation_uuid;
     event.target_relation_generation = target.descriptor.relation_generation;
     event.import_ordinal = index + 1;
     event.row_uuid = row_uuids[index];
@@ -1624,7 +1624,7 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
       UuidText(authority.entry.allocation.recovery_operation_uuid),
       UuidText(publication_uuid), UuidText(mutation_uuid), UuidText(batch_uuid)};
   for (const auto& row : parsed.rows) {
-    if (!operation_identities.insert(row.requested_row_uuid.canonical).second) {
+    if (!operation_identities.insert(row.requested_row_uuid).second) {
       return Failure("BULK.IMPORT.RECOVERY_CONFLICT",
                      "sblr.bulk_import_stream.derived_identity_collision",
                      "one deterministic operation identity collided");
@@ -1707,7 +1707,7 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
   } state;
   EngineExecuteNativeBulkIngestRequest native;
   native.context = request.context;
-  native.target_table.uuid.canonical = target.descriptor.relation_uuid.canonical;
+  native.target_table.uuid = target.descriptor.relation_uuid;
   native.target_table.object_kind = "table";
   native.canonical_rows = parsed.rows;
   native.shared_row_field_order = parsed.shared_field_order;

@@ -235,7 +235,7 @@ AllocatorHotPathResult ExecuteAllocatorHotPath(
   }
 
   AllocatorHotPathResult result;
-  std::vector<std::string> grant_ids;
+  std::vector<scratchbird::core::memory::QueryMemoryUuid> grant_ids;
   grant_ids.reserve(request.objects.size());
   for (const auto& object : request.objects) {
     ExecutorQueryMemoryRequest memory_request;

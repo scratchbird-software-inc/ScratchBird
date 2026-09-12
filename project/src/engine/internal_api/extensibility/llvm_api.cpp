@@ -78,11 +78,11 @@ std::string Fnv1aHex(const std::string& value) {
 
 std::string CacheMaterial(const EngineApiRequest& request, const std::string& mode, const std::string& module) {
   std::string material = "mode=" + mode + ";module=" + module;
-  material += ";target=" + request.target_object.uuid.canonical;
-  material += ";principal=" + request.context.principal_uuid.canonical;
+  material += ";target=" + request.target_object.uuid;
+  material += ";principal=" + request.context.principal_uuid;
   material += ";policy_epoch=" + std::to_string(request.context.security_epoch);
   for (const auto& descriptor : request.descriptors) {
-    material += ";descriptor=" + descriptor.descriptor_uuid.canonical + ":" +
+    material += ";descriptor=" + descriptor.descriptor_uuid + ":" +
                 descriptor.descriptor_kind + ":" + descriptor.canonical_type_name + ":" +
                 descriptor.encoded_descriptor;
   }
@@ -198,8 +198,8 @@ native::NativeCompileRequest BuildNativeCompileRequest(const EngineCompileLlvmMo
   native::NativeCompileRequest native_request;
   native_request.requested_mode = mode == "aot" ? native::NativeCompileMode::aot : native::NativeCompileMode::jit;
   native_request.module_payload = module;
-  native_request.target_object_uuid = request.target_object.uuid.canonical;
-  native_request.principal_uuid = request.context.principal_uuid.canonical;
+  native_request.target_object_uuid = request.target_object.uuid;
+  native_request.principal_uuid = request.context.principal_uuid;
   native_request.database_path = request.context.database_path;
   native_request.catalog_generation_id = request.context.catalog_generation_id;
   native_request.security_epoch = request.context.security_epoch;
@@ -225,7 +225,7 @@ native::NativeCompileRequest BuildNativeCompileRequest(const EngineCompileLlvmMo
   native_request.physical_profiles = request.physical_profile.encoded_profiles;
   native_request.option_envelopes = request.option_envelopes;
   for (const auto& descriptor : request.descriptors) {
-    native_request.descriptors.push_back({descriptor.descriptor_uuid.canonical,
+    native_request.descriptors.push_back({descriptor.descriptor_uuid,
                                           descriptor.descriptor_kind,
                                           descriptor.canonical_type_name,
                                           descriptor.encoded_descriptor});

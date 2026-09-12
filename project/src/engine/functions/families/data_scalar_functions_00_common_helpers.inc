@@ -907,21 +907,21 @@ scratchbird::engine::internal_api::EngineRequestContext EngineRequestContextFrom
     const scratchbird::engine::sblr::SblrExecutionContext& context) {
   scratchbird::engine::internal_api::EngineRequestContext out;
   out.database_path = context.database_path;
-  out.database_uuid.canonical = context.database_uuid;
-  out.cluster_uuid.canonical = context.cluster_uuid;
-  out.node_uuid.canonical = context.node_uuid;
-  out.transaction_uuid.canonical = context.transaction_uuid;
+  out.database_uuid = context.database_uuid;
+  out.cluster_uuid = context.cluster_uuid;
+  out.node_uuid = context.node_uuid;
+  out.transaction_uuid = context.transaction_uuid;
   out.local_transaction_id = context.local_transaction_id;
   out.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   out.transaction_isolation_level = context.transaction_isolation_level;
-  out.statement_uuid.canonical = context.statement_uuid;
-  out.principal_uuid.canonical = context.user_uuid;
-  out.current_role_uuid.canonical = context.current_role_uuid;
-  out.current_schema_uuid.canonical = context.current_schema_uuid;
-  out.session_uuid.canonical = context.session_uuid;
+  out.statement_uuid = context.statement_uuid;
+  out.principal_uuid = context.user_uuid;
+  out.current_role_uuid = context.current_role_uuid;
+  out.current_schema_uuid = context.current_schema_uuid;
+  out.session_uuid = context.session_uuid;
   out.current_sqlstate = context.current_sqlstate;
-  out.current_diagnostic_uuid.canonical = context.current_diagnostic_uuid;
+  out.current_diagnostic_uuid = context.current_diagnostic_uuid;
   out.client_protocol_uuid = context.client_protocol_uuid;
   out.application_name = context.application_name;
   out.security_context_present = context.security_context_present;
@@ -1179,7 +1179,7 @@ ResolvePrivilegePresentedObject(
   const auto resolved =
       scratchbird::engine::internal_api::EngineResolveName(request);
   if (!resolved.ok ||
-      resolved.bound_object_identity.object_uuid.canonical.empty() ||
+      resolved.bound_object_identity.object_uuid.is_nil() ||
       (!resolved.bound_object_identity.resolved_object_type.empty() &&
        LowerAscii(resolved.bound_object_identity.resolved_object_type) !=
            LowerAscii(std::string(object_kind)))) {
@@ -1216,7 +1216,7 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeTable(
               api_context, wanted_text, "table")) {
         if (const auto table =
                 scratchbird::engine::internal_api::FindVisibleCrudTable(
-                    state, resolved->object_uuid.canonical,
+                    state, resolved->object_uuid,
                     api_context.local_transaction_id)) {
           const auto object = ResolvePrivilegeCatalogObject(
               api_context, table->table_uuid, "table");
@@ -1259,9 +1259,9 @@ std::optional<PrivilegeObjectDescriptor> ResolvePrivilegeSchema(
   if (const auto resolved = ResolvePrivilegePresentedObject(
           api_context, schema_identifier, "schema")) {
     const auto object = ResolvePrivilegeCatalogObject(
-        api_context, resolved->object_uuid.canonical, "schema");
+        api_context, resolved->object_uuid, "schema");
     return PrivilegeObjectDescriptor{
-        resolved->object_uuid.canonical, std::string(schema_identifier),
+        resolved->object_uuid, std::string(schema_identifier),
         "schema", object ? object->owner_principal_uuid : std::string{}, {}};
   }
   const std::string wanted = UnquoteCatalogToken(std::string(schema_identifier));
@@ -1331,12 +1331,12 @@ PrivilegeVisibilityDecision PrivilegeObjectAllowsCurrentPrincipal(
   scratchbird::engine::internal_api::EngineEvaluateVisibilityRequest request;
   request.context = api_context;
   request.operation_id = "security.evaluate_visibility";
-  request.target_object.uuid.canonical = object.uuid;
+  request.target_object.uuid = object.uuid;
   request.target_object.object_kind = object.object_class;
   request.required_right = privilege.all_privileges
                                ? "VISIBLE"
                                : privilege.security_right;
-  request.target_owner_uuid.canonical = object.owner_uuid;
+  request.target_owner_uuid = object.owner_uuid;
   request.allow_target_owner = true;
   request.allow_materialized_grant = !privilege.all_privileges;
   request.requested_right_valid = privilege.supported;

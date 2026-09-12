@@ -115,12 +115,12 @@ std::string TableUuid(const EngineApiRequest& request) {
     return explicit_table;
   }
   for (const auto& object : request.related_objects) {
-    if (object.object_kind == "table" && !object.uuid.canonical.empty()) {
-      return object.uuid.canonical;
+    if (object.object_kind == "table" && !object.uuid.is_nil()) {
+      return object.uuid;
     }
   }
   if (request.target_object.object_kind == "table") {
-    return request.target_object.uuid.canonical;
+    return request.target_object.uuid;
   }
   return {};
 }
@@ -131,9 +131,9 @@ std::string PeriodUuid(const EngineApiRequest& request) {
     return explicit_period;
   }
   if (request.target_object.object_kind == std::string(kTemporalPeriodKind)) {
-    return request.target_object.uuid.canonical;
+    return request.target_object.uuid;
   }
-  return request.target_object.uuid.canonical;
+  return request.target_object.uuid;
 }
 
 bool MatchesTarget(const std::string& grant_target,
@@ -141,21 +141,21 @@ bool MatchesTarget(const std::string& grant_target,
                    const EngineApiRequest& request) {
   return grant_target.empty() || grant_target == "*" ||
          grant_target == target_uuid ||
-         grant_target == request.target_database.uuid.canonical ||
-         grant_target == request.target_schema.uuid.canonical ||
-         grant_target == request.target_object.uuid.canonical;
+         grant_target == request.target_database.uuid ||
+         grant_target == request.target_schema.uuid ||
+         grant_target == request.target_object.uuid;
 }
 
 bool SubjectMatches(const EngineMaterializedAuthorizationContext& auth,
                     const EngineUuid& subject_uuid,
                     const EngineRequestContext& context) {
-  if (!subject_uuid.canonical.empty() &&
-      subject_uuid.canonical == context.principal_uuid.canonical) {
+  if (!subject_uuid.is_nil() &&
+      subject_uuid == context.principal_uuid) {
     return true;
   }
   for (const auto& subject : auth.effective_subjects) {
-    if (!subject.subject_uuid.canonical.empty() &&
-        subject.subject_uuid.canonical == subject_uuid.canonical) {
+    if (!subject.subject_uuid.is_nil() &&
+        subject.subject_uuid == subject_uuid) {
       return true;
     }
   }
@@ -195,7 +195,7 @@ bool HasRight(const EngineApiRequest& request,
                                grant.right == "ALL" ||
                                grant.right == "SYSARCH";
     if (!right_matches ||
-        !MatchesTarget(grant.target_uuid.canonical, std::string(target_uuid), request)) {
+        !MatchesTarget(grant.target_uuid, std::string(target_uuid), request)) {
       continue;
     }
     if (grant.deny) {

@@ -630,7 +630,7 @@ bool AccountTimeSeriesDiagnosticMemoryV1(
 bool AccountTimeSeriesEngineDescriptorMemoryV1(
     const EngineDescriptor& descriptor, std::uint64_t* total) {
   return CheckedTimeSeriesOwnedStringBytes(
-             descriptor.descriptor_uuid.canonical, total) &&
+             descriptor.descriptor_uuid, total) &&
          CheckedTimeSeriesOwnedStringBytes(descriptor.descriptor_kind,
                                            total) &&
          CheckedTimeSeriesOwnedStringBytes(descriptor.canonical_type_name,
@@ -642,7 +642,7 @@ bool AccountTimeSeriesEngineDescriptorMemoryV1(
 bool AccountTimeSeriesStorageDescriptorMemoryV1(
     const MgaRelationStorageDescriptor& descriptor, std::uint64_t* total) {
   const auto account_uuid = [&](const EngineUuid& uuid) {
-    return CheckedTimeSeriesOwnedStringBytes(uuid.canonical, total);
+    return CheckedTimeSeriesOwnedStringBytes(uuid, total);
   };
   if (!account_uuid(descriptor.descriptor_uuid) ||
       !account_uuid(descriptor.database_uuid) ||
@@ -1384,7 +1384,7 @@ bool ExactTimeSeriesValueDescriptor(
     return expected_registry_identity != nullptr && timezone == fields.end() &&
            column_uuid != fields.end() &&
            column_uuid->second == expected_column_uuid &&
-           descriptor.descriptor_uuid.canonical ==
+           descriptor.descriptor_uuid ==
                expected_column_uuid &&
            fields.contains("datatype_descriptor_uuid") &&
            fields.at("datatype_descriptor_uuid") ==
@@ -1462,19 +1462,19 @@ bool ExactTimeSeriesStorageDescriptorImpl(
         column.max_inline_bytes != 4096 ||
         column.overflow_policy != "mga_large_value_locator" ||
         column.value_descriptor.canonical_type_name != kTypes[ordinal] ||
-        !CanonicalTimeSeriesUuid(column.column_uuid.canonical) ||
+        !CanonicalTimeSeriesUuid(column.column_uuid) ||
         !CanonicalTimeSeriesUuid(
-            column.value_descriptor.descriptor_uuid.canonical) ||
-        !column_uuids.insert(column.column_uuid.canonical).second ||
+            column.value_descriptor.descriptor_uuid) ||
+        !column_uuids.insert(column.column_uuid).second ||
         !descriptor_uuids
-             .insert(column.value_descriptor.descriptor_uuid.canonical)
+             .insert(column.value_descriptor.descriptor_uuid)
              .second ||
         !column.charset_uuid.empty() || !column.collation_uuid.empty() ||
         column.character_length != 0 ||
         !ExactTimeSeriesValueDescriptor(column.value_descriptor,
                                         kTypes[ordinal],
                                         expected_type_uuid,
-                                        column.column_uuid.canonical,
+                                        column.column_uuid,
                                         expected_registry_identity)) {
       return false;
     }
@@ -1765,7 +1765,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
         LoadMgaRelationStorageDescriptor(request.context,
                                          request.object_uuid);
     if (!current_descriptor.ok ||
-        current_descriptor.descriptor.descriptor_uuid.canonical !=
+        current_descriptor.descriptor.descriptor_uuid !=
             request.expected_descriptor_uuid ||
         current_descriptor.descriptor.descriptor_generation !=
             request.expected_descriptor_generation) {
@@ -1871,7 +1871,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
   if (!read_carrier_memory.has_value() ||
       !account_working(*read_carrier_memory) ||
       !account_working_string(selected_access_path_id) ||
-      !account_working_string(read.descriptor.descriptor_uuid.canonical) ||
+      !account_working_string(read.descriptor.descriptor_uuid) ||
       !account_working_string(request.selected_alternative_uuid) ||
       !account_working_string(request.capability_uuid) ||
       !account_working_string(request.provider_uuid) ||
@@ -1895,7 +1895,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
       exact_fallback_access_invocation_count;
   result.selected_access_path_id = selected_access_path_id;
   result.scanned_row_version_count = read.scanned_row_version_count;
-  result.descriptor_uuid = read.descriptor.descriptor_uuid.canonical;
+  result.descriptor_uuid = read.descriptor.descriptor_uuid;
   result.descriptor_generation = read.descriptor.descriptor_generation;
   result.selected_alternative_uuid = request.selected_alternative_uuid;
   result.capability_uuid = request.capability_uuid;

@@ -36,8 +36,8 @@ struct CanonicalPredicate {
 struct CanonicalSblrExpressionNode {
   std::string operator_id;
   std::string descriptor_digest;
-  std::string object_uuid;
-  std::string function_uuid;
+  planner::CanonicalPlannerUuid object_uuid;
+  planner::CanonicalPlannerUuid function_uuid;
   std::string literal_digest;
   std::vector<CanonicalSblrExpressionNode> children;
   bool commutative = false;

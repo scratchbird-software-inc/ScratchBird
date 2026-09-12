@@ -72,7 +72,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   }
 
   const auto identity_scope =
-      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid;
   const auto calibration_uuid =
       DerivedCanonicalUuid(identity_scope, "relational.calibration");
   std::unordered_set<std::uint32_t> covered_nodes;

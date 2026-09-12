@@ -282,18 +282,19 @@ SpecializedProviderCapability CapabilityFromLogicalNode(
   capability.write_ahead_log_claims_transaction_finality_authority =
       HasDescriptor(node, "nosql.write_ahead_log.transaction_finality_authority");
 
-  const auto object_uuid = node.required_object_uuids.empty()
-                               ? "local.default"
-                               : node.required_object_uuids.front();
+  const auto target = node.required_object_uuids.empty()
+                          ? OptimizerStatisticTarget::LocalDefault()
+                          : OptimizerStatisticTarget::Object(node.required_object_uuids.front());
+  if (node.required_object_uuids.size() > 1 || !target.Valid()) {
+    capability.policy_allowed = false;
+    return capability;
+  }
   capability.estimated_rows =
       statistics.EstimateUnsigned("visible_row_count",
-                                  object_uuid,
+                                  target,
                                   statistics.EstimateUnsigned("row_count",
-                                                              object_uuid,
+                                                              target,
                                                               1000));
-  if (capability.estimated_rows == 0) {
-    capability.estimated_rows = 1000;
-  }
   return capability;
 }
 

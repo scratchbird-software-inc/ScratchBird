@@ -138,6 +138,7 @@ bool NameRegistryWouldConflict(const EngineRequestContext& context,
                                const std::string& scope_uuid,
                                const std::vector<EngineLocalizedName>& names,
                                std::uint64_t observer_tx,
-                               std::string* conflict_name);
+                               std::string* conflict_name,
+                               EngineApiDiagnostic& diagnostic);
 
 }  // namespace scratchbird::engine::internal_api

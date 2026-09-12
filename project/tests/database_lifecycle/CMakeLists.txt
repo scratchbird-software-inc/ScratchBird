@@ -8,6 +8,11 @@
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(NOT TARGET sb_server_legacy_diagnostic_rendering)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
+                   ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
+endif()
+
 if(SB_ENABLE_TEST_DML_ROUTE_SELECTION)
   add_executable(dml_optimization_history_probe dml_optimization_history_probe.cpp)
   target_compile_features(dml_optimization_history_probe PRIVATE cxx_std_23)
@@ -2468,6 +2473,8 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_executable(agent_metrics_audit_support_bundle_gate
     agent_metrics_audit_support_bundle_gate.cpp
   )
+  target_link_libraries(agent_metrics_audit_support_bundle_gate PRIVATE
+    sb_server_legacy_diagnostic_rendering)
   target_compile_features(agent_metrics_audit_support_bundle_gate PRIVATE cxx_std_23)
   target_link_libraries(agent_metrics_audit_support_bundle_gate
     PRIVATE
@@ -2488,6 +2495,8 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   add_executable(agent_evidence_audit_redaction_retention_gate
     agent_evidence_audit_redaction_retention_gate.cpp
   )
+  target_link_libraries(agent_evidence_audit_redaction_retention_gate PRIVATE
+    sb_server_legacy_diagnostic_rendering)
   target_compile_features(agent_evidence_audit_redaction_retention_gate PRIVATE cxx_std_23)
   target_link_libraries(agent_evidence_audit_redaction_retention_gate
     PRIVATE
@@ -5791,6 +5800,8 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   add_executable(database_lifecycle_observability_conformance
     observability_conformance.cpp
   )
+  target_link_libraries(database_lifecycle_observability_conformance PRIVATE
+    sb_server_legacy_diagnostic_rendering)
   target_compile_features(database_lifecycle_observability_conformance PRIVATE cxx_std_23)
   target_link_libraries(database_lifecycle_observability_conformance
     PRIVATE

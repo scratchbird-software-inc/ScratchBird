@@ -7903,9 +7903,9 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
 
 done:
   AbandonBulkImportStreamForWire();
-  if (session_.authenticated && HasExecutionRoute()) {
+  if (session_.authenticated) {
     MessageVectorSet disconnect_messages;
-    (void)DisconnectExecutionRoute(&disconnect_messages);
+    if (!DisconnectExecutionRoute(&disconnect_messages)) rc = 1;
   }
   if (metrics_) metrics_->SetState(rc == 0 ? ParserState::kDisconnected : ParserState::kFailed);
   return rc;

@@ -9,6 +9,8 @@
 # Pure canonical parameter wire codecs shared by parser producers and by the
 # server/engine's independent revalidation path. This target contains no
 # catalog, MGA, admission, executor, or optimizer authority.
+include(${PROJECT_SOURCE_DIR}/src/wire/diagnostic_identity_projection_codec.cmake)
+include(${PROJECT_SOURCE_DIR}/src/wire/message_vector_value_codec.cmake)
 if(NOT TARGET sb_sblr_parameter_wire_codec)
 add_library(sb_sblr_parameter_wire_codec STATIC
   sblr_parameter_runtime.cpp
@@ -250,7 +252,8 @@ target_include_directories(sb_sblr_parameter_wire_codec PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(sb_sblr_parameter_wire_codec PUBLIC sb_core_hash)
+target_link_libraries(sb_sblr_parameter_wire_codec PUBLIC sb_core_hash sb_wire_diagnostic_identity_projection_codec
+  $<LINK_ONLY:sb_wire_message_vector_value_codec>)
 endif()
 
 # Pure manifest-owned contextual-TEXT carrier codec shared by parser and
@@ -315,6 +318,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
     canonical_query_aggregate_registration.cpp
     canonical_query_correlated_registration.cpp
     canonical_query_descriptor_support.cpp
+    canonical_query_result_metadata.cpp
+    canonical_query_result_values.cpp
     canonical_query_filter_registration.cpp
     canonical_query_filter_project_composition.cpp
     canonical_query_order_limit_composition.cpp
@@ -377,6 +382,8 @@ add_library(sb_engine_sblr
   canonical_query_aggregate_registration.cpp
   canonical_query_correlated_registration.cpp
   canonical_query_descriptor_support.cpp
+  canonical_query_result_metadata.cpp
+  canonical_query_result_values.cpp
   canonical_query_filter_registration.cpp
   canonical_query_filter_project_composition.cpp
   canonical_query_order_limit_composition.cpp

@@ -60,6 +60,8 @@ struct PlanCandidate {
   std::vector<std::string> acceptance_reasons;
   std::vector<std::string> refusal_reasons;
   std::vector<std::string> statistics_diagnostics;
+  // Actual selected statistic values/provenance and binary target identities.
+  std::vector<OptimizerStatistic> statistic_inputs;
   std::vector<std::string> runtime_evidence;
   CostVector cost;
   std::uint64_t estimated_rows = 0;

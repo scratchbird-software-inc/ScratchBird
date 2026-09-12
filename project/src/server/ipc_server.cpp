@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_ENDPOINT
 
 #include "ipc_server.hpp"
+#include "../wire/parser_server_ipc/binary_identity_io.hpp"
 
 #include "parser_server_event_frame_dispatcher.hpp"
 #include "listener_orchestrator.hpp"
@@ -637,12 +638,12 @@ ParserServerEventEngineContext EventEngineContextFromSession(
                            : ParserServerEventTrustMode::server_isolated;
   context.request_id = UuidBytesToText(request.header.request_uuid);
   context.database_path = session.database_path;
-  context.database_uuid.canonical = session.database_uuid;
+  context.database_uuid = session.database_uuid;
   if (context.database_path.empty()) {
     for (const auto& database : engine_state.databases) {
       if (database.database_open) {
         context.database_path = database.database_path;
-        context.database_uuid.canonical = database.database_uuid;
+        context.database_uuid = database.database_uuid;
         context.database_page_size_bytes = database.page_size_bytes;
         break;
       }
@@ -651,18 +652,18 @@ ParserServerEventEngineContext EventEngineContextFromSession(
     for (const auto& database : engine_state.databases) {
       if (!database.database_open) continue;
       const bool path_matches = database.database_path == context.database_path;
-      const bool uuid_matches = !context.database_uuid.canonical.empty() &&
-                                database.database_uuid == context.database_uuid.canonical;
+      const bool uuid_matches = !context.database_uuid.is_nil() &&
+                                database.database_uuid == context.database_uuid;
       if (path_matches || uuid_matches) {
         context.database_page_size_bytes = database.page_size_bytes;
         break;
       }
     }
   }
-  context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
-  context.transaction_uuid.canonical = session.transaction_uuid;
-  context.statement_uuid.canonical = UuidBytesToText(request.header.request_uuid);
+  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
+  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.transaction_uuid = session.transaction_uuid;
+  context.statement_uuid = UuidBytesToText(request.header.request_uuid);
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = session.snapshot_visible_through_local_transaction_id;
   context.statement_timestamp = CurrentUtcTimestampText();
@@ -1097,12 +1098,12 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = UuidBytesToText(frame.header.request_uuid);
   context.database_path = session.database_path;
-  context.database_uuid.canonical = session.database_uuid;
+  context.database_uuid = session.database_uuid;
   if (context.database_path.empty()) {
     for (const auto& database : engine_state.databases) {
       if (!database.database_open) continue;
       context.database_path = database.database_path;
-      context.database_uuid.canonical = database.database_uuid;
+      context.database_uuid = database.database_uuid;
       context.database_page_size_bytes = database.page_size_bytes;
       break;
     }
@@ -1110,21 +1111,21 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
     for (const auto& database : engine_state.databases) {
       if (!database.database_open) continue;
       const bool path_matches = database.database_path == context.database_path;
-      const bool uuid_matches = !context.database_uuid.canonical.empty() &&
-                                database.database_uuid == context.database_uuid.canonical;
+      const bool uuid_matches = !context.database_uuid.is_nil() &&
+                                database.database_uuid == context.database_uuid;
       if (path_matches || uuid_matches) {
         context.database_page_size_bytes = database.page_size_bytes;
         break;
       }
     }
   }
-  context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
+  context.session_uuid = UuidBytesToText(session.session_uuid);
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
   }
-  context.transaction_uuid.canonical = session.transaction_uuid;
-  context.statement_uuid.canonical = UuidBytesToText(frame.header.request_uuid);
+  context.transaction_uuid = session.transaction_uuid;
+  context.statement_uuid = UuidBytesToText(frame.header.request_uuid);
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -1307,7 +1308,7 @@ struct PsNameResolveRequest {
   bool bypass_cache = false;
   bool transaction_routed = false;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
+  scratchbird::core::platform::Uuid transaction_uuid;
   std::uint8_t projection_flags = 0;
   bool include_persisted_relation_descriptor = false;
 };
@@ -1374,7 +1375,9 @@ std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
   if (!PsNameReadU64(payload, &offset, &request.local_transaction_id)) {
     return std::nullopt;
   }
-  if (!read_request_string(&request.transaction_uuid, 64)) {
+  if (request.local_transaction_id == 0 ||
+      !scratchbird::wire::parser_server_ipc::ReadEngineIdentityUuid(
+          payload, &offset, &request.transaction_uuid)) {
     return std::nullopt;
   }
   if (schema == sbps::kSchemaResolveNameRequestV2) {
@@ -1838,11 +1841,11 @@ std::vector<std::uint8_t> EncodePsNameResolvePayload(std::string_view outcome,
     PsNamePutU8(&payload, kResourceDescriptorExtensionV1);
     PsNamePutString(&payload, resource_descriptor->resource_family);
     PsNamePutString(&payload, resource_descriptor->canonical_name);
-    PsNamePutString(&payload,
-                    resource_descriptor->parent_resource_uuid.canonical);
+    PsNamePutUuid(&payload,
+                  resource_descriptor->parent_resource_uuid.bytes);
     PsNamePutString(&payload, resource_descriptor->parent_canonical_name);
-    PsNamePutString(&payload,
-                    resource_descriptor->default_collation_uuid.canonical);
+    PsNamePutUuid(&payload,
+                  resource_descriptor->default_collation_uuid.bytes);
     PsNamePutString(&payload, resource_descriptor->default_collation_name);
     PsNamePutU64(&payload, resource_descriptor->resource_epoch);
     PsNamePutU64(&payload, resource_descriptor->family_epoch);
@@ -1965,7 +1968,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     std::string_view resolved_relation_uuid) {
   PsPublicRelationProjectionResult result;
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
+      context.transaction_uuid.is_nil() ||
       context.resource_epoch == 0 || resolved_relation_uuid.empty()) {
     result.diagnostic = PsRelationProjectionDiagnostic(
         "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUEST_INVALID",
@@ -1985,20 +1988,20 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     return result;
   }
   const auto descriptor_uuid = PsNameUuidFromText(
-      loaded.descriptor.descriptor_uuid.canonical);
+      loaded.descriptor.descriptor_uuid);
   const auto relation_uuid = PsNameUuidFromText(
-      loaded.descriptor.relation_uuid.canonical);
+      loaded.descriptor.relation_uuid);
   const auto schema_uuid = PsNameUuidFromText(
-      loaded.descriptor.schema_uuid.canonical);
+      loaded.descriptor.schema_uuid);
   if (!descriptor_uuid || !relation_uuid || !schema_uuid ||
-      loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid ||
+      loaded.descriptor.relation_uuid != resolved_relation_uuid ||
       loaded.descriptor.descriptor_generation == 0 ||
       loaded.descriptor.columns.empty()) {
     result.diagnostic = PsRelationProjectionDiagnostic(
-        loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid
+        loaded.descriptor.relation_uuid != resolved_relation_uuid
             ? "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RELATION_MISMATCH"
             : "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-        loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid
+        loaded.descriptor.relation_uuid != resolved_relation_uuid
             ? "parser_server_ipc.relation_descriptor_relation_mismatch"
             : "parser_server_ipc.relation_descriptor_invalid",
         "The persisted MGA relation descriptor failed neutral projection validation.",
@@ -2045,9 +2048,9 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
   std::set<std::uint32_t> ordinals;
   for (const auto& source : loaded.descriptor.columns) {
     const auto column_uuid =
-        PsNameUuidFromText(source.column_uuid.canonical);
+        PsNameUuidFromText(source.column_uuid);
     const auto type_descriptor_uuid = PsNameUuidFromText(
-        source.value_descriptor.descriptor_uuid.canonical);
+        source.value_descriptor.descriptor_uuid);
     if (!column_uuid || !type_descriptor_uuid ||
         source.canonical_name_key.empty() ||
         source.canonical_name_key.size() >
@@ -2061,7 +2064,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
         source.value_descriptor.encoded_descriptor.empty() ||
         source.value_descriptor.encoded_descriptor.size() >
             kMaxPsEncodedTypeDescriptorBytes ||
-        !column_uuids.insert(source.column_uuid.canonical).second ||
+        !column_uuids.insert(source.column_uuid).second ||
         !ordinals.insert(source.ordinal).second) {
       result.diagnostic = PsRelationProjectionDiagnostic(
           "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
@@ -2087,7 +2090,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     column.character_length = source.character_length;
 
     std::string datatype_descriptor_uuid =
-        source.value_descriptor.descriptor_uuid.canonical;
+        source.value_descriptor.descriptor_uuid;
     bool datatype_descriptor_uuid_seen = false;
     std::size_t descriptor_field_offset = 0;
     while (descriptor_field_offset <=
@@ -2183,7 +2186,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
         return result;
       }
       engine_api::EngineUuid engine_charset_uuid;
-      engine_charset_uuid.canonical = source.charset_uuid;
+      engine_charset_uuid = source.charset_uuid;
       const auto charset = engine_api::LookupEngineResourceDescriptorByUuid(
           context, engine_charset_uuid, "charset");
       if (!charset.ok) {
@@ -2200,7 +2203,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           "text_resource_storage",
           "large_object");
       if (!resource.present || resource.resource_family != "charset" ||
-          resource.resource_uuid.canonical != source.charset_uuid ||
+          resource.resource_uuid != source.charset_uuid ||
           resource.canonical_name.empty() ||
           resource.canonical_name.size() >
               kMaxPsRelationMetadataTextBytes ||
@@ -2243,7 +2246,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
         return result;
       }
       engine_api::EngineUuid engine_collation_uuid;
-      engine_collation_uuid.canonical = source.collation_uuid;
+      engine_collation_uuid = source.collation_uuid;
       const auto collation = engine_api::LookupEngineResourceDescriptorByUuid(
           context, engine_collation_uuid, "collation");
       if (!collation.ok) {
@@ -2256,8 +2259,8 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
       }
       const auto& resource = collation.resource_descriptor;
       if (!resource.present || resource.resource_family != "collation" ||
-          resource.resource_uuid.canonical != source.collation_uuid ||
-          resource.parent_resource_uuid.canonical != source.charset_uuid ||
+          resource.resource_uuid != source.collation_uuid ||
+          resource.parent_resource_uuid != source.charset_uuid ||
           resource.canonical_name.empty() ||
           resource.canonical_name.size() >
               kMaxPsRelationMetadataTextBytes ||
@@ -2391,7 +2394,7 @@ std::optional<std::string> EncodeGlobalAggregateViewSemanticDetail(
       engine_api::EngineGlobalAggregateAvgIntegerResultDescriptor();
   if (!projection.present ||
       projection.marker != engine_api::kEngineGlobalAggregateViewMarkerV1 ||
-      projection.projection_descriptor.descriptor_uuid.canonical.empty() ||
+      projection.projection_descriptor.descriptor_uuid.is_nil() ||
       projection.projection_descriptor.descriptor_kind !=
           "global_aggregate_view" ||
       projection.projection_descriptor.canonical_type_name !=
@@ -2411,7 +2414,7 @@ std::optional<std::string> EncodeGlobalAggregateViewSemanticDetail(
   std::ostringstream packed;
   packed << "gavs1|" << PsNameHexEncode(projection.marker) << '|'
          << PsNameHexEncode(
-                projection.projection_descriptor.descriptor_uuid.canonical)
+                projection.projection_descriptor.descriptor_uuid)
          << '|' << projection.descriptor_generation << '|'
          << PsNameHexEncode(
                 projection.projection_descriptor.descriptor_kind)
@@ -2441,7 +2444,7 @@ std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
   const std::size_t expected_output_count = v1 ? 2u : 1u;
   if (!projection.present ||
       (!v1 && !v2) ||
-      projection.projection_descriptor.descriptor_uuid.canonical.empty() ||
+      projection.projection_descriptor.descriptor_uuid.is_nil() ||
       projection.projection_descriptor.descriptor_kind !=
           "relation_projection_view" ||
       projection.projection_descriptor.canonical_type_name !=
@@ -2453,20 +2456,20 @@ std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
   }
 
   std::set<std::string> identities = {
-      projection.projection_descriptor.descriptor_uuid.canonical};
+      projection.projection_descriptor.descriptor_uuid};
   std::set<std::string> names;
   for (std::size_t index = 0; index < projection.ordered_outputs.size();
        ++index) {
     const auto& output = projection.ordered_outputs[index];
     if (output.ordinal != index || output.output_name.empty() ||
-        output.output_column_uuid.canonical.empty() ||
-        output.output_type.type_descriptor_uuid.canonical.empty() ||
+        output.output_column_uuid.is_nil() ||
+        output.output_type.type_descriptor_uuid.is_nil() ||
         output.output_type.descriptor_kind.empty() ||
         output.output_type.canonical_type_name.empty() ||
         output.output_type.encoded_descriptor.empty() ||
-        !identities.insert(output.output_column_uuid.canonical).second ||
+        !identities.insert(output.output_column_uuid).second ||
         !identities.insert(
-             output.output_type.type_descriptor_uuid.canonical).second ||
+             output.output_type.type_descriptor_uuid).second ||
         !names.insert(output.output_name).second) {
       return std::nullopt;
     }
@@ -2476,15 +2479,15 @@ std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
   packed << (v1 ? "rpvs1|" : "rpvd2|")
          << PsNameHexEncode(projection.marker) << '|'
          << PsNameHexEncode(
-                projection.projection_descriptor.descriptor_uuid.canonical)
+                projection.projection_descriptor.descriptor_uuid)
          << '|' << projection.descriptor_generation << '|'
          << expected_output_count;
   for (const auto& output : projection.ordered_outputs) {
     packed << '|' << output.ordinal << '|'
            << PsNameHexEncode(output.output_name) << '|'
-           << PsNameHexEncode(output.output_column_uuid.canonical) << '|'
+           << PsNameHexEncode(output.output_column_uuid) << '|'
            << PsNameHexEncode(
-                  output.output_type.type_descriptor_uuid.canonical)
+                  output.output_type.type_descriptor_uuid)
            << '|' << PsNameHexEncode(output.output_type.descriptor_kind)
            << '|' << PsNameHexEncode(
                   output.output_type.canonical_type_name)
@@ -2814,7 +2817,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         const auto selected = found->second.transactions_by_local_id.find(
             decoded->local_transaction_id);
         if (decoded->local_transaction_id == 0 ||
-            decoded->transaction_uuid.empty() ||
+            decoded->transaction_uuid.is_nil() ||
             selected == found->second.transactions_by_local_id.end() ||
             selected->second.transaction_uuid != decoded->transaction_uuid ||
             selected->second.lifecycle_state !=
@@ -3069,8 +3072,8 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
     request.sql_object_reference.object_name =
         PsNameIdentifierAtom(parts->back(), identifier_profile);
     const auto resolved = engine_api::EngineResolveName(request);
-    if (resolved.ok && !resolved.primary_object.uuid.canonical.empty()) {
-      const auto object_uuid = PsNameUuidFromText(resolved.primary_object.uuid.canonical);
+    if (resolved.ok && !resolved.primary_object.uuid.is_nil()) {
+      const auto object_uuid = PsNameUuidFromText(resolved.primary_object.uuid);
       if (object_uuid) {
         const auto catalog_epoch =
             resolved.bound_object_identity.catalog_generation_id != 0
@@ -3089,13 +3092,13 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
             !descriptor_resolution_request &&
             PsNameResolutionCacheable(request.context,
                                       resolved_object_class,
-                                      resolved.primary_object.uuid.canonical)) {
+                                      resolved.primary_object.uuid)) {
           StorePsNameCacheVariants(session_registry,
                                    *session,
                                    *decoded,
                                    identifier_profile,
                                    request.context,
-                                   resolved.primary_object.uuid.canonical,
+                                   resolved.primary_object.uuid,
                                    decoded->presented_name,
                                    resolved_object_class,
                                    catalog_epoch,
@@ -3105,7 +3108,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                    &*session,
                                    "resolved",
                                    "engine_catalog_resolver",
-                                   resolved.primary_object.uuid.canonical,
+                                   resolved.primary_object.uuid,
                                    resolved_object_class,
                                    cache_key,
                                    stable_cache_key,
@@ -3124,7 +3127,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         if (relation_projection_schema) {
           semantic_detail = BuildPsNameSemanticDetail(
               request.context,
-              resolved.primary_object.uuid.canonical,
+              resolved.primary_object.uuid,
               resolved_object_class,
               semantic_detail.detail,
               &resolved.semantic_projection);

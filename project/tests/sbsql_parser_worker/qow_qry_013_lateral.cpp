@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -17,6 +18,7 @@ namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
 
 namespace {
+using scratchbird::tests::BinaryUuid;
 
 constexpr std::uint64_t kOwnerLocalTransactionId =
     0xffff'ffff'ffff'ff00ULL;
@@ -37,12 +39,12 @@ bool Require(const bool condition, const std::string_view detail) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const std::string& statement_snapshot_uuid) {
+    const api::EngineUuid& statement_snapshot_uuid) {
   return {
-      "019f0000-0000-7200-8000-00000000e661",
-      "019f0000-0000-7200-8000-00000000e662",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e661"),
+      BinaryUuid("019f0000-0000-7200-8000-00000000e662"),
       statement_snapshot_uuid,
-      "019f0000-0000-7200-8000-00000000e663",
+      BinaryUuid("019f0000-0000-7200-8000-00000000e663"),
       kOwnerLocalTransactionId,
       0,
       kOldestActiveLocalTransactionId,
@@ -91,12 +93,12 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   for (auto& node : dag->nodes) {
     node.mga_statement_context = context;
     node.selected_alternative_uuid =
-        "019f0000-0000-7200-8000-00000000e664";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e664");
     node.executor_capability_uuid =
-        "019f0000-0000-7200-8000-00000000e665";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e665");
     node.executor_capability_abi_version = 1;
     node.cost_vector_uuid =
-        "019f0000-0000-7200-8000-00000000e666";
+        BinaryUuid("019f0000-0000-7200-8000-00000000e666");
     node.memory_bytes_required = 32ULL * 1024ULL * 1024ULL;
     node.engine_capability_validated = true;
   }
@@ -111,15 +113,15 @@ exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
   return authority;
 }
 
-api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
-                                 const std::string& type_uuid,
+api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
+                                 const api::EngineUuid& type_uuid,
                                  const std::string& type_name) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = type_name;
-  descriptor.encoded_descriptor =
-      "type_uuid=" + type_uuid + ";nullability=nullable";
+  descriptor.type_uuid = type_uuid;
+  descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }
 
@@ -142,39 +144,39 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 
 exec::CanonicalCorrelatedSubqueryRequest CorrelatedRequest() {
   const auto outer_key = Descriptor(
-      "019f0000-0000-7200-8000-000000003101",
-      "019f0000-0000-7300-8000-000000003102", "int64");
+      BinaryUuid("019f0000-0000-7200-8000-000000003101"),
+      BinaryUuid("019f0000-0000-7300-8000-000000003102"), "int64");
   const auto outer_payload = Descriptor(
-      "019f0000-0000-7200-8000-000000003103",
-      "019f0000-0000-7300-8000-000000003104", "text");
+      BinaryUuid("019f0000-0000-7200-8000-000000003103"),
+      BinaryUuid("019f0000-0000-7300-8000-000000003104"), "text");
   const auto inner_key = Descriptor(
-      "019f0000-0000-7200-8000-000000003105",
-      "019f0000-0000-7300-8000-000000003106", "int64");
+      BinaryUuid("019f0000-0000-7200-8000-000000003105"),
+      BinaryUuid("019f0000-0000-7300-8000-000000003106"), "int64");
   const auto inner_payload = Descriptor(
-      "019f0000-0000-7200-8000-000000003107",
-      "019f0000-0000-7300-8000-000000003108", "text");
+      BinaryUuid("019f0000-0000-7200-8000-000000003107"),
+      BinaryUuid("019f0000-0000-7300-8000-000000003108"), "text");
 
   exec::CanonicalCorrelatedSubqueryRequest request;
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000003109";
+      BinaryUuid("019f0000-0000-7200-8000-000000003109");
   request.physical_dag.root_physical_node_id = 3103;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000003111"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003111")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000003112"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003112")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000003113"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003113")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000003114"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003114")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000003115"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003115")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000003116"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003116")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000003117"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003117")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000003118"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003118")},
   };
   request.physical_dag.nodes = {
       {.physical_node_id = 3101,
@@ -227,25 +229,25 @@ exec::CanonicalLateralSubqueryRequest Request() {
   exec::CanonicalLateralSubqueryRequest request;
   request.correlated_request = CorrelatedRequest();
   request.physical_dag.selected_plan_uuid =
-      "019f0000-0000-7200-8000-000000003121";
+      BinaryUuid("019f0000-0000-7200-8000-000000003121");
   request.physical_dag.root_physical_node_id = 3113;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
-       "019f0000-0000-7200-8000-000000003122"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003122")},
       {exec::PhysicalAdmissionStage::kCatalogEpoch,
-       "019f0000-0000-7200-8000-000000003123"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003123")},
       {exec::PhysicalAdmissionStage::kSecurity,
-       "019f0000-0000-7200-8000-000000003124"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003124")},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       "019f0000-0000-7200-8000-000000003125"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003125")},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
-       "019f0000-0000-7200-8000-000000003126"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003126")},
       {exec::PhysicalAdmissionStage::kResource,
-       "019f0000-0000-7200-8000-000000003127"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003127")},
       {exec::PhysicalAdmissionStage::kStatisticsProvenance,
-       "019f0000-0000-7200-8000-000000003128"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003128")},
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
-       "019f0000-0000-7200-8000-000000003129"},
+       BinaryUuid("019f0000-0000-7200-8000-000000003129")},
   };
   request.physical_dag.admission_evidence[3].evidence_uuid =
       request.correlated_request.mga_authority.statement_context
@@ -326,9 +328,9 @@ bool ValidateLateralSubquery() {
               "outer-alias" &&
           result.output_batch.rows[4].values[3].encoded_value == "inner-c" &&
           result.correlated_plan_uuid ==
-              "019f0000-0000-7200-8000-000000003109" &&
+              BinaryUuid("019f0000-0000-7200-8000-000000003109") &&
           result.selected_plan_uuid ==
-              "019f0000-0000-7200-8000-000000003121" &&
+              BinaryUuid("019f0000-0000-7200-8000-000000003121") &&
           result.executed_physical_node_id == 3113 &&
           result.causal_counter_id == 31103 &&
           result.mga_statement_context.visible_committed_high_watermark == 0 &&
@@ -480,15 +482,15 @@ bool ValidateLateralSubquery() {
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
                         result.scope_execution_count == 0 &&
                         result.output_row_count == 0 &&
-                        result.selected_plan_uuid.empty() &&
-                        result.correlated_plan_uuid.empty() &&
+                        result.selected_plan_uuid.is_nil() &&
+                        result.correlated_plan_uuid.is_nil() &&
                         !exec::PhysicalMgaStatementContextValid(
                             result.mga_statement_context),
                     "missing LATERAL engine MGA transaction was accepted");
 
   request = Request();
   request.mga_authority.statement_context.statement_uuid =
-      "019f0000-0000-7200-8000-00000000e667";
+      BinaryUuid("019f0000-0000-7200-8000-00000000e667");
   result = exec::ExecuteCanonicalLateralSubquery(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
                     "cross-statement LATERAL authority reached access");
@@ -496,7 +498,7 @@ bool ValidateLateralSubquery() {
   request = Request();
   auto drift = request.correlated_request.mga_authority.statement_context;
   drift.owning_transaction_uuid =
-      "019f0000-0000-7200-8000-00000000e668";
+      BinaryUuid("019f0000-0000-7200-8000-00000000e668");
   request.correlated_request.mga_authority.resolve_current = [drift] {
     exec::CanonicalMgaCurrentResolution current;
     current.statement_context = drift;
@@ -508,8 +510,62 @@ bool ValidateLateralSubquery() {
   return passed;
 }
 
+bool ValidateBinaryCancellationAuthority() {
+  bool passed = true;
+  const auto bound_request = [] {
+    auto bound = Request();
+    // Both scopes use the same admitted policy, not merely probes that happen
+    // to return the same value. Preserve their separate plan identities.
+    bound.physical_dag.admission_evidence[4].evidence_uuid =
+        bound.correlated_request.physical_dag.capability_snapshot_uuid;
+    bound.mga_authority = BindPhysicalAbiV2(
+        &bound.physical_dag,
+        &bound.correlated_request.mga_authority.statement_context);
+    bound.cancellation_evidence_uuid =
+        bound.physical_dag.capability_snapshot_uuid;
+    bound.correlated_request.cancellation_evidence_uuid =
+        bound.cancellation_evidence_uuid;
+    bound.cancellation_requested = [] { return false; };
+    bound.correlated_request.cancellation_requested = [] { return false; };
+    return bound;
+  };
+  auto request = Request();
+  request.cancellation_evidence_uuid = request.physical_dag.capability_snapshot_uuid;
+  auto result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "cancellation evidence without a probe was accepted");
+
+  request = bound_request();
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(result.diagnostic.ok,
+                    "correct binary cancellation policy failed execution");
+
+  for (std::size_t bit = 0; bit < 128; ++bit) {
+    request = bound_request();
+    request.cancellation_evidence_uuid.bytes[bit / 8] ^=
+        static_cast<std::uint8_t>(1U << (bit % 8));
+    result = exec::ExecuteCanonicalLateralSubquery(request);
+    passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                          result.selected_plan_uuid.is_nil(),
+                      "changed cancellation policy identity published a result");
+  }
+
+  request = bound_request();
+  request.cancellation_requested = [] { return true; };
+  request.correlated_request.cancellation_requested = [] { return true; };
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.cancellation_observed &&
+                        result.output_batch.rows.empty() && result.selected_plan_uuid.is_nil() &&
+                        result.cancellation_evidence_uuid ==
+                            request.cancellation_evidence_uuid,
+                    "bound cancellation failed to suppress result publication");
+  return passed;
+}
+
 }  // namespace
 
 int main() {
-  return ValidateLateralSubquery() ? EXIT_SUCCESS : EXIT_FAILURE;
+  const bool execution = ValidateLateralSubquery();
+  const bool binary = ValidateBinaryCancellationAuthority();
+  return execution && binary ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -526,7 +526,7 @@ bool QowBindCanonicalParameterSlotsV1(
     const auto& supplied = supplied_parameters[index];
     const auto nullability =
         descriptor_field(slot.encoded_descriptor, "nullability");
-    if (!canonical_uuid(slot.descriptor_uuid.canonical) ||
+    if (!canonical_uuid(slot.descriptor_uuid) ||
         slot.descriptor_kind != "scalar" || slot.canonical_type_name.empty() ||
         slot.canonical_type_name == "unknown" ||
         slot.encoded_descriptor.empty() ||
@@ -541,8 +541,8 @@ bool QowBindCanonicalParameterSlotsV1(
     }
     names.push_back(supplied.first);
     const auto& value = supplied.second;
-    if (value.descriptor.descriptor_uuid.canonical !=
-            slot.descriptor_uuid.canonical ||
+    if (value.descriptor.descriptor_uuid !=
+            slot.descriptor_uuid ||
         value.descriptor.descriptor_kind != slot.descriptor_kind ||
         value.descriptor.canonical_type_name != slot.canonical_type_name ||
         value.descriptor.encoded_descriptor != slot.encoded_descriptor) {
@@ -837,7 +837,7 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
   result.result_shape.result_kind = "scalar_projection_rows";
 
   EngineRowValue row;
-  row.requested_row_uuid.canonical = "scalar-projection-row-0";
+  row.requested_row_uuid = "scalar-projection-row-0";
   for (std::uint64_t index = 0; index < projection_count; ++index) {
     const std::string prefix = "projection_" + std::to_string(index) + "_";
     std::string name = SecurityOptionValue(request, prefix + "name:");

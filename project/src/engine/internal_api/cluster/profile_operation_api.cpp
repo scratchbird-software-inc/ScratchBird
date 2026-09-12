@@ -45,7 +45,7 @@ EngineClusterProfileOperationResult EngineClusterProfileOperation(
   AddApiBehaviorRow(&result,
                     {{"cluster_profile_action", profile_action},
                      {"surface_id", surface_id},
-                     {"object_uuid", request.target_object.uuid.canonical},
+                     {"object_uuid", request.target_object.uuid},
                      {"object_kind", request.target_object.object_kind},
                      {"open_core_scope", "noncluster_or_profile_scoped"},
                      {"private_cluster_provider_dispatch", "false"}});

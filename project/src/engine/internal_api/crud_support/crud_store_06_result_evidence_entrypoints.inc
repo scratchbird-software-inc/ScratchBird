@@ -280,7 +280,7 @@ EngineResultShape CrudRowsToResultShape(const std::vector<CrudRowVersionRecord>&
   shape.result_kind = "crud_rows";
   for (const auto& row : rows) {
     EngineRowValue out_row;
-    out_row.requested_row_uuid.canonical = row.row_uuid;
+    out_row.requested_row_uuid = row.row_uuid;
     for (const auto& [field, value] : row.values) {
       EngineTypedValue typed;
       typed.encoded_value = value;

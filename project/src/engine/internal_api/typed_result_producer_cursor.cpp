@@ -8,13 +8,14 @@
 
 #include "typed_result_producer_cursor.hpp"
 
-#include "hash_digest.hpp"
+#include "core/uuid/uuid.hpp"
+#include "wire/typed_result_packet_view.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <mutex>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -22,13 +23,10 @@ namespace scratchbird::engine::internal_api {
 
 namespace {
 
-constexpr std::string_view kBatchUuidDomain =
-    "ScratchBird.TypedResultProducerBatchUuid.V1";
-
 constexpr const char* kInvalidArgument = "SB_ENGINE_STATUS_INVALID_ARGUMENT";
 constexpr const char* kAccessDenied = "SECURITY.ACCESS_DENIED";
 constexpr const char* kMgaStale = "MGA.TRANSACTION.STALE";
-constexpr const char* kDescriptorInvalid = "DATATYPE.DESCRIPTOR_INVALID";
+constexpr const char* kDescriptorInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kCursorStale = "CURSOR.STALE";
 constexpr const char* kResourceExceeded = "RESOURCE.BUDGET_EXCEEDED";
 constexpr const char* kCancelled = "PROCESS.CANCELLED";
@@ -108,34 +106,23 @@ TypedResultProducerReleaseReasonV1 ReleaseReasonForClose(
   return TypedResultProducerReleaseReasonV1::recovery;
 }
 
-void AppendLittle64(std::vector<byte>* bytes, u64 value) {
-  for (unsigned shift = 0; shift < 64; shift += 8) {
-    bytes->push_back(static_cast<byte>((value >> shift) & 0xffu));
+wire::TypedResultUuid MakeBatchUuid() noexcept {
+  // Local, process-private batch identity. Its time bits are never cursor
+  // order, MGA visibility, finality, or cluster time authority.
+  try {
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (millis < 0 || static_cast<u64>(millis) > 0x0000ffffffffffffull) {
+      return {};
+    }
+    const auto generated = core::uuid::GenerateEngineIdentityV7(
+        core::platform::UuidKind::object, static_cast<u64>(millis));
+    if (generated.ok()) return generated.value.value.bytes;
+  } catch (...) {
+    // Entropy or allocation failure must not manufacture an identity or let
+    // an exception escape with the carrier stuck in its pulling state.
   }
-}
-
-wire::TypedResultUuid MakeBatchUuid(
-    const wire::TypedResultUuid& carrier_uuid,
-    const wire::TypedResultUuid& result_set_uuid,
-    u64 batch_ordinal) {
-  std::vector<byte> material;
-  material.reserve(kBatchUuidDomain.size() + carrier_uuid.size() +
-                   result_set_uuid.size() + sizeof(batch_ordinal));
-  material.insert(material.end(), kBatchUuidDomain.begin(),
-                  kBatchUuidDomain.end());
-  material.insert(material.end(), carrier_uuid.begin(), carrier_uuid.end());
-  material.insert(material.end(), result_set_uuid.begin(),
-                  result_set_uuid.end());
-  AppendLittle64(&material, batch_ordinal);
-  const auto digest = core::hash::ComputeSha256Digest(material);
-  wire::TypedResultUuid uuid{};
-  if (!digest.ok()) return uuid;
-  std::copy_n(digest.digest.begin(), uuid.size(), uuid.begin());
-  // UUIDv7-compatible variant/version bits.  The digest remains only a private
-  // collision-resistant batch identity; it creates no authentication authority.
-  uuid[6] = static_cast<byte>((uuid[6] & 0x0fu) | 0x70u);
-  uuid[8] = static_cast<byte>((uuid[8] & 0x3fu) | 0x80u);
-  return uuid;
+  return {};
 }
 
 TypedResultProducerPullResultV1 PullFailure(
@@ -234,7 +221,13 @@ struct TypedResultProducerCursorCarrierV1::State {
   TypedResultProducerCursorLifecycleV1 lifecycle =
       TypedResultProducerCursorLifecycleV1::open;
   bool retained_authority_released = false;
+  bool defer_terminal_release = false;
+  TypedResultProducerReleaseReasonV1 terminal_release_reason =
+      TypedResultProducerReleaseReasonV1::open_refused;
   wire::TypedResultCursorBatchState batch_state;
+  // One provisional binary ID for the current ordinal, retained across an
+  // aborted stage so re-encoding the same retry preserves exact packet bytes.
+  wire::TypedResultUuid pending_batch_uuid{};
 
   std::unique_ptr<TypedResultStatementReceiptHandleV1> statement_receipt;
   std::unique_ptr<TypedResultMgaSnapshotPinHandleV1> mga_snapshot_pin;
@@ -244,20 +237,36 @@ struct TypedResultProducerCursorCarrierV1::State {
       resource_grant_receipt;
   std::unique_ptr<TypedResultProducerSourceV1> producer_state;
 
+  ~State() { ReleaseLocked(terminal_release_reason); }
+
   void ReleaseLocked(TypedResultProducerReleaseReasonV1 reason) noexcept {
     if (retained_authority_released) return;
     retained_authority_released = true;
+    pending_batch_uuid = {};
     if (producer_state) producer_state->Close(reason);
+    producer_state.reset();
+    // Release all carrier-owned dynamic storage before its granting authority.
+    // Returned transport storage is a separate owner, not a retained cursor page.
+    descriptor_authority = nullptr;
+    std::vector<byte>().swap(result_descriptor_vector);
+    static_assert(std::is_nothrow_move_assignable_v<wire::TypedResultRowDescriptor>);
+    row_descriptor = {};
+    batch_state = {};
     if (resource_grant_receipt) resource_grant_receipt->Release(reason);
+    resource_grant_receipt.reset();
     if (cancellation_receipt) cancellation_receipt->Release(reason);
+    cancellation_receipt.reset();
     if (mga_snapshot_pin) mga_snapshot_pin->Release(reason);
+    mga_snapshot_pin.reset();
     if (statement_receipt) statement_receipt->Release(reason);
+    statement_receipt.reset();
   }
 
   void TerminalLocked(TypedResultProducerCursorLifecycleV1 terminal,
                       TypedResultProducerReleaseReasonV1 reason) noexcept {
     lifecycle = terminal;
-    ReleaseLocked(reason);
+    terminal_release_reason = reason;
+    if (!defer_terminal_release) ReleaseLocked(reason);
   }
 };
 
@@ -286,9 +295,9 @@ TypedResultProducerCursorCarrierV1::Snapshot() const {
   result.session_uuid = state_->session_uuid;
   result.execution_uuid = state_->execution_uuid;
   result.result_set_uuid = state_->result_set_uuid;
-  result.row_descriptor_uuid = state_->row_descriptor.descriptor_uuid;
+  result.row_descriptor_uuid = state_->row_descriptor_uuid;
   result.row_descriptor_generation =
-      state_->row_descriptor.descriptor_generation;
+      state_->row_descriptor_generation;
   result.snapshot_uuid = state_->snapshot_uuid;
   result.cursor_stream_descriptor_uuid =
       state_->cursor_stream_descriptor_uuid;
@@ -314,7 +323,27 @@ TypedResultProducerCursorCarrierV1::row_descriptor() const {
 }
 
 TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
-    TypedResultProducerOpenRequestV1 request) {
+    TypedResultProducerOpenRequestV1 request) try {
+  // Own the incoming handles even if allocating State fails. Once transferred,
+  // State's destructor performs the same terminal transition on failed Open.
+  struct IncomingOwner {
+    TypedResultProducerOpenRequestV1& request;
+    ~IncomingOwner() {
+      const auto reason = TypedResultProducerReleaseReasonV1::open_refused;
+      if (request.producer_state) request.producer_state->Close(reason);
+      request.producer_state.reset();
+      request.descriptor_authority = nullptr;
+      request.row_descriptor = {};
+      if (request.resource_grant_receipt) request.resource_grant_receipt->Release(reason);
+      request.resource_grant_receipt.reset();
+      if (request.cancellation_receipt) request.cancellation_receipt->Release(reason);
+      request.cancellation_receipt.reset();
+      if (request.mga_snapshot_pin) request.mga_snapshot_pin->Release(reason);
+      request.mga_snapshot_pin.reset();
+      if (request.statement_receipt) request.statement_receipt->Release(reason);
+      request.statement_receipt.reset();
+    }
+  } incoming{request};
   auto state = std::make_unique<TypedResultProducerCursorCarrierV1::State>();
   state->carrier_uuid = request.carrier_uuid;
   state->carrier_generation = request.carrier_generation;
@@ -358,7 +387,7 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
         status == TypedResultProducerCursorStatusV1::cancelled
             ? TypedResultProducerCursorLifecycleV1::cancelled
             : TypedResultProducerCursorLifecycleV1::revoked;
-    state->ReleaseLocked(release_reason);
+    state->terminal_release_reason = release_reason;
     TypedResultProducerOpenResultV1 result;
     result.status = status;
     result.diagnostic_code = diagnostic_code;
@@ -394,6 +423,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   TypedResultProducerOwnerObservationV1 owner;
   try {
     owner = state->statement_receipt->ObserveOwner(state->session_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     owner = TypedResultProducerOwnerObservationV1::denied;
   }
@@ -411,6 +442,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   try {
     snapshot = state->mga_snapshot_pin->ObserveSnapshot(
         state->statement_snapshot_uuid, state->snapshot_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     snapshot = TypedResultProducerMgaObservationV1::stale_or_unequal;
   }
@@ -445,6 +478,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   try {
     descriptor_decision =
         state->descriptor_authority(decoded_descriptor.descriptor);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     descriptor_decision.accepted = false;
     descriptor_decision.detail = "descriptor_authority_exception";
@@ -464,6 +499,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   try {
     receipt = state->statement_receipt->ObserveReceipt(
         state->statement_receipt_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     receipt = TypedResultProducerReceiptObservationV1::stale;
   }
@@ -484,6 +521,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
         state->resource_grant_receipt_uuid,
         state->resource_grant_generation, state->resource_grant_bytes,
         state->max_chunk_bytes);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     grant = TypedResultProducerGrantObservationV1::stale_or_released;
   }
@@ -496,6 +535,8 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   try {
     cancellation = state->cancellation_receipt->ObserveCancellation(
         state->cancellation_receipt_uuid, state->cancellation_generation);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     cancellation = TypedResultProducerCancellationObservationV1::stale;
   }
@@ -514,6 +555,11 @@ TypedResultProducerOpenResultV1 OpenTypedResultProducerCursorV1(
   result.carrier = std::unique_ptr<TypedResultProducerCursorCarrierV1>(
       new TypedResultProducerCursorCarrierV1(std::move(state)));
   return result;
+} catch (const std::bad_alloc&) {
+  TypedResultProducerOpenResultV1 result;
+  result.status = TypedResultProducerCursorStatusV1::resource_budget_exceeded;
+  // Emergency status is allocation-free; rich diagnostic text may be absent.
+  return result;
 }
 
 TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
@@ -526,9 +572,23 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
 TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     TypedResultProducerCursorCarrierV1& carrier,
     const TypedResultProducerPullRequestV1& request,
-    const TypedResultProducerPrecommitGateV1& precommit_gate) {
+    const TypedResultProducerPrecommitGateV1& precommit_gate) try {
   auto& state = *carrier.state_;
   std::lock_guard<std::mutex> lock(state.mutation_gate);
+  // Declared before all descriptor/stage/encoding temporaries: they are destroyed
+  // before any terminal authority release, and a throwing prepublication path
+  // cannot strand the carrier in pulling. The mutation gate remains held.
+  struct PullOwner {
+    TypedResultProducerCursorCarrierV1::State& state;
+    ~PullOwner() {
+      if (state.lifecycle == TypedResultProducerCursorLifecycleV1::pulling) {
+        state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
+      }
+      state.defer_terminal_release = false;
+      if (IsTerminal(state.lifecycle)) state.ReleaseLocked(state.terminal_release_reason);
+    }
+  } pull_owner{state};
+  state.defer_terminal_release = true;
 
   if (request.version != kTypedResultProducerCursorVersionV1 ||
       !UuidPresent(request.cursor_uuid) || request.carrier_generation == 0 ||
@@ -549,6 +609,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   TypedResultProducerOwnerObservationV1 owner;
   try {
     owner = state.statement_receipt->ObserveOwner(state.session_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     owner = TypedResultProducerOwnerObservationV1::denied;
   }
@@ -563,6 +625,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   try {
     snapshot = state.mga_snapshot_pin->ObserveSnapshot(
         state.statement_snapshot_uuid, state.snapshot_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     snapshot = TypedResultProducerMgaObservationV1::stale_or_unequal;
   }
@@ -582,7 +646,9 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     try {
       descriptor_decision =
           state.descriptor_authority(current_descriptor.descriptor);
-    } catch (...) {
+    } catch (const std::bad_alloc&) {
+    throw;
+  } catch (...) {
       descriptor_decision.accepted = false;
       descriptor_decision.detail = "descriptor_authority_exception";
     }
@@ -608,6 +674,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   try {
     receipt = state.statement_receipt->ObserveReceipt(
         state.statement_receipt_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     receipt = TypedResultProducerReceiptObservationV1::stale;
   }
@@ -649,6 +717,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
         state.resource_grant_receipt_uuid,
         state.resource_grant_generation, state.resource_grant_bytes,
         request.maximum_bytes);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     grant = TypedResultProducerGrantObservationV1::stale_or_released;
   }
@@ -667,7 +737,9 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     try {
       return state.cancellation_receipt->ObserveCancellation(
           state.cancellation_receipt_uuid, state.cancellation_generation);
-    } catch (...) {
+    } catch (const std::bad_alloc&) {
+    throw;
+  } catch (...) {
       return TypedResultProducerCancellationObservationV1::stale;
     }
   };
@@ -711,6 +783,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
       return observed != TypedResultProducerCancellationObservationV1::live;
     };
     staged = state.producer_state->Stage(stage_request);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (const std::exception& error) {
     producer_failed = true;
     producer_failure_detail =
@@ -763,6 +837,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   // cancellation, or producer failure observed after Stage returned.
   try {
     owner = state.statement_receipt->ObserveOwner(state.session_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     owner = TypedResultProducerOwnerObservationV1::denied;
   }
@@ -777,6 +853,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   try {
     snapshot = state.mga_snapshot_pin->ObserveSnapshot(
         state.statement_snapshot_uuid, state.snapshot_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     snapshot = TypedResultProducerMgaObservationV1::stale_or_unequal;
   }
@@ -804,8 +882,10 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     wire::TypedResultBatch batch;
     batch.execution_uuid = state.execution_uuid;
     batch.result_set_uuid = state.result_set_uuid;
-    batch.batch_uuid =
-        MakeBatchUuid(state.carrier_uuid, state.result_set_uuid, old_ordinal);
+    if (!UuidPresent(state.pending_batch_uuid)) {
+      state.pending_batch_uuid = MakeBatchUuid();
+    }
+    batch.batch_uuid = state.pending_batch_uuid;
     batch.batch_ordinal = old_ordinal;
     batch.end_of_rowset = staged.end_of_cursor;
     batch.cursor_bound = true;
@@ -820,7 +900,7 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     if (!UuidPresent(batch.batch_uuid)) {
       state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
       return PullFailure(TypedResultProducerCursorStatusV1::fetch_failed,
-                         kFetchFailed, "batch_uuid_digest_failed");
+                         kFetchFailed, "batch_uuid_generation_failed");
     }
 
     wire::TypedResultCarrierBinding binding;
@@ -839,23 +919,30 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
         state.cursor_stream_descriptor_generation;
 
     auto encoded = wire::EncodeTypedResultBatch(
-        batch, state.row_descriptor, binding);
-    if (!encoded.ok()) {
+        batch, state.row_descriptor, binding,
+        std::min({request.maximum_bytes, state.max_chunk_bytes,
+                  state.resource_grant_bytes, kTypedResultProducerMaximumBytesV1}));
+    if (encoded.status == wire::TypedResultCodecStatus::resource_limit_exceeded) {
+      // Preserve the retained-authority refusal order and source lease below;
+      // the oversized candidate was refused before packet materialization.
+      encoded_batch_over_bound = true;
+    } else if (!encoded.ok()) {
       state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
       return PullFailure(
           TypedResultProducerCursorStatusV1::descriptor_invalid,
           kDescriptorInvalid, "staged_batch_encode:" + encoded.detail);
     }
-    if (encoded.encoded.empty() ||
+    if (encoded_batch_over_bound || encoded.encoded.empty() ||
         encoded.encoded.size() > request.maximum_bytes ||
         encoded.encoded.size() > state.max_chunk_bytes ||
         encoded.encoded.size() > state.resource_grant_bytes ||
         encoded.encoded.size() > kTypedResultProducerMaximumBytesV1) {
       encoded_batch_over_bound = true;
     } else {
-      auto decoded = wire::DecodeTypedResultBatch(
-          encoded.encoded, state.row_descriptor, binding, &staged_batch_state);
-      if (!decoded.ok() || decoded.encoded != encoded.encoded) {
+      auto decoded = wire::DecodeTypedResultPacketView(
+          encoded.encoded.data(), encoded.encoded.size(),
+          state.row_descriptor, binding, &staged_batch_state);
+      if (!decoded.ok() || !decoded.has_cursor_state) {
         state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
         return PullFailure(
             TypedResultProducerCursorStatusV1::descriptor_invalid,
@@ -863,10 +950,17 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
       }
       published.status = TypedResultProducerCursorStatusV1::ok;
       published.outcome = TypedResultProducerPullOutcomeV1::batch;
-      published.row_count = decoded.batch.rows.size();
-      published.end_of_cursor = decoded.batch.end_of_rowset;
-      published.row_data_packet = std::move(decoded.encoded);
-      published.batch = std::move(decoded.batch);
+      published.row_count = decoded.view.header().row_count;
+      published.end_of_cursor = decoded.view.header().end_of_rowset;
+      // The encoder's owning copy is distinct from the staged source storage,
+      // which must die before the retained source grant is released at EOS.
+      // Moving source-owned rows requires a separately retained physical lease.
+      // The complete immutable packet has been independently checked. Keep
+      // its provisional state private until the existing source/authority
+      // barrier below; no second owning decode or payload clone is needed.
+      staged_batch_state = std::move(decoded.next_cursor_state);
+      published.row_data_packet = std::move(encoded.encoded);
+      published.batch = std::move(encoded.batch);
     }
   }
 
@@ -887,7 +981,9 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     TypedResultProducerPrecommitDecisionV1 decision;
     try {
       decision = precommit_gate(published);
-    } catch (...) {
+    } catch (const std::bad_alloc&) {
+    throw;
+  } catch (...) {
       decision.accepted = false;
       decision.refusal_status =
           TypedResultProducerCursorStatusV1::fetch_failed;
@@ -916,6 +1012,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   // Immediately-before-publication authority pass, in the Core refusal order.
   try {
     owner = state.statement_receipt->ObserveOwner(state.session_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     owner = TypedResultProducerOwnerObservationV1::denied;
   }
@@ -930,6 +1028,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   try {
     snapshot = state.mga_snapshot_pin->ObserveSnapshot(
         state.statement_snapshot_uuid, state.snapshot_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     snapshot = TypedResultProducerMgaObservationV1::stale_or_unequal;
   }
@@ -949,7 +1049,9 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
     try {
       descriptor_decision =
           state.descriptor_authority(current_descriptor.descriptor);
-    } catch (...) {
+    } catch (const std::bad_alloc&) {
+    throw;
+  } catch (...) {
       descriptor_decision.accepted = false;
     }
   }
@@ -970,6 +1072,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   try {
     receipt = state.statement_receipt->ObserveReceipt(
         state.statement_receipt_uuid);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     receipt = TypedResultProducerReceiptObservationV1::stale;
   }
@@ -996,6 +1100,8 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
         state.resource_grant_receipt_uuid,
         state.resource_grant_generation, state.resource_grant_bytes,
         publication_grant_bytes);
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     grant = TypedResultProducerGrantObservationV1::stale_or_released;
   }
@@ -1087,6 +1193,13 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
             "source_publication_charge_exceeds_retained_authority");
       case TypedResultProducerStageCommitStatusV1::committed:
         break;
+      default:
+        // A source transition has not committed merely because its status is
+        // unknown. The lease is already aborted; publish no rows or EOS.
+        state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
+        return PullFailure(TypedResultProducerCursorStatusV1::fetch_failed,
+                           kFetchFailed,
+                           "source_publication_commit_status_invalid");
     }
   }
 
@@ -1107,6 +1220,7 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
   state.batch_state = std::move(staged_batch_state);
   state.row_position = old_position + published.row_count;
   state.next_batch_ordinal = old_ordinal + 1;
+  state.pending_batch_uuid = {};
   if (published.end_of_cursor) {
     state.TerminalLocked(TypedResultProducerCursorLifecycleV1::eos,
                          TypedResultProducerReleaseReasonV1::eos);
@@ -1115,6 +1229,10 @@ TypedResultProducerPullResultV1 PullTypedResultProducerCursorV1(
 
   state.lifecycle = TypedResultProducerCursorLifecycleV1::open;
   return published;
+} catch (const std::bad_alloc&) {
+  TypedResultProducerPullResultV1 result;
+  result.status = TypedResultProducerCursorStatusV1::resource_budget_exceeded;
+  return result;
 }
 
 TypedResultProducerOperationResultV1 CloseTypedResultProducerCursorV1(

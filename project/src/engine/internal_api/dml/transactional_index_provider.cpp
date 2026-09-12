@@ -186,7 +186,7 @@ std::string DmlTransactionalIndexMutationIdentity(
     std::string_view mutation_kind) {
   const std::string material =
       "SB_DML_TRANSACTIONAL_INDEX_MUTATION_V1\t" +
-      context.transaction_uuid.canonical + "\t" +
+      context.transaction_uuid + "\t" +
       std::to_string(context.local_transaction_id) + "\t" +
       request.index.index_uuid + "\t" +
       std::to_string(request.index.event_sequence) + "\t" +
@@ -217,7 +217,7 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntry(
                "family=" + ResolvedFamily(request.index)));
   }
   if (append_context_ == nullptr || context_.local_transaction_id == 0 ||
-      context_.transaction_uuid.canonical.empty() ||
+      context_.transaction_uuid.is_nil() ||
       request.index.index_uuid.empty() || request.index.event_sequence == 0 ||
       request.table_uuid.empty() || request.row_uuid.empty() ||
       request.version_uuid.empty()) {

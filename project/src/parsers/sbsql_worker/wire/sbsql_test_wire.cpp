@@ -10,6 +10,7 @@
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
+#include "binder/descriptor_authority.hpp"
 #include "cst/cst.hpp"
 #include "embedded/embedded_engine_client.hpp"
 #include "ipc/sbps_client.hpp"
@@ -1305,14 +1306,24 @@ BuildEngineProjectedNativeBindingContext(
   if (std::ranges::any_of(ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCte;
       })) {
-    if (!IsNativeHeapCteIdentity(ast)) return fail("cte_identity_shape_invalid");
+    const auto producer_root = NativeCteProducerRoot(ast);
+    if (!producer_root) return fail("cte_identity_shape_invalid");
     auto producer = ast;
-    producer.root_relation_id = producer.relations.front().relation_id;
+    producer.root_relation_id = *producer_root;
     producer.relations.pop_back();
     return BuildEngineProjectedNativeBindingContext(
         producer, statement_context, resolved_object_reference_seeds, messages);
   }
   NativeRelationalBindingContext context;
+  const auto finish_context = [&]()
+      -> std::optional<NativeRelationalBindingContext> {
+    for (auto& descriptor : context.descriptors) {
+      if (!PreserveNativeDescriptorAuthority(&descriptor, statement_context)) {
+        return fail("descriptor_datatype_authority_not_preserved");
+      }
+    }
+    return std::move(context);
+  };
   context.bound_ast_uuid = statement_context.bound_ast_uuid;
   context.catalog_epoch_uuid = statement_context.catalog_epoch_uuid;
   context.security_context_uuid = statement_context.security_context_uuid;
@@ -1500,7 +1511,7 @@ BuildEngineProjectedNativeBindingContext(
         {source.relation_id, "table-function.generate-series.v1"});
     context.relations.push_back(
         {match.relation_id, "match-recognize.a-plus.true.all-rows.v1"});
-    return context;
+    return finish_context();
   }
   if (table_function_relation != ast.relations.end()) {
     const auto& relation = *table_function_relation;
@@ -1597,7 +1608,7 @@ BuildEngineProjectedNativeBindingContext(
          relation.relation_id});
     context.relations.push_back(
         {relation.relation_id, "table-function.generate-series.v1"});
-    return context;
+    return finish_context();
   }
 
   const auto spatial_columnar_source = std::ranges::find_if(
@@ -2217,7 +2228,7 @@ BuildEngineProjectedNativeBindingContext(
         {ast.relations.front().relation_id,
          spatial ? "sblr.model-source.spatial.v1"
                  : "sblr.model-source.columnar.v1"});
-    return context;
+    return finish_context();
   }
 
   const auto search_source = std::ranges::find_if(
@@ -2569,7 +2580,7 @@ BuildEngineProjectedNativeBindingContext(
         (complete_filter ? "-structured-filter.v1" : ".v1");
     context.relations.push_back(
         {ast.relations.front().relation_id, semantic});
-    return context;
+    return finish_context();
   }
 
   const auto vector_source = std::ranges::find_if(
@@ -2891,7 +2902,7 @@ BuildEngineProjectedNativeBindingContext(
         {ast.relations.front().relation_id,
          filtered ? "sblr.model-source.vector-filtered-search.v1"
                   : "sblr.model-source.vector-exact-search.v1"});
-    return context;
+    return finish_context();
   }
 
   const auto time_series_source = std::ranges::find_if(
@@ -3388,7 +3399,7 @@ BuildEngineProjectedNativeBindingContext(
         {ast.relations.front().relation_id,
          downsample ? "sblr.model-aggregate.time-series-downsample.v1"
                     : "sblr.model-source.time-series-range-read.v1"});
-    return context;
+    return finish_context();
   }
 
   const auto key_value_source = std::ranges::find_if(
@@ -3809,7 +3820,7 @@ BuildEngineProjectedNativeBindingContext(
              : (multi_get
                     ? "sblr.model-source.key-value-multi-get.v1"
                     : "sblr.model-source.key-value-prefix-range.v1")});
-    return context;
+    return finish_context();
   }
 
   const auto graph_source = std::ranges::find_if(
@@ -4188,7 +4199,7 @@ BuildEngineProjectedNativeBindingContext(
         {ast.relations.front().relation_id,
          graph_expand ? "sblr.model-expand.graph-expand.v1"
                       : "sblr.model-source.graph-match.v1"});
-    return context;
+    return finish_context();
   }
 
   const auto document_source = std::ranges::find_if(
@@ -4728,7 +4739,7 @@ BuildEngineProjectedNativeBindingContext(
              : (document_source->model_operation_id == "DOCUMENT_PATH"
                     ? "sblr.model-source.document-path.v1"
                     : "sblr.model-source.document-find.v1")});
-    return context;
+    return finish_context();
   }
 
   const auto window_relation = std::ranges::find_if(
@@ -5674,7 +5685,7 @@ BuildEngineProjectedNativeBindingContext(
           {qualify_relation->relation_id,
            "qualify.window-result-numeric-comparison.v1"});
     }
-    return context;
+    return finish_context();
   }
 
   const auto catalog_join = std::ranges::find_if(
@@ -7681,7 +7692,7 @@ BuildEngineProjectedNativeBindingContext(
              limit_relation->relation_id});
       }
     }
-    return context;
+    return finish_context();
   }
 
   if (!ast.catalog_relation_sources.empty()) {
@@ -8818,7 +8829,7 @@ BuildEngineProjectedNativeBindingContext(
           {aggregate_relation->relation_id, aggregate_semantic});
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
-    return context;
+    return finish_context();
   }
 
   std::vector<std::uint64_t> numeric_literal_occurrences;
@@ -9122,7 +9133,7 @@ BuildEngineProjectedNativeBindingContext(
       context.relations.push_back({relation.relation_id, semantic});
     }
   }
-  return context;
+  return finish_context();
 }
 
 using CanonicalBytes = std::vector<std::uint8_t>;
@@ -11961,7 +11972,7 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
           });
       if (literal_profile ==
               statement_context.literal_statement_descriptor_profiles.end() ||
-          descriptor->second.authoritative ||
+          !descriptor->second.authoritative ||
           literal_profile->profile_version != 1 ||
           literal_profile->descriptor_generation == 0 ||
           (literal_profile->codec_id !=
@@ -11974,6 +11985,10 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
         return std::nullopt;
       }
       node.descriptor_generation = literal_profile->descriptor_generation;
+      NativeDescriptorBindingInput numeric_descriptor;
+      numeric_descriptor.descriptor_uuid = literal_profile->binding_descriptor_uuid;
+      numeric_descriptor.type_uuid = literal_profile->type_uuid;
+      numeric_descriptor.nullability = BoundNullability::kNonNull;
       if (literal_profile->codec_id ==
           scratchbird::engine::sblr::kSblrLiteralInt64LeCodecId) {
       std::int64_t numeric = 0;
@@ -11990,8 +12005,14 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
         const auto encoded = scratchbird::engine::sblr::
             EncodeSblrLiteralExactDecimalV1(lexical);
         if (!encoded.ok) return std::nullopt;
+        numeric_descriptor.width_precision_scale.precision = encoded.precision;
+        numeric_descriptor.width_precision_scale.scale = encoded.scale;
         node.body.assign(encoded.canonical_bytes.begin(),
                          encoded.canonical_bytes.end());
+      }
+      if (!PreserveNativeDescriptorAuthority(&numeric_descriptor, statement_context) ||
+          !MatchesNativeNumericDescriptorRecord(descriptor->second.fields, numeric_descriptor)) {
+        return std::nullopt;
       }
     }
     nodes.push_back(std::move(node));
@@ -12069,7 +12090,7 @@ bool FinalizeLiteralSubmission(
   const auto refuse = [&](std::string detail) {
     if (messages != nullptr) {
       messages->diagnostics.push_back(MakeDiagnostic(
-          "DATATYPE.DESCRIPTOR_INVALID", "ERROR", std::move(detail),
+          "DATATYPE.DESCRIPTOR.INVALID", "ERROR", std::move(detail),
           "sbp_sbsql.wire.literal_finalize"));
     }
     return false;
@@ -15721,11 +15742,65 @@ bool AttachIssuedSourceMap(const ParserStatementContext& context,
   auto smba = sm::EncodeSblrSourceMapBoundAstV1(&ast);
   sm::SblrSourceMapEntryV1 entry;
   entry.node_id = 1;
-  entry.source_artifact_uuid = *artifact;
+  // This remains a process-integration fixture, not an ordinary SQL AST.
+  // Its metadata must nevertheless pass the real receipt-owned retention
+  // protocol; parser package identity is not source artifact authority.
+  const auto source_identity = uuid::GenerateEngineIdentityV7(
+      UuidKind::object, CurrentUnixMillis());
+  const auto statement_identity = CanonicalUuidBytes(issue_context.statement_uuid);
+  const auto dialect_identity = CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
+  if (!source_identity.ok() || !statement_identity || !dialect_identity) return false;
+  std::copy(source_identity.value.value.bytes.begin(), source_identity.value.value.bytes.end(),
+            entry.source_artifact_uuid.begin());
   entry.source_artifact_generation = 1;
   entry.byte_length = 1;
   entry.line = 1;
   entry.column = 1;
+  sm::SblrSourceArtifactMapV1 source_artifact;
+  source_artifact.artifact_uuid = entry.source_artifact_uuid;
+  source_artifact.sblr_envelope_uuid = *statement_identity;
+  source_artifact.dialect_family_uuid = *dialect_identity;
+  source_artifact.parser_package_uuid = *artifact;
+  source_artifact.language_tag = session.language_tag;
+  sm::SblrSourceArtifactSpanV1 source_span;
+  source_span.source_span_id = 1;
+  source_span.node_id = entry.node_id;
+  source_span.byte_length = entry.byte_length;
+  source_span.line_start = source_span.line_end = 1;
+  source_span.column_start = 1;
+  source_span.column_end = 2;
+  source_artifact.source_spans.push_back(source_span);
+  sm::SblrSourceArtifactRetainRequestV1 retain;
+  retain.authenticated_receipt_uuid = *receipt;
+  retain.sblr_envelope_uuid = *statement_identity;
+  retain.artifact_uuid = entry.source_artifact_uuid;
+  retain.canonical_artifact_bytes = sm::EncodeSblrSourceArtifactMapV1(source_artifact);
+  retain.declared_size = retain.canonical_artifact_bytes.size();
+  retain.crc32c = scratchbird::engine::SblrCrc32c(
+      retain.canonical_artifact_bytes.data(), retain.canonical_artifact_bytes.size());
+  retain.artifact_sha256 = sm::HashSblrSourceArtifactBytesV1(
+      retain.canonical_artifact_bytes.data(), retain.canonical_artifact_bytes.size());
+  retain.redaction_class = source_artifact.redaction_class;
+  retain.decompile_policy = source_artifact.decompile_policy;
+  const auto retain_bytes = sm::EncodeSblrSourceArtifactRetainRequestV1(retain);
+  if (retain_bytes.empty()) return false;
+  auto retained = client->RetainSourceArtifact(session, retain_bytes);
+  sm::SblrSourceArtifactRetainAckV1 ack;
+  std::string retain_detail;
+  if (!retained.accepted || !sm::DecodeSblrSourceArtifactRetainAckV1(
+          retained.canonical_payload.data(), retained.canonical_payload.size(),
+          &ack, &retain_detail) ||
+      ack.authenticated_receipt_uuid != retain.authenticated_receipt_uuid ||
+      ack.sblr_envelope_uuid != retain.sblr_envelope_uuid ||
+      ack.artifact_uuid != retain.artifact_uuid ||
+      ack.declared_size != retain.declared_size || ack.crc32c != retain.crc32c ||
+      ack.artifact_sha256 != retain.artifact_sha256 ||
+      ack.redaction_class != retain.redaction_class ||
+      ack.decompile_policy != retain.decompile_policy || !ack.retention_generation) {
+    if (messages) *messages = std::move(retained.messages);
+    return false;
+  }
+  entry.source_artifact_generation = ack.retention_generation;
   sm::SblrSourceMapIssueRequestV1 issue;
   issue.statement_receipt_uuid = *receipt;
   issue.registry_snapshot_uuid = *snapshot;
@@ -25721,7 +25796,7 @@ PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
           "019d0000-0000-7000-8000-00000000d711" ||
       authenticated_type_uuid !=
           "019d0000-0000-7000-8000-00000000d712") {
-    result.diagnostic_code = "DATATYPE.DESCRIPTOR_INVALID";
+    result.diagnostic_code = "DATATYPE.DESCRIPTOR.INVALID";
     return result;
   }
   if (value.encoding == PreparedParameterPayloadEncoding::binary) {
@@ -27659,10 +27734,16 @@ bool SbsqlTestWireSession::DisconnectExecutionRoute(MessageVectorSet* messages) 
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     return embedded_client_->DisconnectSession(session_, messages);
   }
-  if (!config_.server_endpoint.empty()) {
+  if (!config_.server_endpoint.empty() && server_client_ != nullptr) {
     return server_client_->DisconnectSession(session_, messages);
   }
-  return true;
+  if (messages != nullptr) {
+    messages->diagnostics.push_back(MakeDiagnostic(
+        "PARSER_SERVER_IPC.SESSION_NOT_BOUND", "ERROR",
+        "Authenticated session cleanup requires its bound execution route.",
+        "sbp_sbsql.wire"));
+  }
+  return false;
 }
 
 PipelineResult SbsqlTestWireSession::RunServerManagementCommand(
@@ -29061,7 +29142,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               ast.native_relational, *native_statement_context, false);
           if (!prebind.has_value()) {
             result.messages.diagnostics.push_back(MakeDiagnostic(
-                "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                 "The native numeric literal negotiation request was unavailable.",
                 "sbp_sbsql.wire"));
           } else {
@@ -29074,7 +29155,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               result.messages = std::move(negotiated.messages);
               if (!result.messages.has_errors()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The engine refused native numeric literal descriptor negotiation.",
                     "sbp_sbsql.wire"));
               }
@@ -29084,7 +29165,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                       negotiated.canonical_payload, &*literal_prebind_state,
                       &*native_statement_context, false)) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The engine literal descriptor negotiation result was malformed.",
                     "sbp_sbsql.wire"));
               }
@@ -29597,7 +29678,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 (decimal_literal && !decimal.ok)) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
                   decimal_literal ? decimal.diagnostic_id
-                                  : "DATATYPE.DESCRIPTOR_INVALID",
+                                  : "DATATYPE.DESCRIPTOR.INVALID",
                   "ERROR",
                   "The negotiated literal profile does not match the exact "
                   "canonical literal codec.",
@@ -29606,24 +29687,29 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             }
             const auto apply_literal_profile =
                 [&](NativeDescriptorBindingInput* descriptor) {
-                  descriptor->descriptor_uuid =
+                  NativeDescriptorBindingInput projected;
+                  projected.descriptor_id = descriptor->descriptor_id;
+                  projected.descriptor_uuid =
                       profile.binding_descriptor_uuid;
-                  descriptor->type_uuid = profile.type_uuid;
-                  descriptor->canonical_type_name =
+                  projected.type_uuid = profile.type_uuid;
+                  projected.canonical_type_name =
                       bigint_literal ? "int64" : "decimal";
-                  descriptor->nullability = BoundNullability::kNonNull;
-                  descriptor->collation_uuid.reset();
-                  descriptor->timezone_profile_id.reset();
-                  descriptor->width_precision_scale.width.reset();
+                  projected.nullability = BoundNullability::kNonNull;
                   if (decimal_literal) {
-                    descriptor->width_precision_scale.precision =
+                    projected.width_precision_scale.precision =
                         decimal.precision;
-                    descriptor->width_precision_scale.scale = decimal.scale;
-                  } else {
-                    descriptor->width_precision_scale.precision.reset();
-                    descriptor->width_precision_scale.scale.reset();
+                    projected.width_precision_scale.scale = decimal.scale;
                   }
-                  descriptor->element_profile.clear();
+                  if (!PreserveNativeDescriptorAuthority(
+                          &projected, *native_statement_context)) {
+                    result.messages.diagnostics.push_back(MakeDiagnostic(
+                        "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
+                        "The negotiated literal descriptor authority could not be preserved.",
+                        "sbp_sbsql.wire"));
+                    return false;
+                  }
+                  *descriptor = std::move(projected);
+                  return true;
                 };
             auto expression = ast_literal == ast.native_relational.expressions.end()
                 ? native_binding_context->expressions.end()
@@ -29639,7 +29725,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             if(expression==native_binding_context->expressions.end()) {
               if (ast_literal == ast.native_relational.expressions.end()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID","ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID","ERROR",
                     "The negotiated literal occurrence was absent from the typed AST.",
                     "sbp_sbsql.wire"));
                 break;
@@ -29673,12 +29759,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                  numeric_profile->descriptor_uuid;
                         }) != 1) {
                   result.messages.diagnostics.push_back(MakeDiagnostic(
-                      "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                      "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                       "The catalog LIMIT literal placeholder is not unique.",
                       "sbp_sbsql.wire"));
                   break;
                 }
-                apply_literal_profile(&*descriptor);
+                if (!apply_literal_profile(&*descriptor)) break;
                 native_binding_context->expressions.push_back(
                     {descriptor->descriptor_id, descriptor->descriptor_id,
                      std::nullopt, std::nullopt,
@@ -29702,7 +29788,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                             ast_literal->expression_id};
               if (!reserved_expression_id.has_value()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The JOIN literal operand could not receive a fresh bound expression identity.",
                     "sbp_sbsql.wire"));
                 break;
@@ -29728,12 +29814,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                  profile.binding_descriptor_uuid;
                         }) != 1) {
                   result.messages.diagnostics.push_back(MakeDiagnostic(
-                      "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                      "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                       "The negotiated literal descriptor placeholder is not unique.",
                       "sbp_sbsql.wire"));
                   break;
                 }
-                apply_literal_profile(&*existing_profile_descriptor);
+                if (!apply_literal_profile(&*existing_profile_descriptor)) break;
                 native_binding_context->expressions.push_back(
                     {*reserved_expression_id,
                      existing_profile_descriptor->descriptor_id,
@@ -29745,7 +29831,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               NativeDescriptorBindingInput literal_descriptor;
               literal_descriptor.descriptor_id = static_cast<std::uint32_t>(
                   native_binding_context->descriptors.size() + 1);
-              apply_literal_profile(&literal_descriptor);
+              if (!apply_literal_profile(&literal_descriptor)) break;
               const auto literal_descriptor_id =
                   literal_descriptor.descriptor_id;
               native_binding_context->descriptors.push_back(
@@ -29762,12 +29848,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                   });
               if (descriptor == native_binding_context->descriptors.end()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The negotiated literal descriptor binding was absent.",
                     "sbp_sbsql.wire"));
                 break;
               }
-              apply_literal_profile(&*descriptor);
+              if (!apply_literal_profile(&*descriptor)) break;
             }
           }
         }
@@ -29817,7 +29903,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                             ast_parameter->expression_id};
               if (!reserved_expression_id.has_value()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The JOIN filter parameter could not receive a fresh bound expression identity.",
                     "sbp_sbsql.wire"));
                 break;
@@ -29853,7 +29939,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               }
               if (exact_numeric_mapping_failure != nullptr) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     std::string("The exact non-null int64 parameter mapping is invalid: ") +
                         exact_numeric_mapping_failure + ".",
                     "sbp_sbsql.wire"));
@@ -29943,7 +30029,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                        native_binding_context->descriptors,
                        carries_same_immutable_authority))) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
-                    "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                    "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                     "The structural parameter mapping did not match one "
                     "immutable engine-issued catalog datatype authority.",
                     "sbp_sbsql.wire"));
@@ -29999,7 +30085,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             }
             if (missing_projection != nullptr) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   std::string("The engine parameter occurrence mapping lacked its exact ") +
                       missing_projection + ".",
                   "sbp_sbsql.wire"));
@@ -30051,7 +30137,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                     return expression.expression_id >= reserved_id;
                   })) {
             result.messages.diagnostics.push_back(MakeDiagnostic(
-                "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                 "The JOIN OFFSET literal could not receive its ordered "
                 "engine-issued descriptor binding.",
                 "sbp_sbsql.wire"));
@@ -30080,7 +30166,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 });
             if (ast_variable == ast.native_relational.expressions.end()) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   "The authenticated variable occurrence was absent from the AST.",
                   "sbp_sbsql.wire"));
               break;
@@ -30167,7 +30253,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 !std::ranges::all_of(native_binding_context->descriptors,
                                      carries_same_immutable_authority)) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   "The structural variable mapping did not match the exact "
                   "engine-issued bigint datatype profile.",
                   "sbp_sbsql.wire"));
@@ -30193,7 +30279,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                           ast_variable->expression_id};
             if (!reserved_expression_id.has_value()) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   "The JOIN filter variable could not receive a fresh bound expression identity.",
                   "sbp_sbsql.wire"));
               break;
@@ -30247,7 +30333,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         if (!zero_numeric_prebind.has_value() ||
             !zero_numeric_prebind->second.occurrences.empty()) {
           lowered.messages.diagnostics.push_back(MakeDiagnostic(
-              "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+              "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
               "The contextual TEXT composition zero-demand literal subset "
               "could not be encoded exactly.",
               "sbp_sbsql.wire.contextual_text"));
@@ -30261,7 +30347,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             lowered.messages = std::move(zero_numeric_negotiated.messages);
             if (!lowered.messages.has_errors()) {
               lowered.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   "The engine refused the contextual TEXT composition "
                   "zero-profile literal subset.",
                   "sbp_sbsql.wire.contextual_text"));
@@ -30274,7 +30360,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 !native_statement_context
                      ->literal_statement_descriptor_profiles.empty()) {
               lowered.messages.diagnostics.push_back(MakeDiagnostic(
-                  "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+                  "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
                   "The contextual TEXT composition zero-profile literal "
                   "result was not exact.",
                   "sbp_sbsql.wire.contextual_text"));
@@ -30857,7 +30943,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       result.accepted = false;
       if (!result.messages.has_errors()) {
         result.messages.diagnostics.push_back(MakeDiagnostic(
-            "DATATYPE.DESCRIPTOR_INVALID", "ERROR",
+            "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
             "The engine refused or malformed literal binding finalization.",
             "sbp_sbsql.wire"));
       }
@@ -31710,30 +31796,29 @@ PipelineResult SbsqlTestWireSession::RunErrorVectorForWire() {
   if (!acquired.accepted) { result.messages = std::move(acquired.messages); return result; }
   const auto receipt = CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);
   const auto registry = CanonicalUuidBytes(acquired.context.catalog_epoch_uuid);
-  const auto diagnostic_snapshot = CanonicalUuidBytes(
-      acquired.context.preliminary_diagnostic_registry_snapshot_uuid);
-  if (!receipt || !registry || !diagnostic_snapshot ||
+  const auto diagnostic_snapshot =
+      acquired.context.preliminary_diagnostic_registry_snapshot_uuid;
+  if (!receipt || !registry ||
       acquired.context.preliminary_diagnostic_identities.empty()) return result;
   const auto& identity = acquired.context.preliminary_diagnostic_identities.front();
-  const auto diagnostic_uuid = CanonicalUuidBytes(identity.diagnostic_uuid);
-  if (!diagnostic_uuid) return result;
+  const auto diagnostic_uuid = identity.diagnostic_uuid;
   namespace ev = scratchbird::engine::sblr;
   ev::SblrErrorVectorIssueRequestV1 request;
   request.statement_receipt_uuid = *receipt;
   request.registry_snapshot_uuid = *registry;
   request.registry_generation = acquired.context.literal_catalog_generation;
-  request.diagnostic_registry_snapshot_uuid = *diagnostic_snapshot;
+  request.diagnostic_registry_snapshot_uuid = diagnostic_snapshot;
   request.diagnostic_registry_generation =
       acquired.context.preliminary_diagnostic_registry_generation;
   ev::SblrErrorVectorEntryV1 entry;
   entry.occurrence_ordinal = 1;
-  entry.diagnostic_uuid = *diagnostic_uuid;
+  entry.diagnostic_uuid = diagnostic_uuid;
   entry.diagnostic_generation = identity.generation;
-  entry.precedence_ordinal = 1;
+  entry.precedence_ordinal = identity.precedence_ordinal;
   entry.severity_code = identity.severity_code;
   entry.redaction_class = identity.redaction_class;
   entry.safe_field_count = 0;
-  entry.safe_fields_sha256 = identity.identity_sha256;
+  entry.safe_fields_sha256 = ev::SblrErrorVectorEmptySafeFieldsHashV1();
   request.entries.push_back(entry);
   auto evrq = ev::EncodeSblrErrorVectorIssueRequestV1(&request);
   auto issued = server_client_->IssueErrorVectorDescriptor(session_, evrq);
@@ -31951,19 +32036,113 @@ PipelineResult SbsqlTestWireSession::RunCursorOpenForWire() {
   result.accepted = executed.accepted;
   result.messages = executed.messages;
   if (result.accepted) {
-    co::SblrCursorHandleV1 handle;
-    if (!co::DecodeSblrCursorHandleV1(
-            reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
-            executed.row_packet.size(), &handle, &detail))
-      result.accepted = false;
-    else admitted_cursor_handle_.assign(executed.row_packet.begin(), executed.row_packet.end());
+    result.accepted = cursor_response_state_.AdmitOpen(
+        reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+        executed.row_packet.size());
   }
   return result;
 }
 
-PipelineResult SbsqlTestWireSession::RunCursorFetchForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated||admitted_cursor_handle_.empty())return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cf=scratchbird::engine::sblr;cf::SblrCursorHandleV1 h;std::string detail;if(!cf::DecodeSblrCursorHandleV1(admitted_cursor_handle_.data(),admitted_cursor_handle_.size(),&h,&detail)||!acquired.context.preliminary_cursor_fetch_executor_availability_generation)return result;cf::SblrCursorFetchOperandV1 o;o.cursor=h.cursor;o.cursor_generation=h.cursor_generation;o.plan=h.plan;o.plan_generation=h.plan_generation;o.row_shape=h.row_shape;o.row_shape_generation=h.row_shape_generation;o.transaction=h.transaction;o.session=h.session;o.position_generation=h.position_generation;o.maximum_rows=h.fetch_size;o.cursor_evidence=h.cursor_evidence;o.availability_generation=acquired.context.preliminary_cursor_fetch_executor_availability_generation;auto body=cf::EncodeSblrCursorFetchOperandV1(o);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.cursor_fetch";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){cf::SblrCursorFetchResultV1 r;if(!cf::DecodeSblrCursorFetchResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunCursorFetchForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated ||
+      !cursor_response_state_.HasHandle()) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  namespace cursor = scratchbird::engine::sblr;
+  const auto generation =
+      acquired.context.preliminary_cursor_fetch_executor_availability_generation;
+  if (!generation) return result;
+  const auto& h = cursor_response_state_.OpenedHandle();
+  cursor::SblrCursorFetchOperandV1 operand;
+  operand.cursor = h.cursor;
+  operand.cursor_generation = h.cursor_generation;
+  operand.plan = h.plan;
+  operand.plan_generation = h.plan_generation;
+  operand.row_shape = h.row_shape;
+  operand.row_shape_generation = h.row_shape_generation;
+  operand.transaction = h.transaction;
+  operand.session = h.session;
+  operand.position_generation = cursor_response_state_.PositionGeneration();
+  operand.cursor_evidence = cursor_response_state_.CursorEvidence();
+  operand.availability_generation = generation;
+  operand.maximum_rows = h.fetch_size;
+  auto body = cursor::EncodeSblrCursorFetchOperandV1(operand);
+  if (body.empty()) return result;
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.cursor_fetch";
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &body);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = executed.messages;
+  if (result.accepted) {
+    result.accepted = cursor_response_state_.AdmitFetch(
+        reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+        executed.row_packet.size(), generation, operand.maximum_rows);
+  }
+  return result;
+}
 
-PipelineResult SbsqlTestWireSession::RunCursorCloseForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated||admitted_cursor_handle_.empty())return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace cc=scratchbird::engine::sblr;cc::SblrCursorHandleV1 h;std::string detail;if(!cc::DecodeSblrCursorHandleV1(admitted_cursor_handle_.data(),admitted_cursor_handle_.size(),&h,&detail)||!acquired.context.preliminary_cursor_close_executor_availability_generation)return result;cc::SblrCursorCloseOperandV1 o;o.cursor=h.cursor;o.cursor_generation=h.cursor_generation;o.plan=h.plan;o.plan_generation=h.plan_generation;o.row_shape=h.row_shape;o.row_shape_generation=h.row_shape_generation;o.transaction=h.transaction;o.session=h.session;o.position_generation=h.position_generation;o.close_reason=1;o.cursor_evidence=h.cursor_evidence;o.availability_generation=acquired.context.preliminary_cursor_close_executor_availability_generation;auto body=cc::EncodeSblrCursorCloseOperandV1(o);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.cursor_close";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){cc::SblrCursorCloseResultV1 r;if(!cc::DecodeSblrCursorCloseResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
+PipelineResult SbsqlTestWireSession::RunCursorCloseForWire() {
+  PipelineResult result;
+  if (server_client_ == nullptr || !session_.authenticated ||
+      !cursor_response_state_.HasHandle()) return result;
+  ParserTransactionSelector selector{session_.local_transaction_id,
+                                     session_.transaction_uuid};
+  auto acquired = server_client_->AcquireNativeStatementContext(session_, selector);
+  if (!acquired.accepted) {
+    result.messages = std::move(acquired.messages);
+    return result;
+  }
+  namespace cursor = scratchbird::engine::sblr;
+  const auto generation =
+      acquired.context.preliminary_cursor_close_executor_availability_generation;
+  if (!generation) return result;
+  const auto& h = cursor_response_state_.OpenedHandle();
+  cursor::SblrCursorCloseOperandV1 operand;
+  operand.cursor = h.cursor;
+  operand.cursor_generation = h.cursor_generation;
+  operand.plan = h.plan;
+  operand.plan_generation = h.plan_generation;
+  operand.row_shape = h.row_shape;
+  operand.row_shape_generation = h.row_shape_generation;
+  operand.transaction = h.transaction;
+  operand.session = h.session;
+  operand.position_generation = cursor_response_state_.PositionGeneration();
+  operand.cursor_evidence = cursor_response_state_.CursorEvidence();
+  operand.availability_generation = generation;
+  operand.close_reason = 1;
+  auto body = cursor::EncodeSblrCursorCloseOperandV1(operand);
+  if (body.empty()) return result;
+  BoundStatement bound;
+  SblrEnvelope lowered;
+  lowered.operation_id = "engine.op.cursor_close";
+  // The submission adapter shares this operand slot with CURSOR_FETCH.
+  auto submission = BuildCanonicalNativeSubmission(
+      bound, lowered, acquired.context, session_, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &body);
+  if (!submission) return result;
+  auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(
+      session_, acquired.context, *submission, {}, false);
+  result.accepted = executed.accepted;
+  result.messages = executed.messages;
+  if (result.accepted) {
+    result.accepted = cursor_response_state_.AdmitClose(
+        reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),
+        executed.row_packet.size(), generation, operand.close_reason);
+  }
+  return result;
+}
 
 PipelineResult SbsqlTestWireSession::RunReadByKeyForWire(){PipelineResult result;if(server_client_==nullptr||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace rb=scratchbird::engine::sblr;rb::SblrReadByKeyRequestV1 q;auto receipt=CanonicalUuidBytes(acquired.context.literal_preliminary_receipt_uuid);if(!receipt||!acquired.context.preliminary_read_by_key_executor_availability_generation)return result;std::copy(receipt->begin(),receipt->end(),q.receipt.begin());q.occurrence=1;q.key_occurrence=1;auto coordinated=server_client_->CoordinateReadByKey(session_,rb::EncodeSblrReadByKeyRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;rb::SblrReadByKeyDescriptorV1 d;std::string detail;if(!rb::DecodeSblrReadByKeyDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto body=rb::EncodeSblrReadByKeyDescriptorV1(d,true);BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.read_by_key";auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&body);if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=executed.messages;if(result.accepted){rb::SblrReadByKeyResultV1 r;if(!rb::DecodeSblrReadByKeyResultV1(reinterpret_cast<const std::uint8_t*>(executed.row_packet.data()),executed.row_packet.size(),&r,&detail))result.accepted=false;}return result;}
 
@@ -35253,21 +35432,44 @@ int SbsqlTestWireSession::ServeFd(std::intptr_t fd) {
     }
   }
 
-  if (!WriteAll(fd, "ScratchBird SBSQL parser ready\n")) return 1;
+  bool disconnect_attempted = false;
+  bool disconnected = false;
+  MessageVectorSet disconnect_messages;
+  const auto disconnect_once = [&]() {
+    if (!disconnect_attempted) {
+      disconnect_attempted = true;
+      disconnected = DisconnectExecutionRoute(&disconnect_messages);
+      if (!disconnected && disconnect_messages.diagnostics.empty()) {
+        disconnect_messages.diagnostics.push_back(MakeDiagnostic(
+            "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN", "WARNING",
+            "The execution route did not confirm session cleanup.",
+            "sbp_sbsql.wire"));
+      }
+    }
+    return disconnected;
+  };
+  if (!WriteAll(fd, "ScratchBird SBSQL parser ready\n")) {
+    (void)disconnect_once();
+    if (metrics_) metrics_->SetState(ParserState::kFailed);
+    return 1;
+  }
   std::string line;
   int rc = 0;
   while (ReadLine(fd, &line)) {
-    const auto response = HandleLine(line);
+    auto response = HandleLine(line);
+    // A goodbye is a cleanup acknowledgement, not merely a parsed QUIT.
+    // Complete the real route first; failed cleanup must never emit OK BYE.
+    if (response.close && !disconnect_once()) {
+      rc = 1;
+      response.text = RenderMessageVectorSet(disconnect_messages);
+    }
     if (!WriteAll(fd, response.text)) {
       rc = 1;
       break;
     }
     if (response.close) break;
   }
-  if (session_.authenticated && HasExecutionRoute()) {
-    MessageVectorSet disconnect_messages;
-    (void)DisconnectExecutionRoute(&disconnect_messages);
-  }
+  if (!disconnect_once()) rc = 1;
   if (metrics_) metrics_->SetState(rc == 0 ? ParserState::kDisconnected : ParserState::kFailed);
   return rc;
 }

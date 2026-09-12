@@ -48,29 +48,26 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+platform::Uuid BinaryUuid(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& key_descriptor_uuid,
+std::vector<platform::byte> EncodedKey(const platform::Uuid& key_descriptor_uuid,
                                        const std::string& key) {
-  const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           key_descriptor_uuid);
-  Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
+
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid = descriptor_uuid.value;
+  component.type_descriptor_uuid = {platform::UuidKind::object, key_descriptor_uuid};
   component.payload.assign(key.begin(), key.end());
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test key encoding failed");
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalScanBound Bound(const std::string& key_descriptor_uuid,
+page::IndexBtreePhysicalScanBound Bound(const platform::Uuid& key_descriptor_uuid,
                                         const std::string& key,
                                         bool inclusive = true) {
   page::IndexBtreePhysicalScanBound bound;
@@ -80,28 +77,21 @@ page::IndexBtreePhysicalScanBound Bound(const std::string& key_descriptor_uuid,
   return bound;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
-  const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(parsed.ok(), "index uuid parse failed");
-  auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 768);
+page::IndexBtreePhysicalTree MakeTree(const platform::Uuid& index_uuid) {
+  auto initialized = page::InitializeIndexBtreePhysicalTree(
+      {platform::UuidKind::object, index_uuid}, 768);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& key_descriptor_uuid,
+page::IndexBtreeCell Cell(const platform::Uuid& key_descriptor_uuid,
                           const std::string& key,
-                          const std::string& row_uuid,
+                          const platform::Uuid& row_uuid,
                           platform::byte version_suffix) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(key_descriptor_uuid, key);
-  const auto parsed_row =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           row_uuid);
-  Require(parsed_row.ok(), "row uuid parse failed");
-  cell.row_uuid = parsed_row.value;
+  cell.row_uuid = {platform::UuidKind::row, row_uuid};
   cell.version_uuid = GeneratedUuid(platform::UuidKind::row,
                                     1700100000000ull + version_suffix,
                                     version_suffix);
@@ -176,18 +166,18 @@ exec::IndexedPhysicalOperatorRequest BaseRequest(
 }
 
 struct Fixture {
-  std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700101000000ull, 0x41);
-  std::string key_descriptor_uuid =
-      UuidText(platform::UuidKind::object, 1700101001000ull, 0x42);
-  std::string row_alpha =
-      UuidText(platform::UuidKind::row, 1700102000000ull, 0x51);
-  std::string row_bravo =
-      UuidText(platform::UuidKind::row, 1700102001000ull, 0x52);
-  std::string row_charlie =
-      UuidText(platform::UuidKind::row, 1700102002000ull, 0x53);
-  std::string row_delta =
-      UuidText(platform::UuidKind::row, 1700102003000ull, 0x54);
+  platform::Uuid index_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700101000000ull, 0x41);
+  platform::Uuid key_descriptor_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700101001000ull, 0x42);
+  platform::Uuid row_alpha =
+      BinaryUuid(platform::UuidKind::row, 1700102000000ull, 0x51);
+  platform::Uuid row_bravo =
+      BinaryUuid(platform::UuidKind::row, 1700102001000ull, 0x52);
+  platform::Uuid row_charlie =
+      BinaryUuid(platform::UuidKind::row, 1700102002000ull, 0x53);
+  platform::Uuid row_delta =
+      BinaryUuid(platform::UuidKind::row, 1700102003000ull, 0x54);
   page::IndexBtreePhysicalTree tree = MakeTree(index_uuid);
 
   Fixture() {
@@ -276,21 +266,21 @@ void TestIndexedNestedLoopAndRuntimeFilter() {
 
 void TestMergeOrderedInput() {
   Fixture left;
-  const std::string right_index_uuid =
-      UuidText(platform::UuidKind::object, 1700103000000ull, 0x71);
+  const platform::Uuid right_index_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700103000000ull, 0x71);
   auto right = MakeTree(right_index_uuid);
   InsertCell(&right, Cell(left.key_descriptor_uuid, "alpha",
-                         UuidText(platform::UuidKind::row,
+                         BinaryUuid(platform::UuidKind::row,
                                   1700104000000ull,
                                   0x81),
                          0x91));
   InsertCell(&right, Cell(left.key_descriptor_uuid, "charlie",
-                         UuidText(platform::UuidKind::row,
+                         BinaryUuid(platform::UuidKind::row,
                                   1700104001000ull,
                                   0x82),
                          0x92));
   InsertCell(&right, Cell(left.key_descriptor_uuid, "echo",
-                         UuidText(platform::UuidKind::row,
+                         BinaryUuid(platform::UuidKind::row,
                                   1700104002000ull,
                                   0x83),
                          0x93));
