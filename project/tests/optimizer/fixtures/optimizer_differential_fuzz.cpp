@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_differential_fuzz.hpp"
+#include "../../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include "access_path_full.hpp"
 #include "join_planner_full.hpp"
@@ -25,6 +26,37 @@
 
 namespace scratchbird::engine::optimizer {
 namespace {
+
+using Uuid = scratchbird::core::platform::Uuid;
+using scratchbird::tests::BinaryUuid;
+// Named fixture constants only; no runtime identity issuance or name binding.
+const Uuid kFixture0 = BinaryUuid("019f0000-0000-7300-8000-00000000f4ec");
+const Uuid kFixture1 = BinaryUuid("019f0000-0000-7300-8000-00000000f4ed");
+const Uuid kFixture2 = BinaryUuid("019f0000-0000-7300-8000-00000000f4ee");
+const Uuid kFixture3 = BinaryUuid("019f0000-0000-7300-8000-00000000f4ef");
+const Uuid kFixture4 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f0");
+const Uuid kFixture5 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f1");
+const Uuid kFixture6 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f2");
+const Uuid kFixture7 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f3");
+const Uuid kFixture8 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f4");
+const Uuid kFixture9 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f5");
+const Uuid kFixture10 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f6");
+const Uuid kFixture11 = BinaryUuid("019f0000-0000-7300-8000-00000000f4f7");
+
+std::string IdentityEvidence(const Uuid& value) {
+  // Presentation belongs to this test boundary, never engine identity keys.
+  constexpr char digits[] = "0123456789abcdef";
+  std::string text;
+  for (const auto byte : value.bytes) {
+    text.push_back(digits[byte >> 4]); text.push_back(digits[byte & 15]);
+  }
+  return text;
+}
+std::vector<std::string> IdentityEvidence(const std::vector<Uuid>& values) {
+  std::vector<std::string> out;
+  for (const auto& value : values) out.push_back(IdentityEvidence(value));
+  return out;
+}
 
 bool Has(const std::vector<std::string>& values, std::string_view expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
@@ -84,6 +116,11 @@ OptimizerRouteEvidence RefusedRoute(std::string diagnostic,
   return route;
 }
 
+OptimizerRouteEvidence ExpectedRefusal(const OptimizerDifferentialCase& test_case) {
+  return RefusedRoute(test_case.expected_refusal_diagnostic,
+                      {"baseline_route=declared_component_expectation"});
+}
+
 OptimizerDifferentialCaseResult CompareRoutes(OptimizerDifferentialCase test_case,
                                               OptimizerRouteEvidence baseline,
                                               OptimizerRouteEvidence optimized) {
@@ -91,15 +128,20 @@ OptimizerDifferentialCaseResult CompareRoutes(OptimizerDifferentialCase test_cas
   result.test_case = std::move(test_case);
   result.baseline = std::move(baseline);
   result.optimized = std::move(optimized);
-  if (result.baseline.accepted && result.optimized.accepted &&
+  const bool expects_acceptance = result.test_case.expected_outcome ==
+      OptimizerDifferentialOutcome::kAcceptedEquivalent;
+  const bool expects_refusal = result.test_case.expected_outcome ==
+      OptimizerDifferentialOutcome::kExactRefusalEquivalent;
+  if (expects_acceptance && result.baseline.accepted && result.optimized.accepted &&
       result.baseline.canonical_semantic_digest ==
           result.optimized.canonical_semantic_digest &&
       result.baseline.result_class == result.optimized.result_class) {
     result.outcome = OptimizerDifferentialOutcome::kAcceptedEquivalent;
     return result;
   }
-  if (!result.baseline.accepted && !result.optimized.accepted &&
-      !result.baseline.exact_refusal_diagnostic.empty() &&
+  if (expects_refusal && !result.baseline.accepted && !result.optimized.accepted &&
+      !result.test_case.expected_refusal_diagnostic.empty() &&
+      result.baseline.exact_refusal_diagnostic == result.test_case.expected_refusal_diagnostic &&
       result.baseline.exact_refusal_diagnostic ==
           result.optimized.exact_refusal_diagnostic) {
     result.outcome = OptimizerDifferentialOutcome::kExactRefusalEquivalent;
@@ -107,7 +149,11 @@ OptimizerDifferentialCaseResult CompareRoutes(OptimizerDifferentialCase test_cas
   }
 
   result.outcome = OptimizerDifferentialOutcome::kMismatch;
-  if (result.baseline.accepted != result.optimized.accepted) {
+  if ((!expects_acceptance && !expects_refusal) ||
+      (expects_acceptance && !result.baseline.accepted && !result.optimized.accepted) ||
+      (expects_refusal && result.baseline.accepted && result.optimized.accepted)) {
+    result.mismatch_reason = "expected_acceptance_or_refusal_not_observed";
+  } else if (result.baseline.accepted != result.optimized.accepted) {
     result.mismatch_reason = "accepted_refused_state_diverged";
   } else if (result.baseline.accepted) {
     result.mismatch_reason = "canonical_semantic_digest_or_result_class_diverged";
@@ -117,8 +163,8 @@ OptimizerDifferentialCaseResult CompareRoutes(OptimizerDifferentialCase test_cas
   return result;
 }
 
-OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
-                                     const std::string& statistic_uuid) {
+OptimizerStatsIdentity FreshIdentity(const Uuid& object_uuid,
+                                     const Uuid& statistic_uuid) {
   OptimizerStatsIdentity identity;
   identity.object_uuid = object_uuid;
   identity.statistic_uuid = statistic_uuid;
@@ -131,27 +177,17 @@ OptimizerStatsIdentity FreshIdentity(const std::string& object_uuid,
   return identity;
 }
 
-TableCardinalityStats TableStats(const std::string& relation_uuid) {
-  TableCardinalityStats stats;
-  stats.identity = FreshIdentity(relation_uuid, relation_uuid + ":table");
-  stats.row_count = 64000;
-  stats.visible_row_count = 60000;
-  stats.page_count = 1500;
-  stats.average_row_bytes = 96;
-  return stats;
-}
-
-IndexStats BaseIndex(const std::string& relation_uuid,
-                     const std::string& index_uuid) {
+IndexStats BaseIndex(const Uuid& relation_uuid,
+                     const Uuid& index_uuid) {
   IndexStats stats;
-  stats.identity = FreshIdentity(index_uuid, index_uuid + ":index");
+  stats.identity = FreshIdentity(index_uuid, kFixture11);
   stats.index_uuid = index_uuid;
   stats.relation_uuid = relation_uuid;
   stats.index_family = "btree";
   stats.descriptor_digest = "desc:odf027:customer:v1";
   stats.collation_identity = "unicode.casefold.det";
-  stats.key_column_uuids = {"expr.customer_name"};
-  stats.covered_column_uuids = {"expr.customer_name", "col.active"};
+  stats.key_column_uuids = {kFixture0};
+  stats.covered_column_uuids = {kFixture0, kFixture1};
   stats.covering = true;
   stats.height = 3;
   stats.leaf_pages = 80;
@@ -260,10 +296,10 @@ OptimizerPlanCacheKeyInput BaseCacheInput() {
   input.compatibility_epoch = 107;
   input.format_compatibility_epoch = 108;
   input.route_epoch = 109;
-  input.object_uuids = {"rel.customer"};
-  input.function_uuids = {"fn.mask_email"};
-  input.index_uuids = {"idx.customer_id"};
-  input.filespace_uuids = {"filespace.hot"};
+  input.object_uuids = {kFixture2};
+  input.function_uuids = {kFixture3};
+  input.index_uuids = {kFixture4};
+  input.filespace_uuids = {kFixture5};
   return input;
 }
 
@@ -280,33 +316,33 @@ CachedOptimizerPlan CachedPlan(const OptimizerPlanCacheKeyInput& input) {
 
 JoinGraph InnerJoinGraph() {
   std::vector<JoinRelationNode> relations = {
-      {.relation_uuid = "rel.big", .estimated_rows = 10000},
-      {.relation_uuid = "rel.medium", .estimated_rows = 200},
-      {.relation_uuid = "rel.small", .estimated_rows = 10},
+      {.relation_uuid = kFixture6, .estimated_rows = 10000},
+      {.relation_uuid = kFixture7, .estimated_rows = 200},
+      {.relation_uuid = kFixture8, .estimated_rows = 10},
   };
   std::vector<JoinPredicateEdge> predicates;
   JoinPredicateEdge big_medium;
-  big_medium.left_relation_uuid = "rel.big";
-  big_medium.right_relation_uuid = "rel.medium";
+  big_medium.left_relation_uuid = kFixture6;
+  big_medium.right_relation_uuid = kFixture7;
   big_medium.predicate_kind = "join.equi";
   big_medium.equality = true;
   big_medium.selectivity = 0.05;
   predicates.push_back(big_medium);
   JoinPredicateEdge medium_small = big_medium;
-  medium_small.left_relation_uuid = "rel.medium";
-  medium_small.right_relation_uuid = "rel.small";
+  medium_small.left_relation_uuid = kFixture7;
+  medium_small.right_relation_uuid = kFixture8;
   predicates.push_back(medium_small);
   return BuildJoinGraph(std::move(relations), std::move(predicates), false, false);
 }
 
 JoinGraph BarrierJoinGraph(const OptimizerDifferentialCase& test_case) {
   std::vector<JoinRelationNode> relations = {
-      {.relation_uuid = "rel.big", .estimated_rows = 10000},
-      {.relation_uuid = "rel.small", .estimated_rows = 10},
+      {.relation_uuid = kFixture6, .estimated_rows = 10000},
+      {.relation_uuid = kFixture8, .estimated_rows = 10},
   };
   JoinPredicateEdge edge;
-  edge.left_relation_uuid = "rel.big";
-  edge.right_relation_uuid = "rel.small";
+  edge.left_relation_uuid = kFixture6;
+  edge.right_relation_uuid = kFixture8;
   edge.predicate_kind = "join.equi";
   edge.equality = true;
   bool contains_outer = false;
@@ -357,38 +393,45 @@ OptimizerRouteEvidence JoinAcceptedRoute(const JoinGraph& graph,
     return RefusedRoute(JoinSorted(order.diagnostics, "+"),
                         {"join_order_not_available"});
   }
-  std::vector<std::string> relation_uuids;
+  std::vector<Uuid> relation_uuids;
   for (const auto& relation : graph.relations) {
     relation_uuids.push_back(relation.relation_uuid);
   }
+  auto ordered_ids = order.ordered_relation_uuids;
+  std::sort(ordered_ids.begin(), ordered_ids.end());
+  auto expected_ids = relation_uuids;
+  std::sort(expected_ids.begin(), expected_ids.end());
+  if (ordered_ids != expected_ids) return RefusedRoute("fixture.join_binding_permutation_invalid", {});
   return AcceptedRoute(
-      "join:inner:equi:" + JoinSorted(relation_uuids, ","),
+      "join:inner:equi:" + JoinSorted(IdentityEvidence(relation_uuids), ","),
       "inner_join_semantic_result",
-      {"optimized_order=" + JoinInOrder(order.ordered_relation_uuids, ","),
+      {"optimized_order=" + JoinInOrder(IdentityEvidence(order.ordered_relation_uuids), ","),
        "reorder_applied=" + std::string(order.reorder_applied ? "true" : "false"),
        "bounded_enumeration_applied=" +
            std::string(order.bounded_enumeration_applied ? "true" : "false")});
 }
 
 OptimizerRouteEvidence JoinBaselineRoute(const JoinGraph& graph) {
-  std::vector<std::string> relation_uuids;
-  std::vector<std::string> input_order;
+  std::vector<Uuid> relation_uuids;
+  std::vector<Uuid> input_order;
   for (const auto& relation : graph.relations) {
     relation_uuids.push_back(relation.relation_uuid);
     input_order.push_back(relation.relation_uuid);
   }
-  return AcceptedRoute("join:inner:equi:" + JoinSorted(relation_uuids, ","),
+  return AcceptedRoute("join:inner:equi:" + JoinSorted(IdentityEvidence(relation_uuids), ","),
                        "inner_join_semantic_result",
-                       {"baseline_order=" + JoinInOrder(input_order, ","),
+                       {"baseline_order=" + JoinInOrder(IdentityEvidence(input_order), ","),
                         "reorder_applied=false",
                         "baseline_route=semantic_reference"});
 }
 
 OptimizerRouteEvidence JoinRefusalRoute(const JoinGraph& graph,
                                         const JoinOrderPlan& order) {
-  std::vector<std::string> input_order;
+  std::vector<Uuid> input_order;
   for (const auto& relation : graph.relations) input_order.push_back(relation.relation_uuid);
   const bool order_preserved = order.ordered_relation_uuids == input_order;
+  if (!order.ok || !order_preserved || !order.semantic_order_preserved)
+    return RefusedRoute("fixture.join_order_contract_violated", {});
   std::vector<std::string> evidence = {
       "join_reorder_allowed=false",
       "input_order_preserved=" + std::string(order_preserved ? "true" : "false"),
@@ -463,9 +506,9 @@ OptimizerRouteEvidence PredicateIndexRoute(const PredicateIndexMatchRequest& req
   const auto match = MatchPredicateToIndex(request);
   if (!match.matches) {
     return RefusedRoute(JoinSorted(match.refusal_reasons, "+"),
-                        {"index_uuid=" + request.index.index_uuid});
+                        {"index_uuid=" + IdentityEvidence(request.index.index_uuid)});
   }
-  return AcceptedRoute("index:" + request.index.index_uuid + ":predicate:" +
+  return AcceptedRoute("index:" + IdentityEvidence(request.index.index_uuid) + ":predicate:" +
                            match.canonical_predicate_digest,
                        "index_access_semantic_result",
                        match.acceptance_reasons);
@@ -537,7 +580,7 @@ OptimizerDifferentialCaseResult RunJoinCase(
   }
   const auto graph = BarrierJoinGraph(test_case);
   const auto order = EnumerateDeterministicJoinOrder(graph, 8 * 1024 * 1024);
-  return CompareRoutes(test_case, JoinRefusalRoute(graph, order),
+  return CompareRoutes(test_case, ExpectedRefusal(test_case),
                        JoinRefusalRoute(graph, order));
 }
 
@@ -556,7 +599,7 @@ OptimizerDifferentialCaseResult RunRewriteCase(
     input.base_row_security_recheck_planned = false;
     input.mga_compatible = false;
     input.estimated_rewrite_cost = input.estimated_base_cost;
-    return CompareRoutes(test_case, SummaryRewriteRoute(input),
+    return CompareRoutes(test_case, ExpectedRefusal(test_case),
                          SummaryRewriteRoute(input));
   }
   if (test_case.case_id == "rewrite_cse_proof_equivalence") {
@@ -570,7 +613,7 @@ OptimizerDifferentialCaseResult RunRewriteCase(
   input.base_row_security_recheck_planned = false;
   input.estimated_reuse_cost = input.estimated_recompute_cost;
   input.terms = {SafeTerm("expr.single", "digest.single:v1")};
-  return CompareRoutes(test_case, CseRewriteRoute(input), CseRewriteRoute(input));
+  return CompareRoutes(test_case, ExpectedRefusal(test_case), CseRewriteRoute(input));
 }
 
 OptimizerDifferentialCaseResult RunCacheCase(
@@ -589,13 +632,13 @@ OptimizerDifferentialCaseResult RunCacheCase(
   } else {
     input.route_capability_digest = "route:remote-pushdown:v1";
   }
-  return CompareRoutes(test_case, CacheLookupRoute(input), CacheLookupRoute(input));
+  return CompareRoutes(test_case, ExpectedRefusal(test_case), CacheLookupRoute(input));
 }
 
 OptimizerDifferentialCaseResult RunAccessPathCase(
     const OptimizerDifferentialCase& test_case) {
-  const std::string relation_uuid = "rel.odf027.access";
-  auto index = BaseIndex(relation_uuid, "idx.odf027.functional.lower_name.active");
+  const Uuid relation_uuid = kFixture9;
+  auto index = BaseIndex(relation_uuid, kFixture10);
   index.expression_index = true;
   index.key_expression_digests = {CanonicalizeExpressionText("lower(customer_name)").digest};
   index.partial = true;
@@ -620,13 +663,13 @@ OptimizerDifferentialCaseResult RunAccessPathCase(
     request.base_row_mga_recheck_planned = false;
     request.base_row_security_recheck_planned = true;
     request.index = index;
-    return CompareRoutes(test_case, PredicateIndexRoute(request),
+    return CompareRoutes(test_case, ExpectedRefusal(test_case),
                          PredicateIndexRoute(request));
   }
 
   OptimizerPartitionSegmentPruneRequest request;
   request.requested = true;
-  request.relation_uuid = relation_uuid;
+  request.relation_uuid = "rel.odf027.access"; // Existing legacy pruning carrier, migrated separately.
   request.predicate = PrunePredicate();
   request.base_row_mga_recheck_planned =
       test_case.case_id != "access_path_pruning_recheck_exact_refusal";
@@ -640,94 +683,152 @@ OptimizerDifferentialCaseResult RunAccessPathCase(
     return CompareRoutes(test_case, PartitionBaselineRoute(request),
                          PartitionPruneRoute(request));
   }
-  return CompareRoutes(test_case, PartitionPruneRoute(request),
+  return CompareRoutes(test_case, ExpectedRefusal(test_case),
                        PartitionPruneRoute(request));
 }
 
 }  // namespace
 
+OptimizerDifferentialCaseResult CompareOptimizerDifferentialRoutes(
+    OptimizerDifferentialCase test_case, OptimizerRouteEvidence baseline,
+    OptimizerRouteEvidence optimized) {
+  return CompareRoutes(std::move(test_case), std::move(baseline), std::move(optimized));
+}
+
 std::vector<OptimizerDifferentialCase> GenerateOptimizerDifferentialFuzzCorpus() {
   return {
       {"predicate_commuted_equality_equivalence",
        OptimizerDifferentialCaseClass::kPredicateEquivalence,
-       "commuted equality plus boolean predicate canonical digest equivalence"},
+       "commuted equality plus boolean predicate canonical digest equivalence",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"predicate_and_or_flatten_reorder_equivalence",
        OptimizerDifferentialCaseClass::kPredicateEquivalence,
-       "AND/OR flatten and reorder canonical digest equivalence"},
+       "AND/OR flatten and reorder canonical digest equivalence",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"predicate_double_not_equivalence",
        OptimizerDifferentialCaseClass::kPredicateEquivalence,
-       "double-NOT boolean canonical digest equivalence"},
+       "double-NOT boolean canonical digest equivalence",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"expression_digest_equivalence",
        OptimizerDifferentialCaseClass::kPredicateEquivalence,
-       "expression digest equivalence independent of raw text shape"},
+       "expression digest equivalence independent of raw text shape",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"join_inner_reorder_accepted_equivalence",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "inner join reorder keeps the same join semantic result class"},
+       "inner join reorder keeps the same join semantic result class",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"join_outer_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "outer join reorder has exact semantic-barrier refusal"},
+       "outer join reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_OUTER_JOIN"},
       {"join_semi_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "semi join reorder has exact semantic-barrier refusal"},
+       "semi join reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_SEMI_JOIN+SB_OPT_JOIN_ORDER_PRESERVED_SEMI_OR_ANTI_JOIN"},
       {"join_anti_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "anti join reorder has exact semantic-barrier refusal"},
+       "anti join reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_ANTI_JOIN+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_SEMI_OR_ANTI_JOIN"},
       {"join_correlation_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "correlation reorder has exact semantic-barrier refusal"},
+       "correlation reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_CORRELATION"},
       {"join_lateral_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "lateral dependency reorder has exact semantic-barrier refusal"},
+       "lateral dependency reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_LATERAL"},
       {"join_volatile_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "volatile predicate reorder has exact semantic-barrier refusal"},
+       "volatile predicate reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_VOLATILE"},
       {"join_explicit_barrier_exact_refusal",
        OptimizerDifferentialCaseClass::kJoinOrderBarrier,
-       "explicit barrier reorder has exact semantic-barrier refusal"},
+       "explicit barrier reorder has exact semantic-barrier refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_JOIN_INPUT_ORDER_SELECTED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_BY_SEMANTIC_BARRIER+SB_OPT_JOIN_ORDER_PRESERVED_EXPLICIT_BARRIER"},
       {"rewrite_materialized_summary_proof_equivalence",
        OptimizerDifferentialCaseClass::kRewriteProof,
-       "materialized summary rewrite accepted only with proof and rechecks"},
+       "materialized summary rewrite accepted only with proof and rechecks",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"rewrite_materialized_summary_exact_refusal",
        OptimizerDifferentialCaseClass::kRewriteProof,
-       "unsafe materialized summary rewrite exact refusal"},
+       "unsafe materialized summary rewrite exact refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_REWRITE_BASE_ROW_MGA_RECHECK_MISSING+SB_OPT_REWRITE_BASE_ROW_SECURITY_RECHECK_MISSING+SB_OPT_REWRITE_EQUIVALENCE_PROOF_MISSING+SB_OPT_REWRITE_MGA_INCOMPATIBLE_STATE+SB_OPT_REWRITE_NO_BENEFIT+SB_OPT_REWRITE_SUMMARY_STALE"},
       {"rewrite_cse_proof_equivalence",
        OptimizerDifferentialCaseClass::kRewriteProof,
-       "deterministic common subexpression reuse accepted with proof"},
+       "deterministic common subexpression reuse accepted with proof",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"rewrite_cse_exact_refusal",
        OptimizerDifferentialCaseClass::kRewriteProof,
-       "unsafe common subexpression reuse exact refusal"},
+       "unsafe common subexpression reuse exact refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPT_REWRITE_BASE_ROW_MGA_RECHECK_MISSING+SB_OPT_REWRITE_BASE_ROW_SECURITY_RECHECK_MISSING+SB_OPT_REWRITE_EQUIVALENCE_PROOF_MISSING+SB_OPT_REWRITE_MGA_INCOMPATIBLE_STATE+SB_OPT_REWRITE_NO_BENEFIT+SB_OPT_REWRITE_NO_COMMON_EXPRESSION"},
       {"plan_cache_equivalent_shape_hit",
        OptimizerDifferentialCaseClass::kPlanCacheShape,
-       "equivalent plan-cache shape reuses metadata-only plan safely"},
+       "equivalent plan-cache shape reuses metadata-only plan safely",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"plan_cache_parameter_shape_exact_refusal",
        OptimizerDifferentialCaseClass::kPlanCacheShape,
-       "changed parameter shape exact cache refusal"},
+       "changed parameter shape exact cache refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPTIMIZER_PLAN_CACHE_INCOMPATIBLE_PARAMETER_SHAPE"},
       {"plan_cache_security_redaction_exact_refusal",
        OptimizerDifferentialCaseClass::kPlanCacheShape,
-       "changed security/redaction shape exact cache refusal"},
+       "changed security/redaction shape exact cache refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPTIMIZER_PLAN_CACHE_REDACTION_SECURITY_POLICY_MISMATCH"},
       {"plan_cache_memory_shape_exact_refusal",
        OptimizerDifferentialCaseClass::kPlanCacheShape,
-       "changed memory shape exact cache refusal"},
+       "changed memory shape exact cache refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPTIMIZER_PLAN_CACHE_MEMORY_GRANT_MISMATCH"},
       {"plan_cache_route_shape_exact_refusal",
        OptimizerDifferentialCaseClass::kPlanCacheShape,
-       "changed route capability exact cache refusal"},
+       "changed route capability exact cache refusal",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "SB_OPTIMIZER_PLAN_CACHE_ROUTE_CAPABILITY_MISMATCH"},
       {"access_path_predicate_index_equivalence",
        OptimizerDifferentialCaseClass::kAccessPathMetadata,
-       "equivalent predicate/index combinations preserve semantic result"},
+       "equivalent predicate/index combinations preserve semantic result",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"access_path_missing_recheck_exact_refusal",
        OptimizerDifferentialCaseClass::kAccessPathMetadata,
-       "metadata-only index match refuses without MGA recheck"},
+       "metadata-only index match refuses without MGA recheck",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "metadata_match_only_mga_visibility_recheck_missing+partial_predicate_mga_recheck_missing+partial_predicate_not_proven"},
       {"access_path_pruning_advisory_equivalence",
        OptimizerDifferentialCaseClass::kAccessPathMetadata,
-       "partition pruning metadata is advisory with MGA/security recheck"},
+       "partition pruning metadata is advisory with MGA/security recheck",
+       OptimizerDifferentialOutcome::kAcceptedEquivalent},
       {"access_path_pruning_recheck_exact_refusal",
        OptimizerDifferentialCaseClass::kAccessPathMetadata,
-       "partition pruning refuses exactly without rechecks"},
+       "partition pruning refuses exactly without rechecks",
+       OptimizerDifferentialOutcome::kExactRefusalEquivalent,
+       "partition_scanned_mga_recheck_missing+partition_scanned_mga_recheck_missing+partition_segment_prune_mga_recheck_missing+partition_segment_prune_security_recheck_missing"},
   };
 }
 
 OptimizerDifferentialCaseResult RunOptimizerDifferentialFuzzCase(
     const OptimizerDifferentialCase& test_case) {
+  const auto corpus = GenerateOptimizerDifferentialFuzzCorpus();
+  const auto known = std::find_if(corpus.begin(), corpus.end(), [&](const auto& value) {
+    return value.case_id == test_case.case_id && value.case_class == test_case.case_class &&
+        value.expected_outcome == test_case.expected_outcome &&
+        value.expected_refusal_diagnostic == test_case.expected_refusal_diagnostic;
+  });
+  if (known == corpus.end()) {
+    OptimizerDifferentialCaseResult result;
+    result.test_case = test_case;
+    result.mismatch_reason = "unknown_or_modified_case_contract";
+    return result;
+  }
   switch (test_case.case_class) {
     case OptimizerDifferentialCaseClass::kPredicateEquivalence:
       return RunPredicateCase(test_case);

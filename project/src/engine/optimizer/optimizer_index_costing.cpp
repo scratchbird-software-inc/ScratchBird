@@ -367,7 +367,8 @@ const char* EnterpriseIndexAccessIntentName(EnterpriseIndexAccessIntent intent) 
 
 EnterpriseIndexCostResult EstimateEnterpriseIndexAccessCost(
     const EnterpriseIndexCostRequest& request) {
-  if (request.index.index_uuid.empty() || request.index.index_family.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.index.index_uuid) ||
+      request.index.index_family.empty()) {
     return Refuse(request,
                   "SB_OPT_INDEX_COST_IDENTITY_REQUIRED",
                   "index identity required");

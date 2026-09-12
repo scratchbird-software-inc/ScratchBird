@@ -716,6 +716,30 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_full_statistics_binary_store PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_differential_metadata_boundary
+    ../optimizer/optimizer_deficiency_odf_027_gate.cpp
+    ../optimizer/fixtures/optimizer_differential_fuzz.cpp
+    ../../src/engine/optimizer/predicate_normalization.cpp
+    ../../src/engine/optimizer/join_planner_full.cpp
+    ../../src/engine/optimizer/partition_segment_pruning.cpp
+    ../../src/engine/optimizer/optimizer_rewrite.cpp
+    ../../src/engine/optimizer/optimizer_barrier.cpp
+    ../../src/engine/optimizer/optimizer_plan_cache.cpp
+    ../../src/engine/optimizer/access_path_full.cpp)
+  target_compile_features(sbsql_sblr_alignment_differential_metadata_boundary PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_differential_metadata_boundary PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_differential_metadata_boundary PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_differential_metadata_boundary PRIVATE
+    ../optimizer/fixtures
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_differential_metadata_boundary PRIVATE
+    sbsql_sblr_alignment_access_statistics_component sb_core_hash sb_core_index)
+  add_test(NAME sbsql_sblr_alignment_differential_metadata_boundary
+    COMMAND sbsql_sblr_alignment_differential_metadata_boundary)
+  set_tests_properties(sbsql_sblr_alignment_differential_metadata_boundary PROPERTIES
+    LABELS "sbsql_sblr_alignment;optimizer;metadata_only;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_binary_join_search
     ../optimizer/optimizer_planner_opch_join_gate.cpp
     ../../src/engine/optimizer/join_planner_full.cpp

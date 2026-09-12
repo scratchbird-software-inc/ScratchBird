@@ -1206,7 +1206,9 @@ set_tests_properties(optimizer_enterprise_metric_manifest_gate PROPERTIES
 add_executable(
   optimizer_deficiency_odf_027_gate
   optimizer_deficiency_odf_027_gate.cpp
+  fixtures/optimizer_differential_fuzz.cpp
 )
+target_include_directories(optimizer_deficiency_odf_027_gate PRIVATE fixtures)
 target_compile_features(optimizer_deficiency_odf_027_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_deficiency_odf_027_gate
@@ -1218,7 +1220,7 @@ add_test(
   COMMAND optimizer_deficiency_odf_027_gate
 )
 set_tests_properties(optimizer_deficiency_odf_027_gate PROPERTIES
-  LABELS "optimizer_deficiency_odf_027_gate;ODF-027;optimizer_deficiency;optimizer;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_odf_027_gate;ODF-027;optimizer_deficiency;optimizer;component_regression;metadata_only;not_runtime_acceptance"
 )
 
 add_executable(

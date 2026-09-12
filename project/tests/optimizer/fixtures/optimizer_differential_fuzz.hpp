@@ -8,6 +8,9 @@
 
 #pragma once
 
+// Test-only metadata differential corpus. This is not an execution oracle or
+// engine API, and matching metadata does not establish SQL/MGA equivalence.
+
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -34,6 +37,8 @@ struct OptimizerDifferentialCase {
   OptimizerDifferentialCaseClass case_class =
       OptimizerDifferentialCaseClass::kPredicateEquivalence;
   std::string summary;
+  OptimizerDifferentialOutcome expected_outcome = OptimizerDifferentialOutcome::kMismatch;
+  std::string expected_refusal_diagnostic;
 };
 
 struct OptimizerRouteEvidence {
@@ -58,6 +63,11 @@ struct OptimizerDifferentialFuzzReport {
   std::size_t exact_refusal_equivalent_count = 0;
   std::size_t mismatch_count = 0;
 };
+
+OptimizerDifferentialCaseResult CompareOptimizerDifferentialRoutes(
+    OptimizerDifferentialCase test_case,
+    OptimizerRouteEvidence baseline,
+    OptimizerRouteEvidence optimized);
 
 std::vector<OptimizerDifferentialCase> GenerateOptimizerDifferentialFuzzCorpus();
 OptimizerDifferentialCaseResult RunOptimizerDifferentialFuzzCase(

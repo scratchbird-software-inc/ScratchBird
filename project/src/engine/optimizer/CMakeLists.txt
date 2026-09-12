@@ -152,7 +152,6 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     model_family_coordinator.cpp
     model_family_profile_factory.cpp
     optimizer_cost_full.cpp
-    optimizer_differential_fuzz.cpp
     optimizer_driver_explain_compatibility.cpp
     optimizer_explain.cpp
     optimizer_feedback.cpp

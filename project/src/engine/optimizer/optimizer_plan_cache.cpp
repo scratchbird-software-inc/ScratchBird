@@ -99,7 +99,8 @@ bool IsPlaceholderPlanCacheValue(const std::string& value) {
          value.find("placeholder") != std::string::npos;
 }
 
-bool SortedVectorsDiffer(std::vector<std::string> left, std::vector<std::string> right) {
+template<class T>
+bool SortedVectorsDiffer(std::vector<T> left, std::vector<T> right) {
   std::sort(left.begin(), left.end());
   left.erase(std::unique(left.begin(), left.end()), left.end());
   std::sort(right.begin(), right.end());
@@ -266,41 +267,40 @@ std::string CanonicalPlanKeyPayload(const OptimizerPlanCacheKeyInput& input) {
 }
 
 std::string CanonicalPersistencePayload(const OptimizerPlanCachePersistenceEnvelope& envelope) {
-  std::ostringstream out;
-  out << "schema=" << envelope.schema_version
-      << "|source=" << envelope.persistence_source
-      << "|storage_scope=" << envelope.request.storage_scope_uuid
-      << "|principal=" << envelope.request.persisted_by_principal_uuid
-      << "|persisted_epoch=" << envelope.request.persisted_epoch
-      << "|catalog_epoch=" << envelope.request.catalog_epoch
-      << "|stats_epoch=" << envelope.request.stats_epoch
-      << "|security_epoch=" << envelope.request.security_epoch
-      << "|redaction_epoch=" << envelope.request.redaction_epoch
-      << "|policy_epoch=" << envelope.request.policy_epoch
-      << "|resource_epoch=" << envelope.request.resource_epoch
-      << "|route_epoch=" << envelope.request.route_epoch
-      << "|memory_policy_epoch=" << envelope.request.memory_policy_epoch
-      << "|memory_feedback_generation=" << envelope.request.memory_feedback_generation
-      << "|durable_catalog=" << (envelope.request.durable_catalog_persistence ? 1 : 0)
-      << "|mga_committed=" << (envelope.request.mga_transaction_committed ? 1 : 0)
-      << "|security_redaction_evidence="
-      << (envelope.request.security_redaction_evidence_present ? 1 : 0)
-      << "|fixture=" << (envelope.request.fixture_or_test_only ? 1 : 0)
-      << "|cluster_projection="
-      << (envelope.request.cluster_route_projection_present ? 1 : 0);
-  std::vector<std::string> plan_payloads;
-  plan_payloads.reserve(envelope.plans.size());
+  planner::CanonicalPlannerBindingBytes out("optimizer-plan-cache-persistence-v2");
+  out.Number(envelope.schema_version);
+  out.Text(envelope.persistence_source);
+  out.Identity(envelope.request.storage_scope_uuid);
+  out.Identity(envelope.request.persisted_by_principal_uuid);
+  out.Number(envelope.request.persisted_epoch);
+  out.Number(envelope.request.catalog_epoch);
+  out.Number(envelope.request.stats_epoch);
+  out.Number(envelope.request.security_epoch);
+  out.Number(envelope.request.redaction_epoch);
+  out.Number(envelope.request.policy_epoch);
+  out.Number(envelope.request.resource_epoch);
+  out.Number(envelope.request.route_epoch);
+  out.Number(envelope.request.memory_policy_epoch);
+  out.Number(envelope.request.memory_feedback_generation);
+  out.Flag(envelope.request.durable_catalog_persistence);
+  out.Flag(envelope.request.mga_transaction_committed);
+  out.Flag(envelope.request.security_redaction_evidence_present);
+  out.Flag(envelope.request.fixture_or_test_only);
+  out.Flag(envelope.request.cluster_route_projection_present);
+  std::vector<std::string> records;
   for (const auto& plan : envelope.plans) {
-    std::ostringstream plan_out;
-    plan_out << plan.cache_key
-             << "|plan_id=" << plan.result.plan_id
-             << "|diagnostic=" << plan.result.diagnostic_code
-             << "|created_epoch=" << plan.created_epoch
-             << "|key=" << CanonicalPlanKeyPayload(plan.key_input);
-    plan_payloads.push_back(plan_out.str());
+    planner::CanonicalPlannerBindingBytes record("optimizer-persisted-plan-v2");
+    record.Text(plan.cache_key);
+    record.Text(plan.result.plan_id);
+    record.Text(plan.result.diagnostic_code);
+    record.Number(plan.created_epoch);
+    record.Text(CanonicalPlanKeyPayload(plan.key_input));
+    records.push_back(std::move(record).Take());
   }
-  AppendSorted(out, "plans", std::move(plan_payloads));
-  return out.str();
+  std::sort(records.begin(), records.end());
+  out.Number(records.size());
+  for (const auto& record : records) out.Text(record);
+  return std::move(out).Take();
 }
 
 OptimizerPlanCacheEnterpriseValidation ValidatePersistenceEnvelope(
@@ -318,11 +318,11 @@ OptimizerPlanCacheEnterpriseValidation ValidatePersistenceEnvelope(
     AddValidationFailure(&validation, kDiagEnterprisePersistenceUnsafe,
                          "enterprise_plan_cache_persistence_source_not_catalog");
   }
-  if (envelope.request.storage_scope_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(envelope.request.storage_scope_uuid)) {
     AddValidationFailure(&validation, kDiagEnterprisePersistenceUnsafe,
                          "enterprise_plan_cache_storage_scope_missing");
   }
-  if (envelope.request.persisted_by_principal_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(envelope.request.persisted_by_principal_uuid)) {
     AddValidationFailure(&validation, kDiagEnterprisePersistenceUnsafe,
                          "enterprise_plan_cache_persisting_principal_missing");
   }
@@ -408,39 +408,47 @@ std::string BuildNormalizedOptimizerPolicyControlDigest(
 }
 
 std::string BuildOptimizerPlanCacheKey(const OptimizerPlanCacheKeyInput& input) {
-  std::ostringstream out;
-  out << "op=" << input.operation_id
-      << "|sblr=" << input.sblr_digest
-      << "|desc=" << input.descriptor_set_digest
-      << "|stats=" << input.statistics_snapshot_id
-      << "|catalog_stats=" << input.catalog_stats_digest
-      << "|cost=" << input.cost_profile_id
-      << "|exec=" << input.executor_capability_set_id
-      << "|route_cap=" << input.route_capability_digest
-      << "|security_policy=" << input.security_policy_digest
-      << "|redaction_route=" << input.redaction_route_digest
-      << "|optimizer_controls=" << input.normalized_optimizer_controls_digest
-      << "|param_shape=" << input.parameter_shape_digest
-      << "|memory_grant_class=" << input.memory_grant_class
-      << "|memory_grant=" << input.memory_grant_digest
-      << "|catalog_epoch=" << input.catalog_epoch
-      << "|stats_epoch=" << input.stats_epoch
-      << "|security_epoch=" << input.security_epoch
-      << "|redaction_epoch=" << input.redaction_epoch
-      << "|policy_epoch=" << input.policy_epoch
-      << "|resource_epoch=" << input.resource_epoch
-      << "|name_resolution_epoch=" << input.name_resolution_epoch
-      << "|memory_policy_epoch=" << input.memory_policy_epoch
-      << "|memory_feedback_generation=" << input.memory_feedback_generation
-      << "|compatibility_epoch=" << input.compatibility_epoch
-      << "|format_compatibility_epoch=" << input.format_compatibility_epoch
-      << "|route_epoch=" << input.route_epoch;
-  AppendSorted(out, "objects", input.object_uuids);
-  AppendSorted(out, "functions", input.function_uuids);
-  AppendSorted(out, "indexes", input.index_uuids);
-  AppendSorted(out, "filespaces", input.filespace_uuids);
-  AppendSorted(out, "dependency_digests", input.dependency_digests);
-  return out.str();
+  planner::CanonicalPlannerBindingBytes out("optimizer-plan-cache-key-v2");
+  out.Text(input.operation_id);
+  out.Text(input.sblr_digest);
+  out.Text(input.descriptor_set_digest);
+  out.Text(input.statistics_snapshot_id);
+  out.Text(input.catalog_stats_digest);
+  out.Text(input.cost_profile_id);
+  out.Text(input.executor_capability_set_id);
+  out.Text(input.route_capability_digest);
+  out.Text(input.security_policy_digest);
+  out.Text(input.redaction_route_digest);
+  out.Text(input.normalized_optimizer_controls_digest);
+  out.Text(input.parameter_shape_digest);
+  out.Text(input.memory_grant_class);
+  out.Text(input.memory_grant_digest);
+  out.Number(input.catalog_epoch);
+  out.Number(input.stats_epoch);
+  out.Number(input.security_epoch);
+  out.Number(input.redaction_epoch);
+  out.Number(input.policy_epoch);
+  out.Number(input.resource_epoch);
+  out.Number(input.name_resolution_epoch);
+  out.Number(input.memory_policy_epoch);
+  out.Number(input.memory_feedback_generation);
+  out.Number(input.compatibility_epoch);
+  out.Number(input.format_compatibility_epoch);
+  out.Number(input.route_epoch);
+  for (const auto* source : {&input.object_uuids, &input.function_uuids,
+                            &input.index_uuids, &input.filespace_uuids}) {
+    auto identities = *source;
+    std::sort(identities.begin(), identities.end());
+    identities.erase(std::unique(identities.begin(), identities.end()), identities.end());
+    out.Number(identities.size());
+    for (const auto& identity : identities) out.Identity(identity);
+  }
+  auto dependencies = input.dependency_digests;
+  std::sort(dependencies.begin(), dependencies.end());
+  dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+  out.Number(dependencies.size());
+  for (const auto& value : dependencies) out.Text(value);
+  return std::move(out).Take();
 }
 
 OptimizerPlanCacheEnterpriseValidation ValidateEnterpriseOptimizerPlanCacheKeyInput(
@@ -448,6 +456,16 @@ OptimizerPlanCacheEnterpriseValidation ValidateEnterpriseOptimizerPlanCacheKeyIn
   OptimizerPlanCacheEnterpriseValidation validation;
   validation.ok = true;
   validation.diagnostic_code = kDiagEnterpriseOk;
+
+  for (const auto* identities : {&input.object_uuids, &input.function_uuids,
+                                 &input.index_uuids, &input.filespace_uuids}) {
+    if (!std::ranges::all_of(*identities, [](const auto& value) {
+          return scratchbird::core::uuid::IsEngineIdentityUuid(value);
+        })) {
+      AddValidationFailure(&validation, kDiagEnterpriseKeyIncomplete,
+                           "enterprise_plan_cache_dependency_identity_invalid");
+    }
+  }
 
   const std::vector<std::pair<const char*, std::string>> required_strings = {
       {"operation_id", input.operation_id},
@@ -581,10 +599,10 @@ std::uint64_t EpochOrFallback(std::uint64_t value, std::uint64_t fallback) {
 
 OptimizerPlanCacheKeyInput BuildOptimizerPlanCacheKeyInput(const BoundOptimizerRequest& request,
                                                            std::string cost_profile_id,
-                                                           std::vector<std::string> object_uuids,
-                                                           std::vector<std::string> function_uuids,
-                                                           std::vector<std::string> index_uuids,
-                                                           std::vector<std::string> filespace_uuids) {
+                                                           std::vector<internal_api::EngineUuid> object_uuids,
+                                                           std::vector<internal_api::EngineUuid> function_uuids,
+                                                           std::vector<internal_api::EngineUuid> index_uuids,
+                                                           std::vector<internal_api::EngineUuid> filespace_uuids) {
   OptimizerPlanCacheKeyInput input;
   input.operation_id = request.context.operation_id;
   input.sblr_digest = request.context.sblr_digest;
@@ -737,7 +755,7 @@ void OptimizerPlanCache::Put(CachedOptimizerPlan plan) {
   plan.invalidated_by_dependency = false;
   plan.invalidation_diagnostic_code.clear();
   plan.invalidation_event_kind.clear();
-  plan.invalidation_dependency_uuid.clear();
+  plan.invalidation_dependency_uuid = {};
   plans_[plan.cache_key] = std::move(plan);
   ++stats_.puts;
 }
@@ -774,14 +792,17 @@ OptimizerPlanCacheEnterpriseValidation OptimizerPlanCache::PutEnterpriseGoverned
     return validation;
   }
   governance.scope.plan_cache_key = plan.cache_key;
-  if (governance.scope.database_id.empty()) {
+  if (governance.scope.database_id.is_nil()) {
     AddValidationFailure(&validation,
                          "SB_OPTIMIZER_PLAN_CACHE_MEMORY_SCOPE_REQUIRED",
                          "optimizer_plan_cache_database_scope_required");
     return validation;
   }
-  if (governance.scope.session_id.empty()) {
-    governance.scope.session_id = "optimizer-plan-cache-global-session";
+  if (governance.scope.session_id.is_nil()) {
+    AddValidationFailure(&validation,
+                         "SB_OPTIMIZER_PLAN_CACHE_MEMORY_SCOPE_REQUIRED",
+                         "optimizer_plan_cache_session_scope_required");
+    return validation;
   }
   if (governance.epochs.catalog_epoch == 0) {
     governance.epochs.catalog_epoch = plan.key_input.catalog_epoch;
@@ -819,7 +840,13 @@ OptimizerPlanCacheEnterpriseValidation OptimizerPlanCache::PutEnterpriseGoverned
   lease.epochs = governance.epochs;
   lease.provenance = governance.provenance;
   lease.memory_class = "ceic_020.optimizer_plan_cache";
-  lease.owner_id = "optimizer.plan_cache:" + plan.cache_key;
+  const auto owner = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!owner) {
+    AddValidationFailure(&validation, "SB_OPTIMIZER_PLAN_CACHE_MEMORY_SCOPE_REQUIRED",
+                         "optimizer_plan_cache_owner_issuance_failed");
+    return validation;
+  }
+  lease.owner_id = *owner;
   lease.route_label = plan.key_input.operation_id;
   lease.requested_bytes = governance.estimated_plan_bytes;
   lease.cluster_route_requested = governance.cluster_route_requested;
@@ -838,18 +865,19 @@ OptimizerPlanCacheEnterpriseValidation OptimizerPlanCache::PutEnterpriseGoverned
   plan.memory_governed = true;
   plan.memory_reserved_bytes = governance.estimated_plan_bytes;
   plan.memory_lease_id = acquired.lease_id;
+  plan.memory_owner_uuid = *owner;
   plan.memory_scope = governance.scope;
   plan.memory_governance_evidence = acquired.evidence;
-  std::string prior_lease_id;
+  internal_api::EngineUuid prior_lease_id;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto existing = plans_.find(plan.cache_key);
     if (existing != plans_.end() && existing->second.memory_governed &&
-        !existing->second.memory_lease_id.empty()) {
+        !existing->second.memory_lease_id.is_nil()) {
       prior_lease_id = existing->second.memory_lease_id;
     }
   }
-  if (!prior_lease_id.empty()) {
+  if (!prior_lease_id.is_nil()) {
     auto released_prior = governance.governor->Release(
         prior_lease_id,
         memory::ResultCursorPlanMemoryReleaseReason::eviction);
@@ -870,8 +898,7 @@ OptimizerPlanCacheEnterpriseValidation OptimizerPlanCache::PutEnterpriseGoverned
   }
   Put(std::move(plan));
   validation.evidence.push_back("CEIC-020_OPTIMIZER_PLAN_CACHE_MEMORY_GOVERNED");
-  validation.evidence.push_back("optimizer_plan_cache_memory_lease_id=" +
-                                acquired.lease_id);
+  validation.evidence.push_back("optimizer_plan_cache_memory_lease_retained=true");
   validation.evidence.insert(validation.evidence.end(),
                              acquired.evidence.begin(),
                              acquired.evidence.end());
@@ -931,8 +958,8 @@ OptimizerPlanCacheLookupResult OptimizerPlanCache::Lookup(const OptimizerPlanCac
     if (!exact->second.invalidation_event_kind.empty()) {
       result.evidence.push_back("invalidation_kind=" + exact->second.invalidation_event_kind);
     }
-    if (!exact->second.invalidation_dependency_uuid.empty()) {
-      result.evidence.push_back("invalidation_dependency=" + exact->second.invalidation_dependency_uuid);
+    if (!exact->second.invalidation_dependency_uuid.is_nil()) {
+      result.evidence.push_back("invalidation_dependency_present=true");
     }
     return result;
   }
@@ -1032,8 +1059,8 @@ OptimizerPlanCacheInvalidationResult OptimizerPlanCache::InvalidateWithEvidence(
                                 ? "optimizer_plan_cache_invalidation"
                                 : "optimizer_plan_cache_unknown_invalidation_kind");
   result.evidence.push_back("invalidation_kind=" + event.event_kind);
-  if (!event.dependency_uuid.empty()) {
-    result.evidence.push_back("invalidation_dependency=" + event.dependency_uuid);
+  if (!event.dependency_uuid.is_nil()) {
+    result.evidence.push_back("invalidation_dependency_present=true");
   }
   for (auto& [key, plan] : plans_) {
     (void)key;
@@ -1054,11 +1081,11 @@ OptimizerPlanCacheInvalidationResult
 OptimizerPlanCache::InvalidateWithGovernedMemory(
     const OptimizerInvalidationEvent& event,
     memory::ResultCursorPlanMemoryGovernor* governor) {
-  std::vector<std::string> lease_ids;
+  std::vector<internal_api::EngineUuid> lease_ids;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [_, plan] : plans_) {
-      if (plan.valid && plan.memory_governed && !plan.memory_lease_id.empty() &&
+      if (plan.valid && plan.memory_governed && !plan.memory_lease_id.is_nil() &&
           OptimizerPlanDependsOnEvent(plan, event)) {
         lease_ids.push_back(plan.memory_lease_id);
       }
@@ -1088,7 +1115,7 @@ OptimizerPlanCache::InvalidateWithGovernedMemory(
 }
 
 OptimizerPlanCacheInvalidationResult OptimizerPlanCache::ShrinkGovernedMemory(
-    const std::string& database_id,
+    const internal_api::EngineUuid& database_id,
     std::uint64_t target_bytes,
     memory::ResultCursorPlanMemoryGovernor* governor) {
   OptimizerPlanCacheInvalidationResult result;
@@ -1189,7 +1216,7 @@ OptimizerPlanCacheEnterpriseValidation OptimizerPlanCache::ImportPersistenceEnve
     plan.invalidated_by_dependency = false;
     plan.invalidation_diagnostic_code.clear();
     plan.invalidation_event_kind.clear();
-    plan.invalidation_dependency_uuid.clear();
+    plan.invalidation_dependency_uuid = {};
     plans_[plan.cache_key] = std::move(plan);
   }
   stats_.puts += plans_.size();
@@ -1221,9 +1248,9 @@ bool OptimizerPlanDependsOnEvent(const CachedOptimizerPlan& plan, const Optimize
     return plan.cache_key.find("cluster") != std::string::npos || plan.cache_key.find("remote") != std::string::npos;
   }
   if (EventInvalidatesByDependency(event)) {
-    return event.dependency_uuid.empty() || PlanMentionsDependency(plan, event.dependency_uuid);
+    return event.dependency_uuid.is_nil() || PlanMentionsDependency(plan, event.dependency_uuid);
   }
-  if (event.dependency_uuid.empty()) { return false; }
+  if (event.dependency_uuid.is_nil()) { return false; }
   return PlanMentionsDependency(plan, event.dependency_uuid);
 }
 
@@ -1319,13 +1346,13 @@ std::string OptimizerInvalidationDiagnosticCode(const OptimizerInvalidationEvent
 }
 
 OptimizerInvalidationEvent OptimizerInvalidationEventForMutation(std::string mutation_source,
-                                                                 std::string dependency_uuid,
+                                                                 internal_api::EngineUuid dependency_uuid,
                                                                  std::uint64_t event_epoch) {
   OptimizerInvalidationEvent event;
   event.dependency_uuid = std::move(dependency_uuid);
   event.event_epoch = event_epoch;
   if (mutation_source == "catalog_object_create") {
-    event.event_kind = event.dependency_uuid.empty() ? "catalog_create_ambiguous_path" : "catalog_create";
+    event.event_kind = event.dependency_uuid.is_nil() ? "catalog_create_ambiguous_path" : "catalog_create";
   } else if (mutation_source == "catalog_object_alter") {
     event.event_kind = "catalog_alter";
   } else if (mutation_source == "catalog_object_drop") {

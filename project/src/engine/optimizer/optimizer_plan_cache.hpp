@@ -2736,7 +2736,8 @@ struct CachedOptimizerPlan {
   bool parser_or_reference_finality_authority = false;
   bool memory_governed = false;
   std::uint64_t memory_reserved_bytes = 0;
-  std::string memory_lease_id;
+  internal_api::EngineUuid memory_lease_id;
+  internal_api::EngineUuid memory_owner_uuid;
   memory::ResultCursorPlanMemoryScope memory_scope;
   std::vector<std::string> memory_governance_evidence;
 };
@@ -2867,7 +2868,7 @@ class OptimizerPlanCache {
       const OptimizerInvalidationEvent& event,
       memory::ResultCursorPlanMemoryGovernor* governor);
   OptimizerPlanCacheInvalidationResult ShrinkGovernedMemory(
-      const std::string& database_id,
+      const internal_api::EngineUuid& database_id,
       std::uint64_t target_bytes,
       memory::ResultCursorPlanMemoryGovernor* governor);
   OptimizerPlanCachePersistenceEnvelope ExportPersistenceEnvelope(

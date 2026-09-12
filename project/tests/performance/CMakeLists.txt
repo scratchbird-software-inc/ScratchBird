@@ -1295,7 +1295,9 @@ set_tests_properties(optimizer_runtime_hot_path_orh_100_110_111_gate PROPERTIES
 add_executable(
   optimizer_runtime_hot_path_orh_120_gate
   optimizer_runtime_hot_path_orh_120_gate.cpp
+  ../optimizer/fixtures/optimizer_differential_fuzz.cpp
 )
+target_include_directories(optimizer_runtime_hot_path_orh_120_gate PRIVATE ../optimizer/fixtures)
 target_compile_features(optimizer_runtime_hot_path_orh_120_gate PRIVATE cxx_std_23)
 target_link_libraries(
   optimizer_runtime_hot_path_orh_120_gate
@@ -1535,7 +1537,9 @@ set_tests_properties(optimizer_runtime_hot_path_orh_128_gate PROPERTIES
 add_executable(
   optimizer_runtime_hot_path_orh_129_gate
   optimizer_runtime_hot_path_orh_129_gate.cpp
+  ../optimizer/fixtures/optimizer_differential_fuzz.cpp
 )
+target_include_directories(optimizer_runtime_hot_path_orh_129_gate PRIVATE ../optimizer/fixtures)
 target_compile_features(optimizer_runtime_hot_path_orh_129_gate PRIVATE cxx_std_20)
 target_link_libraries(
   optimizer_runtime_hot_path_orh_129_gate
