@@ -59,6 +59,15 @@ std::string Golden(const c::CatalogCharsetRecord& r) {
   o.Field(20,2,Number(r.loaded_at_database_create,1));o.Field(21,2,Number(r.engine_owned,1));
   o.Field(22,1,Number(r.creator_transaction_number));return o.Finish();
 }
+std::string Golden(const c::CatalogResourceAliasRecord& r) {
+  Oracle o(65557);
+  o.Field(1,1,Number(r.family)); o.Field(2,3,r.alias); o.Field(3,3,r.canonical_name);
+  if(r.target_uuid)o.Field(4,5,Identity(*r.target_uuid));
+  o.Field(5,3,r.source_path);o.Field(6,1,Number(r.resource_epoch));o.Field(7,1,Number(r.family_epoch));
+  o.Field(8,3,r.family_version);o.Field(9,3,r.seed_pack_name);o.Field(10,3,r.seed_pack_version);
+  o.Field(11,2,Number(r.loaded_at_database_create,1));o.Field(12,2,Number(r.engine_owned,1));
+  o.Field(13,1,Number(r.creator_transaction_number));return o.Finish();
+}
 std::string Golden(const c::CatalogCollationRecord& r) {
   Oracle o(65558);
   o.Field(1,1,Number(2));o.Field(2,3,r.canonical_name);o.Field(3,5,Identity(r.resource_uuid));
@@ -163,6 +172,57 @@ int main() {
   bad_collation=collation;bad_collation.default_for_charset=false;g=graph;g[2].payload=Golden(bad_collation);
   Check(!c::ValidateCatalogResourceGraph(g),"false default target admitted");
   g=graph;g[1].payload=Golden(no_default);Check(!c::ValidateCatalogResourceGraph(g),"missing default back reference admitted");
+  c::CatalogResourceAliasRecord alias;
+  alias.alias="utf-8";alias.canonical_name=charset.canonical_name;alias.target_uuid=charset.resource_uuid;
+  alias.source_path=charset.source_path;alias.resource_epoch=charset.resource_epoch;alias.family_epoch=charset.family_epoch;
+  alias.family_version=charset.family_version;alias.seed_pack_name=charset.resource_seed_pack;alias.seed_pack_version=charset.resource_seed_version;
+  alias.loaded_at_database_create=true;alias.engine_owned=true;alias.creator_transaction_number=1;
+  for(unsigned family:{0,3,9,10}) {
+    auto a=alias;a.family=family;
+    const auto golden=Golden(a);
+    Check(Bytes(c::EncodeCatalogResourceAliasRecord(a))==golden,"alias independent byte oracle mismatch");
+    const auto decoded=c::DecodeCatalogResourceAliasRecord(golden);
+    Check(decoded.ok()&&Golden(*decoded.record)==golden,"alias value loss on decode");
+    for(std::size_t n=0;n<golden.size();++n)
+      Check(!c::DecodeCatalogResourceAliasRecord(golden.substr(0,n)).ok(),"truncated alias admitted");
+    std::vector<std::size_t> header_offsets;
+    for(std::size_t n=0;n<24;++n)header_offsets.push_back(n);
+    for(std::size_t pos=24;pos<golden.size();) {
+      for(std::size_t n=0;n<8;++n)header_offsets.push_back(pos+n);
+      const auto size=p::LoadLittle32(reinterpret_cast<const p::byte*>(golden.data()+pos+4));pos+=8+size;
+    }
+    for(const auto offset:header_offsets)for(unsigned value=0;value<256;++value) {
+      if(static_cast<unsigned char>(golden[offset])==value)continue;
+      auto damaged=golden;damaged[offset]=static_cast<char>(value);
+      const auto refused=c::DecodeCatalogResourceAliasRecord(damaged);
+      Check(!refused.ok()&&!refused.record,"mutated alias field header admitted");
+    }
+    Check(!c::DecodeCatalogResourceAliasRecord(golden+"x").ok(),"alias trailing bytes admitted");
+    auto invalid=a;
+    if(invalid.target_uuid)invalid.target_uuid.reset();else invalid.target_uuid=Id(1);
+    Check(!c::EncodeCatalogResourceAliasRecord(invalid).ok(),"alias identity presence mismatch admitted");
+    invalid=a;invalid.alias=std::string(130977,'a');Check(!c::EncodeCatalogResourceAliasRecord(invalid).ok(),"oversize alias admitted");
+    invalid=a;invalid.alias=std::string(1,char(0xff));Check(!c::EncodeCatalogResourceAliasRecord(invalid).ok(),"invalid alias UTF8 admitted");
+  }
+  auto invalid_alias=alias;invalid_alias.target_uuid->value.bytes[6]=0x40;
+  Check(!c::EncodeCatalogResourceAliasRecord(invalid_alias).ok(),"earlier UUID version admitted as alias target");
+  invalid_alias=alias;invalid_alias.target_uuid->kind=p::UuidKind::schema;
+  Check(!c::EncodeCatalogResourceAliasRecord(invalid_alias).ok(),"wrong alias target UUID kind admitted");
+  const auto alias_row=Header(c::CatalogRecordKind::charset_alias,{},Id(1),Golden(alias));
+  g=graph;g.push_back(alias_row);Check(c::ValidateCatalogResourceGraph(g),"valid binary alias graph refused");
+  g.back().header.parent_uuid=Id(2);Check(!c::ValidateCatalogResourceGraph(g),"alias parent mismatch admitted");
+  g=graph;auto bad_alias=alias;++bad_alias.family_epoch;g.push_back(alias_row);g.back().payload=Golden(bad_alias);
+  Check(!c::ValidateCatalogResourceGraph(g),"alias epoch mismatch admitted");
+  g=graph;g.push_back(alias_row);g.back().header.object_uuid=Id(5);
+  Check(!c::ValidateCatalogResourceGraph(g),"alias invented separate object identity");
+  auto zone=alias;zone.family=9;zone.alias="Etc/UTC";zone.canonical_name=zone.alias;zone.target_uuid=Id(5);
+  const auto zone_row=Header(c::CatalogRecordKind::timezone,Id(5),Id(3),Golden(zone));
+  g=graph;g.push_back(zone_row);Check(c::ValidateCatalogResourceGraph(g),"canonical timezone identity graph refused");
+  g.back().header.object_uuid=Id(6);Check(!c::ValidateCatalogResourceGraph(g),"timezone target/header mismatch admitted");
+  g=graph;g.push_back(zone_row);g.back().header.parent_uuid=Id(1);
+  Check(!c::ValidateCatalogResourceGraph(g),"timezone non-bundle parent admitted");
+  g=graph;g.push_back(zone_row);zone.alias="UTC";g.back().payload=Golden(zone);
+  Check(!c::ValidateCatalogResourceGraph(g),"timezone alias masqueraded as canonical descriptor");
   std::cout<<"catalog resource records checks="<<checks<<" failures="<<failures<<'\n';
   return failures?1:0;
 }

@@ -8,6 +8,16 @@
 
 namespace scratchbird::core::catalog {
 constexpr std::size_t kCatalogResourcePayloadMaxBytes = 130976;
+struct CatalogResourceAliasRecord {
+  u64 family = 0;
+  std::string alias, canonical_name;
+  std::optional<TypedUuid> target_uuid;
+  std::string source_path;
+  u64 resource_epoch = 0, family_epoch = 0;
+  std::string family_version, seed_pack_name, seed_pack_version;
+  bool loaded_at_database_create = false, engine_owned = false;
+  u64 creator_transaction_number = 0;
+};
 struct CatalogCharsetRecord {
   std::string canonical_name;
   TypedUuid resource_uuid;
@@ -47,6 +57,9 @@ template <typename Record> struct CatalogResourceDecodeResult {
   bool ok() const { return error == CatalogValueError::none && record.has_value(); }
 };
 const CatalogValueSchema& CatalogCharsetRecordSchema();
+const CatalogValueSchema& CatalogResourceAliasRecordSchema();
+CatalogValueEncodeResult EncodeCatalogResourceAliasRecord(const CatalogResourceAliasRecord& record);
+CatalogResourceDecodeResult<CatalogResourceAliasRecord> DecodeCatalogResourceAliasRecord(std::string_view bytes);
 const CatalogValueSchema& CatalogCollationRecordSchema();
 CatalogValueEncodeResult EncodeCatalogCharsetRecord(const CatalogCharsetRecord& record);
 CatalogValueEncodeResult EncodeCatalogCollationRecord(const CatalogCollationRecord& record);

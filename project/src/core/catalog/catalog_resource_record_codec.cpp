@@ -48,7 +48,8 @@ template <typename V> const V& Get(const CatalogValueDecodeResult& result, u16 i
   return std::get<V>(it->value);
 }
 bool ResourceKind(CatalogRecordKind kind) {
-  return kind == CatalogRecordKind::charset || kind == CatalogRecordKind::collation;
+  return kind == CatalogRecordKind::charset || kind == CatalogRecordKind::charset_alias ||
+      kind == CatalogRecordKind::collation || kind == CatalogRecordKind::timezone;
 }
 }  // namespace
 
@@ -66,6 +67,47 @@ const CatalogValueSchema& CatalogCharsetRecordSchema() {
       {18,T::utf8_text,true,kTextMax}, {19,T::utf8_text,true,kTextMax},
       {20,T::boolean,true,1}, {21,T::boolean,true,1}, {22,T::unsigned_integer,true,8}}};
   return schema;
+}
+const CatalogValueSchema& CatalogResourceAliasRecordSchema() {
+  static const CatalogValueSchema schema{65557,1,{
+      {1,T::unsigned_integer,true,8}, {2,T::utf8_text,true,kTextMax},
+      {3,T::utf8_text,true,kTextMax}, {4,T::engine_identity,true,16,UuidKind::object},
+      {5,T::utf8_text,true,kTextMax}, {6,T::unsigned_integer,true,8},
+      {7,T::unsigned_integer,true,8}, {8,T::utf8_text,true,kTextMax},
+      {9,T::utf8_text,true,kTextMax}, {10,T::utf8_text,true,kTextMax},
+      {11,T::boolean,true,1}, {12,T::boolean,true,1}, {13,T::unsigned_integer,true,8}}};
+  return schema;
+}
+namespace {
+bool Valid(const CatalogResourceAliasRecord& r) {
+  return (r.family == 0 || r.family == 3 || r.family == 9 || r.family == 10) && !r.alias.empty() &&
+      !r.canonical_name.empty() && !r.source_path.empty() && !r.seed_pack_name.empty() &&
+      !r.seed_pack_version.empty() && r.resource_epoch != 0 && r.creator_transaction_number != 0 &&
+      r.target_uuid.has_value() && r.family_epoch != 0 && !r.family_version.empty();
+}
+}
+CatalogValueEncodeResult EncodeCatalogResourceAliasRecord(const CatalogResourceAliasRecord& r) {
+  if (!Valid(r)) return {E::invalid_value,{}};
+  std::vector<CatalogValueField> fields{{1,r.family},{2,r.alias},{3,r.canonical_name}};
+  if (r.target_uuid) fields.push_back({4,*r.target_uuid});
+  const std::vector<CatalogValueField> tail{{5,r.source_path},{6,r.resource_epoch},{7,r.family_epoch},
+      {8,r.family_version},{9,r.seed_pack_name},{10,r.seed_pack_version},
+      {11,r.loaded_at_database_create},{12,r.engine_owned},{13,r.creator_transaction_number}};
+  fields.insert(fields.end(),tail.begin(),tail.end());
+  return Encode(CatalogResourceAliasRecordSchema(),fields);
+}
+CatalogResourceDecodeResult<CatalogResourceAliasRecord> DecodeCatalogResourceAliasRecord(std::string_view bytes) {
+  const auto d=Decode(CatalogResourceAliasRecordSchema(),bytes);
+  if (!d.ok()) return {d.error,{}};
+  CatalogResourceAliasRecord r;
+  r.family=Get<u64>(d,1); r.alias=Get<std::string>(d,2); r.canonical_name=Get<std::string>(d,3);
+  for (const auto& field:d.fields) if (field.id==4) r.target_uuid=std::get<TypedUuid>(field.value);
+  r.source_path=Get<std::string>(d,5); r.resource_epoch=Get<u64>(d,6); r.family_epoch=Get<u64>(d,7);
+  r.family_version=Get<std::string>(d,8); r.seed_pack_name=Get<std::string>(d,9);
+  r.seed_pack_version=Get<std::string>(d,10); r.loaded_at_database_create=Get<bool>(d,11);
+  r.engine_owned=Get<bool>(d,12); r.creator_transaction_number=Get<u64>(d,13);
+  if (!Valid(r)) return {E::invalid_value,{}};
+  return {E::none,std::move(r)};
 }
 const CatalogValueSchema& CatalogCollationRecordSchema() {
   static const CatalogValueSchema schema{65558, 1, {
@@ -144,9 +186,15 @@ CatalogResourceDecodeResult<CatalogCollationRecord> DecodeCatalogCollationRecord
   return {E::none,std::move(r)};
 }
 bool CatalogResourcePayloadMatchesHeader(const CatalogTypedRecord& record) {
-  if (record.header.deleted || record.header.object_uuid.kind != UuidKind::object ||
-      record.header.parent_uuid.kind != UuidKind::object ||
+  if (record.header.deleted || record.header.parent_uuid.kind != UuidKind::object ||
       !uuid::IsEngineIdentityUuid(record.header.parent_uuid.value)) return false;
+  if (record.header.kind == CatalogRecordKind::charset_alias) {
+    const auto d=DecodeCatalogResourceAliasRecord(record.payload);
+    return record.header.object_uuid.kind == UuidKind::unknown && record.header.object_uuid.value.is_nil() &&
+        d.ok() && d.record->family == 0 && d.record->target_uuid &&
+        Same(*d.record->target_uuid,record.header.parent_uuid);
+  }
+  if (record.header.object_uuid.kind != UuidKind::object) return false;
   if (record.header.kind == CatalogRecordKind::charset) {
     const auto d=DecodeCatalogCharsetRecord(record.payload);
     return d.ok() && Same(d.record->resource_uuid,record.header.object_uuid);
@@ -156,13 +204,18 @@ bool CatalogResourcePayloadMatchesHeader(const CatalogTypedRecord& record) {
     return d.ok() && Same(d.record->resource_uuid,record.header.object_uuid) &&
         Same(d.record->charset_uuid,record.header.parent_uuid);
   }
+  if (record.header.kind == CatalogRecordKind::timezone) {
+    const auto d=DecodeCatalogResourceAliasRecord(record.payload);
+    return d.ok() && d.record->family==9 && d.record->alias==d.record->canonical_name &&
+        d.record->target_uuid && Same(*d.record->target_uuid,record.header.object_uuid);
+  }
   return false;
 }
 bool ValidateCatalogResourceGraph(const std::vector<CatalogTypedRecord>& records) {
   std::map<std::array<byte,16>,const CatalogTypedRecord*> objects;
   for (const auto& r:records) {
     if (!uuid::IsEngineIdentityUuid(r.header.object_uuid.value)) {
-      if (ResourceKind(r.header.kind)) return false;
+      if (ResourceKind(r.header.kind) && r.header.kind != CatalogRecordKind::charset_alias) return false;
       continue;
     }
     const auto inserted=objects.emplace(r.header.object_uuid.value.bytes,&r);
@@ -189,7 +242,7 @@ bool ValidateCatalogResourceGraph(const std::vector<CatalogTypedRecord>& records
             collation.record->canonical_name!=charset.record->default_collation_name ||
             !Same(collation.record->charset_uuid,charset.record->resource_uuid)) return false;
       }
-    } else {
+    } else if (raw.header.kind == CatalogRecordKind::collation) {
       const auto collation=DecodeCatalogCollationRecord(raw.payload);
       const auto* parent=find(collation.record->charset_uuid,CatalogRecordKind::charset);
       if (!parent) return false;
@@ -201,6 +254,21 @@ bool ValidateCatalogResourceGraph(const std::vector<CatalogTypedRecord>& records
       if (collation.record->default_for_charset &&
           (!charset.record->default_collation_uuid ||
            !Same(*charset.record->default_collation_uuid,collation.record->resource_uuid))) return false;
+    } else if (raw.header.kind==CatalogRecordKind::timezone) {
+      if (!find(raw.header.parent_uuid,CatalogRecordKind::resource_bundle))return false;
+    } else {
+      const auto alias=DecodeCatalogResourceAliasRecord(raw.payload);
+      const auto* parent=find(*alias.record->target_uuid,CatalogRecordKind::charset);
+      if (!parent) return false;
+      const auto charset=DecodeCatalogCharsetRecord(parent->payload);
+      if (!charset.ok() || charset.record->resource_epoch != alias.record->resource_epoch ||
+          charset.record->family_epoch != alias.record->family_epoch ||
+          charset.record->family_version != alias.record->family_version ||
+          charset.record->resource_seed_pack != alias.record->seed_pack_name ||
+          charset.record->resource_seed_version != alias.record->seed_pack_version ||
+          charset.record->creator_transaction_number != alias.record->creator_transaction_number ||
+          charset.record->loaded_at_database_create != alias.record->loaded_at_database_create ||
+          charset.record->engine_owned != alias.record->engine_owned) return false;
     }
   }
   return true;

@@ -26,6 +26,9 @@ void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 namespace {
 unsigned checks = 0, failures = 0;
+scratchbird::core::platform::Uuid Id(unsigned tail) {
+  return {{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,static_cast<unsigned char>(tail)}};
+}
 void Check(bool ok, const char* message) {
   ++checks;
   if (!ok) { ++failures; std::cerr << message << '\n'; }
@@ -171,7 +174,7 @@ void Ambiguous(const r::ResourceSeedCatalogImage& image, r::ResourceSeedFamily f
   const auto result = r::ResolveResourceSeedAlias(image, family, label);
   Check(!result.ok() && result.diagnostic.diagnostic_code == "SB_RESOURCE_ALIAS_AMBIGUOUS",
         "multiple targets were not refused with the registered ambiguity code");
-  Check(result.alias.canonical_name.empty() && result.alias.canonical_resource_uuid.empty(),
+  Check(result.alias.canonical_name.empty() && result.alias.canonical_resource_uuid.is_nil(),
         "ambiguous lookup published a selected target");
   Check(result.diagnostic.message_key == "resource.alias.ambiguous",
         "ambiguity message key did not match the admitted shape");
@@ -187,8 +190,8 @@ void Ambiguous(const r::ResourceSeedCatalogImage& image, r::ResourceSeedFamily f
 int main() {
   const auto charset = r::ResourceSeedFamily::charset;
   r::ResourceSeedCatalogImage image;
-  image.aliases = {{charset,"shared","first","019d0000-0000-7000-8000-000000000001","one"},
-                   {charset,"SHARED","second","019d0000-0000-7000-8000-000000000002","two"}};
+  image.aliases = {{charset,"shared","first",Id(1),"one"},
+                   {charset,"SHARED","second",Id(2),"two"}};
   Ambiguous(image,charset,"Shared");
   std::reverse(image.aliases.begin(),image.aliases.end());
   Ambiguous(image,charset,"Shared");
@@ -204,7 +207,7 @@ int main() {
         "another resource family affected charset resolution");
   const auto missing = r::ResolveResourceSeedAlias(image,charset,"absent");
   Check(!missing.ok() && missing.diagnostic.diagnostic_code == "SB_RESOURCE_ALIAS_NOT_FOUND" &&
-        missing.alias.canonical_resource_uuid.empty(),"absent alias produced a target");
+        missing.alias.canonical_resource_uuid.is_nil(),"absent alias produced a target");
   image.aliases[0].family = r::ResourceSeedFamily::timezone_tables;
   Check(!r::ResolveResourceSeedAlias(image,r::ResourceSeedFamily::timezone_tables,"shared").ok(),
         "timezone aliases unexpectedly folded case");
@@ -214,11 +217,11 @@ int main() {
   // Bound identities, not alias presentation labels, select descriptors.
   r::ResourceSeedCatalogImage bound;
   r::ResourceSeedCharsetDescriptor charset_descriptor;
-  charset_descriptor.resource_uuid="019d0000-0000-7000-8000-000000000003";
+  charset_descriptor.resource_uuid=Id(3);
   charset_descriptor.canonical_name="canonical-charset";
   bound.charsets.push_back(charset_descriptor);
   r::ResourceSeedCollationDescriptor collation_descriptor;
-  collation_descriptor.resource_uuid="019d0000-0000-7000-8000-000000000004";
+  collation_descriptor.resource_uuid=Id(4);
   collation_descriptor.canonical_name="canonical-collation";
   bound.collations.push_back(collation_descriptor);
   bound.aliases={{charset,"cs-alias","stale-presentation",charset_descriptor.resource_uuid,""},
@@ -229,7 +232,7 @@ int main() {
   Check(r::FindResourceSeedCollation(bound,"CO-ALIAS")==&bound.collations.front(),
         "collation alias did not select its bound descriptor");
   auto conflict=bound.aliases.back();
-  conflict.canonical_resource_uuid="019d0000-0000-7000-8000-000000000005";
+  conflict.canonical_resource_uuid=Id(5);
   bound.aliases.push_back(conflict);
   Ambiguous(bound,r::ResourceSeedFamily::collation,"co-alias");
   Check(!r::FindResourceSeedCollation(bound,"co-alias"),

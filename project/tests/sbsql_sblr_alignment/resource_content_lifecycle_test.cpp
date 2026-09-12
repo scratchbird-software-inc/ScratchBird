@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
@@ -40,6 +41,18 @@ std::string Quote(const std::string& value) {
   for (char c:value) result += c=='\'' ? "'\\''" : std::string(1,c);
   return result+"'";
 }
+std::string IdentityBytes(const r::ResourceSeedCatalogImage& image) {
+  std::string bytes;
+  const auto append=[&](const platform::Uuid& id) {
+    bytes.append(reinterpret_cast<const char*>(id.bytes.data()),id.bytes.size());
+  };
+  for (const auto& row:image.charsets) { append(row.resource_uuid);append(row.default_collation_uuid); }
+  for (const auto& row:image.collations) { append(row.resource_uuid);append(row.charset_uuid); }
+  for (const auto& row:image.timezones) append(row.resource_uuid);
+  for (const auto& row:image.aliases) append(row.canonical_resource_uuid);
+  for (const auto& row:image.artifacts) append(row.artifact_uuid);
+  return bytes;
+}
 struct SavedPage { std::uint64_t number; std::uint32_t page_size; std::vector<platform::byte> body; };
 void WritePage(const fs::path& path,const SavedPage& page) {
   disk::FileDevice device;
@@ -47,7 +60,8 @@ void WritePage(const fs::path& path,const SavedPage& page) {
   Require(device.WriteAt(page.number*page.page_size+disk::kPageHeaderSerializedBytes,
                         page.body.data(),page.body.size()).ok() && device.Sync().ok(),"fixture write failed");
 }
-SavedPage Corrupt(const fs::path& path,bool cycle) {
+enum class Corruption { artifact, cycle, alias_identity, alias_epoch };
+SavedPage Corrupt(const fs::path& path,Corruption corruption) {
   SavedPage original{}; SavedPage changed{};
   {
     disk::FileDevice device;
@@ -63,13 +77,33 @@ SavedPage Corrupt(const fs::path& path,bool cycle) {
                             original.body.data(),original.body.size()).ok(),"fixture page read failed");
       const auto body=page::ParseCatalogPageBody(original.body,number); Require(body.ok(),"fixture catalog invalid");
       changed=original;
-      if (cycle) { platform::StoreLittle64(changed.body.data()+32,number); break; }
+      if (corruption==Corruption::cycle) { platform::StoreLittle64(changed.body.data()+32,number); break; }
       std::size_t offset=page::kCatalogPageBodyHeaderBytes;
       bool selected=false;
       for (const auto& row:body.body.rows) {
-        if (row.kind==page::CatalogPageRowKind::resource_seed_artifact) {
-          Require(row.payload.size()>48 && row.payload.substr(0,4)=="RSAC","fixture artifact has wrong layout");
-          changed.body[offset+20+row.payload.size()-1]^=1;
+        if ((corruption==Corruption::artifact && row.kind==page::CatalogPageRowKind::resource_seed_artifact) ||
+            (corruption!=Corruption::artifact && row.kind==page::CatalogPageRowKind::charset_alias_record)) {
+          if (corruption==Corruption::artifact) {
+            Require(row.payload.size()>48 && row.payload.substr(0,4)=="RSAC","fixture artifact has wrong layout");
+            changed.body[offset+20+row.payload.size()-1]^=1;
+          } else {
+            Require(row.payload.size()>24 && row.payload.substr(0,4)=="SBCV","fixture alias has wrong layout");
+            bool field_found=false;
+            for (std::size_t pos=24;pos+8<=row.payload.size();) {
+              const auto* bytes=reinterpret_cast<const platform::byte*>(row.payload.data()+pos);
+              const auto id=platform::LoadLittle16(bytes);
+              const auto length=platform::LoadLittle32(bytes+4);
+              Require(length<=row.payload.size()-pos-8,"fixture alias field out of bounds");
+              if ((corruption==Corruption::alias_identity && id==4) ||
+                  (corruption==Corruption::alias_epoch && id==6)) {
+                if (id==4) { Require(length==16,"alias identity is not binary16"); changed.body[offset+20+pos+8+6]=0x40; }
+                else { Require(length==8,"alias epoch is not u64"); changed.body[offset+20+pos+8]^=2; }
+                field_found=true;break;
+              }
+              pos+=8+length;
+            }
+            Require(field_found,"fixture alias target field missing");
+          }
           std::uint64_t hash=1469598103934665603ULL;
           for (std::size_t i=0;i<row.payload.size();++i) {
             hash^=changed.body[offset+20+i]; hash*=1099511628211ULL;
@@ -107,6 +141,10 @@ int main(int argc,char** argv) {
         config.require_resource_seed_pack=true;
         const auto created=db::CreateDatabaseFile(config); Good(created);
         Require(!created.state.resource_seed_catalog.artifacts.empty(),"create did not retain artifacts");
+        const auto ids=IdentityBytes(created.state.resource_seed_catalog);
+        std::ofstream identity_file(root/"identity-oracle.bin",std::ios::binary);
+        identity_file.write(ids.data(),ids.size());identity_file.close();
+        Require(identity_file.good(),"independent identity oracle write failed");
         return 0;
       }
       const std::string_view mode=argv[1];
@@ -126,6 +164,17 @@ int main(int argc,char** argv) {
       r::ResourceSeedLoadConfig source; source.seed_pack_root=SB_BOOTSTRAP_SEED_PACK_ROOT;
       const auto oracle=r::LoadResourceSeedPack(source); Require(oracle.ok(),"independent oracle pack failed");
       const auto& actual=opened.state.resource_seed_catalog;
+      std::ifstream identity_file(root/"identity-oracle.bin",std::ios::binary);
+      Require(identity_file.good(),"independent identity oracle read failed");
+      const std::string ids(std::istreambuf_iterator<char>(identity_file),{});
+      Require(IdentityBytes(actual)==ids,"binary resource or alias identities changed across process restart");
+      for (const auto& row:actual.aliases) {
+        Require(!row.canonical_resource_uuid.is_nil() && (row.canonical_resource_uuid.bytes[6]>>4)==7,
+                "bound alias lost its binary UUIDv7 target");
+      }
+      const auto ambiguous=r::ResolveResourceSeedAlias(actual,r::ResourceSeedFamily::charset,"gb2312");
+      Require(!ambiguous.ok() && ambiguous.diagnostic.diagnostic_code=="SB_RESOURCE_ALIAS_AMBIGUOUS" &&
+              ambiguous.alias.canonical_resource_uuid.is_nil(),"persisted alias ambiguity changed");
       Require(actual.artifacts.size()==oracle.image.artifacts.size(),"reopen artifact count changed");
       std::size_t bytes=0;
       for (std::size_t i=0;i<actual.artifacts.size();++i) {
@@ -138,7 +187,7 @@ int main(int argc,char** argv) {
         bytes+=a.content->size();
       }
       std::cout << "PASS independent resource reopen artifacts=" << actual.artifacts.size()
-                << " bytes=" << bytes << '\n';
+                << " bytes=" << bytes << " timezone_identities=" << actual.timezones.size() << '\n';
       return 0;
     }
     Require(argc==1,"unexpected arguments");
@@ -167,12 +216,13 @@ int main(int argc,char** argv) {
     Require(std::system((program+" --create "+Quote(root.string())).c_str())==0,"create subprocess failed");
     fs::remove_all(copy);
     Require(std::system((program+" --reopen "+Quote(root.string())).c_str())==0,"independent reopen subprocess failed");
-    for (const bool cycle:{false,true}) {
-      const auto original=Corrupt(root/"content.sbdb",cycle);
-      const auto command=program+(cycle ? " --refuse-chain " : " --refuse-artifact ")+Quote(root.string());
+    for (const auto corruption:{Corruption::artifact,Corruption::cycle,Corruption::alias_identity,Corruption::alias_epoch}) {
+      const auto original=Corrupt(root/"content.sbdb",corruption);
+      const auto command=program+(corruption==Corruption::cycle ? " --refuse-chain " : " --refuse-artifact ")+Quote(root.string());
       const auto refused=std::system(command.c_str());
       WritePage(root/"content.sbdb",original);
       Require(refused==0,"independent corruption refusal failed");
+      std::cout << "verified_corruption_case=" << static_cast<unsigned>(corruption) << '\n';
     }
     Require(std::system((program+" --reopen "+Quote(root.string())).c_str())==0,"restored database did not reopen");
     return 0;

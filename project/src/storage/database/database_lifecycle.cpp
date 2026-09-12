@@ -2268,12 +2268,15 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
              kind != CatalogRecordKind::localized_name &&
              kind != CatalogRecordKind::localized_comment &&
              kind != CatalogRecordKind::charset &&
+             kind != CatalogRecordKind::charset_alias &&
              kind != CatalogRecordKind::collation &&
+             kind != CatalogRecordKind::timezone &&
              payload.find("creator_tx=") == std::string::npos) {
     payload = std::string("creator_tx=") + std::to_string(kBootstrapCatalogTransactionId) + "\n" + payload;
   }
   record.payload = std::move(payload);
-  if ((kind == CatalogRecordKind::charset || kind == CatalogRecordKind::collation) &&
+  if ((kind == CatalogRecordKind::charset || kind == CatalogRecordKind::charset_alias ||
+       kind == CatalogRecordKind::collation || kind == CatalogRecordKind::timezone) &&
       !scratchbird::core::catalog::CatalogResourcePayloadMatchesHeader(record)) {
     const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
         "catalog.record_codec.fields_missing", {}, "resource_binary_payload_or_header_invalid");
@@ -2323,40 +2326,38 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
   if (image->minimal_bootstrap) return result;
   u64 charset_seed = identity_seed + 80000;
   for (auto& charset : image->charsets) {
-    if (charset.resource_uuid.empty()) {
+    if (charset.resource_uuid.is_nil()) {
       const auto generated = GenerateEngineIdentityV7(UuidKind::object, charset_seed);
       if (!generated.ok()) {
         return CatalogRowsBuildError(generated.status, generated.diagnostic);
       }
-      charset.resource_uuid =
-          scratchbird::core::uuid::UuidToString(generated.value.value);
+      charset.resource_uuid = generated.value.value;
     } else {
-      const auto parsed = ParseTypedUuid(UuidKind::object, charset.resource_uuid);
-      if (!parsed.ok()) {
-        return CatalogRowsBuildError(parsed.status, parsed.diagnostic);
-      }
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(charset.resource_uuid))
+        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(), "RESOURCE.VALIDATION.FAILED",
+                "resource.seed_pack.charset_descriptor_invalid"));
     }
     charset.resource_epoch = image->resource_epoch;
     charset.family_epoch = image->charset_epoch;
     charset.family_version = image->charset_version;
-    charset.default_collation_uuid.clear();
+    charset.default_collation_uuid = {};
     charset_seed += 4;
   }
 
   u64 collation_seed = identity_seed + 90000;
   for (auto& collation : image->collations) {
-    if (collation.resource_uuid.empty()) {
+    if (collation.resource_uuid.is_nil()) {
       const auto generated = GenerateEngineIdentityV7(UuidKind::object, collation_seed);
       if (!generated.ok()) {
         return CatalogRowsBuildError(generated.status, generated.diagnostic);
       }
-      collation.resource_uuid =
-          scratchbird::core::uuid::UuidToString(generated.value.value);
+      collation.resource_uuid = generated.value.value;
     } else {
-      const auto parsed = ParseTypedUuid(UuidKind::object, collation.resource_uuid);
-      if (!parsed.ok()) {
-        return CatalogRowsBuildError(parsed.status, parsed.diagnostic);
-      }
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(collation.resource_uuid))
+        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(), "RESOURCE.VALIDATION.FAILED",
+                "resource.seed_pack.collation_descriptor_invalid"));
     }
     collation.resource_epoch = image->resource_epoch;
     collation.family_epoch = image->collation_epoch;
@@ -2368,7 +2369,7 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
         break;
       }
     }
-    if (parent == nullptr || parent->resource_uuid.empty()) {
+    if (parent == nullptr || parent->resource_uuid.is_nil()) {
       return CatalogRowsBuildError(
           DatabaseLifecycleErrorStatus(),
           MakeDatabaseLifecycleDiagnostic(
@@ -2380,7 +2381,7 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
     }
     collation.charset_uuid = parent->resource_uuid;
     if (collation.default_for_charset) {
-      if (!parent->default_collation_uuid.empty() &&
+      if (!parent->default_collation_uuid.is_nil() &&
           parent->default_collation_uuid != collation.resource_uuid) {
         return CatalogRowsBuildError(
             DatabaseLifecycleErrorStatus(),
@@ -2397,8 +2398,16 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
     collation_seed += 4;
   }
 
+  u64 timezone_seed=identity_seed+100000;
+  for (auto& timezone:image->timezones) {
+    if (timezone.resource_uuid.is_nil()) {
+      const auto generated=GenerateEngineIdentityV7(UuidKind::object,timezone_seed++);
+      if (!generated.ok()) return CatalogRowsBuildError(generated.status,generated.diagnostic);
+      timezone.resource_uuid=generated.value.value;
+    }
+  }
   for (auto& alias : image->aliases) {
-    alias.canonical_resource_uuid.clear();
+    alias.canonical_resource_uuid = {};
     if (alias.family == ResourceSeedFamily::charset) {
       for (const auto& charset : image->charsets) {
         if (charset.canonical_name == alias.canonical_name) {
@@ -2412,6 +2421,10 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
           alias.canonical_resource_uuid = collation.resource_uuid;
           break;
         }
+      }
+    } else if (alias.family == ResourceSeedFamily::timezone_source || alias.family == ResourceSeedFamily::timezone_tables) {
+      for (const auto& timezone:image->timezones) {
+        if (timezone.canonical_name==alias.canonical_name) {alias.canonical_resource_uuid=timezone.resource_uuid;break;}
       }
     }
   }
@@ -3666,6 +3679,25 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     }
   }
 
+  const auto encode_alias = [&](const ResourceSeedAlias& alias) {
+    scratchbird::core::catalog::CatalogResourceAliasRecord record;
+    record.family = static_cast<u64>(alias.family);
+    record.alias = alias.alias; record.canonical_name = alias.canonical_name;
+    if (!alias.canonical_resource_uuid.is_nil())
+      record.target_uuid = TypedUuid{UuidKind::object, alias.canonical_resource_uuid};
+    record.source_path = alias.source_path; record.resource_epoch = image.resource_epoch;
+    if (alias.family == ResourceSeedFamily::charset) {
+      record.family_epoch = image.charset_epoch; record.family_version = image.charset_version;
+    } else if (alias.family == ResourceSeedFamily::collation) {
+      record.family_epoch = image.collation_epoch; record.family_version = image.collation_version;
+    } else if (alias.family == ResourceSeedFamily::timezone_source || alias.family == ResourceSeedFamily::timezone_tables) {
+      record.family_epoch = image.timezone_epoch; record.family_version = image.timezone_version;
+    }
+    record.seed_pack_name = image.seed_pack_name; record.seed_pack_version = image.seed_pack_version;
+    record.loaded_at_database_create = true; record.engine_owned = true;
+    record.creator_transaction_number = kBootstrapCatalogTransactionId;
+    return scratchbird::core::catalog::EncodeCatalogResourceAliasRecord(record);
+  };
   for (const ResourceSeedAlias& alias : image.aliases) {
     CatalogPageRowKind row_kind = CatalogPageRowKind::resource_family_summary;
     if (alias.family == ResourceSeedFamily::charset) {
@@ -3676,45 +3708,28 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                alias.family == ResourceSeedFamily::timezone_source) {
       row_kind = CatalogPageRowKind::timezone_record;
     }
-    const bool charset_family = alias.family == ResourceSeedFamily::charset;
-    const bool collation_family = alias.family == ResourceSeedFamily::collation;
-    const std::string alias_payload =
-        KeyValuePayload({{"family", ResourceSeedFamilyName(alias.family)},
-                         {"alias", alias.alias},
-                         {"canonical_name", alias.canonical_name},
-                         {"canonical_resource_uuid", alias.canonical_resource_uuid},
-                         {"resource_epoch", std::to_string(image.resource_epoch)},
-                         {"family_epoch",
-                          std::to_string(charset_family
-                                             ? image.charset_epoch
-                                             : (collation_family ? image.collation_epoch : 0))},
-                         {"family_version",
-                          charset_family
-                              ? image.charset_version
-                              : (collation_family ? image.collation_version : "")},
-                         {"source_path", alias.source_path}});
-    result.rows.push_back(Row(row_kind, ordinal++, alias_payload));
+    const auto encoded = encode_alias(alias);
+    if (!encoded.ok()) {
+      const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing", config.path, "resource_alias_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+    result.rows.push_back(Row(row_kind, ordinal++, {encoded.bytes.begin(), encoded.bytes.end()}));
   }
 
   u64 resource_catalog_seed = config.creation_unix_epoch_millis + 70000;
   for (const auto& charset : image.charsets) {
-    const auto object_uuid = ParseTypedUuid(UuidKind::object, charset.resource_uuid);
-    if (!object_uuid.ok()) {
-      return CatalogRowsBuildError(object_uuid.status, object_uuid.diagnostic);
-    }
+    const TypedUuid object_uuid{UuidKind::object, charset.resource_uuid};
     scratchbird::core::catalog::CatalogCharsetRecord record;
     record.canonical_name=charset.canonical_name;
-    record.resource_uuid=object_uuid.value;
+    record.resource_uuid=object_uuid;
     record.aliases=charset.aliases; record.description=charset.description;
     record.min_bytes=charset.min_bytes; record.max_bytes=charset.max_bytes;
     record.variable_width=charset.variable_width; record.encoding_type=charset.encoding_type;
     record.iana_name=charset.iana_name; record.supported_by=charset.supported_by;
     record.default_collation_name=charset.default_collation_name;
-    if (!charset.default_collation_uuid.empty()) {
-      const auto identity=ParseTypedUuid(UuidKind::object,charset.default_collation_uuid);
-      if (!identity.ok()) return CatalogRowsBuildError(identity.status,identity.diagnostic);
-      record.default_collation_uuid=identity.value;
-    }
+    if (!charset.default_collation_uuid.is_nil())
+      record.default_collation_uuid=TypedUuid{UuidKind::object,charset.default_collation_uuid};
     record.source_path=charset.source_path; record.resource_epoch=charset.resource_epoch;
     record.family_epoch=charset.family_epoch; record.family_version=charset.family_version;
     record.resource_seed_pack=image.seed_pack_name; record.resource_seed_version=image.seed_pack_version;
@@ -3733,23 +3748,17 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                                   resource_catalog_seed,
                                   resource_payload,
                                   resource_bundle_object.value,
-                                  object_uuid.value);
+                                  object_uuid);
     if (!typed.ok()) { return typed; }
     resource_catalog_seed += 4;
   }
 
   for (const auto& collation : image.collations) {
-    const auto object_uuid = ParseTypedUuid(UuidKind::object, collation.resource_uuid);
-    const auto parent_uuid = ParseTypedUuid(UuidKind::object, collation.charset_uuid);
-    if (!object_uuid.ok()) {
-      return CatalogRowsBuildError(object_uuid.status, object_uuid.diagnostic);
-    }
-    if (!parent_uuid.ok()) {
-      return CatalogRowsBuildError(parent_uuid.status, parent_uuid.diagnostic);
-    }
+    const TypedUuid object_uuid{UuidKind::object, collation.resource_uuid};
+    const TypedUuid parent_uuid{UuidKind::object, collation.charset_uuid};
     scratchbird::core::catalog::CatalogCollationRecord record;
-    record.canonical_name=collation.canonical_name; record.resource_uuid=object_uuid.value;
-    record.charset_name=collation.charset_name; record.charset_uuid=parent_uuid.value;
+    record.canonical_name=collation.canonical_name; record.resource_uuid=object_uuid;
+    record.charset_name=collation.charset_name; record.charset_uuid=parent_uuid;
     record.default_for_charset=collation.default_for_charset;
     record.default_authority=collation.default_authority;
     record.case_insensitive=collation.case_insensitive; record.accent_insensitive=collation.accent_insensitive;
@@ -3771,13 +3780,13 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                                   &ordinal,
                                   resource_catalog_seed,
                                   resource_payload,
-                                  parent_uuid.value,
-                                  object_uuid.value);
+                                  parent_uuid,
+                                  object_uuid);
     if (!typed.ok()) { return typed; }
     resource_catalog_seed += 4;
   }
 
-  std::set<std::string> emitted_resource_alias_records;
+  std::set<std::tuple<u16,u16,std::string,scratchbird::core::platform::Uuid,std::string>> emitted_resource_alias_records;
   for (const ResourceSeedAlias& alias : image.aliases) {
     CatalogRecordKind resource_kind = CatalogRecordKind::unknown;
     if (alias.family == ResourceSeedFamily::charset) {
@@ -3787,35 +3796,25 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
       resource_kind = CatalogRecordKind::charset_alias;
     } else if (alias.family == ResourceSeedFamily::collation) {
       continue;
-    } else if (alias.family == ResourceSeedFamily::timezone_tables ||
-               alias.family == ResourceSeedFamily::timezone_source) {
-      resource_kind = CatalogRecordKind::timezone;
     } else {
       continue;
     }
 
-    const std::string dedupe_key =
-        std::to_string(static_cast<u16>(resource_kind)) + ":" +
-        ResourceSeedFamilyName(alias.family) + ":" + alias.alias + ":" + alias.canonical_name;
+    const auto dedupe_key = std::make_tuple(static_cast<u16>(resource_kind), static_cast<u16>(alias.family),
+        alias.alias, alias.canonical_resource_uuid,
+        alias.canonical_resource_uuid.is_nil() ? alias.canonical_name : std::string{});
     if (!emitted_resource_alias_records.insert(dedupe_key).second) {
       continue;
     }
 
     TypedUuid parent_uuid = resource_bundle_object.value;
     if (resource_kind == CatalogRecordKind::charset_alias) {
-      const auto parsed_parent =
-          ParseTypedUuid(UuidKind::object, alias.canonical_resource_uuid);
-      if (!parsed_parent.ok()) {
-        return CatalogRowsBuildError(parsed_parent.status,
-                                     parsed_parent.diagnostic);
-      }
-      parent_uuid = parsed_parent.value;
+      parent_uuid = TypedUuid{UuidKind::object, alias.canonical_resource_uuid};
     }
-    const std::string resource_payload =
+    std::string resource_payload =
         KeyValuePayload({{"family", ResourceSeedFamilyName(alias.family)},
                          {"alias", alias.alias},
                          {"canonical_name", alias.canonical_name},
-                         {"canonical_resource_uuid", alias.canonical_resource_uuid},
                          {"source_path", alias.source_path},
                          {"resource_epoch", std::to_string(image.resource_epoch)},
                          {"family_epoch",
@@ -3830,6 +3829,15 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                          {"resource_seed_version", image.seed_pack_version},
                          {"loaded_at_database_create", "1"},
                          {"engine_owned", "1"}});
+    if (resource_kind == CatalogRecordKind::charset_alias) {
+      const auto encoded = encode_alias(alias);
+      if (!encoded.ok()) {
+        const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+            "catalog.record_codec.fields_missing", config.path, "resource_alias_binary_payload_invalid");
+        return CatalogRowsBuildError(refused.status, refused.diagnostic);
+      }
+      resource_payload.assign(encoded.bytes.begin(), encoded.bytes.end());
+    }
     typed = AddTypedCatalogRecord(&result.rows,
                                   resource_kind,
                                   &ordinal,
@@ -3840,6 +3848,23 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     resource_catalog_seed += 4;
   }
 
+  for (const auto& timezone:image.timezones) {
+    ResourceSeedAlias canonical;
+    canonical.family=ResourceSeedFamily::timezone_source; canonical.alias=timezone.canonical_name;
+    canonical.canonical_name=timezone.canonical_name;canonical.canonical_resource_uuid=timezone.resource_uuid;
+    canonical.source_path=timezone.source_path;
+    const auto encoded=encode_alias(canonical);
+    if (!encoded.ok()) {
+      const auto refused=LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+          "catalog.record_codec.fields_missing",config.path,"timezone_binary_payload_invalid");
+      return CatalogRowsBuildError(refused.status,refused.diagnostic);
+    }
+    const auto added=AddTypedCatalogRecord(&result.rows,CatalogRecordKind::timezone,&ordinal,
+        resource_catalog_seed,{encoded.bytes.begin(),encoded.bytes.end()},resource_bundle_object.value,
+        TypedUuid{UuidKind::object,timezone.resource_uuid});
+    if (!added.ok())return added;
+    resource_catalog_seed+=4;
+  }
   for (const ResourceSeedArtifact& artifact : image.artifacts) {
     CatalogRecordKind resource_detail_kind = CatalogRecordKind::unknown;
     if (artifact.family == ResourceSeedFamily::timezone_source ||
@@ -3932,6 +3957,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   }};
   for (const auto& summary : summaries) {
     if (summary.second.first == CatalogRecordKind::charset ||
+        summary.second.first == CatalogRecordKind::charset_alias ||
+        summary.second.first == CatalogRecordKind::timezone ||
         summary.second.first == CatalogRecordKind::collation) continue;
     const std::string payload = KeyValuePayload({{"record_count", std::to_string(summary.second.second)}});
     result.rows.push_back(Row(summary.first, ordinal++, payload));
@@ -3973,8 +4000,22 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
   for (const auto& artifact : image.artifacts) artifacts_by_id.emplace(artifact.artifact_uuid, &artifact);
   std::vector<scratchbird::core::catalog::CatalogCharsetRecord> charsets;
   std::vector<scratchbird::core::catalog::CatalogCollationRecord> collations;
+  std::vector<scratchbird::core::catalog::CatalogResourceAliasRecord> aliases;
+  std::vector<scratchbird::core::catalog::CatalogResourceAliasRecord> timezones;
   for (const CatalogPageRow& row : rows) {
     if (row.kind == CatalogPageRowKind::resource_seed_artifact) continue;
+    if (row.kind == CatalogPageRowKind::charset_alias_record ||
+        row.kind == CatalogPageRowKind::collation_record ||
+        (row.kind == CatalogPageRowKind::timezone_record && row.payload.starts_with("SBCV"))) {
+      const auto decoded = scratchbird::core::catalog::DecodeCatalogResourceAliasRecord(row.payload);
+      if (!decoded.ok()) return std::nullopt;
+      const auto family = decoded.record->family;
+      if ((row.kind == CatalogPageRowKind::charset_alias_record && family != 0) ||
+          (row.kind == CatalogPageRowKind::collation_record && family != 3) ||
+          (row.kind == CatalogPageRowKind::timezone_record && family != 9 && family != 10)) return std::nullopt;
+      aliases.push_back(*decoded.record);
+      continue;
+    }
     const auto fields = row.kind == CatalogPageRowKind::typed_catalog_record
         ? std::map<std::string,std::string>{} : ParseKeyValuePayload(row.payload);
     if (row.kind == CatalogPageRowKind::resource_seed_pack) {
@@ -4049,20 +4090,8 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
                  image.timezone_version,
                  image.timezone_content_hash,
                  image.timezone_epoch);
-    } else if ((row.kind == CatalogPageRowKind::charset_alias_record ||
-                row.kind == CatalogPageRowKind::collation_record ||
-                row.kind == CatalogPageRowKind::timezone_record) &&
-               fields.count("alias") != 0 && fields.count("canonical_name") != 0) {
-      ResourceSeedAlias alias;
-      alias.family = fields.count("family") == 0 ? ResourceSeedFamily::unknown : ParseResourceFamilyName(fields.at("family"));
-      alias.alias = fields.at("alias");
-      alias.canonical_name = fields.at("canonical_name");
-      alias.canonical_resource_uuid =
-          fields.count("canonical_resource_uuid") == 0
-              ? ""
-              : fields.at("canonical_resource_uuid");
-      alias.source_path = fields.count("source_path") == 0 ? "" : fields.at("source_path");
-      image.aliases.push_back(std::move(alias));
+    } else if (row.kind == CatalogPageRowKind::timezone_record && fields.count("alias") != 0) {
+      return std::nullopt;  // No prototype text alias fallback.
     } else if (row.kind == CatalogPageRowKind::typed_catalog_record) {
       const auto decoded = DecodeCatalogTypedRecord(row);
       if (!decoded.ok()) {
@@ -4099,6 +4128,11 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
         if (!payload.ok()) return std::nullopt;
         collations.push_back(std::move(*payload.record));
         continue;
+      }
+      if (decoded.record.header.kind == CatalogRecordKind::timezone) {
+        const auto payload=scratchbird::core::catalog::DecodeCatalogResourceAliasRecord(decoded.record.payload);
+        if (!payload.ok())return std::nullopt;
+        timezones.push_back(*payload.record);continue;
       }
       if (decoded.record.header.kind != CatalogRecordKind::index_descriptor) continue;
       const auto typed_fields=ParseKeyValuePayload(decoded.record.payload);
@@ -4139,15 +4173,13 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
         r.resource_epoch!=image.resource_epoch || r.family_epoch!=image.charset_epoch ||
         r.family_version!=image.charset_version) return std::nullopt;
     ResourceSeedCharsetDescriptor charset;
-    // The legacy resource API is still text-shaped. This explicit projection
-    // does not change the binary identity authority of the persisted record.
-    charset.resource_uuid=scratchbird::core::uuid::UuidToString(r.resource_uuid.value);
+    charset.resource_uuid=r.resource_uuid.value;
     charset.canonical_name=r.canonical_name; charset.description=r.description; charset.aliases=r.aliases;
     charset.min_bytes=static_cast<u32>(r.min_bytes); charset.max_bytes=static_cast<u32>(r.max_bytes);
     charset.variable_width=r.variable_width; charset.encoding_type=r.encoding_type; charset.iana_name=r.iana_name;
     charset.supported_by=r.supported_by; charset.default_collation_name=r.default_collation_name;
     if (r.default_collation_uuid)
-      charset.default_collation_uuid=scratchbird::core::uuid::UuidToString(r.default_collation_uuid->value);
+      charset.default_collation_uuid=r.default_collation_uuid->value;
     charset.source_path=r.source_path; charset.resource_epoch=r.resource_epoch;
     charset.family_epoch=r.family_epoch; charset.family_version=r.family_version;
     image.charsets.push_back(std::move(charset));
@@ -4159,9 +4191,9 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
         r.resource_epoch!=image.resource_epoch || r.family_epoch!=image.collation_epoch ||
         r.family_version!=image.collation_version) return std::nullopt;
     ResourceSeedCollationDescriptor collation;
-    collation.resource_uuid=scratchbird::core::uuid::UuidToString(r.resource_uuid.value);
+    collation.resource_uuid=r.resource_uuid.value;
     collation.canonical_name=r.canonical_name; collation.charset_name=r.charset_name;
-    collation.charset_uuid=scratchbird::core::uuid::UuidToString(r.charset_uuid.value);
+    collation.charset_uuid=r.charset_uuid.value;
     collation.default_for_charset=r.default_for_charset; collation.default_authority=r.default_authority;
     collation.case_insensitive=r.case_insensitive; collation.accent_insensitive=r.accent_insensitive;
     collation.language=r.language; collation.description=r.description; collation.supported_by=r.supported_by;
@@ -4169,25 +4201,33 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
     collation.family_epoch=r.family_epoch; collation.family_version=r.family_version;
     image.collations.push_back(std::move(collation));
   }
-  for (auto& alias : image.aliases) {
-    if (!alias.canonical_resource_uuid.empty()) {
-      continue;
-    }
-    if (alias.family == ResourceSeedFamily::charset) {
-      for (const auto& charset : image.charsets) {
-        if (charset.canonical_name == alias.canonical_name) {
-          alias.canonical_resource_uuid = charset.resource_uuid;
-          break;
-        }
-      }
-    } else if (alias.family == ResourceSeedFamily::collation) {
-      for (const auto& collation : image.collations) {
-        if (collation.canonical_name == alias.canonical_name) {
-          alias.canonical_resource_uuid = collation.resource_uuid;
-          break;
-        }
-      }
-    }
+  for (const auto& record : aliases) {
+    if (!record.loaded_at_database_create || !record.engine_owned ||
+        record.creator_transaction_number != kBootstrapCatalogTransactionId ||
+        record.seed_pack_name != image.seed_pack_name || record.seed_pack_version != image.seed_pack_version ||
+        record.resource_epoch != image.resource_epoch) return std::nullopt;
+    if ((record.family == 0 && (record.family_epoch != image.charset_epoch || record.family_version != image.charset_version)) ||
+        (record.family == 3 && (record.family_epoch != image.collation_epoch || record.family_version != image.collation_version)) ||
+        ((record.family == 9 || record.family == 10) &&
+         (record.family_epoch != image.timezone_epoch || record.family_version != image.timezone_version)))
+      return std::nullopt;
+    ResourceSeedAlias alias;
+    alias.family = static_cast<ResourceSeedFamily>(record.family); alias.alias = record.alias;
+    alias.canonical_name = record.canonical_name; alias.source_path = record.source_path;
+    if (record.target_uuid) alias.canonical_resource_uuid = record.target_uuid->value;
+    image.aliases.push_back(std::move(alias));
+  }
+  for (const auto& record:timezones) {
+    if (record.family!=9 || record.alias!=record.canonical_name || !record.target_uuid ||
+        !record.loaded_at_database_create || !record.engine_owned || record.creator_transaction_number!=kBootstrapCatalogTransactionId ||
+        record.seed_pack_name!=image.seed_pack_name || record.seed_pack_version!=image.seed_pack_version ||
+        record.resource_epoch!=image.resource_epoch || record.family_epoch!=image.timezone_epoch ||
+        record.family_version!=image.timezone_version)return std::nullopt;
+    scratchbird::core::resources::ResourceSeedTimezoneDescriptor timezone;
+    timezone.resource_uuid=record.target_uuid->value;timezone.canonical_name=record.canonical_name;
+    timezone.source_path=record.source_path;timezone.resource_epoch=record.resource_epoch;
+    timezone.family_epoch=record.family_epoch;timezone.family_version=record.family_version;
+    image.timezones.push_back(std::move(timezone));
   }
   return image;
 }

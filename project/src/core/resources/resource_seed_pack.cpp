@@ -1016,7 +1016,7 @@ void FinalizeResourceSeedDescriptors(ResourceSeedCatalogImage* image) {
     charset.family_epoch = image->charset_epoch;
     charset.family_version = image->charset_version;
     charset.default_collation_name.clear();
-    charset.default_collation_uuid.clear();
+    charset.default_collation_uuid = {};
   }
   for (auto& collation : image->collations) {
     collation.resource_epoch = image->resource_epoch;
@@ -1024,7 +1024,7 @@ void FinalizeResourceSeedDescriptors(ResourceSeedCatalogImage* image) {
     collation.family_version = image->collation_version;
     auto* charset = FindCharsetForRelationship(image, collation.charset_name);
     if (charset == nullptr) {
-      collation.charset_uuid.clear();
+      collation.charset_uuid = {};
       continue;
     }
     collation.charset_name = charset->canonical_name;
@@ -1034,6 +1034,19 @@ void FinalizeResourceSeedDescriptors(ResourceSeedCatalogImage* image) {
       charset->default_collation_uuid = collation.resource_uuid;
     }
   }
+  std::map<std::string,std::string> timezone_targets;
+  for (const auto& alias:image->aliases)
+    if (alias.family==ResourceSeedFamily::timezone_source || alias.family==ResourceSeedFamily::timezone_tables)
+      timezone_targets.emplace(alias.canonical_name,alias.source_path);
+  image->timezones.clear();
+  for (const auto& [name,path]:timezone_targets) {
+    ResourceSeedTimezoneDescriptor descriptor;
+    descriptor.canonical_name=name; descriptor.source_path=path;
+    descriptor.resource_epoch=image->resource_epoch; descriptor.family_epoch=image->timezone_epoch;
+    descriptor.family_version=image->timezone_version;
+    image->timezones.push_back(std::move(descriptor));
+  }
+  image->timezone_records=static_cast<u32>(image->timezones.size());
 }
 
 bool IsDataLine(const std::string& line) {
@@ -1493,31 +1506,40 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
                                "resource.seed_pack.family_version_records_missing");
     }
     if (image.charsets.size() != image.charset_records ||
-        image.collations.size() != image.collation_records) {
+        image.collations.size() != image.collation_records || image.timezones.size() != image.timezone_records) {
       return ResourceSeedError("RESOURCE.MANIFEST.INVALID",
                                "resource.seed_pack.descriptor_record_count_mismatch");
     }
     const bool durable_identities_present =
         std::any_of(image.charsets.begin(), image.charsets.end(),
                     [](const ResourceSeedCharsetDescriptor& descriptor) {
-                      return !descriptor.resource_uuid.empty();
+                      return !descriptor.resource_uuid.is_nil();
                     }) ||
         std::any_of(image.collations.begin(), image.collations.end(),
                     [](const ResourceSeedCollationDescriptor& descriptor) {
-                      return !descriptor.resource_uuid.empty();
-                    });
+                      return !descriptor.resource_uuid.is_nil();
+                    }) || std::any_of(image.timezones.begin(),image.timezones.end(),
+                        [](const auto& descriptor){return !descriptor.resource_uuid.is_nil();}) ||
+                        std::any_of(image.aliases.begin(), image.aliases.end(),
+                        [](const auto& alias) { return !alias.canonical_resource_uuid.is_nil(); });
+    const auto system_identity = [](const scratchbird::core::platform::Uuid& id) {
+      return !id.is_nil() && (id.bytes[6] >> 4) == 7 && (id.bytes[8] & 0xc0) == 0x80;
+    };
+    std::set<scratchbird::core::platform::Uuid> resource_identities;
+    for (const auto& artifact : image.artifacts)
+      if (!artifact.artifact_uuid.is_nil()) resource_identities.insert(artifact.artifact_uuid);
     std::map<std::pair<ResourceSeedFamily, std::string>,
              std::vector<const ResourceSeedAlias*>> alias_relations;
     for (const auto& alias : image.aliases)
       alias_relations[{alias.family, LowerAscii(alias.alias)}].push_back(&alias);
     const auto has_alias_relation = [&](ResourceSeedFamily family, const std::string& label,
                                         const std::string& canonical_name,
-                                        const std::string& identity) {
+                                        const scratchbird::core::platform::Uuid& identity) {
       const auto found = alias_relations.find({family, LowerAscii(label)});
       if (found == alias_relations.end()) return false;
       return std::any_of(found->second.begin(), found->second.end(), [&](const auto* alias) {
         return durable_identities_present
-            ? !identity.empty() && alias->canonical_resource_uuid == identity
+            ? !identity.is_nil() && alias->canonical_resource_uuid == identity
             : LowerAscii(alias->canonical_name) == LowerAscii(canonical_name);
       });
     };
@@ -1526,7 +1548,8 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
           charset.max_bytes < charset.min_bytes || charset.resource_epoch == 0 ||
           charset.variable_width != (charset.min_bytes != charset.max_bytes) ||
           charset.family_epoch == 0 || charset.family_version.empty() ||
-          (durable_identities_present && charset.resource_uuid.empty())) {
+          (durable_identities_present && (!system_identity(charset.resource_uuid) ||
+                                         !resource_identities.insert(charset.resource_uuid).second))) {
         return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
                                  "resource.seed_pack.charset_descriptor_invalid",
                                  charset.canonical_name);
@@ -1550,7 +1573,7 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
             ResourceRelationshipKey(default_collation->charset_name) !=
                 ResourceRelationshipKey(charset.canonical_name) ||
             (durable_identities_present &&
-             (charset.default_collation_uuid.empty() ||
+             (charset.default_collation_uuid.is_nil() ||
               charset.default_collation_uuid !=
                   default_collation->resource_uuid))) {
           return ResourceSeedError(
@@ -1558,7 +1581,7 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
               "resource.seed_pack.charset_default_collation_invalid",
               charset.canonical_name);
         }
-      } else if (!charset.default_collation_uuid.empty()) {
+      } else if (!charset.default_collation_uuid.is_nil()) {
         return ResourceSeedError(
             "RESOURCE.VALIDATION.FAILED",
             "resource.seed_pack.charset_default_collation_invalid",
@@ -1578,7 +1601,8 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
           collation.family_version.empty() ||
           parent_charset == nullptr ||
           (durable_identities_present &&
-           (collation.resource_uuid.empty() || collation.charset_uuid.empty() ||
+           (!system_identity(collation.resource_uuid) ||
+            !resource_identities.insert(collation.resource_uuid).second || collation.charset_uuid.is_nil() ||
             parent_charset->resource_uuid != collation.charset_uuid))) {
         return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
                                  "resource.seed_pack.collation_descriptor_invalid",
@@ -1597,6 +1621,32 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
         return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
                                  "resource.seed_pack.default_collation_relationship_invalid",
                                  collation.canonical_name);
+      }
+    }
+    std::set<std::string> timezone_names;
+    for (const auto& timezone:image.timezones) {
+      if (timezone.canonical_name.empty() || timezone.source_path.empty() ||
+          !timezone_names.insert(timezone.canonical_name).second || timezone.resource_epoch!=image.resource_epoch ||
+          timezone.family_epoch!=image.timezone_epoch || timezone.family_version!=image.timezone_version ||
+          (durable_identities_present && (!system_identity(timezone.resource_uuid) ||
+                                         !resource_identities.insert(timezone.resource_uuid).second)))
+        return ResourceSeedError("RESOURCE.VALIDATION.FAILED","resource.seed_pack.timezone_descriptor_invalid");
+    }
+    if (durable_identities_present) {
+      for (const auto& alias : image.aliases) {
+        bool valid_target = false;
+        if (alias.family == ResourceSeedFamily::charset) {
+          valid_target = std::any_of(image.charsets.begin(), image.charsets.end(),
+              [&](const auto& row) { return row.resource_uuid == alias.canonical_resource_uuid; });
+        } else if (alias.family == ResourceSeedFamily::collation) {
+          valid_target = std::any_of(image.collations.begin(), image.collations.end(),
+              [&](const auto& row) { return row.resource_uuid == alias.canonical_resource_uuid; });
+        } else if (alias.family == ResourceSeedFamily::timezone_tables || alias.family == ResourceSeedFamily::timezone_source) {
+          valid_target = std::any_of(image.timezones.begin(),image.timezones.end(),
+              [&](const auto& row){return row.resource_uuid==alias.canonical_resource_uuid;});
+        }
+        if (!valid_target) return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
+                                                    "resource.seed_pack.alias_target_invalid");
       }
     }
   }
@@ -1820,8 +1870,8 @@ ResourceSeedAliasResolutionResult ResolveResourceSeedAlias(const ResourceSeedCat
         selected = &record;
         continue;
       }
-      const bool bound = !selected->canonical_resource_uuid.empty() ||
-                         !record.canonical_resource_uuid.empty();
+      const bool bound = !selected->canonical_resource_uuid.is_nil() ||
+                         !record.canonical_resource_uuid.is_nil();
       const bool same_target = bound
           ? selected->canonical_resource_uuid == record.canonical_resource_uuid
           : (fold_case ? LowerAscii(selected->canonical_name) : selected->canonical_name) ==
@@ -1855,9 +1905,9 @@ const ResourceSeedCharsetDescriptor* FindResourceSeedCharset(
   }
   const std::string canonical = LowerAscii(alias.alias.canonical_name);
   for (const auto& charset : image.charsets) {
-    if ((!alias.alias.canonical_resource_uuid.empty() &&
+    if ((!alias.alias.canonical_resource_uuid.is_nil() &&
          charset.resource_uuid == alias.alias.canonical_resource_uuid) ||
-        (alias.alias.canonical_resource_uuid.empty() &&
+        (alias.alias.canonical_resource_uuid.is_nil() &&
          LowerAscii(charset.canonical_name) == canonical)) {
       return &charset;
     }
@@ -1877,7 +1927,7 @@ const ResourceSeedCollationDescriptor* FindResourceSeedCollation(
   const auto alias = ResolveResourceSeedAlias(image, ResourceSeedFamily::collation, name);
   if (!alias.ok()) return nullptr;
   for (const auto& collation : image.collations) {
-    if (!alias.alias.canonical_resource_uuid.empty()) {
+    if (!alias.alias.canonical_resource_uuid.is_nil()) {
       if (collation.resource_uuid == alias.alias.canonical_resource_uuid) return &collation;
     } else if (LowerAscii(collation.canonical_name) == LowerAscii(alias.alias.canonical_name)) {
       return &collation;

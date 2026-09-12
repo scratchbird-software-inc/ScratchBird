@@ -47,7 +47,7 @@ bool IsExactCanonicalSessionUuid(const std::string& value) {
 
 std::string LowerResourceClass(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
+    return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
   });
   return value;
 }
@@ -130,10 +130,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         "durable_resource_seed_catalog_required");
   }
 
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::transaction,
-      request.context.transaction_uuid);
-  if (!parsed_transaction.ok()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.context.transaction_uuid)) {
     return ResourceResolutionFailure(
         request,
         "CATALOG.RESOURCE.TRANSACTION_INVALID",
@@ -150,7 +147,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
   }
   if (transaction_entry == nullptr ||
       transaction_entry->identity.transaction_uuid.value !=
-          parsed_transaction.value.value ||
+          request.context.transaction_uuid ||
       !IsResourceReadableTransactionState(transaction_entry->state)) {
     return ResourceResolutionFailure(
         request,
@@ -161,8 +158,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
 
   if (!request.context.database_uuid.is_nil() &&
       request.context.database_uuid !=
-          scratchbird::core::uuid::UuidToString(
-              opened.state.database_uuid.value)) {
+          opened.state.database_uuid.value) {
     return ResourceResolutionFailure(
         request,
         "CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
@@ -703,16 +699,11 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                 "catalog.resource.uuid_required",
                 resource_family + "_uuid_required");
   }
-  const auto parsed_resource = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::object,
-      resource_uuid);
-  if (!parsed_resource.ok()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(resource_uuid)) {
     return fail("CATALOG.RESOURCE.UUID_INVALID",
                 "catalog.resource.uuid_invalid",
                 resource_family + "_uuid_malformed");
   }
-  const std::string canonical_resource_uuid =
-      scratchbird::core::uuid::UuidToString(parsed_resource.value.value);
 
   if (context.database_path.empty()) {
     return fail("CATALOG.RESOURCE.DATABASE_REQUIRED",
@@ -744,10 +735,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                 "durable_resource_seed_catalog_required");
   }
 
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid);
-  if (!parsed_transaction.ok()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid)) {
     return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
                 "catalog.resource.transaction_invalid",
                 "transaction_uuid_malformed");
@@ -762,7 +750,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
   }
   if (transaction_entry == nullptr ||
       transaction_entry->identity.transaction_uuid.value !=
-          parsed_transaction.value.value ||
+          context.transaction_uuid ||
       !IsResourceReadableTransactionState(transaction_entry->state)) {
     return fail("CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
                 "catalog.resource.transaction_not_active",
@@ -771,8 +759,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
 
   if (!context.database_uuid.is_nil() &&
       context.database_uuid !=
-          scratchbird::core::uuid::UuidToString(
-              opened.state.database_uuid.value)) {
+          opened.state.database_uuid.value) {
     return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
                 "catalog.resource.database_identity_mismatch",
                 "database_uuid_does_not_match_catalog_authority");
@@ -801,14 +788,14 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     const scratchbird::core::resources::ResourceSeedCharsetDescriptor*
         matched = nullptr;
     for (const auto& charset : image.charsets) {
-      if (charset.resource_uuid == canonical_resource_uuid) {
+      if (charset.resource_uuid == resource_uuid) {
         matched = &charset;
         break;
       }
     }
     if (matched == nullptr) {
       for (const auto& collation : image.collations) {
-        if (collation.resource_uuid == canonical_resource_uuid) {
+        if (collation.resource_uuid == resource_uuid) {
           return fail("CATALOG.RESOURCE.FAMILY_MISMATCH",
                       "catalog.resource.family_mismatch",
                       "expected=charset;actual=collation");
@@ -816,7 +803,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
       }
       return fail("CATALOG.RESOURCE.UUID_NOT_FOUND",
                   "catalog.resource.uuid_not_found",
-                  canonical_resource_uuid);
+                  scratchbird::core::uuid::UuidToString(resource_uuid));
     }
     descriptor.canonical_name = matched->canonical_name;
     descriptor.resource_uuid = matched->resource_uuid;
@@ -832,14 +819,14 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     const scratchbird::core::resources::ResourceSeedCollationDescriptor*
         matched = nullptr;
     for (const auto& collation : image.collations) {
-      if (collation.resource_uuid == canonical_resource_uuid) {
+      if (collation.resource_uuid == resource_uuid) {
         matched = &collation;
         break;
       }
     }
     if (matched == nullptr) {
       for (const auto& charset : image.charsets) {
-        if (charset.resource_uuid == canonical_resource_uuid) {
+        if (charset.resource_uuid == resource_uuid) {
           return fail("CATALOG.RESOURCE.FAMILY_MISMATCH",
                       "catalog.resource.family_mismatch",
                       "expected=collation;actual=charset");
@@ -847,7 +834,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
       }
       return fail("CATALOG.RESOURCE.UUID_NOT_FOUND",
                   "catalog.resource.uuid_not_found",
-                  canonical_resource_uuid);
+                  scratchbird::core::uuid::UuidToString(resource_uuid));
     }
     descriptor.canonical_name = matched->canonical_name;
     descriptor.resource_uuid = matched->resource_uuid;
@@ -920,10 +907,7 @@ EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
                 "catalog.resource.catalog_required",
                 "durable_resource_seed_catalog_required");
   }
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::transaction,
-      context.transaction_uuid);
-  if (!parsed_transaction.ok()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid)) {
     return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
                 "catalog.resource.transaction_invalid",
                 "transaction_uuid_malformed");
@@ -938,15 +922,14 @@ EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
   }
   if (transaction_entry == nullptr ||
       transaction_entry->identity.transaction_uuid.value !=
-          parsed_transaction.value.value ||
+          context.transaction_uuid ||
       !IsResourceReadableTransactionState(transaction_entry->state)) {
     return fail("CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
                 "catalog.resource.transaction_not_active",
                 "exact_active_transaction_identity_required");
   }
   if (!context.database_uuid.is_nil() &&
-      context.database_uuid != scratchbird::core::uuid::UuidToString(
-                                             opened.state.database_uuid.value)) {
+      context.database_uuid != opened.state.database_uuid.value) {
     return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
                 "catalog.resource.database_identity_mismatch",
                 "database_uuid_does_not_match_catalog_authority");

@@ -71,7 +71,7 @@ struct ResourceSeedAlias {
   ResourceSeedFamily family = ResourceSeedFamily::unknown;
   std::string alias;
   std::string canonical_name;
-  std::string canonical_resource_uuid;
+  scratchbird::core::platform::Uuid canonical_resource_uuid;
   std::string source_path;
 };
 
@@ -79,7 +79,7 @@ struct ResourceSeedAlias {
 // committed to that database's catalog.  The remaining fields are immutable
 // seed-pack authority and are retained across database reopen/reconstruction.
 struct ResourceSeedCharsetDescriptor {
-  std::string resource_uuid;
+  scratchbird::core::platform::Uuid resource_uuid;
   std::string canonical_name;
   std::string description;
   std::vector<std::string> aliases;
@@ -90,7 +90,7 @@ struct ResourceSeedCharsetDescriptor {
   std::string iana_name;
   std::vector<std::string> supported_by;
   std::string default_collation_name;
-  std::string default_collation_uuid;
+  scratchbird::core::platform::Uuid default_collation_uuid;
   std::string source_path;
   u64 resource_epoch = 0;
   u64 family_epoch = 0;
@@ -98,10 +98,10 @@ struct ResourceSeedCharsetDescriptor {
 };
 
 struct ResourceSeedCollationDescriptor {
-  std::string resource_uuid;
+  scratchbird::core::platform::Uuid resource_uuid;
   std::string canonical_name;
   std::string charset_name;
-  std::string charset_uuid;
+  scratchbird::core::platform::Uuid charset_uuid;
   bool default_for_charset = false;
   std::string default_authority;
   bool case_insensitive = false;
@@ -121,6 +121,13 @@ struct ResourceSeedFamilyVersion {
   std::string content_hash;
   u64 activation_epoch = 0;
   bool active = false;
+};
+
+struct ResourceSeedTimezoneDescriptor {
+  scratchbird::core::platform::Uuid resource_uuid;
+  std::string canonical_name, source_path;
+  u64 resource_epoch = 0, family_epoch = 0;
+  std::string family_version;
 };
 
 struct ResourceSeedRuntimeCacheEpoch {
@@ -198,6 +205,7 @@ struct ResourceSeedCatalogImage {
   std::vector<ResourceSeedAlias> aliases;
   std::vector<ResourceSeedCharsetDescriptor> charsets;
   std::vector<ResourceSeedCollationDescriptor> collations;
+  std::vector<ResourceSeedTimezoneDescriptor> timezones;
 };
 
 struct ResourceSeedLifecycleEvaluationResult {
