@@ -10,6 +10,7 @@
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/relational_identity_codec.hpp"
 #include "wire/contextual_operand_freeze.hpp"
+#include "wire/native_query_artifact.hpp"
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -23008,7 +23009,7 @@ bool Rcp079BuildAndBind(const std::string_view sql,
   }
   const bool accepted =
       exact_authoritative_text && exact_non_text_absent_width &&
-      !lowered.payload.empty() &&
+      lowered.payload.empty() && !lowered.operands.empty() &&
       !lowered.messages.has_errors() && verified.admitted &&
       !verified.messages.has_errors() &&
       lowered_operation_count ==
@@ -23155,7 +23156,7 @@ bool Rcp080WireBuildBindLowerVerify(
     *proof_detail = "lowering: " + ipc::MessageVectorToJson(lowered.messages) +
                     "; verification: " + ipc::MessageVectorToJson(verified.messages);
   }
-  return !lowered.payload.empty() && !lowered.messages.has_errors() &&
+  return lowered.payload.empty() && !lowered.operands.empty() && !lowered.messages.has_errors() &&
          verified.admitted && !verified.messages.has_errors();
 }
 
@@ -27855,7 +27856,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     if (metrics_) metrics_->Increment("sys.metrics.parsers.frontdoor_cache.attempts_total");
     if (auto cached = cache_->LookupEntry(frontdoor_cache_key)) {
       auto result = PipelineResultFromCacheEntry(*cached);
-      if (!submit || CanReuseFrontdoorCacheForSubmit(result)) {
+      if ((!submit && result.operation_family != "sblr.query.relational.v3") ||
+          CanReuseFrontdoorCacheForSubmit(result)) {
         if (metrics_) {
           metrics_->Increment("sys.metrics.parsers.frontdoor_cache.hits_total");
           metrics_->Increment("sys.metrics.parsers.frontdoor_cache.parse_lower_skips_total");
@@ -27932,6 +27934,16 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     return result;
   }
   auto ast = BuildAst(cst);
+  const bool compile_or_submit = submit || ast.native_relational.recognized();
+  if (ast.native_relational.recognized() && !session_.authenticated) {
+    PipelineResult result;
+    result.statement_hash = Fnv1a64(cst.source);
+    result.messages.diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.AUTH.REQUIRED", "ERROR",
+        "Native compilation requires an authenticated binding context.", "sbp_sbsql.wire"));
+    result.accepted = false;
+    return result;
+  }
   mark_phase("build_ast");
   std::vector<std::string> resolved_object_uuids;
   std::vector<ResolvedObjectReferenceSeed> resolved_object_reference_seeds;
@@ -28160,7 +28172,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       ast.native_relational.expressions, [](const auto& expression) {
         return expression.expression_kind == NativeExpressionAstKind::kVariable;
       });
-  if (submit && variable_count != 0 && variable_coordination == nullptr) {
+  if (compile_or_submit && variable_count != 0 && variable_coordination == nullptr) {
     scratchbird::engine::sblr::SblrVariableFrameBeginRequestV1 request;
     const auto operation = CanonicalUuidBytes(NewCreatedObjectUuid("OBJECT"));
     const auto transaction = CanonicalUuidBytes(session_.transaction_uuid);
@@ -28282,7 +28294,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     admitted_savepoint_handle_ = named->second;
   }
-  if (submit && (ast.native_relational.recognized() || canonical_txn_begin ||
+  if (compile_or_submit && (ast.native_relational.recognized() || canonical_txn_begin ||
                  canonical_txn_set_characteristics ||
                  canonical_txn_commit || canonical_txn_rollback ||
                  canonical_txn_savepoint || canonical_txn_release_savepoint ||
@@ -29639,7 +29651,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   mark_phase("bind_ast");
   auto lowered = LowerToSblr(bound, cst, session_);
   mark_phase("lower_to_sblr");
-  if (submit && native_statement_context.has_value() &&
+  if (compile_or_submit && native_statement_context.has_value() &&
       native_binding_context.has_value() && !bound.messages.has_errors() &&
       !lowered.messages.has_errors()) {
     const auto contextual_literal_count = std::ranges::count_if(
@@ -29782,6 +29794,13 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       mark_phase("contextual_text_profile_issue");
     }
   }
+  const bool native_query_candidate = lowered.operation_id == "query.execute";
+  bool native_candidate_verified = false;
+  if (native_query_candidate) {
+    auto verified = VerifySblrEnvelope(lowered);
+    native_candidate_verified = verified.admitted;
+    if (!verified.admitted) lowered.messages = std::move(verified.messages);
+  }
   if (!lowered.payload.empty() &&
       lowered.payload.size() > config_.resource_budget.max_sblr_envelope_bytes) {
     lowered.messages.diagnostics.push_back(MakeDiagnostic(
@@ -29836,7 +29855,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     conformance_summary->resolved_object_uuids =
         lowered.resolved_object_uuids;
   }
-  result.accepted = !lowered.messages.has_errors() && !lowered.payload.empty();
+  result.accepted = !lowered.messages.has_errors() &&
+      (native_query_candidate ? native_candidate_verified : !lowered.payload.empty());
   result.parser_executes_sql = false;
   result.cached_storage_authority = false;
   result.cached_authorization_authority = false;
@@ -30009,7 +30029,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     mark_phase("acquire_canonical_statement_context");
   }
   std::optional<ParserCanonicalSblrSubmission> native_submission;
-  if (submit && result.accepted && native_statement_context.has_value()) {
+  if (compile_or_submit && result.accepted && native_statement_context.has_value()) {
     const bool embedded_native_route =
         config_.embedded_engine_direct && embedded_client_ != nullptr;
     if (canonical_txn_set_characteristics) {
@@ -30329,6 +30349,22 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
     mark_phase("encode_native_canonical_submission");
   }
+  if (native_query_candidate && result.accepted) {
+    const auto artifact_status = native_submission && native_statement_context
+        ? PublishNativeQueryArtifact(*native_submission,
+              config_.resource_budget.max_sblr_envelope_bytes, &result.sblr_payload)
+        : NativeQueryArtifactStatus::kIncomplete;
+    if (artifact_status != NativeQueryArtifactStatus::kOk) {
+      result.accepted = false;
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          artifact_status == NativeQueryArtifactStatus::kOverBudget
+              ? "SBSQL.RESOURCE.SBLR_ENVELOPE_TOO_LARGE" : "SBLR.OPERAND_INVALID",
+          "ERROR", "Native compilation did not produce one complete canonical artifact.",
+          "sbp_sbsql.wire"));
+    }
+    if (conformance_summary) conformance_summary->payload_nonempty =
+        artifact_status == NativeQueryArtifactStatus::kOk;
+  }
   if (canonical_compile_output != nullptr) {
     if (!result.accepted || !native_statement_context.has_value() ||
         !native_submission.has_value() || !native_submission->complete()) {
@@ -30353,7 +30389,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
-  if (cursor_requested) {
+  if (cursor_requested && !native_query_candidate) {
     if (stream_row_count != 0) {
       InjectStreamRowCount(&result.sblr_payload, stream_row_count);
     } else {
@@ -30361,7 +30397,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
   }
   mark_phase("shape_pipeline_result");
-  if (result.accepted && cache_ != nullptr &&
+  if (result.accepted && cache_ != nullptr && !native_query_candidate &&
       (!submit || CanReuseFrontdoorCacheForSubmit(result))) {
     CacheEntry entry;
     entry.key = BuildFrontdoorLoweringCacheKey(config_, session_, sql);

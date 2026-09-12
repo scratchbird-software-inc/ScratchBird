@@ -114,7 +114,12 @@ std::string RenderMessageVectorSet(const MessageVectorSet& messages) {
 std::string RenderSblrEnvelope(const SblrEnvelope& envelope) {
   if (envelope.messages.has_errors()) return RenderMessageVectorSet(envelope.messages);
   std::ostringstream out;
-  out << "SBLR " << envelope.operation_family << ' ' << envelope.statement_hash << ' ' << envelope.payload << "\n";
+  if (envelope.operation_id == "query.execute") {
+    out << "LOWERING_CANDIDATE " << envelope.operation_family << ' '
+        << envelope.statement_hash << " operands=" << envelope.operands.size() << "\n";
+  } else {
+    out << "SBLR " << envelope.operation_family << ' ' << envelope.statement_hash << ' ' << envelope.payload << "\n";
+  }
   return out.str();
 }
 
@@ -153,13 +158,15 @@ std::string RenderPipelineResult(const PipelineResult& result) {
       !result.sblr_payload.empty() &&
       HasServerExecutionDiagnostic(result.messages)) {
     out << "PREPARED " << result.operation_family << ' ' << result.statement_hash << "\n";
-    out << "SBLR " << result.sblr_payload << "\n";
+    out << "SBLR " << (RequiresBinaryResultEncoding(result.sblr_payload)
+        ? HexEncodeResultPayload(result.sblr_payload) : result.sblr_payload) << "\n";
     out << RenderMessageVectorSet(result.messages);
     return out.str();
   }
   if (!result.accepted || result.messages.has_errors()) return RenderMessageVectorSet(result.messages);
   out << "PREPARED " << result.operation_family << ' ' << result.statement_hash << "\n";
-  out << "SBLR " << result.sblr_payload << "\n";
+  out << "SBLR " << (RequiresBinaryResultEncoding(result.sblr_payload)
+      ? HexEncodeResultPayload(result.sblr_payload) : result.sblr_payload) << "\n";
   if (!result.server_cursor_uuid.empty()) {
     out << "CURSOR " << result.server_cursor_uuid << ' ' << result.server_row_count << "\n";
   }

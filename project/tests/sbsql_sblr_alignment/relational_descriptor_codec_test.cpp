@@ -6,6 +6,7 @@
 #include "binder/descriptor_authority.hpp"
 #include "wire/contextual_operand_freeze.hpp"
 #include "lowering/relational_identity_operand.hpp"
+#include "wire/native_query_artifact.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -647,11 +648,114 @@ void TestContextIdentityOperands() {
   Require(wire::ValidateSblrEnvelope(user_value).ok, "system context policy rejected earlier-version user UUID data");
 }
 }
+namespace {
+void TestNativeArtifactPublication() {
+  namespace parser = scratchbird::parser::sbsql;
+  namespace sb = scratchbird::engine;
+  using Status = parser::NativeQueryArtifactStatus;
+  scratchbird::parser::ipc::ParserCanonicalSblrSubmission submission;
+  submission.statement_uuid = Id(60);
+  auto operation = wire::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE", "artifact.fixture");
+  operation.opcode_code = 4615; operation.parser_package_uuid = Id(61);
+  operation.registry_snapshot_uuid = Id(62); operation.result_shape = "query_execute_result";
+  operation.diagnostic_shape = "diagnostic_vector";
+  const auto frame = [&](bool begin) {
+    auto result = operation; result.operation_id = begin ? "engine.op.package_begin" : "engine.op.package_end";
+    result.opcode = begin ? "SBLR_PACKAGE_BEGIN" : "SBLR_PACKAGE_END"; result.opcode_code = begin ? 1 : 2;
+    wire::SblrOperand operand; operand.ordinal = 1; operand.name = "package_descriptor";
+    operand.type = begin ? "package.header" : "package.footer"; operand.value_kind = wire::SblrValueKind::descriptor_ref;
+    const auto id = Id(63); operand.value_body.assign(id.bytes.begin(), id.bytes.end());
+    result.operands = {operand}; return result;
+  };
+  wire::SblrOpcodeStream stream; stream.package_descriptor_uuid = Id(63);
+  stream.registry_snapshot_uuid = Id(62); stream.operations = {frame(true), operation, frame(false)};
+  submission.canonical_operation_bytes = wire::EncodeSblrOpcodeStream(stream);
+  Require(!submission.canonical_operation_bytes.empty(), "artifact SBOS fixture refused");
+  sb::SblrCanonicalContainer container;
+  const auto anchor_uuid = [&](std::size_t offset, Uuid id) {
+    std::copy(id.bytes.begin(), id.bytes.end(), container.canonical_anchor.begin() + offset);
+  };
+  anchor_uuid(0, Id(64)); anchor_uuid(16, Id(65)); anchor_uuid(32, Id(61));
+  anchor_uuid(76, Id(62)); anchor_uuid(116, submission.statement_uuid);
+  for (const auto offset : {48, 52, 60, 68, 92, 100}) container.canonical_anchor[offset] = 1;
+  container.operation_payload = submission.canonical_operation_bytes;
+  submission.canonical_container_bytes = sb::EncodeSblrContainer(container);
+  const auto number = [](std::uint64_t value, unsigned width) { Bytes out; Append(out, value, width); return out; };
+  const auto structure = [&](std::uint32_t format, std::uint32_t id) {
+    Bytes out; Append(out, format, 4); Append(out, 1, 2); Append(out, 0, 2);
+    Append(out, 4, 8); Append(out, id, 4); return out;
+  };
+  sb::SblrExecutionEnvelopeV1 ingress; auto& f = ingress.fields;
+  f[0].assign(submission.statement_uuid.bytes.begin(), submission.statement_uuid.bytes.end());
+  f[1] = number(1, 2); f[2] = number(0, 2); f[3] = number(0x00010001, 4); f[4] = number(1, 2);
+  f[5] = {1}; Append(f[5], submission.canonical_operation_bytes.size(), 8);
+  f[5].insert(f[5].end(), submission.canonical_operation_bytes.begin(), submission.canonical_operation_bytes.end());
+  f[6] = {0}; f[7] = {1}; Append(f[7], sb::SblrCrc32c(submission.canonical_operation_bytes.data(), submission.canonical_operation_bytes.size()), 4);
+  f[8] = number(submission.canonical_operation_bytes.size(), 8); f[9] = number(1, 2);
+  f[10] = {1}; f[11] = {1};
+  const auto dialect = Id(65); const auto user = Id(66);
+  f[10].insert(f[10].end(), dialect.bytes.begin(), dialect.bytes.end());
+  f[11].insert(f[11].end(), user.bytes.begin(), user.bytes.end());
+  f[12] = structure(0x1001, 1); f[13] = structure(0x1002, 2);
+  f[14] = {0}; f[15] = number(1, 8); f[16] = number(0, 4); f[17] = number(0, 4);
+  f[18] = number(0, 4); f[19] = {0}; f[20] = number(0, 4); f[21] = structure(0x1005, 5);
+  f[22] = {0}; f[23] = {0}; f[24] = {0}; f[25] = number(0, 2); f[26] = {0}; f[27] = {0};
+  submission.canonical_execution_envelope_bytes = sb::EncodeSblrExecutionEnvelopeV1(ingress);
+  Require(!submission.canonical_container_bytes.empty() && !submission.canonical_execution_envelope_bytes.empty(),
+          "canonical artifact fixtures refused");
+  const auto limit = std::max({submission.canonical_container_bytes.size(), submission.canonical_operation_bytes.size(),
+                               submission.canonical_execution_envelope_bytes.size()});
+  std::string output = "sentinel";
+  Require(parser::PublishNativeQueryArtifact(submission, limit, &output) == Status::kOk &&
+          output == std::string(submission.canonical_container_bytes.begin(), submission.canonical_container_bytes.end()),
+          "publication did not return exact canonical container bytes");
+  const auto refuse = [&](const auto& input, std::size_t budget, Status status) {
+    std::string sentinel = "unchanged";
+    Require(parser::PublishNativeQueryArtifact(input, budget, &sentinel) == status && sentinel == "unchanged",
+            "artifact refusal changed output or reported wrong status");
+  };
+  refuse(submission, limit - 1, Status::kOverBudget);
+  auto wrong = submission; wrong.canonical_operation_bytes.clear(); refuse(wrong, limit, Status::kIncomplete);
+  wrong = submission; wrong.canonical_container_bytes.clear(); refuse(wrong, limit, Status::kIncomplete);
+  wrong = submission; wrong.canonical_execution_envelope_bytes.clear(); refuse(wrong, limit, Status::kIncomplete);
+  wrong = submission; wrong.statement_uuid = Uuid{}; refuse(wrong, limit, Status::kIncomplete);
+  wrong = submission; wrong.statement_uuid.bytes[6] = 0x40; refuse(wrong, limit, Status::kInvalid);
+  for (auto member : {&scratchbird::parser::ipc::ParserCanonicalSblrSubmission::canonical_container_bytes,
+                      &scratchbird::parser::ipc::ParserCanonicalSblrSubmission::canonical_operation_bytes,
+                      &scratchbird::parser::ipc::ParserCanonicalSblrSubmission::canonical_execution_envelope_bytes}) {
+    wrong = submission; (wrong.*member)[0] ^= 1; refuse(wrong, limit, Status::kInvalid);
+    wrong = submission; (wrong.*member).pop_back(); refuse(wrong, limit, Status::kInvalid);
+  }
+  for (std::size_t byte = 0; byte < 16; ++byte) {
+    wrong = submission; wrong.statement_uuid.bytes[byte] ^= 1; refuse(wrong, limit, Status::kInvalid);
+    auto changed = container; changed.canonical_anchor[116 + byte] ^= 1;
+    wrong = submission; wrong.canonical_container_bytes = sb::EncodeSblrContainer(changed);
+    if (!wrong.canonical_container_bytes.empty()) refuse(wrong, limit, Status::kInvalid);
+    auto crossed = ingress; crossed.fields[0][byte] ^= 1;
+    wrong = submission; wrong.canonical_execution_envelope_bytes = sb::EncodeSblrExecutionEnvelopeV1(crossed);
+    if (!wrong.canonical_execution_envelope_bytes.empty()) refuse(wrong, limit, Status::kInvalid);
+  }
+  auto changed_stream = stream; changed_stream.operations[1].trace_key = "artifact.other";
+  wrong = submission; wrong.canonical_operation_bytes = wire::EncodeSblrOpcodeStream(changed_stream);
+  refuse(wrong, limit + 1024, Status::kInvalid);
+  std::size_t failure_sites = 0;
+  for (long site = 0; site < 1000; ++site) {
+    std::string sentinel = "unchanged"; fail_after = site;
+    try {
+      const auto status = parser::PublishNativeQueryArtifact(submission, limit, &sentinel); fail_after = -1;
+      Require(status == Status::kOk && sentinel == output, "artifact allocation sweep published partial result"); break;
+    } catch (const std::bad_alloc&) { fail_after = -1; ++faults; ++failure_sites;
+      Require(sentinel == "unchanged", "artifact allocation failure modified output"); }
+  }
+  Require(failure_sites > 0 && failure_sites < 1000, "artifact allocation sweep incomplete");
+}
+}
 int main() {
   try {
     TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
     TestReservationSnapshot();
     TestContextIdentityOperands();
+    TestNativeArtifactPublication();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {

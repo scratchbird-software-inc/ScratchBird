@@ -33204,54 +33204,6 @@ std::string_view ExpectedNativeAggregateSemanticVariant(
   return {};
 }
 
-std::string EscapeCanonicalSblrField(std::string_view value) {
-  std::string escaped;
-  escaped.reserve(value.size());
-  for (const char ch : value) {
-    switch (ch) {
-      case '\\': escaped += "\\\\"; break;
-      case '\n': escaped += "\\n"; break;
-      case '\r': escaped += "\\r"; break;
-      case '\t': escaped += "\\t"; break;
-      default: escaped += ch; break;
-    }
-  }
-  return escaped;
-}
-
-std::string EncodeCanonicalNativeRelationalEnvelope(
-    const SblrEnvelope& envelope,
-    const BoundStatement& bound) {
-  std::ostringstream out;
-  out << "operation_id=" << envelope.operation_id << '\n'
-      << "opcode=" << envelope.sblr_opcode << '\n'
-      << "result_shape=" << envelope.result_shape_key << '\n'
-      << "diagnostic_shape=" << envelope.diagnostic_shape_key << '\n'
-      << "parser_package_uuid="
-      << EscapeCanonicalSblrField(bound.parser_package_uuid) << '\n'
-      << "registry_snapshot_uuid="
-      << EscapeCanonicalSblrField(bound.command_registry_snapshot_uuid) << '\n'
-      << "trace_key=" << EscapeCanonicalSblrField(envelope.trace_key) << '\n'
-      << "contains_sql_text=false\n"
-      << "parser_resolved_names_to_uuids=true\n"
-      << "requires_security_context=true\n"
-      << "requires_transaction_context=true\n"
-      << "requires_cluster_authority=false\n"
-      << "source_artifact_policy_status=absent\n"
-      << "source_artifact_identity=\n"
-      << "source_artifact_hash=\n"
-      << "source_artifact_format=sblr.source_artifact_map.v1\n"
-      << "source_artifact_render_metadata_only=true\n"
-      << "source_artifact_contains_sql_text=false\n"
-      << "source_artifact_raw_sql_text_authoritative=false\n";
-  for (const auto& operand : envelope.operands) {
-    out << "operand=" << EscapeCanonicalSblrField(operand.type) << '\t'
-        << EscapeCanonicalSblrField(operand.name) << '\t'
-        << EscapeCanonicalSblrField(operand.value) << '\n';
-  }
-  return out.str();
-}
-
 // QOW-ROUTE-STAGE-QRY-005-V1
 // QOW-ROUTE-STAGE-QRY-006-V1
 // QOW-SOURCE-QRY-005-V1
@@ -33432,7 +33384,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_binding_v1", std::to_string(cte.relation_id),
          EncodeCanonicalHex(cte.semantic_variant_id) + "|-|-|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -33847,7 +33798,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::string(kMatchOrderingPropertyUuid),
          "1|2|-|" + std::to_string(output_expression_id) +
              ":1:2:-|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
   if (table_function_relation != native.relations.end()) {
@@ -34011,7 +33961,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         {"relational_table_function_v1", "1",
          JoinCanonicalHandleList(
              relation.table_function_argument_expression_ids)});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -34304,7 +34253,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
              source.object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -34653,7 +34601,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
              search_source->object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -34949,7 +34896,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
              vector_source->object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -35418,7 +35364,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                        : "SBLR_MODEL_SOURCE_V1") +
              "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
              "|" + time_series_source->object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -35698,7 +35643,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
              key_value_source->object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -35987,7 +35931,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                          : "SBLR_MODEL_SOURCE_V1") +
              "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
              "|" + graph_source->object_uuid + "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -36266,7 +36209,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                   ? *relation.bound_object_uuid
                   : "-") +
              "|-|-"});
-    envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
     return envelope;
   }
 
@@ -42197,7 +42139,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              join_property_uuids(window_dependency_property_uuids) + "|" +
              window_frame_descriptor_uuid});
   }
-  envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;
 }
 
@@ -49329,6 +49270,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
           &result.messages, "SBSQL.SBLR.QUERY_EXECUTE_AUTHORITY_INVALID",
           "canonical query execution must preserve engine-owned MGA and parser non-authority");
     }
+    if (!envelope.payload.empty()) {
+      AddVerifierError(&result.messages, "SBLR.OPERAND_INVALID",
+                       "native relational candidates cannot carry a legacy text envelope");
+    }
+    result.admitted = !result.messages.has_errors();
+    return result;
   }
   if (envelope.payload.find("\"query_envelope_kind\":\"vector_search\"") != std::string::npos) {
     if (envelope.operation_id != "nosql.vector_search" ||
