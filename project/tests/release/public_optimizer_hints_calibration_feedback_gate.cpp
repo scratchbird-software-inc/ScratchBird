@@ -131,11 +131,18 @@ opt::OptimizerRuntimeFeedback RuntimeFeedback() {
   return feedback;
 }
 
+plan::CanonicalPlannerUuid LifecycleFixtureId(unsigned ordinal) {
+  plan::CanonicalPlannerUuid id{};
+  id.bytes[0] = 1; id.bytes[6] = 0x70; id.bytes[8] = 0x80;
+  id.bytes[15] = static_cast<unsigned char>(ordinal);
+  return id;
+}
+
 opt::OptimizerStatisticsLifecycleRequest StatisticsLifecycleRequest() {
   opt::OptimizerStatisticsLifecycleRequest request;
   request.trigger = opt::OptimizerStatisticsLifecycleTrigger::kAgentAutoMaintenance;
-  request.relation_uuid = Id("relation.customer");
-  request.column_uuids = {Id("column.customer_id"), Id("column.region")};
+  request.relation_uuid = LifecycleFixtureId(1);
+  request.column_uuids = {LifecycleFixtureId(2), LifecycleFixtureId(3)};
   request.current_stats_epoch = 6203;
   request.request_stats_epoch = 6204;
   request.catalog_epoch = 6205;
@@ -143,10 +150,7 @@ opt::OptimizerStatisticsLifecycleRequest StatisticsLifecycleRequest() {
   request.policy_epoch = 6207;
   request.stats_visibility_epoch = 6208;
   request.current_freshness = opt::OptimizerStatsFreshnessState::kStale;
-  request.sampled_rows = 10000;
-  request.total_rows_estimate = 250000;
-  request.page_count = 2048;
-  request.average_row_bytes = 96;
+  // No observation is supplied: the planner must not fabricate a scan.
   request.rows_modified_since_stats = 75000;
   request.bulk_rows_written = 10000;
   request.stale_row_threshold = 1000;
@@ -197,7 +201,7 @@ plan::LogicalPlan LogicalPlan() {
                                         plan::PhysicalAccessKind::kNone,
                                         Id("operation.lookup"),
                                         "lookup");
-  node.required_object_uuids.push_back(Id("relation.customer"));
+node.required_object_uuids.push_back(LifecycleFixtureId(1));
   node.required_descriptors.push_back("sha256:descriptor-pcr062-customer");
   logical.nodes.push_back(std::move(node));
   return logical;
@@ -417,38 +421,44 @@ void StatisticsLifecyclePlansRefreshAndCatalogPersistence() {
           "statistics lifecycle should plan catalog update");
   Require(result.next_stats_epoch > request.request_stats_epoch,
           "statistics refresh should advance stats epoch");
-  Require(result.next_stats_visibility_epoch > request.stats_visibility_epoch,
-          "statistics refresh should advance metadata visibility epoch");
-  Require(result.has_planned_table_stats,
-          "statistics lifecycle should produce planned table stats");
-  Require(result.planned_table_stats.identity.object_uuid == request.relation_uuid,
-          "planned stats should remain UUID scoped");
-  Require(result.planned_table_stats.identity.transaction_visibility_epoch ==
-              result.next_stats_visibility_epoch,
-          "planned stats should carry visibility epoch metadata");
+  Require(result.next_stats_visibility_epoch == request.stats_visibility_epoch,
+          "statistics refresh planning must preserve captured MGA visibility");
+  Require(!result.observed_table_stats,
+          "statistics lifecycle fabricated an observation");
+  Require(result.relation_uuid == request.relation_uuid,
+          "refresh recipe lost binary relation binding");
   Require(result.histogram_rebuild && result.mcv_rebuild,
           "statistics lifecycle should plan histogram and MCV rebuilds");
   Require(!result.row_visibility_semantics_changed &&
               !result.transaction_finality_semantics_changed,
           "statistics lifecycle must not alter row visibility or transaction finality");
   Require(Contains(result.evidence, "catalog_stats_epoch_persist=planned"),
-          "statistics lifecycle should prove catalog stats epoch persistence");
+          "statistics lifecycle should describe planned catalog stats epoch persistence");
   Require(Contains(result.evidence,
                    "mga_finality_authority=engine_transaction_inventory"),
           "statistics lifecycle should preserve MGA finality authority");
 
   const auto serialized = opt::SerializeOptimizerStatisticsLifecycleEvidence(result);
-  Require(ContainsText(serialized, "catalog_update_planned=true"),
-          "serialized lifecycle evidence should expose catalog persistence plan");
-  Require(ContainsText(serialized, "row_visibility_semantics_changed=false"),
-          "serialized lifecycle evidence should reject visibility overclaim");
-  Require(ContainsText(serialized, "transaction_finality_semantics_changed=false"),
-          "serialized lifecycle evidence should reject finality overclaim");
+  Require(ContainsText(serialized, "optimizer-statistics-lifecycle-v1"),
+          "serialized lifecycle evidence must use the framed binary contract");
+  const auto flag_offset = 8 + std::string_view("optimizer-statistics-lifecycle-v1").size() +
+      3 * 8 + 16 + 8 + request.column_uuids.size() * 16 + 2 * 8;
+  const auto encoded_flag = [&](std::size_t index) {
+    const auto offset = flag_offset + index * 8;
+    Require(offset + 8 <= serialized.size(), "truncated lifecycle flag binding");
+    std::uint64_t value = 0;
+    for (unsigned byte = 0; byte != 8; ++byte)
+      value |= std::uint64_t(static_cast<unsigned char>(serialized[offset + byte])) << (byte * 8);
+    return value;
+  };
+  Require(encoded_flag(5) == 1, "binary binding lost catalog update plan");
+  Require(encoded_flag(7) == 0, "binary binding claimed visibility change");
+  Require(encoded_flag(8) == 0, "binary binding claimed finality change");
 
   auto unsafe = request;
   unsafe.parser_or_reference_authority = true;
   Require(opt::EvaluateOptimizerStatisticsLifecycle(unsafe).diagnostic_code ==
-              "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_REFERENCE_AUTHORITY",
+              "SB-STAT-0001",
           "statistics lifecycle must refuse parser or reference authority");
 }
 

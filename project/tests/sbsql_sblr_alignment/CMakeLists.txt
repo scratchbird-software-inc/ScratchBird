@@ -834,6 +834,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_access_statistics_binding PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_statistics_lifecycle
+    ../optimizer/optimizer_deficiency_odf_028_gate.cpp)
+  target_compile_features(sbsql_sblr_alignment_statistics_lifecycle PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_statistics_lifecycle PRIVATE
+    sb_engine_optimizer_contract_only)
+  add_test(NAME sbsql_sblr_alignment_statistics_lifecycle
+    COMMAND sbsql_sblr_alignment_statistics_lifecycle)
+  set_tests_properties(sbsql_sblr_alignment_statistics_lifecycle PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;metadata_only;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_statistics_invalidation
     ../optimizer/optimizer_enterprise_stats_invalidation_gate.cpp
     ../../src/engine/optimizer/optimizer_statistics_invalidation.cpp

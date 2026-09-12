@@ -1227,7 +1227,7 @@ add_executable(
   optimizer_deficiency_odf_028_gate
   optimizer_deficiency_odf_028_gate.cpp
 )
-target_compile_features(optimizer_deficiency_odf_028_gate PRIVATE cxx_std_20)
+target_compile_features(optimizer_deficiency_odf_028_gate PRIVATE cxx_std_23)
 target_link_libraries(
   optimizer_deficiency_odf_028_gate
   PRIVATE
@@ -1238,7 +1238,7 @@ add_test(
   COMMAND optimizer_deficiency_odf_028_gate
 )
 set_tests_properties(optimizer_deficiency_odf_028_gate PROPERTIES
-  LABELS "optimizer_deficiency_odf_028_gate;ODF-028;optimizer_deficiency;optimizer;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_deficiency_odf_028_gate;ODF-028;optimizer_deficiency;optimizer;component_regression;metadata_only;not_runtime_acceptance"
 )
 
 if(NOT TARGET sb_engine_internal_api)

@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::engine::optimizer {
@@ -38,16 +40,16 @@ enum class OptimizerStatisticsLifecycleDecision {
 };
 
 struct OptimizerStatisticsLifecycleRebuildPlan {
-  std::string column_uuid;
-  std::string statistic_uuid;
+  planner::CanonicalPlannerUuid column_uuid;
+  // The collector issues a statistic identity only when it creates a record.
   std::uint64_t target_entry_count = 0;
 };
 
 struct OptimizerStatisticsLifecycleRequest {
   OptimizerStatisticsLifecycleTrigger trigger =
       OptimizerStatisticsLifecycleTrigger::kManualAnalyze;
-  std::string relation_uuid;
-  std::vector<std::string> column_uuids;
+  planner::CanonicalPlannerUuid relation_uuid;
+  std::vector<planner::CanonicalPlannerUuid> column_uuids;
 
   std::uint64_t current_stats_epoch = 0;
   std::uint64_t request_stats_epoch = 0;
@@ -61,32 +63,45 @@ struct OptimizerStatisticsLifecycleRequest {
   bool stats_compatible = true;
   bool require_fresh_current_stats = false;
 
-  std::uint64_t sampled_rows = 0;
-  std::uint64_t total_rows_estimate = 0;
-  std::uint64_t page_count = 0;
-  std::uint64_t average_row_bytes = 0;
+  // Optional existing observation, never a forecast or a replacement record.
+  // Absence and an observed empty table are distinct.
+  std::optional<TableCardinalityStats> observed_table_stats;
   std::uint64_t rows_modified_since_stats = 0;
   std::uint64_t bulk_rows_written = 0;
   std::uint64_t stale_row_threshold = 1;
   std::uint64_t histogram_bucket_target = 0;
   std::uint64_t mcv_entry_target = 0;
 
-  bool policy_enabled = true;
-  bool security_context_present = true;
-  bool grants_proven = true;
-  bool mga_visibility_recheck_present = true;
-  bool security_recheck_present = true;
-  bool epoch_evidence_present = true;
+  // Caller-supplied planning prerequisites, not proof of runtime authority.
+  // Execution must resolve and recheck the owning security/catalog/agent context.
+  bool policy_enabled = false;
+  bool security_context_present = false;
+  bool grants_proven = false;
+  bool mga_visibility_recheck_present = false;
+  bool security_recheck_present = false;
+  bool epoch_evidence_present = false;
   bool advisory_only = true;
   bool parser_or_reference_authority = false;
-  bool agent_policy_safe = true;
-  bool catalog_descriptor_present = true;
-  bool catalog_write_admitted = true;
-  bool agent_runtime_registered = true;
-  bool agent_schedule_admitted = true;
+  bool agent_policy_safe = false;
+  bool catalog_descriptor_present = false;
+  bool catalog_write_admitted = false;
+  bool agent_runtime_registered = false;
+  bool agent_schedule_admitted = false;
+};
+
+enum class OptimizerStatisticsLifecycleFailure {
+  kNone, kInvalidRequest, kAllocationFailure, kInternalFailure,
 };
 
 struct OptimizerStatisticsLifecycleResult {
+  OptimizerStatisticsLifecycleFailure failure =
+      OptimizerStatisticsLifecycleFailure::kNone;
+  OptimizerStatisticsLifecycleTrigger trigger =
+      OptimizerStatisticsLifecycleTrigger::kManualAnalyze;
+  planner::CanonicalPlannerUuid relation_uuid;
+  std::vector<planner::CanonicalPlannerUuid> column_uuids;
+  std::uint64_t security_epoch = 0;
+  std::uint64_t policy_epoch = 0;
   OptimizerStatisticsLifecycleDecision decision =
       OptimizerStatisticsLifecycleDecision::kRefused;
   bool accepted = false;
@@ -94,18 +109,19 @@ struct OptimizerStatisticsLifecycleResult {
   bool histogram_rebuild = false;
   bool mcv_rebuild = false;
   bool advisor_metadata_only = false;
-  bool agent_action_safe = false;
   bool catalog_update_planned = false;
   bool agent_schedule_planned = false;
   bool row_visibility_semantics_changed = false;
   bool transaction_finality_semantics_changed = false;
+  // A proposed statistics epoch, NOT a committed generation. Catalog and MGA
+  // visibility epochs are captured unchanged; this evaluator has no writer.
   std::uint64_t next_stats_epoch = 0;
   std::uint64_t next_catalog_epoch = 0;
   std::uint64_t next_stats_visibility_epoch = 0;
-  std::string diagnostic_code;
+  std::string_view diagnostic_code;
+  std::string_view reason;
   std::vector<std::string> evidence;
-  TableCardinalityStats planned_table_stats;
-  bool has_planned_table_stats = false;
+  std::optional<TableCardinalityStats> observed_table_stats;
   std::vector<OptimizerStatisticsLifecycleRebuildPlan> histogram_plans;
   std::vector<OptimizerStatisticsLifecycleRebuildPlan> mcv_plans;
 };
@@ -113,7 +129,7 @@ struct OptimizerStatisticsLifecycleResult {
 const char* OptimizerStatisticsLifecycleTriggerName(
     OptimizerStatisticsLifecycleTrigger trigger);
 OptimizerStatisticsLifecycleResult EvaluateOptimizerStatisticsLifecycle(
-    const OptimizerStatisticsLifecycleRequest& request);
+    const OptimizerStatisticsLifecycleRequest& request) noexcept;
 std::string SerializeOptimizerStatisticsLifecycleEvidence(
     const OptimizerStatisticsLifecycleResult& result);
 

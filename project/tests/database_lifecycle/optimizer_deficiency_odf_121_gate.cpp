@@ -266,8 +266,8 @@ idx::IndexMaintenanceRequest IndexRebuildRequest(platform::TypedUuid index_uuid)
 opt::OptimizerStatisticsLifecycleRequest StatsRefreshRequest() {
   opt::OptimizerStatisticsLifecycleRequest request;
   request.trigger = opt::OptimizerStatisticsLifecycleTrigger::kPostBulkRefresh;
-  request.relation_uuid = NewUuidText(platform::UuidKind::object);
-  request.column_uuids.push_back(NewUuidText(platform::UuidKind::object));
+  request.relation_uuid = NewUuid(platform::UuidKind::object).value;
+  request.column_uuids.push_back(NewUuid(platform::UuidKind::object).value);
   request.current_stats_epoch = 4;
   request.request_stats_epoch = 4;
   request.catalog_epoch = 7;
@@ -275,10 +275,10 @@ opt::OptimizerStatisticsLifecycleRequest StatsRefreshRequest() {
   request.policy_epoch = 7;
   request.stats_visibility_epoch = 9;
   request.current_freshness = opt::OptimizerStatsFreshnessState::kStale;
-  request.sampled_rows = 64;
-  request.total_rows_estimate = 128;
-  request.page_count = 8;
-  request.average_row_bytes = 64;
+  request.policy_enabled = request.security_context_present = request.grants_proven =
+      request.mga_visibility_recheck_present = request.security_recheck_present =
+      request.epoch_evidence_present = request.catalog_descriptor_present =
+      request.catalog_write_admitted = true;
   request.bulk_rows_written = 32;
   request.histogram_bucket_target = 8;
   request.mcv_entry_target = 4;
@@ -663,7 +663,9 @@ void TestStatsBackfillCleanupAndCrashSafety() {
           agents::OnlineMaintenanceOperationKind::optimizer_stats_refresh,
           stats_op,
           database_uuid,
-          StatsRefreshRequest().relation_uuid,
+          // Independent legacy agent fixture, not execution of the recipe
+          // evaluated above. Its textual target API still needs migration.
+          NewUuidText(platform::UuidKind::object),
           4));
   Require(stats_started.ok(), "ODF-121 stats refresh start failed");
   auto stats_progress = agents::RecordOnlineMaintenanceProgress(
