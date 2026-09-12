@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-#include "core/uuid/uuid.hpp"
+#include "../../../core/uuid/uuid.hpp"
 #include <cstdint>
 #include <optional>
 #include <string>

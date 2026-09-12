@@ -12,6 +12,7 @@
 
 #include "engine/executor/executor_foundation.hpp"
 #include "engine/internal_api/api_types.hpp"
+#include "uuid.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,27 @@
 namespace scratchbird::engine::sblr {
 
 namespace exec = scratchbird::engine::executor;
+
+// Identity portion of expression-key receipt admission only. The issuer still
+// verifies logical/physical lineage, full descriptor/value authority, MGA,
+// cancellation, memory grants and actual key materialization independently.
+inline bool CanonicalSortExpressionIdentityBinding(
+    const scratchbird::engine::internal_api::EngineUuid& ordering_property_uuid,
+    const scratchbird::engine::internal_api::EngineUuid& deterministic_tie_evidence_uuid,
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const scratchbird::engine::internal_api::EngineUuid& collation_uuid) {
+  using scratchbird::core::uuid::IsEngineIdentityUuid;
+  return IsEngineIdentityUuid(ordering_property_uuid) &&
+      IsEngineIdentityUuid(deterministic_tie_evidence_uuid) &&
+      ordering_property_uuid != deterministic_tie_evidence_uuid &&
+      IsEngineIdentityUuid(descriptor.descriptor_uuid) &&
+      IsEngineIdentityUuid(descriptor.type_uuid) &&
+      (collation_uuid.is_nil() || IsEngineIdentityUuid(collation_uuid)) &&
+      descriptor.collation_uuid == collation_uuid &&
+      deterministic_tie_evidence_uuid != descriptor.descriptor_uuid &&
+      deterministic_tie_evidence_uuid != descriptor.type_uuid &&
+      deterministic_tie_evidence_uuid != collation_uuid;
+}
 
 struct PreparedSortExpression {
   std::uint32_t expression_id{0};
@@ -40,7 +62,7 @@ struct PreparedSortRoot {
   std::vector<PreparedSortExpression> expressions;
   exec::DescriptorBatch expression_input_batch;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
-  std::string ordering_property_uuid;
+  scratchbird::engine::internal_api::EngineUuid ordering_property_uuid;
   std::string detail;
 };
 
@@ -63,8 +85,8 @@ bool MaterializeExpressionSortBatch(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveExpressionSortRegistration(
     PreparedSortRoot prepared,
-    std::string deterministic_tie_evidence_uuid,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid deterministic_tie_evidence_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_pair_comparisons,
     scratchbird::engine::internal_api::TypedRelationalDag relational_dag,

@@ -149,7 +149,7 @@ bool EvaluateCanonicalQuantifiedSubqueryTruth(
 // SEARCH_KEY: SB_ENGINE_CANONICAL_QUERY_RELATIONAL_REGISTRATION_AUTHORITY
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
     std::vector<std::size_t> projected_columns,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context,
@@ -344,7 +344,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveQueryDistinctRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_value_comparisons,
     api::EngineRequestContext mga_context) {
@@ -452,7 +452,7 @@ MakeLiveQueryDistinctRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::uint64_t row_limit,
     const std::uint64_t row_offset,
     const bool fetch_first_rows_only,
@@ -613,7 +613,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context,
@@ -820,7 +820,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
     exec::ExecutorColumnDescriptor result_column,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context,
     const api::EngineRequestContext* borrowed_mga_context,
@@ -840,7 +840,6 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   };
   if (!strict_dispatcher_memory ||
       !account_string(result_column.stable_name) ||
-      !account_string(result_column.descriptor.descriptor_uuid) ||
       !account_string(result_column.descriptor.descriptor_kind) ||
       !account_string(result_column.descriptor.canonical_type_name) ||
       !account_string(result_column.descriptor.encoded_descriptor)) {
@@ -1015,8 +1014,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
-    std::string deterministic_tie_evidence_uuid,
-    std::string capability_uuid,
+    api::EngineUuid deterministic_tie_evidence_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_pair_comparisons,
     api::EngineRequestContext mga_context,
@@ -1027,7 +1026,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
   std::uint64_t registration_retained_bytes =
       strict_dispatcher_memory
           ? sizeof(std::vector<exec::CanonicalDescriptorOrderTerm>) +
-                sizeof(std::string) + sizeof(api::EngineRequestContext) +
+                sizeof(api::EngineUuid) + sizeof(api::EngineRequestContext) +
                 8 * sizeof(void*) + 512
           : 0;
   const auto account_string = [&](const std::string& value) {
@@ -1042,13 +1041,11 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
                        sizeof(exec::CanonicalDescriptorOrderTerm),
                        &order_term_bytes) ||
       !CheckedAdd(registration_retained_bytes, order_term_bytes,
-                  &registration_retained_bytes) ||
-      !account_string(deterministic_tie_evidence_uuid)) {
+                  &registration_retained_bytes)) {
     registration_retained_bytes = 0;
   }
   for (const auto& term : order_terms) {
     if (registration_retained_bytes == 0 ||
-        !account_string(term.collation_uuid) ||
         !account_string(term.text_seed.seed_pack_name) ||
         !account_string(term.text_seed.seed_pack_version) ||
         !account_string(term.text_seed.charset_name) ||
@@ -1231,7 +1228,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
 
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveMatchRecognizeRegistration(
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_partition_rows,
     const std::size_t maximum_active_states,
     const std::size_t maximum_output_rows,
@@ -1456,7 +1453,7 @@ MakeLiveMatchRecognizeRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveCardinalitySubqueryRegistration(
     LiveCardinalitySubqueryRegistrationProfile profile,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
@@ -1615,7 +1612,7 @@ MakeLiveCardinalitySubqueryRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLivePredicateSubqueryRegistration(
     LivePredicateSubqueryRegistrationProfile prepared,
-    std::string capability_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     api::EngineRequestContext mga_context) {

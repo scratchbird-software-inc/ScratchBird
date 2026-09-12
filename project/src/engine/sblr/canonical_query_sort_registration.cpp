@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_query_sort_registration.hpp"
+#include "uuid.hpp"
 
 #include "canonical_query_descriptor_support.hpp"
 #include "canonical_query_physical_registration.hpp"
@@ -230,8 +231,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const exec::TypedPhysicalNodeDag& physical_dag,
       const std::uint64_t selected_physical_node_id,
       const std::vector<exec::CanonicalDescriptorOrderTerm>& order_terms,
-      const std::string& ordering_property_uuid,
-      const std::string& deterministic_tie_evidence_uuid,
+      const api::EngineUuid& ordering_property_uuid,
+      const api::EngineUuid& deterministic_tie_evidence_uuid,
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority) {
@@ -251,8 +252,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const exec::TypedPhysicalNodeDag& physical_dag,
       const std::uint64_t selected_physical_node_id,
       const std::vector<exec::CanonicalDescriptorOrderTerm>& order_terms,
-      const std::string& ordering_property_uuid,
-      const std::string& deterministic_tie_evidence_uuid,
+      const api::EngineUuid& ordering_property_uuid,
+      const api::EngineUuid& deterministic_tie_evidence_uuid,
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
@@ -292,8 +293,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const exec::TypedPhysicalNodeDag& physical_dag,
       const std::uint64_t selected_physical_node_id,
       const std::vector<exec::CanonicalDescriptorOrderTerm>& order_terms,
-      const std::string& ordering_property_uuid,
-      const std::string& deterministic_tie_evidence_uuid,
+      const api::EngineUuid& ordering_property_uuid,
+      const api::EngineUuid& deterministic_tie_evidence_uuid,
       const std::size_t maximum_pair_comparisons,
       const std::uint64_t maximum_order_key_batch_bytes,
       const exec::CanonicalExecutionMgaAuthority& mga_authority,
@@ -345,8 +346,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       result.diagnostic = before;
       return result;
     }
-    if (!CanonicalUuidText(ordering_property_uuid) ||
-        !CanonicalUuidText(deterministic_tie_evidence_uuid) ||
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(ordering_property_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(deterministic_tie_evidence_uuid) ||
         ordering_property_uuid == deterministic_tie_evidence_uuid) {
       return refuse(
           "expression ordering property and deterministic tie evidence are "
@@ -365,12 +366,12 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
             "sort.typed.expression-row.v1" ||
         selected_node->input_physical_node_ids.size() != 1 ||
         selected_node->delivered_property_uuids !=
-            std::vector<std::string>{ordering_property_uuid} ||
+            std::vector<api::EngineUuid>{ordering_property_uuid} ||
         selected_node->enforced_property_uuids !=
-            std::vector<std::string>{ordering_property_uuid} ||
+            std::vector<api::EngineUuid>{ordering_property_uuid} ||
         (!selected_node->required_property_uuids.empty() &&
          selected_node->required_property_uuids !=
-             std::vector<std::string>{ordering_property_uuid}) ||
+             std::vector<api::EngineUuid>{ordering_property_uuid}) ||
         relational_dag.bound_sblr_tree_uuid !=
             physical_dag.bound_sblr_tree_uuid ||
         maximum_pair_comparisons == 0 ||
@@ -476,9 +477,9 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
         logical_node->semantic_variant_id != "sort.required-order.v1" ||
         logical_node->bound_expression_ids != expression_ids ||
         logical_node->required_property_uuids !=
-            std::vector<std::string>{ordering_property_uuid} ||
+            std::vector<api::EngineUuid>{ordering_property_uuid} ||
         logical_node->delivered_property_uuids !=
-            std::vector<std::string>{ordering_property_uuid} ||
+            std::vector<api::EngineUuid>{ordering_property_uuid} ||
         property == relational_dag.properties.end() ||
         property->property_kind != api::RelationalPropertyKind::kOrdering ||
         property->origin_node_id != logical_node->node_id ||
@@ -502,9 +503,6 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
       const auto& property_term = property->ordering_terms[ordinal];
       const auto& order_term = order_terms[ordinal];
       const auto key_column = input_batch.columns.size() + ordinal;
-      const auto materialized_type_uuid = ExactEncodedDescriptorField(
-          expression.materialized_column.descriptor.encoded_descriptor,
-          "type_uuid");
       const bool ascending =
           property_term.direction ==
           api::RelationalPropertySortDirection::kAscending;
@@ -525,18 +523,10 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
           order_term.column != key_column ||
           order_term.expression_descriptor_id !=
               expression.materialized_column.descriptor_id ||
-          !materialized_type_uuid.has_value() ||
-          !CanonicalUuidText(
-              expression.materialized_column.descriptor.descriptor_uuid
-                  ) ||
-          !CanonicalUuidText(*materialized_type_uuid) ||
-          deterministic_tie_evidence_uuid ==
-              expression.materialized_column.descriptor.descriptor_uuid
-                   ||
-          deterministic_tie_evidence_uuid == *materialized_type_uuid ||
-          (!property_term.collation_uuid.empty() &&
-           deterministic_tie_evidence_uuid ==
-               property_term.collation_uuid)) {
+          !CanonicalSortExpressionIdentityBinding(
+              ordering_property_uuid, deterministic_tie_evidence_uuid,
+              expression.materialized_column.descriptor,
+              property_term.collation_uuid)) {
         return refuse(
             "expression order-key term differs from its typed relational "
             "property");
@@ -642,8 +632,8 @@ class CanonicalDescriptorSortKeyReceiptIssuer {
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveExpressionSortRegistration(
     PreparedSortRoot prepared,
-    std::string deterministic_tie_evidence_uuid,
-    std::string capability_uuid,
+    api::EngineUuid deterministic_tie_evidence_uuid,
+    api::EngineUuid capability_uuid,
     const std::size_t maximum_input_row_count,
     const std::size_t maximum_pair_comparisons,
     api::TypedRelationalDag relational_dag,
@@ -658,13 +648,14 @@ MakeLiveExpressionSortRegistration(
   const bool prepared_expression_ordering =
       prepared.expression_ordering && !prepared.expressions.empty() &&
       prepared.order_terms.size() == prepared.expressions.size() &&
-      !prepared.ordering_property_uuid.empty();
+      !prepared.ordering_property_uuid.is_nil();
   std::uint64_t registration_retained_bytes =
       strict_dispatcher_memory
           ? sizeof(std::vector<exec::CanonicalDescriptorOrderTerm>) +
                 sizeof(std::vector<PreparedSortExpression>) +
                 sizeof(CanonicalRelationalExpressionRuntimeServices) +
-                sizeof(api::EngineRequestContext) + 16 * sizeof(void*) + 1024
+                sizeof(api::EngineRequestContext) + 2 * sizeof(api::EngineUuid) +
+                16 * sizeof(void*) + 1024
           : 0;
   const auto account_array = [&](const std::size_t count,
                                  const std::size_t width) {
@@ -683,14 +674,11 @@ MakeLiveExpressionSortRegistration(
       !account_array(prepared.order_terms.capacity(),
                      sizeof(exec::CanonicalDescriptorOrderTerm)) ||
       !account_array(prepared.expressions.capacity(),
-                     sizeof(PreparedSortExpression)) ||
-      !account_string(prepared.ordering_property_uuid) ||
-      !account_string(deterministic_tie_evidence_uuid)) {
+                     sizeof(PreparedSortExpression))) {
     registration_retained_bytes = 0;
   }
   for (const auto& term : prepared.order_terms) {
     if (registration_retained_bytes == 0 ||
-        !account_string(term.collation_uuid) ||
         !account_string(term.text_seed.seed_pack_name) ||
         !account_string(term.text_seed.seed_pack_version) ||
         !account_string(term.text_seed.charset_name) ||
@@ -722,7 +710,6 @@ MakeLiveExpressionSortRegistration(
         !account_array(expression.row_binding.slots.capacity(),
                        sizeof(CanonicalRelationalExpressionRowSlotBinding)) ||
         !account_string(column.stable_name) ||
-        !account_string(column.descriptor.descriptor_uuid) ||
         !account_string(column.descriptor.descriptor_kind) ||
         !account_string(column.descriptor.canonical_type_name) ||
         !account_string(column.descriptor.encoded_descriptor)) {
@@ -731,8 +718,7 @@ MakeLiveExpressionSortRegistration(
     }
     if (expression.row_independent_value.has_value()) {
       const auto& value = *expression.row_independent_value;
-      if (!account_string(value.descriptor.descriptor_uuid) ||
-          !account_string(value.descriptor.descriptor_kind) ||
+      if (!account_string(value.descriptor.descriptor_kind) ||
           !account_string(value.descriptor.canonical_type_name) ||
           !account_string(value.descriptor.encoded_descriptor) ||
           !account_string(value.encoded_value) ||

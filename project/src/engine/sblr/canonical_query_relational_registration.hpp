@@ -69,7 +69,7 @@ struct CanonicalRelationalExpressionRuntimeServices;
 // engine-selected statement context.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
     std::vector<std::size_t> projected_columns,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     const scratchbird::engine::internal_api::EngineRequestContext*
@@ -85,7 +85,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveQueryDistinctRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_value_comparisons,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
@@ -96,7 +96,7 @@ MakeLiveQueryDistinctRegistration(
 // revalidation handle over the engine-selected statement context.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::uint64_t row_limit,
     std::uint64_t row_offset,
     bool fetch_first_rows_only,
@@ -112,7 +112,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // optimizer-published memory grant and can only revalidate MGA authority.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
     exec::ExecutorColumnDescriptor result_column,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     const scratchbird::engine::internal_api::EngineRequestContext*
@@ -125,8 +125,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
 // engine cancellation policy, and revalidation-only MGA authority.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
-    std::string deterministic_tie_evidence_uuid,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid deterministic_tie_evidence_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     std::size_t maximum_pair_comparisons,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
@@ -140,7 +140,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
 // engine cancellation policy, and revalidation-only MGA authority.
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveMatchRecognizeRegistration(
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_partition_rows,
     std::size_t maximum_active_states,
     std::size_t maximum_output_rows,
@@ -154,7 +154,7 @@ MakeLiveMatchRecognizeRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveCardinalitySubqueryRegistration(
     LiveCardinalitySubqueryRegistrationProfile profile,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
 
@@ -164,7 +164,7 @@ MakeLiveCardinalitySubqueryRegistration(
 exec::CanonicalPhysicalExecutorRegistration
 MakeLivePredicateSubqueryRegistration(
     LivePredicateSubqueryRegistrationProfile profile,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     CanonicalRelationalExpressionRuntimeServices expression_services,
     scratchbird::engine::internal_api::EngineRequestContext mga_context);
@@ -174,7 +174,7 @@ MakeLivePredicateSubqueryRegistration(
 // configuration and memory grants and can only revalidate MGA authority.
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
-    std::string capability_uuid,
+    scratchbird::engine::internal_api::EngineUuid capability_uuid,
     std::size_t maximum_input_row_count,
     scratchbird::engine::internal_api::EngineRequestContext mga_context,
     const scratchbird::engine::internal_api::EngineRequestContext*

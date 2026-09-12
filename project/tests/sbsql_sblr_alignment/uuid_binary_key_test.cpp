@@ -8,6 +8,7 @@
 #include "../../src/engine/executor/canonical_aggregate_registry.hpp"
 #include "../../src/engine/executor/runtime_identity.hpp"
 #include "../../src/engine/internal_api/query/expression_api.hpp"
+#include "../../src/engine/sblr/canonical_query_sort_registration.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -586,6 +587,64 @@ void Benchmark(const std::vector<Uuid>& source, const char* dataset, const char*
   });
 }
 
+void CanonicalSortBinaryIdentityContract() {
+  namespace query = scratchbird::engine::sblr;
+  namespace api = scratchbird::engine::internal_api;
+  static_assert(std::is_same_v<decltype(query::PreparedSortRoot::ordering_property_uuid),Uuid>);
+  const auto id=[](unsigned tail) {
+    return Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,static_cast<std::uint8_t>(tail)}};
+  };
+  const auto order=id(1),tie=id(2),descriptor_id=id(3),type=id(4),collation=id(5);
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid=descriptor_id;
+  descriptor.type_uuid=type;
+  descriptor.collation_uuid=collation;
+  unsigned checks=0;
+  const auto check=[&](bool actual,bool expected) {
+    ++checks; Require(actual==expected,"sort binary identity binding admitted a wrong identity");
+  };
+  const auto bound=[&](const api::EngineDescriptor& d,Uuid evidence,Uuid property,Uuid coll) {
+    return query::CanonicalSortExpressionIdentityBinding(property,evidence,d,coll);
+  };
+  const auto exact=[&](const api::EngineDescriptor& d){return bound(d,tie,order,collation);};
+  check(exact(descriptor),true);
+  auto copied=descriptor; copied.encoded_descriptor="type_uuid=019d0000-0000-5000-8000-000000000099";
+  // This identity-only guard must not parse a text shadow. Full descriptor
+  // validity remains a separate mandatory check in receipt issuance.
+  check(exact(copied),true);
+  copied.type_uuid={}; check(exact(copied),false);
+  copied=descriptor; copied.collation_uuid={}; check(exact(copied),false);
+  check(bound(copied,tie,order,{}),true);
+  for(const auto alias:{order,descriptor_id,type,collation,Uuid{}})
+    check(bound(descriptor,alias,order,collation),false);
+  check(bound(descriptor,tie,{},collation),false);
+  for(unsigned version=0;version<16;++version) {
+    for(unsigned slot=0;slot<5;++slot) {
+      auto altered=descriptor; auto property=order,evidence=tie,coll=collation;
+      Uuid* identities[]={&property,&evidence,&altered.descriptor_uuid,&altered.type_uuid,&coll};
+      identities[slot]->bytes[6]=static_cast<std::uint8_t>(version<<4);
+      if(slot==4)altered.collation_uuid=coll;
+      check(bound(altered,evidence,property,coll),version==7);
+    }
+  }
+  for(unsigned variant=0;variant<4;++variant) {
+    for(unsigned slot=0;slot<5;++slot) {
+      auto altered=descriptor; auto property=order,evidence=tie,coll=collation;
+      Uuid* identities[]={&property,&evidence,&altered.descriptor_uuid,&altered.type_uuid,&coll};
+      identities[slot]->bytes[8]=static_cast<std::uint8_t>(variant<<6);
+      if(slot==4)altered.collation_uuid=coll;
+      check(bound(altered,evidence,property,coll),variant==2);
+    }
+  }
+  // Distinct raw bytes remain distinct even when textual descriptor metadata
+  // or a shared prefix would otherwise collapse the identity.
+  for(unsigned byte=0;byte<16;++byte) {
+    auto changed=tie; changed.bytes[15]=0x60; changed.bytes[byte]^=1;
+    check(bound(descriptor,changed,order,collation),true);
+  }
+  std::cout << "canonical_sort_binary_identity checks=" << checks << '\n';
+}
+
 int main(int argc, char** argv) {
   try {
     const auto epoch_millis = [] {
@@ -630,6 +689,7 @@ int main(int argc, char** argv) {
       Require(uuid::EngineIdentityPathComponent(changed).has_value() == (variant == 2),
               "invalid system variant gained an owner path");
     }
+    CanonicalSortBinaryIdentityContract();
     TypedDescriptorBinaryIdentityContract();
     AggregateRegistryBinaryIdentityContract();
     BinaryIdentityDecodeContract();
