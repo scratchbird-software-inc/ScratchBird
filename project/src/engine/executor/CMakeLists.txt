@@ -44,6 +44,17 @@ if(NOT TARGET sb_engine_gpu_acceleration)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../gpu_acceleration ${CMAKE_CURRENT_BINARY_DIR}/engine_gpu_acceleration)
 endif()
 
+add_library(sb_engine_collated_scalar_compare STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api/query/collated_scalar_compare.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../sblr/relational_descriptor_codec.cpp)
+target_compile_features(sb_engine_collated_scalar_compare PUBLIC cxx_std_20)
+target_include_directories(sb_engine_collated_scalar_compare PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api
+  ${CMAKE_CURRENT_SOURCE_DIR}/../..
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes)
+target_link_libraries(sb_engine_collated_scalar_compare PUBLIC
+  sb_core_datatypes sb_core_uuid)
+
 # RCP-023-CMAKE-CANONICAL-TYPED-EXPRESSION-RUNTIME-V1
 # This lower contract is shared by executor consumers and the higher internal
 # API. Keeping it below both targets prevents a circular static-archive link.
@@ -62,7 +73,7 @@ if(NOT TARGET sb_engine_typed_scalar_descriptor_contract)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
   )
   target_link_libraries(sb_engine_typed_scalar_descriptor_contract PUBLIC
-    sb_core_datatypes
+    sb_core_datatypes sb_engine_collated_scalar_compare
   )
 endif()
 

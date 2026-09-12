@@ -29,6 +29,7 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_advanced_family.hpp"
 #include "datatype_document.hpp"
 #include "domain_support/domain_store.hpp"
@@ -479,76 +480,6 @@ bool QowPreserveInvalidDescriptorStateAndCoerceV1(
   }
   *output_value = std::move(coerced);
   *cast_category = std::move(category);
-  return true;
-}
-
-// QOW-SOURCE-QRY-008-COLLATION-V1
-bool QowCompareCanonicalCollatedScalarsV1(
-    const EngineTypedValue& left_value,
-    const EngineTypedValue& right_value,
-    const std::string& collation_uuid,
-    const EngineApiU64 resource_epoch,
-    const EngineApiU64 collation_epoch,
-    const scratchbird::core::datatypes::DatatypeTextSeedAuthority& text_seed,
-    int* comparison,
-    std::string* refusal_detail) {
-  namespace dt = scratchbird::core::datatypes;
-  if (comparison == nullptr || refusal_detail == nullptr) return false;
-  *comparison = 0;
-  refusal_detail->clear();
-  const std::string left_collation = QowCanonicalDescriptorFieldV1(
-      left_value.descriptor.encoded_descriptor, "collation_uuid");
-  const std::string right_collation = QowCanonicalDescriptorFieldV1(
-      right_value.descriptor.encoded_descriptor, "collation_uuid");
-  if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
-      !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
-      left_value.descriptor.descriptor_kind != "scalar" ||
-      right_value.descriptor.descriptor_kind != "scalar" ||
-      dt::CanonicalTypeIdFromStableName(
-          left_value.descriptor.canonical_type_name) !=
-          dt::CanonicalTypeId::character ||
-      dt::CanonicalTypeIdFromStableName(
-          right_value.descriptor.canonical_type_name) !=
-          dt::CanonicalTypeId::character ||
-      !QowCanonicalUuidV1(collation_uuid) || left_collation != collation_uuid ||
-      right_collation != collation_uuid) {
-    *refusal_detail =
-        "canonical character descriptors do not share the bound collation UUID";
-    return false;
-  }
-  if (resource_epoch == 0 || collation_epoch == 0 || !text_seed.active ||
-      text_seed.seed_pack_name.empty() || text_seed.seed_pack_version.empty() ||
-      text_seed.charset_name.empty() || text_seed.collation_name.empty()) {
-    *refusal_detail = "bound collation resource authority is incomplete";
-    return false;
-  }
-  if (left_value.isSqlNull() || right_value.isSqlNull()) {
-    *refusal_detail =
-        "SQL NULL comparison requires the shared three-valued predicate seam";
-    return false;
-  }
-  if (left_value.state != EngineValueState::value ||
-      right_value.state != EngineValueState::value || left_value.is_null ||
-      right_value.is_null) {
-    *refusal_detail = "collation comparison requires two non-NULL value states";
-    return false;
-  }
-  dt::DatatypeComparisonRequest request;
-  request.left.type_id = dt::CanonicalTypeId::character;
-  request.left.encoded_value = left_value.encoded_value;
-  request.right.type_id = dt::CanonicalTypeId::character;
-  request.right.encoded_value = right_value.encoded_value;
-  request.case_insensitive_character_compare =
-      text_seed.collation_case_insensitive;
-  request.text_seed = text_seed;
-  const auto compared = dt::CompareDatatypeValues(request);
-  if (!compared.ok()) {
-    *refusal_detail = compared.diagnostic.diagnostic_code.empty()
-                          ? "canonical collation comparison refused"
-                          : compared.diagnostic.diagnostic_code;
-    return false;
-  }
-  *comparison = compared.comparison;
   return true;
 }
 
@@ -1972,7 +1903,7 @@ EngineTypedValue RequestSecondValue(const EngineApiRequest& request, const Engin
 }
 
 EngineDescriptor RequestTargetDescriptor(const EngineApiRequest& request, const EngineDescriptor& target_descriptor) {
-  if (!target_descriptor_type_name.empty() || !target_descriptor.descriptor_uuid.is_nil()) {
+  if (!target_descriptor.canonical_type_name.empty() || !target_descriptor.descriptor_uuid.is_nil()) {
     return target_descriptor;
   }
   if (request.descriptors.size() >= 2) { return request.descriptors[1]; }
@@ -1981,7 +1912,7 @@ EngineDescriptor RequestTargetDescriptor(const EngineApiRequest& request, const 
 }
 
 EngineDescriptor RequestPrimaryDescriptor(const EngineApiRequest& request, const EngineDescriptor& descriptor) {
-  if (!descriptor_type_name.empty() || !descriptor.descriptor_uuid.is_nil() ||
+  if (!descriptor.canonical_type_name.empty() || !descriptor.descriptor_uuid.is_nil() ||
       !descriptor.encoded_descriptor.empty()) {
     return descriptor;
   }
@@ -2326,9 +2257,9 @@ EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionReques
       {"query_binding", "canonical_expression_reference"});
   result.evidence.push_back(
       {"statement_metadata_snapshot",
-       context.statement_metadata_snapshot_uuid});
+       scratchbird::core::uuid::UuidToString(context.statement_metadata_snapshot_uuid)});
   result.evidence.push_back(
-      {"bound_object_uuid", result.primary_object.uuid});
+      {"bound_object_uuid", scratchbird::core::uuid::UuidToString(result.primary_object.uuid)});
   return result;
 }
 
@@ -2372,7 +2303,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
     result.evidence.push_back({"datatype_cast", result.cast_category});
     result.evidence.push_back(
         {"canonical_descriptor_identity",
-         result.value.descriptor.descriptor_uuid});
+         scratchbird::core::uuid::UuidToString(result.value.descriptor.descriptor_uuid)});
     return result;
   }
   const auto source_type = TypeFromDescriptor(input.descriptor);
@@ -2458,10 +2389,6 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
                           ? (owned_right = RequestSecondValue(
                                  request, request.right_value))
                           : *request.borrowed_right_value;
-  const std::string left_collation = DescriptorField(
-      left.descriptor.encoded_descriptor, "collation_uuid");
-  const std::string right_collation = DescriptorField(
-      right.descriptor.encoded_descriptor, "collation_uuid");
   auto refuse = [&](std::string detail) {
     return ApiFailure<EngineCompareScalarValuesResult>(
         context,
@@ -2471,18 +2398,45 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
             "engine.query.typed_scalar_collation_refused",
             std::move(detail)));
   };
-  if (left_collation.empty() || left_collation != right_collation) {
-    return refuse("bound scalar collation UUID is absent or mismatched");
+  RelationalTypeDescriptor left_descriptor, right_descriptor;
+  if (!QowDecodeCanonicalTextDescriptorV1(left.descriptor, &left_descriptor) ||
+      !QowDecodeCanonicalTextDescriptorV1(right.descriptor, &right_descriptor) ||
+      left_descriptor.collation_uuid != right_descriptor.collation_uuid) {
+    return refuse("bound scalar binary descriptors are absent, invalid or mismatched");
   }
-  EngineUuid collation_uuid;
-  collation_uuid = left_collation;
-  const auto resolved = LookupEngineResourceDescriptorByUuid(
-      context, collation_uuid, "collation");
+  const auto live_descriptor = [&](const RelationalTypeDescriptor& descriptor) {
+    if (!context.security_context_present ||
+        descriptor.statement_receipt_uuid != context.statement_receipt_uuid ||
+        descriptor.datatype_catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+        descriptor.datatype_catalog_generation != context.datatype_catalog_generation ||
+        descriptor.datatype_registry_generation != context.datatype_registry_generation) return false;
+    const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        descriptor.datatype_catalog_snapshot_uuid, descriptor.datatype_catalog_generation,
+        descriptor.datatype_registry_generation, descriptor.descriptor_uuid, descriptor.descriptor_generation);
+    return identity.ok &&
+        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(identity.row.canonical_name) ==
+            scratchbird::core::datatypes::CanonicalTypeId::character &&
+        identity.row.type_uuid == descriptor.type_uuid &&
+        identity.row.type_generation == descriptor.type_generation &&
+        identity.row.codec_id == descriptor.codec_id &&
+        identity.row.codec_version == descriptor.codec_version &&
+        identity.row.codec_generation == descriptor.codec_generation;
+  };
+  if (!live_descriptor(left_descriptor) || !live_descriptor(right_descriptor))
+    return refuse("bound scalar descriptor differs from the live receipt/catalog authority");
+  const EngineUuid collation_uuid = *left_descriptor.collation_uuid;
+  const auto resolved = LookupEngineResourceDescriptorByUuid(context, collation_uuid, "collation");
   if (!resolved.ok || !resolved.resource_descriptor.present ||
-      resolved.resource_descriptor.resource_uuid != left_collation) {
+      resolved.resource_descriptor.resource_uuid != collation_uuid ||
+      resolved.resource_descriptor.resource_epoch != context.resource_epoch ||
+      resolved.resource_descriptor.resource_epoch == 0 ||
+      resolved.resource_descriptor.family_epoch == 0 ||
+      resolved.resource_descriptor.canonical_name.empty() ||
+      resolved.resource_descriptor.parent_canonical_name.empty() ||
+      resolved.resource_descriptor.seed_pack_name.empty() ||
+      resolved.resource_descriptor.seed_pack_version.empty()) {
     const std::string detail = resolved.diagnostic.code.empty()
-                                   ? "bound collation resource was not resolved"
-                                   : resolved.diagnostic.code;
+        ? "bound collation resource was not resolved" : resolved.diagnostic.code;
     return refuse(detail);
   }
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
@@ -2511,7 +2465,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
     result.collation_uuid = std::move(collation_uuid);
     result.collation_epoch = resolved.resource_descriptor.family_epoch;
     result.evidence.push_back(
-        {"canonical_collation_identity", left_collation});
+        {"canonical_collation_identity", scratchbird::core::uuid::UuidToString(collation_uuid)});
     result.evidence.push_back(
         {"collation_epoch", std::to_string(result.collation_epoch)});
     result.evidence.push_back(
@@ -2521,7 +2475,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
   int comparison = 0;
   std::string refusal_detail;
   if (!QowCompareCanonicalCollatedScalarsV1(
-          left, right, left_collation,
+          left, right, collation_uuid,
           resolved.resource_descriptor.resource_epoch,
           resolved.resource_descriptor.family_epoch, text_seed, &comparison,
           &refusal_detail)) {
@@ -2533,7 +2487,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
   result.collation_uuid = std::move(collation_uuid);
   result.collation_epoch = resolved.resource_descriptor.family_epoch;
   result.evidence.push_back(
-      {"canonical_collation_identity", left_collation});
+      {"canonical_collation_identity", scratchbird::core::uuid::UuidToString(collation_uuid)});
   result.evidence.push_back(
       {"collation_epoch", std::to_string(result.collation_epoch)});
   return result;
@@ -3106,7 +3060,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
          dt::DatatypeNumericOperationKindName(numeric_request.operation)});
     result.evidence.push_back(
         {"canonical_numeric_descriptor",
-         result.value.descriptor.descriptor_uuid});
+         scratchbird::core::uuid::UuidToString(result.value.descriptor.descriptor_uuid)});
     return result;
   }
 

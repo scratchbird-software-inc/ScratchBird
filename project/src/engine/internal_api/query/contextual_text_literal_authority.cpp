@@ -505,6 +505,8 @@ bool ResolveProjectedTargetDescriptor(
   }
   EngineDescriptor resolved;
   resolved.descriptor_uuid.bytes = selected->descriptor_uuid;
+  resolved.type_uuid.bytes = selected->type_uuid;
+  resolved.collation_uuid.bytes = selected->collation_uuid;
   // Public MGA projection rows retain the persisted descriptor class.  The
   // executor-facing value descriptor is the scalar view of that exact column;
   // its UUID, type and encoded authority remain byte-for-byte unchanged.
@@ -2304,6 +2306,8 @@ PrepareContextualTextLiteralAuthorityV2(
         return result;
       }
       runtime.value.descriptor.descriptor_uuid = graph_binding.exact_descriptor.descriptor_uuid;
+      runtime.value.descriptor.type_uuid = graph_binding.exact_descriptor.type_uuid;
+      runtime.value.descriptor.collation_uuid = *graph_binding.exact_descriptor.collation_uuid;
       runtime.value.descriptor.descriptor_kind = "scalar";
       runtime.value.descriptor.canonical_type_name = "text";
       runtime.value.descriptor.encoded_descriptor.assign(

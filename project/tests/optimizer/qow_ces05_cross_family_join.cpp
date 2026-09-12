@@ -22,6 +22,8 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include "engine/sblr/relational_descriptor_codec.hpp"
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
@@ -1882,15 +1884,31 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
                : "";
   }
   if (scenario == "JOIN-SCENARIO-COLLATION-V1") {
-    constexpr std::string_view collation_uuid =
-        "019f0000-0000-7400-8000-000000000841";
+    const api::EngineUuid collation_uuid{{0x01,0x9f,0,0,0,0,0x74,0,0x80,0,0,0,0,0,8,0x41}};
+    const auto identity = [](std::uint64_t id) {
+      api::EngineUuid result{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0}};
+      for (unsigned byte = 0; byte < 6; ++byte)
+        result.bytes[15 - byte] = static_cast<std::uint8_t>(id >> (byte * 8));
+      return result;
+    };
     const auto descriptor = [&](const std::uint64_t id) {
-      auto value = executor::MakeExecutorDescriptor(
-          "text", "type_uuid=" + Uuid(26'010) +
-                      ";nullability=non_null;collation_uuid=" +
-                      std::string(collation_uuid));
-      value.descriptor_uuid.canonical = Uuid(id);
-      value.descriptor_kind = "scalar";
+      api::RelationalTypeDescriptor bound;
+      bound.descriptor_id = static_cast<std::uint32_t>(id);
+      bound.descriptor_uuid = identity(id); bound.type_uuid = identity(26'010);
+      bound.collation_uuid = collation_uuid; bound.nullability = api::RelationalNullability::kNonNull;
+      bound.datatype_identity_authoritative = true;
+      bound.descriptor_generation = bound.type_generation = bound.codec_generation = 1;
+      bound.datatype_catalog_generation = bound.datatype_registry_generation = 1;
+      bound.codec_id = "datatype.text.utf8.v1"; bound.codec_version = 1;
+      bound.statement_receipt_uuid = identity(26'013);
+      bound.datatype_catalog_snapshot_uuid = identity(26'014);
+      std::vector<std::uint8_t> bytes;
+      if (!sblr::EncodeRelationalTypeDescriptorV1(bound, &bytes))
+        throw std::runtime_error("invalid binary collation fixture");
+      api::EngineDescriptor value;
+      value.descriptor_uuid = bound.descriptor_uuid; value.descriptor_kind = "scalar";
+      value.type_uuid = bound.type_uuid; value.collation_uuid = collation_uuid;
+      value.canonical_type_name = "text"; value.encoded_descriptor.assign(bytes.begin(), bytes.end());
       return value;
     };
     datatypes::DatatypeTextSeedAuthority authority;
@@ -1905,7 +1923,7 @@ std::string ExecutePrejoinSemanticReceipt(const std::string_view scenario) {
     const bool accepted = api::QowCompareCanonicalCollatedScalarsV1(
         executor::MakeExecutorValue(descriptor(26'011), "A"),
         executor::MakeExecutorValue(descriptor(26'012), "a"),
-        std::string(collation_uuid), 31, 17, authority, &comparison,
+        collation_uuid, 31, 17, authority, &comparison,
         &refusal);
     return accepted && comparison == 0 && refusal.empty()
                ? "collation:unicode_ci:A=a:31:17"

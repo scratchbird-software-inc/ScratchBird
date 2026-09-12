@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "query/relational_type_descriptor.hpp"
 #include "datatype_operations.hpp"
 
 #include <cstdint>
@@ -162,10 +163,12 @@ bool QowPreserveInvalidDescriptorStateAndCoerceV1(
     std::string* cast_category,
     std::string* refusal_reason,
     std::string* refusal_detail);
+bool QowDecodeCanonicalTextDescriptorV1(
+    const EngineDescriptor& descriptor, RelationalTypeDescriptor* output);
 bool QowCompareCanonicalCollatedScalarsV1(
     const EngineTypedValue& left_value,
     const EngineTypedValue& right_value,
-    const std::string& collation_uuid,
+    const EngineUuid& collation_uuid,
     EngineApiU64 resource_epoch,
     EngineApiU64 collation_epoch,
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& text_seed,

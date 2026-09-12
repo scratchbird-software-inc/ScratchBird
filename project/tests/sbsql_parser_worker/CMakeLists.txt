@@ -353,7 +353,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_executable(qow_qry_008_collation_test_v1 qow_qry_008_collation.cpp)
   target_compile_features(qow_qry_008_collation_test_v1 PRIVATE cxx_std_20)
   target_link_libraries(qow_qry_008_collation_test_v1 PRIVATE
-    sb_qow_typed_scalar_descriptor_contract
+    sb_engine_collated_scalar_compare
   )
   add_test(NAME qow_qry_008_collation_v1 COMMAND qow_qry_008_collation_test_v1)
   set_tests_properties(qow_qry_008_collation_v1 PROPERTIES

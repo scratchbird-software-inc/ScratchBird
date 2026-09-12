@@ -22,6 +22,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
     TIMEOUT 60)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_binary_collation
+    ../sbsql_parser_worker/qow_qry_008_collation.cpp)
+  target_compile_features(sbsql_sblr_alignment_binary_collation PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_binary_collation PRIVATE
+    sb_engine_collated_scalar_compare)
+  add_test(NAME sbsql_sblr_alignment_binary_collation
+    COMMAND sbsql_sblr_alignment_binary_collation)
+  set_tests_properties(sbsql_sblr_alignment_binary_collation PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;collation;component_runtime;not_e2e"
+    TIMEOUT 60)
+  add_test(NAME sbsql_sblr_alignment_binary_collation_unicode
+    COMMAND sbsql_sblr_alignment_binary_collation --unicode)
+  set_tests_properties(sbsql_sblr_alignment_binary_collation_unicode PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;collation;unicode;required_regression;not_e2e"
+    TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_parser_profile_identity
     parser_profile_identity_test.cpp
     ../../src/parsers/sbsql_worker/metrics/parser_metrics.cpp
