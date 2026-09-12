@@ -166,7 +166,7 @@ const char* ExtendedOptimizerStatisticKindName(ExtendedOptimizerStatisticKind ki
     case ExtendedOptimizerStatisticKind::kFkPkJoinCardinality: return "fk_pk_join_cardinality";
     case ExtendedOptimizerStatisticKind::kDocumentPathBridge: return "document_path_bridge";
   }
-  return "multi_column_ndv";
+  return "unknown";
 }
 
 bool OptimizerTableStatsAreUsable(const TableCardinalityStats& stats) {
@@ -243,12 +243,14 @@ OptimizerStatsPublicationResult OptimizerStatisticsStore::PublishRelationSnapsho
     if (!filespaces.emplace(record.filespace_uuid, record.page_family).second) return {};
 
   std::lock_guard store_lock(mutex_);
+  bool conflicting_identity = false;
   const auto current_family = [&](const auto& records) {
     for (const auto& record : records) {
       if (record.identity.object_uuid == relation) {
         if (record.identity.stats_epoch >= snapshot.stats_epoch ||
             record.identity.catalog_epoch > snapshot.catalog_epoch) return false;
       } else if (statistic_ids.contains(record.identity.statistic_uuid)) {
+        conflicting_identity = true;
         return false;
       }
     }
@@ -257,7 +259,7 @@ OptimizerStatsPublicationResult OptimizerStatisticsStore::PublishRelationSnapsho
   if (!current_family(tables_) || !current_family(columns_) || !current_family(histograms_) ||
       !current_family(mcv_) || !current_family(extended_stats_) || !current_family(indexes_) ||
       !current_family(expressions_))
-    return {PublicationStatus::kStaleEpoch};
+    return {conflicting_identity ? PublicationStatus::kInvalidSnapshot : PublicationStatus::kStaleEpoch};
   // An index cannot silently change its owning relation. Filespace statistics
   // are shared node metadata, not owned by whichever relation was analyzed.
   for (const auto& record : indexes_)
@@ -738,26 +740,39 @@ OptimizerPinnedStatsDescriptorCache& GlobalOptimizerPinnedStatsDescriptorCache()
 }
 
 std::optional<OptimizerStatisticsCatalog> OptimizerStatisticsStore::ToLegacyCatalog() const try {
-  std::lock_guard lock(mutex_);
+  // Projection creates no published snapshot identity.
+  return ProjectOptimizerStatsSnapshot(Snapshot({}));
+} catch (const std::bad_alloc&) {
+  return std::nullopt;
+} catch (const std::length_error&) {
+  return std::nullopt;
+}
+
+std::optional<OptimizerStatisticsCatalog> ProjectOptimizerStatsSnapshot(
+    const OptimizerStatsSnapshot& snapshot) try {
   OptimizerStatisticsCatalog catalog;
-  for (const auto& table : tables_) {
+  for (const auto& table : snapshot.tables) {
     if (!catalog.Add(MakeUnsignedStatistic("row_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("visible_row_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.visible_row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("relation_visible_version_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.visible_row_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("page_count", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.page_count, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("average_row_bytes", "relation", OptimizerStatisticTarget::Object(table.identity.object_uuid), table.average_row_bytes, table.identity.source, table.identity.stats_epoch, 0, table.identity.confidence, OptimizerStatsIdentityIsUsable(table.identity)))) return std::nullopt;
   }
-  for (const auto& column : columns_) {
+  for (const auto& column : snapshot.columns) {
     const bool usable = OptimizerStatsIdentityIsUsable(column.identity);
     if (!catalog.Add(MakeUnsignedStatistic("column_ndv", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.distinct_count, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
     if (!catalog.Add(MakeStatistic("column_null_fraction", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.null_fraction, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("column_average_width_bytes", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.average_width_bytes, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
     if (!catalog.Add(MakeStatistic("column_correlation", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.correlation, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable, false, OptimizerStatisticValueDomain::kSignedCorrelation))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("column_sample_rows", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.sample_rows, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeUnsignedStatistic("column_hll_estimated_distinct", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_estimated_distinct, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("column_hll_relative_error_ppm", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_relative_error * 1000000.0, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
+    if (column.hyperloglog_register_count != 0) {
+      const auto hll_confidence = column.hyperloglog_relative_error > 0.0 &&
+          column.identity.confidence == CostConfidence::kExact ? CostConfidence::kHigh : column.identity.confidence;
+      if (!catalog.Add(MakeUnsignedStatistic("column_hll_estimated_distinct", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_estimated_distinct, column.identity.source, column.identity.stats_epoch, 0, hll_confidence, usable))) return std::nullopt;
+    }
+    if (column.hyperloglog_register_count != 0 && !catalog.Add(MakeStatistic("column_hll_relative_error_ppm", "column", OptimizerStatisticTarget::Object(column.column_uuid), column.hyperloglog_relative_error * 1000000.0, column.identity.source, column.identity.stats_epoch, 0, column.identity.confidence, usable))) return std::nullopt;
   }
-  for (const auto& histogram : histograms_) {
+  for (const auto& histogram : snapshot.histograms) {
     const bool usable = OptimizerStatsIdentityIsUsable(histogram.identity);
     double fraction = 0.0;
     std::uint64_t rows = 0;
@@ -770,18 +785,28 @@ std::optional<OptimizerStatisticsCatalog> OptimizerStatisticsStore::ToLegacyCata
     if (!catalog.Add(MakeStatistic("histogram_covered_fraction", "histogram", OptimizerStatisticTarget::Object(histogram.column_uuid), fraction, histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("histogram_row_count", "histogram", OptimizerStatisticTarget::Object(histogram.column_uuid), rows, histogram.identity.source, histogram.identity.stats_epoch, 0, histogram.identity.confidence, usable))) return std::nullopt;
   }
-  for (const auto& mcv_value : mcv_) {
-    if (!catalog.Add(MakeStatistic("mcv_frequency", "mcv", OptimizerStatisticTarget::Object(mcv_value.column_uuid), mcv_value.frequency, mcv_value.identity.source, mcv_value.identity.stats_epoch, 0, mcv_value.identity.confidence, OptimizerStatsIdentityIsUsable(mcv_value.identity)))) return std::nullopt;
+  for (const auto& mcv_value : snapshot.mcv) {
+    if (!catalog.Add(MakeStatistic("mcv_frequency", "mcv", OptimizerStatisticTarget::Object(mcv_value.identity.statistic_uuid), mcv_value.frequency, mcv_value.identity.source, mcv_value.identity.stats_epoch, 0, mcv_value.identity.confidence, OptimizerStatsIdentityIsUsable(mcv_value.identity)))) return std::nullopt;
   }
-  for (const auto& stats : extended_stats_) {
+  for (const auto& stats : snapshot.extended_stats) {
     const bool usable = OptimizerStatsIdentityIsUsable(stats.identity);
-    if (!catalog.Add(MakeUnsignedStatistic("extended_multi_column_distinct_count", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.multi_column_distinct_count, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("extended_functional_dependency_strength", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.functional_dependency_strength, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("extended_correlation_coefficient", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.correlation_coefficient, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable, false, OptimizerStatisticValueDomain::kSignedCorrelation))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("extended_histogram_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.histogram_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("extended_sampled_dependency_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.sampled_dependency_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    if (stats.kind == ExtendedOptimizerStatisticKind::kMultiColumnNdv || stats.kind == ExtendedOptimizerStatisticKind::kJointMcv || stats.kind == ExtendedOptimizerStatisticKind::kDocumentPathBridge) {
+      if (!catalog.Add(MakeUnsignedStatistic("extended_multi_column_distinct_count", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.multi_column_distinct_count, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    }
+    if (stats.kind == ExtendedOptimizerStatisticKind::kFunctionalDependency) {
+      if (!catalog.Add(MakeStatistic("extended_functional_dependency_strength", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.functional_dependency_strength, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    }
+    if (stats.kind == ExtendedOptimizerStatisticKind::kCrossColumnCorrelation) {
+      if (!catalog.Add(MakeStatistic("extended_correlation_coefficient", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.correlation_coefficient, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable, false, OptimizerStatisticValueDomain::kSignedCorrelation))) return std::nullopt;
+    }
+    if (stats.kind == ExtendedOptimizerStatisticKind::kMultiColumnHistogram || stats.kind == ExtendedOptimizerStatisticKind::kDocumentPathBridge) {
+      if (!catalog.Add(MakeStatistic("extended_histogram_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.histogram_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    }
+    if (stats.kind == ExtendedOptimizerStatisticKind::kSampledDependency || stats.kind == ExtendedOptimizerStatisticKind::kDocumentPathBridge) {
+      if (!catalog.Add(MakeStatistic("extended_sampled_dependency_selectivity", "extended_stats", OptimizerStatisticTarget::Object(stats.identity.statistic_uuid), stats.sampled_dependency_selectivity, stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence, usable))) return std::nullopt;
+    }
   }
-  for (const auto& index : indexes_) {
+  for (const auto& index : snapshot.indexes) {
     if (!catalog.Add(MakeUnsignedStatistic("index_height", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.height, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("index_depth", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.height, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
     if (!catalog.Add(MakeUnsignedStatistic("index_leaf_pages", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.leaf_pages, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
@@ -793,13 +818,13 @@ std::optional<OptimizerStatisticsCatalog> OptimizerStatisticsStore::ToLegacyCata
     if (!catalog.Add(MakeStatistic("index_false_positive_ratio", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.false_positive_ratio, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
     if (!catalog.Add(MakeStatistic("index_route_benchmark_clean", "index", OptimizerStatisticTarget::Object(index.index_uuid), index.route_benchmark_clean ? 1.0 : 0.0, index.identity.source, index.identity.stats_epoch, 0, index.identity.confidence, OptimizerStatsIdentityIsUsable(index.identity)))) return std::nullopt;
   }
-  for (const auto& filespace : page_filespaces_) {
+  for (const auto& filespace : snapshot.page_filespaces) {
     const bool usable = OptimizerStatsIdentityIsUsable(filespace.identity);
-    if (!catalog.Add(MakeUnsignedStatistic("filespace_available_pages", "filespace", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.free_pages, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("page_family_read_latency_microseconds", "page_family", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.sequential_latency_score * 1000.0, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
-    if (!catalog.Add(MakeStatistic("io_latency_multiplier", "page_family", OptimizerStatisticTarget::Object(filespace.filespace_uuid), filespace.sequential_latency_score, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeUnsignedStatistic("filespace_available_pages", "filespace", OptimizerStatisticTarget::Object(filespace.identity.statistic_uuid), filespace.free_pages, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("page_family_read_latency_microseconds", "page_family", OptimizerStatisticTarget::Object(filespace.identity.statistic_uuid), filespace.sequential_latency_score * 1000.0, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
+    if (!catalog.Add(MakeStatistic("io_latency_multiplier", "page_family", OptimizerStatisticTarget::Object(filespace.identity.statistic_uuid), filespace.sequential_latency_score, filespace.identity.source, filespace.identity.stats_epoch, 0, filespace.identity.confidence, usable))) return std::nullopt;
   }
-  for (const auto& expression : expressions_) {
+  for (const auto& expression : snapshot.expressions) {
     const bool usable = OptimizerStatsIdentityIsUsable(expression.identity);
     if (!catalog.Add(MakeUnsignedStatistic("expression_distinct_count", "expression", OptimizerStatisticTarget::Object(expression.identity.statistic_uuid), expression.distinct_count, expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable))) return std::nullopt;
     if (!catalog.Add(MakeStatistic("expression_null_fraction", "expression", OptimizerStatisticTarget::Object(expression.identity.statistic_uuid), expression.null_fraction, expression.identity.source, expression.identity.stats_epoch, 0, expression.identity.confidence, usable))) return std::nullopt;
@@ -872,6 +897,9 @@ std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const Optim
   }
   for (const auto& stats : snapshot.extended_stats) {
     ValidateIdentity(stats.identity, "extended_stats", &statuses);
+    if (stats.kind < ExtendedOptimizerStatisticKind::kMultiColumnNdv ||
+        stats.kind > ExtendedOptimizerStatisticKind::kDocumentPathBridge)
+      statuses.push_back(Status(false, "SB_OPT_STATS_NOT_USABLE", stats.identity.statistic_uuid));
     if (!scratchbird::core::uuid::IsEngineIdentityUuid(stats.relation_uuid)) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_RELATION_UUID_REQUIRED", stats.identity.statistic_uuid));
     if (stats.column_uuids.empty() && stats.document_path_digests.empty()) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_SHAPE_REQUIRED", stats.identity.statistic_uuid));
     if (!std::isfinite(stats.functional_dependency_strength) || stats.functional_dependency_strength < 0.0 || stats.functional_dependency_strength > 1.0) statuses.push_back(Status(false, "SB_OPT_EXTENDED_STATS_DEPENDENCY_INVALID", stats.identity.statistic_uuid));

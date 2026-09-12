@@ -1450,7 +1450,7 @@ add_test(
   COMMAND optimizer_enterprise_analyze_statistics_gate
 )
 set_tests_properties(optimizer_enterprise_analyze_statistics_gate PROPERTIES
-  LABELS "optimizer_enterprise_analyze_statistics_gate;OEIC-020;optimizer;enterprise;analyze;statistics;benchmark_clean;mga_transaction_regression"
+  LABELS "optimizer_enterprise_analyze_statistics_gate;OEIC-020;optimizer;analyze;statistics;component_regression;not_runtime_acceptance"
 )
 
 add_executable(

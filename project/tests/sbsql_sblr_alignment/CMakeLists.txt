@@ -834,6 +834,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_access_statistics_binding PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_analyze_publication
+    ../optimizer/optimizer_enterprise_analyze_statistics_gate.cpp
+    ../../src/engine/optimizer/optimizer_production_analyze.cpp
+    ../../src/engine/optimizer/optimizer_statistics_full.cpp)
+  target_compile_features(sbsql_sblr_alignment_analyze_publication PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_analyze_publication PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_analyze_publication PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_analyze_publication PRIVATE
+    sbsql_sblr_alignment_access_statistics_component)
+  add_test(NAME sbsql_sblr_alignment_analyze_publication
+    COMMAND sbsql_sblr_alignment_analyze_publication)
+  set_tests_properties(sbsql_sblr_alignment_analyze_publication PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_statistics_publication
     statistics_publication_test.cpp
     ../../src/engine/optimizer/optimizer_statistics_full.cpp)

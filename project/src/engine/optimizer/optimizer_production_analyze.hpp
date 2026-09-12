@@ -17,8 +17,10 @@
 namespace scratchbird::engine::optimizer {
 
 // SEARCH_KEY: OEIC_PRODUCTION_ANALYZE_STATISTICS
-// Production ANALYZE collection is a catalog/statistics update path only. It
-// consumes engine-owned scan evidence and writes optimizer statistics; it never
+// Publishes already-collected statistics into the in-memory optimizer store.
+// It does not perform a storage scan or durable catalog transaction. Supplied
+// authority flags are validation metadata, not proof that those actions ran.
+// It never
 // becomes row visibility, transaction finality, security, parser, reference, or
 // recovery authority.
 enum class OptimizerProductionAnalyzeSampleMethod {
@@ -60,9 +62,10 @@ struct OptimizerProductionAnalyzeMcvSample {
 };
 
 struct OptimizerProductionAnalyzeColumnSample {
-  std::string column_uuid;
+  planner::CanonicalPlannerUuid column_uuid;
   std::string descriptor_digest;
   std::uint64_t sample_rows = 0;
+  // Population estimates at the bound visible-row boundary, not sample counts.
   std::uint64_t null_count = 0;
   std::uint64_t distinct_count = 0;
   std::uint64_t hyperloglog_register_count = 0;
@@ -101,8 +104,8 @@ struct OptimizerProductionAnalyzePageFilespaceSample {
 };
 
 struct OptimizerProductionAnalyzeRequest {
-  std::string analyze_run_uuid;
-  std::string relation_uuid;
+  planner::CanonicalPlannerUuid analyze_run_uuid;
+  planner::CanonicalPlannerUuid relation_uuid;
   std::string descriptor_set_digest;
   std::string storage_scan_evidence_digest;
   std::string sample_provenance_digest;
@@ -125,7 +128,6 @@ struct OptimizerProductionAnalyzeRequest {
   std::uint64_t source_generation = 0;
 
   bool benchmark_clean_profile = false;
-  bool require_all_stat_families = true;
 
   std::vector<OptimizerProductionAnalyzeColumnSample> columns;
   std::vector<OptimizerProductionAnalyzeExpressionSample> expressions;
@@ -135,8 +137,8 @@ struct OptimizerProductionAnalyzeRequest {
 };
 
 struct OptimizerProductionAnalyzeResult {
-  bool accepted = false;
-  bool catalog_stats_written = false;
+  bool statistics_published = false;
+  OptimizerStatsPublicationStatus publication_status = OptimizerStatsPublicationStatus::kInvalidSnapshot;
   bool snapshot_valid = false;
   bool benchmark_clean_ready = false;
   bool pinned_stats_invalidated = false;
@@ -144,8 +146,8 @@ struct OptimizerProductionAnalyzeResult {
   std::vector<std::string> evidence;
   std::vector<StatisticsContractStatus> validation_statuses;
   std::vector<StatisticsContractStatus> benchmark_clean_statuses;
-  OptimizerStatsSnapshot snapshot;
-  OptimizerStatisticsCatalog catalog_view;
+  std::shared_ptr<const OptimizerStatsSnapshot> snapshot;
+  std::optional<OptimizerStatisticsCatalog> catalog_view;
   std::uint64_t table_stats_written = 0;
   std::uint64_t column_stats_written = 0;
   std::uint64_t histogram_stats_written = 0;
@@ -165,6 +167,6 @@ OptimizerProductionAnalyzeResult RunOptimizerProductionAnalyze(
 
 std::vector<StatisticsContractStatus> ValidateProductionAnalyzeBenchmarkCleanCatalog(
     const OptimizerStatisticsCatalog& catalog,
-    const OptimizerProductionAnalyzeRequest& request);
+    const OptimizerStatsSnapshot& snapshot);
 
 }  // namespace scratchbird::engine::optimizer

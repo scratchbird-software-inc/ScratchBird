@@ -91,6 +91,7 @@ struct MostCommonValueStats {
   planner::CanonicalPlannerUuid column_uuid;
   std::string value_encoded;
   double frequency = 0.0;
+  std::uint64_t row_count = 0;
 };
 
 // SEARCH_KEY: SB_OPTIMIZER_EXTENDED_STATS_ODFR_010
@@ -206,8 +207,24 @@ struct PageFilespaceStats {
   bool degraded = false;
 };
 
+struct OptimizerStatsCollectionBinding {
+  planner::CanonicalPlannerUuid run_uuid;
+  std::string descriptor_set_digest;
+  std::string storage_scan_evidence_digest;
+  std::string sample_provenance_digest;
+  std::string result_contract_hash;
+  std::string sample_method;
+  std::uint64_t sampled_rows = 0;
+  std::uint64_t source_generation = 0;
+  std::uint64_t transaction_visibility_epoch = 0;
+  std::uint64_t security_epoch = 0;
+  std::uint64_t redaction_epoch = 0;
+  std::uint64_t resource_epoch = 0;
+};
+
 struct OptimizerStatsSnapshot {
   planner::CanonicalPlannerUuid snapshot_id;
+  OptimizerStatsCollectionBinding collection;
   std::uint64_t stats_epoch = 0;
   std::uint64_t catalog_epoch = 0;
   std::vector<TableCardinalityStats> tables;
@@ -371,6 +388,9 @@ bool OptimizerStatsIdentityIsUsable(const OptimizerStatsIdentity& identity);
 const char* ExtendedOptimizerStatisticKindName(ExtendedOptimizerStatisticKind kind);
 std::optional<TableCardinalityStats> BuildTableStatsFromAnalyzeSample(const AnalyzeSampleInput& input);
 std::vector<StatisticsContractStatus> ValidateOptimizerStatsSnapshot(const OptimizerStatsSnapshot& snapshot);
+// Pure projection: no live store/cache mutation or fabricated snapshot ID.
+std::optional<OptimizerStatisticsCatalog> ProjectOptimizerStatsSnapshot(
+    const OptimizerStatsSnapshot& snapshot);
 double EstimateEqualitySelectivityFromColumnStats(const ColumnStats& stats, std::uint64_t table_rows);
 double EstimateRangeSelectivityFromHistogram(const HistogramStats& stats);
 CostVector ApplyIndexHealthCostAdjustment(CostVector cost, const IndexStats& stats);
