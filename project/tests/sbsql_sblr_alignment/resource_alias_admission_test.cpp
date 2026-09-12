@@ -1,18 +1,170 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "resource_seed_pack.hpp"
+#include "resource_artifact_content_codec.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <new>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace r = scratchbird::core::resources;
+namespace { long fail_after = -1; unsigned allocation_faults = 0; }
+void* operator new(std::size_t size) {
+  if (fail_after == 0) throw std::bad_alloc();
+  if (fail_after > 0) --fail_after;
+  if (auto* memory = std::malloc(size ? size : 1)) return memory;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool ok, const char* message) {
   ++checks;
   if (!ok) { ++failures; std::cerr << message << '\n'; }
+}
+void ArtifactContent(const r::ResourceSeedCatalogImage& image) {
+  static_assert(std::is_const_v<typename decltype(r::ResourceSeedArtifact::content)::element_type>);
+  auto snapshot = image;
+  Check(snapshot.artifacts.front().content == image.artifacts.front().content,
+        "same-node snapshot unnecessarily lost immutable content ownership");
+  const auto invalid = [&](r::ResourceSeedCatalogImage changed) {
+    const auto refused = r::ValidateResourceSeedCatalogImage(changed, false);
+    Check(!refused.ok() && refused.image.artifacts.empty(), "corrupt content image was published");
+    changed.minimal_bootstrap = true;
+    const auto minimal = r::ValidateResourceSeedCatalogImage(changed, true);
+    Check(!minimal.ok() && minimal.image.artifacts.empty(), "minimal flag bypassed retained content integrity");
+  };
+  snapshot.artifacts.front().content.reset(); invalid(snapshot); snapshot = image;
+  snapshot.artifacts.front().content = std::make_shared<const std::string>("changed"); invalid(snapshot); snapshot = image;
+  ++snapshot.artifacts.front().content_size_bytes; invalid(snapshot); snapshot = image;
+  snapshot.artifacts.front().content_hash[0] ^= 1; invalid(snapshot); snapshot = image;
+  snapshot.artifacts.front().status = r::ResourceSeedArtifactStatus::pending; invalid(snapshot); snapshot = image;
+  snapshot.artifacts.front().family = r::ResourceSeedFamily::unknown; invalid(snapshot); snapshot = image;
+  snapshot.artifacts.front().canonical_path.clear(); invalid(snapshot); snapshot = image;
+  snapshot.artifacts.push_back(snapshot.artifacts.front()); invalid(snapshot); snapshot = image;
+  ++snapshot.resource_artifact_records; invalid(snapshot); snapshot = image;
+  snapshot.content_hash[0] ^= 1; invalid(snapshot); snapshot = image;
+  snapshot.collation_content_hash[0] ^= 1;
+  Check(!r::ValidateResourceSeedCatalogImage(snapshot, false).ok(), "wrong family checksum accepted");
+  // Provenance paths must not be dereferenced while validating retained content.
+  snapshot = image; snapshot.seed_pack_root = "/missing/resource-fixture"; snapshot.manifest_path.clear();
+  Check(r::ValidateResourceSeedCatalogImage(snapshot, false).ok(), "retained content required a host file");
+
+  std::vector<std::string> encoded;
+  std::size_t content_bytes = 0;
+  unsigned identity = 1;
+  for (auto& artifact : snapshot.artifacts) {
+    artifact.artifact_uuid.bytes = {0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0,0};
+    for (unsigned i=0;i<4;++i) artifact.artifact_uuid.bytes[15-i] = (identity >> (8*i)) & 255;
+    ++identity;
+    Check(artifact.content && artifact.content->size() == artifact.content_size_bytes,
+          "actual seed artifact did not retain complete bytes");
+    content_bytes += artifact.content->size();
+    std::vector<std::string> fragments;
+    Check(r::EncodeResourceSeedArtifactContent(artifact, &fragments), "actual artifact encoding failed");
+    for (auto& fragment : fragments) encoded.push_back(std::move(fragment));
+  }
+  std::vector<std::string_view> views;
+  {
+    auto changed=snapshot; changed.artifacts[1].artifact_uuid=changed.artifacts[0].artifact_uuid; invalid(changed);
+    changed=snapshot; changed.artifacts[0].artifact_uuid={}; invalid(changed);
+    changed=snapshot; changed.artifacts[0].artifact_uuid.bytes[6]=0x40; invalid(changed);
+    changed=snapshot; changed.artifacts[0].artifact_uuid.bytes[8]=0x40; invalid(changed);
+  }
+  for (const auto& row : encoded) views.push_back(row);
+  std::vector<r::ResourceSeedArtifact> decoded;
+  Check(r::DecodeResourceSeedArtifactContents(views,&decoded), "actual seed fragment decode failed");
+  Check(decoded.size() == snapshot.artifacts.size(), "artifact group count changed");
+  if (decoded.size() == snapshot.artifacts.size()) {
+    for (std::size_t i=0;i<decoded.size();++i) {
+      const auto& expected = snapshot.artifacts[i]; const auto& actual = decoded[i];
+      Check(actual.artifact_uuid == expected.artifact_uuid && actual.family == expected.family &&
+          actual.canonical_path == expected.canonical_path && actual.source_pattern == expected.source_pattern &&
+          actual.required_catalog_rows == expected.required_catalog_rows && actual.create_time_action == expected.create_time_action &&
+          actual.content_hash == expected.content_hash && actual.content_size_bytes == expected.content_size_bytes &&
+          actual.content && *actual.content == *expected.content, "fragment round trip changed artifact authority");
+    }
+    snapshot.artifacts = decoded;
+    Check(r::ValidateResourceSeedCatalogImage(snapshot, false).ok(), "decoded seed image failed integrity");
+  }
+  const auto small = std::find_if(snapshot.artifacts.begin(), snapshot.artifacts.end(),
+      [](const auto& a) { return a.family == r::ResourceSeedFamily::i18n_version; });
+  Check(small != snapshot.artifacts.end(), "version artifact missing");
+  if (small != snapshot.artifacts.end()) {
+    std::vector<std::string> rows;
+    Check(r::EncodeResourceSeedArtifactContent(*small,&rows) && rows.size() == 1, "small artifact is not single-fragment");
+    if (rows.size() == 1) {
+      const auto reject = [&](const std::vector<std::string>& changed) {
+        std::vector<std::string_view> input; for (const auto& row : changed) input.push_back(row);
+        std::vector<r::ResourceSeedArtifact> sentinel{*small};
+        const auto previous = sentinel.front().content;
+        Check(!r::DecodeResourceSeedArtifactContents(input,&sentinel) && sentinel.size() == 1 &&
+            sentinel.front().content == previous, "malformed fragments changed published output");
+      };
+      for (std::size_t size=0;size<rows[0].size();++size) reject({rows[0].substr(0,size)});
+      for (std::size_t byte : {0u,4u,6u,14u,16u,24u,32u,36u,40u,44u,48u,50u,52u}) {
+        auto changed = rows; changed[0][byte] ^= char(0xff); reject(changed);
+      }
+      auto changed=rows; changed[0].back() ^= 1; reject(changed);
+      changed=rows; changed[0].push_back('\0'); reject(changed);
+      changed=rows; changed.push_back(rows[0]); reject(changed);
+      auto earlier=*small; earlier.artifact_uuid.bytes[6]=0x40;
+      std::vector<std::string> sentinel{"unchanged"};
+      Check(!r::EncodeResourceSeedArtifactContent(earlier,&sentinel) && sentinel == std::vector<std::string>{"unchanged"},
+            "earlier-version system UUID encoded or changed output");
+      auto empty=*small; empty.content = std::make_shared<const std::string>();
+      empty.content_size_bytes=0; empty.content_hash="fnv1a64:cbf29ce484222325";
+      std::vector<std::string> empty_rows;
+      Check(r::EncodeResourceSeedArtifactContent(empty,&empty_rows), "explicit empty artifact refused");
+      std::vector<std::string_view> empty_views;
+      for (const auto& row:empty_rows) empty_views.push_back(row);
+      std::vector<r::ResourceSeedArtifact> empty_decoded;
+      Check(r::DecodeResourceSeedArtifactContents(empty_views,&empty_decoded) && empty_decoded.size()==1 &&
+          empty_decoded[0].content && empty_decoded[0].content->empty(), "empty artifact became missing content");
+
+      bool encoded_success=false, decoded_success=false;
+      std::vector<std::string_view> source{rows[0]};
+      for (long attempt=0;attempt<1000 && !encoded_success;++attempt) {
+        std::vector<std::string> out{"unchanged"};
+        fail_after=attempt; encoded_success=r::EncodeResourceSeedArtifactContent(*small,&out); fail_after=-1;
+        if (!encoded_success) { ++allocation_faults; Check(out==std::vector<std::string>{"unchanged"},
+            "encode allocation failure changed output"); }
+      }
+      for (long attempt=0;attempt<1000 && !decoded_success;++attempt) {
+        std::vector<r::ResourceSeedArtifact> out{*small}; const auto previous=out[0].content;
+        fail_after=attempt; decoded_success=r::DecodeResourceSeedArtifactContents(source,&out); fail_after=-1;
+        if (!decoded_success) { ++allocation_faults; Check(out.size()==1 && out[0].content==previous,
+            "decode allocation failure changed output"); }
+      }
+      Check(encoded_success && decoded_success, "allocation fault sweep never reached success");
+    }
+  }
+  const auto large=std::find_if(snapshot.artifacts.begin(),snapshot.artifacts.end(),
+      [](const auto& a){return a.family==r::ResourceSeedFamily::uca;});
+  if (large!=snapshot.artifacts.end()) {
+    std::vector<std::string> rows;
+    Check(r::EncodeResourceSeedArtifactContent(*large,&rows) && rows.size()>2,"UCA did not span fragments");
+    if (rows.size()>2) {
+      std::vector<std::string_view> input; for (const auto& row:rows) input.push_back(row);
+      std::vector<r::ResourceSeedArtifact> out{*large}; const auto previous=out[0].content;
+      std::swap(input[0],input[1]);
+      Check(!r::DecodeResourceSeedArtifactContents(input,&out) && out[0].content==previous,
+            "reordered UCA fragments published");
+      std::swap(input[0],input[1]); input.pop_back();
+      Check(!r::DecodeResourceSeedArtifactContents(input,&out) && out[0].content==previous,
+            "missing final UCA fragment published");
+    }
+  } else Check(false,"actual UCA artifact missing");
+  std::cout << "resource_content artifacts=" << snapshot.artifacts.size()
+            << " bytes=" << content_bytes << " fragments=" << encoded.size() << '\n';
 }
 void Ambiguous(const r::ResourceSeedCatalogImage& image, r::ResourceSeedFamily family,
                const std::string& label) {
@@ -91,8 +243,11 @@ int main() {
   r::ResourceSeedLoadConfig config;
   config.seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   const auto loaded = r::LoadResourceSeedPack(config);
+  if (!loaded.ok()) std::cerr << loaded.diagnostic.diagnostic_code << ':'
+                             << loaded.diagnostic.message_key << '\n';
   Check(loaded.ok(),"actual seed pack failed to load");
   if (loaded.ok()) {
+    ArtifactContent(loaded.image);
     Ambiguous(loaded.image,charset,"gb2312");
     Ambiguous(loaded.image,charset,"binary");
     const auto* native = r::FindResourceSeedCharset(loaded.image,"binary");
@@ -118,5 +273,6 @@ int main() {
           "complete restored alias catalog stopped validating");
   }
   std::cout << "resource_alias_admission checks=" << checks << " failures=" << failures << '\n';
+  std::cout << "resource_content allocation_faults=" << allocation_faults << '\n';
   return failures ? 1 : 0;
 }

@@ -437,6 +437,17 @@ add_test(NAME sbsql_sblr_alignment_resource_alias_admission
 set_tests_properties(sbsql_sblr_alignment_resource_alias_admission PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-01;component_regression;resource_alias" TIMEOUT 60)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_resource_content_lifecycle resource_content_lifecycle_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_resource_content_lifecycle PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_resource_content_lifecycle PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(sbsql_sblr_alignment_resource_content_lifecycle PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_resource_content_lifecycle COMMAND sbsql_sblr_alignment_resource_content_lifecycle)
+  set_tests_properties(sbsql_sblr_alignment_resource_content_lifecycle PROPERTIES
+    LABELS "sbsql_sblr_alignment;resource_content;real_storage;independent_process;not_e2e" TIMEOUT 120)
+endif()
+
 add_executable(sbsql_sblr_alignment_catalog_resource_seed
   ${PROJECT_SOURCE_DIR}/tests/database_lifecycle/resource_seed_conformance.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_resource_seed PRIVATE cxx_std_23)

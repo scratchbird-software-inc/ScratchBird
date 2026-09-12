@@ -127,15 +127,17 @@ std::vector<scratchbird::storage::page::CatalogPageRow> ReadBootstrapCatalogRows
   const auto parsed_header = scratchbird::storage::disk::ParseDatabaseHeader(serialized);
   if (!parsed_header.ok()) return fail("database_header_invalid");
   if (!context.database_uuid.is_nil()) {
-    const auto expected = scratchbird::core::uuid::ParseTypedUuid(
-        scratchbird::core::platform::UuidKind::database, context.database_uuid);
-    if (!expected.ok() || expected.value.value != parsed_header.header.database_uuid)
+    if (context.database_uuid.bytes != parsed_header.header.database_uuid.bytes)
       return fail("database_identity_mismatch");
   }
+  const auto extent = device.Size();
+  if (!extent.ok() || parsed_header.header.page_size == 0 ||
+      extent.size_bytes % parsed_header.header.page_size != 0) return fail("catalog_extent_invalid");
+  const auto page_count = extent.size_bytes / parsed_header.header.page_size;
   std::uint64_t page_number = scratchbird::storage::database::kCatalogPageNumber;
   std::set<std::uint64_t> visited;
   while (page_number != 0) {
-    if (visited.size() >= 1024 || !visited.insert(page_number).second)
+    if (page_number >= page_count || !visited.insert(page_number).second)
       return fail("catalog_chain_cycle_or_limit");
     const auto body_offset = scratchbird::storage::page::CheckedPageBodyOffset(
         parsed_header.header.page_size, page_number, scratchbird::storage::disk::kPageHeaderSerializedBytes);

@@ -12,6 +12,7 @@
 // SEARCH_KEY: WORKLOAD_GOVERNANCE_FAIRNESS
 #include "runtime_platform.hpp"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,10 @@ struct ResourceSeedArtifact {
   std::string content_hash;
   u64 content_size_bytes = 0;
   ResourceSeedArtifactStatus status = ResourceSeedArtifactStatus::pending;
+  // Owning-node snapshot content, never a lazy reference to a host seed file.
+  // Null means missing; a non-null empty string is an explicitly empty artifact.
+  std::shared_ptr<const std::string> content;
+  scratchbird::core::platform::Uuid artifact_uuid;
 };
 
 struct ResourceSeedAlias {
@@ -232,6 +237,7 @@ struct ResourceSeedCatalogImageResult {
 const char* ResourceSeedFamilyName(ResourceSeedFamily family);
 const char* ResourceSeedArtifactStatusName(ResourceSeedArtifactStatus status);
 ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig& config);
+bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact);
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,
                                                                bool allow_minimal_bootstrap = false);
 const ResourceSeedFamilyVersion* FindResourceSeedFamilyVersion(const ResourceSeedCatalogImage& image,

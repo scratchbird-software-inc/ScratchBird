@@ -15,6 +15,7 @@
 #include "catalog_filespace_record_codec.hpp"
 #include "catalog_localized_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
+#include "resource_artifact_content_codec.hpp"
 #include "cluster_catalog_schema_versioning.hpp"
 #include "agent_engine_lifecycle.hpp"
 #include "catalog_page.hpp"
@@ -2307,10 +2308,19 @@ CatalogRowsBuildResult AssignResourceSeedCatalogIdentities(
     u64 identity_seed) {
   CatalogRowsBuildResult result;
   result.status = DatabaseLifecycleOkStatus();
-  if (image == nullptr || image->minimal_bootstrap) {
+  if (image == nullptr) {
     return result;
   }
 
+  u64 artifact_seed = identity_seed + 70000;
+  for (auto& artifact : image->artifacts) {
+    if (artifact.artifact_uuid.is_nil()) {
+      const auto generated = GenerateEngineIdentityV7(UuidKind::object, artifact_seed++);
+      if (!generated.ok()) return CatalogRowsBuildError(generated.status, generated.diagnostic);
+      artifact.artifact_uuid = generated.value.value;
+    }
+  }
+  if (image->minimal_bootstrap) return result;
   u64 charset_seed = identity_seed + 80000;
   for (auto& charset : image->charsets) {
     if (charset.resource_uuid.empty()) {
@@ -3636,13 +3646,21 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
                          {"content_size_bytes", std::to_string(artifact.content_size_bytes)},
                          {"required_catalog_rows", artifact.required_catalog_rows},
                          {"create_time_action", artifact.create_time_action}});
-    result.rows.push_back(Row(CatalogPageRowKind::resource_seed_artifact, ordinal++, artifact_payload));
+    std::vector<std::string> artifact_fragments;
+    if (!scratchbird::core::resources::EncodeResourceSeedArtifactContent(artifact, &artifact_fragments)) {
+      const auto refused = LifecycleError("SB_RESOURCE_SEED_INVALID",
+          "resource.seed_pack.artifact_content_invalid", config.path);
+      return CatalogRowsBuildError(refused.status, refused.diagnostic);
+    }
+    for (auto& fragment : artifact_fragments)
+      result.rows.push_back(Row(CatalogPageRowKind::resource_seed_artifact, ordinal++, std::move(fragment)));
     const auto typed_artifact = AddTypedCatalogRecord(&result.rows,
                                                       CatalogRecordKind::resource_artifact,
                                                       &ordinal,
                                                       config.creation_unix_epoch_millis + 50100 + ordinal * 2,
                                                       artifact_payload,
-                                                      resource_bundle_object.value);
+                                                      resource_bundle_object.value,
+                                                      TypedUuid{UuidKind::object, artifact.artifact_uuid});
     if (!typed_artifact.ok()) {
       return typed_artifact;
     }
@@ -3945,9 +3963,18 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
 
 std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const std::vector<CatalogPageRow>& rows) {
   ResourceSeedCatalogImage image;
+  std::vector<std::string_view> artifact_fragments;
+  for (const auto& row : rows)
+    if (row.kind == CatalogPageRowKind::resource_seed_artifact) artifact_fragments.push_back(row.payload);
+  if (!scratchbird::core::resources::DecodeResourceSeedArtifactContents(artifact_fragments, &image.artifacts))
+    return std::nullopt;
+  std::map<scratchbird::core::platform::Uuid, const ResourceSeedArtifact*> artifacts_by_id;
+  std::set<scratchbird::core::platform::Uuid> verified_artifacts;
+  for (const auto& artifact : image.artifacts) artifacts_by_id.emplace(artifact.artifact_uuid, &artifact);
   std::vector<scratchbird::core::catalog::CatalogCharsetRecord> charsets;
   std::vector<scratchbird::core::catalog::CatalogCollationRecord> collations;
   for (const CatalogPageRow& row : rows) {
+    if (row.kind == CatalogPageRowKind::resource_seed_artifact) continue;
     const auto fields = row.kind == CatalogPageRowKind::typed_catalog_record
         ? std::map<std::string,std::string>{} : ParseKeyValuePayload(row.payload);
     if (row.kind == CatalogPageRowKind::resource_seed_pack) {
@@ -4022,17 +4049,6 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
                  image.timezone_version,
                  image.timezone_content_hash,
                  image.timezone_epoch);
-    } else if (row.kind == CatalogPageRowKind::resource_seed_artifact) {
-      ResourceSeedArtifact artifact;
-      artifact.family = fields.count("family") == 0 ? ResourceSeedFamily::unknown : ParseResourceFamilyName(fields.at("family"));
-      artifact.canonical_path = fields.count("canonical_path") == 0 ? "" : fields.at("canonical_path");
-      artifact.source_pattern = fields.count("source_pattern") == 0 ? "" : fields.at("source_pattern");
-      artifact.content_hash = fields.count("content_hash") == 0 ? "" : fields.at("content_hash");
-      artifact.content_size_bytes = ParseU64Field(fields, "content_size_bytes");
-      artifact.required_catalog_rows = fields.count("required_catalog_rows") == 0 ? "" : fields.at("required_catalog_rows");
-      artifact.create_time_action = fields.count("create_time_action") == 0 ? "" : fields.at("create_time_action");
-      artifact.status = scratchbird::core::resources::ResourceSeedArtifactStatus::loaded;
-      image.artifacts.push_back(std::move(artifact));
     } else if ((row.kind == CatalogPageRowKind::charset_alias_record ||
                 row.kind == CatalogPageRowKind::collation_record ||
                 row.kind == CatalogPageRowKind::timezone_record) &&
@@ -4051,6 +4067,26 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
       const auto decoded = DecodeCatalogTypedRecord(row);
       if (!decoded.ok()) {
         return std::nullopt;
+      }
+      if (decoded.record.header.kind == CatalogRecordKind::resource_artifact) {
+        const auto found = artifacts_by_id.find(decoded.record.header.object_uuid.value);
+        if (found == artifacts_by_id.end() || !verified_artifacts.insert(found->first).second)
+          return std::nullopt;
+        const auto& artifact = *found->second;
+        const auto metadata = ParseKeyValuePayload(decoded.record.payload);
+        const auto matches = [&](const char* key, const std::string& expected) {
+          const auto entry = metadata.find(key);
+          return entry != metadata.end() && entry->second == expected;
+        };
+        if (!matches("family", ResourceSeedFamilyName(artifact.family)) ||
+            !matches("canonical_path", artifact.canonical_path) ||
+            !matches("source_pattern", artifact.source_pattern) ||
+            !matches("content_hash", artifact.content_hash) ||
+            !matches("content_size_bytes", std::to_string(artifact.content_size_bytes)) ||
+            !matches("required_catalog_rows", artifact.required_catalog_rows) ||
+            !matches("create_time_action", artifact.create_time_action) ||
+            !matches("creator_tx", std::to_string(kBootstrapCatalogTransactionId))) return std::nullopt;
+        continue;
       }
       if (decoded.record.header.kind == CatalogRecordKind::charset) {
         auto payload=scratchbird::core::catalog::DecodeCatalogCharsetRecord(decoded.record.payload);
@@ -4092,9 +4128,8 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
       image.index_dependencies.push_back(std::move(dependency));
     }
   }
-  if (image.resource_artifact_records == 0) {
-    image.resource_artifact_records = static_cast<u32>(image.artifacts.size());
-  }
+  if (verified_artifacts.size() != image.artifacts.size() ||
+      image.resource_artifact_records != image.artifacts.size()) return std::nullopt;
   if (image.charset_records != charsets.size() || image.collation_records != collations.size())
     return std::nullopt;
   for (const auto& r:charsets) {
@@ -5264,10 +5299,17 @@ DatabaseLifecycleResult EnsureFirstOpenActivationTransaction(FileDevice* device,
 DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
                                             u32 page_size,
                                             std::vector<CatalogPageRow>* rows) {
+  const auto size = device->Size();
+  if (!size.ok()) return PropagateDiagnostic(size.status, size.diagnostic);
+  if (page_size == 0 || size.size_bytes % page_size != 0)
+    return LifecycleError("SB-CATALOG-PAGE-BODY-NEXT-CHAIN-TOO-LONG",
+                          "storage.database_lifecycle.catalog_next_chain_too_long");
+  const u64 page_count = size.size_bytes / page_size;
   u64 page_number = kCatalogPageNumber;
-  u32 visited = 0;
+  std::set<u64> visited;
+  std::vector<CatalogPageRow> staged;
   while (page_number != 0) {
-    if (++visited > 1024) {
+    if (page_number >= page_count || !visited.insert(page_number).second) {
       return LifecycleError("SB-CATALOG-PAGE-BODY-NEXT-CHAIN-TOO-LONG",
                             "storage.database_lifecycle.catalog_next_chain_too_long");
     }
@@ -5303,12 +5345,13 @@ DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
     if (!parsed.ok()) {
       return PropagateDiagnostic(parsed.status, parsed.diagnostic);
     }
-    rows->insert(rows->end(), parsed.body.rows.begin(), parsed.body.rows.end());
+    staged.insert(staged.end(), parsed.body.rows.begin(), parsed.body.rows.end());
     page_number = parsed.body.next_page_number;
   }
 
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
+  rows->swap(staged);
   return result;
 }
 

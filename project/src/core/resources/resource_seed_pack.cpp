@@ -1345,6 +1345,7 @@ ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig
                                    "resource.seed_pack.alias_conflict",
                                    conflict_detail);
         }
+        artifact.content = std::make_shared<const std::string>(std::move(text));
         image.artifacts.push_back(std::move(artifact));
         ++matched;
       }
@@ -1379,8 +1380,60 @@ ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig
   return result;
 }
 
+bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact) {
+  return static_cast<u16>(artifact.family) < static_cast<u16>(ResourceSeedFamily::unknown) &&
+      !artifact.canonical_path.empty() && artifact.status == ResourceSeedArtifactStatus::loaded &&
+      artifact.content && artifact.content->size() == artifact.content_size_bytes &&
+      Fnv1a64Hex(*artifact.content) == artifact.content_hash;
+}
+
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,
                                                                bool allow_minimal_bootstrap) {
+  if (!image.artifacts.empty()) {
+    std::set<std::pair<ResourceSeedFamily, std::string>> paths;
+    std::map<std::string, const std::string*> path_contents;
+    std::set<scratchbird::core::platform::Uuid> identities;
+    const bool identities_present = std::any_of(image.artifacts.begin(), image.artifacts.end(),
+        [](const auto& artifact) { return !artifact.artifact_uuid.is_nil(); });
+    std::string aggregate;
+    std::map<ResourceSeedFamily, std::string> family_aggregates;
+    for (const auto& artifact : image.artifacts) {
+      if (!ValidateResourceSeedArtifactContent(artifact) ||
+          !paths.emplace(artifact.family, artifact.canonical_path).second) {
+        return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
+                                 "resource.seed_pack.artifact_content_invalid");
+      }
+      if (identities_present && (artifact.artifact_uuid.is_nil() ||
+          (artifact.artifact_uuid.bytes[6] >> 4) != 7 || (artifact.artifact_uuid.bytes[8] & 0xc0) != 0x80 ||
+          !identities.insert(artifact.artifact_uuid).second)) {
+        return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
+                                 "resource.seed_pack.artifact_content_invalid");
+      }
+      const auto prior = path_contents.emplace(artifact.canonical_path, artifact.content.get());
+      if (!prior.second && *prior.first->second != *artifact.content) {
+        return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
+                                 "resource.seed_pack.artifact_content_invalid");
+      }
+      aggregate += artifact.content_hash;
+      AppendFamilyHash(&family_aggregates, artifact.family, artifact.content_hash);
+    }
+    if (image.resource_artifact_records != image.artifacts.size() ||
+        Fnv1a64Hex(aggregate) != image.content_hash) {
+      return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
+                               "resource.seed_pack.artifact_aggregate_invalid");
+    }
+    if (!image.minimal_bootstrap) {
+      for (const auto family : {ResourceSeedFamily::charset, ResourceSeedFamily::collation,
+                                ResourceSeedFamily::locale, ResourceSeedFamily::timezone_version}) {
+        const auto found = family_aggregates.find(family);
+        if (found == family_aggregates.end() ||
+            Fnv1a64Hex(found->second) != ResourceSeedContentHashForFamily(image, family)) {
+          return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
+                                   "resource.seed_pack.artifact_family_hash_invalid");
+        }
+      }
+    }
+  }
   if (image.minimal_bootstrap && allow_minimal_bootstrap) {
     ResourceSeedCatalogImageResult result;
     result.status = ResourceSeedOkStatus();
