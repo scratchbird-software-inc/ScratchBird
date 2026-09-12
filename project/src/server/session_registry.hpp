@@ -719,6 +719,7 @@ struct ServerTransactionResponseState {
     kNone = 0,
     kRetaining = 1,
     kOrdinaryReady = 2,
+    kLastActiveReady = kOrdinaryReady,  // Historical name, not a cardinality condition.
     kAutocommitReady = 3,
   };
   bool selected_present = false;

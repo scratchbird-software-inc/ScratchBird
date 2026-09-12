@@ -421,6 +421,7 @@ struct SbwpTxnFinalityRecord {
 struct SbwpSessionState {
   std::array<std::uint8_t, 16> attachment_id{};
   std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> transaction_uuid{};
   std::uint32_t server_sequence{0};
   std::uint64_t txn_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
@@ -1863,6 +1864,11 @@ StartupNegotiation ParseStartupNegotiation(const std::vector<std::uint8_t>& payl
     return RejectStartup("08P01",
                          "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
                          "dormant reattach and multiplex connect flags are mutually exclusive");
+  }
+  if ((connect_flags & kConnectFlagMultiplexRequest) != 0) {
+    return RejectStartup("0A000",
+                         "NATIVE_WIRE.CONNECT_INGRESS_DENIED",
+                         "shared-connection multiplexing is not admitted in this protocol profile");
   }
   negotiated.selected_protocol_version = std::min<std::uint16_t>(max_version, kSbwpVersionCurrent);
   if (negotiated.selected_protocol_version < kSbwpVersionCurrent &&
@@ -3927,7 +3933,7 @@ std::vector<std::uint8_t> ReadyPayload(const SbwpSessionState& state, ReadyReaso
     out.reserve(76);
     PutUuid(&out, state.session_uuid);
     PutUuid(&out, state.attachment_id);
-    PutZeroUuid(&out);
+    PutUuid(&out, state.transaction_uuid);
     PutU64(&out, state.txn_id);
     out.push_back(state.txn_id == 0 ? 0x52 : 0x54);
     out.push_back(static_cast<std::uint8_t>(reason));
@@ -3951,6 +3957,12 @@ std::vector<std::uint8_t> ReadyPayload(const SbwpSessionState& state, ReadyReaso
 bool SendReady(ClientIo* io,
                SbwpSessionState* state,
                ReadyReason reason = ReadyReason::kCommandComplete) {
+  // Do not publish a live Ready with a missing authoritative identity. A
+  // broken attach/replacement must terminate instead of inventing a UUID.
+  if (state->authenticated &&
+      (state->txn_id == 0 || IsZeroUuid(state->transaction_uuid))) {
+    return false;
+  }
   state->ready_sent_for_current_operation = true;
   return SendFrame(io, state, kReady, ReadyPayload(*state, reason));
 }
@@ -4202,9 +4214,8 @@ bool HandleTxnCommitReplay(ClientIo* io,
         "side-effect commit retry refused without caller acknowledgement of the retry boundary",
         true);
   }
-  if (existing->replacement_txn_id != 0) {
-    state->txn_id = existing->replacement_txn_id;
-  }
+  // Historical finality describes the completed request, not the currently
+  // selected live boundary. A replay must not restore a retired numeric echo.
   return SendTxnFinalityStatus(io, state, *existing) &&
          SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "COMMIT")) &&
          SendReady(io, state, ReadyReason::kCommandComplete);
@@ -4286,6 +4297,7 @@ bool RollbackForReset(SbsqlTestWireSession* session, SbwpSessionState* state, st
     return false;
   }
   state->txn_id = *replacement;
+  state->transaction_uuid = TextToUuidBytes(session->session().transaction_uuid);
   return true;
 }
 
@@ -4681,8 +4693,8 @@ void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
   if (state == nullptr) return;
   RefreshWireAuthorityEpochsFromSession(session, state);
   const auto& context = session.session();
-  if (context.local_transaction_id == 0) return;
   state->txn_id = context.local_transaction_id;
+  state->transaction_uuid = TextToUuidBytes(context.transaction_uuid);
   state->snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
 }
@@ -4695,13 +4707,16 @@ bool AdmitFrameTransaction(ClientIo* io,
       frame.header.txn_id == state->txn_id) {
     return true;
   }
-  return SendError(io,
+  const bool response_sent = SendError(io,
                    state,
                    "25000",
                    "SBWP.TRANSACTION_ID_MISMATCH",
                    std::string(operation) +
                        " frame transaction does not match the current engine transaction") &&
          SendReady(io, state, ReadyReason::kErrorRecovered);
+  // Successful response I/O does not admit a rejected request.
+  (void)response_sent;
+  return false;
 }
 
 bool NativeBulkIngestRequested(std::string_view sql) {
@@ -7308,6 +7323,7 @@ bool HandleStartup(SbsqlTestWireSession* session,
   }
   state->session_uuid = state->attachment_id;
   state->txn_id = session->session().local_transaction_id;
+  state->transaction_uuid = TextToUuidBytes(session->session().transaction_uuid);
   state->snapshot_visible_through_local_transaction_id =
       session->session().snapshot_visible_through_local_transaction_id;
   state->catalog_epoch = session->session().catalog_epoch;
