@@ -718,7 +718,7 @@ struct ServerTransactionResponseState {
   enum class ReplacementReason : std::uint8_t {
     kNone = 0,
     kRetaining = 1,
-    kLastActiveReady = 2,
+    kOrdinaryReady = 2,
     kAutocommitReady = 3,
   };
   bool selected_present = false;

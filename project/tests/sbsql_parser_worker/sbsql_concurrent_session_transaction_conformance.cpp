@@ -1545,6 +1545,7 @@ void VerifyNeutralV2MultiTransactionRouting(
                       kKnownNotApplied,
           "pre-engine commit rejection did not publish known-not-applied finality");
 
+  const auto before_t1_commit = session.transactions_by_local_id;
   const auto committed_t1 = scratchbird::server::HandleExecuteSblr(
       &route.registry,
       route.engine_state,
@@ -1561,6 +1562,13 @@ void VerifyNeutralV2MultiTransactionRouting(
               committed_t1.transaction_state->finalized.local_transaction_id ==
                   t1.local_transaction_id,
           "V2 commit did not publish typed known-applied finality");
+  Require(committed_t1.transaction_state->replacement_present &&
+              committed_t1.transaction_state->replacement_reason ==
+                  scratchbird::server::ServerTransactionResponseState::
+                      ReplacementReason::kOrdinaryReady &&
+              session.transactions_by_local_id.size() == before_t1_commit.size() &&
+              !session.transactions_by_local_id.contains(t1.local_transaction_id),
+          "ordinary non-default commit omitted its replacement while siblings remained");
   Require(session.local_transaction_id == hidden_default_id &&
               session.transaction_uuid == hidden_default_uuid,
           "V2 finality on a non-default transaction swapped the default scalar");
@@ -1612,6 +1620,76 @@ void VerifyNeutralV2MultiTransactionRouting(
                   policy_tx.lock_timeout_present &&
               replacement.lock_timeout_ms == policy_tx.lock_timeout_ms,
           "COMMIT RETAINING silently dropped admitted neutral transaction policy");
+
+  // Actual engine-backed dispatch, not direct state publication: each ordinary
+  // commit/rollback must replace its own boundary while preserving siblings.
+  // Change session defaults after admission to distinguish retained settings
+  // from a fresh BEGIN using those defaults.
+  const auto old_default_isolation = session.default_transaction_isolation_level;
+  const auto old_default_read_only = session.default_transaction_read_only;
+  auto nondefault = replacement;
+  const auto same_policy = [](const auto& left, const auto& right) {
+    return left.isolation_level == right.isolation_level &&
+           left.read_only == right.read_only &&
+           left.wait_mode == right.wait_mode &&
+           left.lock_timeout_present == right.lock_timeout_present &&
+           left.lock_timeout_ms == right.lock_timeout_ms;
+  };
+  for (const bool finalize_default : {false, true}) {
+    for (const bool commit_boundary : {true, false}) {
+      const auto selected = finalize_default
+          ? session.transactions_by_local_id.at(session.default_local_transaction_id)
+          : nondefault;
+      session.default_transaction_isolation_level =
+          selected.isolation_level == "snapshot" ? "read_committed" : "snapshot";
+      session.default_transaction_read_only = !selected.read_only;
+      const auto siblings_before = session.transactions_by_local_id;
+      const auto default_before = session.default_local_transaction_id;
+      const auto operation = commit_boundary ? "transaction.commit" : "transaction.rollback";
+      const auto result = scratchbird::server::HandleExecuteSblr(
+          &route.registry, route.engine_state,
+          ExecuteFrameV2(route.session_uuid,
+              TransactionEnvelope(operation, commit_boundary ? "SBLR_TXN_COMMIT" : "SBLR_TXN_ROLLBACK"),
+              1, &selected));
+      Require(result.accepted && result.transaction_state.has_value(),
+              "ordinary finalization with siblings failed");
+      const auto& outcome = *result.transaction_state;
+      Require(outcome.finality == scratchbird::server::ServerTransactionResponseState::Finality::kKnownApplied &&
+                  outcome.finalized_present && outcome.replacement_present &&
+                  outcome.finalized.transaction_uuid == selected.transaction_uuid &&
+                  outcome.finalized.local_transaction_id == selected.local_transaction_id &&
+                  outcome.replacement_reason == scratchbird::server::ServerTransactionResponseState::ReplacementReason::kOrdinaryReady,
+              "ordinary finalization omitted exact finality or replacement posture");
+      const auto& next = outcome.replacement;
+      Require(next.local_transaction_id != selected.local_transaction_id &&
+                  next.transaction_uuid != selected.transaction_uuid &&
+                  same_policy(next, selected) &&
+                  next.deferred_catalog_cache_mutations.empty() &&
+                  session.transactions_by_local_id.size() == siblings_before.size() &&
+                  !session.transactions_by_local_id.contains(selected.local_transaction_id) &&
+                  session.transactions_by_local_id.at(next.local_transaction_id).transaction_uuid == next.transaction_uuid,
+              "ordinary replacement reused identity, changed policy or changed transaction count");
+      Require(session.default_local_transaction_id ==
+                  (finalize_default ? next.local_transaction_id : default_before) &&
+                  session.local_transaction_id == session.default_local_transaction_id,
+              "replacement did not preserve default ownership");
+      for (const auto& [id, sibling] : siblings_before) {
+        if (id == selected.local_transaction_id) continue;
+        const auto& after = session.transactions_by_local_id.at(id);
+        Require(after.transaction_uuid == sibling.transaction_uuid &&
+                    after.snapshot_visible_through_local_transaction_id == sibling.snapshot_visible_through_local_transaction_id &&
+                    after.transaction_timestamp == sibling.transaction_timestamp &&
+                    after.begin_ordinal == sibling.begin_ordinal &&
+                    after.lifecycle_state == sibling.lifecycle_state &&
+                    after.deferred_catalog_cache_mutations == sibling.deferred_catalog_cache_mutations &&
+                    same_policy(after, sibling),
+                "ordinary finalization altered a sibling transaction");
+      }
+      if (!finalize_default) nondefault = next;
+    }
+  }
+  session.default_transaction_isolation_level = old_default_isolation;
+  session.default_transaction_read_only = old_default_read_only;
 
   const std::size_t transaction_count_before_conflict =
       session.transactions_by_local_id.size();

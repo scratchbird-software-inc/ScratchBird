@@ -4945,11 +4945,11 @@ ServerTransactionState TransactionStateFromBeginResult(
   return transaction;
 }
 
-bool BeginIndependentTransactionForSession(
+bool BeginOrdinaryReplacementTransactionForSession(
     const ServerSessionRecord& session,
     const HostedEngineState& engine_state,
     const std::array<std::uint8_t, 16>& request_uuid,
-    const ServerTransactionState* policy_source,
+    const ServerTransactionState& finalized_transaction,
     ServerTransactionState* transaction,
     std::string* diagnostic_code,
     std::string* diagnostic_detail) {
@@ -4963,14 +4963,10 @@ bool BeginIndependentTransactionForSession(
   }
   engine_api::EngineBeginTransactionRequest begin;
   begin.context = ReplacementTransactionContext(session, *database, request_uuid);
-  begin.isolation_level =
-      policy_source != nullptr && !policy_source->isolation_level.empty()
-          ? policy_source->isolation_level
-          : session.default_transaction_isolation_level;
+  begin.isolation_level = finalized_transaction.isolation_level;
   const bool read_only =
       session.attach_mode == "read_only" ||
-      (policy_source != nullptr ? policy_source->read_only
-                                : session.default_transaction_read_only);
+      finalized_transaction.read_only;
   begin.context.read_only_mode = read_only;
   begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
   begin.transaction_policy_profile.encoded_profiles.push_back(
@@ -4979,14 +4975,14 @@ bool BeginIndependentTransactionForSession(
   begin.transaction_policy_profile.encoded_profiles.push_back(
       std::string("transaction_read_mode:") +
       (begin.context.read_only_mode ? "read_only" : "read_write"));
-  if (policy_source != nullptr && !policy_source->wait_mode.empty()) {
+  if (!finalized_transaction.wait_mode.empty()) {
     begin.transaction_policy_profile.encoded_profiles.push_back(
-        "transaction_wait_mode:" + policy_source->wait_mode);
+        "transaction_wait_mode:" + finalized_transaction.wait_mode);
   }
-  if (policy_source != nullptr && policy_source->lock_timeout_present) {
+  if (finalized_transaction.lock_timeout_present) {
     begin.transaction_policy_profile.encoded_profiles.push_back(
         "transaction_lock_timeout_ms:" +
-        std::to_string(policy_source->lock_timeout_ms));
+        std::to_string(finalized_transaction.lock_timeout_ms));
   }
   const auto begun = engine_api::EngineBeginTransaction(begin);
   if (!begun.ok ||
@@ -5010,12 +5006,9 @@ bool BeginIndependentTransactionForSession(
     *transaction = TransactionStateFromBeginResult(begun, session);
     transaction->isolation_level = begin.isolation_level;
     transaction->read_only = begin.context.read_only_mode;
-    if (policy_source != nullptr) {
-      transaction->wait_mode = policy_source->wait_mode;
-      transaction->lock_timeout_ms = policy_source->lock_timeout_ms;
-      transaction->lock_timeout_present =
-          policy_source->lock_timeout_present;
-    }
+    transaction->wait_mode = finalized_transaction.wait_mode;
+    transaction->lock_timeout_ms = finalized_transaction.lock_timeout_ms;
+    transaction->lock_timeout_present = finalized_transaction.lock_timeout_present;
   }
   return true;
 }
@@ -11757,16 +11750,17 @@ SessionOperationResult HandleExecuteSblrImpl(
       const bool retaining =
           JsonBoolField(encoded, "retaining", false) ||
           TextBoolField(encoded, "retaining", false);
-      const bool last_active = session->transactions_by_local_id.empty();
-      if (retaining || last_active) {
+      // Each ordinary finalization owns one replacement, even with siblings.
+      // Session defaults may have changed since this transaction began.
+      {
         ServerTransactionState replacement;
         std::string replacement_code;
         std::string replacement_detail;
-        if (!BeginIndependentTransactionForSession(
+        if (!BeginOrdinaryReplacementTransactionForSession(
                 *session,
                 engine_state,
                 request_record.request_uuid,
-                retaining ? &finalized_transaction : nullptr,
+                finalized_transaction,
                 &replacement,
                 &replacement_code,
                 &replacement_detail)) {
@@ -11874,7 +11868,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                       transaction_response.outcome_detail,
                                       transaction_response);
         }
-        if (last_active || finalized_default) {
+        if (finalized_default) {
           session->default_local_transaction_id =
               replacement.local_transaction_id;
         }
@@ -11883,7 +11877,7 @@ SessionOperationResult HandleExecuteSblrImpl(
         transaction_response.replacement_reason =
             retaining
                 ? ServerTransactionResponseState::ReplacementReason::kRetaining
-                : ServerTransactionResponseState::ReplacementReason::kLastActiveReady;
+                : ServerTransactionResponseState::ReplacementReason::kOrdinaryReady;
       }
       ProjectDefaultTransactionToLegacyFields(session);
       row_packet = ExplicitTransactionStatePayload(admission.operation_id,
@@ -12627,16 +12621,17 @@ SessionOperationResult HandleExecuteSblrImpl(
             canonical_transaction_commit &&
             canonical_commit_options.has_value() &&
             canonical_commit_options->commit_mode == 2;
-        const bool last_active = session->transactions_by_local_id.empty();
-        if (retaining || last_active) {
+        // Canonical finality has the same per-transaction replacement rule
+        // as explicit routing; siblings never suppress this boundary.
+        {
           ServerTransactionState replacement;
           std::string replacement_code;
           std::string replacement_detail;
-          if (!BeginIndependentTransactionForSession(
+          if (!BeginOrdinaryReplacementTransactionForSession(
                   *session,
                   engine_state,
                   request_record.request_uuid,
-                  retaining ? &finalized_transaction : nullptr,
+                  finalized_transaction,
                   &replacement,
                   &replacement_code,
                   &replacement_detail)) {
@@ -12745,8 +12740,10 @@ SessionOperationResult HandleExecuteSblrImpl(
                 transaction_response.outcome_detail,
                 transaction_response);
           }
-          session->default_local_transaction_id =
-              replacement.local_transaction_id;
+          if (finalized_default) {
+            session->default_local_transaction_id =
+                replacement.local_transaction_id;
+          }
           ProjectDefaultTransactionToLegacyFields(session);
           transaction_response.replacement_present = true;
           transaction_response.replacement = replacement;
@@ -12754,46 +12751,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               retaining
                   ? ServerTransactionResponseState::ReplacementReason::kRetaining
                   : ServerTransactionResponseState::ReplacementReason::
-                        kLastActiveReady;
-        } else {
-          // The finalized transaction was not the session's final active
-          // boundary. Select one existing active transaction as the default;
-          // opening another transaction here would violate MGA concurrency.
-          if (finalized_default ||
-              session->transactions_by_local_id.find(
-                  session->default_local_transaction_id) ==
-                  session->transactions_by_local_id.end()) {
-            session->default_local_transaction_id = 0;
-          }
-          ProjectDefaultTransactionToLegacyFields(session);
-          const auto selected_default =
-              session->transactions_by_local_id.find(
-                  session->default_local_transaction_id);
-          if (selected_default == session->transactions_by_local_id.end() ||
-              selected_default->second.lifecycle_state !=
-                  ServerTransactionLifecycleState::kActive) {
-            session->detached_recovery_quarantined = true;
-            transaction_response.selected_present = false;
-            transaction_response.diagnostic_code =
-                "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE";
-            transaction_response.outcome_detail =
-                "existing_default_projection_missing_after_known_finality";
-            CompleteServerRequestLifecycle(
-                registry,
-                request_record.request_uuid,
-                ServerRequestLifecycleState::kFailed,
-                transaction_response.outcome_detail);
-            return V2TransactionOutcome(
-                false,
-                decoded->session_uuid,
-                request_record.request_uuid,
-                admission.operation_id,
-                row_packet,
-                transaction_response.outcome_detail,
-                transaction_response);
-          }
-          transaction_response.selected_present = true;
-          transaction_response.selected = selected_default->second;
+                        kOrdinaryReady;
         }
         mark_execute_phase("canonical_transaction_replacement_boundary");
       } else if (admission.operation_id == "transaction.commit" ||
