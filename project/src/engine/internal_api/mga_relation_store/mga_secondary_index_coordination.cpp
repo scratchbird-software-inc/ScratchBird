@@ -756,11 +756,9 @@ EngineApiDiagnostic BuildSecondaryIndexDeltaLedgerRecord(
                                         "unique_index_delta_refused");
   }
   idx::SecondaryIndexDeltaLedgerRecord record;
-  auto diagnostic = ParseLedgerTypedUuid(GenerateCrudEngineUuid("object"),
-                                         scratchbird::core::platform::UuidKind::object,
-                                         &record.delta.delta_id);
-  if (diagnostic.error) { return diagnostic; }
-  diagnostic = ParseLedgerTypedUuid(input.index.index_uuid,
+  record.delta.delta_id = {scratchbird::core::platform::UuidKind::object,
+                          GenerateCrudEngineUuid("object")};
+  auto diagnostic = ParseLedgerTypedUuid(input.index.index_uuid,
                                     scratchbird::core::platform::UuidKind::object,
                                     &record.delta.index_uuid);
   if (diagnostic.error) { return diagnostic; }

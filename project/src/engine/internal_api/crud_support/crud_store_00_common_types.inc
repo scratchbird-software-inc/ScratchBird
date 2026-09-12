@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -46,11 +45,6 @@ using scratchbird::transaction::mga::IsTerminalTransactionState;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
 using scratchbird::transaction::mga::TransactionState;
-
-std::uint64_t CurrentUnixMillis() {
-  const auto now = std::chrono::system_clock::now().time_since_epoch();
-  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-}
 
 std::vector<std::string> Split(const std::string& value, char delimiter) {
   std::vector<std::string> parts;

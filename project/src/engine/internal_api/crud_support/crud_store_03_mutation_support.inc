@@ -29,21 +29,6 @@ bool CrudRowVersionVisibleToContext(const RelationReadSnapshot& state,
   return CrudRowVersionVisibleToContextInternal(state, row, context);
 }
 
-std::string GenerateCrudEngineUuid(std::string kind, std::uint64_t unix_epoch_millis) {
-  using scratchbird::core::platform::UuidKind;
-  using scratchbird::core::uuid::GenerateEngineIdentityV7;
-  using scratchbird::core::uuid::UuidToString;
-  if (unix_epoch_millis == 0) { unix_epoch_millis = CurrentUnixMillis(); }
-  UuidKind uuid_kind = UuidKind::object;
-  if (kind == "row") { uuid_kind = UuidKind::row; }
-  else if (kind == "transaction") { uuid_kind = UuidKind::transaction; }
-  else if (kind == "schema") { uuid_kind = UuidKind::schema; }
-  else if (kind == "database") { uuid_kind = UuidKind::database; }
-  const auto generated = GenerateEngineIdentityV7(uuid_kind, unix_epoch_millis);
-  if (!generated.ok()) { return {}; }
-  return UuidToString(generated.value.value);
-}
-
 bool IsEmptyUuid(const EngineUuid& uuid) { return uuid.is_nil(); }
 
 bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t, std::uint64_t observer_tx) {
@@ -52,11 +37,6 @@ bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator
   if (it == state.transactions.end()) { return false; }
   if (it->second == "committed" || it->second == "archived") { return true; }
   return creator_tx == observer_tx && (it->second == "active" || it->second == "prepared");
-}
-
-std::string UuidStringOrGenerated(const EngineUuid& uuid, std::string kind) {
-  if (!IsEmptyUuid(uuid)) { return uuid; }
-  return GenerateCrudEngineUuid(std::move(kind));
 }
 
 EngineApiDiagnostic ValidateCrudDatabasePath(const EngineRequestContext& context, const std::string& operation_id) {

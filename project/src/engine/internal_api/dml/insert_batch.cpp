@@ -1730,7 +1730,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
     }
   }
   MaterializeOmittedInsertColumns(row_encoder_plan, &row.values);
-  row.row_uuid = UuidStringOrGenerated(input_row.requested_row_uuid, "row");
+  row.row_uuid = UuidOrGenerated(input_row.requested_row_uuid, "row");
   row.encoded_bytes = static_cast<std::uint64_t>(EncodedValueBytes(row.values));
   row.toast_required = row.encoded_bytes > row_template.max_inline_encoded_bytes ||
                        InsertBatchOptionEnabled(request, "large_value.force_toast=true");

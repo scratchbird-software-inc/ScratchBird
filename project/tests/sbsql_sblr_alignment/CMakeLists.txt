@@ -856,6 +856,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ddl_result_identity_test.cpp
     ../../src/engine/internal_api/behavior_support/ddl_result_identity.cpp
     ../../src/engine/internal_api/api_unsupported.cpp)
+  add_executable(sbsql_sblr_alignment_crud_binary_identity
+    crud_binary_identity_test.cpp
+    ../../src/engine/internal_api/crud_support/crud_identity.cpp)
+  target_compile_features(sbsql_sblr_alignment_crud_binary_identity PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_crud_binary_identity PRIVATE
+    ../../src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_crud_binary_identity PRIVATE
+    sb_core_uuid sb_core_time sb_core_diagnostic_catalog)
+  target_link_options(sbsql_sblr_alignment_crud_binary_identity PRIVATE
+    "-Wl,--wrap=RAND_bytes"
+    "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
+  add_test(NAME sbsql_sblr_alignment_crud_binary_identity
+    COMMAND sbsql_sblr_alignment_crud_binary_identity)
+  set_tests_properties(sbsql_sblr_alignment_crud_binary_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;allocation_failure;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_ddl_result_identity PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_ddl_result_identity PRIVATE
     ../../src/engine/internal_api)

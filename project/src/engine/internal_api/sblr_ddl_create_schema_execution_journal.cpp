@@ -28,7 +28,7 @@
 #include <new>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <set>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -131,37 +131,6 @@ std::string UuidText(const SblrDdlCreateSchemaJournalUuidV1& value) {
     text.push_back(kHex[value[index] & 0x0fU]);
   }
   return text;
-}
-
-bool ParseUuidText(const std::string& text,
-                   SblrDdlCreateSchemaJournalUuidV1* value) {
-  if (value == nullptr || text.size() != 36 || text[8] != '-' ||
-      text[13] != '-' || text[18] != '-' || text[23] != '-') {
-    return false;
-  }
-  const auto nibble = [](char character) -> int {
-    if (character >= '0' && character <= '9') return character - '0';
-    if (character >= 'a' && character <= 'f') return character - 'a' + 10;
-    if (character >= 'A' && character <= 'F') return character - 'A' + 10;
-    return -1;
-  };
-  SblrDdlCreateSchemaJournalUuidV1 parsed{};
-  std::size_t byte = 0;
-  for (std::size_t index = 0; index < text.size();) {
-    if (text[index] == '-') {
-      ++index;
-      continue;
-    }
-    if (index + 1 >= text.size() || byte >= parsed.size()) return false;
-    const auto high = nibble(text[index]);
-    const auto low = nibble(text[index + 1]);
-    if (high < 0 || low < 0) return false;
-    parsed[byte++] = static_cast<std::uint8_t>((high << 4) | low);
-    index += 2;
-  }
-  if (byte != parsed.size() || !NonZero(parsed)) return false;
-  *value = parsed;
-  return true;
 }
 
 bool DecodeDescriptor(
@@ -686,16 +655,12 @@ SblrDdlCreateSchemaJournalResultV1 LoadExact(
 
 bool NextDistinctUuid(
     std::string kind,
-    std::unordered_set<std::string>* identities,
+    std::set<SblrDdlCreateSchemaJournalUuidV1>* identities,
     SblrDdlCreateSchemaJournalUuidV1* value) {
   for (std::size_t attempt = 0; attempt != 64; ++attempt) {
     const auto candidate = GenerateCrudEngineUuid(kind);
-    SblrDdlCreateSchemaJournalUuidV1 parsed{};
-    if (!ParseUuidText(candidate, &parsed) ||
-        !identities->insert(candidate).second) {
-      continue;
-    }
-    *value = parsed;
+    if (!identities->insert(candidate.bytes).second) continue;
+    *value = candidate.bytes;
     return true;
   }
   return false;
@@ -706,22 +671,22 @@ bool MakeBegunSnapshot(
     SblrDdlCreateSchemaJournalSnapshotV1* snapshot) {
   scratchbird::engine::sblr::SblrDdlCreateSchemaDescriptorV1 descriptor;
   if (snapshot == nullptr || !DecodeDescriptor(key, &descriptor)) return false;
-  std::unordered_set<std::string> identities{
-      UuidText(descriptor.receipt),
-      UuidText(descriptor.schema_uuid),
-      UuidText(descriptor.database_uuid),
-      UuidText(descriptor.owning_transaction_uuid),
-      UuidText(descriptor.statement_snapshot_uuid),
-      UuidText(descriptor.catalog_epoch_uuid),
-      UuidText(descriptor.security_context_uuid),
-      UuidText(descriptor.policy_snapshot_uuid),
-      UuidText(descriptor.resource_grant_uuid),
-      UuidText(descriptor.owner_principal_uuid),
-      UuidText(descriptor.binding_uuid),
-      UuidText(descriptor.recovery_uuid),
+  std::set<SblrDdlCreateSchemaJournalUuidV1> identities{
+      descriptor.receipt,
+      descriptor.schema_uuid,
+      descriptor.database_uuid,
+      descriptor.owning_transaction_uuid,
+      descriptor.statement_snapshot_uuid,
+      descriptor.catalog_epoch_uuid,
+      descriptor.security_context_uuid,
+      descriptor.policy_snapshot_uuid,
+      descriptor.resource_grant_uuid,
+      descriptor.owner_principal_uuid,
+      descriptor.binding_uuid,
+      descriptor.recovery_uuid,
   };
   if (NonZero(descriptor.parent_schema_uuid)) {
-    identities.insert(UuidText(descriptor.parent_schema_uuid));
+    identities.insert(descriptor.parent_schema_uuid);
   }
 
   SblrDdlCreateSchemaJournalSnapshotV1 value;

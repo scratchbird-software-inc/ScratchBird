@@ -102,7 +102,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
         "ddl.create_index",
         UnsupportedCrudFeatureDiagnostic("ddl.create_index", "opaque_column_index_denied"));
   }
-  const std::string index_uuid = UuidStringOrGenerated(definition.requested_index_uuid, "object");
+  const EngineUuid index_uuid = UuidOrGenerated(definition.requested_index_uuid, "object");
   std::string index_name = "unnamed_index";
   if (!definition.names.empty() && !definition.names.front().name.empty()) { index_name = definition.names.front().name; }
   CrudIndexRecord created_index = BuildCrudIndexRecord(definition, request.target_object.uuid, index_uuid, index_name);
@@ -406,7 +406,7 @@ EngineCreateDomainResult EngineCreateDomain(const EngineCreateDomainRequest& req
   }
   DomainRecord record;
   record.creator_tx = request.context.local_transaction_id;
-  record.domain_uuid = UuidStringOrGenerated(request.target_object.uuid, "object");
+  record.domain_uuid = UuidOrGenerated(request.target_object.uuid, "object");
   if (FindVisibleDomain(request.context, record.domain_uuid, request.context.local_transaction_id)) {
     return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
         request.context,

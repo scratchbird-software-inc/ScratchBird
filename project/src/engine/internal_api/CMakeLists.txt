@@ -361,6 +361,7 @@ add_library(sb_engine_internal_api
   artifacts/artifact_api.cpp
   behavior_support/api_behavior_store.cpp
   behavior_support/ddl_result_identity.cpp
+  crud_support/crud_identity.cpp
   crud_support/crud_store.cpp
   domain_support/domain_store.cpp
   api_unsupported.cpp

@@ -13,10 +13,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -191,10 +193,32 @@ struct CrudStoreResult {
   CrudState state;
 };
 
-std::string GenerateCrudEngineUuid(std::string kind, std::uint64_t unix_epoch_millis = 0);
+// Source issuance failure, not an EngineApiResult or emitted diagnostic:
+// preserve the native cause without allocating another occurrence UUID.
+class CrudIdentityIssuanceError final : public std::exception {
+ public:
+  explicit CrudIdentityIssuanceError(
+      scratchbird::core::platform::DiagnosticRecord diagnostic) noexcept
+      : diagnostic_(std::move(diagnostic)) {}
+  const char* what() const noexcept override {
+    return diagnostic_.diagnostic_code.c_str();
+  }
+  const scratchbird::core::platform::DiagnosticRecord& diagnostic() const noexcept {
+    return diagnostic_;
+  }
+ private:
+  scratchbird::core::platform::DiagnosticRecord diagnostic_;
+};
+
+// Binary source only. This legacy convenience issuer does not establish the
+// caller's database/cluster clock policy or grant mutation/publication authority.
+// A supplied zero millisecond value is zero, not a sentinel for current time.
+EngineUuid GenerateCrudEngineUuid(
+    std::string_view kind,
+    std::optional<std::uint64_t> unix_epoch_millis = std::nullopt);
 bool IsEmptyUuid(const EngineUuid& uuid);
 bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std::uint64_t event_sequence, std::uint64_t observer_tx);
-std::string UuidStringOrGenerated(const EngineUuid& uuid, std::string kind);
+EngineUuid UuidOrGenerated(const EngineUuid& uuid, std::string_view kind);
 CrudStoreResult LoadCrudState(const EngineRequestContext& context);
 EngineApiDiagnostic AppendCrudEvent(const EngineRequestContext& context, const std::string& event);
 EngineApiDiagnostic ValidateCrudDatabasePath(const EngineRequestContext& context, const std::string& operation_id);

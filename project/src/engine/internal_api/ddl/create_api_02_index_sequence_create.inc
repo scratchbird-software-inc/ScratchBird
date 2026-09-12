@@ -249,7 +249,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   if (!loaded.ok) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", loaded.diagnostic);
   }
-  const std::string table_uuid = UuidStringOrGenerated(request.requested_table_uuid, "object");
+  const EngineUuid table_uuid = UuidOrGenerated(request.requested_table_uuid, "object");
   std::string table_name = "unnamed_table";
   if (!request.table_names.empty() && !request.table_names.front().name.empty()) {
     table_name = request.table_names.front().name;
@@ -1005,7 +1005,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   for (const auto& inline_index : request.table_indexes) {
     CrudIndexRecord created_index = BuildCrudIndexRecord(inline_index,
                                                          table_uuid,
-                                                         UuidStringOrGenerated(inline_index.requested_index_uuid, "object"),
+                                                         UuidOrGenerated(inline_index.requested_index_uuid, "object"),
                                                          inline_index.names.empty() ? "inline_index" : inline_index.names.front().name);
     created_index.creator_tx = request.context.local_transaction_id;
     if (!created_index.key_envelopes.empty() && IsSupportedCrudIndexProfile(created_index.profile)) {
