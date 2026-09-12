@@ -3,6 +3,7 @@
 // Actual canonical comparison component; not live receipt or SQL/IPC evidence.
 #include "query/expression_api.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "canonical_utf8.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -175,9 +176,133 @@ void TestAtomicity() {
   Require(!api::QowDecodeCanonicalTextDescriptorV1(changed,&sentinel) && sentinel == original,
           "failed descriptor decode modified output");
 }
+std::string Utf8Scalar(std::uint32_t cp) {
+  std::string bytes;
+  if (cp < 0x80) bytes.push_back(static_cast<char>(cp));
+  else if (cp < 0x800) {
+    bytes.push_back(static_cast<char>(0xc0 | (cp >> 6)));
+    bytes.push_back(static_cast<char>(0x80 | (cp & 63)));
+  } else if (cp < 0x10000) {
+    bytes.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+    bytes.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63)));
+    bytes.push_back(static_cast<char>(0x80 | (cp & 63)));
+  } else {
+    bytes.push_back(static_cast<char>(0xf0 | (cp >> 18)));
+    bytes.push_back(static_cast<char>(0x80 | ((cp >> 12) & 63)));
+    bytes.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63)));
+    bytes.push_back(static_cast<char>(0x80 | (cp & 63)));
+  }
+  return bytes;
+}
+void TestUtf8Admission() {
+  const auto validate = [](const std::string& bytes, std::uint64_t* count) {
+    return dt::ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), count);
+  };
+  for (std::uint32_t cp = 0; cp <= 0x10ffff; ++cp) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const auto bytes = Utf8Scalar(cp); std::size_t offset = 0;
+    std::uint32_t scalar = 0xffffffff; std::uint64_t count = 99;
+    Require(dt::DecodeCanonicalUtf8Scalar(reinterpret_cast<const std::uint8_t*>(bytes.data()),
+        bytes.size(), &offset, &scalar) && offset == bytes.size() && scalar == cp,
+        "Unicode scalar decoder mismatch");
+    Require(validate(bytes, &count) && count == 1, "Unicode scalar validation mismatch");
+  }
+  for (unsigned a = 0; a < 256; ++a) {
+    std::uint64_t count = 99; std::string bytes(1, static_cast<char>(a));
+    const bool valid = validate(bytes, &count);
+    Require(valid == (a < 128) && count == (valid ? 1 : 0), "one-byte encoding oracle mismatch");
+    for (unsigned b = 0; b < 256; ++b) {
+      bytes.resize(1); bytes.push_back(static_cast<char>(b)); count = 99;
+      const bool ascii = a < 128 && b < 128;
+      const bool pair = a >= 0xc2 && a <= 0xdf && b >= 0x80 && b <= 0xbf;
+      const bool accepted = validate(bytes, &count);
+      Require(accepted == (ascii || pair) && count == (ascii ? 2 : pair ? 1 : 0),
+              "two-byte encoding oracle mismatch");
+    }
+  }
+  const std::vector<std::string> malformed = {
+      "\x80", "\xc0\x80", "\xc1\xbf", "\xe0\x80\xaf", "\xed\xa0\x80",
+      "\xed\xbf\xbf", "\xf0\x80\x80\xaf", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80",
+      "\xf8\x88\x80\x80\x80", "\xff", "\xc2", "\xe1\x80", "\xf1\x80\x80",
+      "\xc2z", "\xe1z\x80", "\xf1\x80z\x80"};
+  const auto invalid_operations = [&](const std::string& bytes) {
+    dt::DatatypeOperationValue value{dt::CanonicalTypeId::character, bytes, false};
+    dt::DatatypeComparisonRequest compare; compare.left = value;
+    compare.right = {dt::CanonicalTypeId::character, "valid", false}; compare.text_seed = Seed();
+    Require(!dt::CompareDatatypeValues(compare).ok(), "invalid TEXT comparison accepted");
+    std::swap(compare.left, compare.right);
+    Require(!dt::CompareDatatypeValues(compare).ok(), "invalid right TEXT comparison accepted");
+    compare.left.is_null = true;
+    Require(!dt::CompareDatatypeValues(compare).ok(), "NULL bypassed invalid non-null TEXT");
+    dt::DatatypeSortKeyRequest sort; sort.value = value; sort.text_seed = Seed();
+    const auto key = dt::MakeDatatypeSortKey(sort);
+    Require(!key.ok() && key.sort_key.empty(), "invalid TEXT produced sort key");
+    dt::DatatypeHashRequest hash; hash.value = value;
+    const auto hashed = dt::HashDatatypeValue(hash);
+    Require(!hashed.ok() && hashed.stable_hash_hex.empty(), "invalid TEXT produced hash");
+    dt::DatatypeSerializationRequest serialize; serialize.value = value;
+    const auto serialized = dt::SerializeDatatypeValue(serialize);
+    Require(!serialized.ok() && serialized.serialized_value.empty(), "invalid TEXT serialized");
+    constexpr char hex[] = "0123456789abcdef";
+    std::string wire = "SBDV1;type=text;state=value;payload=";
+    for (unsigned char byte : bytes) { wire.push_back(hex[byte >> 4]); wire.push_back(hex[byte & 15]); }
+    dt::DatatypeDeserializationRequest deserialize; deserialize.serialized_value = wire;
+    const auto decoded = dt::DeserializeDatatypeValue(deserialize);
+    Require(!decoded.ok() && decoded.value.encoded_value.empty() &&
+            decoded.value.type_id == dt::CanonicalTypeId::unknown, "invalid TEXT deserialization published value");
+    int result = 99; std::string refusal;
+    Require(!api::QowCompareCanonicalCollatedScalarsV1(Value(bytes), Value("valid",6), Id(1),31,17,
+        Seed(), &result, &refusal) && result == 99, "invalid TEXT reached successful scalar comparison");
+  };
+  for (const auto& bytes : malformed) {
+    std::size_t offset = 0; std::uint32_t scalar = 0xffffffff;
+    Require(!dt::DecodeCanonicalUtf8Scalar(reinterpret_cast<const std::uint8_t*>(bytes.data()),
+        bytes.size(), &offset, &scalar) && offset == 0 && scalar == 0xffffffff,
+        "failed scalar decode changed outputs");
+    invalid_operations(bytes); invalid_operations(std::string("prefix\0",7) + bytes);
+  }
+  for (std::uint32_t cp : {0x80u,0x7ffu,0x800u,0xd7ffu,0xe000u,0xffffu,0x10000u,0x10ffffu}) {
+    const auto valid = Utf8Scalar(cp);
+    for (std::size_t length = 1; length < valid.size(); ++length) invalid_operations(valid.substr(0,length));
+    for (std::size_t offset = 1; offset < valid.size(); ++offset) {
+      for (unsigned byte : {0u,0x7fu,0xc0u,0xffu}) {
+        auto invalid = valid; invalid[offset] = static_cast<char>(byte); invalid_operations(invalid);
+      }
+    }
+  }
+  for (const auto& bytes : {std::string{},std::string("a\0b",3),Utf8Scalar(0xffff),Utf8Scalar(0x10ffff)}) {
+    dt::DatatypeOperationValue value{dt::CanonicalTypeId::character, bytes, false};
+    dt::DatatypeSerializationRequest serialize; serialize.value = value;
+    const auto encoded = dt::SerializeDatatypeValue(serialize); Require(encoded.ok(), "valid TEXT serialization refused");
+    dt::DatatypeDeserializationRequest deserialize; deserialize.serialized_value = encoded.serialized_value;
+    const auto decoded = dt::DeserializeDatatypeValue(deserialize);
+    Require(decoded.ok() && decoded.value.encoded_value == bytes, "valid TEXT round trip failed");
+    Compare(bytes, bytes, Seed(), 0);
+  }
+  std::size_t offset = 1; std::uint32_t scalar = 99;
+  for (const auto* wire : {"SBDV1;type=text;state=value", "SBDV1;type=text;state=value;payload=0g"}) {
+    dt::DatatypeDeserializationRequest deserialize; deserialize.serialized_value = wire;
+    const auto decoded = dt::DeserializeDatatypeValue(deserialize);
+    Require(!decoded.ok() && decoded.value.type_id == dt::CanonicalTypeId::unknown &&
+            decoded.value.encoded_value.empty(), "missing or malformed payload published empty TEXT");
+  }
+  const std::uint8_t byte = 'a';
+  Require(!dt::DecodeCanonicalUtf8Scalar(&byte,1,&offset,&scalar) && offset == 1 && scalar == 99,
+          "end offset accepted");
+  offset = std::numeric_limits<std::size_t>::max();
+  Require(!dt::DecodeCanonicalUtf8Scalar(&byte,1,&offset,&scalar), "out of bounds offset accepted");
+  Require(!dt::DecodeCanonicalUtf8Scalar(nullptr,1,&offset,&scalar), "null input accepted");
+  Require(!dt::DecodeCanonicalUtf8Scalar(&byte,1,nullptr,&scalar), "null offset accepted");
+  Require(!dt::DecodeCanonicalUtf8Scalar(&byte,1,&offset,nullptr), "null scalar accepted");
+}
 }
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string_view(argv[1]) == "--utf8") {
+      TestUtf8Admission();
+      std::cout << "PASS canonical UTF-8 checks=" << checks << '\n';
+      return EXIT_SUCCESS;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--unicode") {
       TestUnicodeComparison();
       std::cout << "PASS Unicode collation checks=" << checks << '\n';

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "datatype_operations.hpp"
+#include "canonical_utf8.hpp"
 
 #include "sbl_numeric.hpp"
 
@@ -40,6 +41,12 @@ Status ErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
 }
 
+bool CanonicalCharacterValueValid(const DatatypeOperationValue& value) noexcept {
+  return value.is_null || value.type_id != CanonicalTypeId::character ||
+      ValidateCanonicalUtf8(reinterpret_cast<const std::uint8_t*>(value.encoded_value.data()),
+                            value.encoded_value.size());
+}
+
 std::string LowerAscii(std::string value) {
   for (char& c : value) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
   return value;
@@ -63,54 +70,6 @@ std::string EncodeUtf8Codepoint(std::uint32_t codepoint) {
     out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
   }
   return out;
-}
-
-bool DecodeNextUtf8Codepoint(const std::string& value,
-                             std::size_t* offset,
-                             std::uint32_t* codepoint) {
-  const auto byte = static_cast<unsigned char>(value[*offset]);
-  if (byte < 0x80) {
-    *codepoint = byte;
-    ++(*offset);
-    return true;
-  }
-  const auto continuation = [&value](std::size_t pos, unsigned char* out) {
-    if (pos >= value.size()) { return false; }
-    const auto next = static_cast<unsigned char>(value[pos]);
-    if ((next & 0xc0) != 0x80) { return false; }
-    *out = next;
-    return true;
-  };
-  unsigned char b1 = 0;
-  unsigned char b2 = 0;
-  unsigned char b3 = 0;
-  if ((byte & 0xe0) == 0xc0) {
-    if (!continuation(*offset + 1, &b1)) { return false; }
-    *codepoint = ((byte & 0x1f) << 6) | (b1 & 0x3f);
-    *offset += 2;
-    return true;
-  }
-  if ((byte & 0xf0) == 0xe0) {
-    if (!continuation(*offset + 1, &b1) ||
-        !continuation(*offset + 2, &b2)) {
-      return false;
-    }
-    *codepoint = ((byte & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
-    *offset += 3;
-    return true;
-  }
-  if ((byte & 0xf8) == 0xf0) {
-    if (!continuation(*offset + 1, &b1) ||
-        !continuation(*offset + 2, &b2) ||
-        !continuation(*offset + 3, &b3)) {
-      return false;
-    }
-    *codepoint = ((byte & 0x07) << 18) | ((b1 & 0x3f) << 12) |
-                 ((b2 & 0x3f) << 6) | (b3 & 0x3f);
-    *offset += 4;
-    return true;
-  }
-  return false;
 }
 
 bool IsUpperLatinCodepoint(std::uint32_t codepoint) {
@@ -191,20 +150,17 @@ bool AppendAccentFoldedLatin(std::uint32_t codepoint,
   }
 }
 
-std::string NormalizeLatinTextForCollation(const std::string& value,
-                                           bool case_insensitive,
-                                           bool accent_insensitive) {
+bool NormalizeLatinTextForCollation(const std::string& value,
+                                    bool case_insensitive,
+                                    bool accent_insensitive,
+                                    std::string* output) {
   std::string out;
   out.reserve(value.size());
   std::size_t offset = 0;
   while (offset < value.size()) {
-    const std::size_t start = offset;
     std::uint32_t codepoint = 0;
-    if (!DecodeNextUtf8Codepoint(value, &offset, &codepoint)) {
-      out.push_back(value[start]);
-      offset = start + 1;
-      continue;
-    }
+    if (!DecodeCanonicalUtf8Scalar(reinterpret_cast<const std::uint8_t*>(value.data()),
+                                   value.size(), &offset, &codepoint)) return false;
     if (codepoint == 0x00df && case_insensitive) {
       out.append("ss");
       continue;
@@ -216,7 +172,8 @@ std::string NormalizeLatinTextForCollation(const std::string& value,
     if (case_insensitive) { codepoint = LowerLatinCodepoint(codepoint); }
     out.append(EncodeUtf8Codepoint(codepoint));
   }
-  return out;
+  output->swap(out);
+  return true;
 }
 
 bool TextSeedRequested(const DatatypeTextSeedAuthority& seed,
@@ -1872,6 +1829,12 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
 
+  if (!CanonicalCharacterValueValid(request.left) || !CanonicalCharacterValueValid(request.right)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "character_utf8_invalid");
+    return result;
+  }
   if (request.left.is_null || request.right.is_null) {
     if (request.left.is_null && request.right.is_null) {
       result.comparison = 0;
@@ -1920,12 +1883,17 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
           "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
       return result;
     }
-    left = NormalizeLatinTextForCollation(left,
-                                          request.text_seed.collation_case_insensitive,
-                                          request.text_seed.collation_accent_insensitive);
-    right = NormalizeLatinTextForCollation(right,
-                                           request.text_seed.collation_case_insensitive,
-                                           request.text_seed.collation_accent_insensitive);
+    if (!NormalizeLatinTextForCollation(left,
+            request.text_seed.collation_case_insensitive,
+            request.text_seed.collation_accent_insensitive, &left) ||
+        !NormalizeLatinTextForCollation(right,
+            request.text_seed.collation_case_insensitive,
+            request.text_seed.collation_accent_insensitive, &right)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "character_utf8_invalid");
+      return result;
+    }
   }
   if (IsInteger(request.left.type_id)) {
     const bool left_negative = !left.empty() && left.front() == '-';
@@ -2079,6 +2047,10 @@ std::string OrderedFiniteDecimalKey(const std::string& value) {
 bool CanonicalHashPayload(const DatatypeOperationValue& value,
                           std::string* payload,
                           std::string* failure_detail) {
+  if (!CanonicalCharacterValueValid(value)) {
+    *failure_detail = "character_utf8_invalid";
+    return false;
+  }
   if (value.is_null) {
     payload->clear();
     return true;
@@ -2129,6 +2101,12 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (!CanonicalCharacterValueValid(request.value)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "character_utf8_invalid");
+    return result;
+  }
   if (request.value.is_null) {
     result.sort_key =
         request.null_ordering == DatatypeNullOrdering::nulls_first ? "00:null" : "ff:null";
@@ -2164,9 +2142,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
         return result;
       }
-      value = NormalizeLatinTextForCollation(value,
-                                             request.text_seed.collation_case_insensitive,
-                                             request.text_seed.collation_accent_insensitive);
+      if (!NormalizeLatinTextForCollation(value,
+              request.text_seed.collation_case_insensitive,
+              request.text_seed.collation_accent_insensitive, &value)) {
+        result.status = ErrorStatus();
+        result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+            "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "character_utf8_invalid");
+        return result;
+      }
     }
     result.sort_key = "20:" + request.text_seed.seed_pack_name + ":" +
                       request.text_seed.seed_pack_version + ":" +
@@ -2256,6 +2239,12 @@ DatatypeSerializationResult SerializeDatatypeValue(
   DatatypeSerializationResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (!CanonicalCharacterValueValid(request.value)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_SERIALIZATION_REJECTED", "datatype.serialization.rejected", "character_utf8_invalid");
+    return result;
+  }
   if (request.value.type_id == CanonicalTypeId::unknown) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
@@ -2302,17 +2291,33 @@ DatatypeDeserializationResult DeserializeDatatypeValue(
     return result;
   }
   bool ok = false;
-  result.value.type_id = type_id;
-  result.value.is_null = fields["state"] == "null";
-  result.value.encoded_value = result.value.is_null ? std::string() :
-                               HexDecodeStrict(fields["payload"], false, &ok);
-  if (!result.value.is_null && !ok) {
+  DatatypeOperationValue staged;
+  staged.type_id = type_id;
+  staged.is_null = fields["state"] == "null";
+  if (!staged.is_null) {
+    // Empty TEXT is a value, not NULL or a missing payload field.
+    if (type_id == CanonicalTypeId::character && fields.contains("payload") &&
+        fields.at("payload").empty()) {
+      ok = true;
+    } else {
+      staged.encoded_value = HexDecodeStrict(fields["payload"], false, &ok);
+    }
+  }
+  if (!staged.is_null && !ok) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
                                                         "SB_DATATYPE_DESERIALIZATION_REJECTED",
                                                         "datatype.deserialization.rejected",
                                                         "payload_hex_invalid");
+    return result;
   }
+  if (!CanonicalCharacterValueValid(staged)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_DESERIALIZATION_REJECTED", "datatype.deserialization.rejected", "character_utf8_invalid");
+    return result;
+  }
+  result.value = std::move(staged);
   return result;
 }
 

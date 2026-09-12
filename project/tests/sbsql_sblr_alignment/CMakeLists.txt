@@ -37,6 +37,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_binary_collation_unicode PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;collation;unicode;required_regression;not_e2e"
     TIMEOUT 60)
+  add_test(NAME sbsql_sblr_alignment_canonical_text_utf8
+    COMMAND sbsql_sblr_alignment_binary_collation --utf8)
+  set_tests_properties(sbsql_sblr_alignment_canonical_text_utf8 PROPERTIES
+    LABELS "sbsql_sblr_alignment;utf8;datatype;component_runtime;not_e2e"
+    TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_parser_profile_identity
     parser_profile_identity_test.cpp
     ../../src/parsers/sbsql_worker/metrics/parser_metrics.cpp
