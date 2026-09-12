@@ -19,6 +19,8 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <map>
+#include <set>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -29,6 +31,16 @@
 namespace scratchbird::engine::optimizer {
 namespace planner = scratchbird::engine::planner;
 
+namespace {
+void AppendSelectedAlternativeBinding(std::string& signature, std::uint32_t logical_node_id,
+                                      const planner::CanonicalPlannerUuid& alternative_uuid) {
+  planner::CanonicalPlannerBindingBytes record("optimizer-selected-alternative-v2");
+  record.Number(logical_node_id);
+  record.Identity(alternative_uuid);
+  signature.append(std::move(record).Take());
+}
+}  // namespace
+
 // QOW-SOURCE-OPT-005-V1
 CanonicalOptimizerStatisticsAdmissionResult
 AdmitCanonicalOptimizerStatisticsBeforeAccess(
@@ -38,6 +50,7 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t logical_node_id,
                           std::string field_id) {
+    result = {};
     result.issues.push_back({std::move(diagnostic_id), logical_node_id,
                              std::move(field_id)});
     result.accepted = false;
@@ -45,17 +58,8 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
     result.data_access_allowed = false;
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const planner::CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
 
   const auto graph_validation =
@@ -124,7 +128,7 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
             estimate.source ==
                 CanonicalOptimizerStatisticSource::kCatalogSample;
         const bool object_bound =
-            !estimate.object_uuid.empty() &&
+            canonical_uuid(estimate.object_uuid) &&
             std::ranges::find(node.required_object_uuids,
                               estimate.object_uuid) !=
                 node.required_object_uuids.end();
@@ -137,8 +141,10 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
                     estimate.collected_at_monotonic_ns <=
                 estimate.maximum_age_ns;
         if (!catalog_source || !object_bound || !fresh ||
-            estimate.confidence == CostConfidence::kUnknown ||
-            estimate.confidence == CostConfidence::kRejected ||
+            estimate.confidence < CostConfidence::kExact ||
+            estimate.confidence > CostConfidence::kLow ||
+            (!estimate.row_count_present && estimate.row_count != 0) ||
+            (!estimate.page_count_present && estimate.page_count != 0) ||
             (!estimate.row_count_present && !estimate.page_count_present)) {
           return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-PROVENANCE-V1",
                         estimate.logical_node_id, "known_estimate");
@@ -147,7 +153,10 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
         break;
       }
       case CanonicalOptimizerStatisticState::kUnknown:
-        if (estimate.source !=
+        if ((!estimate.object_uuid.is_nil() &&
+             (!canonical_uuid(estimate.object_uuid) ||
+              std::ranges::find(node.required_object_uuids, estimate.object_uuid) == node.required_object_uuids.end())) ||
+            estimate.source !=
                 CanonicalOptimizerStatisticSource::kUnavailable ||
             estimate.confidence != CostConfidence::kUnknown ||
             estimate.row_count_present || estimate.page_count_present ||
@@ -163,11 +172,12 @@ AdmitCanonicalOptimizerStatisticsBeforeAccess(
       case CanonicalOptimizerStatisticState::kNotApplicable:
         if (node.node_kind !=
                 planner::CanonicalLogicalRelationalNodeKind::kValues ||
-            !estimate.object_uuid.empty() ||
+            !estimate.object_uuid.is_nil() ||
             estimate.source !=
                 CanonicalOptimizerStatisticSource::kUnavailable ||
             estimate.confidence != CostConfidence::kUnknown ||
             estimate.row_count_present || estimate.page_count_present ||
+            estimate.row_count != 0 || estimate.page_count != 0 ||
             estimate.collected_at_monotonic_ns != 0 ||
             estimate.maximum_age_ns != 0) {
           return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-NOT-APPLICABLE-V1",
@@ -199,7 +209,7 @@ EvaluateCanonicalRelationalCandidateLegality(
   CanonicalRelationalCandidateLegalityResult result;
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t node_id,
-                          std::string alternative_uuid,
+                          planner::CanonicalPlannerUuid alternative_uuid,
                           std::string field_id) {
     result.accepted = false;
     result.data_access_allowed = false;
@@ -231,7 +241,7 @@ EvaluateCanonicalRelationalCandidateLegality(
   for (const auto& node : graph.nodes) {
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   for (const auto& property : properties.properties) {
@@ -244,7 +254,7 @@ EvaluateCanonicalRelationalCandidateLegality(
           const planner::CanonicalLogicalPropertyKind kind) {
         return std::ranges::any_of(
             node.delivered_property_uuids,
-            [&](const std::string& property_uuid) {
+            [&](const planner::CanonicalPlannerUuid& property_uuid) {
               return properties_by_uuid.at(property_uuid)->property_kind ==
                      kind;
             });
@@ -326,14 +336,14 @@ EvaluateCanonicalRelationalCandidateLegality(
     alternative_property_reference_count +=
         alternative.delivered_property_uuids.size();
     const auto* node = nodes_by_id.at(alternative.logical_node_id);
-    std::unordered_set<std::string> input_delivered;
+    std::set<planner::CanonicalPlannerUuid> input_delivered;
     for (const auto input_id : node->input_logical_node_ids) {
       const auto* input = nodes_by_id.at(input_id);
       input_delivered.insert(input->delivered_property_uuids.begin(),
                              input->delivered_property_uuids.end());
     }
-    std::unordered_set<std::string> candidate_required;
-    std::unordered_set<std::string> candidate_delivered;
+    std::set<planner::CanonicalPlannerUuid> candidate_required;
+    std::set<planner::CanonicalPlannerUuid> candidate_delivered;
     for (const auto& property_uuid : alternative.required_property_uuids) {
       if (!properties_by_uuid.contains(property_uuid) ||
           !candidate_required.insert(property_uuid).second) {
@@ -438,12 +448,7 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
     const auto& issue = validation.issues.front();
     return refuse(issue.diagnostic_id, issue.logical_node_id, issue.field_id);
   }
-  if (estimated_input_rows == 0) {
-    return refuse("QOW-DIAG-WINDOW-SCHEDULE-COST-V1", 0,
-                  "estimated_input_rows");
-  }
-
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   for (const auto& property : properties.properties) {
@@ -512,7 +517,7 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
     return true;
   };
   std::uint64_t sort_levels = 0;
-  for (auto remaining = estimated_input_rows - 1; remaining != 0;
+  for (auto remaining = estimated_input_rows == 0 ? 0 : estimated_input_rows - 1; remaining != 0;
        remaining >>= 1) {
     ++sort_levels;
   }
@@ -523,7 +528,7 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
         planner::CanonicalLogicalRelationalNodeKind::kWindow) {
       continue;
     }
-    std::vector<std::string> available_property_uuids;
+    std::vector<planner::CanonicalPlannerUuid> available_property_uuids;
     for (const auto input_id : node.input_logical_node_ids) {
       const auto input = nodes_by_id.find(input_id);
       if (input == nodes_by_id.end()) {
@@ -560,7 +565,7 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
         }
       }
       const auto find_compatible = [&](const auto* required) {
-        if (required == nullptr) return std::string{};
+        if (required == nullptr) return planner::CanonicalPlannerUuid{};
         for (const auto& available_uuid : available_property_uuids) {
           const auto available = properties_by_uuid.find(available_uuid);
           if (available != properties_by_uuid.end() &&
@@ -568,18 +573,18 @@ CanonicalWindowPropertyScheduleResult PlanCanonicalWindowPropertySchedule(
             return available_uuid;
           }
         }
-        return std::string{};
+        return planner::CanonicalPlannerUuid{};
       };
       const auto reused_partition = find_compatible(partition);
       const auto reused_ordering = find_compatible(ordering);
       const bool repartition = partition != nullptr &&
-                               reused_partition.empty();
+                               reused_partition.is_nil();
       const bool sort = ordering != nullptr &&
-                        (reused_ordering.empty() || repartition);
-      if (!reused_partition.empty()) {
+                        (reused_ordering.is_nil() || repartition);
+      if (!reused_partition.is_nil()) {
         stage.reused_property_uuids.push_back(reused_partition);
       }
-      if (!reused_ordering.empty() && !repartition) {
+      if (!reused_ordering.is_nil() && !repartition) {
         stage.reused_property_uuids.push_back(reused_ordering);
       }
       if (repartition) {
@@ -666,7 +671,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
   CanonicalOptimizerAlternativeInventoryResult result;
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t logical_node_id,
-                          std::string alternative_uuid,
+                          planner::CanonicalPlannerUuid alternative_uuid,
                           std::string field_id) {
     result = {};
     result.issues.push_back({std::move(diagnostic_id), logical_node_id,
@@ -674,18 +679,8 @@ EnumerateCanonicalOptimizerAlternativeInventory(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-' ||
-        value == "00000000-0000-0000-0000-000000000000") {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const planner::CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto stable_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -785,7 +780,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
   for (const auto& node : graph.nodes) {
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   for (const auto& property : admission_request.logical_properties.properties) {
@@ -812,7 +807,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
   result.catalog.statement_snapshot_id = graph.statement_snapshot_id;
   result.catalog.mga_statement_context = graph.mga_statement_context;
 
-  std::unordered_set<std::string> alternative_uuids;
+  std::set<planner::CanonicalPlannerUuid> alternative_uuids;
   std::unordered_set<std::string> node_implementations;
   for (const auto* record : records) {
     const auto node_it = nodes_by_id.find(record->logical_node_id);
@@ -980,7 +975,7 @@ EnumerateCanonicalOptimizerAlternativeInventory(
     return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-COVERAGE-V1", 0, {},
                   "legal_candidate_coverage");
   }
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const CanonicalRelationalCandidateLegalityRecord*>
       legality_by_uuid;
   for (const auto& candidate : legality.candidates) {
@@ -1016,7 +1011,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   CanonicalOptimizerSearchResult result;
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t logical_node_id,
-                          std::string alternative_uuid,
+                          planner::CanonicalPlannerUuid alternative_uuid,
                           std::string field_id) {
     result = {};
     result.issues.push_back({std::move(diagnostic_id), logical_node_id,
@@ -1024,17 +1019,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const planner::CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto valid_rule_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -1155,26 +1141,26 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
                   "legal_candidate_cost_count");
   }
 
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalPhysicalAlternativeRecord*>
       alternatives_by_uuid;
   for (const auto& alternative : alternatives.alternatives) {
     alternatives_by_uuid.emplace(alternative.alternative_uuid, &alternative);
   }
-  std::unordered_set<std::string> legal_alternative_uuids;
-  std::unordered_map<std::string,
+  std::set<planner::CanonicalPlannerUuid> legal_alternative_uuids;
+  std::map<planner::CanonicalPlannerUuid,
                      const CanonicalRelationalCandidateLegalityRecord*>
       legality_by_alternative_uuid;
   for (const auto& record : legality.candidates) {
     legality_by_alternative_uuid.emplace(record.alternative_uuid, &record);
     if (record.legal) legal_alternative_uuids.insert(record.alternative_uuid);
   }
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const CanonicalOptimizerSearchCandidateInput*>
       candidate_inputs;
-  std::unordered_set<std::string> transformation_uuids;
-  std::unordered_set<std::string> cost_vector_uuids;
-  std::optional<std::string> calibration_profile_uuid;
+  std::set<planner::CanonicalPlannerUuid> transformation_uuids;
+  std::set<planner::CanonicalPlannerUuid> cost_vector_uuids;
+  std::optional<planner::CanonicalPlannerUuid> calibration_profile_uuid;
   std::optional<std::string> model_family_id;
   bool mixed_model_family_plan = false;
   for (const auto& candidate : candidates) {
@@ -1526,8 +1512,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
                      &plan->memory_bytes)) {
       return false;
     }
-    plan->signature += std::to_string(group.logical_node_id) + "=" +
-                       candidate.alternative_uuid + ";";
+    AppendSelectedAlternativeBinding(plan->signature, group.logical_node_id, candidate.alternative_uuid);
     plan->selected.push_back(&candidate);
     return true;
   };
@@ -1572,7 +1557,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
           return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                         fallback_group.logical_node_id,
                         best == fallback_group.candidates.end()
-                            ? std::string{}
+                            ? planner::CanonicalPlannerUuid{}
                             : best->alternative_uuid,
                         "timeout_fallback_plan_cost_vector");
         }
@@ -1678,8 +1663,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
           current = prior;
           return;
         }
-        current.signature += std::to_string(group.logical_node_id) + "=" +
-                             candidate.alternative_uuid + ";";
+        AppendSelectedAlternativeBinding(current.signature, group.logical_node_id, candidate.alternative_uuid);
         current.selected.push_back(&candidate);
         enumerate(index + 1);
         current = prior;
@@ -1703,7 +1687,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     }
     result.trace.push_back(
         {result.search_step_count, "memo.exhaustive.oracle-agreed.v1", 0,
-         frontier.size(), 0, oracle_best->signature});
+         frontier.size(), 0, "binary_oracle_plan_binding_retained"});
   }
 
   result.selected_alternatives.reserve(selected.selected.size());
@@ -1738,7 +1722,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   result.trace.push_back(
       {result.search_step_count, "memo.plan.selected.v1", 0,
        selected.selected.size(), result.pruned_plan_count,
-       selected.signature});
+       "binary_selected_plan_binding_retained"});
   return result;
 }
 
@@ -1756,8 +1740,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   CanonicalOptimizerPhysicalPublicationResult result;
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t logical_node_id,
-                          std::string alternative_uuid,
-                          std::string capability_uuid,
+                          planner::CanonicalPlannerUuid alternative_uuid,
+                          planner::CanonicalPlannerUuid capability_uuid,
                           std::string field_id) {
     result = {};
     result.issues.push_back(
@@ -1766,17 +1750,8 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
          std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const planner::CanonicalPlannerUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto stable_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -2036,7 +2011,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                   "capability_catalog_scope");
   }
 
-  std::unordered_map<std::string, const CanonicalExecutorCapabilityRecord*>
+  std::map<planner::CanonicalPlannerUuid, const CanonicalExecutorCapabilityRecord*>
       capabilities_by_uuid;
   std::unordered_set<std::string> capability_implementations;
   for (const auto& capability : capability_catalog.capabilities) {
@@ -2092,13 +2067,13 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   std::unordered_map<std::uint32_t,
                      const planner::CanonicalLogicalRelationalNode*>
       nodes_by_id;
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalPhysicalAlternativeRecord*>
       alternatives_by_uuid;
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const CanonicalRelationalCandidateLegalityRecord*>
       legality_by_uuid;
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   std::unordered_map<
@@ -2134,7 +2109,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
   std::ranges::sort(selected, {},
                     &CanonicalOptimizerSelectedAlternative::logical_node_id);
   std::unordered_set<std::uint32_t> selected_node_ids;
-  std::unordered_set<std::string> selected_alternative_uuids;
+  std::set<planner::CanonicalPlannerUuid> selected_alternative_uuids;
   std::uint64_t selected_score = 0;
   std::string selected_signature;
   for (const auto* selection : selected) {
@@ -2204,8 +2179,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                     selection->alternative_uuid, {},
                     "selected_memo_candidate");
     }
-    selected_signature += std::to_string(selection->logical_node_id) + "=" +
-                          selection->alternative_uuid + ";";
+    AppendSelectedAlternativeBinding(selected_signature, selection->logical_node_id, selection->alternative_uuid);
   }
   if (selected_node_ids.size() != nodes_by_id.size() ||
       selected_signature != search.selected_plan_signature ||
@@ -2345,7 +2319,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                     capability.available ? "selected_capability_contract"
                                          : capability.refusal_diagnostic_id);
     }
-    const auto supports_property = [&](const std::string& property_uuid) {
+    const auto supports_property = [&](const planner::CanonicalPlannerUuid& property_uuid) {
       const auto property_it = properties_by_uuid.find(property_uuid);
       return property_it != properties_by_uuid.end() &&
              std::ranges::find(capability.supported_property_kinds,
@@ -2537,10 +2511,10 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
                     node.executor_capability_uuid,
                     "retained_publication_identity");
     }
-    std::unordered_set<std::string> delivered_properties(
+    std::set<planner::CanonicalPlannerUuid> delivered_properties(
         node.delivered_property_uuids.begin(),
         node.delivered_property_uuids.end());
-    std::unordered_set<std::string> enforced_properties;
+    std::set<planner::CanonicalPlannerUuid> enforced_properties;
     if (!std::ranges::all_of(
             node.enforced_property_uuids,
             [&](const auto& property_uuid) {

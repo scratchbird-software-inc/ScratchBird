@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_contract.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
+using scratchbird::tests::BinaryUuid;
 
 #include <cstdlib>
 #include <iostream>
@@ -18,6 +20,7 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+unsigned checks = 0;
 constexpr std::string_view kCatalogEpoch =
     "019f0000-0000-7100-8000-000000005001";
 constexpr std::string_view kStatisticsSnapshot =
@@ -31,6 +34,7 @@ constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
+  ++checks;
   if (!condition) std::cerr << "QOW-TEST-OPT-005-V1: " << detail << '\n';
   return condition;
 }
@@ -38,13 +42,13 @@ bool Require(const bool condition, const std::string_view detail) {
 plan::CanonicalMgaStatementContext MgaContext() {
   plan::CanonicalMgaStatementContext context;
   context.statement_uuid =
-      "019f0000-0000-7100-8000-000000005011";
+      BinaryUuid("019f0000-0000-7100-8000-000000005011");
   context.owning_transaction_uuid =
-      "019f0000-0000-7100-8000-000000005012";
+      BinaryUuid("019f0000-0000-7100-8000-000000005012");
   context.statement_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000005013";
+      BinaryUuid("019f0000-0000-7100-8000-000000005013");
   context.statement_metadata_snapshot_uuid =
-      "019f0000-0000-7100-8000-000000005014";
+      BinaryUuid("019f0000-0000-7100-8000-000000005014");
   context.owning_local_transaction_id = kOwner;
   context.visible_committed_high_watermark = 0;
   context.oldest_active_transaction_id = kOldestActive;
@@ -64,10 +68,10 @@ plan::CanonicalMgaStatementContext MgaContext() {
 plan::CanonicalLogicalRelationalGraph Graph() {
   plan::CanonicalLogicalRelationalGraph graph;
   graph.bound_sblr_tree_uuid =
-      "019f0000-0000-7100-8000-000000005004";
-  graph.catalog_epoch_uuid = std::string(kCatalogEpoch);
+      BinaryUuid("019f0000-0000-7100-8000-000000005004");
+  graph.catalog_epoch_uuid = BinaryUuid(kCatalogEpoch);
   graph.security_context_uuid =
-      "019f0000-0000-7100-8000-000000005005";
+      BinaryUuid("019f0000-0000-7100-8000-000000005005");
   graph.local_transaction_id = kOwner;
   graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
@@ -86,7 +90,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   scan.logical_node_id = 2;
   scan.node_kind = plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
   scan.output_descriptor_ids = {1};
-  scan.required_object_uuids = {std::string(kRelation)};
+  scan.required_object_uuids = {BinaryUuid(kRelation)};
   scan.origin_relational_node_ids = {2};
   scan.semantic_variant_id = "relation.source.v1";
 
@@ -96,7 +100,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   join.input_logical_node_ids = {1, 2};
   join.output_descriptor_ids = {1};
   join.bound_expression_ids = {1};
-  join.required_object_uuids = {std::string(kRelation)};
+  join.required_object_uuids = {BinaryUuid(kRelation)};
   join.origin_relational_node_ids = {3};
   join.semantic_variant_id = "join.inner.v1";
   graph.nodes = {values, scan, join};
@@ -110,8 +114,8 @@ opt::CanonicalOptimizerNodeEstimate Estimate(
   estimate.logical_node_id = node_id;
   estimate.state = state;
   estimate.source = opt::CanonicalOptimizerStatisticSource::kUnavailable;
-  estimate.catalog_epoch_uuid = std::string(kCatalogEpoch);
-  estimate.statistics_snapshot_uuid = std::string(kStatisticsSnapshot);
+  estimate.catalog_epoch_uuid = BinaryUuid(kCatalogEpoch);
+  estimate.statistics_snapshot_uuid = BinaryUuid(kStatisticsSnapshot);
   estimate.statistics_generation = 9;
   estimate.admitted_at_monotonic_ns = 1'000'000;
   estimate.confidence = opt::CostConfidence::kUnknown;
@@ -120,15 +124,15 @@ opt::CanonicalOptimizerNodeEstimate Estimate(
 
 opt::CanonicalOptimizerStatisticsSnapshot Snapshot() {
   opt::CanonicalOptimizerStatisticsSnapshot snapshot;
-  snapshot.statistics_snapshot_uuid = std::string(kStatisticsSnapshot);
-  snapshot.catalog_epoch_uuid = std::string(kCatalogEpoch);
+  snapshot.statistics_snapshot_uuid = BinaryUuid(kStatisticsSnapshot);
+  snapshot.catalog_epoch_uuid = BinaryUuid(kCatalogEpoch);
   snapshot.statistics_generation = 9;
   snapshot.admitted_at_monotonic_ns = 1'000'000;
   snapshot.captured_before_data_access = true;
   auto values = Estimate(
       1, opt::CanonicalOptimizerStatisticState::kNotApplicable);
   auto scan = Estimate(2, opt::CanonicalOptimizerStatisticState::kKnown);
-  scan.object_uuid = std::string(kRelation);
+  scan.object_uuid = BinaryUuid(kRelation);
   scan.source = opt::CanonicalOptimizerStatisticSource::kCatalogSample;
   scan.collected_at_monotonic_ns = 900'000;
   scan.maximum_age_ns = 200'000;
@@ -163,7 +167,7 @@ bool ValidateQualifiedAndUnknownStatistics() {
   auto all_known = Snapshot();
   auto& join = all_known.node_estimates[2];
   join.state = opt::CanonicalOptimizerStatisticState::kKnown;
-  join.object_uuid = std::string(kRelation);
+  join.object_uuid = BinaryUuid(kRelation);
   join.source = opt::CanonicalOptimizerStatisticSource::kCatalogExact;
   join.collected_at_monotonic_ns = 950'000;
   join.maximum_age_ns = 100'000;
@@ -243,7 +247,7 @@ bool ValidateStatementContextStatisticsRefusal() {
       "incomplete statement vector reached statistics admission");
   passed &= expect_refusal(
       [](auto& graph) {
-        graph.mga_statement_context.statement_snapshot_uuid.clear();
+        graph.mga_statement_context.statement_snapshot_uuid = {};
       },
       "missing snapshot UUID reached statistics admission");
   passed &= expect_refusal(
@@ -260,6 +264,41 @@ bool ValidateStatementContextStatisticsRefusal() {
   return passed;
 }
 
+bool ValidateBinaryStatisticsBoundaries() {
+  bool passed = true;
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    auto snapshot = Snapshot();
+    snapshot.statistics_snapshot_uuid.bytes[bit / 8] ^= 1U << (bit % 8);
+    for (auto& estimate : snapshot.node_estimates)
+      estimate.statistics_snapshot_uuid = snapshot.statistics_snapshot_uuid;
+    const auto& bytes = snapshot.statistics_snapshot_uuid.bytes;
+    const bool valid_v7 = (bytes[6] >> 4) == 7 && (bytes[8] & 0xc0) == 0x80;
+    auto result = opt::AdmitCanonicalOptimizerStatisticsBeforeAccess(Graph(), snapshot);
+    passed &= Require(result.accepted == valid_v7 && !result.data_access_allowed,
+                      "binary snapshot admission follows independent version/variant oracle");
+    snapshot = Snapshot();
+    snapshot.node_estimates.back().statistics_snapshot_uuid.bytes[bit / 8] ^= 1U << (bit % 8);
+    result = opt::AdmitCanonicalOptimizerStatisticsBeforeAccess(Graph(), snapshot);
+    passed &= Require(!result.accepted && result.known_estimate_count == 0 &&
+                          result.unknown_estimate_count == 0 && result.not_applicable_estimate_count == 0,
+                      "all128 snapshot binding bits checked and late refusal clears partial counters");
+  }
+  auto reject = [&](auto mutation) {
+    auto snapshot = Snapshot(); mutation(snapshot);
+    const auto result = opt::AdmitCanonicalOptimizerStatisticsBeforeAccess(Graph(), snapshot);
+    return Require(!result.accepted && !result.benchmark_clean_ready && !result.data_access_allowed &&
+                       result.known_estimate_count == 0 && result.unknown_estimate_count == 0 &&
+                       result.not_applicable_estimate_count == 0,
+                   "malformed estimate cannot publish admitted counters or access authority");
+  };
+  passed &= reject([](auto& s) { s.node_estimates[1].confidence = static_cast<opt::CostConfidence>(255); });
+  passed &= reject([](auto& s) { s.node_estimates[1].page_count_present = false; });
+  passed &= reject([](auto& s) { s.node_estimates[0].row_count = 1; });
+  passed &= reject([](auto& s) { s.node_estimates[2].object_uuid = BinaryUuid("019f0000-0000-7100-8000-000000005099"); });
+  passed &= reject([](auto& s) { s.node_estimates[2].object_uuid.bytes[0] = 1; });
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-OPT-005-V1
@@ -268,5 +307,7 @@ int main() {
   passed &= ValidateQualifiedAndUnknownStatistics();
   passed &= ValidateNoDefaultOrActualSubstitution();
   passed &= ValidateStatementContextStatisticsRefusal();
+  passed &= ValidateBinaryStatisticsBoundaries();
+  if (passed) std::cout << "PASS canonical statistics admission checks=" << checks << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

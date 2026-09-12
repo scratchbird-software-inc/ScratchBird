@@ -20,17 +20,17 @@ namespace scratchbird::engine::optimizer {
 struct CanonicalRelationalCandidateLegalityIssue {
   std::string diagnostic_id;
   std::uint32_t logical_node_id{0};
-  std::string alternative_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
   std::string field_id;
 };
 
 struct CanonicalRelationalCandidateLegalityRecord {
-  std::string alternative_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
   std::uint32_t logical_node_id{0};
   bool legal{false};
   bool property_enforcement_required{false};
-  std::vector<std::string> enforced_property_uuids;
-  std::vector<std::string> missing_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> enforced_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> missing_property_uuids;
   std::string refusal_diagnostic_id;
 };
 
@@ -52,11 +52,11 @@ enum class CanonicalWindowPropertyEnforcementKind : std::uint8_t {
 
 struct CanonicalWindowPropertyScheduleStage {
   std::uint32_t logical_node_id{0};
-  std::string window_property_uuid;
+  planner::CanonicalPlannerUuid window_property_uuid;
   CanonicalWindowPropertyEnforcementKind enforcement_kind{
       CanonicalWindowPropertyEnforcementKind::kReuse};
-  std::vector<std::string> reused_property_uuids;
-  std::vector<std::string> enforced_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> reused_property_uuids;
+  std::vector<planner::CanonicalPlannerUuid> enforced_property_uuids;
   std::uint64_t estimated_cost_units{0};
 };
 

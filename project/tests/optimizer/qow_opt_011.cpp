@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "canonical_candidate_legality.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -21,6 +22,7 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+unsigned checks = 0;
 constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
 constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
 constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
@@ -28,15 +30,16 @@ constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
 constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
+  ++checks;
   if (!condition) std::cerr << "QOW-TEST-OPT-011-V1: " << detail << '\n';
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
+plan::CanonicalPlannerUuid Uuid(const std::uint64_t suffix) {
   auto text = std::string("019f0000-0000-7700-8000-000000000000");
   const auto digits = std::to_string(suffix);
   text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+  return scratchbird::tests::BinaryUuid(text);
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {
@@ -170,8 +173,8 @@ plan::CanonicalPhysicalAlternativeRecord Alternative(
     const std::uint32_t node_id,
     std::string implementation_id,
     const std::uint32_t descriptor,
-    std::vector<std::string> required,
-    std::vector<std::string> delivered) {
+    std::vector<plan::CanonicalPlannerUuid> required,
+    std::vector<plan::CanonicalPlannerUuid> delivered) {
   plan::CanonicalPhysicalAlternativeRecord alternative;
   alternative.alternative_uuid = Uuid(200 + ordinal);
   alternative.logical_node_id = node_id;
@@ -248,20 +251,20 @@ bool ValidateCanonicalLegalityAndEnforcement() {
   passed &= Require(sort_full && sort_full->legal &&
                         sort_full->property_enforcement_required &&
                         sort_full->enforced_property_uuids ==
-                            std::vector<std::string>{Uuid(103)},
+                            std::vector<plan::CanonicalPlannerUuid>{Uuid(103)},
                     "full sort did not explicitly enforce ordering");
   passed &= Require(sort_noop && !sort_noop->legal &&
                         sort_noop->missing_property_uuids ==
-                            std::vector<std::string>{Uuid(103)},
+                            std::vector<plan::CanonicalPlannerUuid>{Uuid(103)},
                     "no-op sort ignored missing input order");
   passed &= Require(window_stream && !window_stream->legal &&
                         window_stream->missing_property_uuids ==
-                            std::vector<std::string>{Uuid(104)},
+                            std::vector<plan::CanonicalPlannerUuid>{Uuid(104)},
                     "streaming window ignored missing partition property");
   passed &= Require(window_materialize && window_materialize->legal &&
                         window_materialize->property_enforcement_required &&
                         window_materialize->enforced_property_uuids ==
-                            std::vector<std::string>{Uuid(104)},
+                            std::vector<plan::CanonicalPlannerUuid>{Uuid(104)},
                     "materialized window did not enforce partition property");
   return passed;
 }
@@ -291,6 +294,28 @@ bool ValidateNoMarkersOrDefaults() {
                         malformed.issues.front().diagnostic_id ==
                             "QOW-DIAG-CANDIDATE-PROPERTY-REFERENCE-V1",
                     "unknown alternative property was accepted");
+  return passed;
+}
+
+bool ValidateBinaryAlternativeBindings() {
+  bool passed = true;
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    auto inputs = ValidInputs();
+    auto& identity = inputs.alternatives.alternatives[0].alternative_uuid;
+    identity.bytes[bit / 8] ^= 1U << (bit % 8);
+    const bool valid_v7 = (identity.bytes[6] >> 4) == 7 && (identity.bytes[8] & 0xc0) == 0x80;
+    bool duplicate = false;
+    for (std::size_t i = 1; i < inputs.alternatives.alternatives.size(); ++i)
+      duplicate = duplicate || inputs.alternatives.alternatives[i].alternative_uuid == identity;
+    const auto result = opt::EvaluateCanonicalRelationalCandidateLegality(
+        inputs.graph, inputs.properties, inputs.alternatives);
+    passed &= Require(result.accepted == (valid_v7 && !duplicate) && !result.data_access_allowed,
+                      "all128 alternative bits retained and invalid/duplicate identities rejected");
+    if (result.accepted) {
+      passed &= Require(result.candidates.front().alternative_uuid == identity,
+                        "legality result retains actual binary alternative identity");
+    }
+  }
   return passed;
 }
 
@@ -408,7 +433,7 @@ WindowScheduleInputs MultipleWindowScheduleInputs() {
   };
   const auto window_property = [&](const std::uint64_t ordinal,
                                    const std::uint32_t node_id,
-                                   std::vector<std::string> dependencies) {
+                                   std::vector<plan::CanonicalPlannerUuid> dependencies) {
     plan::CanonicalLogicalPropertyRecord property;
     property.property_uuid = Uuid(ordinal);
     property.property_kind = Kind::kWindow;
@@ -467,26 +492,25 @@ bool ValidateWindowPropertyScheduleCosting() {
       result.stages.size() == 4 &&
           result.stages[0].enforcement_kind == Enforcement::kReuse &&
           result.stages[0].reused_property_uuids ==
-              std::vector<std::string>({Uuid(301), Uuid(302)}) &&
+              std::vector<plan::CanonicalPlannerUuid>({Uuid(301), Uuid(302)}) &&
           result.stages[1].enforcement_kind == Enforcement::kSort &&
           result.stages[1].enforced_property_uuids ==
-              std::vector<std::string>({Uuid(322)}) &&
+              std::vector<plan::CanonicalPlannerUuid>({Uuid(322)}) &&
           result.stages[2].enforcement_kind ==
               Enforcement::kRepartitionAndSort &&
           result.stages[2].enforced_property_uuids ==
-              std::vector<std::string>({Uuid(331), Uuid(332)}) &&
+              std::vector<plan::CanonicalPlannerUuid>({Uuid(331), Uuid(332)}) &&
           result.stages[3].enforcement_kind == Enforcement::kRepartition &&
           result.stages[3].enforced_property_uuids ==
-              std::vector<std::string>({Uuid(341)}),
+              std::vector<plan::CanonicalPlannerUuid>({Uuid(341)}),
       "Window schedule did not distinguish reuse/sort/repartition barriers");
 
   const auto zero = opt::PlanCanonicalWindowPropertySchedule(
       inputs.graph, inputs.properties, 0);
   passed &= Require(
-      !zero.accepted && zero.stages.empty() && !zero.issues.empty() &&
-          zero.issues.front().diagnostic_id ==
-              "QOW-DIAG-WINDOW-SCHEDULE-COST-V1",
-      "zero-row Window cost input did not refuse atomically");
+      zero.accepted && zero.complete_legal_schedule && zero.stages.size() == 4 &&
+          zero.issues.empty() && zero.estimated_cost_units == 0 && !zero.data_access_allowed,
+      "known zero-row Window input must retain its property schedule with zero row-dependent cost");
   const auto overflow = opt::PlanCanonicalWindowPropertySchedule(
       inputs.graph, inputs.properties,
       std::numeric_limits<std::uint64_t>::max());
@@ -505,11 +529,12 @@ bool ValidateWindowPropertyScheduleCosting() {
 int main() {
   if (!ValidateCanonicalLegalityAndEnforcement() ||
       !ValidateNoMarkersOrDefaults() ||
+      !ValidateBinaryAlternativeBindings() ||
       !ValidatePerNodeCoverageRefusal() ||
       !ValidateStatementContextLegalityRefusal() ||
       !ValidateWindowPropertyScheduleCosting()) {
     return 1;
   }
-  std::cout << "QOW-TEST-OPT-011-V1: PASS\n";
+  std::cout << "QOW-TEST-OPT-011-V1: PASS checks=" << checks << '\n';
   return 0;
 }

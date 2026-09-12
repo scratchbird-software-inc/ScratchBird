@@ -708,6 +708,40 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_full_statistics_binary_store PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_canonical_statistics_admission
+    ../optimizer/qow_opt_005.cpp
+    ../../src/engine/optimizer/optimizer_contract.cpp)
+  target_compile_features(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE
+    SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1)
+  target_compile_options(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE sb_core_uuid sb_engine_plan_shapes)
+  add_test(NAME sbsql_sblr_alignment_canonical_statistics_admission
+    COMMAND sbsql_sblr_alignment_canonical_statistics_admission)
+  set_tests_properties(sbsql_sblr_alignment_canonical_statistics_admission PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_canonical_candidate_legality
+    ../optimizer/qow_opt_011.cpp
+    ../../src/engine/optimizer/optimizer_contract.cpp)
+  target_compile_features(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE
+    SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1)
+  target_compile_options(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_canonical_candidate_legality PRIVATE sb_core_uuid sb_engine_plan_shapes)
+  add_test(NAME sbsql_sblr_alignment_canonical_candidate_legality
+    COMMAND sbsql_sblr_alignment_canonical_candidate_legality)
+  set_tests_properties(sbsql_sblr_alignment_canonical_candidate_legality PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_library(sbsql_sblr_alignment_access_statistics_component STATIC
     ../../src/engine/optimizer/access_path.cpp
     ../../src/engine/optimizer/statistics_catalog.cpp
