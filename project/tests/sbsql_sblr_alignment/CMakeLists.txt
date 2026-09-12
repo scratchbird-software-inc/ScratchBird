@@ -433,6 +433,22 @@ set_tests_properties(sbsql_sblr_alignment_catalog_uuid_admission PROPERTIES
   TIMEOUT 60)
 
 add_executable(sbsql_sblr_alignment_uuid_kind_admission uuid_kind_admission_test.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  if(NOT TARGET sb_core_time)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/src/core/time
+                     ${CMAKE_CURRENT_BINARY_DIR}/core_time)
+  endif()
+  add_executable(sbsql_sblr_alignment_uuid_generation_source uuid_generation_source_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_uuid_generation_source PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_uuid_generation_source PRIVATE
+    sb_core_uuid sb_core_time sb_core_diagnostic_catalog Threads::Threads)
+  target_link_options(sbsql_sblr_alignment_uuid_generation_source PRIVATE "-Wl,--wrap=RAND_bytes")
+  add_test(NAME sbsql_sblr_alignment_uuid_generation_source
+    COMMAND sbsql_sblr_alignment_uuid_generation_source)
+  set_tests_properties(sbsql_sblr_alignment_uuid_generation_source PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;entropy_failure;fork;not_runtime_acceptance"
+    TIMEOUT 60)
+endif()
 target_compile_features(sbsql_sblr_alignment_uuid_kind_admission PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_uuid_kind_admission PRIVATE sb_core_uuid)
 add_test(NAME sbsql_sblr_alignment_uuid_kind_admission

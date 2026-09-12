@@ -36,8 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Existing 1361 registrations, 17 MGA-COW identities and the admitted UUIDv7 diagnostic.
-  Check(catalog.size==1379 && catalog.data!=nullptr,"complete Core code inventory missing");
+  // Prior1379 registrations plus five admitted PREPARED failures and one UUID
+  // timestamp-bound refusal. Check exact Core import, not a minimum row count.
+  Check(catalog.size==1385 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -75,6 +76,18 @@ int main() {
   Sample("UUID.ENGINE_IDENTITY_NOT_V7",S::error,true,
          "never_retry_without_corrected_input_or_revalidated_authority",
          "reject_before_publication_preserve_authoritative_transaction_state","UUID");
+  Sample("TIME.UUID_TIMESTAMP_OUT_OF_RANGE",S::error,true,
+         "never_retry_without_corrected_time_authority","reject_uuid_generation_without_identity","TIME");
+  Sample("PREPARED.IDENTITY_ISSUANCE_FAILED",S::error,true,
+         "retry_after_resource_or_identity_authority_recovery","do_not_publish_template_or_use_receipt","PREPARED");
+  Sample("PREPARED.ALLOCATION_FAILED",S::error,true,
+         "retry_after_resource_recovery","do_not_publish_unowned_template_or_receipt","PREPARED");
+  Sample("PREPARED.CONTENT_HASH_FAILED",S::error,true,
+         "retry_after_hash_provider_recovery","do_not_publish_fallback_digest_or_template","PREPARED");
+  Sample("PREPARED.METADATA_CONFLICT",S::error,true,
+         "never_retry_without_corrected_metadata","refuse_cache_hit_preserve_retained_metadata","PREPARED");
+  Sample("PREPARED.OWNER_MISMATCH",S::error,true,
+         "never_retry_without_corrected_owner","refuse_binding_or_receipt_use","PREPARED");
   Sample("SBLR.ERROR_VECTOR.STALE",S::error,true,
          "only_after_verified_authority_revalidation_and_fresh_receipt",
          "refuse_without_changing_authoritative_transaction_outcome","SBLR");
@@ -93,8 +106,8 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x72,0x4f,0x5c,0xab,0x25,0x2b,0xdc,0x54,0xf3,0xcf,0x3b,0xe2,0x71,0x18,0x1f,0x1b,
-    0xc3,0x78,0x54,0xfd,0xea,0xa6,0x5a,0x69,0x33,0x84,0x89,0x6b,0x29,0xa8,0xf3,0x5c};
+    0x85,0x19,0x79,0x75,0x8d,0x5f,0xc1,0x21,0xf8,0x5f,0x81,0xac,0x83,0x5d,0xc2,0x2a,
+    0x83,0xf3,0x8e,0x94,0x93,0x70,0xb0,0x3c,0xac,0x46,0x88,0x68,0x61,0xbe,0xc1,0xc6};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

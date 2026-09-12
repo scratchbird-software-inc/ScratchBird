@@ -6,10 +6,12 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+find_package(OpenSSL REQUIRED)
+
 add_library(sb_core_uuid
   uuid.cpp
 )
 
 target_compile_features(sb_core_uuid PUBLIC cxx_std_17)
 target_include_directories(sb_core_uuid PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(sb_core_uuid PUBLIC sb_core_platform)
+target_link_libraries(sb_core_uuid PUBLIC sb_core_platform OpenSSL::Crypto)

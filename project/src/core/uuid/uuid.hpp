@@ -109,6 +109,9 @@ TypedUuidResult MakeTypedUuid(UuidKind kind, Uuid value);
 TypedUuidResult ParseTypedUuid(UuidKind kind, std::string text);
 TypedUuidResult MakeDurableEngineIdentityUuid(UuidKind kind, Uuid value);
 TypedUuidResult ParseDurableEngineIdentityUuid(UuidKind kind, std::string text);
+// Binary generation fails without a value when the cryptographic backend is
+// unavailable or the supplied Unix millisecond timestamp exceeds 48 bits.
+// Supplying a timestamp does not establish accepted clock/cluster authority.
 TypedUuidResult GenerateEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis);
 TypedUuidResult GenerateDurableEngineIdentityV7(UuidKind kind, u64 unix_epoch_millis);
 

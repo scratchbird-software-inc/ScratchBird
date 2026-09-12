@@ -123,13 +123,25 @@ UuidV7TimestampResult WallClockToUuidV7Millis(WallClockTime wall_clock) {
   if (wall_clock.unix_seconds < 0 || wall_clock.nanoseconds >= 1000000000u) {
     result.status = TimeErrorStatus();
     result.diagnostic = MakeTimeDiagnostic(result.status,
-                                           "SB-TIME-UUIDV7-TIMESTAMP-INVALID",
-                                           "time.uuidv7.timestamp_invalid");
+                                           "TIME.UUID_TIMESTAMP_OUT_OF_RANGE",
+                                           "time.uuidv7.timestamp_out_of_range");
     return result;
   }
 
-  result.unix_epoch_millis = static_cast<u64>(wall_clock.unix_seconds) * 1000ull +
-                             static_cast<u64>(wall_clock.nanoseconds / 1000000u);
+  constexpr u64 max_millis = 0x0000ffffffffffffULL;
+  const auto seconds = static_cast<u64>(wall_clock.unix_seconds);
+  const auto subsecond_millis = static_cast<u64>(wall_clock.nanoseconds / 1000000u);
+  // Admit the complete value before multiplying: a large valid signed second
+  // count can otherwise wrap uint64 milliseconds back into a plausible UUID.
+  if (seconds > max_millis / 1000 ||
+      (seconds == max_millis / 1000 && subsecond_millis > max_millis % 1000)) {
+    result.status = TimeErrorStatus();
+    result.diagnostic = MakeTimeDiagnostic(result.status,
+                                           "TIME.UUID_TIMESTAMP_OUT_OF_RANGE",
+                                           "time.uuidv7.timestamp_out_of_range");
+    return result;
+  }
+  result.unix_epoch_millis = seconds * 1000 + subsecond_millis;
   return result;
 }
 

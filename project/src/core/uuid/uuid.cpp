@@ -14,19 +14,11 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
-#include <functional>
-#include <random>
+#include <openssl/rand.h>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 #include <vector>
-
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 namespace scratchbird::core::uuid {
 namespace {
@@ -106,62 +98,20 @@ Uuid MakeV1Layout(u8 version, u64 gregorian_100ns_timestamp, u16 clock_sequence,
   return uuid;
 }
 
-std::uint64_t CurrentProcessIdentity() {
-#if defined(_WIN32)
-  return static_cast<std::uint64_t>(::GetCurrentProcessId());
-#else
-  return static_cast<std::uint64_t>(::getpid());
-#endif
-}
-
-struct ProcessRandomState {
-  std::uint64_t process_identity = 0;
-  std::mt19937_64 generator;
-};
-
-ProcessRandomState MakeProcessRandomState(std::uint64_t process_identity) {
-    std::random_device random;
-    const auto now = static_cast<u64>(
-        std::chrono::high_resolution_clock::now().time_since_epoch().count());
-    const auto thread_hash = static_cast<u64>(
-        std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::seed_seq seed{
-        random(),
-        random(),
-        random(),
-        random(),
-        static_cast<unsigned int>(now & 0xffffffffull),
-        static_cast<unsigned int>((now >> 32) & 0xffffffffull),
-        static_cast<unsigned int>(thread_hash & 0xffffffffull),
-        static_cast<unsigned int>((thread_hash >> 32) & 0xffffffffull),
-        static_cast<unsigned int>(process_identity & 0xffffffffull),
-        static_cast<unsigned int>((process_identity >> 32) & 0xffffffffull)};
-  return {process_identity, std::mt19937_64(seed)};
-}
-
-std::array<byte, 16> RandomBytes16() {
+std::optional<std::array<byte, 16>> RandomBytes16() {
   std::array<byte, 16> bytes{};
-  const auto process_identity = CurrentProcessIdentity();
-  thread_local ProcessRandomState state =
-      MakeProcessRandomState(process_identity);
-  if (state.process_identity != process_identity) {
-    // A fork clones thread-local PRNG state.  Reseed before producing any
-    // durable identity in the child so a crashed child and its recovering
-    // parent cannot publish the same UUIDv7 random suffix.
-    state = MakeProcessRandomState(process_identity);
-  }
-  for (std::size_t i = 0; i < bytes.size(); i += 8) {
-    const auto value = state.generator();
-    bytes[i] = static_cast<byte>((value >> 56) & 0xffu);
-    bytes[i + 1] = static_cast<byte>((value >> 48) & 0xffu);
-    bytes[i + 2] = static_cast<byte>((value >> 40) & 0xffu);
-    bytes[i + 3] = static_cast<byte>((value >> 32) & 0xffu);
-    bytes[i + 4] = static_cast<byte>((value >> 24) & 0xffu);
-    bytes[i + 5] = static_cast<byte>((value >> 16) & 0xffu);
-    bytes[i + 6] = static_cast<byte>((value >> 8) & 0xffu);
-    bytes[i + 7] = static_cast<byte>(value & 0xffu);
-  }
+  // Use the project's cryptographic backend, including its OS entropy and
+  // fork/reseed handling. Never substitute a locally seeded PRNG. A failed
+  // provider may have partially written bytes; none may escape on failure.
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) return std::nullopt;
   return bytes;
+}
+
+UuidResult GenerationFailure(const char* code, const char* message_key) {
+  UuidResult result;
+  result.status = UuidErrorStatus();
+  result.diagnostic = MakeUuidDiagnostic(result.status, code, message_key);
+  return result;
 }
 
 u32 LeftRotate32(u32 value, u32 count) {
@@ -650,12 +600,6 @@ TypedUuidResult GenerateNameBasedV3(UuidKind kind, const Uuid& namespace_uuid, s
   return MakeUuidWithVersion(kind, uuid, 3);
 }
 
-TypedUuidResult GenerateRandomV4(UuidKind kind) {
-  Uuid uuid;
-  uuid.bytes = RandomBytes16();
-  return MakeUuidWithVersion(kind, uuid, 4);
-}
-
 TypedUuidResult GenerateNameBasedV5(UuidKind kind, const Uuid& namespace_uuid, std::string name) {
   const std::vector<byte> data = NamespaceNameBytes(namespace_uuid, name);
   const std::array<byte, 20> digest = Sha1(data);
@@ -682,20 +626,6 @@ TypedUuidResult GenerateReorderedTimeV6(UuidKind kind,
   for (std::size_t i = 0; i < node.size(); ++i) {
     uuid.bytes[10 + i] = node[i];
   }
-  return MakeTypedUuid(kind, uuid);
-}
-
-TypedUuidResult GenerateUnixTimeV7(UuidKind kind, u64 unix_epoch_millis) {
-  Uuid uuid;
-  uuid.bytes = RandomBytes16();
-  const u64 ms = unix_epoch_millis & 0x0000ffffffffffffull;
-  uuid.bytes[0] = static_cast<byte>((ms >> 40) & 0xffu);
-  uuid.bytes[1] = static_cast<byte>((ms >> 32) & 0xffu);
-  uuid.bytes[2] = static_cast<byte>((ms >> 24) & 0xffu);
-  uuid.bytes[3] = static_cast<byte>((ms >> 16) & 0xffu);
-  uuid.bytes[4] = static_cast<byte>((ms >> 8) & 0xffu);
-  uuid.bytes[5] = static_cast<byte>(ms & 0xffu);
-  SetVersion(&uuid, 7);
   return MakeTypedUuid(kind, uuid);
 }
 
@@ -771,8 +701,10 @@ UuidResult GenerateCompatibilityNameBasedV3(const Uuid& namespace_uuid, std::str
 }
 
 UuidResult GenerateCompatibilityRandomV4() {
+  const auto bytes = RandomBytes16();
+  if (!bytes) return GenerationFailure("TIME.UUID_RANDOMNESS_UNAVAILABLE", "uuid.randomness.unavailable");
   Uuid uuid;
-  uuid.bytes = RandomBytes16();
+  uuid.bytes = *bytes;
   SetVersion(&uuid, 4);
   return MakeCompatibilityUuidResult(uuid, 4);
 }
@@ -803,9 +735,14 @@ UuidResult GenerateCompatibilityReorderedTimeV6(u64 gregorian_100ns_timestamp, u
 }
 
 UuidResult GenerateCompatibilityUnixTimeV7(u64 unix_epoch_millis) {
+  if (unix_epoch_millis > 0x0000ffffffffffffull) {
+    return GenerationFailure("TIME.UUID_TIMESTAMP_OUT_OF_RANGE", "uuid.timestamp.out_of_range");
+  }
+  const auto bytes = RandomBytes16();
+  if (!bytes) return GenerationFailure("TIME.UUID_RANDOMNESS_UNAVAILABLE", "uuid.randomness.unavailable");
   Uuid uuid;
-  uuid.bytes = RandomBytes16();
-  const u64 ms = unix_epoch_millis & 0x0000ffffffffffffull;
+  uuid.bytes = *bytes;
+  const u64 ms = unix_epoch_millis;
   uuid.bytes[0] = static_cast<byte>((ms >> 40) & 0xffu);
   uuid.bytes[1] = static_cast<byte>((ms >> 32) & 0xffu);
   uuid.bytes[2] = static_cast<byte>((ms >> 24) & 0xffu);
