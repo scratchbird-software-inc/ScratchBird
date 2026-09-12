@@ -9,6 +9,7 @@
 #pragma once
 
 #include "engine/internal_api/query/contextual_text_literal_authority.hpp"
+#include "engine/internal_api/query/contextual_text_descriptor_match.hpp"
 #include "engine/sblr/sblr_literal_runtime.hpp"
 
 #include <array>
@@ -39,7 +40,7 @@ struct EngineContextualTextGraphSourceV2 {
 
 struct EngineContextualTextGraphDescriptorV2 {
   std::uint32_t descriptor_handle = 0;
-  std::array<std::string, 17> exact_relational_descriptor_v2_fields{};
+  RelationalTypeDescriptor exact_descriptor;
   std::string canonical_type_name;
   bool element_profile_empty = false;
 };

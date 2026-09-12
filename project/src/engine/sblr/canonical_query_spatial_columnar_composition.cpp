@@ -103,52 +103,6 @@ using PersistedRowDescriptorAuthorityCallbackV1 = std::function<bool(
     api::RelationalNullability,
     std::string*)>;
 
-bool MatchesExactBoundRelationalDescriptorFieldsV2(
-    const std::array<std::string, 17>& fields,
-    const api::RelationalTypeDescriptor& bound,
-    const api::RelationalNullability effective_nullability) {
-  std::array<char, 32> numeric{};
-  const auto exact_u64 = [&](const std::string& actual,
-                             const std::uint64_t expected) {
-    const auto encoded = std::to_chars(numeric.data(),
-                                       numeric.data() + numeric.size(),
-                                       expected);
-    return encoded.ec == std::errc{} &&
-           actual.size() ==
-               static_cast<std::size_t>(encoded.ptr - numeric.data()) &&
-           std::equal(actual.begin(), actual.end(), numeric.begin());
-  };
-  const auto exact_optional_u32 = [&](const std::string& actual,
-                                      const std::optional<std::uint32_t>& value) {
-    return value.has_value() ? exact_u64(actual, *value) : actual == "-";
-  };
-  const auto exact_optional_string = [](
-                                         const std::string& actual,
-                                         const std::optional<std::string>& value) {
-    return value.has_value() ? actual == *value : actual == "-";
-  };
-  return fields[0] == bound.descriptor_uuid &&
-         exact_u64(fields[1], bound.descriptor_generation) &&
-         fields[2] == bound.type_uuid &&
-         exact_u64(fields[3], bound.type_generation) &&
-         fields[4] == bound.codec_id &&
-         exact_u64(fields[5], bound.codec_version) &&
-         exact_u64(fields[6], bound.codec_generation) &&
-         fields[7] ==
-             (effective_nullability == api::RelationalNullability::kNullable
-                  ? "1"
-                  : "0") &&
-         exact_optional_string(fields[8], bound.collation_uuid) &&
-         exact_optional_string(fields[9], bound.timezone_profile_id) &&
-         exact_optional_u32(fields[10], bound.width) &&
-         exact_optional_u32(fields[11], bound.precision) &&
-         exact_optional_u32(fields[12], bound.scale) &&
-         fields[13] == bound.statement_receipt_uuid &&
-         fields[14] == bound.datatype_catalog_snapshot_uuid &&
-         exact_u64(fields[15], bound.datatype_catalog_generation) &&
-         exact_u64(fields[16], bound.datatype_registry_generation);
-}
-
 struct ContextualTextDirectRouteTargetV2 {
   std::uint32_t descriptor_handle{0};
   std::size_t row_ordinal{0};
@@ -341,12 +295,8 @@ bool PrepareContextualTextDirectRouteAuthorityV2(
         target_descriptor == dag.descriptors.end() ||
         !literal_descriptor->datatype_identity_authoritative ||
         !target_descriptor->datatype_identity_authoritative ||
-        !MatchesExactBoundRelationalDescriptorFieldsV2(
-            binding.exact_relational_descriptor_v2_fields,
-            *literal_descriptor, literal_descriptor->nullability) ||
-        !MatchesExactBoundRelationalDescriptorFieldsV2(
-            binding.exact_target_relational_descriptor_v2_fields,
-            *target_descriptor, target_descriptor->nullability) ||
+        binding.exact_descriptor != *literal_descriptor ||
+        binding.exact_target_descriptor != *target_descriptor ||
         binding.canonical_type_name != "text" ||
         !binding.element_profile_empty ||
         binding.target_canonical_type_name != "text" ||
@@ -355,7 +305,7 @@ bool PrepareContextualTextDirectRouteAuthorityV2(
         runtime.value.is_null || !runtime.value.binary_value.empty() ||
         !literal_body_matches ||
         runtime.value.descriptor.descriptor_uuid !=
-            binding.exact_relational_descriptor_v2_fields[0] ||
+            binding.exact_descriptor.descriptor_uuid ||
         runtime.value.descriptor.canonical_type_name != "text") {
       *diagnostic_id = "SBLR.CONTEXTUAL_TEXT_LITERAL.TARGET_MISMATCH";
       *refusal_detail =
@@ -638,7 +588,7 @@ bool EvaluateContextualTextEqualityV2(
   if (!left_value.isSqlNull() && !right_value.isSqlNull() &&
       !api::QowCompareCanonicalCollatedScalarsV1(
           left_value, right_value,
-          runtime.comparison_resources.collation_uuid_canonical,
+          runtime.comparison_resources.collation_identity,
           runtime.comparison_resources.collation_resource_epoch,
           runtime.comparison_resources.collation_family_epoch,
           runtime.comparison_resources.text_seed, &comparison,

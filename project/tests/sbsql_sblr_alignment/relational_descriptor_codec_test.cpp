@@ -7,6 +7,7 @@
 #include "wire/contextual_operand_freeze.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "wire/native_query_artifact.hpp"
+#include "engine/internal_api/query/contextual_text_descriptor_match.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -750,12 +751,95 @@ void TestNativeArtifactPublication() {
   Require(failure_sites > 0 && failure_sites < 1000, "artifact allocation sweep incomplete");
 }
 }
+namespace {
+void TestContextualDescriptorAgreement() {
+  auto literal = Fixture(1 | 2 | 8);
+  literal.nullability = api::RelationalNullability::kNonNull;
+  literal.codec_id = wire::kContextualTextCodecIdentifierV2;
+  wire::ContextualTextLiteralProfileV2 profile;
+  profile.literal_descriptor_handle = literal.descriptor_id;
+  profile.target_descriptor_handle = literal.descriptor_id + 1;
+  profile.descriptor_uuid = literal.descriptor_uuid.bytes;
+  profile.type_uuid = literal.type_uuid.bytes;
+  profile.collation_uuid = literal.collation_uuid->bytes;
+  profile.statement_receipt_uuid = literal.statement_receipt_uuid.bytes;
+  profile.catalog_snapshot_uuid = literal.datatype_catalog_snapshot_uuid.bytes;
+  profile.descriptor_generation = literal.descriptor_generation;
+  profile.type_generation = literal.type_generation;
+  profile.codec_version = literal.codec_version;
+  profile.codec_generation = literal.codec_generation;
+  profile.catalog_generation = literal.datatype_catalog_generation;
+  profile.datatype_registry_generation = literal.datatype_registry_generation;
+  profile.target_character_limit = 0;
+  auto target = literal; target.descriptor_id = profile.target_descriptor_handle;
+  target.nullability = api::RelationalNullability::kNullable;
+  Require(api::MatchesContextualTextDescriptorV2(literal, profile, false) &&
+          api::MatchesContextualTextDescriptorV2(target, profile, true),
+          "exact contextual descriptor agreement refused");
+  Require(!api::MatchesContextualTextDescriptorV2(literal, profile, true) &&
+          !api::MatchesContextualTextDescriptorV2(target, profile, false),
+          "literal and target descriptor handles crossed");
+  const auto reject = [&](const Descriptor& changed) {
+    Require(!api::MatchesContextualTextDescriptorV2(changed, profile, false),
+            "changed contextual descriptor accepted");
+  };
+  for (auto member : {&Descriptor::descriptor_uuid, &Descriptor::type_uuid,
+                      &Descriptor::statement_receipt_uuid, &Descriptor::datatype_catalog_snapshot_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto changed = literal; (changed.*member).bytes[byte] ^= 1; reject(changed);
+    }
+  }
+  for (std::size_t byte = 0; byte < 16; ++byte) {
+    auto changed = literal; changed.collation_uuid->bytes[byte] ^= 1; reject(changed);
+  }
+  for (auto member : {&Descriptor::descriptor_generation, &Descriptor::type_generation,
+                      &Descriptor::codec_generation, &Descriptor::datatype_catalog_generation,
+                      &Descriptor::datatype_registry_generation}) {
+    auto changed = literal; ++(changed.*member); reject(changed);
+  }
+  auto changed = literal; ++changed.descriptor_id; reject(changed);
+  changed = literal; ++changed.codec_version; reject(changed);
+  changed = literal; changed.codec_id += ".other"; reject(changed);
+  changed = literal; changed.datatype_identity_authoritative = false; reject(changed);
+  changed = literal; changed.collation_uuid.reset(); reject(changed);
+  changed = literal; changed.timezone_profile_id = ""; reject(changed);
+  changed = literal; changed.width.reset(); reject(changed);
+  changed = literal; changed.width = 1; reject(changed);
+  changed = literal; changed.precision = 0; reject(changed);
+  changed = literal; changed.scale = 0; reject(changed);
+  changed = literal; changed.nullability = api::RelationalNullability::kNullable; reject(changed);
+  changed = literal; changed.nullability = api::RelationalNullability::kUnknown; reject(changed);
+  target.nullability = api::RelationalNullability::kUnknown;
+  Require(!api::MatchesContextualTextDescriptorV2(target, profile, true), "unknown target nullability accepted");
+  target.nullability = api::RelationalNullability::kNonNull;
+  Require(api::MatchesContextualTextDescriptorV2(target, profile, true), "non-null target refused");
+  profile.target_character_limit = std::numeric_limits<std::uint32_t>::max();
+  literal.width = std::numeric_limits<std::uint32_t>::max();
+  Require(api::MatchesContextualTextDescriptorV2(literal, profile, false), "maximum bounded width refused");
+  ++profile.target_character_limit;
+  Require(!api::MatchesContextualTextDescriptorV2(literal, profile, false), "unrepresentable width accepted");
+  profile.target_character_limit = std::numeric_limits<std::uint64_t>::max();
+  Require(!api::MatchesContextualTextDescriptorV2(literal, profile, false), "finite width treated as unbounded");
+  literal.width.reset();
+  Require(api::MatchesContextualTextDescriptorV2(literal, profile, false), "unbounded width refused");
+  Bytes bytes; Require(wire::EncodeRelationalTypeDescriptorV1(literal, &bytes), "contextual snapshot encoding refused");
+  Descriptor decoded;
+  Require(wire::DecodeRelationalTypeDescriptorV1(bytes.data(), bytes.size(), &decoded) &&
+          decoded == literal && api::MatchesContextualTextDescriptorV2(decoded, profile, false),
+          "contextual snapshot round trip lost identity");
+  fail_after = 0;
+  const bool no_allocation = api::MatchesContextualTextDescriptorV2(decoded, profile, false);
+  fail_after = -1;
+  Require(no_allocation, "contextual descriptor comparison allocated or failed");
+}
+}
 int main() {
   try {
     TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
     TestReservationSnapshot();
     TestContextIdentityOperands();
     TestNativeArtifactPublication();
+    TestContextualDescriptorAgreement();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {

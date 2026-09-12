@@ -35,6 +35,8 @@ struct RelationalTypeDescriptor {
   core::platform::Uuid datatype_catalog_snapshot_uuid;
   std::uint64_t datatype_catalog_generation{0};
   std::uint64_t datatype_registry_generation{0};
+
+  bool operator==(const RelationalTypeDescriptor&) const = default;
 };
 
 }  // namespace scratchbird::engine::internal_api

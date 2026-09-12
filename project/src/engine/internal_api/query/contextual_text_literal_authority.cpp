@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/contextual_text_literal_authority.hpp"
+#include "query/contextual_text_descriptor_match.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -119,99 +120,7 @@ std::optional<std::string> ExactEncodedDescriptorField(
   return result;
 }
 
-std::array<std::string, 17> ExpectedLiteralDescriptorFields(
-    const sblr::ContextualTextLiteralProfileV2& profile) {
-  const std::string width =
-      profile.target_character_limit ==
-              std::numeric_limits<std::uint64_t>::max()
-          ? "-"
-          : std::to_string(profile.target_character_limit);
-  return {UuidText(profile.descriptor_uuid),
-          std::to_string(profile.descriptor_generation),
-          UuidText(profile.type_uuid),
-          std::to_string(profile.type_generation),
-          sblr::kContextualTextCodecIdentifierV2,
-          std::to_string(profile.codec_version),
-          std::to_string(profile.codec_generation),
-          "0",
-          UuidText(profile.collation_uuid),
-          "-",
-          width,
-          "-",
-          "-",
-          UuidText(profile.statement_receipt_uuid),
-          UuidText(profile.catalog_snapshot_uuid),
-          std::to_string(profile.catalog_generation),
-          std::to_string(profile.datatype_registry_generation)};
-}
 
-std::string JoinLiteralDescriptorFields(
-    const std::array<std::string, 17>& fields) {
-  std::size_t bytes = fields.size() - 1;
-  for (const auto& field : fields) bytes += field.size();
-  std::string result;
-  result.reserve(bytes);
-  for (std::size_t index = 0; index != fields.size(); ++index) {
-    if (index != 0) result.push_back('|');
-    result.append(fields[index]);
-  }
-  return result;
-}
-
-void AppendRuntimeDescriptorField(std::string* descriptor,
-                                  std::string_view key,
-                                  std::string_view value) {
-  if (!descriptor->empty()) descriptor->push_back(';');
-  descriptor->append(key);
-  descriptor->push_back('=');
-  descriptor->append(value);
-}
-
-std::string RuntimeEncodedDescriptor(
-    const std::array<std::string, 17>& fields,
-    const sblr::ContextualTextLiteralProfileV2& profile,
-    std::string_view exact_relational_descriptor) {
-  std::string result;
-  AppendRuntimeDescriptorField(&result, "canonical", "text");
-  AppendRuntimeDescriptorField(&result, "datatype_descriptor_uuid", fields[0]);
-  AppendRuntimeDescriptorField(&result, "datatype_descriptor_generation",
-                               fields[1]);
-  AppendRuntimeDescriptorField(&result, "type_uuid", fields[2]);
-  AppendRuntimeDescriptorField(&result, "type_generation", fields[3]);
-  AppendRuntimeDescriptorField(&result, "codec_uuid",
-                               UuidText(profile.codec_uuid));
-  AppendRuntimeDescriptorField(&result, "codec_id", fields[4]);
-  AppendRuntimeDescriptorField(&result, "codec_version", fields[5]);
-  AppendRuntimeDescriptorField(&result, "codec_generation", fields[6]);
-  AppendRuntimeDescriptorField(&result, "null_encoding", "1");
-  AppendRuntimeDescriptorField(&result, "nullability",
-                               fields[7] == "1" ? "nullable" : "non_null");
-  AppendRuntimeDescriptorField(&result, "charset_uuid",
-                               UuidText(profile.charset_uuid));
-  AppendRuntimeDescriptorField(&result, "charset_generation",
-                               std::to_string(profile.charset_generation));
-  AppendRuntimeDescriptorField(&result, "collation_uuid", fields[8]);
-  AppendRuntimeDescriptorField(&result, "collation_generation",
-                               std::to_string(profile.collation_generation));
-  AppendRuntimeDescriptorField(&result, "resource_epoch",
-                               std::to_string(profile.resource_epoch));
-  AppendRuntimeDescriptorField(&result, "timezone_profile_id", fields[9]);
-  if (fields[10] != "-") {
-    AppendRuntimeDescriptorField(&result, "width", fields[10]);
-  }
-  AppendRuntimeDescriptorField(&result, "precision", fields[11]);
-  AppendRuntimeDescriptorField(&result, "scale", fields[12]);
-  AppendRuntimeDescriptorField(&result, "statement_receipt_uuid", fields[13]);
-  AppendRuntimeDescriptorField(&result, "datatype_catalog_snapshot_uuid",
-                               fields[14]);
-  AppendRuntimeDescriptorField(&result, "datatype_catalog_generation",
-                               fields[15]);
-  AppendRuntimeDescriptorField(&result, "datatype_registry_generation",
-                               fields[16]);
-  AppendRuntimeDescriptorField(&result, "relational_descriptor_v2",
-                               exact_relational_descriptor);
-  return result;
-}
 
 bool SameTextSeed(
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& left,
@@ -261,20 +170,19 @@ bool ValidComparisonResources(
   return resources.charset_uuid == profile.charset_uuid &&
          resources.charset_generation == profile.charset_generation &&
          !resources.charset_name.empty() &&
-         resources.charset_uuid_canonical == UuidText(profile.charset_uuid) &&
+         resources.charset_identity.bytes == profile.charset_uuid &&
          resources.charset_resource_epoch == profile.resource_epoch &&
          resources.charset_family_epoch == profile.charset_generation &&
          resources.collation_uuid == profile.collation_uuid &&
          resources.collation_generation == profile.collation_generation &&
          !resources.collation_name.empty() &&
-         resources.collation_uuid_canonical ==
-             UuidText(profile.collation_uuid) &&
+         resources.collation_identity.bytes == profile.collation_uuid &&
          resources.collation_resource_epoch == profile.resource_epoch &&
          resources.collation_family_epoch == profile.collation_generation &&
          resources.charset_resource.present &&
          resources.charset_resource.resource_family == "charset" &&
          resources.charset_resource.resource_uuid ==
-             resources.charset_uuid_canonical &&
+             resources.charset_identity &&
          resources.charset_resource.canonical_name == resources.charset_name &&
          resources.charset_resource.resource_epoch ==
              resources.charset_resource_epoch &&
@@ -283,11 +191,11 @@ bool ValidComparisonResources(
          resources.collation_resource.present &&
          resources.collation_resource.resource_family == "collation" &&
          resources.collation_resource.resource_uuid ==
-             resources.collation_uuid_canonical &&
+             resources.collation_identity &&
          resources.collation_resource.canonical_name ==
              resources.collation_name &&
          resources.collation_resource.parent_resource_uuid ==
-             resources.charset_uuid_canonical &&
+             resources.charset_identity &&
          resources.collation_resource.parent_canonical_name ==
              resources.charset_name &&
          resources.collation_resource.resource_epoch ==
@@ -330,13 +238,13 @@ bool SameComparisonResources(
   return left.charset_uuid == right.charset_uuid &&
          left.charset_generation == right.charset_generation &&
          left.charset_name == right.charset_name &&
-         left.charset_uuid_canonical == right.charset_uuid_canonical &&
+         left.charset_identity == right.charset_identity &&
          left.charset_resource_epoch == right.charset_resource_epoch &&
          left.charset_family_epoch == right.charset_family_epoch &&
          left.collation_uuid == right.collation_uuid &&
          left.collation_generation == right.collation_generation &&
          left.collation_name == right.collation_name &&
-         left.collation_uuid_canonical == right.collation_uuid_canonical &&
+         left.collation_identity == right.collation_identity &&
          left.collation_resource_epoch == right.collation_resource_epoch &&
          left.collation_family_epoch == right.collation_family_epoch &&
          SameTextSeed(left.text_seed, right.text_seed) &&
@@ -387,7 +295,7 @@ bool ResolveLiveComparisonResources(
     return false;
   }
 
-  const EngineUuid charset_uuid{UuidText(profile.charset_uuid)};
+  const EngineUuid charset_uuid{profile.charset_uuid};
   const auto charset = LookupEngineResourceDescriptorByUuid(
       context, charset_uuid, "charset");
   if (!charset.ok || !charset.resource_descriptor.present ||
@@ -405,7 +313,7 @@ bool ResolveLiveComparisonResources(
     }
     return false;
   }
-  const EngineUuid collation_uuid{UuidText(profile.collation_uuid)};
+  const EngineUuid collation_uuid{profile.collation_uuid};
   const auto collation = LookupEngineResourceDescriptorByUuid(
       context, collation_uuid, "collation");
   if (!collation.ok || !collation.resource_descriptor.present ||
@@ -435,14 +343,14 @@ bool ResolveLiveComparisonResources(
   resolved.charset_uuid = profile.charset_uuid;
   resolved.charset_generation = profile.charset_generation;
   resolved.charset_name = charset.resource_descriptor.canonical_name;
-  resolved.charset_uuid_canonical = charset_uuid;
+  resolved.charset_identity = charset_uuid;
   resolved.charset_resource_epoch =
       charset.resource_descriptor.resource_epoch;
   resolved.charset_family_epoch = charset.resource_descriptor.family_epoch;
   resolved.collation_uuid = profile.collation_uuid;
   resolved.collation_generation = profile.collation_generation;
   resolved.collation_name = collation.resource_descriptor.canonical_name;
-  resolved.collation_uuid_canonical = collation_uuid;
+  resolved.collation_identity = collation_uuid;
   resolved.collation_resource_epoch =
       collation.resource_descriptor.resource_epoch;
   resolved.collation_family_epoch =
@@ -512,7 +420,7 @@ bool ResolveProjectedTargetDescriptor(
     const sblr::ContextualTextLiteralDemandV2& demand,
     const sblr::ContextualTextLiteralProfileV2& profile,
     const EngineResolvedContextualTextTargetV2& target,
-    const std::array<std::string, 17>& exact_target_descriptor_fields,
+    const RelationalTypeDescriptor& exact_target_descriptor,
     EngineDescriptor* descriptor,
     EngineApiDiagnostic* diagnostic) {
   if (descriptor == nullptr) return false;
@@ -568,10 +476,10 @@ bool ResolveProjectedTargetDescriptor(
                 selected->encoded_type_descriptor,
                 "datatype_descriptor_uuid");
   if (selected == nullptr || !selected->identity_present ||
-      (exact_target_descriptor_fields[7] != "0" &&
-       exact_target_descriptor_fields[7] != "1") ||
+      (exact_target_descriptor.nullability != RelationalNullability::kNonNull &&
+       exact_target_descriptor.nullability != RelationalNullability::kNullable) ||
       (((selected->attributes & 0x01u) != 0) !=
-       (exact_target_descriptor_fields[7] == "1")) ||
+       (exact_target_descriptor.nullability == RelationalNullability::kNullable)) ||
       !embedded_datatype_descriptor_uuid.has_value() ||
       *embedded_datatype_descriptor_uuid != UuidText(profile.descriptor_uuid) ||
       selected->descriptor_generation != profile.descriptor_generation ||
@@ -596,7 +504,7 @@ bool ResolveProjectedTargetDescriptor(
     return false;
   }
   EngineDescriptor resolved;
-  resolved.descriptor_uuid = UuidText(selected->descriptor_uuid);
+  resolved.descriptor_uuid.bytes = selected->descriptor_uuid;
   // Public MGA projection rows retain the persisted descriptor class.  The
   // executor-facing value descriptor is the scalar view of that exact column;
   // its UUID, type and encoded authority remain byte-for-byte unchanged.
@@ -753,18 +661,13 @@ bool SamePinnedContext(const EngineRequestContext& left,
 bool RequestMatchesContext(
     const EngineRequestContext& context,
     const sblr::ContextualTextLiteralNegotiationRequestV2& request) {
-  sblr::ContextualTextUuidV2 statement_receipt{};
-  sblr::ContextualTextUuidV2 catalog_snapshot{};
-  sblr::ContextualTextUuidV2 mga_snapshot{};
   return context.security_context_present &&
-         ToWireUuid(context.statement_receipt_uuid,
-                    &statement_receipt) &&
-         ToWireUuid(context.datatype_catalog_snapshot_uuid,
-                    &catalog_snapshot) &&
-         ToWireUuid(context.statement_snapshot_uuid, &mga_snapshot) &&
-         statement_receipt == request.statement_receipt_uuid &&
-         catalog_snapshot == request.catalog_snapshot_uuid &&
-         mga_snapshot == request.mga_snapshot_uuid &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(context.statement_receipt_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(context.datatype_catalog_snapshot_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(context.statement_snapshot_uuid) &&
+         context.statement_receipt_uuid.bytes == request.statement_receipt_uuid &&
+         context.datatype_catalog_snapshot_uuid.bytes == request.catalog_snapshot_uuid &&
+         context.statement_snapshot_uuid.bytes == request.mga_snapshot_uuid &&
          context.datatype_catalog_generation == request.catalog_generation &&
          context.datatype_registry_generation ==
              request.datatype_registry_generation &&
@@ -914,10 +817,10 @@ void AddVectorStorageV2(const std::vector<T>& value,
   counter->AddProduct(LogicalPayloadUnitsV2(value, accounting), sizeof(T));
 }
 
-void AddDynamicPayloadV2(const EngineUuid& value,
-                         const LogicalPayloadAccountingV2 accounting,
-                         LogicalByteCounterV2* counter) noexcept {
-  AddStringPayloadV2(value, accounting, counter);
+void AddDynamicPayloadV2(const EngineUuid&,
+                         const LogicalPayloadAccountingV2,
+                         LogicalByteCounterV2*) noexcept {
+  // UUID bytes are inline and already included in fixed object storage.
 }
 
 void AddDynamicPayloadV2(const EngineDescriptor& value,
@@ -1026,14 +929,14 @@ void AddDynamicPayloadV2(
     const EngineContextualTextVerifiedGraphBindingV2& value,
     const LogicalPayloadAccountingV2 accounting,
     LogicalByteCounterV2* counter) noexcept {
-  for (const auto& field : value.exact_relational_descriptor_v2_fields) {
-    AddStringPayloadV2(field, accounting, counter);
-  }
+  const auto account_descriptor = [&](const RelationalTypeDescriptor& descriptor) {
+    AddStringPayloadV2(descriptor.codec_id, accounting, counter);
+    if (descriptor.timezone_profile_id)
+      AddStringPayloadV2(*descriptor.timezone_profile_id, accounting, counter);
+  };
+  account_descriptor(value.exact_descriptor);
+  account_descriptor(value.exact_target_descriptor);
   AddStringPayloadV2(value.canonical_type_name, accounting, counter);
-  for (const auto& field :
-       value.exact_target_relational_descriptor_v2_fields) {
-    AddStringPayloadV2(field, accounting, counter);
-  }
   AddStringPayloadV2(value.target_canonical_type_name, accounting, counter);
 }
 
@@ -1042,9 +945,9 @@ void AddDynamicPayloadV2(
     const LogicalPayloadAccountingV2 accounting,
     LogicalByteCounterV2* counter) noexcept {
   AddStringPayloadV2(value.charset_name, accounting, counter);
-  AddStringPayloadV2(value.charset_uuid_canonical, accounting, counter);
+  AddDynamicPayloadV2(value.charset_identity, accounting, counter);
   AddStringPayloadV2(value.collation_name, accounting, counter);
-  AddStringPayloadV2(value.collation_uuid_canonical, accounting, counter);
+  AddDynamicPayloadV2(value.collation_identity, accounting, counter);
   AddDynamicPayloadV2(value.text_seed, accounting, counter);
   AddDynamicPayloadV2(value.charset_resource, accounting, counter);
   AddDynamicPayloadV2(value.collation_resource, accounting, counter);
@@ -1060,9 +963,9 @@ void AddDynamicPayloadV2(
   AddDynamicPayloadV2(value.graph_binding, accounting, counter);
   AddDynamicPayloadV2(value.value, accounting, counter);
   AddDynamicPayloadV2(value.target_descriptor, accounting, counter);
-  AddVectorStorageV2(value.exact_literal_relational_descriptor_v2_bytes,
+  AddVectorStorageV2(value.exact_literal_relational_descriptor_v3_bytes,
                      accounting, counter);
-  AddVectorStorageV2(value.exact_target_relational_descriptor_v2_bytes,
+  AddVectorStorageV2(value.exact_target_relational_descriptor_v3_bytes,
                      accounting, counter);
   AddDynamicPayloadV2(value.exact_profile, accounting, counter);
   AddDynamicPayloadV2(value.comparison_resources, accounting, counter);
@@ -2320,16 +2223,6 @@ PrepareContextualTextLiteralAuthorityV2(
       const auto& mapping = execute.mappings[index];
       const auto& demand = issued_request.demands[index];
       const auto& graph_binding = verified_graph_bindings[index];
-      const auto expected_literal_descriptor =
-          ExpectedLiteralDescriptorFields(mapping.profile);
-      auto expected_target_descriptor = expected_literal_descriptor;
-      if (graph_binding.exact_target_relational_descriptor_v2_fields[7] ==
-              "0" ||
-          graph_binding.exact_target_relational_descriptor_v2_fields[7] ==
-              "1") {
-        expected_target_descriptor[7] =
-            graph_binding.exact_target_relational_descriptor_v2_fields[7];
-      }
       if (graph_binding.literal_occurrence != mapping.literal_occurrence ||
           graph_binding.node_id != mapping.node_id ||
           graph_binding.literal_expression_id == 0 ||
@@ -2351,12 +2244,10 @@ PrepareContextualTextLiteralAuthorityV2(
               mapping.target_descriptor_handle ||
           graph_binding.canonical_type_name != "text" ||
           !graph_binding.element_profile_empty ||
-          graph_binding.exact_relational_descriptor_v2_fields !=
-              expected_literal_descriptor ||
+          !MatchesContextualTextDescriptorV2(graph_binding.exact_descriptor, mapping.profile, false) ||
           graph_binding.target_canonical_type_name != "text" ||
           !graph_binding.target_element_profile_empty ||
-          graph_binding.exact_target_relational_descriptor_v2_fields !=
-              expected_target_descriptor) {
+          !MatchesContextualTextDescriptorV2(graph_binding.exact_target_descriptor, mapping.profile, true)) {
         result.diagnostic = Diagnostic(
             "SBLR.OPERAND_INVALID",
             "engine.contextual_text_literal.verified_graph_binding_mismatch");
@@ -2374,7 +2265,7 @@ PrepareContextualTextLiteralAuthorityV2(
       EngineDescriptor projected_target_descriptor;
       if (!ResolveProjectedTargetDescriptor(
               demand, mapping.profile, targets[index],
-              graph_binding.exact_target_relational_descriptor_v2_fields,
+              graph_binding.exact_target_descriptor,
               &projected_target_descriptor, &resolver_diagnostic)) {
         result.diagnostic = std::move(resolver_diagnostic);
         return result;
@@ -2402,21 +2293,22 @@ PrepareContextualTextLiteralAuthorityV2(
       value.target_context_sha256 = mapping.profile.target_context_sha256;
       EngineContextualTextPreparedRuntimeMaterializationV2 runtime;
       runtime.graph_binding = graph_binding;
-      const auto literal_descriptor = JoinLiteralDescriptorFields(
-          graph_binding.exact_relational_descriptor_v2_fields);
-      const auto target_descriptor = JoinLiteralDescriptorFields(
-          graph_binding.exact_target_relational_descriptor_v2_fields);
-      runtime.exact_literal_relational_descriptor_v2_bytes.assign(
-          literal_descriptor.begin(), literal_descriptor.end());
-      runtime.exact_target_relational_descriptor_v2_bytes.assign(
-          target_descriptor.begin(), target_descriptor.end());
-      runtime.value.descriptor.descriptor_uuid =
-          graph_binding.exact_relational_descriptor_v2_fields[0];
+      if (!sblr::EncodeRelationalTypeDescriptorV1(
+              graph_binding.exact_descriptor,
+              &runtime.exact_literal_relational_descriptor_v3_bytes) ||
+          !sblr::EncodeRelationalTypeDescriptorV1(
+              graph_binding.exact_target_descriptor,
+              &runtime.exact_target_relational_descriptor_v3_bytes)) {
+        result.diagnostic = Diagnostic("CTB.TEXT.DESCRIPTOR_INVALID",
+            "engine.contextual_text_literal.runtime_descriptor_invalid");
+        return result;
+      }
+      runtime.value.descriptor.descriptor_uuid = graph_binding.exact_descriptor.descriptor_uuid;
       runtime.value.descriptor.descriptor_kind = "scalar";
       runtime.value.descriptor.canonical_type_name = "text";
-      runtime.value.descriptor.encoded_descriptor = RuntimeEncodedDescriptor(
-          graph_binding.exact_relational_descriptor_v2_fields,
-          mapping.profile, literal_descriptor);
+      runtime.value.descriptor.encoded_descriptor.assign(
+          runtime.exact_literal_relational_descriptor_v3_bytes.begin(),
+          runtime.exact_literal_relational_descriptor_v3_bytes.end());
       runtime.value.encoded_value.assign(mapping.profile.canonical_body.begin(),
                                          mapping.profile.canonical_body.end());
       runtime.value.binary_value.clear();

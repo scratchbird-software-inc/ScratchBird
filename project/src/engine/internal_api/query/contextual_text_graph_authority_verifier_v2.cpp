@@ -62,20 +62,6 @@ bool Nonzero(const Sha256& value) {
                              [](std::uint8_t byte) { return byte != 0; });
 }
 
-std::string UuidText(const Uuid& value) {
-  constexpr char hex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(36);
-  for (std::size_t index = 0; index != value.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) {
-      out.push_back('-');
-    }
-    out.push_back(hex[value[index] >> 4]);
-    out.push_back(hex[value[index] & 0x0f]);
-  }
-  return out;
-}
-
 bool SameContext(const EngineRequestContext& left,
                  const EngineRequestContext& right) {
   return left.security_context_present && right.security_context_present &&
@@ -99,79 +85,17 @@ bool SameContext(const EngineRequestContext& left,
 bool ExactDescriptor(
     const EngineContextualTextGraphDescriptorV2& descriptor,
     const sblr::ContextualTextLiteralProfileV2& profile) {
-  if (descriptor.descriptor_handle != profile.literal_descriptor_handle ||
-      descriptor.canonical_type_name != "text" ||
-      !descriptor.element_profile_empty ||
-      (profile.target_character_limit >
-           std::numeric_limits<std::uint32_t>::max() &&
-       profile.target_character_limit !=
-           std::numeric_limits<std::uint64_t>::max())) {
-    return false;
-  }
-  const std::string width =
-      profile.target_character_limit ==
-              std::numeric_limits<std::uint64_t>::max()
-          ? "-"
-          : std::to_string(profile.target_character_limit);
-  const std::array<std::string, 17> expected{
-      UuidText(profile.descriptor_uuid),
-      std::to_string(profile.descriptor_generation),
-      UuidText(profile.type_uuid),
-      std::to_string(profile.type_generation),
-      sblr::kContextualTextCodecIdentifierV2,
-      std::to_string(profile.codec_version),
-      std::to_string(profile.codec_generation),
-      "0",
-      UuidText(profile.collation_uuid),
-      "-",
-      width,
-      "-",
-      "-",
-      UuidText(profile.statement_receipt_uuid),
-      UuidText(profile.catalog_snapshot_uuid),
-      std::to_string(profile.catalog_generation),
-      std::to_string(profile.datatype_registry_generation)};
-  return descriptor.exact_relational_descriptor_v2_fields == expected;
+  return descriptor.descriptor_handle == descriptor.exact_descriptor.descriptor_id &&
+         descriptor.canonical_type_name == "text" && descriptor.element_profile_empty &&
+         MatchesContextualTextDescriptorV2(descriptor.exact_descriptor, profile, false);
 }
 
 bool ExactTargetDescriptor(
     const EngineContextualTextGraphDescriptorV2& descriptor,
     const sblr::ContextualTextLiteralProfileV2& profile) {
-  if (descriptor.descriptor_handle != profile.target_descriptor_handle ||
-      descriptor.canonical_type_name != "text" ||
-      !descriptor.element_profile_empty ||
-      (profile.target_character_limit >
-           std::numeric_limits<std::uint32_t>::max() &&
-       profile.target_character_limit !=
-           std::numeric_limits<std::uint64_t>::max())) {
-    return false;
-  }
-  const auto& actual = descriptor.exact_relational_descriptor_v2_fields;
-  if (actual[7] != "0" && actual[7] != "1") return false;
-  const std::string width =
-      profile.target_character_limit ==
-              std::numeric_limits<std::uint64_t>::max()
-          ? "-"
-          : std::to_string(profile.target_character_limit);
-  const std::array<std::string, 17> expected{
-      UuidText(profile.descriptor_uuid),
-      std::to_string(profile.descriptor_generation),
-      UuidText(profile.type_uuid),
-      std::to_string(profile.type_generation),
-      sblr::kContextualTextCodecIdentifierV2,
-      std::to_string(profile.codec_version),
-      std::to_string(profile.codec_generation),
-      actual[7],
-      UuidText(profile.collation_uuid),
-      "-",
-      width,
-      "-",
-      "-",
-      UuidText(profile.statement_receipt_uuid),
-      UuidText(profile.catalog_snapshot_uuid),
-      std::to_string(profile.catalog_generation),
-      std::to_string(profile.datatype_registry_generation)};
-  return actual == expected;
+  return descriptor.descriptor_handle == descriptor.exact_descriptor.descriptor_id &&
+         descriptor.canonical_type_name == "text" && descriptor.element_profile_empty &&
+         MatchesContextualTextDescriptorV2(descriptor.exact_descriptor, profile, true);
 }
 
 bool SameSource(const EngineContextualTextGraphSourceV2& left,
@@ -395,7 +319,7 @@ struct CanonicalNodeRecord {
 
 struct CanonicalDescriptorRecord {
   std::uint32_t handle = 0;
-  std::array<std::string, 17> fields{};
+  RelationalTypeDescriptor value;
 };
 
 struct CanonicalExpressionRecord {
@@ -424,99 +348,39 @@ struct CanonicalOutputRecord {
   std::uint32_t ordinal = 0;
 };
 
-bool ParseDescriptorV2(const sblr::SblrOperand& operand,
+bool ParseDescriptorV3(const sblr::SblrOperand& operand,
                        CanonicalDescriptorRecord* out) {
-  if (out == nullptr || !ParseSlotHandle(operand.name, &out->handle)) {
-    return false;
-  }
-  std::string_view payload;
-  std::array<std::string_view, 17> fields{};
-  if (!TypedPayload(operand, &payload) || payload.size() > 65536 ||
-      !SplitFields(payload, &fields)) {
-    return false;
-  }
-  Uuid uuid{};
-  std::uint64_t numeric = 0;
-  if (!ParseUuidText(fields[0], &uuid) ||
-      !ParseUnsigned(fields[1], std::numeric_limits<std::uint64_t>::max(),
-                     &numeric) ||
-      numeric == 0 || !ParseUuidText(fields[2], &uuid) ||
-      !ParseUnsigned(fields[3], std::numeric_limits<std::uint64_t>::max(),
-                     &numeric) ||
-      numeric == 0 || fields[4].empty() ||
-      fields[4].find('|') != std::string_view::npos ||
-      !ParseUnsigned(fields[5], std::numeric_limits<std::uint16_t>::max(),
-                     &numeric) ||
-      numeric == 0 ||
-      !ParseUnsigned(fields[6], std::numeric_limits<std::uint64_t>::max(),
-                     &numeric) ||
-      numeric == 0 || !ParseUnsigned(fields[7], 1, &numeric) ||
-      (fields[8] != "-" && !ParseUuidText(fields[8], &uuid)) ||
-      !ParseUuidText(fields[13], &uuid) ||
-      !ParseUuidText(fields[14], &uuid) ||
-      !ParseUnsigned(fields[15], std::numeric_limits<std::uint64_t>::max(),
-                     &numeric) ||
-      numeric == 0 ||
-      !ParseUnsigned(fields[16], std::numeric_limits<std::uint64_t>::max(),
-                     &numeric) ||
-      numeric == 0) {
-    return false;
-  }
-  std::optional<std::string> optional_hex;
-  if (!DecodeOptionalHex(fields[9], &optional_hex)) return false;
-  for (const auto index : {10U, 11U, 12U}) {
-    if (fields[index] != "-" &&
-        !ParseUnsigned(fields[index],
-                       std::numeric_limits<std::uint32_t>::max(), &numeric)) {
-      return false;
-    }
-  }
-  for (std::size_t index = 0; index != fields.size(); ++index) {
-    out->fields[index] = std::string(fields[index]);
-  }
+  if (!out || operand.type != "relational_descriptor_v3" ||
+      operand.value_kind != sblr::SblrValueKind::relational_type_descriptor ||
+      !operand.value.empty()) return false;
+  CanonicalDescriptorRecord staged;
+  if (!ParseSlotHandle(operand.name, &staged.handle) ||
+      !sblr::DecodeRelationalTypeDescriptorV1(
+          operand.value_body.data(), operand.value_body.size(), &staged.value) ||
+      staged.handle != staged.value.descriptor_id) return false;
+  *out = std::move(staged);
   return true;
 }
 
 bool DescriptorIsLiveText(
     const EngineRequestContext& context,
     const CanonicalDescriptorRecord& descriptor) {
-  std::uint64_t descriptor_generation = 0;
-  std::uint64_t type_generation = 0;
-  std::uint64_t codec_version = 0;
-  std::uint64_t codec_generation = 0;
-  std::uint64_t catalog_generation = 0;
-  std::uint64_t registry_generation = 0;
-  const auto& fields = descriptor.fields;
-  if (!ParseUnsigned(fields[1], std::numeric_limits<std::uint64_t>::max(),
-                     &descriptor_generation) ||
-      !ParseUnsigned(fields[3], std::numeric_limits<std::uint64_t>::max(),
-                     &type_generation) ||
-      !ParseUnsigned(fields[5], std::numeric_limits<std::uint16_t>::max(),
-                     &codec_version) ||
-      !ParseUnsigned(fields[6], std::numeric_limits<std::uint64_t>::max(),
-                     &codec_generation) ||
-      !ParseUnsigned(fields[15], std::numeric_limits<std::uint64_t>::max(),
-                     &catalog_generation) ||
-      !ParseUnsigned(fields[16], std::numeric_limits<std::uint64_t>::max(),
-                     &registry_generation) ||
-      fields[13] != context.statement_receipt_uuid ||
-      fields[14] != context.datatype_catalog_snapshot_uuid ||
-      catalog_generation != context.datatype_catalog_generation ||
-      registry_generation != context.datatype_registry_generation) {
-    return false;
-  }
-  const auto identity =
-      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          fields[14], catalog_generation, registry_generation, fields[0],
-          descriptor_generation);
+  const auto& value = descriptor.value;
+  if (!value.datatype_identity_authoritative ||
+      value.statement_receipt_uuid != context.statement_receipt_uuid ||
+      value.datatype_catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
+      value.datatype_catalog_generation != context.datatype_catalog_generation ||
+      value.datatype_registry_generation != context.datatype_registry_generation) return false;
+  const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      value.datatype_catalog_snapshot_uuid, value.datatype_catalog_generation,
+      value.datatype_registry_generation, value.descriptor_uuid, value.descriptor_generation);
   return identity.ok &&
-         scratchbird::core::datatypes::
-             IsExactCanonicalTextTypeCodecIdentityV1(identity.row) &&
-         identity.row.type_uuid == fields[2] &&
-         identity.row.type_generation == type_generation &&
-         identity.row.codec_id == fields[4] &&
-         identity.row.codec_version == codec_version &&
-         identity.row.codec_generation == codec_generation;
+      scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(identity.row) &&
+      identity.row.type_uuid == value.type_uuid &&
+      identity.row.type_generation == value.type_generation &&
+      identity.row.codec_id == value.codec_id &&
+      identity.row.codec_version == value.codec_version &&
+      identity.row.codec_generation == value.codec_generation;
 }
 
 class CanonicalOperandGraphSelector final
@@ -667,24 +531,16 @@ class CanonicalOperandGraphSelector final
           found->binding_present = true;
           continue;
         }
-        if (operand.type == "relational_descriptor_v1") {
-          std::uint32_t handle = 0;
-          std::string_view payload;
-          std::array<std::string_view, 8> fields{};
-          if (!ParseSlotHandle(operand.name, &handle) ||
-              !TypedPayload(operand, &payload) ||
-              !SplitFields(payload, &fields) ||
-              !descriptor_handles.insert(handle).second) {
-            return Invalid("descriptor_v1_invalid", diagnostic);
-          }
-          continue;
+        if (operand.type == "relational_descriptor_v1" ||
+            operand.type == "relational_descriptor_v2") {
+          return Invalid("legacy_descriptor_transport", diagnostic);
         }
-        if (operand.type == "relational_descriptor_v2") {
+        if (operand.type == "relational_descriptor_v3") {
           CanonicalDescriptorRecord descriptor;
-          if (!ParseDescriptorV2(operand, &descriptor) ||
+          if (!ParseDescriptorV3(operand, &descriptor) ||
               !descriptor_handles.insert(descriptor.handle).second ||
-              !descriptors.emplace(descriptor.handle, descriptor).second) {
-            return Invalid("descriptor_v2_invalid", diagnostic);
+              !descriptors.emplace(descriptor.handle, std::move(descriptor)).second) {
+            return Invalid("descriptor_v3_invalid", diagnostic);
           }
           continue;
         }
@@ -996,12 +852,6 @@ class CanonicalOperandGraphSelector final
             descriptors.find(mapping.literal_descriptor_handle);
         const auto target_descriptor =
             descriptors.find(mapping.target_descriptor_handle);
-        std::uint64_t target_nullable = 0;
-        const std::string expected_width =
-            profile.target_character_limit ==
-                    std::numeric_limits<std::uint64_t>::max()
-                ? "-"
-                : std::to_string(profile.target_character_limit);
         if (literal_descriptor == descriptors.end() ||
             target_descriptor == descriptors.end() ||
             mapping.literal_descriptor_handle ==
@@ -1012,14 +862,7 @@ class CanonicalOperandGraphSelector final
                                   target_descriptor->second) ||
             target->second.result_descriptor_handle !=
                 mapping.target_descriptor_handle ||
-            target_descriptor->second.fields[8] !=
-                UuidText(profile.collation_uuid) ||
-            target_descriptor->second.fields[9] != "-" ||
-            target_descriptor->second.fields[10] != expected_width ||
-            target_descriptor->second.fields[11] != "-" ||
-            target_descriptor->second.fields[12] != "-" ||
-            !ParseUnsigned(target_descriptor->second.fields[7], 1,
-                           &target_nullable)) {
+            !MatchesContextualTextDescriptorV2(target_descriptor->second.value, profile, true)) {
           return DescriptorInvalid("descriptor_binding_invalid", diagnostic);
         }
 
@@ -1051,8 +894,8 @@ class CanonicalOperandGraphSelector final
             target->second.result_descriptor_handle;
         occurrence.target_descriptor.descriptor_handle =
             target->second.result_descriptor_handle;
-        occurrence.target_descriptor.exact_relational_descriptor_v2_fields =
-            target_descriptor->second.fields;
+        occurrence.target_descriptor.exact_descriptor =
+            target_descriptor->second.value;
         occurrence.target_descriptor.canonical_type_name = "text";
         occurrence.target_descriptor.element_profile_empty = true;
         occurrence.literal_expression_id = item.reference->expression_id;
@@ -1064,8 +907,8 @@ class CanonicalOperandGraphSelector final
             mapping.literal_descriptor_handle;
         occurrence.literal_descriptor.descriptor_handle =
             mapping.literal_descriptor_handle;
-        occurrence.literal_descriptor.exact_relational_descriptor_v2_fields =
-            literal_descriptor->second.fields;
+        occurrence.literal_descriptor.exact_descriptor =
+            literal_descriptor->second.value;
         occurrence.literal_descriptor.canonical_type_name = "text";
         occurrence.literal_descriptor.element_profile_empty = true;
         if (!ExactDescriptor(occurrence.literal_descriptor, profile)) {
@@ -1432,14 +1275,14 @@ class Verifier final : public EngineContextualTextGraphAuthorityVerifierV2 {
       binding.literal_descriptor_handle =
           occurrence.literal_descriptor_handle;
       binding.target_descriptor_handle = occurrence.target_descriptor_handle;
-      binding.exact_relational_descriptor_v2_fields =
-          occurrence.literal_descriptor.exact_relational_descriptor_v2_fields;
+      binding.exact_descriptor =
+          occurrence.literal_descriptor.exact_descriptor;
       binding.canonical_type_name =
           occurrence.literal_descriptor.canonical_type_name;
       binding.element_profile_empty =
           occurrence.literal_descriptor.element_profile_empty;
-      binding.exact_target_relational_descriptor_v2_fields =
-          occurrence.target_descriptor.exact_relational_descriptor_v2_fields;
+      binding.exact_target_descriptor =
+          occurrence.target_descriptor.exact_descriptor;
       binding.target_canonical_type_name =
           occurrence.target_descriptor.canonical_type_name;
       binding.target_element_profile_empty =

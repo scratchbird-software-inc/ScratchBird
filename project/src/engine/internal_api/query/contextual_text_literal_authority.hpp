@@ -9,6 +9,7 @@
 #pragma once
 
 #include "engine/internal_api/api_types.hpp"
+#include "engine/internal_api/query/relational_type_descriptor.hpp"
 #include "engine/internal_api/catalog/name_resolution_api.hpp"
 #include "engine/sblr/contextual_text_literal_v2_codec.hpp"
 #include "core/datatypes/datatype_operations.hpp"
@@ -126,11 +127,10 @@ struct EngineContextualTextVerifiedGraphBindingV2 {
   std::uint32_t source_node_id = 0;
   std::uint32_t literal_descriptor_handle = 0;
   std::uint32_t target_descriptor_handle = 0;
-  std::array<std::string, 17> exact_relational_descriptor_v2_fields{};
+  RelationalTypeDescriptor exact_descriptor;
   std::string canonical_type_name;
   bool element_profile_empty = false;
-  std::array<std::string, 17>
-      exact_target_relational_descriptor_v2_fields{};
+  RelationalTypeDescriptor exact_target_descriptor;
   std::string target_canonical_type_name;
   bool target_element_profile_empty = false;
 
@@ -317,13 +317,13 @@ struct EngineContextualTextComparisonResourceSnapshotV2 {
   scratchbird::engine::sblr::ContextualTextUuidV2 charset_uuid{};
   std::uint64_t charset_generation = 0;
   std::string charset_name;
-  std::string charset_uuid_canonical;
+  EngineUuid charset_identity;
   std::uint64_t charset_resource_epoch = 0;
   std::uint64_t charset_family_epoch = 0;
   scratchbird::engine::sblr::ContextualTextUuidV2 collation_uuid{};
   std::uint64_t collation_generation = 0;
   std::string collation_name;
-  std::string collation_uuid_canonical;
+  EngineUuid collation_identity;
   std::uint64_t collation_resource_epoch = 0;
   std::uint64_t collation_family_epoch = 0;
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
@@ -355,8 +355,8 @@ struct EngineContextualTextPreparedRuntimeMaterializationV2 {
   EngineContextualTextVerifiedGraphBindingV2 graph_binding;
   EngineTypedValue value;
   EngineDescriptor target_descriptor;
-  std::vector<std::uint8_t> exact_literal_relational_descriptor_v2_bytes;
-  std::vector<std::uint8_t> exact_target_relational_descriptor_v2_bytes;
+  std::vector<std::uint8_t> exact_literal_relational_descriptor_v3_bytes;
+  std::vector<std::uint8_t> exact_target_relational_descriptor_v3_bytes;
   scratchbird::engine::sblr::ContextualTextLiteralProfileV2 exact_profile;
   EngineContextualTextComparisonResourceSnapshotV2 comparison_resources;
 };
