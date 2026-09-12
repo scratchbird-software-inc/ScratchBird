@@ -483,7 +483,8 @@ void RequireEngineResourceResolution(const engine::EngineRequestContext& context
   charset_request.context = stale_context;
   const auto stale = engine::EngineResolveName(charset_request);
   Require(!stale.ok && !stale.diagnostics.empty() &&
-              stale.diagnostics.front().code == "CATALOG.RESOURCE.EPOCH_STALE",
+              stale.diagnostics.front().code == "CATALOG.INVALID_INPUT" &&
+              stale.diagnostics.front().message_key == "catalog.resource.epoch_stale",
           "stale resource epoch was not refused by the engine");
 
   engine::EngineRollbackTransactionRequest rollback;
@@ -657,14 +658,16 @@ void RequireGbkRelationDescriptorPersistence(
       missing_epoch_context, gbk_uuid, "charset");
   Require(!missing_epoch.ok &&
               missing_epoch.diagnostic.code ==
-                  "CATALOG.RESOURCE.EPOCH_REQUIRED",
+                  "CATALOG.INVALID_INPUT" &&
+              missing_epoch.diagnostic.message_key == "catalog.resource.epoch_required",
           "UUID resource lookup accepted a zero resource epoch");
   auto stale_epoch_context = context;
   ++stale_epoch_context.resource_epoch;
   const auto stale_epoch = engine::LookupEngineResourceDescriptorByUuid(
       stale_epoch_context, gbk_uuid, "charset");
   Require(!stale_epoch.ok &&
-              stale_epoch.diagnostic.code == "CATALOG.RESOURCE.EPOCH_STALE",
+              stale_epoch.diagnostic.code == "CATALOG.INVALID_INPUT" &&
+              stale_epoch.diagnostic.message_key == "catalog.resource.epoch_stale",
           "UUID resource lookup accepted a stale resource epoch");
 
   const std::string schema_uuid =

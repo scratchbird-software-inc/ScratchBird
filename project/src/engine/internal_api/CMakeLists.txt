@@ -394,6 +394,7 @@ add_library(sb_engine_internal_api
   catalog/ipar_fast_path_support.cpp
   catalog/name_registry.cpp
   catalog/name_resolution_api.cpp
+  catalog/resource_descriptor_lookup.cpp
   catalog/relation_descriptor_projection.cpp
   catalog/relation_projection_view.cpp
   catalog/pinned_descriptor_cache.cpp

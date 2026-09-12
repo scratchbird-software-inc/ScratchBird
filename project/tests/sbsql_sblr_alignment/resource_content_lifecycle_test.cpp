@@ -6,6 +6,10 @@
 #include "memory.hpp"
 #include "uuid.hpp"
 #include "catalog_page.hpp"
+#include "catalog/name_resolution_api.hpp"
+#include "catalog/resource_catalog_admission.hpp"
+#include "local_transaction_store.hpp"
+#include "transaction_inventory.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -23,6 +27,8 @@ namespace page = scratchbird::storage::page;
 namespace disk = scratchbird::storage::disk;
 namespace platform = scratchbird::core::platform;
 using scratchbird::core::platform::UuidKind;
+namespace engine = scratchbird::engine::internal_api;
+namespace mga = scratchbird::transaction::mga;
 void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 void Good(const db::DatabaseLifecycleResult& result) {
   if (!result.ok()) {
@@ -52,6 +58,134 @@ std::string IdentityBytes(const r::ResourceSeedCatalogImage& image) {
   for (const auto& row:image.aliases) append(row.canonical_resource_uuid);
   for (const auto& row:image.artifacts) append(row.artifact_uuid);
   return bytes;
+}
+void ResourceAdmission(const fs::path& path) {
+  db::DatabaseOpenConfig open; open.path=path.string(); open.read_only=true;
+  open.suppress_background_agents=true;
+  const auto initial=db::OpenDatabaseFile(open); Good(initial);
+  const auto& image=initial.state.resource_seed_catalog;
+  Require(!image.charsets.empty() && !image.collations.empty(),"resource descriptor oracle missing");
+  engine::EngineRequestContext context;
+  context.database_path=path.string(); context.database_uuid=initial.state.database_uuid.value;
+  context.resource_epoch=image.resource_epoch;
+  auto inventory=initial.state.local_transaction_inventory;
+  const auto begin=[&](bool read_only) {
+    const auto id=uuid::GenerateEngineIdentityV7(UuidKind::transaction,Now());
+    Require(id.ok(),"resource admission transaction identity failed");
+    const auto begun=read_only
+        ? mga::BeginLocalReadOnlyTransaction(inventory,id.value,Now())
+        : mga::BeginLocalTransaction(inventory,id.value,Now());
+    Require(begun.ok(),"resource admission actual transaction begin failed");
+    const auto persisted=db::PersistLocalTransactionInventoryToDatabase(path.string(),begun.inventory);
+    Require(persisted.ok(),"resource admission transaction persistence failed");
+    inventory=persisted.inventory;
+    context.transaction_uuid=id.value.value;
+    context.local_transaction_id=begun.entry.identity.local_id.value;
+  };
+  begin(false);
+  unsigned checks=0;
+  const auto check=[&](bool condition,const char* detail){++checks;Require(condition,detail);};
+  const auto lookup=[&](const engine::EngineRequestContext& candidate) {
+    return engine::LookupEngineResourceDescriptorByUuid(candidate,image.charsets.front().resource_uuid,"charset");
+  };
+  const auto refused=[&](const engine::EngineRequestContext& candidate,const char* key) {
+    const auto resource=lookup(candidate);
+    check(!resource.ok && resource.diagnostic.error && resource.diagnostic.code=="CATALOG.INVALID_INPUT" && resource.diagnostic.message_key==key &&
+          resource.diagnostic.canonical_metadata.has_value() &&
+          !resource.resource_descriptor.present && resource.resource_descriptor.resource_uuid.is_nil(),
+          "resource lookup published authority for invalid context");
+    const auto timezone=engine::LookupEngineTimezoneSeedAuthority(candidate);
+    check(!timezone.ok && timezone.diagnostic.error && timezone.diagnostic.code=="CATALOG.INVALID_INPUT" && timezone.diagnostic.message_key==key &&
+          timezone.diagnostic.canonical_metadata.has_value() &&
+          !timezone.authority.active && timezone.authority.timezone_names.empty(),
+          "timezone lookup published authority for invalid context");
+  };
+  const auto charset=lookup(context);
+  check(charset.ok && charset.resource_descriptor.resource_uuid==image.charsets.front().resource_uuid &&
+        charset.resource_descriptor.default_collation_uuid==image.charsets.front().default_collation_uuid &&
+        charset.resource_descriptor.family_epoch==image.charsets.front().family_epoch &&
+        charset.resource_descriptor.canonical_name==image.charsets.front().canonical_name,
+        "actual charset lookup changed binary identity or cohort");
+  const auto collation=engine::LookupEngineResourceDescriptorByUuid(
+      context,image.collations.front().resource_uuid,"COLLATION");
+  check(collation.ok && collation.resource_descriptor.resource_uuid==image.collations.front().resource_uuid &&
+        collation.resource_descriptor.parent_resource_uuid==image.collations.front().charset_uuid &&
+        collation.resource_descriptor.family_version==image.collations.front().family_version,
+        "actual collation lookup changed binary identity or parent");
+  const auto zone=engine::LookupEngineTimezoneSeedAuthority(context);
+  check(zone.ok && zone.authority.active && zone.authority.timezone_epoch==image.timezone_epoch &&
+        zone.authority.timezone_records==image.timezone_records,
+        "actual timezone lookup rejected exact active transaction");
+  auto bad=context; bad.database_uuid={}; refused(bad,"catalog.resource.database_required");
+  bad=context; bad.database_path.clear(); refused(bad,"catalog.resource.database_required");
+  bad=context; bad.database_uuid.bytes[6]=0x40;
+  refused(bad,"catalog.resource.database_identity_mismatch");
+  bad=context; bad.database_uuid.bytes[15]^=1;
+  refused(bad,"catalog.resource.database_identity_mismatch");
+  bad=context; bad.transaction_uuid={}; refused(bad,"catalog.resource.transaction_required");
+  bad=context; bad.local_transaction_id=0; refused(bad,"catalog.resource.transaction_required");
+  for (unsigned version=1;version<=6;++version) {
+    bad=context; bad.transaction_uuid.bytes[6]=static_cast<unsigned char>(version<<4);
+    refused(bad,"catalog.resource.transaction_invalid");
+    auto identity=image.charsets.front().resource_uuid;
+    identity.bytes[6]=static_cast<unsigned char>(version<<4);
+    const auto result=engine::LookupEngineResourceDescriptorByUuid(context,identity,"charset");
+    check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" && result.diagnostic.message_key=="catalog.resource.uuid_invalid" &&
+          result.diagnostic.canonical_metadata.has_value() &&
+          !result.resource_descriptor.present,"old UUID version admitted as system resource identity");
+  }
+  bad=context; bad.transaction_uuid.bytes[15]^=1;
+  refused(bad,"catalog.resource.transaction_not_active");
+  bad=context; bad.local_transaction_id+=100;
+  refused(bad,"catalog.resource.transaction_not_active");
+  bad=context; bad.resource_epoch=0; refused(bad,"catalog.resource.epoch_required");
+  bad=context; ++bad.resource_epoch; refused(bad,"catalog.resource.epoch_stale");
+  const auto wrong_family=engine::LookupEngineResourceDescriptorByUuid(
+      context,image.collations.front().resource_uuid,"charset");
+  check(!wrong_family.ok && wrong_family.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+        wrong_family.diagnostic.message_key=="catalog.resource.family_mismatch" &&
+        wrong_family.diagnostic.canonical_metadata.has_value() &&
+        !wrong_family.resource_descriptor.present,"resource family mismatch was not refused");
+  const auto invalid_resource=[&](platform::Uuid id,const char* family,const char* key) {
+    const auto result=engine::LookupEngineResourceDescriptorByUuid(context,id,family);
+    check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+          result.diagnostic.message_key==key && result.diagnostic.canonical_metadata.has_value() &&
+          !result.resource_descriptor.present && result.resource_descriptor.resource_uuid.is_nil(),
+          "invalid resource identity/family published a descriptor");
+  };
+  invalid_resource({},"charset","catalog.resource.uuid_required");
+  invalid_resource(image.charsets.front().resource_uuid,"unknown","catalog.resource.family_invalid");
+  auto invalid_id=image.charsets.front().resource_uuid; invalid_id.bytes[8]&=0x3f;
+  invalid_resource(invalid_id,"charset","catalog.resource.uuid_invalid");
+  const auto unknown_id=uuid::GenerateEngineIdentityV7(UuidKind::object,Now());
+  Require(unknown_id.ok(),"absent resource fixture identity generation failed");
+  const auto absent=engine::LookupEngineResourceDescriptorByUuid(context,unknown_id.value.value,"charset");
+  check(!absent.ok && absent.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
+        absent.diagnostic.canonical_metadata.has_value() && !absent.resource_descriptor.present,
+        "absent resource used a name fallback or unregistered diagnostic");
+  bad=context; bad.database_path=(path.parent_path()/"missing.sbdb").string();
+  const auto missing=lookup(bad);
+  auto missing_config=open; missing_config.path=bad.database_path;
+  const auto native_missing=db::OpenDatabaseFile(missing_config);
+  check(!missing.ok && missing.diagnostic.native_source.has_value() && missing.diagnostic.canonical_metadata.has_value() &&
+        !native_missing.ok() && missing.diagnostic.native_source->record.diagnostic_code==
+            native_missing.diagnostic.diagnostic_code &&
+        missing.diagnostic.native_source->record.message_key==native_missing.diagnostic.message_key &&
+        !missing.resource_descriptor.present,"native storage failure cause was discarded");
+  const auto finalize=[&] {
+    const auto committed=mga::CommitLocalTransaction(inventory,{context.local_transaction_id},Now());
+    Require(committed.ok(),"resource admission actual transaction commit failed");
+    const auto persisted=db::PersistLocalTransactionInventoryToDatabase(path.string(),committed.inventory);
+    Require(persisted.ok(),"resource admission commit persistence failed");
+    inventory=persisted.inventory;
+    refused(context,"catalog.resource.transaction_not_active");
+  };
+  finalize();
+  begin(true);
+  check(lookup(context).ok,"read-only-active transaction could not admit resource");
+  check(engine::LookupEngineTimezoneSeedAuthority(context).ok,"read-only-active timezone admission failed");
+  finalize();
+  std::cout << "PASS actual resource engine admission checks=" << checks << '\n';
 }
 struct SavedPage { std::uint64_t number; std::uint32_t page_size; std::vector<platform::byte> body; };
 void WritePage(const fs::path& path,const SavedPage& page) {
@@ -148,8 +282,9 @@ int main(int argc,char** argv) {
         return 0;
       }
       const std::string_view mode=argv[1];
-      Require(mode=="--reopen" || mode=="--refuse-artifact" || mode=="--refuse-chain","unknown fixture mode");
+      Require(mode=="--reopen" || mode=="--admission" || mode=="--refuse-artifact" || mode=="--refuse-chain","unknown fixture mode");
       Require(!fs::exists(root/"initial-resource-pack"),"seed directory still present during reopen");
+      if(mode=="--admission") { ResourceAdmission(root/"content.sbdb"); return 0; }
       db::DatabaseOpenConfig config; config.path=(root/"content.sbdb").string();
       config.read_only=true; config.suppress_background_agents=true;
       const auto opened=db::OpenDatabaseFile(config);
@@ -216,6 +351,7 @@ int main(int argc,char** argv) {
     Require(std::system((program+" --create "+Quote(root.string())).c_str())==0,"create subprocess failed");
     fs::remove_all(copy);
     Require(std::system((program+" --reopen "+Quote(root.string())).c_str())==0,"independent reopen subprocess failed");
+    Require(std::system((program+" --admission "+Quote(root.string())).c_str())==0,"actual resource admission subprocess failed");
     for (const auto corruption:{Corruption::artifact,Corruption::cycle,Corruption::alias_identity,Corruption::alias_epoch}) {
       const auto original=Corrupt(root/"content.sbdb",corruption);
       const auto command=program+(corruption==Corruption::cycle ? " --refuse-chain " : " --refuse-artifact ")+Quote(root.string());

@@ -111,7 +111,7 @@ bool PrepareCanonicalSortOrderTerm(
       *detail =
           "sort character ordering lacks current engine collation authority: " +
           (resolved.diagnostic.code.empty()
-               ? std::string("CATALOG.RESOURCE.DESCRIPTOR_INVALID")
+               ? std::string("CATALOG.INVALID_INPUT")
                : resolved.diagnostic.code);
       return false;
     }

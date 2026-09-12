@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/resource_catalog_admission.hpp"
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
@@ -70,13 +71,6 @@ EngineResolveNameResult ResourceResolutionFailure(
                               std::move(detail)));
 }
 
-bool IsResourceReadableTransactionState(
-    scratchbird::transaction::mga::TransactionState state) {
-  using scratchbird::transaction::mga::TransactionState;
-  return state == TransactionState::active ||
-         state == TransactionState::read_only_active;
-}
-
 std::optional<EngineResolveNameResult> ResolveEngineResourceName(
     const EngineResolveNameRequest& request) {
   const std::string resource_class =
@@ -88,94 +82,16 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
       request.sql_object_reference.object_name.raw_text.empty()) {
     return ResourceResolutionFailure(
         request,
-        "CATALOG.RESOURCE.NAME_INVALID",
+        "CATALOG.INVALID_INPUT",
         "catalog.resource.name_invalid",
         "resource_names_must_be_unqualified_and_nonempty");
   }
-  if (request.context.database_path.empty()) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.DATABASE_REQUIRED",
-        "catalog.resource.database_required",
-        "database_path_required");
+  auto admission = OpenEngineResourceCatalog(request.context);
+  if (!admission.ok()) {
+    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+        request.context, "catalog.resolve_name", std::move(admission.diagnostic));
   }
-  if (request.context.local_transaction_id == 0 ||
-      request.context.transaction_uuid.is_nil()) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.TRANSACTION_REQUIRED",
-        "catalog.resource.transaction_required",
-        "exact_active_transaction_identity_required");
-  }
-
-  scratchbird::storage::database::DatabaseOpenConfig open_config;
-  open_config.path = request.context.database_path;
-  open_config.read_only = true;
-  open_config.suppress_background_agents = true;
-  const auto opened =
-      scratchbird::storage::database::OpenDatabaseFile(open_config);
-  if (!opened.ok()) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.CATALOG_UNAVAILABLE",
-        "catalog.resource.catalog_unavailable",
-        opened.diagnostic.diagnostic_code);
-  }
-  if (!opened.state.resource_seed_catalog_present ||
-      !opened.state.resource_seed_catalog.active) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.CATALOG_REQUIRED",
-        "catalog.resource.catalog_required",
-        "durable_resource_seed_catalog_required");
-  }
-
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.context.transaction_uuid)) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.TRANSACTION_INVALID",
-        "catalog.resource.transaction_invalid",
-        "transaction_uuid_malformed");
-  }
-  const scratchbird::transaction::mga::TransactionInventoryEntry*
-      transaction_entry = nullptr;
-  for (const auto& entry : opened.state.local_transaction_inventory.entries) {
-    if (entry.identity.local_id.value == request.context.local_transaction_id) {
-      transaction_entry = &entry;
-      break;
-    }
-  }
-  if (transaction_entry == nullptr ||
-      transaction_entry->identity.transaction_uuid.value !=
-          request.context.transaction_uuid ||
-      !IsResourceReadableTransactionState(transaction_entry->state)) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
-        "catalog.resource.transaction_not_active",
-        "exact_active_transaction_identity_required");
-  }
-
-  if (!request.context.database_uuid.is_nil() &&
-      request.context.database_uuid !=
-          opened.state.database_uuid.value) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
-        "catalog.resource.database_identity_mismatch",
-        "database_uuid_does_not_match_catalog_authority");
-  }
-
-  const auto& image = opened.state.resource_seed_catalog;
-  if (request.context.resource_epoch != 0 &&
-      request.context.resource_epoch != image.resource_epoch) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.RESOURCE.EPOCH_STALE",
-        "catalog.resource.epoch_stale",
-        "requested=" + std::to_string(request.context.resource_epoch) +
-            ";current=" + std::to_string(image.resource_epoch));
-  }
+  const auto& image = admission.state->resource_seed_catalog;
 
   EngineResolvedResourceDescriptor descriptor;
   descriptor.present = true;
@@ -206,7 +122,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         return *ambiguity;
       return ResourceResolutionFailure(
           request,
-          "CATALOG.NAME.NOT_FOUND",
+          "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
           "message_vector.item_not_found_or_does_not_exist",
           "charset_not_found_or_not_visible");
     }
@@ -229,7 +145,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         return *ambiguity;
       return ResourceResolutionFailure(
           request,
-          "CATALOG.NAME.NOT_FOUND",
+          "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
           "message_vector.item_not_found_or_does_not_exist",
           "collation_not_found_or_not_visible");
     }
@@ -254,7 +170,7 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
        descriptor.parent_resource_uuid.is_nil())) {
     return ResourceResolutionFailure(
         request,
-        "CATALOG.RESOURCE.DESCRIPTOR_INVALID",
+        "CATALOG.INVALID_INPUT",
         "catalog.resource.descriptor_invalid",
         descriptor.canonical_name);
   }
@@ -672,321 +588,6 @@ EngineResolveNameResult MakeNameRegistryResolveResult(
 }
 
 }  // namespace
-
-EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
-    const EngineRequestContext& context,
-    const EngineUuid& resource_uuid,
-    const std::string& expected_resource_family) {
-  EngineResourceDescriptorLookupResult result;
-  auto fail = [&](std::string code,
-                  std::string message_key,
-                  std::string detail) {
-    result.diagnostic = MakeEngineApiDiagnostic(std::move(code),
-                                                std::move(message_key),
-                                                std::move(detail));
-    return result;
-  };
-
-  const std::string resource_family =
-      LowerResourceClass(expected_resource_family);
-  if (!IsEngineResourceClass(resource_family)) {
-    return fail("CATALOG.RESOURCE.FAMILY_INVALID",
-                "catalog.resource.family_invalid",
-                expected_resource_family);
-  }
-  if (resource_uuid.is_nil()) {
-    return fail("CATALOG.RESOURCE.UUID_REQUIRED",
-                "catalog.resource.uuid_required",
-                resource_family + "_uuid_required");
-  }
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(resource_uuid)) {
-    return fail("CATALOG.RESOURCE.UUID_INVALID",
-                "catalog.resource.uuid_invalid",
-                resource_family + "_uuid_malformed");
-  }
-
-  if (context.database_path.empty()) {
-    return fail("CATALOG.RESOURCE.DATABASE_REQUIRED",
-                "catalog.resource.database_required",
-                "database_path_required");
-  }
-  if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.is_nil()) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_REQUIRED",
-                "catalog.resource.transaction_required",
-                "exact_active_transaction_identity_required");
-  }
-
-  scratchbird::storage::database::DatabaseOpenConfig open_config;
-  open_config.path = context.database_path;
-  open_config.read_only = true;
-  open_config.suppress_background_agents = true;
-  const auto opened =
-      scratchbird::storage::database::OpenDatabaseFile(open_config);
-  if (!opened.ok()) {
-    return fail("CATALOG.RESOURCE.CATALOG_UNAVAILABLE",
-                "catalog.resource.catalog_unavailable",
-                opened.diagnostic.diagnostic_code);
-  }
-  if (!opened.state.resource_seed_catalog_present ||
-      !opened.state.resource_seed_catalog.active) {
-    return fail("CATALOG.RESOURCE.CATALOG_REQUIRED",
-                "catalog.resource.catalog_required",
-                "durable_resource_seed_catalog_required");
-  }
-
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid)) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
-                "catalog.resource.transaction_invalid",
-                "transaction_uuid_malformed");
-  }
-  const scratchbird::transaction::mga::TransactionInventoryEntry*
-      transaction_entry = nullptr;
-  for (const auto& entry : opened.state.local_transaction_inventory.entries) {
-    if (entry.identity.local_id.value == context.local_transaction_id) {
-      transaction_entry = &entry;
-      break;
-    }
-  }
-  if (transaction_entry == nullptr ||
-      transaction_entry->identity.transaction_uuid.value !=
-          context.transaction_uuid ||
-      !IsResourceReadableTransactionState(transaction_entry->state)) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
-                "catalog.resource.transaction_not_active",
-                "exact_active_transaction_identity_required");
-  }
-
-  if (!context.database_uuid.is_nil() &&
-      context.database_uuid !=
-          opened.state.database_uuid.value) {
-    return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
-                "catalog.resource.database_identity_mismatch",
-                "database_uuid_does_not_match_catalog_authority");
-  }
-
-  const auto& image = opened.state.resource_seed_catalog;
-  if (context.resource_epoch == 0) {
-    return fail("CATALOG.RESOURCE.EPOCH_REQUIRED",
-                "catalog.resource.epoch_required",
-                "exact_nonzero_resource_epoch_required");
-  }
-  if (context.resource_epoch != image.resource_epoch) {
-    return fail("CATALOG.RESOURCE.EPOCH_STALE",
-                "catalog.resource.epoch_stale",
-                "requested=" + std::to_string(context.resource_epoch) +
-                    ";current=" + std::to_string(image.resource_epoch));
-  }
-
-  EngineResolvedResourceDescriptor descriptor;
-  descriptor.present = true;
-  descriptor.resource_family = resource_family;
-  descriptor.seed_pack_name = image.seed_pack_name;
-  descriptor.seed_pack_version = image.seed_pack_version;
-  descriptor.resource_epoch = image.resource_epoch;
-  if (resource_family == "charset") {
-    const scratchbird::core::resources::ResourceSeedCharsetDescriptor*
-        matched = nullptr;
-    for (const auto& charset : image.charsets) {
-      if (charset.resource_uuid == resource_uuid) {
-        matched = &charset;
-        break;
-      }
-    }
-    if (matched == nullptr) {
-      for (const auto& collation : image.collations) {
-        if (collation.resource_uuid == resource_uuid) {
-          return fail("CATALOG.RESOURCE.FAMILY_MISMATCH",
-                      "catalog.resource.family_mismatch",
-                      "expected=charset;actual=collation");
-        }
-      }
-      return fail("CATALOG.RESOURCE.UUID_NOT_FOUND",
-                  "catalog.resource.uuid_not_found",
-                  scratchbird::core::uuid::UuidToString(resource_uuid));
-    }
-    descriptor.canonical_name = matched->canonical_name;
-    descriptor.resource_uuid = matched->resource_uuid;
-    descriptor.default_collation_uuid =
-        matched->default_collation_uuid;
-    descriptor.default_collation_name = matched->default_collation_name;
-    descriptor.family_epoch = matched->family_epoch;
-    descriptor.family_version = matched->family_version;
-    descriptor.min_bytes = matched->min_bytes;
-    descriptor.max_bytes = matched->max_bytes;
-    descriptor.variable_width = matched->variable_width;
-  } else {
-    const scratchbird::core::resources::ResourceSeedCollationDescriptor*
-        matched = nullptr;
-    for (const auto& collation : image.collations) {
-      if (collation.resource_uuid == resource_uuid) {
-        matched = &collation;
-        break;
-      }
-    }
-    if (matched == nullptr) {
-      for (const auto& charset : image.charsets) {
-        if (charset.resource_uuid == resource_uuid) {
-          return fail("CATALOG.RESOURCE.FAMILY_MISMATCH",
-                      "catalog.resource.family_mismatch",
-                      "expected=collation;actual=charset");
-        }
-      }
-      return fail("CATALOG.RESOURCE.UUID_NOT_FOUND",
-                  "catalog.resource.uuid_not_found",
-                  scratchbird::core::uuid::UuidToString(resource_uuid));
-    }
-    descriptor.canonical_name = matched->canonical_name;
-    descriptor.resource_uuid = matched->resource_uuid;
-    descriptor.parent_resource_uuid = matched->charset_uuid;
-    descriptor.parent_canonical_name = matched->charset_name;
-    descriptor.family_epoch = matched->family_epoch;
-    descriptor.family_version = matched->family_version;
-    descriptor.default_for_parent = matched->default_for_charset;
-    descriptor.case_insensitive = matched->case_insensitive;
-    descriptor.accent_insensitive = matched->accent_insensitive;
-  }
-
-  if (descriptor.resource_uuid.is_nil() ||
-      descriptor.resource_epoch == 0 || descriptor.family_epoch == 0 ||
-      descriptor.family_version.empty() ||
-      (resource_family == "charset" &&
-       (descriptor.min_bytes == 0 ||
-        descriptor.max_bytes < descriptor.min_bytes)) ||
-      (resource_family == "collation" &&
-       descriptor.parent_resource_uuid.is_nil())) {
-    return fail("CATALOG.RESOURCE.DESCRIPTOR_INVALID",
-                "catalog.resource.descriptor_invalid",
-                descriptor.canonical_name);
-  }
-
-  result.ok = true;
-  result.diagnostic =
-      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-  result.resource_descriptor = std::move(descriptor);
-  return result;
-}
-
-EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
-    const EngineRequestContext& context) {
-  EngineTimezoneSeedAuthorityLookupResult result;
-  auto fail = [&](std::string code,
-                  std::string message_key,
-                  std::string detail) {
-    result.diagnostic = MakeEngineApiDiagnostic(std::move(code),
-                                                std::move(message_key),
-                                                std::move(detail));
-    return result;
-  };
-  if (context.database_path.empty()) {
-    return fail("CATALOG.RESOURCE.DATABASE_REQUIRED",
-                "catalog.resource.database_required",
-                "database_path_required");
-  }
-  if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.is_nil()) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_REQUIRED",
-                "catalog.resource.transaction_required",
-                "exact_active_transaction_identity_required");
-  }
-
-  scratchbird::storage::database::DatabaseOpenConfig open_config;
-  open_config.path = context.database_path;
-  open_config.read_only = true;
-  open_config.suppress_background_agents = true;
-  const auto opened =
-      scratchbird::storage::database::OpenDatabaseFile(open_config);
-  if (!opened.ok()) {
-    return fail("CATALOG.RESOURCE.CATALOG_UNAVAILABLE",
-                "catalog.resource.catalog_unavailable",
-                opened.diagnostic.diagnostic_code);
-  }
-  if (!opened.state.resource_seed_catalog_present ||
-      !opened.state.resource_seed_catalog.active) {
-    return fail("CATALOG.RESOURCE.CATALOG_REQUIRED",
-                "catalog.resource.catalog_required",
-                "durable_resource_seed_catalog_required");
-  }
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid)) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
-                "catalog.resource.transaction_invalid",
-                "transaction_uuid_malformed");
-  }
-  const scratchbird::transaction::mga::TransactionInventoryEntry*
-      transaction_entry = nullptr;
-  for (const auto& entry : opened.state.local_transaction_inventory.entries) {
-    if (entry.identity.local_id.value == context.local_transaction_id) {
-      transaction_entry = &entry;
-      break;
-    }
-  }
-  if (transaction_entry == nullptr ||
-      transaction_entry->identity.transaction_uuid.value !=
-          context.transaction_uuid ||
-      !IsResourceReadableTransactionState(transaction_entry->state)) {
-    return fail("CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
-                "catalog.resource.transaction_not_active",
-                "exact_active_transaction_identity_required");
-  }
-  if (!context.database_uuid.is_nil() &&
-      context.database_uuid != opened.state.database_uuid.value) {
-    return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
-                "catalog.resource.database_identity_mismatch",
-                "database_uuid_does_not_match_catalog_authority");
-  }
-
-  const auto& image = opened.state.resource_seed_catalog;
-  if (context.resource_epoch == 0) {
-    return fail("CATALOG.RESOURCE.EPOCH_REQUIRED",
-                "catalog.resource.epoch_required",
-                "exact_nonzero_resource_epoch_required");
-  }
-  if (context.resource_epoch != image.resource_epoch) {
-    return fail("CATALOG.RESOURCE.EPOCH_STALE",
-                "catalog.resource.epoch_stale",
-                "requested=" + std::to_string(context.resource_epoch) +
-                    ";current=" + std::to_string(image.resource_epoch));
-  }
-
-  EngineTimezoneSeedAuthorityDescriptor authority;
-  authority.active = image.active;
-  authority.seed_pack_name = image.seed_pack_name;
-  authority.seed_pack_version = image.seed_pack_version;
-  authority.content_hash = image.timezone_content_hash;
-  authority.resource_epoch = image.resource_epoch;
-  authority.timezone_epoch = image.timezone_epoch;
-  authority.timezone_records = image.timezone_records;
-  authority.timezone_transition_records =
-      image.timezone_transition_records;
-  authority.timezone_leap_second_records =
-      image.timezone_leap_second_records;
-  for (const auto& alias : image.aliases) {
-    if (alias.family !=
-        scratchbird::core::resources::ResourceSeedFamily::timezone_tables) {
-      continue;
-    }
-    authority.timezone_names.push_back(alias.alias);
-    authority.timezone_names.push_back(alias.canonical_name);
-  }
-  std::sort(authority.timezone_names.begin(), authority.timezone_names.end());
-  authority.timezone_names.erase(
-      std::unique(authority.timezone_names.begin(),
-                  authority.timezone_names.end()),
-      authority.timezone_names.end());
-  if (!authority.active || authority.seed_pack_name.empty() ||
-      authority.seed_pack_version.empty() || authority.content_hash.empty() ||
-      authority.resource_epoch == 0 || authority.timezone_epoch == 0 ||
-      authority.timezone_records == 0 || authority.timezone_names.empty()) {
-    return fail("CATALOG.RESOURCE.TIMEZONE_AUTHORITY_INVALID",
-                "catalog.resource.timezone_authority_invalid",
-                "durable_timezone_seed_authority_incomplete");
-  }
-  result.ok = true;
-  result.diagnostic =
-      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-  result.authority = std::move(authority);
-  return result;
-}
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_NAME_RESOLUTION_API_BEHAVIOR
 EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& request) {
