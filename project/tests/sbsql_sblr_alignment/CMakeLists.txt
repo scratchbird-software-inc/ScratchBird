@@ -708,6 +708,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_full_statistics_binary_store PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_binary_join_search
+    ../optimizer/optimizer_planner_opch_join_gate.cpp
+    ../../src/engine/optimizer/join_planner_full.cpp
+    ../../src/engine/optimizer/cost_model.cpp)
+  target_compile_features(sbsql_sblr_alignment_binary_join_search PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_binary_join_search PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_binary_join_search PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_binary_join_search PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_binary_join_search PRIVATE sb_core_uuid sb_engine_plan_shapes)
+  add_test(NAME sbsql_sblr_alignment_binary_join_search
+    COMMAND sbsql_sblr_alignment_binary_join_search)
+  set_tests_properties(sbsql_sblr_alignment_binary_join_search PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_canonical_statistics_admission
     ../optimizer/qow_opt_005.cpp
     ../../src/engine/optimizer/optimizer_contract.cpp)

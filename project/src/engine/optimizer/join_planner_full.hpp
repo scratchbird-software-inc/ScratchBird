@@ -18,7 +18,7 @@ namespace scratchbird::engine::optimizer {
 
 // SEARCH_KEY: SB_OPTIMIZER_JOIN_GRAPH_ENUMERATOR
 struct JoinRelationNode {
-  std::string relation_uuid;
+  planner::CanonicalPlannerUuid relation_uuid;
   std::uint64_t estimated_rows = 0;
   std::uint64_t memory_profile_bytes = 0;
   bool order_preserving_required = false;
@@ -44,8 +44,8 @@ enum class JoinSemanticKind {
 };
 
 struct JoinPredicateEdge {
-  std::string left_relation_uuid;
-  std::string right_relation_uuid;
+  planner::CanonicalPlannerUuid left_relation_uuid;
+  planner::CanonicalPlannerUuid right_relation_uuid;
   std::string predicate_kind;
   JoinSemanticKind semantic_kind = JoinSemanticKind::kInner;
   // CROSS is represented as a semantic graph edge with no predicate.  Other
@@ -98,7 +98,7 @@ struct JoinSearchPolicy {
 
 struct JoinOrderPlan {
   bool ok = false;
-  std::vector<std::string> ordered_relation_uuids;
+  std::vector<planner::CanonicalPlannerUuid> ordered_relation_uuids;
   scratchbird::engine::planner::PhysicalAccessKind method = scratchbird::engine::planner::PhysicalAccessKind::kJoinNestedLoop;
   CostVector cost;
   std::uint64_t estimated_rows = 0;

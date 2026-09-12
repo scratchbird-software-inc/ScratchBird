@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
+#include <set>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -46,14 +48,6 @@ std::uint64_t SaturatingScale(std::uint64_t value, double factor) {
 
 void AddCost(CostVector* destination, const CostVector& source) {
   AccumulateCostVector(destination, source);
-}
-
-double CombinedSelectivity(const std::vector<JoinPredicateEdge>& predicates) {
-  long double value = 1.0L;
-  for (const auto& predicate : predicates) {
-    value *= static_cast<long double>(std::clamp(predicate.selectivity, 0.000001, 1.0));
-  }
-  return static_cast<double>(std::clamp(value, 0.000001L, 1.0L));
 }
 
 bool IsOuterJoin(JoinSemanticKind kind) {
@@ -154,17 +148,58 @@ std::vector<std::string> SemanticBarrierDiagnostics(const JoinGraph& graph) {
   return diagnostics;
 }
 
-std::optional<std::size_t> RelationIndex(const JoinGraph& graph, const std::string& relation_uuid) {
+std::optional<std::size_t> RelationIndex(const JoinGraph& graph, const planner::CanonicalPlannerUuid& relation_uuid) {
   for (std::size_t i = 0; i < graph.relations.size(); ++i) {
     if (graph.relations[i].relation_uuid == relation_uuid) return i;
   }
   return std::nullopt;
 }
 
+bool ValidPredicateShape(const JoinPredicateEdge& predicate) {
+  const bool cross = IsCrossJoin(predicate.semantic_kind);
+  return !((cross &&
+         (predicate.predicate_count != 0 || predicate.equality ||
+          predicate.predicate_kind != "join.cross" ||
+          predicate.selectivity != 1.0 || predicate.nullable ||
+          predicate.outer_join_sensitive || predicate.correlated ||
+          predicate.lateral || predicate.volatile_predicate)) ||
+        (!cross && predicate.predicate_count == 0));
+}
+
+// Graphs are public mutable values; validate at both construction and search.
+bool ValidJoinBindings(const JoinGraph& graph) {
+  std::set<planner::CanonicalPlannerUuid> identities;
+  for (const auto& relation : graph.relations) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation.relation_uuid) ||
+        !identities.insert(relation.relation_uuid).second) return false;
+  }
+  for (const auto& predicate : graph.predicates) {
+    if (!ValidPredicateShape(predicate) ||
+        !identities.contains(predicate.left_relation_uuid) ||
+        !identities.contains(predicate.right_relation_uuid) ||
+        predicate.left_relation_uuid == predicate.right_relation_uuid ||
+        !std::isfinite(predicate.selectivity) || predicate.selectivity < 0.0 ||
+        predicate.selectivity > 1.0) return false;
+    switch (predicate.semantic_kind) {
+      case JoinSemanticKind::kInner:
+      case JoinSemanticKind::kLeftOuter:
+      case JoinSemanticKind::kRightOuter:
+      case JoinSemanticKind::kFullOuter:
+      case JoinSemanticKind::kSemi:
+      case JoinSemanticKind::kAnti:
+      case JoinSemanticKind::kCross: break;
+      default: return false;
+    }
+  }
+  return true;
+}
+
 struct IndexedEdge {
   std::uint64_t left_mask = 0;
   std::uint64_t right_mask = 0;
   const JoinPredicateEdge* edge = nullptr;
+  std::size_t left_index = 0;
+  std::size_t right_index = 0;
 };
 
 std::vector<IndexedEdge> BuildIndexedEdges(const JoinGraph& graph) {
@@ -173,7 +208,9 @@ std::vector<IndexedEdge> BuildIndexedEdges(const JoinGraph& graph) {
     const auto left = RelationIndex(graph, predicate.left_relation_uuid);
     const auto right = RelationIndex(graph, predicate.right_relation_uuid);
     if (!left || !right || *left == *right) continue;
-    indexed.push_back({std::uint64_t{1} << *left, std::uint64_t{1} << *right, &predicate});
+    indexed.push_back({*left < 64 ? std::uint64_t{1} << *left : 0,
+                       *right < 64 ? std::uint64_t{1} << *right : 0,
+                       &predicate, *left, *right});
   }
   return indexed;
 }
@@ -205,6 +242,39 @@ double SelectivityBetween(const std::vector<IndexedEdge>& edges, std::uint64_t l
   }
   if (!found) return 1.0;
   return static_cast<double>(std::clamp(value, 0.000001L, 1.0L));
+}
+
+// Linear/greedy searches use relation positions, not a fixed-width DP mask.
+struct JoiningEdges {
+  bool connected = false;
+  bool equality = false;
+  double selectivity = 1.0;
+};
+
+JoiningEdges EdgesForNextRelation(const std::vector<IndexedEdge>& edges,
+                                  const std::vector<std::size_t>& previous,
+                                  std::size_t next) {
+  JoiningEdges result;
+  long double selectivity = 1.0L;
+  for (const auto& edge : edges) {
+    const auto other = edge.left_index == next ? edge.right_index :
+                       edge.right_index == next ? edge.left_index :
+                       std::numeric_limits<std::size_t>::max();
+    if (std::find(previous.begin(), previous.end(), other) == previous.end()) continue;
+    result.connected = true;
+    result.equality = result.equality || edge.edge->equality;
+    selectivity *= edge.edge->selectivity;
+  }
+  result.selectivity = static_cast<double>(selectivity);
+  return result;
+}
+
+bool InputsOrdered(const JoinGraph& graph, const std::vector<std::size_t>& previous,
+                   std::size_t next) {
+  return graph.relations[next].order_preserving_required &&
+         std::all_of(previous.begin(), previous.end(), [&](std::size_t index) {
+           return graph.relations[index].order_preserving_required;
+         });
 }
 
 bool InputsOrdered(const JoinGraph& graph, std::uint64_t mask) {
@@ -450,14 +520,14 @@ void AddToFrontier(const JoinGraph& graph,
   plan->max_frontier_width = std::max(plan->max_frontier_width, frontier->size());
 }
 
-std::vector<std::string> OrderUuidsForState(const JoinGraph& graph, const DpState& state) {
-  std::vector<std::string> order;
+std::vector<planner::CanonicalPlannerUuid> OrderUuidsForState(const JoinGraph& graph, const DpState& state) {
+  std::vector<planner::CanonicalPlannerUuid> order;
   for (const auto index : state.order) order.push_back(graph.relations[index].relation_uuid);
   return order;
 }
 
-std::vector<std::string> InputOrderUuids(const JoinGraph& graph) {
-  std::vector<std::string> order;
+std::vector<planner::CanonicalPlannerUuid> InputOrderUuids(const JoinGraph& graph) {
+  std::vector<planner::CanonicalPlannerUuid> order;
   for (const auto& relation : graph.relations) order.push_back(relation.relation_uuid);
   return order;
 }
@@ -468,7 +538,6 @@ DpState CostInputOrder(const JoinGraph& graph,
   DpState state;
   if (graph.relations.empty()) return state;
   state.present = true;
-  state.mask = 1;
   state.estimated_rows = std::max<std::uint64_t>(1, graph.relations.front().estimated_rows);
   state.memory_profile_kib = BytesToKib(graph.relations.front().memory_profile_bytes);
   state.order.push_back(0);
@@ -482,27 +551,22 @@ DpState CostInputOrder(const JoinGraph& graph,
                                 graph.relations.front().lateral_dependency;
   RefreshPropertySignature(&state);
   for (std::size_t i = 1; i < graph.relations.size(); ++i) {
-    const auto next_mask = std::uint64_t{1} << i;
-    const auto current_mask = state.mask;
-    const auto selectivity = HasConnectingEdge(edges, current_mask, next_mask)
-                                 ? SelectivityBetween(edges, current_mask, next_mask)
-                                 : CombinedSelectivity(graph.predicates);
+    const auto joining = EdgesForNextRelation(edges, state.order, i);
     const auto method = BestJoinMethodCost(state.estimated_rows,
                                            std::max<std::uint64_t>(1, graph.relations[i].estimated_rows),
-                                           HasEqualityEdge(edges, current_mask, next_mask),
-                                           InputsOrdered(graph, current_mask | next_mask),
+                                           joining.equality,
+                                           InputsOrdered(graph, state.order, i),
                                            memory_budget_bytes,
-                                           selectivity);
+                                           joining.selectivity);
     AddCost(&state.cost, method.cost);
     state.method = method.method;
     state.estimated_rows = EstimatedJoinRows(state.estimated_rows,
                                              std::max<std::uint64_t>(1, graph.relations[i].estimated_rows),
-                                             selectivity);
+                                             joining.selectivity);
     state.memory_profile_kib = SaturatingAdd(
         SaturatingAdd(state.memory_profile_kib,
                       BytesToKib(graph.relations[i].memory_profile_bytes)),
         method.cost.memory_cost);
-    state.mask |= next_mask;
     state.order.push_back(i);
     state.ordered_output = state.ordered_output &&
                            graph.relations[i].order_preserving_required;
@@ -536,6 +600,16 @@ JoinGraph BuildJoinGraph(std::vector<JoinRelationNode> relations,
   JoinGraph graph;
   graph.relations = std::move(relations);
   graph.predicates = std::move(predicates);
+  if (!ValidJoinBindings(graph)) {
+    graph.valid = false;
+    const bool malformed_predicate = std::any_of(
+        graph.predicates.begin(), graph.predicates.end(),
+        [](const auto& predicate) { return !ValidPredicateShape(predicate); });
+    graph.refusal_diagnostic = malformed_predicate
+        ? "SB_OPT_JOIN_CROSS_SEMANTIC_PREDICATE_INVALID"
+        : "SB_OPT_JOIN_GRAPH_INVALID";
+    return graph;
+  }
   graph.contains_outer_join = contains_outer_join;
   graph.contains_semi_or_anti = contains_semi_or_anti;
   for (const auto& relation : graph.relations) {
@@ -546,18 +620,6 @@ JoinGraph BuildJoinGraph(std::vector<JoinRelationNode> relations,
   }
   for (const auto& predicate : graph.predicates) {
     const bool cross = IsCrossJoin(predicate.semantic_kind);
-    if ((cross &&
-         (predicate.predicate_count != 0 || predicate.equality ||
-          predicate.predicate_kind != "join.cross" ||
-          predicate.selectivity != 1.0 || predicate.nullable ||
-          predicate.outer_join_sensitive || predicate.correlated ||
-          predicate.lateral || predicate.volatile_predicate)) ||
-        (!cross && predicate.predicate_count == 0)) {
-      graph.valid = false;
-      graph.refusal_diagnostic =
-          "SB_OPT_JOIN_CROSS_SEMANTIC_PREDICATE_INVALID";
-      return graph;
-    }
     if (cross) {
       graph.contains_cross_join = true;
       graph.contains_explicit_barrier = true;
@@ -575,7 +637,7 @@ JoinGraph BuildJoinGraph(std::vector<JoinRelationNode> relations,
 }
 
 bool JoinReorderAllowed(const JoinGraph& graph) {
-  return graph.valid && SemanticBarrierDiagnostics(graph).empty();
+  return graph.valid && ValidJoinBindings(graph) && SemanticBarrierDiagnostics(graph).empty();
 }
 
 CostVector CostNestedLoopJoin(std::uint64_t outer_rows, std::uint64_t inner_rows, double selectivity) {
@@ -640,7 +702,7 @@ JoinOrderPlan PlanFromState(const JoinGraph& graph,
   plan.requested_strategy = requested;
   plan.selected_strategy = selected;
   plan.ok = state.present;
-  plan.ordered_relation_uuids = state.present ? OrderUuidsForState(graph, state) : std::vector<std::string>{};
+  plan.ordered_relation_uuids = state.present ? OrderUuidsForState(graph, state) : std::vector<planner::CanonicalPlannerUuid>{};
   plan.method = state.method;
   plan.cost = state.cost;
   plan.estimated_rows = state.estimated_rows;
@@ -690,35 +752,33 @@ JoinOrderPlan GreedyJoinOrderPlan(const JoinGraph& graph,
   }
   used[start] = true;
   order.push_back(start);
-  std::uint64_t current_mask = std::uint64_t{1} << start;
   while (order.size() < graph.relations.size()) {
     std::size_t best = graph.relations.size();
     double best_selectivity = 2.0;
+    bool best_connected = false;
     for (std::size_t i = 0; i < graph.relations.size(); ++i) {
       if (used[i]) continue;
-      const auto next_mask = std::uint64_t{1} << i;
-      const bool connected = HasConnectingEdge(indexed_edges, current_mask, next_mask);
-      const double selectivity = connected ? SelectivityBetween(indexed_edges, current_mask, next_mask) : 1.0;
-      if (best == graph.relations.size() ||
-          connected > HasConnectingEdge(indexed_edges, current_mask, std::uint64_t{1} << best) ||
-          selectivity < best_selectivity ||
-          (selectivity == best_selectivity &&
-           graph.relations[i].estimated_rows < graph.relations[best].estimated_rows) ||
-          (selectivity == best_selectivity &&
-           graph.relations[i].estimated_rows == graph.relations[best].estimated_rows &&
-           graph.relations[i].relation_uuid < graph.relations[best].relation_uuid)) {
+      const auto joining = EdgesForNextRelation(indexed_edges, order, i);
+      const bool connected = joining.connected;
+      const double selectivity = joining.selectivity;
+      if (best == graph.relations.size() || connected > best_connected ||
+          (connected == best_connected &&
+           (selectivity < best_selectivity ||
+            (selectivity == best_selectivity &&
+             (graph.relations[i].estimated_rows < graph.relations[best].estimated_rows ||
+              (graph.relations[i].estimated_rows == graph.relations[best].estimated_rows &&
+               graph.relations[i].relation_uuid < graph.relations[best].relation_uuid)))))) {
+        best_connected = connected;
         best = i;
         best_selectivity = selectivity;
       }
     }
     used[best] = true;
     order.push_back(best);
-    current_mask |= std::uint64_t{1} << best;
   }
 
   DpState state;
   state.present = true;
-  state.mask = std::uint64_t{1} << order.front();
   state.estimated_rows = std::max<std::uint64_t>(1, graph.relations[order.front()].estimated_rows);
   state.memory_profile_kib = BytesToKib(graph.relations[order.front()].memory_profile_bytes);
   state.order.push_back(order.front());
@@ -733,26 +793,22 @@ JoinOrderPlan GreedyJoinOrderPlan(const JoinGraph& graph,
   RefreshPropertySignature(&state);
   for (std::size_t position = 1; position < order.size(); ++position) {
     const auto index = order[position];
-    const auto next_mask = std::uint64_t{1} << index;
-    const auto selectivity = HasConnectingEdge(indexed_edges, state.mask, next_mask)
-                                 ? SelectivityBetween(indexed_edges, state.mask, next_mask)
-                                 : CombinedSelectivity(graph.predicates);
+    const auto joining = EdgesForNextRelation(indexed_edges, state.order, index);
     const auto method = BestJoinMethodCost(state.estimated_rows,
                                            std::max<std::uint64_t>(1, graph.relations[index].estimated_rows),
-                                           HasEqualityEdge(indexed_edges, state.mask, next_mask),
-                                           InputsOrdered(graph, state.mask | next_mask),
+                                           joining.equality,
+                                           InputsOrdered(graph, state.order, index),
                                            policy.memory_budget_bytes,
-                                           selectivity);
+                                           joining.selectivity);
     AddCost(&state.cost, method.cost);
     state.method = method.method;
     state.estimated_rows = EstimatedJoinRows(state.estimated_rows,
                                              std::max<std::uint64_t>(1, graph.relations[index].estimated_rows),
-                                             selectivity);
+                                             joining.selectivity);
     state.memory_profile_kib = SaturatingAdd(
         SaturatingAdd(state.memory_profile_kib,
                       BytesToKib(graph.relations[index].memory_profile_bytes)),
         method.cost.memory_cost);
-    state.mask |= next_mask;
     state.order.push_back(index);
     state.ordered_output = state.ordered_output &&
                            graph.relations[index].order_preserving_required;
@@ -823,9 +879,7 @@ JoinOrderPlan EnumerateDpJoinOrder(const JoinGraph& graph, const JoinSearchPolic
     plan = GreedyJoinOrderPlan(graph,
                                indexed_edges,
                                policy,
-                               policy.strategy == JoinSearchStrategy::kExhaustiveDp
-                                   ? JoinSearchStrategy::kHeuristicGreedy
-                                   : JoinSearchStrategy::kInputOrder);
+                               JoinSearchStrategy::kHeuristicGreedy);
     plan.pruning_applied = true;
     plan.pruned_alternatives = 1;
     plan.fallback_reason = "SB_OPT_JOIN_DP_RELATION_LIMIT_FALLBACK";
@@ -1000,7 +1054,7 @@ JoinOrderPlan EnumerateDpJoinOrder(const JoinGraph& graph, const JoinSearchPolic
 }  // namespace
 
 JoinOrderPlan EnumerateJoinOrderWithPolicy(const JoinGraph& graph, const JoinSearchPolicy& policy) {
-  if (!graph.valid) {
+  if (!graph.valid || !ValidJoinBindings(graph)) {
     JoinOrderPlan refused;
     refused.requested_strategy = policy.strategy;
     refused.selected_strategy = JoinSearchStrategy::kInputOrder;

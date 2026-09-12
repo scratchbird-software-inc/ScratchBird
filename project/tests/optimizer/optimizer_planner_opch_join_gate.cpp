@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "join_planner_full.hpp"
+#include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
+#include <limits>
+#include <type_traits>
 
 #include <algorithm>
 #include <cstdlib>
@@ -19,7 +22,13 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+using scratchbird::tests::BinaryUuid;
+std::size_t checks = 0;
+static_assert(sizeof(plan::CanonicalPlannerUuid) == 16);
+static_assert(std::is_same_v<decltype(opt::JoinRelationNode::relation_uuid), plan::CanonicalPlannerUuid>);
+
 bool Require(bool condition, const std::string& message) {
+  ++checks;
   if (!condition) {
     std::cerr << "OPCH join gate failure: " << message << '\n';
     return false;
@@ -31,8 +40,8 @@ bool Contains(const std::vector<std::string>& values, const std::string& expecte
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
-opt::JoinPredicateEdge Edge(std::string left,
-                            std::string right,
+opt::JoinPredicateEdge Edge(plan::CanonicalPlannerUuid left,
+                            plan::CanonicalPlannerUuid right,
                             double selectivity = 0.1,
                             bool equality = true) {
   opt::JoinPredicateEdge edge;
@@ -45,7 +54,7 @@ opt::JoinPredicateEdge Edge(std::string left,
   return edge;
 }
 
-opt::JoinRelationNode Relation(std::string uuid,
+opt::JoinRelationNode Relation(plan::CanonicalPlannerUuid uuid,
                                std::uint64_t rows,
                                bool ordered = false,
                                bool covering = false,
@@ -66,12 +75,12 @@ opt::JoinRelationNode Relation(std::string uuid,
 bool RetainsPropertyFrontierAlternatives() {
   // SEARCH_KEY: OPCH_JOIN_MEMO_FRONTIER_PROPERTY_RETENTION
   auto graph = opt::BuildJoinGraph(
-      {Relation("rel.big", 100000, false, true),
-       Relation("rel.medium", 1000, false, true),
-       Relation("rel.small", 10, false, true)},
-      {Edge("rel.big", "rel.medium", 0.01),
-       Edge("rel.medium", "rel.small", 0.01),
-       Edge("rel.big", "rel.small", 0.25)},
+      {Relation(BinaryUuid("018fa120-0000-7000-8000-000000000001"), 100000, false, true),
+       Relation(BinaryUuid("018fa120-0000-7000-8000-000000000002"), 1000, false, true),
+       Relation(BinaryUuid("018fa120-0000-7000-8000-000000000003"), 10, false, true)},
+      {Edge(BinaryUuid("018fa120-0000-7000-8000-000000000001"), BinaryUuid("018fa120-0000-7000-8000-000000000002"), 0.01),
+       Edge(BinaryUuid("018fa120-0000-7000-8000-000000000002"), BinaryUuid("018fa120-0000-7000-8000-000000000003"), 0.01),
+       Edge(BinaryUuid("018fa120-0000-7000-8000-000000000001"), BinaryUuid("018fa120-0000-7000-8000-000000000003"), 0.25)},
       false,
       false);
 
@@ -98,8 +107,8 @@ bool RetainsPropertyFrontierAlternatives() {
 bool SupportsMultipleStrategiesAndTelemetry() {
   // SEARCH_KEY: OPCH_MULTIPLE_JOIN_STRATEGIES_TELEMETRY
   auto graph = opt::BuildJoinGraph(
-      {Relation("rel.a", 50), Relation("rel.b", 20), Relation("rel.c", 10)},
-      {Edge("rel.a", "rel.b"), Edge("rel.b", "rel.c")},
+      {Relation(BinaryUuid("018fa120-0000-7000-8000-000000000004"), 50), Relation(BinaryUuid("018fa120-0000-7000-8000-000000000005"), 20), Relation(BinaryUuid("018fa120-0000-7000-8000-000000000006"), 10)},
+      {Edge(BinaryUuid("018fa120-0000-7000-8000-000000000004"), BinaryUuid("018fa120-0000-7000-8000-000000000005")), Edge(BinaryUuid("018fa120-0000-7000-8000-000000000005"), BinaryUuid("018fa120-0000-7000-8000-000000000006"))},
       false,
       false);
 
@@ -134,9 +143,9 @@ bool SupportsMultipleStrategiesAndTelemetry() {
 bool PreservesSemanticBarriersAndLegalityDiagnostics() {
   // SEARCH_KEY: OPCH_JOIN_LEGALITY_BARRIER_PROPERTY_REGRESSION
   auto graph = opt::BuildJoinGraph(
-      {Relation("rel.left", 1000), Relation("rel.right", 100)},
+      {Relation(BinaryUuid("018fa120-0000-7000-8000-000000000007"), 1000), Relation(BinaryUuid("018fa120-0000-7000-8000-000000000008"), 100)},
       [&]() {
-        auto edge = Edge("rel.left", "rel.right");
+        auto edge = Edge(BinaryUuid("018fa120-0000-7000-8000-000000000007"), BinaryUuid("018fa120-0000-7000-8000-000000000008"));
         edge.semantic_kind = opt::JoinSemanticKind::kLeftOuter;
         edge.outer_join_sensitive = true;
         edge.nullable = true;
@@ -163,11 +172,120 @@ bool PreservesSemanticBarriersAndLegalityDiagnostics() {
                  "semantic barrier still allowed reordering");
 }
 
+bool WideJoinSearch() {
+  for (std::size_t count : {16u, 17u, 63u, 64u, 65u, 130u}) {
+    std::vector<opt::JoinRelationNode> relations;
+    std::vector<opt::JoinPredicateEdge> predicates;
+    std::vector<plan::CanonicalPlannerUuid> expected;
+    for (std::size_t i = 0; i != count; ++i) {
+      auto id = BinaryUuid("018fa120-0000-7000-8000-000000000000");
+      id.bytes[14] = static_cast<unsigned char>(i >> 8);
+      id.bytes[15] = static_cast<unsigned char>(i);
+      expected.push_back(id);
+      relations.push_back(Relation(id, count - i));
+      if (i) predicates.push_back(Edge(expected[i - 1], id, 1.0));
+    }
+    const auto graph = opt::BuildJoinGraph(relations, predicates, false, false);
+    for (auto strategy : {opt::JoinSearchStrategy::kInputOrder,
+                          opt::JoinSearchStrategy::kHeuristicGreedy,
+                          opt::JoinSearchStrategy::kHypergraphGreedy,
+                          opt::JoinSearchStrategy::kBoundedDp}) {
+      opt::JoinSearchPolicy policy;
+      policy.strategy = strategy;
+      policy.bounded_relation_limit = 8;
+      const auto result = opt::EnumerateJoinOrderWithPolicy(graph, policy);
+      auto wanted = expected;
+      if (strategy != opt::JoinSearchStrategy::kInputOrder)
+        std::reverse(wanted.begin(), wanted.end());
+      if (!Require(result.ok && result.ordered_relation_uuids == wanted,
+                   "wide search retains every exact occurrence in the expected order")) return false;
+      if (!Require(result.selected_strategy ==
+                      (strategy == opt::JoinSearchStrategy::kBoundedDp ?
+                       opt::JoinSearchStrategy::kHeuristicGreedy : strategy),
+                   "reported fallback strategy matches executed algorithm")) return false;
+    }
+  }
+  // A disconnected extension cannot reuse predicates internal to the prefix.
+  const auto a = BinaryUuid("018fa120-0000-7000-8000-000000000301");
+  const auto b = BinaryUuid("018fa120-0000-7000-8000-000000000302");
+  const auto c = BinaryUuid("018fa120-0000-7000-8000-000000000303");
+  const auto graph = opt::BuildJoinGraph({Relation(a, 100), Relation(b, 100), Relation(c, 10)},
+                                       {Edge(a, b, 0.5)}, false, false);
+  opt::JoinSearchPolicy policy;
+  policy.strategy = opt::JoinSearchStrategy::kInputOrder;
+  const auto result = opt::EnumerateJoinOrderWithPolicy(graph, policy);
+  return Require(result.ok && result.estimated_rows == 50000,
+                 "disconnected next relation has unit selectivity");
+}
+
+bool BinaryGraphAdmission() {
+  const auto left = BinaryUuid("018fa120-0000-7000-8000-000000000101");
+  const auto right = BinaryUuid("018fa120-0000-7000-8000-000000000202");
+  const auto graph = opt::BuildJoinGraph({Relation(left, 10), Relation(right, 20)},
+                                       {Edge(left, right)}, false, false);
+  opt::JoinSearchPolicy policy;
+  policy.strategy = opt::JoinSearchStrategy::kInputOrder;
+  for (unsigned bit = 0; bit != 128; ++bit) {
+    auto changed = graph;
+    auto id = left;
+    id.bytes[bit / 8] ^= 1u << (bit % 8);
+    changed.relations[0].relation_uuid = id;
+    changed.predicates[0].left_relation_uuid = id;
+    const bool valid = (id.bytes[6] >> 4) == 7 && (id.bytes[8] & 0xc0) == 0x80;
+    const auto result = opt::EnumerateJoinOrderWithPolicy(changed, policy);
+    if (!Require(result.ok == valid, "all 128 identity bits use binary admission")) return false;
+    if (valid && !Require(result.ordered_relation_uuids ==
+                             std::vector<plan::CanonicalPlannerUuid>{id, right},
+                         "plan retains exact binary identity bits")) return false;
+    changed.predicates[0].left_relation_uuid = left;
+    const auto dangling = opt::EnumerateJoinOrderWithPolicy(changed, policy);
+    if (!Require(!dangling.ok && dangling.ordered_relation_uuids.empty(),
+                 "changed relation cannot leave a silently dropped edge")) return false;
+  }
+  auto duplicate = graph;
+  duplicate.relations[1].relation_uuid = left;
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(duplicate, policy).ok &&
+                   !opt::JoinReorderAllowed(duplicate), "duplicate bindings refused")) return false;
+  auto nil = graph;
+  nil.relations[0].relation_uuid = {};
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(nil, policy).ok,
+               "nil is not a relation binding")) return false;
+  for (double value : {-1.0, 1.01, std::numeric_limits<double>::infinity(),
+                       std::numeric_limits<double>::quiet_NaN()}) {
+    auto invalid = graph;
+    invalid.predicates[0].selectivity = value;
+    if (!Require(!opt::EnumerateJoinOrderWithPolicy(invalid, policy).ok,
+                 "invalid fraction cannot reach cost conversion")) return false;
+  }
+  auto invalid_kind = graph;
+  invalid_kind.predicates[0].semantic_kind = static_cast<opt::JoinSemanticKind>(255);
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(invalid_kind, policy).ok,
+               "unknown semantics refused")) return false;
+  auto self_edge = graph;
+  self_edge.predicates[0].right_relation_uuid = left;
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(self_edge, policy).ok,
+               "same-occurrence edge is not a join edge")) return false;
+  auto malformed = graph;
+  malformed.predicates[0].predicate_count = 0;
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(malformed, policy).ok,
+               "mutable graph cannot bypass predicate shape validation")) return false;
+  malformed = graph;
+  malformed.predicates[0].semantic_kind = opt::JoinSemanticKind::kCross;
+  if (!Require(!opt::EnumerateJoinOrderWithPolicy(malformed, policy).ok,
+               "mutable cross edge cannot retain an equality predicate")) return false;
+  const auto invalid_construction = opt::BuildJoinGraph(
+      {Relation(left, 10)}, {Edge(left, right)}, false, false);
+  return Require(!invalid_construction.valid, "builder validates endpoint membership");
+}
+
 }  // namespace
 
 int main() {
   if (!RetainsPropertyFrontierAlternatives()) return EXIT_FAILURE;
   if (!SupportsMultipleStrategiesAndTelemetry()) return EXIT_FAILURE;
   if (!PreservesSemanticBarriersAndLegalityDiagnostics()) return EXIT_FAILURE;
+  if (!BinaryGraphAdmission()) return EXIT_FAILURE;
+  if (!WideJoinSearch()) return EXIT_FAILURE;
+  std::cout << checks << " binary join checks passed\n";
   return EXIT_SUCCESS;
 }
