@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <functional>
 #include <initializer_list>
 #include <limits>
@@ -2698,7 +2699,7 @@ bool IsBaseLogicalNode(const planner::LogicalPlanNode& node) {
          !IsUpperOperatorAccessKind(node.access_kind);
 }
 
-bool PlanHasBaseForObject(const planner::LogicalPlan& plan, const std::string& object_uuid) {
+bool PlanHasBaseForObject(const planner::LogicalPlan& plan, const planner::CanonicalPlannerUuid& object_uuid) {
   return std::any_of(plan.nodes.begin(), plan.nodes.end(), [&](const planner::LogicalPlanNode& node) {
     return IsBaseLogicalNode(node) &&
            std::find(node.required_object_uuids.begin(), node.required_object_uuids.end(), object_uuid) !=
@@ -2706,14 +2707,35 @@ bool PlanHasBaseForObject(const planner::LogicalPlan& plan, const std::string& o
   });
 }
 
-std::string RequiredObjectUuid(const planner::LogicalPlanNode& node) {
-  return node.required_object_uuids.empty() ? "local.default" : node.required_object_uuids.front();
+planner::CanonicalPlannerUuid RelationKeyForNode(const planner::LogicalPlanNode& node) {
+  if (node.required_object_uuids.size() == 1 &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(node.required_object_uuids.front()))
+    return node.required_object_uuids.front();
+  return {};
 }
 
-std::string RelationKeyForNode(const planner::LogicalPlanNode& node) {
-  if (!node.required_object_uuids.empty()) return node.required_object_uuids.front();
-  if (!node.operation_id.empty()) return node.operation_id;
-  return node.stable_name.empty() ? "local.default" : node.stable_name;
+OptimizerStatisticTarget RequiredStatisticTarget(const planner::LogicalPlanNode& node) {
+  if (node.required_object_uuids.empty()) return OptimizerStatisticTarget::LocalDefault();
+  // A multi-object node cannot choose an arbitrary first object's statistics.
+  // Invalid object targets are rejected by the catalog, not treated as defaults.
+  return OptimizerStatisticTarget::Object(RelationKeyForNode(node));
+}
+
+std::optional<std::uint64_t> KnownRowsForTarget(
+    const OptimizerStatisticsCatalog& statistics, const OptimizerStatisticTarget& target) {
+  if (const auto rows = statistics.TryEstimateUnsigned("visible_row_count", target)) return rows;
+  return statistics.TryEstimateUnsigned("row_count", target);
+}
+
+std::uint64_t EstimatedRowsForTarget(const OptimizerStatisticsCatalog& statistics,
+                                    const OptimizerStatisticTarget& target,
+                                    std::uint64_t fallback) {
+  if (!target.Valid()) return fallback;
+  if (const auto rows = KnownRowsForTarget(statistics, target)) return *rows;
+  if (target.kind != OptimizerStatisticTargetKind::kLocalDefault)
+    if (const auto rows = KnownRowsForTarget(statistics, OptimizerStatisticTarget::LocalDefault()))
+      return *rows;
+  return fallback;
 }
 
 std::string DescriptorDigestForNode(const planner::LogicalPlanNode& node) {
@@ -2728,12 +2750,7 @@ std::string DescriptorDigestForNode(const planner::LogicalPlanNode& node) {
 std::uint64_t EstimateRowsForNode(const OptimizerStatisticsCatalog& statistics,
                                   const planner::LogicalPlanNode& node,
                                   std::uint64_t fallback) {
-  const std::string object_uuid = RequiredObjectUuid(node);
-  auto rows = statistics.EstimateUnsigned("visible_row_count", object_uuid, 0);
-  if (rows == 0) rows = statistics.EstimateUnsigned("row_count", object_uuid, 0);
-  if (rows == 0) rows = statistics.EstimateUnsigned("visible_row_count", "local.default", 0);
-  if (rows == 0) rows = statistics.EstimateUnsigned("row_count", "local.default", 0);
-  return rows == 0 ? fallback : rows;
+  return EstimatedRowsForTarget(statistics, RequiredStatisticTarget(node), fallback);
 }
 
 void AddCost(CostVector* destination, const CostVector& source) {
@@ -2762,6 +2779,16 @@ void AppendOptimizerCandidate(OptimizedPlan* optimized,
                               std::string statistics_version) {
   OptimizerCandidate candidate;
   candidate.node = node;
+  const auto relation = RelationKeyForNode(node);
+  if (!relation.is_nil()) {
+    if (!plan_candidate.relation_uuid.is_nil() && plan_candidate.relation_uuid != relation) {
+      plan_candidate.cost.selectable = false;
+      plan_candidate.cost.confidence = CostConfidence::kRejected;
+      plan_candidate.cost.rejection_reason = "SB_OPT_PHYSICAL_TREE_RELATION_BINDING_MISMATCH";
+    } else {
+      plan_candidate.relation_uuid = relation;
+    }
+  }
   plan_candidate.selected = false;
   candidate.plan_candidate = std::move(plan_candidate);
   candidate.cost = candidate.plan_candidate.cost;
@@ -2772,7 +2799,12 @@ void AppendOptimizerCandidate(OptimizedPlan* optimized,
 }
 
 std::string StatisticsVersionForCandidate(const PlanCandidate& candidate) {
-  return candidate.uses_local_default_statistics ? "local.default:epoch1" : "catalog-scoped:epoch1";
+  if (candidate.statistic_inputs.empty()) return "statistics-unbound";
+  std::set<std::uint64_t> epochs;
+  for (const auto& statistic : candidate.statistic_inputs) epochs.insert(statistic.stats_epoch);
+  std::string result = "statistics-epochs";
+  for (const auto epoch : epochs) result += ":" + std::to_string(epoch);
+  return result;
 }
 
 bool HasAnyDescriptor(const planner::LogicalPlanNode& node, std::initializer_list<std::string_view> descriptors) {
@@ -2818,26 +2850,23 @@ JoinSemanticKind SemanticKindForJoinNode(const planner::LogicalPlanNode& node) {
 }
 
 std::uint64_t CardinalityForRelationUuid(const OptimizerStatisticsCatalog& statistics,
-                                         const std::string& relation_uuid) {
-  auto value = statistics.EstimateUnsigned("row_count", relation_uuid, 0);
-  if (value == 0) value = statistics.EstimateUnsigned("visible_row_count", relation_uuid, 0);
-  if (value == 0) value = statistics.EstimateUnsigned("row_count", "local.default", 0);
-  if (value == 0) value = statistics.EstimateUnsigned("visible_row_count", "local.default", 0);
-  return std::max<std::uint64_t>(1, value);
+                                         const planner::CanonicalPlannerUuid& relation_uuid) {
+  return EstimatedRowsForTarget(statistics, OptimizerStatisticTarget::Object(relation_uuid), 1000);
 }
 
-std::vector<std::string> JoinRelationKeysForNode(const planner::LogicalPlanNode& node) {
-  if (!node.required_object_uuids.empty()) return node.required_object_uuids;
-  return {"local.default", "local.default"};
+std::vector<planner::CanonicalPlannerUuid> JoinRelationKeysForNode(const planner::LogicalPlanNode& node) {
+  return node.required_object_uuids;
 }
 
 double JoinSelectivityForNode(const planner::LogicalPlanNode& node,
                               const OptimizerStatisticsCatalog& statistics) {
   if (SemanticKindForJoinNode(node) == JoinSemanticKind::kCross) return 1.0;
-  const auto statistic = statistics.Find("join_selectivity", node.operation_id);
-  if (statistic && statistic->available) return std::clamp(statistic->value, 0.000001, 1.0);
-  const auto fallback = statistics.Find("join_selectivity", "local.default");
-  if (fallback && fallback->available) return std::clamp(fallback->value, 0.000001, 1.0);
+  // An operation label is not an object identity or a statistics snapshot.
+  const auto fallback = statistics.Find("join_selectivity", OptimizerStatisticTarget::LocalDefault());
+  if (fallback && ValidateStatistic(*fallback, 60000000).ok &&
+      fallback->value_domain == OptimizerStatisticValueDomain::kNonNegative &&
+      std::isfinite(fallback->value) && fallback->value >= 0.0 && fallback->value <= 1.0)
+    return fallback->value;
   return HasDescriptor(node, "join.non_equi") ? 0.25 : 0.10;
 }
 
@@ -2901,24 +2930,24 @@ JoinGraph JoinGraphForNode(const planner::LogicalPlanNode& node,
 JoinPlanningInput JoinInputForNode(const planner::LogicalPlanNode& node,
                                   const OptimizerStatisticsCatalog& statistics) {
   JoinPlanningInput join_input;
-  const std::string left_uuid = node.required_object_uuids.empty()
-                                    ? "local.default"
-                                    : node.required_object_uuids.front();
-  const std::string right_uuid = node.required_object_uuids.size() < 2
-                                     ? "local.default"
-                                     : node.required_object_uuids[1];
-  join_input.left_cardinality = statistics.EstimateUnsigned("row_count", left_uuid, 0);
-  join_input.right_cardinality = statistics.EstimateUnsigned("row_count", right_uuid, 0);
+  const auto left_target = node.required_object_uuids.empty()
+      ? OptimizerStatisticTarget::Object({})
+      : OptimizerStatisticTarget::Object(node.required_object_uuids[0]);
+  const auto right_target = node.required_object_uuids.size() < 2
+      ? OptimizerStatisticTarget::Object({})
+      : OptimizerStatisticTarget::Object(node.required_object_uuids[1]);
+  const auto left_rows = KnownRowsForTarget(statistics, left_target);
+  const auto right_rows = KnownRowsForTarget(statistics, right_target);
+  join_input.left_cardinality = EstimatedRowsForTarget(statistics, left_target, 1000);
+  join_input.right_cardinality = EstimatedRowsForTarget(statistics, right_target, 1000);
   join_input.equi_join = !HasDescriptor(node, "join.non_equi");
   join_input.reorder_safe = !JoinNodeHasSemanticBarrier(node);
   join_input.ordered_inputs = node.access_kind == planner::PhysicalAccessKind::kJoinMerge ||
                               HasDescriptor(node, "join.inputs_ordered");
   join_input.memory_budget_bytes = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                               "local.default",
+                                                               OptimizerStatisticTarget::LocalDefault(),
                                                                1048576);
-  if (join_input.left_cardinality == 0 || join_input.right_cardinality == 0 ||
-      statistics.ConfidenceFor("row_count", left_uuid) == CostConfidence::kUnknown ||
-      statistics.ConfidenceFor("row_count", right_uuid) == CostConfidence::kUnknown) {
+  if (!left_rows || !right_rows) {
     join_input.reorder_safe = false;
     join_input.hash_join_executor_available = false;
     join_input.merge_join_executor_available = false;
@@ -2932,7 +2961,7 @@ void AppendJoinCandidates(OptimizedPlan* optimized,
   const auto decision = PlanLocalJoin(JoinInputForNode(node, statistics));
   const auto graph = JoinGraphForNode(node, statistics);
   const auto memory_budget = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                         "local.default",
+                                                         OptimizerStatisticTarget::LocalDefault(),
                                                          1048576);
   const auto order_plan = EnumerateDeterministicJoinOrder(graph, memory_budget);
   for (auto plan_candidate : decision.candidates) {
@@ -2945,7 +2974,7 @@ void AppendJoinCandidates(OptimizedPlan* optimized,
       plan_candidate.cost = order_plan.cost;
       plan_candidate.estimated_rows = order_plan.estimated_rows;
     }
-    AppendOptimizerCandidate(optimized, node, std::move(plan_candidate), "join-local:epoch1");
+    AppendOptimizerCandidate(optimized, node, std::move(plan_candidate), "statistics-unbound");
   }
   optimized->diagnostics.insert(optimized->diagnostics.end(),
                                 decision.diagnostics.begin(),
@@ -2957,19 +2986,20 @@ void AppendJoinCandidates(OptimizedPlan* optimized,
 
 void AppendRelationalCandidate(OptimizedPlan* optimized,
                                const planner::LogicalPlanNode& node,
-                               const OptimizerStatisticsCatalog& statistics) {
+                               const OptimizerStatisticsCatalog& statistics,
+                               const OrderedLimitPlanningRequest* requested_limit = nullptr) {
   const std::uint64_t input_rows = EstimateRowsForNode(statistics, node, 1000);
   const std::uint64_t row_width = statistics.EstimateUnsigned("average_row_bytes",
-                                                             RequiredObjectUuid(node),
+                                                             RequiredStatisticTarget(node),
                                                              64);
   const std::uint64_t memory_budget = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                                 "local.default",
+                                                                 OptimizerStatisticTarget::LocalDefault(),
                                                                  1048576);
   if (IsAggregateAccessKind(node.access_kind)) {
     AggregatePlanningInput input;
     input.input_rows = input_rows;
     input.group_count = statistics.EstimateUnsigned("group_count",
-                                                    RequiredObjectUuid(node),
+                                                    RequiredStatisticTarget(node),
                                                     std::max<std::uint64_t>(1, input_rows / 10));
     input.row_width_bytes = row_width;
     input.memory_budget_bytes = memory_budget;
@@ -2985,7 +3015,7 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                                ? std::max<std::uint64_t>(1, input.group_count)
                                                : 1);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "relational-upper:epoch1");
+    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
     return;
   }
 
@@ -2993,7 +3023,7 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
     WindowPlanningInput input;
     input.input_rows = input_rows;
     input.partition_count = statistics.EstimateUnsigned("window_partition_count",
-                                                        RequiredObjectUuid(node),
+                                                        RequiredStatisticTarget(node),
                                                         std::max<std::uint64_t>(1, input_rows / 100));
     input.input_ordered = HasDescriptor(node, "window.input_ordered");
     input.frame_requires_materialization = node.access_kind == planner::PhysicalAccessKind::kSortThenWindow ||
@@ -3004,7 +3034,7 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                            decision.cost,
                                            input_rows);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "relational-upper:epoch1");
+    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
     return;
   }
 
@@ -3016,10 +3046,11 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
     input.input_already_ordered = node.access_kind == planner::PhysicalAccessKind::kTopN ||
                                   HasDescriptor(node, "sort.input_ordered");
     input.limit_present = node.access_kind == planner::PhysicalAccessKind::kTopN ||
-                          HasDescriptor(node, "limit.present");
-    input.limit_count = statistics.EstimateUnsigned("limit_count",
-                                                   RequiredObjectUuid(node),
-                                                   10);
+                          HasDescriptor(node, "limit.present") ||
+                          (requested_limit && requested_limit->present);
+    input.limit_count = requested_limit && requested_limit->present
+        ? requested_limit->limit_count
+        : statistics.EstimateUnsigned("limit_count", RequiredStatisticTarget(node), 10);
     const auto decision = PlanSortLimit(input);
     auto candidate = MakeDecisionCandidate(node.access_kind == planner::PhysicalAccessKind::kTopN
                                                ? "CAND-ODF-017-LIMIT"
@@ -3029,7 +3060,7 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                            input.limit_present ? std::min(input.input_rows, input.limit_count)
                                                                : input.input_rows);
     candidate.statistics_diagnostics = decision.diagnostics;
-    AppendOptimizerCandidate(optimized, node, std::move(candidate), "relational-upper:epoch1");
+    AppendOptimizerCandidate(optimized, node, std::move(candidate), "statistics-unbound");
     return;
   }
 
@@ -3040,11 +3071,11 @@ void AppendRelationalCandidate(OptimizedPlan* optimized,
                                                  node.access_kind,
                                                  cost,
                                                  input_rows),
-                           "relational-upper:epoch1");
+                           "statistics-unbound");
 }
 
 struct LeafSelection {
-  std::string key;
+  planner::CanonicalPlannerUuid key;
   std::size_t candidate_index = 0;
   PhysicalPlanNode node;
 };
@@ -3060,11 +3091,7 @@ PhysicalPlanNode PhysicalNodeForCandidate(const OptimizerCandidate& candidate,
   node.runtime_evidence.push_back("logical_operation_id=" + candidate.node.operation_id);
   node.runtime_evidence.push_back("logical_stable_name=" + candidate.node.stable_name);
   node.runtime_evidence.push_back("statistics_version=" + candidate.statistics_version);
-  node.runtime_evidence.push_back("mga_visibility_authority=engine_transaction_inventory");
-  node.runtime_evidence.push_back("visibility_recheck_preserved=true");
-  if (!candidate.node.required_object_uuids.empty()) {
-    node.runtime_evidence.push_back("base_relation_uuid=" + candidate.node.required_object_uuids.front());
-  }
+
   return node;
 }
 
@@ -3075,7 +3102,13 @@ std::vector<LeafSelection> SelectBaseLeaves(OptimizedPlan* optimized) {
     if (!candidate.cost.selectable || !IsScanAccessKind(candidate.plan_candidate.access_kind)) continue;
     const auto key = RelationKeyForNode(candidate.node);
     auto existing = std::find_if(leaves.begin(), leaves.end(), [&](const LeafSelection& leaf) {
-      return leaf.key == key;
+      if (leaf.key != key) return false;
+      if (!key.is_nil()) return true;
+      // Source-free nodes have no relation binding. Do not conflate separate
+      // logical operators by treating absence as a shared object identity.
+      const auto& previous = optimized->candidates[leaf.candidate_index].node;
+      return previous.operation_id == candidate.node.operation_id &&
+             previous.stable_name == candidate.node.stable_name;
     });
     if (existing == leaves.end()) {
       LeafSelection leaf;
@@ -3092,14 +3125,13 @@ std::vector<LeafSelection> SelectBaseLeaves(OptimizedPlan* optimized) {
   for (auto& leaf : leaves) {
     auto& candidate = optimized->candidates[leaf.candidate_index];
     candidate.selected_in_physical_tree = true;
-    leaf.node = PhysicalNodeForCandidate(candidate, leaf.key);
+    leaf.node = PhysicalNodeForCandidate(candidate);
     leaf.node.runtime_evidence.push_back("physical_role=base_scan");
-    leaf.node.runtime_evidence.push_back("relation_key=" + leaf.key);
   }
   return leaves;
 }
 
-const LeafSelection* FindLeaf(const std::vector<LeafSelection>& leaves, const std::string& key) {
+const LeafSelection* FindLeaf(const std::vector<LeafSelection>& leaves, const planner::CanonicalPlannerUuid& key) {
   const auto found = std::find_if(leaves.begin(), leaves.end(), [&](const LeafSelection& leaf) {
     return leaf.key == key;
   });
@@ -3156,9 +3188,14 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
                      std::optional<PhysicalPlanNode>* current) {
   const auto graph = JoinGraphForNode(logical_node, statistics);
   const auto memory_budget = statistics.EstimateUnsigned("memory_grant_available_bytes",
-                                                         "local.default",
+                                                         OptimizerStatisticTarget::LocalDefault(),
                                                          1048576);
   const auto order_plan = EnumerateDeterministicJoinOrder(graph, memory_budget);
+  if (!order_plan.ok) {
+    optimized->diagnostics.insert(optimized->diagnostics.end(),
+        order_plan.diagnostics.begin(), order_plan.diagnostics.end());
+    return false;
+  }
   const auto candidate_index = FindBestJoinCandidateIndex(*optimized,
                                                          logical_node,
                                                          order_plan.ok ? order_plan.method
@@ -3179,7 +3216,7 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
   for (const auto& relation_uuid : ordered_relation_uuids) {
     const auto* leaf = FindLeaf(leaves, relation_uuid);
     if (leaf == nullptr) {
-      optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_JOIN_LEAF_MISSING:" + relation_uuid);
+      optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_JOIN_LEAF_MISSING");
       return false;
     }
     ordered_leaves.push_back(leaf);
@@ -3192,14 +3229,7 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
   auto& selected = optimized->candidates[*candidate_index];
   selected.selected_in_physical_tree = true;
   const bool reorder_safe = JoinReorderAllowed(graph);
-  const auto join_order = [&]() {
-    std::ostringstream out;
-    for (std::size_t i = 0; i < ordered_relation_uuids.size(); ++i) {
-      if (i != 0) out << ",";
-      out << ordered_relation_uuids[i];
-    }
-    return out.str();
-  }();
+
 
   auto build_join = [&](PhysicalPlanNode left,
                         PhysicalPlanNode right,
@@ -3214,7 +3244,7 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
     join.preserves_order = selected.plan_candidate.access_kind == planner::PhysicalAccessKind::kJoinMerge &&
                            join.children[0].preserves_order &&
                            join.children[1].preserves_order;
-    if (step == total_steps && order_plan.estimated_rows != 0) {
+    if (step == total_steps && order_plan.ok) {
       join.estimated_rows = order_plan.estimated_rows;
     }
     AddCost(&join.cost, join.children[0].cost);
@@ -3222,7 +3252,7 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
     join.runtime_evidence.push_back("physical_role=join");
     join.runtime_evidence.push_back(std::string("join_method=") +
                                     planner::PhysicalAccessKindName(selected.plan_candidate.access_kind));
-    join.runtime_evidence.push_back("join_order=" + join_order);
+    join.ordered_relation_uuids = ordered_relation_uuids;
     join.runtime_evidence.push_back(std::string("join_reorder_safe=") + (reorder_safe ? "true" : "false"));
     join.runtime_evidence.push_back(std::string("join_order_strategy=") +
                                     (order_plan.semantic_order_preserved ? "semantic_input_order" : "bounded_dp"));
@@ -3256,14 +3286,17 @@ bool ComposeJoinNode(OptimizedPlan* optimized,
 void AdjustUpperEstimatedRows(PhysicalPlanNode* node,
                               const PhysicalPlanNode& child,
                               const OptimizerStatisticsCatalog& statistics,
-                              const planner::LogicalPlanNode& logical_node) {
+                              const planner::LogicalPlanNode& logical_node,
+                              const OrderedLimitPlanningRequest* requested_limit) {
   if (IsAggregateAccessKind(node->access_kind)) {
     node->estimated_rows = statistics.EstimateUnsigned("group_count",
-                                                       RequiredObjectUuid(logical_node),
+                                                       RequiredStatisticTarget(logical_node),
                                                        std::max<std::uint64_t>(1, child.estimated_rows / 10));
   } else if (node->access_kind == planner::PhysicalAccessKind::kTopN) {
-    const auto limit = statistics.EstimateUnsigned("limit_count", RequiredObjectUuid(logical_node), 10);
-    node->estimated_rows = std::min(child.estimated_rows, std::max<std::uint64_t>(1, limit));
+    const auto limit = requested_limit && requested_limit->present
+        ? requested_limit->limit_count
+        : statistics.EstimateUnsigned("limit_count", RequiredStatisticTarget(logical_node), 10);
+    node->estimated_rows = std::min(child.estimated_rows, limit);
   } else {
     node->estimated_rows = child.estimated_rows;
   }
@@ -3272,7 +3305,8 @@ void AdjustUpperEstimatedRows(PhysicalPlanNode* node,
 bool ComposeUpperNode(OptimizedPlan* optimized,
                       const planner::LogicalPlanNode& logical_node,
                       const OptimizerStatisticsCatalog& statistics,
-                      std::optional<PhysicalPlanNode>* current) {
+                      std::optional<PhysicalPlanNode>* current,
+                      const OrderedLimitPlanningRequest* requested_limit) {
   if (!current->has_value()) {
     optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_UPPER_INPUT_MISSING");
     return false;
@@ -3286,7 +3320,7 @@ bool ComposeUpperNode(OptimizedPlan* optimized,
   selected.selected_in_physical_tree = true;
   auto child = std::move(**current);
   auto upper = PhysicalNodeForCandidate(selected, logical_node.operation_id);
-  AdjustUpperEstimatedRows(&upper, child, statistics, logical_node);
+  AdjustUpperEstimatedRows(&upper, child, statistics, logical_node, requested_limit);
   AddCost(&upper.cost, child.cost);
   upper.storage_backed = false;
   upper.preserves_visibility = child.preserves_visibility;
@@ -3307,17 +3341,15 @@ bool ComposeSetOperationNode(OptimizedPlan* optimized,
                              const planner::LogicalPlanNode& logical_node,
                              const std::vector<LeafSelection>& leaves,
                              std::optional<PhysicalPlanNode>* current) {
-  std::vector<std::string> ordered_relation_uuids = logical_node.required_object_uuids;
-  if (ordered_relation_uuids.empty()) {
-    ordered_relation_uuids.reserve(leaves.size());
-    for (const auto& leaf : leaves) ordered_relation_uuids.push_back(leaf.key);
-  }
   std::vector<const LeafSelection*> ordered_leaves;
-  ordered_leaves.reserve(ordered_relation_uuids.size());
-  for (const auto& relation_uuid : ordered_relation_uuids) {
+  if (logical_node.required_object_uuids.empty()) {
+    ordered_leaves.reserve(leaves.size());
+    for (const auto& leaf : leaves) ordered_leaves.push_back(&leaf);
+  }
+  for (const auto& relation_uuid : logical_node.required_object_uuids) {
     const auto* leaf = FindLeaf(leaves, relation_uuid);
     if (leaf == nullptr) {
-      optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_SET_OPERATION_LEAF_MISSING:" + relation_uuid);
+      optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_SET_OPERATION_LEAF_MISSING");
       return false;
     }
     ordered_leaves.push_back(leaf);
@@ -3373,7 +3405,8 @@ void MarkPrimaryFlatSelection(OptimizedPlan* optimized,
 
 void BuildPhysicalPlanTree(OptimizedPlan* optimized,
                            const planner::LogicalPlan& plan,
-                           const OptimizerStatisticsCatalog& statistics) {
+                           const OptimizerStatisticsCatalog& statistics,
+                           const OrderedLimitPlanningRequest* requested_limit = nullptr) {
   for (auto& candidate : optimized->candidates) {
     candidate.selected = false;
     candidate.selected_in_physical_tree = false;
@@ -3398,7 +3431,7 @@ void BuildPhysicalPlanTree(OptimizedPlan* optimized,
     }
     if (best) {
       optimized->candidates[*best].selected_in_physical_tree = true;
-      current = PhysicalNodeForCandidate(optimized->candidates[*best], RelationKeyForNode(optimized->candidates[*best].node));
+      current = PhysicalNodeForCandidate(optimized->candidates[*best]);
     }
   }
 
@@ -3413,7 +3446,7 @@ void BuildPhysicalPlanTree(OptimizedPlan* optimized,
     }
     if (IsUpperOperatorAccessKind(node.access_kind)) {
       if (leaves.size() == 1 && !current.has_value()) current = leaves.front().node;
-      if (!ComposeUpperNode(optimized, node, statistics, &current)) return;
+      if (!ComposeUpperNode(optimized, node, statistics, &current, requested_limit)) return;
       continue;
     }
   }
@@ -3490,7 +3523,7 @@ OptimizedPlan OptimizeLogicalPlanWithStatistics(const planner::LogicalPlan& plan
 
   for (const auto& node : plan.nodes) {
     if (IsJoinAccessKind(node.access_kind)) {
-      const auto append_join_operand = [&](const std::string& object_uuid, const char* suffix) {
+      const auto append_join_operand = [&](const planner::CanonicalPlannerUuid& object_uuid, const char* suffix) {
         if (PlanHasBaseForObject(plan, object_uuid)) return;
         auto operand = planner::MakeLogicalPlanNode(planner::LogicalPlanNodeKind::kDmlRead,
                                                     planner::PhysicalAccessKind::kNone,
@@ -3547,72 +3580,51 @@ OptimizedPlan OptimizeLogicalPlanWithAccessPathRequest(const planner::LogicalPla
     return optimized;
   }
 
-  OptimizerStatisticsCatalog tree_statistics;
+  // Policy estimates remain explicitly low-confidence policy data, not grants.
+  OptimizerStatisticsCatalog tree_statistics = DefaultLocalStatisticsCatalog();
   if (access_request.table_stats) {
     const auto& stats = *access_request.table_stats;
-    tree_statistics.Add(MakeStatistic("row_count", "relation", access_request.relation_uuid,
-                                      static_cast<double>(stats.row_count),
-                                      StatisticSource::kCatalogExact,
-                                      stats.identity.stats_epoch,
-                                      0,
-                                      stats.identity.confidence));
-    tree_statistics.Add(MakeStatistic("visible_row_count", "relation", access_request.relation_uuid,
-                                      static_cast<double>(stats.visible_row_count),
-                                      StatisticSource::kCatalogExact,
-                                      stats.identity.stats_epoch,
-                                      0,
-                                      stats.identity.confidence));
-    tree_statistics.Add(MakeStatistic("page_count", "relation", access_request.relation_uuid,
-                                      static_cast<double>(stats.page_count),
-                                      StatisticSource::kCatalogExact,
-                                      stats.identity.stats_epoch,
-                                      0,
-                                      stats.identity.confidence));
-    tree_statistics.Add(MakeStatistic("average_row_bytes", "relation", access_request.relation_uuid,
-                                      static_cast<double>(stats.average_row_bytes),
-                                      StatisticSource::kCatalogExact,
-                                      stats.identity.stats_epoch,
-                                      0,
-                                      stats.identity.confidence));
-  }
-  tree_statistics.Add(MakeStatistic("memory_grant_available_bytes", "session", "local.default",
-                                    1048576.0,
-                                    StatisticSource::kCatalogExact,
-                                    access_request.table_stats ? access_request.table_stats->identity.stats_epoch : 1,
-                                    0,
-                                    CostConfidence::kHigh));
-  if (access_request.ordered_limit.present && access_request.ordered_limit.limit_count != 0) {
-    tree_statistics.Add(MakeStatistic("limit_count", "relation", access_request.relation_uuid,
-                                      static_cast<double>(access_request.ordered_limit.limit_count),
-                                      StatisticSource::kCatalogExact,
-                                      access_request.table_stats ? access_request.table_stats->identity.stats_epoch : 1,
-                                      0,
-                                      CostConfidence::kHigh));
+    if (!OptimizerTableStatsAreUsable(stats) ||
+        stats.identity.object_uuid != access_request.relation_uuid) {
+      optimized.diagnostics.push_back(std::string(kCatalogFactsRequired));
+    } else {
+      const auto target = OptimizerStatisticTarget::Object(stats.identity.object_uuid);
+      const auto append = [&](const char* name, std::uint64_t value) {
+        return tree_statistics.Add(MakeUnsignedStatistic(name, "relation", target, value,
+            stats.identity.source, stats.identity.stats_epoch, 0, stats.identity.confidence));
+      };
+      if (!append("row_count", stats.row_count) ||
+          !append("visible_row_count", stats.visible_row_count) ||
+          !append("page_count", stats.page_count) ||
+          !append("average_row_bytes", stats.average_row_bytes)) {
+        optimized.diagnostics.push_back("SB-STAT-0001");
+        return optimized;
+      }
+    }
   }
 
-  for (const auto& node : plan.nodes) {
-    auto bound_node = node;
-    if (bound_node.required_object_uuids.empty() && !access_request.relation_uuid.empty()) {
+  auto bound_plan = plan;
+  for (auto& bound_node : bound_plan.nodes) {
+    if (bound_node.required_object_uuids.empty() && scratchbird::core::uuid::IsEngineIdentityUuid(access_request.relation_uuid)) {
       bound_node.required_object_uuids.push_back(access_request.relation_uuid);
     }
     if (bound_node.required_descriptors.empty() && !access_request.descriptor_digest.empty()) {
       bound_node.required_descriptors.push_back(access_request.descriptor_digest);
     }
     if (IsUpperOperatorAccessKind(bound_node.access_kind)) {
-      AppendRelationalCandidate(&optimized, bound_node, tree_statistics);
+      AppendRelationalCandidate(&optimized, bound_node, tree_statistics, &access_request.ordered_limit);
       continue;
     }
     const auto plan_candidates = GenerateFullAccessPathCandidates(access_request);
     for (auto plan_candidate : plan_candidates) {
+      const auto statistics_version = StatisticsVersionForCandidate(plan_candidate);
       AppendOptimizerCandidate(&optimized,
                                bound_node,
                                std::move(plan_candidate),
-                               access_request.table_stats
-                                   ? ("catalog:" + std::to_string(access_request.table_stats->identity.stats_epoch))
-                                   : "catalog-missing:epoch0");
+                               statistics_version);
     }
   }
-  BuildPhysicalPlanTree(&optimized, plan, tree_statistics);
+  BuildPhysicalPlanTree(&optimized, bound_plan, tree_statistics, &access_request.ordered_limit);
   return optimized;
 }
 
@@ -3645,8 +3657,19 @@ StatisticsContractStatus ValidateBenchmarkCleanOptimizedPlan(const OptimizedPlan
   if (selected->plan_candidate.uses_policy_default_statistics) {
     return {false, "SB_OPTIMIZER_BENCHMARK_CLEAN.POLICY_DEFAULT_STATS", selected->plan_candidate.candidate_id};
   }
-  if (selected->statistics_version.find("local.default") != std::string::npos) {
-    return {false, "SB_OPTIMIZER_BENCHMARK_CLEAN.LOCAL_DEFAULT_STATS", selected->statistics_version};
+  for (const auto& candidate : plan.candidates) {
+    if (!candidate.selected_in_physical_tree) continue;
+    if (candidate.plan_candidate.statistic_inputs.empty())
+      return {false, "SB-STAT-0001", "selected_statistics_unbound",
+              StatisticsContractReason::kMissing};
+    for (const auto& statistic : candidate.plan_candidate.statistic_inputs) {
+      OptimizerStatisticsCatalog selected_statistics;
+      if (!selected_statistics.Add(statistic))
+        return {false, "SB-STAT-0001", "selected_statistics_invalid"};
+      const auto statuses = selected_statistics.ValidateBenchmarkCleanInputs(
+          {statistic.statistic_name}, statistic.target);
+      if (!statuses.empty() && !statuses.front().ok) return statuses.front();
+    }
   }
   return {true, "SB_OPTIMIZER_BENCHMARK_CLEAN.OK", selected->plan_candidate.candidate_id};
 }

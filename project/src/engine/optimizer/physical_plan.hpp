@@ -20,6 +20,7 @@ struct PhysicalPlanNode {
   std::string node_id;
   planner::CanonicalPlannerUuid relation_uuid;
   planner::CanonicalPlannerUuid index_uuid;
+  std::vector<planner::CanonicalPlannerUuid> ordered_relation_uuids;
   PlanOrderedLimitEvidence ordered_limit_evidence;
   scratchbird::engine::planner::PhysicalAccessKind access_kind = scratchbird::engine::planner::PhysicalAccessKind::kNone;
   std::string executor_capability_id;

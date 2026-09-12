@@ -9,6 +9,7 @@
 #include "predicate_normalization.hpp"
 
 #include "partial_index_implication.hpp"
+#include "../../core/hash/hash_digest.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -596,8 +597,8 @@ std::string CanonicalizeSblrExpressionNode(
   }
   if (!SafeSblrIdentityToken(node.operator_id) ||
       !SafeSblrIdentityToken(node.descriptor_digest) ||
-      !SafeSblrIdentityToken(node.object_uuid) ||
-      !SafeSblrIdentityToken(node.function_uuid) ||
+      (!node.object_uuid.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(node.object_uuid)) ||
+      (!node.function_uuid.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(node.function_uuid)) ||
       !SafeSblrIdentityToken(node.literal_digest)) {
     AddSblrDiagnostic(result, "sblr_expression_identity_token_unsafe");
   }
@@ -608,18 +609,20 @@ std::string CanonicalizeSblrExpressionNode(
     children.push_back(CanonicalizeSblrExpressionNode(child, result));
   }
   if (node.commutative) {
-    children = SortedUnique(std::move(children));
+    // Commutativity permits permutation, not removal of repeated operands.
+    std::sort(children.begin(), children.end());
   }
 
-  std::ostringstream out;
-  out << "sblr_expr(op=" << node.operator_id
-      << ";desc=" << node.descriptor_digest
-      << ";object=" << node.object_uuid
-      << ";function=" << node.function_uuid
-      << ";literal=" << node.literal_digest
-      << ";commutative=" << (node.commutative ? "true" : "false")
-      << ";children=[" << Join(children, "|") << "])";
-  return out.str();
+  planner::CanonicalPlannerBindingBytes out("optimizer-sblr-expression-v2");
+  out.Text(node.operator_id);
+  out.Text(node.descriptor_digest);
+  out.Identity(node.object_uuid);
+  out.Identity(node.function_uuid);
+  out.Text(node.literal_digest);
+  out.Flag(node.commutative);
+  out.Number(children.size());
+  for (const auto& child : children) out.Text(child);
+  return std::move(out).Take();
 }
 
 void AddMetadataRecheckAcceptance(const PredicateIndexMatchRequest& request,
@@ -673,7 +676,11 @@ std::string CanonicalPredicateDigest(const std::string& canonical_text) {
 }
 
 std::string CanonicalSblrExpressionDigest(const std::string& canonical_text) {
-  return "sblrexpr64:" + Hex64(Fnv1a64(canonical_text));
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const scratchbird::core::platform::byte*>(canonical_text.data()),
+      canonical_text.size());
+  if (!digest.ok() || digest.digest_bytes != 32) return {};
+  return "sblrexpr256:" + scratchbird::core::hash::HexLower(digest.digest);
 }
 
 CanonicalPredicate CanonicalizePredicateText(const std::string& predicate_text) {
@@ -710,7 +717,16 @@ CanonicalSblrExpression CanonicalizeSblrExpressionTree(
   CanonicalSblrExpression result;
   result.ok = true;
   result.canonical_text = CanonicalizeSblrExpressionNode(expression, &result);
+  if (!result.ok) {
+    result.canonical_text.clear();
+    return result;
+  }
   result.digest = CanonicalSblrExpressionDigest(result.canonical_text);
+  if (result.digest.empty()) {
+    result.canonical_text.clear();
+    AddSblrDiagnostic(&result, "sblr_expression_digest_unavailable");
+    return result;
+  }
   result.searchable_expression_digests = {result.digest};
   if (result.ok) {
     result.evidence.push_back("canonical_sblr_expression_tree=true");
@@ -720,8 +736,6 @@ CanonicalSblrExpression CanonicalizeSblrExpressionTree(
     result.evidence.push_back("reference_expression_authority=false");
     result.evidence.push_back("name_expression_authority=false");
     result.evidence.push_back("mga_visibility_recheck_required=true");
-    result.evidence.push_back(
-        "transaction_finality_authority=engine_transaction_inventory");
   }
   return result;
 }

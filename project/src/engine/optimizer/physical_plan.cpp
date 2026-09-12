@@ -276,6 +276,12 @@ std::string SerializePhysicalPlanNodeToJson(const PhysicalPlanNode& node, std::s
   out << ",\n" << child_pad << "\"index_uuid_bytes\": ";
   AppendIdentityBytes(out, node.index_uuid);
   out << ",\n";
+  out << child_pad << "\"ordered_relation_uuid_bytes\": [";
+  for (std::size_t i = 0; i < node.ordered_relation_uuids.size(); ++i) {
+    if (i) out << ',';
+    AppendIdentityBytes(out, node.ordered_relation_uuids[i]);
+  }
+  out << "],\n";
   if (node.ordered_limit_evidence.present) {
     const auto& ordered = node.ordered_limit_evidence;
     out << child_pad << "\"ordered_limit\": {\"index_uuid_bytes\":";

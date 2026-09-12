@@ -691,6 +691,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # sources while the rest of the executor's binary migration is in progress.
   add_executable(sbsql_sblr_alignment_full_statistics_binary_store
     full_statistics_binary_store_test.cpp
+    ../../src/engine/optimizer/optimizer_contract.cpp
+    ../../src/engine/optimizer/join_planner.cpp
+    ../../src/engine/optimizer/join_planner_full.cpp
+    ../../src/engine/optimizer/relational_planner.cpp
+    ../../src/engine/optimizer/predicate_normalization.cpp
+    ../../src/engine/optimizer/partition_segment_pruning.cpp
     ../../src/engine/optimizer/access_path_full.cpp
     ../../src/engine/optimizer/physical_plan.cpp
     ../../src/engine/optimizer/selectivity_model.cpp
@@ -701,8 +707,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -ffunction-sections -fdata-sections)
   target_link_options(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE -Wl,--gc-sections)
   target_include_directories(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:sbsql_sblr_alignment_access_statistics_component,INCLUDE_DIRECTORIES>)
-  target_link_libraries(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE sb_core_uuid sb_engine_plan_shapes)
+  target_link_libraries(sbsql_sblr_alignment_full_statistics_binary_store PRIVATE
+    sbsql_sblr_alignment_access_statistics_component sb_core_uuid sb_core_hash sb_core_index sb_engine_plan_shapes)
   add_test(NAME sbsql_sblr_alignment_full_statistics_binary_store
     COMMAND sbsql_sblr_alignment_full_statistics_binary_store)
   set_tests_properties(sbsql_sblr_alignment_full_statistics_binary_store PROPERTIES

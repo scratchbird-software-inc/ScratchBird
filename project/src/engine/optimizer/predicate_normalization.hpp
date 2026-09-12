@@ -50,6 +50,7 @@ struct CanonicalSblrExpressionNode {
 
 struct CanonicalSblrExpression {
   bool ok = false;
+  // Legacy field name: opaque versioned binding bytes, never display/SQL text.
   std::string canonical_text;
   std::string digest;
   std::vector<std::string> searchable_expression_digests;
@@ -85,6 +86,7 @@ struct SblrExpressionIndexMatchRequest {
 
 struct SblrExpressionIndexMatchResult {
   bool matches = false;
+  // Opaque versioned bytes matching CanonicalSblrExpression::canonical_text.
   std::string canonical_expression_text;
   std::string canonical_expression_digest;
   std::vector<std::string> acceptance_reasons;

@@ -544,6 +544,19 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
   }
   for (auto& candidate : candidates) {
     candidate.relation_uuid = request.relation_uuid;
+    const auto target = usable_table
+        ? OptimizerStatisticTarget::Object(request.table_stats->identity.object_uuid)
+        : OptimizerStatisticTarget::LocalDefault();
+    const auto source = usable_table ? request.table_stats->identity.source
+                                     : StatisticSource::kPolicyDefault;
+    const auto epoch = usable_table ? request.table_stats->identity.stats_epoch : 1;
+    const auto confidence = usable_table ? request.table_stats->identity.confidence
+                                         : CostConfidence::kLow;
+    candidate.statistic_inputs.push_back(MakeUnsignedStatistic(
+        usable_table ? "visible_row_count" : "row_count", "relation", target,
+        base_rows, source, epoch, 0, confidence));
+    candidate.statistic_inputs.push_back(MakeUnsignedStatistic(
+        "page_count", "relation", target, base_pages, source, epoch, 0, confidence));
     candidate.uses_local_default_statistics = !usable_table;
     candidate.uses_policy_default_statistics = !usable_table;
     if (!usable_table && candidate.cost.selectable) candidate.cost.confidence = CostConfidence::kLow;

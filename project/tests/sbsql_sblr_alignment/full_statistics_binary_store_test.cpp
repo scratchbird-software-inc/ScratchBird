@@ -3,6 +3,7 @@
 #include "../../src/engine/optimizer/optimizer_statistics_full.hpp"
 #include "../../src/engine/optimizer/access_path_full.hpp"
 #include "../../src/engine/optimizer/selectivity_model.hpp"
+#include "../../src/engine/optimizer/optimizer_contract.hpp"
 #include "binary_uuid_fixture.hpp"
 #include <algorithm>
 #include <cmath>
@@ -280,9 +281,208 @@ void ExtendedSelectivity() {
   Check(finished, "selection allocation sweep exhausted");
 }
 }
+namespace {
+void CanonicalBinaryExpressions() {
+  o::CanonicalSblrExpressionNode leaf;
+  leaf.operator_id = "column"; leaf.descriptor_digest = "d"; leaf.object_uuid = Id(1);
+  const auto result = o::CanonicalizeSblrExpressionTree(leaf);
+  std::string expected;
+  const auto number = [&](std::uint64_t n) {
+    for (unsigned i = 0; i != 8; ++i) expected.push_back(static_cast<char>(n >> (8 * i)));
+  };
+  const auto field = [&](std::string_view value) { number(value.size()); expected.append(value); };
+  field("optimizer-sblr-expression-v2"); field("column"); field("d");
+  for (const auto byte : Id(1).bytes) expected.push_back(static_cast<char>(byte));
+  expected.append(16, '\0'); field(""); expected.push_back('\0'); number(0);
+  Check(result.ok && result.canonical_text == expected, "independent binary expression frame oracle");
+  // Independently calculated from that explicit byte frame using Linux sha256sum.
+  Check(result.digest == "sblrexpr256:538fc114a6509908c3c30a552d30888fa8977cde252c5e83cd8084229a9600e6",
+        "full SHA256 expression known-answer test");
+  for (unsigned bit = 0; bit != 128; ++bit) {
+    auto changed = leaf;
+    changed.object_uuid.bytes[bit / 8] ^= 1u << (bit % 8);
+    const auto value = o::CanonicalizeSblrExpressionTree(changed);
+    const bool valid = (changed.object_uuid.bytes[6] >> 4) == 7 &&
+                       (changed.object_uuid.bytes[8] & 0xc0) == 0x80;
+    Check(value.ok == valid, "binary expression UUIDv7 admission covers every bit");
+    if (valid)
+      Check(value.canonical_text != result.canonical_text && value.digest != result.digest,
+            "every admitted object bit affects full expression identity");
+    else
+      Check(value.canonical_text.empty() && value.digest.empty() &&
+            value.searchable_expression_digests.empty(), "refused expression publishes no digest");
+    changed = leaf;
+    changed.function_uuid = changed.object_uuid = Id(1);
+    changed.function_uuid.bytes[bit / 8] ^= 1u << (bit % 8);
+    const auto function = o::CanonicalizeSblrExpressionTree(changed);
+    Check(function.ok == valid, "function identity uses the same binary admission");
+  }
+  o::CanonicalSblrExpressionNode sum;
+  sum.operator_id = "add"; sum.commutative = true; sum.children = {leaf, leaf};
+  const auto twice = o::CanonicalizeSblrExpressionTree(sum);
+  sum.children.pop_back();
+  Check(twice.digest != o::CanonicalizeSblrExpressionTree(sum).digest,
+        "commutativity never deletes repeated operands");
+  auto other = leaf; other.object_uuid = Id(3);
+  sum.children = {leaf, other};
+  const auto forward = o::CanonicalizeSblrExpressionTree(sum);
+  std::reverse(sum.children.begin(), sum.children.end());
+  Check(forward.digest == o::CanonicalizeSblrExpressionTree(sum).digest,
+        "commutative permutation retains identical canonical frame");
+  sum.commutative = false;
+  const auto ordered = o::CanonicalizeSblrExpressionTree(sum);
+  std::reverse(sum.children.begin(), sum.children.end());
+  Check(ordered.digest != o::CanonicalizeSblrExpressionTree(sum).digest,
+        "ordered operands remain order-sensitive");
+  sum.children.back().raw_sql_text_present = true;
+  const auto rejected = o::CanonicalizeSblrExpressionTree(sum);
+  Check(!rejected.ok && rejected.canonical_text.empty() && rejected.digest.empty(),
+        "invalid nested child cannot publish a partial expression identity");
+}
+
+void OptimizerBinaryTrees() {
+  namespace p = scratchbird::engine::planner;
+  p::LogicalPlan plan;
+  plan.ok = true;
+  auto scan = p::MakeLogicalPlanNode(p::LogicalPlanNodeKind::kDmlRead,
+      p::PhysicalAccessKind::kNone, "query.scan", "base_scan");
+  scan.required_object_uuids = {Id(1)};
+  scan.required_descriptors = {std::string(64, 'a')};
+  plan.nodes = {scan};
+  auto statistics = o::DefaultLocalStatisticsCatalog();
+  Check(statistics.Add(o::MakeUnsignedStatistic("row_count", "relation",
+      o::OptimizerStatisticTarget::Object(Id(1)), 100, o::StatisticSource::kCatalogExact,
+      7, 0, o::CostConfidence::kExact)), "actual count admitted");
+  Check(statistics.Add(o::MakeUnsignedStatistic("visible_row_count", "relation",
+      o::OptimizerStatisticTarget::Object(Id(1)), 0, o::StatisticSource::kCatalogExact,
+      7, 0, o::CostConfidence::kExact)), "actual zero visible count admitted");
+  auto optimized = o::OptimizeLogicalPlanWithStatistics(plan, statistics);
+  Check(optimized.ok && optimized.has_physical_plan, "binary single-relation physical tree");
+  Check(optimized.physical_root.relation_uuid == Id(1), "binary scan binding retained in tree");
+  for (const auto& candidate : optimized.candidates)
+    if (candidate.selected)
+      Check(candidate.statistics_version.find("epoch1") == std::string::npos,
+            "selected statistics do not fabricate epoch1");
+
+  auto window = p::MakeLogicalPlanNode(p::LogicalPlanNodeKind::kDmlRead,
+      p::PhysicalAccessKind::kSortThenWindow, "query.window", "window");
+  window.required_object_uuids = {Id(1)};
+  window.required_descriptors = scan.required_descriptors;
+  plan.nodes.push_back(window);
+  optimized = o::OptimizeLogicalPlanWithStatistics(plan, statistics);
+  Check(optimized.ok, "zero visible rows retain a window plan");
+  const auto window_candidate = std::find_if(optimized.candidates.begin(), optimized.candidates.end(),
+      [](const auto& candidate) { return candidate.node.operation_id == "query.window"; });
+  Check(window_candidate != optimized.candidates.end() &&
+        window_candidate->plan_candidate.estimated_rows == 0,
+        "known zero beats positive physical count and policy fallback");
+
+  plan.nodes = {scan};
+  o::TableCardinalityStats table{Identity(1, 2), 100, 100, 10, 8};
+  o::AccessPathPlanningRequest request;
+  request.relation_uuid = Id(1);
+  request.descriptor_digest = scan.required_descriptors.front();
+  request.table_stats = table;
+  request.visibility_proven = true;
+  request.grants_proven = true;
+  auto limit = p::MakeLogicalPlanNode(p::LogicalPlanNodeKind::kDmlRead,
+      p::PhysicalAccessKind::kTopN, "query.limit", "limit");
+  limit.required_object_uuids = {Id(1)};
+  limit.required_descriptors = scan.required_descriptors;
+  plan.nodes.push_back(limit);
+  request.ordered_limit.present = true;
+  request.ordered_limit.limit_count = 0;
+  optimized = o::OptimizeLogicalPlanWithAccessPathRequest(plan, request);
+  Check(optimized.ok && optimized.physical_root.estimated_rows == 0,
+        "request LIMIT zero remains zero through candidate and physical composition");
+  table.identity.source = o::StatisticSource::kCatalogSample;
+  table.identity.confidence = o::CostConfidence::kLow;
+  plan.nodes = {scan, window};
+  table.row_count = 0; table.visible_row_count = 0; table.page_count = 0;
+  request.table_stats = table;
+  request.ordered_limit.present = false;
+  optimized = o::OptimizeLogicalPlanWithAccessPathRequest(plan, request);
+  Check(optimized.ok && optimized.physical_root.estimated_rows == 0,
+        "sample-backed empty relation is not replaced by a default estimate");
+  for (const auto& candidate : optimized.candidates) {
+    if (candidate.node.operation_id != "query.scan") continue;
+    Check(candidate.plan_candidate.statistic_inputs.size() == 2,
+          "full access retains consumed base count and page inputs");
+    for (const auto& statistic : candidate.plan_candidate.statistic_inputs)
+      Check(statistic.source == o::StatisticSource::kCatalogSample &&
+            statistic.confidence == o::CostConfidence::kLow &&
+            statistic.stats_epoch == 7 && statistic.exact_unsigned_value == 0 &&
+            statistic.target.object_uuid == Id(1),
+            "sample provenance and exact zero survive full access costing");
+  }
+  Check(!o::ValidateBenchmarkCleanOptimizedPlan(optimized).ok,
+        "unbound upper statistics cannot be certified by a primary leaf");
+
+  auto join = p::MakeLogicalPlanNode(p::LogicalPlanNodeKind::kDmlRead,
+      p::PhysicalAccessKind::kJoinNestedLoop, "query.join", "join");
+  join.required_object_uuids = {Id(1), Id(3)};
+  join.required_descriptors = scan.required_descriptors;
+  plan.nodes = {join};
+  optimized = o::OptimizeLogicalPlanWithStatistics(plan, o::DefaultLocalStatisticsCatalog());
+  Check(optimized.ok && optimized.physical_root.children.size() == 2,
+        "binary graph composes actual two-child physical tree");
+  auto order = optimized.physical_root.ordered_relation_uuids;
+  std::sort(order.begin(), order.end());
+  Check(order == std::vector<Uuid>{Id(1), Id(3)}, "physical join retains binary relation order");
+  const auto json = o::SerializePhysicalPlanNodeToJson(optimized.physical_root);
+  Check(json.find("ordered_relation_uuid_bytes") != std::string::npos &&
+        json.find("019f0000-") == std::string::npos, "diagnostics project byte arrays, not UUID text");
+  join.required_object_uuids = {Id(1), Id(1)};
+  plan.nodes = {join};
+  optimized = o::OptimizeLogicalPlanWithStatistics(plan, statistics);
+  Check(!optimized.ok && !optimized.has_physical_plan,
+        "invalid duplicate graph cannot fall through to a successful physical plan");
+
+  auto source_free_left = scan;
+  source_free_left.required_object_uuids.clear();
+  source_free_left.operation_id = "values.left";
+  auto source_free_right = source_free_left;
+  source_free_right.operation_id = "values.right";
+  auto set = p::MakeLogicalPlanNode(p::LogicalPlanNodeKind::kDmlRead,
+      p::PhysicalAccessKind::kSetOperation, "query.union", "union");
+  set.required_descriptors = scan.required_descriptors;
+  plan.nodes = {source_free_left, source_free_right, set};
+  optimized = o::OptimizeLogicalPlanWithStatistics(plan, o::DefaultLocalStatisticsCatalog());
+  Check(optimized.ok && optimized.physical_root.children.size() == 2,
+        "absent source identities do not collapse separate source-free set inputs");
+  Check(optimized.physical_root.children[0].runtime_evidence !=
+        optimized.physical_root.children[1].runtime_evidence,
+        "source-free set composition retains distinct logical operands");
+
+  plan.nodes = {scan};
+  request.table_stats = o::TableCardinalityStats{Identity(1, 2), 100, 100, 10, 8};
+  bool finished = false;
+  for (long failure = 0; failure < 4096 && !finished; ++failure) {
+    std::optional<o::OptimizedPlan> published;
+    fault::remaining = failure; fault::hit = false;
+    try { published = o::OptimizeLogicalPlanWithAccessPathRequest(plan, request); }
+    catch (const std::bad_alloc&) {}
+    fault::remaining = -1;
+    if (!fault::hit) {
+      Check(published && published->ok, "optimizer allocation sweep reaches actual success");
+      finished = true;
+      continue;
+    }
+    ++faults;
+    Check(!published || (!published->ok && !published->has_physical_plan),
+          "allocation failure cannot publish a successful physical plan");
+    Check(plan.nodes[0].required_object_uuids == std::vector<Uuid>{Id(1)} &&
+          request.table_stats->visible_row_count == 100,
+          "failed optimization preserves original bindings and statistics");
+  }
+  Check(finished, "optimizer persistent allocation sweep exhausted");
+}
+}
 int main() {
   try {
     StoreAndCounts(); CorrelationsAndIndexes(); BinaryKeys(); AccessBindings(); ExtendedSelectivity();
+    OptimizerBinaryTrees();
+    CanonicalBinaryExpressions();
     std::cout << "PASS full statistics binary store checks=" << checks << " faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& e) {
