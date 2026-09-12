@@ -101,8 +101,8 @@ struct RelationalDagPlanningInput {
   CanonicalOptimizerExecutorAvailability executor_availability;
   CanonicalOptimizerSearchPolicy search_policy;
   CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
-  std::string identity_scope;
-  std::string calibration_profile_uuid;
+  planner::CanonicalPlannerUuid calibration_profile_uuid;
+  std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> profile_identity_owner;
   std::optional<CanonicalPlannerContinuationContext> continuation_context;
   std::optional<CanonicalPlannerWhatIfContext> what_if_context;
 };

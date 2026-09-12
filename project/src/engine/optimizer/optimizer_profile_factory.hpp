@@ -7,7 +7,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::engine::optimizer {
@@ -18,7 +21,7 @@ namespace scratchbird::engine::optimizer {
 // families, cardinalities, or cost-vector terms.
 struct CanonicalOptimizerNodeCapabilityBinding {
   std::uint32_t logical_node_id{0};
-  std::string capability_uuid;
+  planner::CanonicalPlannerUuid capability_uuid;
   std::uint64_t memory_bytes_required{0};
   bool available{true};
   std::string refusal_diagnostic_id;
@@ -41,6 +44,37 @@ struct CanonicalOptimizerProfileFactoryIssue {
   std::string field_id;
 };
 
+struct CanonicalOptimizerProfileIdentities {
+  std::uint32_t logical_node_id{0};
+  planner::CanonicalPlannerUuid capability_uuid;
+  planner::CanonicalPlannerUuid alternative_uuid;
+  planner::CanonicalPlannerUuid transformation_uuid;
+  planner::CanonicalPlannerUuid cost_vector_uuid;
+};
+
+// Immutable per-planning-scope ownership. No process-global identity cache and
+// no label/hash-derived UUIDs. Creation publishes either every key or nothing.
+class CanonicalOptimizerProfileIdentityOwner {
+ public:
+  using Key = std::pair<std::uint32_t, planner::CanonicalPlannerUuid>;
+  static std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> Create(
+      std::string binding, std::vector<Key> keys,
+      std::uint64_t maximum_count, std::uint64_t maximum_binding_bytes) noexcept;
+  bool Matches(std::string_view binding) const noexcept { return binding_ == binding; }
+  const planner::CanonicalPlannerUuid& ScopeUuid() const noexcept { return scope_uuid_; }
+  const CanonicalOptimizerProfileIdentities* Find(
+      std::uint32_t node, const planner::CanonicalPlannerUuid& capability) const noexcept;
+  std::size_t Size() const noexcept { return identities_.size(); }
+
+ private:
+  CanonicalOptimizerProfileIdentityOwner() = default;
+  CanonicalOptimizerProfileIdentityOwner(const CanonicalOptimizerProfileIdentityOwner&) = delete;
+  CanonicalOptimizerProfileIdentityOwner& operator=(const CanonicalOptimizerProfileIdentityOwner&) = delete;
+  planner::CanonicalPlannerUuid scope_uuid_;
+  std::string binding_;
+  std::vector<CanonicalOptimizerProfileIdentities> identities_;
+};
+
 struct CanonicalOptimizerProfileFactoryResult {
   bool accepted{false};
   bool optimizer_owned_enumeration{false};
@@ -50,6 +84,7 @@ struct CanonicalOptimizerProfileFactoryResult {
   CanonicalOptimizerAlternativeInventoryResult inventory;
   CanonicalExecutorCapabilityCatalog capability_catalog;
   std::vector<CanonicalOptimizerSearchCandidateInput> candidates;
+  std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> identity_owner;
   std::vector<CanonicalOptimizerProfileFactoryIssue> issues;
 };
 
@@ -61,7 +96,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,
     const CanonicalOptimizerExecutorAvailability& executor_availability,
-    std::string identity_scope,
-    std::string calibration_profile_uuid);
+    planner::CanonicalPlannerUuid calibration_profile_uuid,
+    std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> identity_owner = {});
 
 }  // namespace scratchbird::engine::optimizer

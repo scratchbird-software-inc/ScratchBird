@@ -735,6 +735,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_canonical_statistics_admission
     ../optimizer/qow_opt_005.cpp
     ../../src/engine/optimizer/optimizer_contract.cpp)
+  add_executable(sbsql_sblr_alignment_profile_identity_owner
+    ../optimizer/qow_opt_006_catalog.cpp
+    ../../src/engine/optimizer/optimizer_profile_factory.cpp
+    ../../src/engine/optimizer/optimizer_admission.cpp
+    ../../src/engine/optimizer/optimizer_contract.cpp)
+  target_compile_features(sbsql_sblr_alignment_profile_identity_owner PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_profile_identity_owner PRIVATE
+    SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1)
+  target_compile_options(sbsql_sblr_alignment_profile_identity_owner PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_profile_identity_owner PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_profile_identity_owner PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_profile_identity_owner PRIVATE sb_core_uuid sb_engine_plan_shapes)
+  add_test(NAME sbsql_sblr_alignment_profile_identity_owner COMMAND sbsql_sblr_alignment_profile_identity_owner)
+  set_tests_properties(sbsql_sblr_alignment_profile_identity_owner PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+  # Existing canonical statistics component uses the same actual contract source.
+  # Its target declaration remains above.
   target_compile_features(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE cxx_std_23)
   target_compile_definitions(sbsql_sblr_alignment_canonical_statistics_admission PRIVATE
     SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1)

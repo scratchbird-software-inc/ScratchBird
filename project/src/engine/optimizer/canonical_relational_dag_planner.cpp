@@ -31,7 +31,7 @@ RelationalDagPlanningResult PlanCanonicalRelationalDag(
   }
   result.factory = BuildCanonicalOptimizerAlternativeProfiles(
       input.admission_request, input.admission, input.executor_availability,
-      input.identity_scope, input.calibration_profile_uuid);
+      input.calibration_profile_uuid, input.profile_identity_owner);
   if (!result.factory.accepted ||
       !result.factory.optimizer_owned_enumeration ||
       !result.factory.snapshot_derived || !result.factory.deterministic ||
@@ -94,6 +94,7 @@ RelationalDagPlanningResult PlanCanonicalRelationalDag(
       return result;
     }
   }
+  result.publication.physical_dag.profile_identity_owner = result.factory.identity_owner;
   result.accepted = true;
   result.optimizer_owned = true;
   result.physical_dag_published = true;

@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <array>
-#include <iomanip>
+#include <type_traits>
+#include <set>
 #include <limits>
+#include <map>
 #include <ranges>
 #include <sstream>
 #include <string_view>
@@ -18,34 +20,126 @@ namespace planner = scratchbird::engine::planner;
 namespace executor = scratchbird::engine::executor;
 namespace {
 
-std::uint64_t Fnv1a64(const std::string_view value,
-                      std::uint64_t hash = 14695981039346656037ull) {
-  for (const auto byte : value) {
-    hash ^= static_cast<std::uint8_t>(byte);
-    hash *= 1099511628211ull;
+// Fixed-schema binary content binding; this is not an issued identity.
+template<class T>
+void ScopeField(planner::CanonicalPlannerBindingBytes& out, const T& value) {
+  if constexpr (std::is_same_v<T, planner::CanonicalPlannerUuid>) out.Identity(value);
+  else if constexpr (std::is_same_v<T, bool>) out.Flag(value);
+  else if constexpr (std::is_same_v<T, std::string>) out.Text(value);
+  else if constexpr (std::is_integral_v<T> || std::is_enum_v<T>)
+    out.Number(static_cast<std::uint64_t>(value));
+  else {
+    out.Number(value.size());
+    for (const auto& item : value) ScopeField(out, item);
   }
-  return hash;
+}
+template<class... T>
+void ScopeFields(planner::CanonicalPlannerBindingBytes& out, const T&... values) {
+  (ScopeField(out, values), ...);
+}
+template<class T, class Key>
+std::vector<const T*> OrderedRecords(const std::vector<T>& values, Key key) {
+  std::vector<const T*> result;
+  result.reserve(values.size());
+  for (const auto& value : values) result.push_back(&value);
+  std::ranges::sort(result, [&](const auto* left, const auto* right) {
+    return key(*left) < key(*right);
+  });
+  return result;
 }
 
-std::string DerivedCanonicalUuid(const std::string_view scope,
-                                 const std::string_view purpose) {
-  const auto first = Fnv1a64(purpose, Fnv1a64(scope));
-  const auto second = Fnv1a64(scope, Fnv1a64(purpose));
-  std::array<std::uint8_t, 16> bytes{};
-  for (std::size_t index = 0; index < 8; ++index) {
-    bytes[index] = static_cast<std::uint8_t>(first >> ((7 - index) * 8));
-    bytes[8 + index] =
-        static_cast<std::uint8_t>(second >> ((7 - index) * 8));
+std::string ProfileScopeBinding(
+    const CanonicalOptimizerAdmissionRequest& request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const CanonicalOptimizerExecutorAvailability& availability,
+    const planner::CanonicalPlannerUuid& calibration,
+    const std::string& properties) {
+  planner::CanonicalPlannerBindingBytes out("optimizer-profile-scope-v1");
+  ScopeFields(out, calibration, request.abi_version,
+      request.populated_from_admitted_typed_sblr, request.data_access_observed,
+      request.parser_planning_authority_claimed);
+  const auto& graph = request.logical_graph;
+  ScopeFields(out, graph.abi_version, graph.bound_sblr_tree_uuid, graph.catalog_epoch_uuid,
+      graph.security_context_uuid, graph.local_transaction_id, graph.statement_snapshot_id,
+      planner::SerializeCanonicalMgaStatementContext(graph.mga_statement_context),
+      graph.root_logical_node_id, graph.result_descriptor_ids, graph.raw_sql_text_present,
+      graph.parser_execution_authority_claimed, graph.transaction_finality_authority_claimed,
+      properties);
+  out.Number(graph.nodes.size());
+  for (const auto* node : OrderedRecords(graph.nodes, [](const auto& value) { return value.logical_node_id; })) {
+    ScopeFields(out, node->logical_node_id, node->node_kind, node->input_logical_node_ids,
+        node->output_descriptor_ids, node->bound_expression_ids, node->argument_expression_ids,
+        node->origin_relational_node_ids, node->required_object_uuids, node->semantic_variant_id,
+        node->shareable, node->required_property_uuids, node->delivered_property_uuids,
+        node->model_family_identity);
   }
-  bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x50);
-  bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (std::size_t index = 0; index < bytes.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-    out << std::setw(2) << static_cast<unsigned>(bytes[index]);
+  const auto& catalog = request.catalog;
+  ScopeFields(out, catalog.snapshot_uuid, catalog.catalog_epoch_uuid, catalog.catalog_generation,
+      catalog.object_uuids, catalog.descriptor_ids, catalog.engine_owned);
+  const auto& security = request.security;
+  ScopeFields(out, security.security_context_uuid, security.security_epoch, security.policy_epoch,
+      security.catalog_generation, security.authorized_object_uuids, security.engine_owned);
+  const auto& mga = request.mga;
+  ScopeFields(out, mga.local_transaction_id, mga.statement_snapshot_id,
+      planner::SerializeCanonicalMgaStatementContext(mga.statement_context), mga.metadata_snapshot_uuid,
+      mga.transaction_active, mga.statement_snapshot_fixed, mga.engine_owned, mga.finality_authority_claimed);
+  const auto& policy = request.policy_capability;
+  ScopeFields(out, policy.policy_snapshot_uuid, policy.policy_epoch, policy.capability_snapshot_uuid,
+      policy.capability_abi_version, policy.supported_node_kinds, policy.engine_owned,
+      policy.cluster_capability_claimed);
+  const auto& resource = request.resource;
+  ScopeFields(out, resource.resource_snapshot_uuid, resource.resource_epoch, resource.memory_budget_bytes,
+      resource.maximum_candidate_count, resource.maximum_memo_groups, resource.maximum_search_steps,
+      resource.maximum_planning_time_ns, resource.spill_allowed, resource.engine_owned);
+  const auto& stats = request.statistics;
+  ScopeFields(out, stats.abi_version, stats.statistics_snapshot_uuid, stats.catalog_epoch_uuid,
+      stats.statistics_generation, stats.admitted_at_monotonic_ns, stats.captured_before_data_access,
+      stats.data_access_observed, stats.runtime_actuals_present, stats.parser_statistics_authority_claimed);
+  out.Number(stats.node_estimates.size());
+  for (const auto* estimate : OrderedRecords(stats.node_estimates, [](const auto& value) { return value.logical_node_id; })) {
+    ScopeFields(out, estimate->logical_node_id, estimate->object_uuid, estimate->state,
+        estimate->source, estimate->catalog_epoch_uuid, estimate->statistics_snapshot_uuid,
+        estimate->statistics_generation, estimate->collected_at_monotonic_ns,
+        estimate->admitted_at_monotonic_ns, estimate->maximum_age_ns, estimate->confidence,
+        estimate->row_count_present, estimate->row_count, estimate->page_count_present,
+        estimate->page_count, estimate->derived_from_runtime_actuals,
+        estimate->benchmark_clean_authority_claimed);
   }
-  return out.str();
+  const auto& route = request.route;
+  ScopeFields(out, route.route_snapshot_uuid, route.route_epoch, route.route_generation, route.operation_id,
+      route.route_id, route.native_local_route, route.engine_owned, route.cluster_route_claimed);
+  ScopeFields(out, admission.admitted, admission.planning_allowed, admission.degraded_for_unknown_statistics,
+      admission.benchmark_clean_ready, admission.data_access_allowed, admission.bound_sblr_tree_uuid,
+      admission.catalog_epoch_uuid, admission.security_context_uuid, admission.capability_snapshot_uuid,
+      admission.resource_snapshot_uuid, admission.statistics_snapshot_uuid, admission.route_snapshot_uuid,
+      admission.local_transaction_id, admission.statement_snapshot_id,
+      planner::SerializeCanonicalMgaStatementContext(admission.mga_statement_context),
+      admission.catalog_generation, admission.security_epoch, admission.policy_epoch,
+      admission.resource_epoch, admission.statistics_generation, admission.route_epoch, admission.route_generation);
+  out.Number(admission.evidence.size());
+  for (const auto& evidence : admission.evidence) ScopeFields(out, evidence.stage, evidence.evidence_id);
+  out.Number(admission.issues.size());
+  for (const auto& issue : admission.issues) ScopeFields(out, issue.stage, issue.diagnostic_id, issue.field_id);
+  const auto& capabilities = availability.capability_catalog;
+  ScopeFields(out, availability.engine_owned, availability.parser_profile_authority_claimed,
+      capabilities.abi_version, capabilities.capability_snapshot_uuid, capabilities.policy_epoch,
+      capabilities.engine_owned, capabilities.cluster_catalog_claimed, capabilities.parser_capability_authority_claimed);
+  out.Number(capabilities.capabilities.size());
+  for (const auto* cap : OrderedRecords(capabilities.capabilities, [](const auto& value) { return value.capability_uuid; })) {
+    ScopeFields(out, cap->capability_uuid, cap->capability_abi_version, cap->implementation_id,
+        cap->logical_node_kind, cap->physical_node_kind, cap->minimum_input_count, cap->maximum_input_count,
+        cap->supported_property_kinds, cap->maximum_memory_bytes, cap->spill_supported,
+        cap->storage_read_capable, cap->mga_visibility_capable, cap->available, cap->refusal_diagnostic_id,
+        cap->engine_owned, cap->cluster_capability_claimed, cap->parser_execution_authority_claimed,
+        cap->transaction_finality_authority_claimed);
+  }
+  out.Number(availability.node_bindings.size());
+  for (const auto* binding : OrderedRecords(availability.node_bindings, [](const auto& value) {
+      return std::pair{value.logical_node_id, value.capability_uuid}; })) {
+    ScopeFields(out, binding->logical_node_id, binding->capability_uuid, binding->memory_bytes_required,
+        binding->available, binding->refusal_diagnostic_id);
+  }
+  return std::move(out).Take();
 }
 
 bool SameCapability(const CanonicalExecutorCapabilityRecord& left,
@@ -128,8 +222,8 @@ std::string ModelFamilyId(
 
 bool HasCostlyProperty(
     const planner::CanonicalLogicalRelationalNode& node,
-    const std::unordered_map<
-        std::string, const planner::CanonicalLogicalPropertyRecord*>&
+    const std::map<
+        planner::CanonicalPlannerUuid, const planner::CanonicalLogicalPropertyRecord*>&
         properties,
     const planner::CanonicalLogicalPropertyKind kind) {
   const auto contains = [&](const auto& values) {
@@ -145,13 +239,56 @@ bool HasCostlyProperty(
 
 }  // namespace
 
+std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner>
+CanonicalOptimizerProfileIdentityOwner::Create(
+    std::string binding, std::vector<Key> keys,
+    std::uint64_t maximum_count, std::uint64_t maximum_binding_bytes) noexcept {
+  try {
+    if (binding.empty() || binding.size() > maximum_binding_bytes ||
+        keys.empty() || keys.size() > maximum_count) return {};
+    std::sort(keys.begin(), keys.end());
+    if (std::adjacent_find(keys.begin(), keys.end()) != keys.end()) return {};
+    for (const auto& [node, capability] : keys)
+      if (node == 0 || !scratchbird::core::uuid::IsEngineIdentityUuid(capability)) return {};
+    auto owner = std::shared_ptr<CanonicalOptimizerProfileIdentityOwner>(
+        new CanonicalOptimizerProfileIdentityOwner);
+    const auto scope = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!scope) return {};
+    owner->scope_uuid_ = *scope;
+    owner->binding_ = std::move(binding);
+    owner->identities_.reserve(keys.size());
+    std::set<planner::CanonicalPlannerUuid> issued{*scope};
+    for (const auto& [node, capability] : keys) {
+      const auto alternative = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+      const auto transformation = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+      const auto cost = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+      if (!alternative || !transformation || !cost ||
+          !issued.insert(*alternative).second || !issued.insert(*transformation).second ||
+          !issued.insert(*cost).second) return {};
+      owner->identities_.push_back({node, capability, *alternative, *transformation, *cost});
+    }
+    return owner;
+  } catch (...) { return {}; }
+}
+
+const CanonicalOptimizerProfileIdentities* CanonicalOptimizerProfileIdentityOwner::Find(
+    std::uint32_t node, const planner::CanonicalPlannerUuid& capability) const noexcept {
+  const auto key = Key{node, capability};
+  const auto found = std::lower_bound(identities_.begin(), identities_.end(), key,
+      [](const auto& identities, const auto& wanted) {
+        return Key{identities.logical_node_id, identities.capability_uuid} < wanted;
+      });
+  return found != identities_.end() && found->logical_node_id == node &&
+      found->capability_uuid == capability ? &*found : nullptr;
+}
+
 CanonicalOptimizerProfileFactoryResult
 BuildCanonicalOptimizerAlternativeProfiles(
     const CanonicalOptimizerAdmissionRequest& admission_request,
     const CanonicalOptimizerAdmissionResult& admission,
     const CanonicalOptimizerExecutorAvailability& executor_availability,
-    std::string identity_scope,
-    std::string calibration_profile_uuid) {
+    planner::CanonicalPlannerUuid calibration_profile_uuid,
+    std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> identity_owner) {
   CanonicalOptimizerProfileFactoryResult result;
   const auto refuse = [&](std::string diagnostic_id,
                           const std::uint32_t logical_node_id,
@@ -165,7 +302,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
   };
   if (!admission.admitted || !admission.planning_allowed ||
       admission.data_access_allowed || !admission.issues.empty() ||
-      identity_scope.empty() || calibration_profile_uuid.empty() ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(calibration_profile_uuid) ||
       !executor_availability.engine_owned ||
       executor_availability.parser_profile_authority_claimed ||
       !executor_availability.capability_catalog.engine_owned ||
@@ -190,13 +327,37 @@ BuildCanonicalOptimizerAlternativeProfiles(
                   issue.field_id);
   }
 
+  const auto serialized_properties = planner::SerializeCanonicalLogicalPropertyCatalog(
+      graph, admission_request.logical_properties);
+  const auto statistics_validation = AdmitCanonicalOptimizerStatisticsBeforeAccess(
+      graph, admission_request.statistics);
+  if (!serialized_properties.accepted || !statistics_validation.accepted)
+    return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1", 0, {}, "scope_metadata");
+  const auto scope_binding = ProfileScopeBinding(admission_request, admission,
+      executor_availability, calibration_profile_uuid,
+      serialized_properties.canonical_serialization);
+  if (identity_owner) {
+    if (!identity_owner->Matches(scope_binding) ||
+        identity_owner->Size() != executor_availability.node_bindings.size())
+      return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1", 0, {}, "identity_owner_scope");
+  } else {
+    std::vector<CanonicalOptimizerProfileIdentityOwner::Key> keys;
+    keys.reserve(executor_availability.node_bindings.size());
+    for (const auto& binding : executor_availability.node_bindings)
+      keys.emplace_back(binding.logical_node_id, binding.capability_uuid);
+    identity_owner = CanonicalOptimizerProfileIdentityOwner::Create(scope_binding, std::move(keys),
+        admission_request.resource.maximum_candidate_count, admission_request.resource.memory_budget_bytes);
+    if (!identity_owner)
+      return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1", 0, {}, "identity_owner_issuance");
+  }
+
   std::unordered_map<std::uint32_t,
                      const planner::CanonicalLogicalRelationalNode*>
       nodes_by_id;
   for (const auto& node : graph.nodes) {
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const planner::CanonicalLogicalPropertyRecord*>
       properties_by_uuid;
   for (const auto& property : admission_request.logical_properties.properties) {
@@ -208,13 +369,13 @@ BuildCanonicalOptimizerAlternativeProfiles(
     estimates_by_node.emplace(estimate.logical_node_id, &estimate);
   }
 
-  std::unordered_map<std::string, const CanonicalExecutorCapabilityRecord*>
+  std::map<planner::CanonicalPlannerUuid, const CanonicalExecutorCapabilityRecord*>
       capabilities_by_uuid;
   for (const auto& capability :
        executor_availability.capability_catalog.capabilities) {
     const auto [it, inserted] = capabilities_by_uuid.emplace(
         capability.capability_uuid, &capability);
-    if (capability.capability_uuid.empty() ||
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(capability.capability_uuid) ||
         capability.implementation_id.empty() ||
         capability.capability_abi_version != 1 || !capability.engine_owned ||
         capability.minimum_input_count > capability.maximum_input_count ||
@@ -241,7 +402,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
                     [](const auto& left, const auto& right) {
                       return left.capability_uuid < right.capability_uuid;
                     });
-  std::unordered_map<std::string,
+  std::map<planner::CanonicalPlannerUuid,
                      const CanonicalOptimizerNodeCapabilityBinding*>
       binding_by_alternative;
   std::unordered_set<std::string> node_implementations;
@@ -296,11 +457,12 @@ BuildCanonicalOptimizerAlternativeProfiles(
       }
       return true;
     };
-    const auto suffix = std::to_string(binding->logical_node_id) + "." +
-                        implementation_id;
     CanonicalOptimizerAlternativeDomainRecord record;
-    record.alternative_uuid =
-        DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
+    const auto* identities = identity_owner->Find(binding->logical_node_id, binding->capability_uuid);
+    if (!identities)
+      return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1",
+                    binding->logical_node_id, implementation_id, "identity_owner_binding");
+    record.alternative_uuid = identities->alternative_uuid;
     record.capability_uuid = binding->capability_uuid;
     record.logical_node_id = binding->logical_node_id;
     record.logical_node_kind = capability->second->logical_node_kind;
@@ -308,7 +470,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
     record.implementation_id = implementation_id;
     record.minimum_input_count = capability->second->minimum_input_count;
     record.maximum_input_count = capability->second->maximum_input_count;
-    std::vector<std::string> input_required_property_uuids;
+    std::vector<planner::CanonicalPlannerUuid> input_required_property_uuids;
     for (const auto& property_uuid : node->second->required_property_uuids) {
       // A Window carries its input ordering forward, but does not create that
       // ordering.  Retain the ordering as an input requirement even though it
@@ -371,8 +533,6 @@ BuildCanonicalOptimizerAlternativeProfiles(
     const auto* capability =
         capabilities_by_uuid.at(binding->capability_uuid);
     const auto* node = nodes_by_id.at(receipt.logical_node_id);
-    const auto suffix = std::to_string(receipt.logical_node_id) + "." +
-                        receipt.implementation_id;
     std::uint64_t estimated_rows = 1;
     std::uint64_t estimated_pages = 0;
     CostConfidence confidence = CostConfidence::kUnknown;
@@ -381,8 +541,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
       confidence = estimate->second->confidence;
       if (estimate->second->state == CanonicalOptimizerStatisticState::kKnown &&
           estimate->second->row_count_present) {
-        estimated_rows = std::max<std::uint64_t>(1,
-                                                estimate->second->row_count);
+        estimated_rows = estimate->second->row_count;
       }
       if (estimate->second->state == CanonicalOptimizerStatisticState::kKnown &&
           estimate->second->page_count_present) {
@@ -391,14 +550,14 @@ BuildCanonicalOptimizerAlternativeProfiles(
     }
     if (confidence == CostConfidence::kUnknown ||
         confidence == CostConfidence::kRejected) {
-      confidence = CostConfidence::kMedium;
+      confidence = CostConfidence::kLow;
     }
     CanonicalOptimizerSearchCandidateInput candidate;
     candidate.alternative_uuid = receipt.alternative_uuid;
     candidate.logical_node_id = receipt.logical_node_id;
     candidate.semantic_variant_id = receipt.semantic_variant_id;
-    candidate.transformation_uuid =
-        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
+    const auto* identities = identity_owner->Find(binding->logical_node_id, binding->capability_uuid);
+    candidate.transformation_uuid = identities->transformation_uuid;
     candidate.transformation_rule_id =
         "canonical.optimizer." +
         std::string(planner::CanonicalLogicalRelationalNodeKindName(
@@ -412,8 +571,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
     candidate.statistics_generation = admission.statistics_generation;
     candidate.model_family_id = ModelFamilyId(*node);
     auto& cost = candidate.cost_terms;
-    cost.cost_vector_uuid =
-        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+    cost.cost_vector_uuid = identities->cost_vector_uuid;
     cost.calibration_profile_uuid = calibration_profile_uuid;
     cost.scalarization_policy_id =
         "canonical.optimizer.complete-unit-sum-minus-cache-benefit.v1";
@@ -422,9 +580,14 @@ BuildCanonicalOptimizerAlternativeProfiles(
     if (node->node_kind ==
         planner::CanonicalLogicalRelationalNodeKind::kRelationSource) {
       if (receipt.implementation_id.find("index") != std::string::npos) {
-        cost.page_read_random_units =
-            estimated_pages == 0 ? 1 : (estimated_pages + 7) / 8;
-        cost.cache_units = std::max<std::uint64_t>(1, estimated_pages / 16);
+        const bool known_pages = estimate != estimates_by_node.end() &&
+            estimate->second->state == CanonicalOptimizerStatisticState::kKnown &&
+            estimate->second->page_count_present;
+        cost.page_read_random_units = known_pages
+            ? estimated_pages / 8 + (estimated_pages % 8 != 0) : 1;
+        cost.cache_units = known_pages && estimated_pages == 0
+            ? 0 : std::max<std::uint64_t>(1, estimated_pages / 16);
+        if (!known_pages) confidence = CostConfidence::kLow;
       } else {
         cost.page_read_sequential_units = estimated_pages;
       }
@@ -539,6 +702,7 @@ BuildCanonicalOptimizerAlternativeProfiles(
     candidate.engine_coster_owned = true;
     result.candidates.push_back(std::move(candidate));
   }
+  result.identity_owner = std::move(identity_owner);
   result.accepted = true;
   result.optimizer_owned_enumeration = true;
   result.snapshot_derived = true;

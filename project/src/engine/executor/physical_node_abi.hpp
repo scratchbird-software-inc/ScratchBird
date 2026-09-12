@@ -18,6 +18,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <string_view>
@@ -25,6 +26,10 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+namespace scratchbird::engine::optimizer {
+class CanonicalOptimizerProfileIdentityOwner;
+}
 
 namespace scratchbird::engine::executor {
 
@@ -384,6 +389,9 @@ struct PhysicalNodeRecord {
 };
 
 struct TypedPhysicalNodeDag {
+  // Lifetime retention only: this pointer is not admission or data-access
+  // authority and is never serialized as an engine/wire identity.
+  std::shared_ptr<const optimizer::CanonicalOptimizerProfileIdentityOwner> profile_identity_owner;
   std::uint16_t abi_version{1};
   PhysicalUuid selected_plan_uuid;
   std::uint64_t root_physical_node_id{0};
