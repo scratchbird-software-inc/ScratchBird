@@ -273,7 +273,12 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
       return result;
     }
   }
-  if (const auto record = FindVisibleApiBehaviorRecord(request.context, descriptor_uuid, observer_tx)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto record = FindVisibleApiBehaviorRecord(request.context, descriptor_uuid, observer_tx,
+      behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(
+      request.context, "catalog.get_descriptor", behavior_diagnostic);
+  if (record) {
     auto result = MakeCrudSuccessResult<EngineGetDescriptorResult>(request.context, "catalog.get_descriptor");
     result.primary_object.uuid = record->object_uuid;
     result.primary_object.object_kind = record->object_kind;

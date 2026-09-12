@@ -1499,8 +1499,10 @@ void TestRelationProjectionView(Fixture& fixture) {
             "rpvs1 result row contract drifted");
   }
 
+  api::EngineApiDiagnostic behavior_read_diagnostic_1;
   const auto visible_before_rejections = api::VisibleApiBehaviorRecords(
-      sblr_context, "view", sblr_context.local_transaction_id);
+      sblr_context, "view", sblr_context.local_transaction_id, behavior_read_diagnostic_1);
+  Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
   Require(!rpvc_source.empty() && rpvc_source.back() == '|',
           "rpvc1 malformed-count fixture drifted");
   RequireRelationProjectionDispatchRejectedBeforeScan(
@@ -1556,8 +1558,10 @@ void TestRelationProjectionView(Fixture& fixture) {
           "2",
           {{"row_field:int32", "row-1|ID", "1"}}),
       "rpvc1 normalized away an injected row");
+  api::EngineApiDiagnostic behavior_read_diagnostic_2;
   const auto visible_after_create_rejections = api::VisibleApiBehaviorRecords(
-      sblr_context, "view", sblr_context.local_transaction_id);
+      sblr_context, "view", sblr_context.local_transaction_id, behavior_read_diagnostic_2);
+  Require(!behavior_read_diagnostic_2.error, "behavior catalog read failed");
   Require(visible_after_create_rejections.size() ==
               visible_before_rejections.size(),
           "malformed rpvc1 mutated durable view state");
@@ -1708,10 +1712,12 @@ void TestRelationProjectionView(Fixture& fixture) {
   Require(!durable.diagnostic.error && durable.present,
           "durable descriptor required for stale runtime probe");
 
+  api::EngineApiDiagnostic behavior_read_diagnostic_3;
   const auto persisted_record = api::FindVisibleApiBehaviorRecord(
       final_reader,
       durable.view_uuid.canonical,
-      final_reader.local_transaction_id);
+      final_reader.local_transaction_id, behavior_read_diagnostic_3);
+  Require(!behavior_read_diagnostic_3.error, "behavior catalog read failed");
   Require(persisted_record.has_value(),
           "persisted relation projection behavior record required");
   const auto persist_stale_variant =
@@ -1870,9 +1876,11 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
       fixture.updatable_descriptor);
   Require(!rpvc2.empty() && rpvc2.back() == '|',
           "rpvc2 malformed-count fixture drifted");
+  api::EngineApiDiagnostic behavior_read_diagnostic_4;
   const auto visible_before_create_refusals =
       api::VisibleApiBehaviorRecords(
-          create, "view", create.local_transaction_id);
+          create, "view", create.local_transaction_id, behavior_read_diagnostic_4);
+  Require(!behavior_read_diagnostic_4.error, "behavior catalog read failed");
   std::set<std::string> visible_view_ids_before;
   for (const auto& record : visible_before_create_refusals) {
     visible_view_ids_before.insert(record.object_uuid);
@@ -1966,9 +1974,11 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
           "1",
           {{"row_field:int32", "row-1|ID", "10"}}),
       "rpvc2 normalized away an injected row");
+  api::EngineApiDiagnostic behavior_read_diagnostic_5;
   const auto visible_after_create_refusals =
       api::VisibleApiBehaviorRecords(
-          create, "view", create.local_transaction_id);
+          create, "view", create.local_transaction_id, behavior_read_diagnostic_5);
+  Require(!behavior_read_diagnostic_5.error, "behavior catalog read failed");
   std::set<std::string> visible_view_ids_after;
   for (const auto& record : visible_after_create_refusals) {
     visible_view_ids_after.insert(record.object_uuid);
@@ -2278,8 +2288,10 @@ void TestUpdatableRelationProjectionView(Fixture& fixture) {
                   v1_row_count_before,
           "non-updatable V1 view mutated its source table");
 
+  api::EngineApiDiagnostic behavior_read_diagnostic_6;
   const auto persisted_record = api::FindVisibleApiBehaviorRecord(
-      refusal_writer, view_uuid, refusal_writer.local_transaction_id);
+      refusal_writer, view_uuid, refusal_writer.local_transaction_id, behavior_read_diagnostic_6);
+  Require(!behavior_read_diagnostic_6.error, "behavior catalog read failed");
   Require(persisted_record.has_value(),
           "V2 persisted descriptor record required for corruption refusal");
 

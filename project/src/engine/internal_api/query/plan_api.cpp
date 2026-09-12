@@ -12421,7 +12421,13 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
     }
   }
 
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, observer_tx)) {
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, {}, observer_tx, sources.diagnostic);
+  if (sources.diagnostic.error) {
+    sources.objects.clear(); sources.resolver_names.clear();
+    sources.columns.clear(); sources.domains.clear();
+    return sources;
+  }
+  for (const auto& record : behavior_records) {
     if (record.object_uuid.empty() ||
         ApiBehaviorFallbackSuppressedObjectKind(record.object_kind) ||
         !object_uuids_in_projection.insert(record.object_uuid).second) {
@@ -12613,12 +12619,12 @@ QuerySysProjectionSources BuildQuerySysProjectionSources(
 
 std::optional<EngineQueryRelation> SysInformationProjectionRelation(
     const EnginePlanOperationRequest& request,
-    std::string* error_detail) {
+    std::string* error_detail, EngineApiDiagnostic& diagnostic) {
   const std::string projection = OptionValue(request, "catalog_projection:");
   if (projection.empty()) return std::nullopt;
   const auto sources = BuildQuerySysProjectionSources(request);
   if (sources.diagnostic.error) {
-    if (error_detail) *error_detail = sources.diagnostic.code + ":" + sources.diagnostic.detail;
+    diagnostic = sources.diagnostic;
     return std::nullopt;
   }
   const auto projection_result = BuildSysInformationProjection(
@@ -12685,7 +12691,9 @@ std::optional<EngineQueryRelation> SysInformationProjectionRelation(
 }
 
 std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanOperationRequest& request,
-                                                               std::string* error_detail) {
+                                                               std::string* error_detail,
+                                                               EngineApiDiagnostic& diagnostic) {
+  diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   std::vector<EngineQueryRelation> relations = request.relations;
   if (relations.empty() && !request.rows.empty()) {
     EngineQueryRelation relation;
@@ -12696,7 +12704,7 @@ std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanO
   }
   const bool has_projection_source = !OptionValue(request, "catalog_projection:").empty();
   if (has_projection_source) {
-    auto projection_relation = SysInformationProjectionRelation(request, error_detail);
+    auto projection_relation = SysInformationProjectionRelation(request, error_detail, diagnostic);
     if (!projection_relation) return std::nullopt;
     relations.push_back(std::move(*projection_relation));
   }
@@ -12711,7 +12719,7 @@ std::optional<std::vector<EngineQueryRelation>> BuildRelations(const EnginePlanO
     }
     const auto loaded = LoadQueryCrudCompatibilityState(request.context);
     if (!loaded.ok) {
-      *error_detail = loaded.diagnostic.detail.empty() ? loaded.diagnostic.code : loaded.diagnostic.detail;
+      diagnostic = loaded.diagnostic;
       return std::nullopt;
     }
     if (!has_projection_source && !request.target_object.uuid.is_nil()) {
@@ -13765,7 +13773,10 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       return ExecuteFastCrudCount(request, operation);
     }
     std::string error_detail;
-    const auto relations = BuildRelations(request, &error_detail);
+    EngineApiDiagnostic source_diagnostic;
+    const auto relations = BuildRelations(request, &error_detail, source_diagnostic);
+    if (source_diagnostic.error) return MakeApiBehaviorDiagnostic<EnginePlanOperationResult>(
+        request.context, "query.plan_operation", source_diagnostic);
     if (!relations) { return QueryFailure<EnginePlanOperationResult>(request.context, error_detail); }
     if (relations->empty()) { return QueryFailure<EnginePlanOperationResult>(request.context, "query_relation_required"); }
     if (!RelationsHaveResolvedTypedValues(*relations, &error_detail)) {
@@ -14823,7 +14834,10 @@ EnginePlanOperationResult EnginePlanOperation(const EnginePlanOperationRequest& 
   }
 
   std::string error_detail;
-  const auto relations = BuildRelations(request, &error_detail);
+  EngineApiDiagnostic source_diagnostic;
+  const auto relations = BuildRelations(request, &error_detail, source_diagnostic);
+  if (source_diagnostic.error) return MakeApiBehaviorDiagnostic<EnginePlanOperationResult>(
+      request.context, "query.plan_operation", source_diagnostic);
   if (!relations || relations->empty()) {
     auto result = EnginePlanOperationUncachedImpl(request);
     PlanCacheBinding binding;

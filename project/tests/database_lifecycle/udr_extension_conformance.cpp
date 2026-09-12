@@ -606,8 +606,10 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "UDR inspect did not expose the C++ runtime-language inventory");
 
   CommitLifecycleTransaction(database_path);
+  api::EngineApiDiagnostic behavior_read_diagnostic_1;
   const auto restart_catalog = api::VisibleApiBehaviorRecords(
-      Context(database_path, 0), "udr_package", 0);
+      Context(database_path, 0), "udr_package", 0, behavior_read_diagnostic_1);
+  Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
   Require(!restart_catalog.empty(),
           "restart catalog reload did not reconstruct UDR package rows");
 

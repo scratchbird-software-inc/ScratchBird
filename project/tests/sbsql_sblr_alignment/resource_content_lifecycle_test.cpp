@@ -8,6 +8,7 @@
 #include "catalog_page.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/resource_catalog_admission.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
 #include <algorithm>
@@ -58,6 +59,98 @@ std::string IdentityBytes(const r::ResourceSeedCatalogImage& image) {
   for (const auto& row:image.aliases) append(row.canonical_resource_uuid);
   for (const auto& row:image.artifacts) append(row.artifact_uuid);
   return bytes;
+}
+void BehaviorReadFailures(const fs::path& path) {
+  // Exercise the production loader and both production selection APIs against
+  // actual storage. This does not certify the legacy record format or SQL/IPC.
+  engine::EngineRequestContext context;
+  context.database_path = path.string();
+  const fs::path journal = path.string() + ".sb.api_events";
+  Require(!fs::exists(journal), "behavior journal fixture must be isolated");
+  unsigned checks = 0;
+  const auto check = [&](bool ok, const char* detail) { ++checks; Require(ok, detail); };
+  const auto probe = [&](const engine::EngineRequestContext& candidate, bool success,
+                         const char* detail, bool native_cause = false) {
+    const auto loaded = engine::LoadApiBehaviorState(candidate);
+    check(loaded.ok == success && loaded.diagnostic.error == !success &&
+          loaded.state.records.empty(), "behavior load outcome or empty state incorrect");
+    engine::EngineApiDiagnostic diagnostic;
+    diagnostic.error = true; diagnostic.code = "fixture_prior_error";
+    const auto rows = engine::VisibleApiBehaviorRecords(candidate, {}, 0, diagnostic);
+    check(rows.empty() && diagnostic.error == !success &&
+          diagnostic.code == loaded.diagnostic.code &&
+          diagnostic.message_key == loaded.diagnostic.message_key &&
+          diagnostic.detail == loaded.diagnostic.detail,
+          "behavior list lost failure or retained an obsolete diagnostic");
+    diagnostic.error = true; diagnostic.code = "fixture_prior_error";
+    const auto found = engine::FindVisibleApiBehaviorRecord(candidate, {}, 0, diagnostic);
+    check(!found && diagnostic.error == !success &&
+          diagnostic.code == loaded.diagnostic.code &&
+          diagnostic.message_key == loaded.diagnostic.message_key &&
+          diagnostic.detail == loaded.diagnostic.detail,
+          "behavior lookup changed read failure into ordinary absence");
+    if (detail) check(loaded.diagnostic.detail == std::string("api_behavior.load_state:") + detail,
+                      "behavior read failure detail mismatch");
+    if (native_cause) {
+      const auto native = db::LoadLocalTransactionInventoryFromDatabase(candidate.database_path);
+      check(!native.ok() && loaded.diagnostic.native_source.has_value() &&
+            diagnostic.native_source.has_value(), "native inventory failure was discarded");
+      check(loaded.diagnostic.native_source->record.diagnostic_code == native.diagnostic.diagnostic_code &&
+            loaded.diagnostic.native_source->record.message_key == native.diagnostic.message_key &&
+            diagnostic.native_source->record.diagnostic_code == native.diagnostic.diagnostic_code &&
+            diagnostic.native_source->record.message_key == native.diagnostic.message_key,
+            "native inventory failure was rewritten at behavior selection");
+    }
+  };
+  probe(context, true, nullptr); // Real database, no behavior records.
+  { std::ofstream out(journal, std::ios::binary); Require(out.good(), "empty journal create failed"); }
+  probe(context, true, nullptr);
+  Require(fs::remove(journal), "empty journal cleanup failed");
+  // Deliberately malformed legacy frames: no accepted text UUID fixture and no
+  // claim that the legacy journal is canonical catalog/MGA authority.
+  const std::string frame = "SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t\t\tactive\t0";
+  const auto malformed = [&](std::string bytes, const char* detail) {
+    { std::ofstream out(journal, std::ios::binary); out.write(bytes.data(), bytes.size());
+      Require(out.good(), "malformed journal fixture write failed"); }
+    probe(context, false, detail);
+    Require(fs::remove(journal), "malformed journal cleanup failed");
+  };
+  malformed("junk" + frame + "\n", "api_journal_record_prefix_invalid");
+  malformed(frame, "api_journal_record_truncated");
+  malformed("SBAPI1\tRECORD\n", "api_journal_record_shape_invalid");
+  malformed(frame + "\t\n", "api_journal_record_shape_invalid");
+  malformed(frame + "\textra\n", "api_journal_record_shape_invalid");
+  for (const char* creator : {"", "-1", "+1", "01", "1x", "18446744073709551616"})
+    malformed(std::string("SBAPI1\tRECORD\t") + creator +
+        "\top\tinvalid_fixture_identity\tobject\t\t\tactive\t0\n", "api_journal_creator_invalid");
+  for (const char* encoded : {"a", "zz", "0z"}) {
+    malformed(std::string("SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t") + encoded +
+        "\t\tactive\t0\n", "api_journal_record_encoding_invalid");
+    malformed(std::string("SBAPI1\tRECORD\t0\top\tinvalid_fixture_identity\tobject\t\t") + encoded +
+        "\tactive\t0\n", "api_journal_record_encoding_invalid");
+  }
+  malformed(frame.substr(0, frame.size() - 1) + "TRUE\n", "api_journal_deleted_invalid");
+  malformed(frame.substr(0, frame.size() - 1) + "2\n", "api_journal_deleted_invalid");
+  Require(fs::create_directory(journal), "directory journal create failed");
+  probe(context, false, "api_journal_not_regular");
+  Require(fs::remove(journal), "directory journal cleanup failed");
+  fs::create_symlink(path.filename(), journal);
+  probe(context, false, "api_journal_symlink_forbidden");
+  Require(fs::remove(journal), "journal symlink cleanup failed");
+  fs::create_symlink("absent-journal-target", journal);
+  probe(context, false, "api_journal_symlink_forbidden");
+  Require(fs::remove(journal), "dangling journal symlink cleanup failed");
+  auto bad = context; bad.database_path.clear();
+  probe(bad, false, "database_path_required");
+  bad.database_path = (path.parent_path() / "missing-behavior.sbdb").string();
+  probe(bad, false, nullptr, true); // No journal cannot make a missing node valid.
+  bad.database_path = (path.parent_path() / "invalid-behavior.sbdb").string();
+  { std::ofstream out(bad.database_path, std::ios::binary); out << "not a database";
+    Require(out.good(), "invalid database fixture create failed"); }
+  probe(bad, false, nullptr, true);
+  Require(fs::remove(bad.database_path), "invalid database fixture cleanup failed");
+  probe(context, true, nullptr); // A prior failed lookup cannot poison a valid empty read.
+  std::cout << "PASS behavior storage read failure propagation checks=" << checks << '\n';
 }
 void ResourceAdmission(const fs::path& path) {
   db::DatabaseOpenConfig open; open.path=path.string(); open.read_only=true;
@@ -282,9 +375,10 @@ int main(int argc,char** argv) {
         return 0;
       }
       const std::string_view mode=argv[1];
-      Require(mode=="--reopen" || mode=="--admission" || mode=="--refuse-artifact" || mode=="--refuse-chain","unknown fixture mode");
+      Require(mode=="--reopen" || mode=="--admission" || mode=="--behavior-read" || mode=="--refuse-artifact" || mode=="--refuse-chain","unknown fixture mode");
       Require(!fs::exists(root/"initial-resource-pack"),"seed directory still present during reopen");
       if(mode=="--admission") { ResourceAdmission(root/"content.sbdb"); return 0; }
+      if(mode=="--behavior-read") { BehaviorReadFailures(root/"content.sbdb"); return 0; }
       db::DatabaseOpenConfig config; config.path=(root/"content.sbdb").string();
       config.read_only=true; config.suppress_background_agents=true;
       const auto opened=db::OpenDatabaseFile(config);
@@ -352,6 +446,7 @@ int main(int argc,char** argv) {
     fs::remove_all(copy);
     Require(std::system((program+" --reopen "+Quote(root.string())).c_str())==0,"independent reopen subprocess failed");
     Require(std::system((program+" --admission "+Quote(root.string())).c_str())==0,"actual resource admission subprocess failed");
+    Require(std::system((program+" --behavior-read "+Quote(root.string())).c_str())==0,"actual behavior storage read subprocess failed");
     for (const auto corruption:{Corruption::artifact,Corruption::cycle,Corruption::alias_identity,Corruption::alias_epoch}) {
       const auto original=Corrupt(root/"content.sbdb",corruption);
       const auto command=program+(corruption==Corruption::cycle ? " --refuse-chain " : " --refuse-artifact ")+Quote(root.string());

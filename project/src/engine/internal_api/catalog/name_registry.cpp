@@ -713,7 +713,9 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
       AddIfNoExplicit(&result.state, &added_entries, EntryFromSimpleName(context, index.index_uuid, "index", index.table_uuid, index.default_name));
     }
   }
-  for (const auto& record : VisibleApiBehaviorRecords(context, {}, observer_tx)) {
+  const auto behavior_records = VisibleApiBehaviorRecords(context, {}, observer_tx, result.diagnostic);
+  if (result.diagnostic.error) { result.state = {}; return result; }
+  for (const auto& record : behavior_records) {
     if (suppress_legacy_objects.count(record.object_uuid) != 0) { continue; }
     if (!record.default_name.empty()) {
       std::string scope_uuid = ApiBehaviorPayloadField(record.payload, "schema");

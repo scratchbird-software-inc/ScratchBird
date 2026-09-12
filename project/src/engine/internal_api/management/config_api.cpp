@@ -38,7 +38,11 @@ std::string RedactConfigPayload(const std::string& payload) {
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_MANAGEMENT_CONFIG_API_BEHAVIOR
 EngineInspectConfigResult EngineInspectConfig(const EngineInspectConfigRequest& request) {
   auto result = MakeApiBehaviorSuccess<EngineInspectConfigResult>(request.context, "management.inspect_config");
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, "config", request.context.local_transaction_id)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, "config", request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineInspectConfigResult>(
+      request.context, "management.inspect_config", behavior_diagnostic);
+  for (const auto& record : behavior_records) {
     AddApiBehaviorRow(&result, {{"config_uuid", record.object_uuid}, {"name", record.default_name}, {"payload", RedactConfigPayload(record.payload)}, {"state", record.state}});
   }
   AddApiBehaviorEvidence(&result, "config_inspect", std::to_string(result.result_shape.rows.size()));

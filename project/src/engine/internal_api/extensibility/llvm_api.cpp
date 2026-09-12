@@ -233,8 +233,11 @@ native::NativeCompileRequest BuildNativeCompileRequest(const EngineCompileLlvmMo
   return native_request;
 }
 
-bool CacheHit(const EngineRequestContext& context, const std::string& key) {
-  for (const auto& record : VisibleApiBehaviorRecords(context, kArtifactKind, context.local_transaction_id)) {
+bool CacheHit(const EngineRequestContext& context, const std::string& key,
+              EngineApiDiagnostic& diagnostic) {
+  const auto behavior_records = VisibleApiBehaviorRecords(context, kArtifactKind, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return false;
+  for (const auto& record : behavior_records) {
     if (record.default_name == key && !record.deleted) { return true; }
   }
   return false;
@@ -351,7 +354,10 @@ EngineCompileLlvmModuleResult EngineCompileLlvmModule(const EngineCompileLlvmMod
   }
 
   const auto requested_cache_key = CacheKey(request, mode, module);
-  const bool prior_hit = CacheHit(request.context, requested_cache_key);
+  EngineApiDiagnostic behavior_diagnostic;
+  const bool prior_hit = CacheHit(request.context, requested_cache_key, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineCompileLlvmModuleResult>(
+      request.context, kOperation, behavior_diagnostic);
   const auto native_result = native::CompileNativeUnit(BuildNativeCompileRequest(request, mode, module, prior_hit));
   if (!native_result.ok) {
     return NativeLlvmFailure(request.context, native_result);

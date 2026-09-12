@@ -1275,8 +1275,10 @@ void TestPersistedGlobalAggregateView(Fixture& fixture) {
               << own_descriptor.view_descriptor_generation
               << " code=" << own_descriptor.diagnostic.code
               << " detail=" << own_descriptor.diagnostic.detail << '\n';
+    api::EngineApiDiagnostic behavior_read_diagnostic_1;
     const auto visible = api::FindVisibleApiBehaviorRecord(
-        create, view_uuid, create.local_transaction_id);
+        create, view_uuid, create.local_transaction_id, behavior_read_diagnostic_1);
+    Require(!behavior_read_diagnostic_1.error, "behavior catalog read failed");
     if (visible.has_value()) {
       std::cerr << "own descriptor record: operation="
                 << visible->operation_id << " kind=" << visible->object_kind

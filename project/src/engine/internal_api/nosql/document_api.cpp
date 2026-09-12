@@ -1004,10 +1004,12 @@ std::vector<DocumentPathProviderProjectedValue> ProjectValuesFromSource(
 }
 
 bool SourceRecordVisibleToRequest(const EngineRequestContext& context,
-                                  const PhysicalDocumentRecord& record) {
+                                  const PhysicalDocumentRecord& record,
+                                  EngineApiDiagnostic& diagnostic) {
   if (!context.security_context_present) { return false; }
-  for (const auto& visible :
-       VisibleApiBehaviorRecords(context, "document", context.local_transaction_id)) {
+  const auto records = VisibleApiBehaviorRecords(context, "document", context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return false;
+  for (const auto& visible : records) {
     if (visible.object_uuid == record.document_uuid ||
         visible.object_uuid == record.name ||
         visible.default_name == record.document_uuid ||
@@ -1023,7 +1025,9 @@ bool RecheckDocumentPathCandidate(
     const EngineDocumentFindRequest& request,
     const DocumentPathProviderCandidate& provider_candidate,
     DocumentPathProviderCandidate* rechecked_candidate,
-    std::string* refusal_detail) {
+    std::string* refusal_detail,
+    EngineApiDiagnostic& behavior_diagnostic) {
+  behavior_diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   std::lock_guard<std::mutex> guard(DocumentStoresMutex());
   auto& state = DocumentStores()[StoreKey(context)];
   LoadDocumentProviderLocked(context, &state);
@@ -1041,7 +1045,7 @@ bool RecheckDocumentPathCandidate(
     return false;
   }
   if (!matched.matches) return false;
-  if (!SourceRecordVisibleToRequest(context, record->second)) { return false; }
+  if (!SourceRecordVisibleToRequest(context, record->second, behavior_diagnostic)) { return false; }
 
   *rechecked_candidate = provider_candidate;
   rechecked_candidate->projected_values =
@@ -1732,10 +1736,14 @@ EngineDocumentFindResult PhysicalDocumentFind(
   for (const auto& candidate : probe.projection_plan.candidates) {
     DocumentPathProviderCandidate rechecked;
     std::string refusal_detail;
+    EngineApiDiagnostic behavior_diagnostic;
     if (RecheckDocumentPathCandidate(
             request.context, request, candidate, &rechecked,
-            &refusal_detail)) {
+            &refusal_detail, behavior_diagnostic)) {
       rechecked_candidates.push_back(std::move(rechecked));
+    } else if (behavior_diagnostic.error) {
+      return MakeApiBehaviorDiagnostic<EngineDocumentFindResult>(
+          request.context, operation_id, behavior_diagnostic);
     } else if (!refusal_detail.empty()) {
       auto failure = DiagnosticResult<EngineDocumentFindResult>(
           request.context, operation_id,
@@ -2012,7 +2020,11 @@ EngineDocumentFindResult EngineDocumentFind(const EngineDocumentFindRequest& req
     return PhysicalDocumentFind(request, kOperation, request.physical_proof);
   }
   auto result = MakeApiBehaviorSuccess<EngineDocumentFindResult>(request.context, kOperation);
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, "document", request.context.local_transaction_id)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, "document", request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineDocumentFindResult>(
+      request.context, kOperation, behavior_diagnostic);
+  for (const auto& record : behavior_records) {
     AddApiBehaviorRow(&result, {{"surface", "document"},
                                 {"document_uuid", record.object_uuid},
                                 {"name", record.default_name},

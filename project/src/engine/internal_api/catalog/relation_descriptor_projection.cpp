@@ -692,7 +692,8 @@ DescribeEngineCatalogRelationProjectionView(
   }
 
   const auto view = FindVisibleApiBehaviorRecord(
-      context, view_uuid, context.local_transaction_id);
+      context, view_uuid, context.local_transaction_id, descriptor.diagnostic);
+  if (descriptor.diagnostic.error) return descriptor;
   if (!view) {
     descriptor.diagnostic =
         ProjectionDiagnostic("projection_view_not_visible");
@@ -803,8 +804,11 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         ProjectionDiagnostic("projection_identity_envelope_invalid"));
   }
 
+  EngineApiDiagnostic behavior_diagnostic;
   const auto view = FindVisibleApiBehaviorRecord(
-      request.context, view_uuid, request.context.local_transaction_id);
+      request.context, view_uuid, request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return ProjectionFailure<EngineSelectRowsResult>(
+      request.context, behavior_diagnostic);
   if (!view || view->object_kind != "view" ||
       view->operation_id != "ddl.create_view" || view->state != "created" ||
       view->deleted || view->creator_tx == 0 ||

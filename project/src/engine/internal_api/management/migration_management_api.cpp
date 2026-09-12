@@ -83,11 +83,13 @@ TResult MigrationDiagnostic(const EngineApiRequest& request, EngineApiDiagnostic
   return MakeApiBehaviorDiagnostic<TResult>(request.context, request.operation_id, std::move(diagnostic));
 }
 
-void AddMigrationRowsFromRecords(EngineApiResult* result,
+EngineApiDiagnostic AddMigrationRowsFromRecords(EngineApiResult* result,
                                  const EngineApiRequest& request,
                                  std::string_view filter_uuid) {
+  EngineApiDiagnostic diagnostic;
   const auto records = VisibleApiBehaviorRecords(request.context, std::string(kMigrationKind),
-                                                request.context.local_transaction_id);
+                                                request.context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return diagnostic;
   for (const auto& record : records) {
     if (!filter_uuid.empty() && record.object_uuid != filter_uuid && record.default_name != filter_uuid) {
       continue;
@@ -102,6 +104,7 @@ void AddMigrationRowsFromRecords(EngineApiResult* result,
                        {"reference_finality_accepted", "false"},
                        {"mga_authority_boundary", "engine_owned"}});
   }
+  return diagnostic;
 }
 
 }  // namespace
@@ -186,7 +189,8 @@ EngineShowMigrationResult EngineShowMigration(const EngineShowMigrationRequest& 
   result.result_shape.result_kind = "rs.migration.status.v1";
   AddMigrationAuthorityEvidence(&result, request, "show_migration", "EngineShowMigration");
   const std::string migration_ref = OptionValue(request, "migration_ref:");
-  AddMigrationRowsFromRecords(&result, request, migration_ref);
+  const auto behavior_diagnostic = AddMigrationRowsFromRecords(&result, request, migration_ref);
+  if (behavior_diagnostic.error) return MigrationDiagnostic<EngineShowMigrationResult>(request, behavior_diagnostic);
   if (result.result_shape.rows.empty()) {
     AddApiBehaviorRow(&result,
                       {{"migration_uuid", migration_ref},
@@ -208,7 +212,8 @@ EngineShowMigrationsResult EngineShowMigrations(const EngineShowMigrationsReques
       request.operation_id.empty() ? "migration.show_all" : request.operation_id);
   result.result_shape.result_kind = "rs.migration.list.v1";
   AddMigrationAuthorityEvidence(&result, request, "show_migrations", "EngineShowMigrations");
-  AddMigrationRowsFromRecords(&result, request, {});
+  const auto behavior_diagnostic = AddMigrationRowsFromRecords(&result, request, {});
+  if (behavior_diagnostic.error) return MigrationDiagnostic<EngineShowMigrationsResult>(request, behavior_diagnostic);
   if (result.result_shape.rows.empty()) {
     AddApiBehaviorRow(&result,
                       {{"migration_count", "0"},

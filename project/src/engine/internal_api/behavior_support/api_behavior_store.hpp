@@ -69,12 +69,16 @@ void AddDdlPublicationResult(EngineApiResult* result,
                              const EngineUuid& object_uuid,
                              const EngineUuid& catalog_row_uuid = {},
                              const std::string& invalidation_scope = {});
+// The diagnostic is mandatory: an empty vector/optional is ordinary absence
+// only when it is non-error. Failure never certifies a cache miss or nonexistence.
 std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,
                                                          const std::string& object_kind,
-                                                         std::uint64_t observer_tx);
+                                                         std::uint64_t observer_tx,
+                                                         EngineApiDiagnostic& diagnostic);
 std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineRequestContext& context,
                                                               const std::string& object_uuid,
-                                                              std::uint64_t observer_tx);
+                                                              std::uint64_t observer_tx,
+                                                              EngineApiDiagnostic& diagnostic);
 EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record);
 EngineApiDiagnostic ValidateApiBehaviorContext(const EngineRequestContext& context,
                                                const std::string& operation_id,

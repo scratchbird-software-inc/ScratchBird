@@ -74,7 +74,11 @@ EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& req
                                 {"payload", schema->payload}});
     return result;
   }
-  const auto record = FindVisibleApiBehaviorRecord(request.context, request.target_object.uuid, request.context.local_transaction_id);
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto record = FindVisibleApiBehaviorRecord(request.context, request.target_object.uuid,
+      request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineLookupObjectResult>(
+      request.context, "catalog.lookup_object", behavior_diagnostic);
   auto result = MakeApiBehaviorSuccess<EngineLookupObjectResult>(request.context, "catalog.lookup_object");
   if (record) {
     const std::string display_name = PublicDisplayNameForObject(request, record->object_uuid, record->object_kind);

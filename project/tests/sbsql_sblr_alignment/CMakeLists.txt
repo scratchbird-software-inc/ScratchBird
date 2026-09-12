@@ -440,6 +440,7 @@ set_tests_properties(sbsql_sblr_alignment_resource_alias_admission PROPERTIES
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_resource_content_lifecycle resource_content_lifecycle_test.cpp)
   target_sources(sbsql_sblr_alignment_resource_content_lifecycle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/engine/internal_api/behavior_support/api_behavior_read.cpp
     ${CMAKE_SOURCE_DIR}/src/engine/internal_api/catalog/resource_descriptor_lookup.cpp
     ${CMAKE_SOURCE_DIR}/src/engine/internal_api/api_unsupported.cpp)
   target_include_directories(sbsql_sblr_alignment_resource_content_lifecycle PRIVATE

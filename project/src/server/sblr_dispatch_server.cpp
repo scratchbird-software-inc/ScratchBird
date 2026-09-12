@@ -3292,13 +3292,15 @@ std::optional<std::string> BehaviorPayloadField(std::string_view payload,
 
 std::optional<DispatchViewDescriptor> LoadDispatchViewDescriptor(
     const ServerSessionRecord& session,
-    std::string_view view_uuid) {
+    std::string_view view_uuid,
+    engine_api::EngineApiDiagnostic& diagnostic) {
   if (view_uuid.empty()) return std::nullopt;
   const auto context = PublicAbiDispatchEngineContext(session);
   const auto record = engine_api::FindVisibleApiBehaviorRecord(
       context,
       std::string(view_uuid),
-      context.local_transaction_id);
+      context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return std::nullopt;
   if (!record.has_value()) return std::nullopt;
   if (record->object_kind != "view" && record->object_kind != "materialized_view") {
     return std::nullopt;
@@ -5455,7 +5457,9 @@ std::optional<SessionOperationResult> ValidateTransactionAdmission(
 std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
                                          std::string_view encoded,
                                          std::string_view operation_id,
-                                         std::string_view operation_family) {
+                                         std::string_view operation_family,
+                                         std::optional<engine_bridge::EngineDiagnosticSnapshot>& read_failure) {
+  read_failure.reset();
   std::string_view dispatch_operation_id = operation_id;
   std::string_view dispatch_operation_family = operation_family;
   std::string virtual_projection;
@@ -7517,7 +7521,24 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         TextLineValue(encoded, "target_object_uuid").value_or(""));
     std::optional<DispatchViewDescriptor> view_descriptor;
     if (!original_target_uuid.empty()) {
-      view_descriptor = LoadDispatchViewDescriptor(session, original_target_uuid);
+      engine_api::EngineApiDiagnostic diagnostic;
+      view_descriptor = LoadDispatchViewDescriptor(session, original_target_uuid, diagnostic);
+      if (diagnostic.error) {
+        // No C ABI result exists for this direct internal read. Preserve its
+        // occurrence, registration and private native cause in the same trusted
+        // carrier; do not reinterpret a failed read as a base-table dispatch.
+        engine_bridge::EngineDiagnosticSnapshot source;
+        source.occurrence_uuid = diagnostic.occurrence_uuid;
+        source.code = diagnostic.code;
+        source.message_key = diagnostic.message_key;
+        source.safe_detail = diagnostic.detail;
+        source.canonical_metadata = diagnostic.canonical_metadata;
+        source.native_source = diagnostic.native_source;
+        for (const auto& field : diagnostic.fields)
+          source.fields.push_back({field.key, field.value});
+        read_failure = std::move(source);
+        return {};
+      }
     }
     operation_envelope += "operand=text\texecute\ttrue\n";
     operation_envelope += "operand=text\tquery_operation\tcount_all\n";
@@ -7792,11 +7813,8 @@ struct PublicAbiDispatchResult {
   sb_engine_result_t result_handle = nullptr;
 };
 
-void CapturePublicAbiFailure(sb_engine_result_t handle,
-                             PublicAbiDispatchResult* result) {
-  scratchbird::server_engine_bridge::EngineDiagnosticSnapshot snapshot;
-  if (!scratchbird::server_engine_bridge::CopyEngineDiagnosticSnapshot(
-          handle, 0, &snapshot)) return;
+void CapturePublicAbiSourceFailure(engine_bridge::EngineDiagnosticSnapshot snapshot,
+                                   PublicAbiDispatchResult* result) {
   result->diagnostic_code = snapshot.code;
   result->diagnostic_detail = snapshot.safe_detail;
   result->audit_detail = snapshot.message_key;
@@ -7808,6 +7826,13 @@ void CapturePublicAbiFailure(sb_engine_result_t handle,
   result->diagnostic_fields =
       RegisteredEngineDiagnosticFields(snapshot.code, candidates);
   result->source_diagnostic = std::move(snapshot);
+}
+
+void CapturePublicAbiFailure(sb_engine_result_t handle,
+                             PublicAbiDispatchResult* result) {
+  engine_bridge::EngineDiagnosticSnapshot snapshot;
+  if (!engine_bridge::CopyEngineDiagnosticSnapshot(handle, 0, &snapshot)) return;
+  CapturePublicAbiSourceFailure(std::move(snapshot), result);
 }
 
 ServerDiagnostic PublicAbiFailureDiagnostic(
@@ -8040,6 +8065,7 @@ struct PreparedMetadataBindingCreateResult {
   engine_bridge::PreparedMetadataBindingHandle binding = nullptr;
   std::string diagnostic_code;
   std::string diagnostic_detail;
+  std::optional<engine_bridge::EngineDiagnosticSnapshot> source_diagnostic;
 
   bool ok() const { return binding != nullptr && diagnostic_code.empty(); }
 };
@@ -8064,7 +8090,12 @@ PreparedMetadataBindingCreateResult CreatePreparedMetadataBinding(
   }
 
   const std::string public_abi_envelope = PublicAbiEnvelopeForDispatch(
-      prepare_session, encoded, operation_id, operation_family);
+      prepare_session, encoded, operation_id, operation_family, result.source_diagnostic);
+  if (result.source_diagnostic) {
+    result.diagnostic_code = result.source_diagnostic->code;
+    result.diagnostic_detail = result.source_diagnostic->safe_detail;
+    return result;
+  }
   if (public_abi_envelope.empty()) {
     result.diagnostic_code =
         "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED";
@@ -8152,8 +8183,13 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
     phase_micros.push_back({std::move(phase), ServerElapsedMicros(phase_last, now)});
     phase_last = now;
   };
+  std::optional<engine_bridge::EngineDiagnosticSnapshot> read_failure;
   const std::string public_abi_envelope =
-      PublicAbiEnvelopeForDispatch(session, encoded, operation_id, operation_family);
+      PublicAbiEnvelopeForDispatch(session, encoded, operation_id, operation_family, read_failure);
+  if (read_failure) {
+    CapturePublicAbiSourceFailure(std::move(*read_failure), &dispatch_result);
+    return dispatch_result;
+  }
   mark_phase("public_abi_envelope");
   if (public_abi_envelope.empty()) {
     dispatch_result.diagnostic_code =
@@ -8881,9 +8917,10 @@ RegisteredEngineDiagnosticFieldsForTest(
 std::string EncodeCreateViewPublicAbiEnvelopeForTest(
     std::string_view encoded_sblr_envelope) {
   ServerSessionRecord session;
+  std::optional<engine_bridge::EngineDiagnosticSnapshot> read_failure;
   return PublicAbiEnvelopeForDispatch(
       session, encoded_sblr_envelope, "ddl.create_view",
-      "sblr.catalog.mutation.v3");
+      "sblr.catalog.mutation.v3", read_failure);
 }
 
 std::vector<std::uint8_t> EncodePrepareSblrPayloadForTest(
@@ -9283,6 +9320,15 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
           binding.diagnostic_detail.empty()
               ? "prepared_metadata_binding_rejected"
               : binding.diagnostic_detail);
+      if (binding.source_diagnostic) {
+        PublicAbiDispatchResult source_failure;
+        CapturePublicAbiSourceFailure(std::move(*binding.source_diagnostic), &source_failure);
+        return FailureWithDiagnostics(
+            static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+            response_schema, decoded->session_uuid,
+            {PublicAbiFailureDiagnostic(source_failure,
+                "The engine could not read the prepared catalog metadata.", {})});
+      }
       return Failure(
           static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
           response_schema,

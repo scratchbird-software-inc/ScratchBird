@@ -285,20 +285,16 @@ EngineApiDiagnostic ValidateStructuredContext(const EngineApiRequest& request,
 }
 
 std::optional<ApiBehaviorRecord> FindStructuredType(const EngineApiRequest& request,
-                                                    const std::string& type_uuid) {
+                                                    const std::string& type_uuid,
+                                                    EngineApiDiagnostic& diagnostic) {
   const auto records = VisibleApiBehaviorRecords(request.context,
                                                 std::string(kStructuredTypeKind),
-                                                request.context.local_transaction_id);
+                                                request.context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
   for (const auto& record : records) {
     if (record.object_uuid == type_uuid && !record.deleted) return record;
   }
   return std::nullopt;
-}
-
-std::string ExistingPayloadOrEmpty(const EngineApiRequest& request,
-                                   const std::string& type_uuid) {
-  const auto record = FindStructuredType(request, type_uuid);
-  return record.has_value() ? record->payload : std::string();
 }
 
 std::uint64_t DescriptorVersion(std::string_view payload) {
@@ -464,7 +460,9 @@ EngineApiDiagnostic ValidateAlterDescriptor(const EngineApiRequest& request,
                                             ApiBehaviorRecord* existing_out,
                                             std::string* payload_out) {
   const std::string type_uuid = StructuredTypeUuid(request);
-  auto existing = FindStructuredType(request, type_uuid);
+  EngineApiDiagnostic behavior_diagnostic;
+  auto existing = FindStructuredType(request, type_uuid, behavior_diagnostic);
+  if (behavior_diagnostic.error) return behavior_diagnostic;
   if (!existing.has_value()) {
     return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_NOT_FOUND",
                                    "sbsql.structured_type.not_found",
@@ -582,7 +580,9 @@ EngineApiDiagnostic ValidateUsageRequest(const EngineApiRequest& request,
                                              "USAGE",
                                              type_uuid);
   if (base.error) return base;
-  auto record = FindStructuredType(request, type_uuid);
+  EngineApiDiagnostic behavior_diagnostic;
+  auto record = FindStructuredType(request, type_uuid, behavior_diagnostic);
+  if (behavior_diagnostic.error) return behavior_diagnostic;
   if (!record.has_value()) {
     return MakeEngineApiDiagnostic("SBSQL.STRUCTURED_TYPE_NOT_FOUND",
                                    "sbsql.structured_type.not_found",
@@ -701,7 +701,10 @@ EngineDropStructuredTypeResult EngineDropStructuredType(
                                                             std::string(kOperation),
                                                             base);
   }
-  auto existing = FindStructuredType(request, type_uuid);
+  EngineApiDiagnostic behavior_diagnostic;
+  auto existing = FindStructuredType(request, type_uuid, behavior_diagnostic);
+  if (behavior_diagnostic.error) return DiagnosticResult<EngineDropStructuredTypeResult>(
+      request, std::string(kOperation), behavior_diagnostic);
   if (!existing.has_value()) {
     return DiagnosticResult<EngineDropStructuredTypeResult>(
         request,
@@ -772,9 +775,12 @@ EngineShowStructuredTypesResult EngineShowStructuredTypes(
   AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_INTROSPECT");
   const std::string family_filter =
       CanonicalFamily(OptionValue(request, "structured_family:")).value_or("");
+  EngineApiDiagnostic behavior_diagnostic;
   const auto records = VisibleApiBehaviorRecords(request.context,
                                                 std::string(kStructuredTypeKind),
-                                                request.context.local_transaction_id);
+                                                request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return DiagnosticResult<EngineShowStructuredTypesResult>(
+      request, std::string(kOperation), behavior_diagnostic);
   for (const auto& record : records) {
     if (!family_filter.empty() &&
         PayloadField(record.payload, "structured_family") != family_filter) {

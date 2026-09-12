@@ -436,10 +436,13 @@ TResult RequireVisibleUdr(const EngineApiRequest& request,
                           ApiBehaviorRecord* out_record) {
   const auto target = RequireTargetUuid<TResult>(request, operation_id);
   if (!target.ok) { return target; }
+  EngineApiDiagnostic behavior_diagnostic;
   const auto record = FindVisibleApiBehaviorRecord(
       request.context,
       request.target_object.uuid,
-      request.context.local_transaction_id);
+      request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<TResult>(
+      request.context, operation_id, behavior_diagnostic);
   if (!record || record->object_kind != kUdrKind) {
     return MakeUdrFailure<TResult>(
         request.context,
@@ -454,10 +457,13 @@ TResult RequireVisibleUdr(const EngineApiRequest& request,
 template <typename TResult>
 TResult ValidateDependencies(const EngineApiRequest& request, const std::string& operation_id) {
   for (const auto& dependency_uuid : DependencyUuids(request)) {
+    EngineApiDiagnostic behavior_diagnostic;
     const auto dependency = FindVisibleApiBehaviorRecord(
         request.context,
         dependency_uuid,
-        request.context.local_transaction_id);
+        request.context.local_transaction_id, behavior_diagnostic);
+    if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<TResult>(
+        request.context, operation_id, behavior_diagnostic);
     if (!dependency || dependency->object_kind != kUdrKind || dependency->state == "failed" || dependency->state == "unloaded") {
       return MakeUdrFailure<TResult>(
           request.context,
@@ -544,10 +550,13 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
   auto target = RequireTargetUuid<EngineRegisterUdrPackageResult>(request, kRegisterOperation);
   if (!target.ok) { return target; }
   if (!request.target_object.uuid.is_nil()) {
+    EngineApiDiagnostic behavior_diagnostic;
     const auto existing = FindVisibleApiBehaviorRecord(
         request.context,
         request.target_object.uuid,
-        request.context.local_transaction_id);
+        request.context.local_transaction_id, behavior_diagnostic);
+    if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineRegisterUdrPackageResult>(
+        request.context, kRegisterOperation, behavior_diagnostic);
     if (existing && existing->object_kind == kUdrKind) {
       return MakeUdrFailure<EngineRegisterUdrPackageResult>(
           request.context,
@@ -797,7 +806,11 @@ EngineInspectUdrPackageResult EngineInspectUdrPackages(const EngineInspectUdrPac
       true);
   if (!authority.ok) { return authority; }
   auto result = MakeApiBehaviorSuccess<EngineInspectUdrPackageResult>(request.context, kInspectOperation);
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, kUdrKind, request.context.local_transaction_id)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, kUdrKind, request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineInspectUdrPackageResult>(
+      request.context, kInspectOperation, behavior_diagnostic);
+  for (const auto& record : behavior_records) {
     const auto runtime_state = udr_runtime::GetPackageState(record.object_uuid);
     AddApiBehaviorRow(&result, {{"object_uuid", record.object_uuid},
                                 {"object_kind", record.object_kind},

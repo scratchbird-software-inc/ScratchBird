@@ -222,12 +222,14 @@ EngineObjectReference TargetFilespace(const EngineApiRequest& request) {
 }
 
 bool VisibleFilespaceCatalogDescriptorExists(const EngineRequestContext& context,
-                                             const std::string& filespace_uuid) {
+                                             const std::string& filespace_uuid,
+                                             EngineApiDiagnostic& diagnostic) {
   if (filespace_uuid.empty()) {
     return false;
   }
   const auto record =
-      FindVisibleApiBehaviorRecord(context, filespace_uuid, context.local_transaction_id);
+      FindVisibleApiBehaviorRecord(context, filespace_uuid, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return false;
   if (record.has_value() && record->object_kind == "filespace") {
     return true;
   }
@@ -2116,8 +2118,12 @@ EngineFilespaceLifecycleResult EngineFilespaceLifecycleOperation(
   const bool creates_or_attaches_descriptor =
       lifecycle_operation == filespace::FilespaceOperation::create_filespace ||
       lifecycle_operation == filespace::FilespaceOperation::attach_filespace;
-  if (!creates_or_attaches_descriptor &&
-      !VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid)) {
+  auto behavior_diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  const bool descriptor_exists = creates_or_attaches_descriptor ||
+      VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid, behavior_diagnostic);
+  if (behavior_diagnostic.error) return FilespaceLifecycleFailure(
+      request, effective_operation, behavior_diagnostic);
+  if (!descriptor_exists) {
     return FilespaceLifecycleFailure(
         request,
         effective_operation,
@@ -2355,7 +2361,11 @@ EngineFilespacePreallocateResult EngineFilespacePreallocate(
     return FilespacePreallocateFailure(
         request, MakeInvalidRequestDiagnostic(kOperation, "target_filespace_uuid_invalid_for_storage_route"));
   }
-  if (!VisibleFilespaceCatalogDescriptorExists(request.context, target.uuid)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const bool descriptor_exists = VisibleFilespaceCatalogDescriptorExists(
+      request.context, target.uuid, behavior_diagnostic);
+  if (behavior_diagnostic.error) return FilespacePreallocateFailure(request, behavior_diagnostic);
+  if (!descriptor_exists) {
     return FilespacePreallocateFailure(
         request, FilespaceCatalogDescriptorNotFoundDiagnostic(kOperation));
   }

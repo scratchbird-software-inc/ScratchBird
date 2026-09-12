@@ -8,52 +8,14 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 
-#include "local_transaction_store.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <fstream>
-#include <filesystem>
-#include <map>
 #include <sstream>
 
 namespace scratchbird::engine::internal_api {
 namespace {
-
-std::vector<std::string> Split(const std::string& value, char delimiter) {
-  std::vector<std::string> parts;
-  std::string current;
-  std::istringstream in(value);
-  while (std::getline(in, current, delimiter)) { parts.push_back(current); }
-  return parts;
-}
-
-int HexValue(char c) {
-  if (c >= '0' && c <= '9') { return c - '0'; }
-  if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
-  if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-  return -1;
-}
-
-std::string HexDecode(const std::string& value) {
-  std::string out;
-  if ((value.size() % 2) != 0) { return out; }
-  out.reserve(value.size() / 2);
-  for (std::size_t i = 0; i < value.size(); i += 2) {
-    const int hi = HexValue(value[i]);
-    const int lo = HexValue(value[i + 1]);
-    if (hi < 0 || lo < 0) { return {}; }
-    out.push_back(static_cast<char>((hi << 4) | lo));
-  }
-  return out;
-}
-
-std::uint64_t ParseU64(const std::string& value) {
-  try { return static_cast<std::uint64_t>(std::stoull(value)); } catch (...) { return 0; }
-}
-
-bool ParseBool(const std::string& value) { return value == "1" || value == "true" || value == "TRUE"; }
 
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
 
@@ -70,176 +32,7 @@ std::string JoinOptions(const std::vector<std::string>& options) {
   return out;
 }
 
-std::string LowerAscii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char ch) {
-                   return static_cast<char>(std::tolower(ch));
-                 });
-  return value;
-}
-
-bool MgaCreatorVisible(
-    const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
-    std::uint64_t creator_tx,
-    const EngineRequestContext& context) {
-  if (creator_tx == 0) { return true; }
-  std::uint64_t transaction_snapshot_boundary =
-      context.snapshot_visible_through_local_transaction_id;
-  bool observer_identity_mismatch = false;
-  for (const auto& observer : inventory.entries) {
-    if (!observer.identity.local_id.valid() ||
-        observer.identity.local_id.value != context.local_transaction_id) {
-      continue;
-    }
-    if (!context.transaction_uuid.is_nil() &&
-        (!observer.identity.transaction_uuid.valid() ||
-         observer.identity.transaction_uuid.value !=
-             context.transaction_uuid)) {
-      observer_identity_mismatch = true;
-      break;
-    }
-    transaction_snapshot_boundary =
-        observer.begin_visible_through_local_transaction_id;
-    break;
-  }
-  if (observer_identity_mismatch) return false;
-  for (const auto& entry : inventory.entries) {
-    if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
-    using scratchbird::transaction::mga::TransactionState;
-    if (creator_tx == context.local_transaction_id) {
-      if (!context.transaction_uuid.is_nil() &&
-          (!entry.identity.transaction_uuid.valid() ||
-           entry.identity.transaction_uuid.value !=
-               context.transaction_uuid)) {
-        return false;
-      }
-      return entry.state == TransactionState::active ||
-             entry.state == TransactionState::read_only_active ||
-             entry.state == TransactionState::preparing ||
-             entry.state == TransactionState::prepared;
-    }
-    if (entry.state != TransactionState::committed &&
-        entry.state != TransactionState::archived) {
-      return false;
-    }
-
-    if (context.statement_metadata_snapshot_engine_owned) {
-      const auto excluded = [creator_tx](const auto& values) {
-        return std::find(values.begin(), values.end(), creator_tx) !=
-               values.end();
-      };
-      if (excluded(
-              context
-                  .statement_metadata_snapshot_active_excluded_local_transaction_ids) ||
-          excluded(
-              context
-                  .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids)) {
-        return false;
-      }
-      return context
-                     .statement_metadata_snapshot_visible_through_local_transaction_id !=
-                 0 &&
-             creator_tx <=
-                 context
-                     .statement_metadata_snapshot_visible_through_local_transaction_id;
-    }
-
-    const std::string isolation = LowerAscii(
-        context.transaction_isolation_level.empty()
-            ? std::string("read_committed")
-            : context.transaction_isolation_level);
-    if ((isolation == "snapshot" || isolation == "repeatable_read" ||
-         isolation == "serializable")) {
-      return creator_tx <= transaction_snapshot_boundary;
-    }
-    return true;
-  }
-  return false;
-}
-
 }  // namespace
-
-EngineApiDiagnostic ValidateApiBehaviorContext(const EngineRequestContext& context,
-                                               const std::string& operation_id,
-                                               bool require_transaction,
-                                               bool require_database_path) {
-  if (require_database_path && context.database_path.empty()) {
-    return MakeInvalidRequestDiagnostic(operation_id, "database_path_required");
-  }
-  if (require_transaction && context.local_transaction_id == 0) {
-    return MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required");
-  }
-  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-}
-
-ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context) {
-  ApiBehaviorStoreResult result;
-  const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.load_state", false, true);
-  if (path_status.error) { result.diagnostic = path_status; return result; }
-  const auto path = ApiBehaviorEventPath(context);
-  std::error_code ec;
-  const auto link_status = std::filesystem::symlink_status(path, ec);
-  if (link_status.type() == std::filesystem::file_type::not_found &&
-      (!ec || ec == std::errc::no_such_file_or_directory)) { result.ok = true; return result; }
-  const auto fail = [&](const char* detail) {
-    ApiBehaviorStoreResult failed;
-    failed.diagnostic = MakeInvalidRequestDiagnostic("api_behavior.load_state", detail);
-    return failed;
-  };
-  if (ec) return fail("api_journal_status_failed");
-  const auto status = std::filesystem::status(path, ec);
-  if (ec || !std::filesystem::is_regular_file(status)) return fail("api_journal_not_regular");
-  std::ifstream in(path, std::ios::binary);
-  if (!in.is_open()) return fail("api_journal_open_failed");
-  const auto transaction_inventory =
-      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
-  if (!transaction_inventory.ok()) {
-    result.diagnostic = MakeEngineApiDiagnostic(
-        transaction_inventory.diagnostic.diagnostic_code.empty()
-            ? "SB-MGA-TXN-INV-LOAD-FAILED"
-            : transaction_inventory.diagnostic.diagnostic_code,
-        transaction_inventory.diagnostic.message_key.empty()
-            ? "mga.transaction_inventory.load_failed"
-            : transaction_inventory.diagnostic.message_key,
-        transaction_inventory.diagnostic.remediation_hint,
-        true);
-    return result;
-  }
-  std::map<std::string, ApiBehaviorRecord> latest;
-  std::string line;
-  std::uint64_t sequence = 0;
-  while (std::getline(in, line)) {
-    ++sequence;
-    if (line.rfind("SBCRUD1", 0) == 0) { continue; }
-    const auto magic_pos = line.find(kApiBehaviorEventMagic);
-    if (magic_pos == std::string::npos) { continue; }
-    if (magic_pos != 0) { line = line.substr(magic_pos); }
-    const auto parts = Split(line, '\t');
-    if (parts.size() < 10 || parts[1] != std::string("RECORD")) { continue; }
-    ApiBehaviorRecord record;
-    record.event_sequence = sequence;
-    record.creator_tx = ParseU64(parts[2]);
-    record.operation_id = parts[3];
-    record.object_uuid = parts[4];
-    record.object_kind = parts[5];
-    record.default_name = HexDecode(parts[6]);
-    record.payload = HexDecode(parts[7]);
-    record.state = parts[8];
-    record.deleted = ParseBool(parts[9]);
-    if (!MgaCreatorVisible(transaction_inventory.inventory,
-                           record.creator_tx,
-                           context)) {
-      continue;
-    }
-    latest[record.object_uuid] = std::move(record);
-  }
-  if (in.bad()) return fail("api_journal_read_failed");
-  for (const auto& [uuid, record] : latest) {
-    if (!record.deleted) { result.state.records.push_back(record); }
-  }
-  result.ok = true;
-  return result;
-}
 
 EngineApiDiagnostic AppendApiBehaviorEvent(const EngineRequestContext& context, const std::string& event) {
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.append_event", false, true);
@@ -307,29 +100,6 @@ void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::strin
 
 void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
-}
-
-std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,
-                                                         const std::string& object_kind,
-                                                         std::uint64_t observer_tx) {
-  EngineRequestContext effective = context;
-  if (effective.local_transaction_id == 0) { effective.local_transaction_id = observer_tx; }
-  const auto loaded = LoadApiBehaviorState(effective);
-  std::vector<ApiBehaviorRecord> records;
-  if (!loaded.ok) { return records; }
-  for (const auto& record : loaded.state.records) {
-    if (object_kind.empty() || record.object_kind == object_kind) { records.push_back(record); }
-  }
-  return records;
-}
-
-std::optional<ApiBehaviorRecord> FindVisibleApiBehaviorRecord(const EngineRequestContext& context,
-                                                              const std::string& object_uuid,
-                                                              std::uint64_t observer_tx) {
-  for (const auto& record : VisibleApiBehaviorRecords(context, {}, observer_tx)) {
-    if (record.object_uuid == object_uuid) { return record; }
-  }
-  return std::nullopt;
 }
 
 EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record) {

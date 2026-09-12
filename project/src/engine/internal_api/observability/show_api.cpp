@@ -1289,7 +1289,11 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
     }
   }
 
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, observer_tx)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, {}, observer_tx, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+      request.context, "observability.show_catalog", behavior_diagnostic);
+  for (const auto& record : behavior_records) {
     if (record.object_uuid.empty() ||
         record.object_kind == "schema" ||
         record.object_kind == "table" ||
@@ -1510,7 +1514,11 @@ EngineShowCatalogResult EngineShowCatalog(const EngineShowCatalogRequest& reques
       }
     }
   }
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id)) {
+  EngineApiDiagnostic behavior_diagnostic;
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+      request.context, "observability.show_catalog", behavior_diagnostic);
+  for (const auto& record : behavior_records) {
     AddApiBehaviorRow(&result, {{"object_uuid", record.object_uuid}, {"object_kind", record.object_kind}, {"name", record.default_name}});
   }
   AddApiBehaviorEvidence(&result, "catalog_rows", std::to_string(result.result_shape.rows.size()));

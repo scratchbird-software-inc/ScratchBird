@@ -358,13 +358,15 @@ TResult DiagnosticResult(const EngineApiRequest& request,
                                             std::move(diagnostic));
 }
 
-void AddTemporalPeriodRows(EngineApiResult* result,
+EngineApiDiagnostic AddTemporalPeriodRows(EngineApiResult* result,
                            const EngineApiRequest& request,
                            std::string_view table_filter,
                            std::string_view period_filter) {
+  EngineApiDiagnostic diagnostic;
   const auto records = VisibleApiBehaviorRecords(request.context,
                                                 std::string(kTemporalPeriodKind),
-                                                request.context.local_transaction_id);
+                                                request.context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return diagnostic;
   for (const auto& record : records) {
     const std::string table_uuid = PayloadField(record.payload, "table_uuid");
     if (!table_filter.empty() && table_uuid != table_filter) {
@@ -386,6 +388,7 @@ void AddTemporalPeriodRows(EngineApiResult* result,
                        {"mga_snapshot_visible_through",
                         std::to_string(request.context.snapshot_visible_through_local_transaction_id)}});
   }
+  return diagnostic;
 }
 
 }  // namespace
@@ -515,7 +518,9 @@ EngineShowBitemporalPeriodsResult EngineShowBitemporalPeriods(
   result.result_shape.result_kind = "rs.bitemporal.periods.v1";
   AddTemporalEvidence(&result, "show_periods", "EngineShowBitemporalPeriods");
   AddApiBehaviorEvidence(&result, "sblr_opcode", "SBLR_CATALOG_INTROSPECT");
-  AddTemporalPeriodRows(&result, request, TableUuid(request), {});
+  auto behavior_diagnostic = AddTemporalPeriodRows(&result, request, TableUuid(request), {});
+  if (behavior_diagnostic.error) return DiagnosticResult<EngineShowBitemporalPeriodsResult>(
+      request, std::string(kOperation), behavior_diagnostic);
   result.result_shape.result_kind = "rs.bitemporal.periods.v1";
   return result;
 }
@@ -541,10 +546,14 @@ EngineShowBitemporalHistoryResult EngineShowBitemporalHistory(
   AddApiBehaviorEvidence(&result,
                          "sblr_opcode",
                          "SBLR_BITEMPORAL_FOR_VERSIONS_BETWEEN");
-  AddTemporalPeriodRows(&result, request, TableUuid(request), PeriodUuid(request));
+  auto behavior_diagnostic = AddTemporalPeriodRows(&result, request, TableUuid(request), PeriodUuid(request));
+  if (behavior_diagnostic.error) return DiagnosticResult<EngineShowBitemporalHistoryResult>(
+      request, std::string(kOperation), behavior_diagnostic);
   const auto dml_records = VisibleApiBehaviorRecords(request.context,
                                                      std::string(kTemporalDmlEventKind),
-                                                     request.context.local_transaction_id);
+                                                     request.context.local_transaction_id, behavior_diagnostic);
+  if (behavior_diagnostic.error) return DiagnosticResult<EngineShowBitemporalHistoryResult>(
+      request, std::string(kOperation), behavior_diagnostic);
   for (const auto& record : dml_records) {
     if (!TableUuid(request).empty() &&
         PayloadField(record.payload, "table_uuid") != TableUuid(request)) {

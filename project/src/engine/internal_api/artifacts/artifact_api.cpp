@@ -144,7 +144,9 @@ std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestCo
         StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
     rows.push_back(std::move(entry));
   }
-  for (const auto& record : VisibleApiBehaviorRecords(context, {}, context.local_transaction_id)) {
+  const auto behavior_records = VisibleApiBehaviorRecords(context, {}, context.local_transaction_id, diagnostic);
+  if (diagnostic.error) return {};
+  for (const auto& record : behavior_records) {
     if (record.object_kind == "schema" && schema_tree_uuids.contains(record.object_uuid)) {
       continue;
     }
@@ -317,7 +319,7 @@ bool ExistingArtifactObjectVisible(const EngineRequestContext& context,
   const auto schema = FindVisibleSchemaTreeRecord(context, object_uuid, observer_tx, diagnostic);
   if (diagnostic.error) return false;
   if (schema) return true;
-  if (FindVisibleApiBehaviorRecord(context, object_uuid, observer_tx)) { return true; }
+  if (FindVisibleApiBehaviorRecord(context, object_uuid, observer_tx, diagnostic)) { return true; }
   return false;
 }
 
@@ -419,7 +421,10 @@ EngineExportCatalogArtifactsResult EngineExportCatalogArtifacts(const EngineExpo
     AddArtifactRow(&result, "catalog_object", schema.schema_uuid, "schema", schema.default_name, schema.payload);
     ++count;
   }
-  for (const auto& record : VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id)) {
+  const auto behavior_records = VisibleApiBehaviorRecords(request.context, {}, request.context.local_transaction_id, schema_diagnostic);
+  if (schema_diagnostic.error) return MakeApiBehaviorDiagnostic<EngineExportCatalogArtifactsResult>(
+      request.context, "artifact.export_catalog", schema_diagnostic);
+  for (const auto& record : behavior_records) {
     if (record.object_kind == "schema" && schema_tree_uuids.contains(record.object_uuid)) {
       continue;
     }
