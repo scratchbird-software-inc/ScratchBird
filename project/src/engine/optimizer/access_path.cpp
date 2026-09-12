@@ -34,6 +34,15 @@ std::string JsonEscape(std::string_view input) {
   return out.str();
 }
 
+void AppendIdentityBytes(std::ostream& out, const planner::CanonicalPlannerUuid& identity) {
+  out << '[';
+  for (std::size_t i = 0; i < identity.bytes.size(); ++i) {
+    if (i) out << ',';
+    out << static_cast<unsigned>(identity.bytes[i]);
+  }
+  out << ']';
+}
+
 PlanCandidate MakeCandidate(std::string id,
                             planner::PhysicalAccessKind access_kind,
                             std::vector<std::string> required_facts,
@@ -387,6 +396,11 @@ std::string SerializePlanCandidateToJson(const PlanCandidate& candidate) {
   std::ostringstream out;
   out << "{";
   out << "\"candidate_id\":\"" << JsonEscape(candidate.candidate_id) << "\",";
+  out << "\"relation_uuid_bytes\":";
+  AppendIdentityBytes(out, candidate.relation_uuid);
+  out << ",\"index_uuid_bytes\":";
+  AppendIdentityBytes(out, candidate.index_uuid);
+  out << ',';
   out << "\"access_kind\":\"" << planner::PhysicalAccessKindName(candidate.access_kind) << "\",";
   out << "\"scope\":\"" << JsonEscape(candidate.scope) << "\",";
   out << "\"estimated_rows\":" << candidate.estimated_rows << ",";
@@ -415,7 +429,14 @@ std::string SerializePlanCandidateToJson(const PlanCandidate& candidate) {
   if (candidate.ordered_limit_evidence.present) {
     const auto& evidence = candidate.ordered_limit_evidence;
     out << ",\"ordered_limit\":{";
-    out << "\"index_uuid\":\"" << JsonEscape(evidence.index_uuid) << "\",";
+    out << "\"index_uuid_bytes\":";
+    AppendIdentityBytes(out, evidence.index_uuid);
+    out << ",\"order_by_column_uuid_bytes\":[";
+    for (std::size_t i = 0; i < evidence.order_by_column_uuids.size(); ++i) {
+      if (i) out << ',';
+      AppendIdentityBytes(out, evidence.order_by_column_uuids[i]);
+    }
+    out << "],";
     out << "\"limit_count\":" << evidence.limit_count << ",";
     out << "\"index_order_satisfied\":" << (evidence.index_order_satisfied ? "true" : "false") << ",";
     out << "\"sort_avoided\":" << (evidence.sort_avoided ? "true" : "false");

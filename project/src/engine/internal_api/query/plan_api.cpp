@@ -13197,18 +13197,15 @@ bool AttachLegacyOptimizerSelectionEvidence(
     auto selected_candidate = std::find_if(optimized.candidates.begin(),
                                            optimized.candidates.end(),
                                            [&](const opt::OptimizerCandidate& candidate) {
-                                             return candidate.plan_candidate.candidate_id ==
+                                             return candidate.selected &&
+                                                    candidate.plan_candidate.candidate_id ==
                                                     optimized.selected_primary_candidate_id;
                                            });
-    if (selected_candidate == optimized.candidates.end()) {
-      selected_candidate = std::find_if(optimized.candidates.begin(),
-                                        optimized.candidates.end(),
-                                        [](const opt::OptimizerCandidate& candidate) {
-                                          return candidate.selected;
-                                        });
-    }
-    if (selected_candidate == optimized.candidates.end() && !optimized.candidates.empty()) {
-      selected_candidate = optimized.candidates.begin();
+    if (selected_candidate == optimized.candidates.end() ||
+        std::count_if(optimized.candidates.begin(), optimized.candidates.end(),
+                      [](const opt::OptimizerCandidate& candidate) { return candidate.selected; }) != 1) {
+      *error_detail = "optimizer_selected_candidate_binding_invalid";
+      return false;
     }
     if (selected_candidate != optimized.candidates.end()) {
       evidence->push_back({"optimizer_statistics_version", selected_candidate->statistics_version});

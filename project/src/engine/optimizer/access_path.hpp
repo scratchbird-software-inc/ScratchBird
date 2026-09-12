@@ -43,16 +43,20 @@ struct PlanSummaryPruneEvidence {
 
 struct PlanOrderedLimitEvidence {
   bool present = false;
-  std::string index_uuid;
-  std::vector<std::string> order_by_column_uuids;
+  planner::CanonicalPlannerUuid index_uuid;
+  std::vector<planner::CanonicalPlannerUuid> order_by_column_uuids;
   std::uint64_t limit_count = 0;
   bool index_order_satisfied = false;
   bool sort_avoided = false;
+  bool operator==(const PlanOrderedLimitEvidence&) const = default;
 };
 
 // SEARCH_KEY: SB_OPTIMIZER_ACCESS_PATH_CANDIDATES
 struct PlanCandidate {
+  // Semantic candidate label, never a container for formatted object UUIDs.
   std::string candidate_id;
+  planner::CanonicalPlannerUuid relation_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
   scratchbird::engine::planner::PhysicalAccessKind access_kind = scratchbird::engine::planner::PhysicalAccessKind::kNone;
   std::string scope = "local";
   std::vector<std::string> required_facts;

@@ -84,6 +84,6 @@ std::vector<PhysicalPlanNode> BuildPhysicalAccessNodes(const std::vector<PlanCan
                                                        const std::string& descriptor_digest);
 bool IndexCanSatisfyPredicate(const IndexStats& index, const std::string& predicate_kind);
 bool IndexCanSatisfyOrdering(const IndexStats& index, const OrderedLimitPlanningRequest& ordered_limit);
-bool IndexCanCoverProjection(const IndexStats& index, const std::vector<std::string>& projected_column_uuids);
+bool IndexCanCoverProjection(const IndexStats& index, const std::vector<planner::CanonicalPlannerUuid>& projected_column_uuids);
 
 }  // namespace scratchbird::engine::optimizer

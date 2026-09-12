@@ -64,11 +64,15 @@ void AppendSorted(std::ostringstream& out, const char* label, std::vector<std::s
   for (const auto& value : values) out << value << ';';
 }
 
-bool CandidateMentions(const PlanCandidate& candidate, const std::string& dependency_uuid) {
-  if (dependency_uuid.empty()) return false;
-  if (candidate.candidate_id.find(dependency_uuid) != std::string::npos) return true;
-  for (const auto& fact : candidate.required_facts) if (fact.find(dependency_uuid) != std::string::npos) return true;
-  return false;
+bool CandidateMentions(const PlanCandidate& candidate, const internal_api::EngineUuid& dependency_uuid) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(dependency_uuid)) return false;
+  if (candidate.relation_uuid == dependency_uuid || candidate.index_uuid == dependency_uuid ||
+      candidate.ordered_limit_evidence.index_uuid == dependency_uuid) return true;
+  return std::ranges::any_of(candidate.statistic_inputs, [&](const auto& statistic) {
+    return statistic.target.kind == OptimizerStatisticTargetKind::kObject &&
+           statistic.target.object_uuid == dependency_uuid;
+  }) || std::ranges::find(candidate.ordered_limit_evidence.order_by_column_uuids, dependency_uuid) !=
+        candidate.ordered_limit_evidence.order_by_column_uuids.end();
 }
 
 bool CandidateIsClusterPath(const PlanCandidate& candidate) {
@@ -197,9 +201,13 @@ void AddLookupEvidence(OptimizerPlanCacheLookupResult* result,
   result->evidence.push_back(std::move(detail));
 }
 
-bool PlanMentionsDependency(const CachedOptimizerPlan& plan, const std::string& dependency_uuid) {
-  if (dependency_uuid.empty()) { return false; }
-  if (plan.cache_key.find(dependency_uuid) != std::string::npos) { return true; }
+bool PlanMentionsDependency(const CachedOptimizerPlan& plan, const internal_api::EngineUuid& dependency_uuid) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(dependency_uuid)) return false;
+  const auto contains = [&](const auto& identities) {
+    return std::ranges::find(identities, dependency_uuid) != identities.end();
+  };
+  if (contains(plan.key_input.object_uuids) || contains(plan.key_input.index_uuids) ||
+      contains(plan.key_input.function_uuids) || contains(plan.key_input.filespace_uuids)) return true;
   for (const auto& candidate : plan.result.candidates) {
     if (CandidateMentions(candidate, dependency_uuid)) { return true; }
   }

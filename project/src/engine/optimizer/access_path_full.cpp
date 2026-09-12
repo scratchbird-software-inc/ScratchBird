@@ -24,9 +24,11 @@ PlanCandidate MakeAccessCandidate(std::string id,
                                   CostVector cost,
                                   std::uint64_t rows,
                                   std::vector<std::string> required,
-                                  std::vector<std::string> missing = {}) {
+                                  std::vector<std::string> missing = {},
+                                  planner::CanonicalPlannerUuid index_uuid = {}) {
   PlanCandidate candidate;
   candidate.candidate_id = std::move(id);
+  candidate.index_uuid = index_uuid;
   candidate.access_kind = kind;
   candidate.cost = std::move(cost);
   candidate.estimated_rows = rows;
@@ -55,14 +57,22 @@ bool IsSpecializedPredicate(const std::string& predicate_kind, const std::string
          (predicate_kind == "timeseries_append" && index_family == "timeseries");
 }
 
-bool VectorContains(const std::vector<std::string>& values, const std::string& value) {
+bool VectorContains(const std::vector<planner::CanonicalPlannerUuid>& values,
+                    const planner::CanonicalPlannerUuid& value) {
   return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-bool VectorPrefixMatches(const std::vector<std::string>& prefix, const std::vector<std::string>& values) {
+bool ValidIndexBinding(const IndexStats& index) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(index.index_uuid) &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(index.relation_uuid) &&
+      OptimizerStatsIdentityIsUsable(index.identity) && !index.rebuild_in_progress;
+}
+
+bool VectorPrefixMatches(const std::vector<planner::CanonicalPlannerUuid>& prefix,
+                         const std::vector<planner::CanonicalPlannerUuid>& values) {
   if (prefix.empty() || values.size() < prefix.size()) return false;
   for (std::size_t i = 0; i < prefix.size(); ++i) {
-    if (prefix[i] != values[i]) return false;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(prefix[i]) || prefix[i] != values[i]) return false;
   }
   return true;
 }
@@ -77,21 +87,23 @@ CostVector SelectableBitmapSummaryCost(std::string reason) {
 }
 
 std::vector<std::string> CoveringRefusalReasons(const IndexStats& index,
-                                                const std::vector<std::string>& projected_column_uuids,
+                                                const std::vector<planner::CanonicalPlannerUuid>& projected_column_uuids,
                                                 bool index_visibility_native,
                                                 const CoveringPayloadPlanningProof& payload) {
   std::vector<std::string> reasons;
+  if (!ValidIndexBinding(index)) reasons.push_back("covering_index_identity_invalid");
   if (!OptimizerStatsIdentityIsUsable(index.identity) || index.rebuild_in_progress) {
     reasons.push_back("covering_index_rebuild_or_stale");
   }
   if (!index.covering) {
     reasons.push_back("covering_index_not_covering");
   }
-  if (projected_column_uuids.empty()) {
+  if (projected_column_uuids.empty() || index.covered_column_uuids.empty()) {
     reasons.push_back("covering_projection_not_covered");
   } else if (!index.covered_column_uuids.empty()) {
     for (const auto& column_uuid : projected_column_uuids) {
-      if (!VectorContains(index.covered_column_uuids, column_uuid)) {
+      if (!scratchbird::core::uuid::IsEngineIdentityUuid(column_uuid) ||
+          !VectorContains(index.covered_column_uuids, column_uuid)) {
         reasons.push_back("covering_projection_not_covered");
         break;
       }
@@ -244,42 +256,45 @@ void AttachPartitionSegmentPruneEvidence(
 }  // namespace
 
 bool IndexCanSatisfyPredicate(const IndexStats& index, const std::string& predicate_kind) {
-  if (!OptimizerStatsIdentityIsUsable(index.identity)) return false;
-  if (index.rebuild_in_progress) return false;
+  if (!ValidIndexBinding(index)) return false;
   if (IsSpecializedPredicate(predicate_kind, index.index_family)) return true;
   if ((predicate_kind.empty() || predicate_kind == "ordered_limit") &&
-      index.index_family == "btree" && index.leaf_pages > 0) return true;
+      index.index_family == "btree" && index.ordered_range_supported) return true;
   if ((predicate_kind == "scalar_eq" || predicate_kind == "unique_eq") &&
       (index.index_family == "btree" || index.index_family == "hash") &&
-      (index.unique || index.distinct_keys > 0)) return true;
-  if (predicate_kind == "scalar_range") return index.index_family == "btree" && index.leaf_pages > 0;
-  if (predicate_kind == "like_prefix") return index.index_family == "btree" && index.leaf_pages > 0;
-  if (predicate_kind == "row_uuid_eq") return index.unique;
+      index.equality_lookup_supported) return true;
+  if (predicate_kind == "scalar_range") return index.index_family == "btree" && index.ordered_range_supported;
+  if (predicate_kind == "like_prefix") return index.index_family == "btree" && index.ordered_range_supported && index.like_prefix_capable;
+  if (predicate_kind == "row_uuid_eq") return index.unique && index.equality_lookup_supported;
   return false;
 }
 
 bool IndexCanSatisfyOrdering(const IndexStats& index, const OrderedLimitPlanningRequest& ordered_limit) {
   if (!ordered_limit.present) return false;
   if (index.index_family != "btree") return false;
-  if (!OptimizerStatsIdentityIsUsable(index.identity) || index.rebuild_in_progress) return false;
+  if (!ValidIndexBinding(index) || !index.ordered_range_supported) return false;
   return VectorPrefixMatches(ordered_limit.order_by_column_uuids, index.key_column_uuids);
 }
 
-bool IndexCanCoverProjection(const IndexStats& index, const std::vector<std::string>& projected_column_uuids) {
+bool IndexCanCoverProjection(const IndexStats& index, const std::vector<planner::CanonicalPlannerUuid>& projected_column_uuids) {
   if (!index.covering || projected_column_uuids.empty() || index.rebuild_in_progress ||
-      !OptimizerStatsIdentityIsUsable(index.identity)) {
+      !ValidIndexBinding(index)) {
     return false;
   }
-  if (index.covered_column_uuids.empty()) return true;
-  return std::all_of(projected_column_uuids.begin(), projected_column_uuids.end(), [&](const std::string& column_uuid) {
-    return VectorContains(index.covered_column_uuids, column_uuid);
+  if (index.covered_column_uuids.empty()) return false;
+  return std::all_of(projected_column_uuids.begin(), projected_column_uuids.end(), [&](const planner::CanonicalPlannerUuid& column_uuid) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(column_uuid) &&
+           VectorContains(index.covered_column_uuids, column_uuid);
   });
 }
 
 std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlanningRequest& request) {
   std::vector<PlanCandidate> candidates;
-  const std::uint64_t base_rows = request.table_stats ? request.table_stats->visible_row_count : 1000;
-  const std::uint64_t base_pages = request.table_stats ? request.table_stats->page_count : 64;
+  const bool usable_table = request.table_stats &&
+      request.table_stats->identity.object_uuid == request.relation_uuid &&
+      OptimizerTableStatsAreUsable(*request.table_stats);
+  const std::uint64_t base_rows = usable_table ? request.table_stats->visible_row_count : 1000;
+  const std::uint64_t base_pages = usable_table ? request.table_stats->page_count : 64;
   auto partition_segment_prune = request.partition_segment_prune;
   partition_segment_prune.base_row_mga_recheck_planned =
       partition_segment_prune.base_row_mga_recheck_planned &&
@@ -319,22 +334,22 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
       auto refusal_reasons = canonical_metadata && !canonical_match.refusal_reasons.empty()
                                  ? canonical_match.refusal_reasons
                                  : std::vector<std::string>{reason};
-      auto rejected = MakeAccessCandidate("CAND-OPT-INDEX-REFUSED:" + index.index_uuid, planner::PhysicalAccessKind::kScalarBtreeLookup, RejectedCost(reason), rows,
-                                          {"index_uuid", "predicate_compatibility"}, refusal_reasons);
+      auto rejected = MakeAccessCandidate("CAND-OPT-INDEX-REFUSED", planner::PhysicalAccessKind::kScalarBtreeLookup, RejectedCost(reason), rows,
+                                          {"index_uuid", "predicate_compatibility"}, refusal_reasons, index.index_uuid);
       candidates.push_back(std::move(rejected));
       auto covering_refused = CoveringRefusalReasons(index,
                                                      request.projected_column_uuids,
                                                      request.index_visibility_native,
                                                      request.covering_payload);
       if (covering_refused.empty()) covering_refused = refusal_reasons;
-      auto covering = MakeAccessCandidate("CAND-OPT-COVERING:" + index.index_uuid,
+      auto covering = MakeAccessCandidate("CAND-OPT-COVERING",
                                           planner::PhysicalAccessKind::kCoveringIndexScan,
                                           RejectedCost(covering_refused.front()),
                                           rows,
                                           {"covering_projection_covered",
                                            "covering_index_covering",
                                            "covering_visibility_index_native_proof"},
-                                          covering_refused);
+                                          covering_refused, index.index_uuid);
       AttachCoveringPayloadEvidence(&covering, request.covering_payload,
                                     covering_refused);
       candidates.push_back(std::move(covering));
@@ -343,9 +358,9 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
     if (IsSpecializedPredicate(request.predicate_kind, index.index_family)) {
       const auto kind = SpecializedAccessKind(request.predicate_kind);
       auto specialized_cost = ApplyIndexHealthCostAdjustment(CostFor(kind), index);
-      candidates.push_back(MakeAccessCandidate("CAND-OPT-SPECIALIZED:" + index.index_uuid, kind, specialized_cost, std::max<std::uint64_t>(1, rows / 10),
+      candidates.push_back(MakeAccessCandidate("CAND-OPT-SPECIALIZED", kind, specialized_cost, std::max<std::uint64_t>(1, rows / 10),
                                                {"specialized_index_family", "predicate_compatibility", "descriptor_compatibility"},
-                                               request.grants_proven ? std::vector<std::string>{} : std::vector<std::string>{"grants_not_proven"}));
+                                               request.grants_proven ? std::vector<std::string>{} : std::vector<std::string>{"grants_not_proven"}, index.index_uuid));
       continue;
     }
     const bool equality = request.predicate_kind == "scalar_eq" || request.predicate_kind == "unique_eq" || request.predicate_kind == "row_uuid_eq";
@@ -363,9 +378,9 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
     selectivity_input.input_confidence = index.identity.confidence;
     const auto selectivity = EstimatePredicateSelectivity(selectivity_input);
     const std::uint64_t estimate = EstimateRowsAfterSelectivity(rows, selectivity);
-    candidates.push_back(MakeAccessCandidate("CAND-OPT-INDEX:" + index.index_uuid, kind, cost, estimate,
+    candidates.push_back(MakeAccessCandidate("CAND-OPT-INDEX", kind, cost, estimate,
                                              {"index_uuid", "predicate_compatibility", "descriptor_compatibility", "index_depth", "index_leaf_pages", "index_fragmentation_ratio", "index_coverage"},
-                                             request.grants_proven ? std::vector<std::string>{} : std::vector<std::string>{"grants_not_proven"}));
+                                             request.grants_proven ? std::vector<std::string>{} : std::vector<std::string>{"grants_not_proven"}, index.index_uuid));
     if (canonical_metadata && candidates.back().cost.selectable) {
       candidates.back().acceptance_reasons.insert(candidates.back().acceptance_reasons.end(),
                                                   canonical_match.acceptance_reasons.begin(),
@@ -377,9 +392,6 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
       if (!IndexCanSatisfyOrdering(index, request.ordered_limit)) {
         refused.push_back("ordered_limit_index_order_mismatch");
       }
-      if (request.ordered_limit.limit_count == 0) {
-        refused.push_back("ordered_limit_bound_missing");
-      }
       auto ordered_cost = CostFor(planner::PhysicalAccessKind::kScalarBtreeRange);
       ordered_cost.reason = "ordered_limit_index_scan";
       if (refused.empty()) {
@@ -390,12 +402,12 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
         ordered_cost.uncertainty_cost = 0;
         FinalizeCostVector(&ordered_cost);
       }
-      auto ordered = MakeAccessCandidate("CAND-OPT-ORDERED-LIMIT:" + index.index_uuid,
+      auto ordered = MakeAccessCandidate("CAND-OPT-ORDERED-LIMIT",
                                          planner::PhysicalAccessKind::kScalarBtreeRange,
                                          refused.empty() ? ordered_cost : RejectedCost(refused.front()),
-                                         refused.empty() ? std::max<std::uint64_t>(1, request.ordered_limit.limit_count) : estimate,
+                                         refused.empty() ? std::min(estimate, request.ordered_limit.limit_count) : estimate,
                                          {"ordered_limit_index_order_satisfied", "ordered_limit_bound_applied", "ordered_limit_preserves_mga_recheck"},
-                                         refused);
+                                         refused, index.index_uuid);
       ordered.ordered_limit_evidence.present = true;
       ordered.ordered_limit_evidence.index_uuid = index.index_uuid;
       ordered.ordered_limit_evidence.order_by_column_uuids = request.ordered_limit.order_by_column_uuids;
@@ -419,14 +431,14 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
       auto covering_cost = refused.empty()
                                ? CostFor(planner::PhysicalAccessKind::kCoveringIndexScan)
                                : RejectedCost(refused.front());
-      auto covering = MakeAccessCandidate("CAND-OPT-COVERING:" + index.index_uuid,
+      auto covering = MakeAccessCandidate("CAND-OPT-COVERING",
                                           planner::PhysicalAccessKind::kCoveringIndexScan,
                                           std::move(covering_cost),
                                           estimate,
                                           {"covering_projection_covered",
                                            "covering_index_covering",
                                            "covering_visibility_index_native_proof"},
-                                          refused);
+                                          refused, index.index_uuid);
       if (refused.empty()) {
         covering.acceptance_reasons = {"covering_projection_covered",
                                        "covering_index_covering",
@@ -529,6 +541,25 @@ std::vector<PlanCandidate> GenerateFullAccessPathCandidates(const AccessPathPlan
     summary.summary_prune_evidence.summary_metadata_visibility_authority = false;
     summary.summary_prune_evidence.summary_metadata_finality_authority = false;
     candidates.push_back(std::move(summary));
+  }
+  for (auto& candidate : candidates) {
+    candidate.relation_uuid = request.relation_uuid;
+    candidate.uses_local_default_statistics = !usable_table;
+    candidate.uses_policy_default_statistics = !usable_table;
+    if (!usable_table && candidate.cost.selectable) candidate.cost.confidence = CostConfidence::kLow;
+    if (rows == 0) candidate.estimated_rows = 0;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid)) {
+      candidate.refusal_reasons.push_back("relation_uuid_invalid");
+      candidate.cost = RejectedCost("relation_uuid_invalid");
+    } else if (!candidate.index_uuid.is_nil()) {
+      const auto bound = std::find_if(request.candidate_indexes.begin(), request.candidate_indexes.end(),
+          [&](const IndexStats& index) { return index.index_uuid == candidate.index_uuid; });
+      if (bound == request.candidate_indexes.end() || !ValidIndexBinding(*bound) ||
+          bound->relation_uuid != request.relation_uuid) {
+        candidate.refusal_reasons.push_back("index_relation_binding_invalid");
+        candidate.cost = RejectedCost("index_relation_binding_invalid");
+      }
+    }
   }
   AttachPartitionSegmentPruneEvidence(&candidates, pruning_plan);
   return candidates;

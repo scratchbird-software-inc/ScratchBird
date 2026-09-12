@@ -8,6 +8,7 @@
 
 #include "physical_plan.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -33,6 +34,15 @@ std::string JsonEscape(std::string_view input) {
 
 std::string Indent(std::size_t count) {
   return std::string(count, ' ');
+}
+
+void AppendIdentityBytes(std::ostream& out, const planner::CanonicalPlannerUuid& identity) {
+  out << '[';
+  for (std::size_t i = 0; i < identity.bytes.size(); ++i) {
+    if (i) out << ',';
+    out << static_cast<unsigned>(identity.bytes[i]);
+  }
+  out << ']';
 }
 
 bool IsStorageAccessKind(planner::PhysicalAccessKind access_kind) {
@@ -146,6 +156,9 @@ PhysicalPlanNode PhysicalPlanNodeFromCandidate(const PlanCandidate& candidate,
                                                std::string descriptor_digest) {
   PhysicalPlanNode node;
   node.node_id = candidate.candidate_id;
+  node.relation_uuid = candidate.relation_uuid;
+  node.index_uuid = candidate.index_uuid;
+  node.ordered_limit_evidence = candidate.ordered_limit_evidence;
   node.access_kind = candidate.access_kind;
   node.executor_capability_id = std::move(executor_capability_id);
   node.descriptor_digest = std::move(descriptor_digest);
@@ -168,7 +181,6 @@ PhysicalPlanNode PhysicalPlanNodeFromCandidate(const PlanCandidate& candidate,
     node.runtime_evidence.push_back(evidence);
   }
   if (candidate.ordered_limit_evidence.present) {
-    node.runtime_evidence.push_back("ordered_limit_index_uuid=" + candidate.ordered_limit_evidence.index_uuid);
     node.runtime_evidence.push_back("ordered_limit_count=" + std::to_string(candidate.ordered_limit_evidence.limit_count));
     node.runtime_evidence.push_back(std::string("ordered_limit_index_order_satisfied=") +
                                     (candidate.ordered_limit_evidence.index_order_satisfied ? "true" : "false"));
@@ -242,12 +254,41 @@ PhysicalPlanValidation ValidatePhysicalPlanNode(const PhysicalPlanNode& node) {
   return validation;
 }
 
+bool PhysicalPlanContainsCandidateBinding(const PhysicalPlanNode& node, const PlanCandidate& candidate) {
+  const auto token = "selected_candidate_id=" + candidate.candidate_id;
+  if (node.relation_uuid == candidate.relation_uuid && node.index_uuid == candidate.index_uuid &&
+      node.access_kind == candidate.access_kind && node.ordered_limit_evidence == candidate.ordered_limit_evidence &&
+      std::find(node.runtime_evidence.begin(), node.runtime_evidence.end(), token) != node.runtime_evidence.end())
+    return true;
+  return std::ranges::any_of(node.children, [&](const auto& child) {
+    return PhysicalPlanContainsCandidateBinding(child, candidate);
+  });
+}
+
 std::string SerializePhysicalPlanNodeToJson(const PhysicalPlanNode& node, std::size_t indent) {
   const auto pad = Indent(indent);
   const auto child_pad = Indent(indent + 2);
   std::ostringstream out;
   out << pad << "{\n";
   out << child_pad << "\"node_id\": \"" << JsonEscape(node.node_id) << "\",\n";
+  out << child_pad << "\"relation_uuid_bytes\": ";
+  AppendIdentityBytes(out, node.relation_uuid);
+  out << ",\n" << child_pad << "\"index_uuid_bytes\": ";
+  AppendIdentityBytes(out, node.index_uuid);
+  out << ",\n";
+  if (node.ordered_limit_evidence.present) {
+    const auto& ordered = node.ordered_limit_evidence;
+    out << child_pad << "\"ordered_limit\": {\"index_uuid_bytes\":";
+    AppendIdentityBytes(out, ordered.index_uuid);
+    out << ",\"order_by_column_uuid_bytes\":[";
+    for (std::size_t i = 0; i < ordered.order_by_column_uuids.size(); ++i) {
+      if (i) out << ',';
+      AppendIdentityBytes(out, ordered.order_by_column_uuids[i]);
+    }
+    out << "],\"limit_count\":" << ordered.limit_count
+        << ",\"index_order_satisfied\":" << (ordered.index_order_satisfied ? "true" : "false")
+        << ",\"sort_avoided\":" << (ordered.sort_avoided ? "true" : "false") << "},\n";
+  }
   out << child_pad << "\"access_kind\": \"" << planner::PhysicalAccessKindName(node.access_kind) << "\",\n";
   out << child_pad << "\"executor_capability_id\": \"" << JsonEscape(node.executor_capability_id) << "\",\n";
   out << child_pad << "\"descriptor_digest\": \"" << JsonEscape(node.descriptor_digest) << "\",\n";

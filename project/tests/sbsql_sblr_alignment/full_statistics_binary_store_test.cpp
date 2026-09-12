@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/optimizer/optimizer_statistics_full.hpp"
+#include "../../src/engine/optimizer/access_path_full.hpp"
 #include "binary_uuid_fixture.hpp"
 #include <algorithm>
 #include <iostream>
@@ -99,10 +100,62 @@ void BinaryKeys() {
   key.object_uuids = {Uuid{}};
   Check(!o::ValidateOptimizerPinnedStatsDescriptorKey(key).ok, "nil object refuses admission");
 }
+
+void AccessBindings() {
+  o::IndexStats index;
+  index.identity = Identity(1, 2); index.index_uuid = Id(3); index.relation_uuid = Id(1);
+  index.covering = true;
+  Check(!o::IndexCanCoverProjection(index, {Id(4)}), "empty covering list is not universal coverage");
+  index.covered_column_uuids = {Id(4), Id(5)};
+  Check(o::IndexCanCoverProjection(index, {Id(5), Id(4)}), "exact binary covering set");
+  Check(!o::IndexCanCoverProjection(index, {Id(6)}), "uncovered column refuses");
+  Check(!o::IndexCanCoverProjection(index, {}), "missing projection refuses");
+  index.covered_column_uuids.push_back(Uuid{});
+  Check(!o::IndexCanCoverProjection(index, {Uuid{}}), "nil cannot supply covering proof");
+  index.key_column_uuids = {Id(4), Id(5)};
+  index.ordered_range_supported = true; index.equality_lookup_supported = true;
+  Check(o::IndexCanSatisfyPredicate(index, "scalar_eq"), "empty index still supports equality");
+  Check(o::IndexCanSatisfyPredicate(index, "scalar_range"), "empty index still supports range");
+  o::OrderedLimitPlanningRequest ordered{true, {Id(4)}, 0};
+  Check(o::IndexCanSatisfyOrdering(index, ordered), "zero limit with exact binary ordering");
+  ordered.order_by_column_uuids = {Id(5)};
+  Check(!o::IndexCanSatisfyOrdering(index, ordered), "ordering must be leading key prefix");
+  index.covered_column_uuids = {Id(4)};
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    auto different = Id(4); different.bytes[bit / 8] ^= 1U << (bit % 8);
+    Check(!o::IndexCanCoverProjection(index, {different}), "all128 covering identity bits compared");
+    ordered.order_by_column_uuids = {different};
+    Check(!o::IndexCanSatisfyOrdering(index, ordered), "all128 ordering identity bits compared");
+  }
+  o::PlanCandidate candidate;
+  candidate.candidate_id = "CAND-OPT-ORDERED-LIMIT";
+  candidate.relation_uuid = Id(1); candidate.index_uuid = Id(3);
+  candidate.access_kind = scratchbird::engine::planner::PhysicalAccessKind::kScalarBtreeRange;
+  candidate.ordered_limit_evidence = {true, Id(3), {Id(4), Id(5)}, 0, true, true};
+  auto physical = o::PhysicalPlanNodeFromCandidate(candidate, "scalar_btree_range", std::string(64, 'a'));
+  Check(physical.relation_uuid == Id(1) && physical.index_uuid == Id(3), "physical node retains binary source");
+  Check(physical.ordered_limit_evidence.index_uuid == Id(3) &&
+        physical.ordered_limit_evidence.order_by_column_uuids == std::vector<Uuid>{Id(4), Id(5)},
+        "physical node retains typed ordered-limit binding");
+  Check(o::PhysicalPlanContainsCandidateBinding(physical, candidate), "actual candidate binding retained");
+  for (unsigned bit = 0; bit < 128; ++bit) {
+    auto changed = candidate;
+    changed.index_uuid.bytes[bit / 8] ^= 1U << (bit % 8);
+    Check(!o::PhysicalPlanContainsCandidateBinding(physical, changed), "shared label cannot mask changed binary index");
+    changed = candidate; changed.relation_uuid.bytes[bit / 8] ^= 1U << (bit % 8);
+    Check(!o::PhysicalPlanContainsCandidateBinding(physical, changed), "shared label cannot mask changed binary relation");
+  }
+  auto changed_limit = candidate; changed_limit.ordered_limit_evidence.limit_count = 1;
+  Check(!o::PhysicalPlanContainsCandidateBinding(physical, changed_limit), "ordered bound is part of retained binding");
+  auto parent = o::PhysicalPlanNode{}; parent.children.push_back(physical);
+  Check(o::PhysicalPlanContainsCandidateBinding(parent, candidate), "retained binding found through real tree");
+  candidate.index_uuid = Id(6);
+  Check(physical.index_uuid == Id(3), "physical node owns independent source binding");
+}
 }
 int main() {
   try {
-    StoreAndCounts(); CorrelationsAndIndexes(); BinaryKeys();
+    StoreAndCounts(); CorrelationsAndIndexes(); BinaryKeys(); AccessBindings();
     std::cout << "PASS full statistics binary store checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& e) {

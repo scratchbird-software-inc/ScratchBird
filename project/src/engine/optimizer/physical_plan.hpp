@@ -18,6 +18,9 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_PHYSICAL_PLAN_NODE_TAXONOMY
 struct PhysicalPlanNode {
   std::string node_id;
+  planner::CanonicalPlannerUuid relation_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
+  PlanOrderedLimitEvidence ordered_limit_evidence;
   scratchbird::engine::planner::PhysicalAccessKind access_kind = scratchbird::engine::planner::PhysicalAccessKind::kNone;
   std::string executor_capability_id;
   std::string descriptor_digest;
@@ -49,6 +52,7 @@ PhysicalPlanNode PhysicalPlanNodeFromCandidate(const PlanCandidate& candidate,
                                                std::string executor_capability_id,
                                                std::string descriptor_digest);
 PhysicalPlanValidation ValidatePhysicalPlanNode(const PhysicalPlanNode& node);
+bool PhysicalPlanContainsCandidateBinding(const PhysicalPlanNode& node, const PlanCandidate& candidate);
 const char* RequiredExecutorCapabilityForAccessKind(scratchbird::engine::planner::PhysicalAccessKind access_kind);
 std::string SerializePhysicalPlanNodeToJson(const PhysicalPlanNode& node, std::size_t indent = 0);
 

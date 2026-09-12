@@ -3377,17 +3377,6 @@ bool ComposeSetOperationNode(OptimizedPlan* optimized,
   return true;
 }
 
-bool PhysicalTreeContainsCandidateEvidence(const PhysicalPlanNode& node,
-                                           const std::string& candidate_id) {
-  const auto token = "selected_candidate_id=" + candidate_id;
-  if (std::find(node.runtime_evidence.begin(), node.runtime_evidence.end(), token) != node.runtime_evidence.end()) {
-    return true;
-  }
-  return std::any_of(node.children.begin(), node.children.end(), [&](const PhysicalPlanNode& child) {
-    return PhysicalTreeContainsCandidateEvidence(child, candidate_id);
-  });
-}
-
 void MarkPrimaryFlatSelection(OptimizedPlan* optimized,
                               const std::vector<LeafSelection>& leaves) {
   if (!leaves.empty()) {
@@ -3475,8 +3464,11 @@ void BuildPhysicalPlanTree(OptimizedPlan* optimized,
   optimized->physical_root = std::move(*current);
   optimized->has_physical_plan = true;
   MarkPrimaryFlatSelection(optimized, leaves);
+  const auto selected_binding = std::find_if(optimized->candidates.begin(), optimized->candidates.end(),
+      [](const OptimizerCandidate& candidate) { return candidate.selected; });
   if (optimized->selected_primary_candidate_id.empty() ||
-      !PhysicalTreeContainsCandidateEvidence(optimized->physical_root, optimized->selected_primary_candidate_id)) {
+      selected_binding == optimized->candidates.end() ||
+      !PhysicalPlanContainsCandidateBinding(optimized->physical_root, selected_binding->plan_candidate)) {
     optimized->diagnostics.push_back("SB_OPT_PHYSICAL_TREE_PRIMARY_SELECTION_NOT_COMPATIBLE");
     optimized->has_physical_plan = false;
     return;
