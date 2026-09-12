@@ -6,7 +6,10 @@
 #include "model_family_coordinator.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace scratchbird::engine::optimizer {
@@ -16,9 +19,9 @@ namespace scratchbird::engine::optimizer {
 // implementation identities, route classification, cost vectors, and ranking
 // eligibility.
 struct ModelFamilyMetricSnapshotV1 {
-  std::string statistics_snapshot_uuid;
-  std::string property_snapshot_uuid;
-  std::string calibration_profile_uuid;
+  scratchbird::core::platform::Uuid statistics_snapshot_uuid;
+  scratchbird::core::platform::Uuid property_snapshot_uuid;
+  scratchbird::core::platform::Uuid calibration_profile_uuid;
   std::uint64_t statistics_generation{0};
   std::uint32_t confidence_basis_points{0};
   std::uint64_t startup_events{0};
@@ -50,8 +53,8 @@ struct ModelFamilyMetricSnapshotV1 {
 struct ModelFamilyCapabilitySnapshotV1 {
   ModelFamilyAlternativeRouteClassV1 route_class{
       ModelFamilyAlternativeRouteClassV1::kNative};
-  std::string provider_uuid;
-  std::string capability_uuid;
+  scratchbird::core::platform::Uuid provider_uuid;
+  scratchbird::core::platform::Uuid capability_uuid;
   std::uint64_t provider_generation{0};
   bool available{false};
   bool exact{true};
@@ -65,9 +68,36 @@ struct ModelFamilyCapabilitySnapshotV1 {
   ModelFamilyMetricSnapshotV1 metrics;
 };
 
+// Immutable runtime ownership, independent of capability/data-access authority.
+// Identity reuse requires the exact full binary planning-scope content binding.
+class ModelFamilyProfileIdentityOwnerV1 {
+ public:
+  using Uuid = scratchbird::core::platform::Uuid;
+  using Key = std::tuple<ModelFamilyAlternativeRouteClassV1, Uuid, Uuid>;
+  struct Identities {
+    Key key;
+    Uuid alternative_uuid;
+    Uuid cost_vector_uuid;
+  };
+  static std::shared_ptr<const ModelFamilyProfileIdentityOwnerV1> Create(
+      std::string binding, std::vector<Key> keys,
+      std::uint64_t maximum_binding_bytes) noexcept;
+  bool Matches(std::string_view binding) const noexcept { return binding_ == binding; }
+  const Uuid& InventoryUuid() const noexcept { return inventory_uuid_; }
+  const Identities* Find(const Key& key) const noexcept;
+  std::size_t Size() const noexcept { return identities_.size(); }
+ private:
+  ModelFamilyProfileIdentityOwnerV1() = default;
+  ModelFamilyProfileIdentityOwnerV1(const ModelFamilyProfileIdentityOwnerV1&) = delete;
+  ModelFamilyProfileIdentityOwnerV1& operator=(const ModelFamilyProfileIdentityOwnerV1&) = delete;
+  Uuid inventory_uuid_;
+  std::string binding_;
+  std::vector<Identities> identities_;
+};
+
 struct ModelFamilyProfileFactoryRequestV1 {
   std::uint16_t abi_version{1};
-  std::string identity_scope;
+  std::shared_ptr<const ModelFamilyProfileIdentityOwnerV1> identity_owner;
   ModelFamilyCoordinatorRequestV1 logical_request;
   std::vector<ModelFamilyCapabilitySnapshotV1> capability_snapshots;
   bool engine_owned{true};
@@ -81,7 +111,8 @@ struct ModelFamilyProfileFactoryResultV1 {
   bool data_access_allowed{false};
   std::uint32_t native_alternative_count{0};
   std::uint32_t exact_fallback_alternative_count{0};
-  std::string candidate_inventory_receipt_uuid;
+  scratchbird::core::platform::Uuid candidate_inventory_receipt_uuid;
+  std::shared_ptr<const ModelFamilyProfileIdentityOwnerV1> identity_owner;
   std::vector<ModelFamilyCandidateV1> candidates;
   std::string diagnostic_id;
   std::string detail;

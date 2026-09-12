@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <iomanip>
+#include <type_traits>
+#include "../../core/uuid/uuid.hpp"
+#include "../planner/logical_plan.hpp"
 #include <limits>
 #include <optional>
 #include <set>
@@ -16,57 +18,11 @@
 namespace scratchbird::engine::optimizer {
 namespace {
 
-bool CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
-  }
-  return true;
+using Uuid = scratchbird::core::platform::Uuid;
+bool CanonicalUuid(const Uuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
-std::uint64_t Fnv1a64(const std::string_view value,
-                      std::uint64_t hash = 14695981039346656037ull) {
-  for (const auto byte : value) {
-    hash ^= static_cast<std::uint8_t>(byte);
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
-std::string DerivedUuid(const std::string_view scope,
-                        const std::string_view purpose) {
-  const auto first = Fnv1a64(purpose, Fnv1a64(scope));
-  const auto second = Fnv1a64(scope, Fnv1a64(purpose));
-  std::array<std::uint8_t, 16> bytes{};
-  for (std::size_t index = 0; index < 8; ++index) {
-    bytes[index] = static_cast<std::uint8_t>(first >> ((7 - index) * 8));
-    bytes[8 + index] =
-        static_cast<std::uint8_t>(second >> ((7 - index) * 8));
-  }
-  bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x50);
-  bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (std::size_t index = 0; index < bytes.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-    out << std::setw(2) << static_cast<unsigned>(bytes[index]);
-  }
-  return out.str();
-}
-
-std::uint64_t SaturatingAdd(const std::uint64_t left,
-                            const std::uint64_t right) {
-  if (right > std::numeric_limits<std::uint64_t>::max() - left) {
-    return std::numeric_limits<std::uint64_t>::max();
-  }
-  return left + right;
-}
 
 bool FamilyOperationValid(const ModelFamilyCoordinatorRequestV1& request) {
   if (request.family_id == "document") {
@@ -155,50 +111,25 @@ std::string ImplementationId(const std::string_view family_id) {
   return {};
 }
 
-bool FamilyMetricShapeValid(const std::string_view family_id,
-                            const ModelFamilyCapabilitySnapshotV1& snapshot) {
+bool FamilyMetricShapeValid(const ModelFamilyCapabilitySnapshotV1& snapshot) {
   const auto& metric = snapshot.metrics;
-  if (!CanonicalUuid(metric.statistics_snapshot_uuid) ||
-      !CanonicalUuid(metric.property_snapshot_uuid) ||
-      !CanonicalUuid(metric.calibration_profile_uuid) ||
-      metric.statistics_generation == 0 ||
-      metric.confidence_basis_points == 0 ||
-      metric.confidence_basis_points > 10'000 ||
-      metric.estimated_rows == 0 || metric.working_set_bytes == 0) {
-    return false;
-  }
-  if (snapshot.route_class ==
-          ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback) {
-    return metric.sequential_pages != 0;
-  }
-  if (family_id == "vector") {
-    return metric.vector_distance_evaluations != 0;
-  }
-  if (family_id == "search") {
-    return metric.text_score_evaluations != 0;
-  }
-  if (family_id == "spatial") {
-    return metric.spatial_evaluations != 0;
-  }
-  return metric.sequential_pages != 0 || metric.random_page_lookups != 0;
+  // Counts are observations, not capability-presence sentinels. A known empty
+  // source may have zero rows, IO, family work, and resident state.
+  return CanonicalUuid(metric.statistics_snapshot_uuid) &&
+      CanonicalUuid(metric.property_snapshot_uuid) &&
+      CanonicalUuid(metric.calibration_profile_uuid) &&
+      metric.statistics_generation != 0 && metric.confidence_basis_points != 0 &&
+      metric.confidence_basis_points <= 10'000;
 }
 
-ModelFamilyCostVectorV1 CostFromSnapshot(
-    const std::string_view identity_scope,
-    const std::string_view family_id,
-    const std::size_t ordinal,
+std::optional<ModelFamilyCostVectorV1> CostFromSnapshot(
+    const Uuid& cost_identity,
     const ModelFamilyCapabilitySnapshotV1& snapshot) {
   const auto& metric = snapshot.metrics;
   ModelFamilyCostVectorV1 cost;
-  const auto route = ModelFamilyAlternativeRouteClassNameV1(snapshot.route_class);
   constexpr std::string_view kScalarizationPolicy =
       "model-family.complete-unit-sum-minus-cache-benefit.v1";
-  cost.cost_vector_uuid = DerivedUuid(
-      identity_scope, "model-family.cost." + std::string(family_id) + "." +
-                          route + "." + snapshot.provider_uuid + "." +
-                          snapshot.capability_uuid + "." +
-                          std::to_string(ordinal) + "." +
-                          std::string(kScalarizationPolicy));
+  cost.cost_vector_uuid = cost_identity;
   cost.provenance_uuid = metric.statistics_snapshot_uuid;
   cost.property_snapshot_uuid = metric.property_snapshot_uuid;
   cost.calibration_profile_uuid = metric.calibration_profile_uuid;
@@ -206,17 +137,16 @@ ModelFamilyCostVectorV1 CostFromSnapshot(
   cost.provenance_generation = metric.statistics_generation;
   cost.confidence_basis_points = metric.confidence_basis_points;
   cost.startup_units = metric.startup_events;
-  cost.cpu_units = SaturatingAdd(metric.estimated_rows,
-                                 metric.startup_events);
-  cost.cpu_units = SaturatingAdd(cost.cpu_units,
-                                 metric.predicate_evaluations);
-  cost.cpu_units = SaturatingAdd(cost.cpu_units,
-                                 metric.vector_distance_evaluations);
-  cost.cpu_units = SaturatingAdd(cost.cpu_units,
-                                 metric.text_score_evaluations);
-  cost.cpu_units = SaturatingAdd(cost.cpu_units,
-                                 metric.spatial_evaluations);
-  cost.cpu_units = SaturatingAdd(cost.cpu_units, metric.udr_invocations);
+  const auto add = [](std::uint64_t value, std::uint64_t& total) {
+    if (value > std::numeric_limits<std::uint64_t>::max() - total) return false;
+    total += value;
+    return true;
+  };
+  for (const auto value : {metric.estimated_rows, metric.startup_events,
+      metric.predicate_evaluations, metric.vector_distance_evaluations,
+      metric.text_score_evaluations, metric.spatial_evaluations, metric.udr_invocations}) {
+    if (!add(value, cost.cpu_units)) return {};
+  }
   cost.sequential_read_units = metric.sequential_pages;
   cost.random_read_units = metric.random_page_lookups;
   cost.page_write_units = metric.page_writes;
@@ -234,8 +164,8 @@ ModelFamilyCostVectorV1 CostFromSnapshot(
   cost.udr_invocation_units = metric.udr_invocations;
   cost.mga_units = metric.mga_rechecks;
   cost.index_maintenance_units = metric.index_maintenance_operations;
-  cost.uncertainty_penalty = SaturatingAdd(
-      metric.uncertainty_events, 10'000 - metric.confidence_basis_points);
+  cost.uncertainty_penalty = metric.uncertainty_events;
+  if (!add(10'000 - metric.confidence_basis_points, cost.uncertainty_penalty)) return {};
   cost.risk_penalty = metric.risk_events;
   cost.cache_miss_units = metric.cache_operations;
   cost.memory_allocation_units = metric.working_set_bytes;
@@ -248,41 +178,113 @@ ModelFamilyCostVectorV1 CostFromSnapshot(
   return cost;
 }
 
-std::string SnapshotReceiptSeed(
-    const ModelFamilyCapabilitySnapshotV1& snapshot) {
-  const auto& metric = snapshot.metrics;
-  const auto boolean = [](const bool value) { return value ? "1" : "0"; };
-  std::ostringstream out;
-  out << ModelFamilyAlternativeRouteClassNameV1(snapshot.route_class) << '|'
-      << snapshot.provider_uuid << '|' << snapshot.capability_uuid << '|'
-      << snapshot.provider_generation << '|' << boolean(snapshot.available)
-      << '|' << boolean(snapshot.exact) << '|'
-      << boolean(snapshot.residual_recheck_required) << '|'
-      << boolean(snapshot.base_row_mga_recheck_required) << '|'
-      << boolean(snapshot.security_recheck_required) << '|'
-      << metric.statistics_snapshot_uuid << '|'
-      << metric.property_snapshot_uuid << '|'
-      << metric.calibration_profile_uuid << '|'
-      << metric.statistics_generation << '|'
-      << metric.confidence_basis_points << '|' << metric.startup_events << '|'
-      << metric.estimated_rows << '|' << metric.sequential_pages << '|'
-      << metric.random_page_lookups << '|' << metric.page_writes << '|'
-      << metric.cache_operations << '|' << metric.working_set_bytes << '|'
-      << metric.memory_grant_units << '|' << metric.spill_bytes << '|'
-      << metric.network_bytes << '|' << metric.compressed_bytes << '|'
-      << metric.encrypted_bytes << '|' << metric.predicate_evaluations << '|'
-      << metric.vector_distance_evaluations << '|'
-      << metric.text_score_evaluations << '|'
-      << metric.spatial_evaluations << '|' << metric.udr_invocations << '|'
-      << metric.mga_rechecks << '|'
-      << metric.index_maintenance_operations << '|'
-      << metric.uncertainty_events << '|' << metric.risk_events << '|'
-      << "model-family.complete-unit-sum-minus-cache-benefit.v1" << '|'
-      << "complete-dimension-vector-v1";
-  return out.str();
+template<class T>
+void BindField(planner::CanonicalPlannerBindingBytes& out, const T& value) {
+  if constexpr (std::is_same_v<T, Uuid>) out.Identity(value);
+  else if constexpr (std::is_same_v<T, bool>) out.Flag(value);
+  else if constexpr (std::is_same_v<T, std::string>) out.Text(value);
+  else if constexpr (std::is_integral_v<T> || std::is_enum_v<T>)
+    out.Number(static_cast<std::uint64_t>(value));
+  else {
+    out.Number(value.size());
+    for (const auto& item : value) BindField(out, item);
+  }
+}
+template<class... T>
+void BindFields(planner::CanonicalPlannerBindingBytes& out, const T&... value) {
+  (BindField(out, value), ...);
+}
+
+// Full content binding, not a UUID, hash, or permission receipt.
+std::string ProfileBinding(const ModelFamilyProfileFactoryRequestV1& request,
+    const std::vector<ModelFamilyCapabilitySnapshotV1>& snapshots) {
+  planner::CanonicalPlannerBindingBytes out("model-family-profile-scope-v1");
+  const auto& logical = request.logical_request;
+  BindFields(out, request.abi_version, request.engine_owned,
+      request.parser_profile_authority_claimed, logical.abi_version, logical.family_id,
+      logical.operation_ids, logical.operation_id, logical.logical_operator_id,
+      logical.composition_profile_id, logical.composition_lexical_source_ordinal,
+      logical.composition_arity, logical.logical_node_id, logical.object_uuid,
+      logical.output_descriptor_ids, logical.bound_sblr_tree_uuid, logical.catalog_epoch_uuid,
+      logical.security_context_uuid, logical.capability_snapshot_uuid, logical.resource_snapshot_uuid,
+      logical.statistics_snapshot_uuid, logical.route_snapshot_uuid, logical.catalog_generation,
+      logical.current_catalog_generation, logical.security_epoch, logical.policy_epoch,
+      logical.resource_epoch, logical.statistics_generation, logical.route_epoch,
+      logical.route_generation, logical.memory_budget_bytes, logical.security_admitted,
+      logical.parser_planning_authority_claimed, logical.transaction_finality_authority_claimed);
+  const auto& mga = logical.mga_statement_context;
+  BindFields(out, mga.statement_uuid, mga.owning_transaction_uuid, mga.statement_snapshot_uuid,
+      mga.statement_metadata_snapshot_uuid, mga.owning_local_transaction_id,
+      mga.visible_committed_high_watermark, mga.oldest_active_transaction_id,
+      mga.oldest_interesting_transaction_id, mga.oldest_snapshot_transaction_id,
+      mga.retention_horizon_transaction_id, mga.active_excluded_local_transaction_ids,
+      mga.in_doubt_excluded_local_transaction_ids, mga.snapshot_kind,
+      mga.publication_inventory_next_local_transaction_id, mga.inventory_authoritative,
+      mga.complete, mga.current, mga.statement_timestamp);
+  out.Number(snapshots.size());
+  for (const auto& snapshot : snapshots) {
+    BindFields(out, snapshot.route_class, snapshot.provider_uuid, snapshot.capability_uuid,
+        snapshot.provider_generation, snapshot.available, snapshot.exact,
+        snapshot.residual_recheck_required, snapshot.base_row_mga_recheck_required,
+        snapshot.security_recheck_required, snapshot.engine_owned, snapshot.local_scope,
+        snapshot.parser_planning_authority_claimed, snapshot.transaction_finality_authority_claimed);
+    const auto& metric = snapshot.metrics;
+    BindFields(out, metric.statistics_snapshot_uuid, metric.property_snapshot_uuid,
+        metric.calibration_profile_uuid, metric.statistics_generation, metric.confidence_basis_points,
+        metric.startup_events, metric.estimated_rows, metric.sequential_pages,
+        metric.random_page_lookups, metric.page_writes, metric.cache_operations,
+        metric.working_set_bytes, metric.memory_grant_units, metric.spill_bytes,
+        metric.network_bytes, metric.compressed_bytes, metric.encrypted_bytes,
+        metric.predicate_evaluations, metric.vector_distance_evaluations,
+        metric.text_score_evaluations, metric.spatial_evaluations, metric.udr_invocations,
+        metric.mga_rechecks, metric.index_maintenance_operations, metric.uncertainty_events,
+        metric.risk_events);
+  }
+  out.Text("model-family.complete-unit-sum-minus-cache-benefit.v1");
+  return std::move(out).Take();
 }
 
 }  // namespace
+
+std::shared_ptr<const ModelFamilyProfileIdentityOwnerV1>
+ModelFamilyProfileIdentityOwnerV1::Create(
+    std::string binding, std::vector<Key> keys,
+    std::uint64_t maximum_binding_bytes) noexcept {
+  try {
+    if (binding.empty() || binding.size() > maximum_binding_bytes ||
+        keys.empty() || keys.size() > 64) return {};
+    std::sort(keys.begin(), keys.end());
+    if (std::adjacent_find(keys.begin(), keys.end()) != keys.end()) return {};
+    for (const auto& [route, provider, capability] : keys) {
+      if ((route != ModelFamilyAlternativeRouteClassV1::kNative &&
+           route != ModelFamilyAlternativeRouteClassV1::kExactCollectionFallback) ||
+          !CanonicalUuid(provider) || !CanonicalUuid(capability)) return {};
+    }
+    auto owner = std::shared_ptr<ModelFamilyProfileIdentityOwnerV1>(
+        new ModelFamilyProfileIdentityOwnerV1);
+    const auto inventory = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!inventory) return {};
+    owner->inventory_uuid_ = *inventory;
+    owner->binding_ = std::move(binding);
+    owner->identities_.reserve(keys.size());
+    std::set<Uuid> issued{*inventory};
+    for (const auto& key : keys) {
+      const auto alternative = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+      const auto cost = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+      if (!alternative || !cost || !issued.insert(*alternative).second ||
+          !issued.insert(*cost).second) return {};
+      owner->identities_.push_back({key, *alternative, *cost});
+    }
+    return owner;
+  } catch (...) { return {}; }
+}
+
+const ModelFamilyProfileIdentityOwnerV1::Identities*
+ModelFamilyProfileIdentityOwnerV1::Find(const Key& key) const noexcept {
+  const auto found = std::lower_bound(identities_.begin(), identities_.end(), key,
+      [](const auto& identities, const auto& wanted) { return identities.key < wanted; });
+  return found != identities_.end() && found->key == key ? &*found : nullptr;
+}
 
 const char* ModelFamilyAlternativeRouteClassNameV1(
     const ModelFamilyAlternativeRouteClassV1 route_class) {
@@ -305,7 +307,7 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
     return result;
   };
   const auto& logical = request.logical_request;
-  if (request.abi_version != 1 || request.identity_scope.empty() ||
+  if (request.abi_version != 1 || logical.memory_budget_bytes == 0 ||
       !request.engine_owned || request.parser_profile_authority_claimed ||
       !logical.candidates.empty() || logical.parser_planning_authority_claimed ||
       logical.transaction_finality_authority_claimed ||
@@ -328,18 +330,29 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
     }
     return left.capability_uuid < right.capability_uuid;
   });
-  std::set<std::string> capability_keys;
-  std::string receipt_seed = request.identity_scope + "|" + logical.family_id +
-                             "|" + logical.operation_id + "|" +
-                             logical.statistics_snapshot_uuid + "|" +
-                             std::to_string(logical.statistics_generation);
+  auto owner = request.identity_owner;
+  const auto binding = ProfileBinding(request, snapshots);
+  if (owner) {
+    if (!owner->Matches(binding) || owner->Size() != snapshots.size())
+      return refuse("SB_MODEL_PROFILE_FACTORY_ADMISSION_REFUSED_V1",
+                    "model-family profile owner scope does not match");
+  } else {
+    std::vector<ModelFamilyProfileIdentityOwnerV1::Key> keys;
+    keys.reserve(snapshots.size());
+    for (const auto& snapshot : snapshots)
+      keys.emplace_back(snapshot.route_class, snapshot.provider_uuid, snapshot.capability_uuid);
+    owner = ModelFamilyProfileIdentityOwnerV1::Create(
+        binding, std::move(keys), logical.memory_budget_bytes);
+    if (!owner)
+      return refuse("SB_MODEL_PROFILE_FACTORY_ADMISSION_REFUSED_V1",
+                    "model-family profile identity issuance failed");
+  }
+  std::set<ModelFamilyProfileIdentityOwnerV1::Key> capability_keys;
   const auto implementation_id = ImplementationId(logical.family_id);
   for (std::size_t ordinal = 0; ordinal < snapshots.size(); ++ordinal) {
     const auto& snapshot = snapshots[ordinal];
-    const auto route = ModelFamilyAlternativeRouteClassNameV1(snapshot.route_class);
-    const auto capability_key = std::string(route) + "|" +
-                                snapshot.provider_uuid + "|" +
-                                snapshot.capability_uuid;
+    const auto capability_key = ModelFamilyProfileIdentityOwnerV1::Key{
+        snapshot.route_class, snapshot.provider_uuid, snapshot.capability_uuid};
     if (!CanonicalUuid(snapshot.provider_uuid) ||
         !CanonicalUuid(snapshot.capability_uuid) ||
         snapshot.provider_generation == 0 || !snapshot.engine_owned ||
@@ -352,7 +365,7 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
             logical.statistics_snapshot_uuid ||
         snapshot.metrics.statistics_generation !=
             logical.statistics_generation ||
-        !FamilyMetricShapeValid(logical.family_id, snapshot) ||
+        !FamilyMetricShapeValid(snapshot) ||
         !capability_keys.insert(capability_key).second) {
       return refuse("SB_MODEL_PROFILE_FACTORY_SNAPSHOT_REFUSED_V1",
                     "model-family capability, statistics, or property snapshot is invalid");
@@ -360,11 +373,11 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
 
     ModelFamilyCandidateV1 candidate;
     candidate.route_class = snapshot.route_class;
-    candidate.alternative_uuid = DerivedUuid(
-        request.identity_scope,
-        "model-family.alternative." + logical.family_id + "." + route + "." +
-            snapshot.provider_uuid + "." + snapshot.capability_uuid + "." +
-            std::to_string(ordinal));
+    const auto* identities = owner->Find(capability_key);
+    if (!identities)
+      return refuse("SB_MODEL_PROFILE_FACTORY_ADMISSION_REFUSED_V1",
+                    "model-family profile identity binding is absent");
+    candidate.alternative_uuid = identities->alternative_uuid;
     candidate.provider_uuid = snapshot.provider_uuid;
     candidate.capability_uuid = snapshot.capability_uuid;
     candidate.implementation_id = implementation_id;
@@ -380,8 +393,11 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
     candidate.security_recheck_required = snapshot.security_recheck_required;
     candidate.engine_owned = snapshot.engine_owned;
     candidate.local_scope = snapshot.local_scope;
-    candidate.cost = CostFromSnapshot(request.identity_scope, logical.family_id,
-                                      ordinal, snapshot);
+    const auto cost = CostFromSnapshot(identities->cost_vector_uuid, snapshot);
+    if (!cost)
+      return refuse("SB_MODEL_PROFILE_FACTORY_COST_OVERFLOW_V1",
+                    "model-family cost dimension exceeded uint64 range");
+    candidate.cost = *cost;
     const auto scalar_score = ScalarizeModelFamilyCostVectorV1(candidate.cost);
     if (!scalar_score.has_value()) {
       return refuse("SB_MODEL_PROFILE_FACTORY_COST_OVERFLOW_V1",
@@ -394,14 +410,13 @@ ModelFamilyProfileFactoryResultV1 BuildModelFamilyAlternativeProfilesV1(
     } else {
       ++result.exact_fallback_alternative_count;
     }
-    receipt_seed += "|" + SnapshotReceiptSeed(snapshot);
   }
-  result.candidate_inventory_receipt_uuid =
-      DerivedUuid(receipt_seed, "model-family.inventory.v1");
+  result.candidate_inventory_receipt_uuid = owner->InventoryUuid();
   for (auto& candidate : result.candidates) {
     candidate.candidate_inventory_receipt_uuid =
         result.candidate_inventory_receipt_uuid;
   }
+  result.identity_owner = std::move(owner);
   result.accepted = true;
   result.optimizer_owned_enumeration = true;
   result.deterministic = true;
@@ -427,11 +442,19 @@ ModelFamilyCoordinatorResultV1 PlanOptimizerOwnedModelFamilySourceV1(
   auto logical = request.logical_request;
   logical.candidates = inventory.candidates;
   auto result = CoordinateModelFamilySourceV1(logical);
-  if (!result.accepted || !result.selected ||
-      result.selected_candidate.candidate_inventory_receipt_uuid !=
-          inventory.candidate_inventory_receipt_uuid) {
+  if (!result.accepted || !result.selected) return result;
+  const auto& selected = result.selected_candidate;
+  const auto* retained = inventory.identity_owner->Find(
+      {selected.route_class, selected.provider_uuid, selected.capability_uuid});
+  if (selected.candidate_inventory_receipt_uuid != inventory.candidate_inventory_receipt_uuid ||
+      !retained || retained->alternative_uuid != selected.alternative_uuid ||
+      retained->cost_vector_uuid != selected.cost.cost_vector_uuid) {
+    result = {};
+    result.diagnostic_id = "SB_MODEL_PROFILE_FACTORY_ADMISSION_REFUSED_V1";
+    result.detail = "selected model candidate is not owned by the exact factory inventory";
     return result;
   }
+  result.physical_dag.model_profile_identity_owner = inventory.identity_owner;
   result.optimizer_owned_enumeration = true;
   result.candidate_inventory_receipt_uuid =
       inventory.candidate_inventory_receipt_uuid;

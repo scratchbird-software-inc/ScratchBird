@@ -142,25 +142,6 @@ std::string ProfileScopeBinding(
   return std::move(out).Take();
 }
 
-bool SameCapability(const CanonicalExecutorCapabilityRecord& left,
-                    const CanonicalExecutorCapabilityRecord& right) {
-  return left.capability_uuid == right.capability_uuid &&
-         left.capability_abi_version == right.capability_abi_version &&
-         left.implementation_id == right.implementation_id &&
-         left.logical_node_kind == right.logical_node_kind &&
-         left.physical_node_kind == right.physical_node_kind &&
-         left.minimum_input_count == right.minimum_input_count &&
-         left.maximum_input_count == right.maximum_input_count &&
-         left.supported_property_kinds == right.supported_property_kinds &&
-         left.maximum_memory_bytes == right.maximum_memory_bytes &&
-         left.spill_supported == right.spill_supported &&
-         left.storage_read_capable == right.storage_read_capable &&
-         left.mga_visibility_capable == right.mga_visibility_capable &&
-         left.available == right.available &&
-         left.refusal_diagnostic_id == right.refusal_diagnostic_id &&
-         left.engine_owned == right.engine_owned;
-}
-
 std::uint64_t SaturatingAdd(const std::uint64_t left,
                             const std::uint64_t right) {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
@@ -306,6 +287,11 @@ BuildCanonicalOptimizerAlternativeProfiles(
       !executor_availability.engine_owned ||
       executor_availability.parser_profile_authority_claimed ||
       !executor_availability.capability_catalog.engine_owned ||
+      executor_availability.capability_catalog.abi_version != 1 ||
+      executor_availability.capability_catalog.cluster_catalog_claimed ||
+      executor_availability.capability_catalog.parser_capability_authority_claimed ||
+      executor_availability.capability_catalog.capabilities.size() >
+          admission_request.resource.maximum_candidate_count ||
       executor_availability.capability_catalog.capability_snapshot_uuid !=
           admission.capability_snapshot_uuid ||
       executor_availability.capability_catalog.policy_epoch !=
@@ -336,6 +322,14 @@ BuildCanonicalOptimizerAlternativeProfiles(
   const auto scope_binding = ProfileScopeBinding(admission_request, admission,
       executor_availability, calibration_profile_uuid,
       serialized_properties.canonical_serialization);
+  // Recompute structural admission for this exact request. This comparison does
+  // not convert metadata into an engine-owned security/MGA/resource receipt.
+  const auto current_admission = AdmitCanonicalOptimizerPlanningRequest(admission_request);
+  if (!current_admission.admitted || !current_admission.planning_allowed ||
+      ProfileScopeBinding(admission_request, current_admission, executor_availability,
+          calibration_profile_uuid, serialized_properties.canonical_serialization) != scope_binding)
+    return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-ADMISSION-V1", 0, {}, "stale_admission");
+
   if (identity_owner) {
     if (!identity_owner->Matches(scope_binding) ||
         identity_owner->Size() != executor_availability.node_bindings.size())
@@ -373,14 +367,15 @@ BuildCanonicalOptimizerAlternativeProfiles(
       capabilities_by_uuid;
   for (const auto& capability :
        executor_availability.capability_catalog.capabilities) {
-    const auto [it, inserted] = capabilities_by_uuid.emplace(
-        capability.capability_uuid, &capability);
+    const bool inserted = capabilities_by_uuid.emplace(
+        capability.capability_uuid, &capability).second;
     if (!scratchbird::core::uuid::IsEngineIdentityUuid(capability.capability_uuid) ||
         capability.implementation_id.empty() ||
         capability.capability_abi_version != 1 || !capability.engine_owned ||
         capability.minimum_input_count > capability.maximum_input_count ||
-        capability.maximum_memory_bytes == 0 ||
-        (!inserted && !SameCapability(*it->second, capability))) {
+        (capability.available && capability.maximum_memory_bytes == 0) ||
+        capability.cluster_capability_claimed || capability.parser_execution_authority_claimed ||
+        capability.transaction_finality_authority_claimed || !inserted) {
       return refuse("QOW-DIAG-OPTIMIZER-PROFILE-FACTORY-CAPABILITY-V1", 0,
                     capability.implementation_id, "capability_catalog");
     }

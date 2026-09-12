@@ -660,7 +660,10 @@ ModelFamilyCoordinatorResultV1 CoordinateModelFamilySourceV1(
     }
     if (selected == nullptr || score < selected_score ||
         (score == selected_score &&
-         candidate.alternative_uuid < selected->alternative_uuid)) {
+         std::tie(candidate.route_class, candidate.provider_uuid, candidate.capability_uuid,
+                  candidate.alternative_uuid) <
+         std::tie(selected->route_class, selected->provider_uuid, selected->capability_uuid,
+                  selected->alternative_uuid))) {
       selected = &candidate;
       selected_score = score;
     }
