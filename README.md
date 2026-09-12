@@ -125,6 +125,40 @@ Once this project becomes "Public Beta" vs "Code Review Beta" the all bug report
 
 See `SECURITY.md` for reporting scope and supported-version policy.
 
+## Open-core and commercial cluster boundary
+
+ScratchBird is designed so that clustering is an extension of the same database engine, not a separate database or proxy layer.
+
+The open-source core therefore includes the **minimum cluster-aware infrastructure that must remain part of the engine** for full cluster operation to be possible. This includes foundational identity, storage, transaction, catalog, routing, fencing, and provider interfaces that cannot be safely added as an external library after the fact.
+
+Examples include:
+
+* durable UUID identities for databases, clusters, filespaces, schemas, objects, rows, pages, and transactions;
+* row identity independent of physical page or slot location;
+* database, filespace, and page UUIDs and generation information in the physical storage format;
+* cluster-aware and shard-aware page types and page classifications;
+* filespace roles and lifecycle states needed for shard placement and relocation;
+* transaction UUIDs separate from node-local transaction IDs;
+* transaction scopes and states required for prepared, limbo, recovery, and cluster-global transactions;
+* cluster catalog schemas and authority references;
+* cluster route, fence, finality, shard-placement, remote-participant, optimizer, metric, and agent contracts;
+* the versioned cluster-provider ABI and deterministic fail-closed behavior when cluster authority is unavailable.
+
+These facilities do **not** mean that the open-source build implements positive distributed cluster execution.
+
+The distributed authority and execution layer is supplied by separate closed-source cluster libraries. Those libraries provide functionality such as membership, decision/finality services, epoch and fence authority, route ownership, physical shard placement and movement, distributed transaction coordination, replication, reconciliation, and cross-node execution.
+
+The architectural boundary is intentionally minimal rather than fixed for licensing purposes. If correctness, performance, storage-format stability, or engine ownership requires an additional primitive to reside in the core, that primitive may be moved into the open-source core while distributed authority remains in the commercial cluster implementation.
+
+In short:
+
+**Open core:** cluster-capable engine substrate + cluster integration boundary.
+
+**Commercial cluster libraries:** positive distributed authority + multi-node execution.
+
+The existence of cluster-related structures in the open core should therefore not be interpreted either as a claim that the public build provides complete clustering or as unused future scaffolding. They are the minimum common infrastructure required by both standalone and cluster-enabled builds.
+
+
 ## License
 
 Use of this repository is governed by the license file included with the release.
