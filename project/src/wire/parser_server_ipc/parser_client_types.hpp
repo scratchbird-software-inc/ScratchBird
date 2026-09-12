@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../../core/platform/runtime_platform.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <array>
 #include <cstdint>
@@ -30,7 +31,14 @@ struct ParserClientConfig {
   std::string common_resource_hash;
   std::string resource_compatibility_identity;
   std::string resource_version_identity;
+  // Optional expected identity, not a display label or a new identity source.
+  // The admitted HELLO profile is the session's immutable profile binding.
   scratchbird::core::platform::Uuid dialect_profile_uuid;
+  [[nodiscard]] bool MatchesDialectProfile(
+      const scratchbird::core::platform::Uuid& admitted) const {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(admitted) &&
+           (dialect_profile_uuid.is_nil() || dialect_profile_uuid == admitted);
+  }
   std::vector<std::string> default_search_path{"sys", "public"};
   std::uint32_t registry_version{1};
   // Opt-in keeps the legacy hello byte-for-byte unchanged for every existing

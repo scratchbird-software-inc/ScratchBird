@@ -17,8 +17,16 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
+// Parser-side JSON presentation only. Retained session/connection ownership
+// stays binary; these strings are never written back into execution context.
+std::string DisplayUuid(const scratchbird::core::platform::Uuid& identity) {
+  return identity.is_nil() ? std::string{}
+                           : scratchbird::core::uuid::UuidToString(identity);
+}
+
 std::string ResourceBudgetJson(const ParserResourceBudget& budget) {
   std::ostringstream out;
+  out.exceptions(std::ios::badbit | std::ios::failbit);
   out << "{\"max_statement_bytes\":" << budget.max_statement_bytes
       << ",\"max_identifier_bytes\":" << budget.max_identifier_bytes
       << ",\"max_token_count\":" << budget.max_token_count
@@ -67,10 +75,11 @@ std::string ParserMetrics::SnapshotJson(const ParserConfig& config,
                                         const SblrTemplateCache& cache) const {
   std::lock_guard lock(mutex_);
   std::ostringstream out;
+  out.exceptions(std::ios::badbit | std::ios::failbit);
   out << "{\"namespace\":\"sys.metrics.parsers\","
       << "\"parser_uuid\":\"" << EscapeJson(config.parser_uuid) << "\","
       << "\"dialect\":\"" << EscapeJson(config.dialect) << "\","
-      << "\"session_uuid\":\"" << EscapeJson(session.authenticated ? session.session_uuid : "") << "\","
+      << "\"session_uuid\":\"" << (session.authenticated ? DisplayUuid(session.session_uuid) : "") << "\","
       << "\"state\":\"" << StateName(state_) << "\","
       << "\"resource_budgets\":" << ResourceBudgetJson(config.resource_budget) << ','
       << "\"cache\":" << cache.SnapshotJson() << ",\"counters\":{";
@@ -99,6 +108,7 @@ std::string ParserMetrics::HeartbeatJson(const ParserConfig& config,
       std::chrono::steady_clock::now() - start_).count();
   std::lock_guard lock(mutex_);
   std::ostringstream out;
+  out.exceptions(std::ios::badbit | std::ios::failbit);
   out << "{\"parser_uuid\":\"" << EscapeJson(config.parser_uuid) << "\","
 #ifndef _WIN32
       << "\"parser_pid\":" << static_cast<long long>(::getpid()) << ','
@@ -106,8 +116,8 @@ std::string ParserMetrics::HeartbeatJson(const ParserConfig& config,
       << "\"parser_pid\":0,"
 #endif
       << "\"dialect\":\"" << EscapeJson(config.dialect) << "\","
-      << "\"connection_uuid\":\"" << EscapeJson(session.connection_uuid) << "\","
-      << "\"session_uuid\":\"" << EscapeJson(session.authenticated ? session.session_uuid : "") << "\","
+      << "\"connection_uuid\":\"" << DisplayUuid(session.connection_uuid) << "\","
+      << "\"session_uuid\":\"" << (session.authenticated ? DisplayUuid(session.session_uuid) : "") << "\","
       << "\"state\":\"" << StateName(state_) << "\","
       << "\"uptime_ms\":" << uptime_ms << ','
       << "\"last_client_activity_ms\":0,\"last_server_activity_ms\":0,"

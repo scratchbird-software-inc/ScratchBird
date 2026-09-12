@@ -22,6 +22,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
     TIMEOUT 60)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_parser_profile_identity
+    parser_profile_identity_test.cpp
+    ../../src/parsers/sbsql_worker/metrics/parser_metrics.cpp
+    ../../src/parsers/sbsql_worker/common/common.cpp
+    ../../src/parsers/sbsql_worker/cache/sblr_template_cache.cpp)
+  target_compile_features(sbsql_sblr_alignment_parser_profile_identity PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_parser_profile_identity PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker
+    ${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc)
+  target_link_libraries(sbsql_sblr_alignment_parser_profile_identity PRIVATE
+    sb_core_uuid sbl_parser_server_ipc_schema)
+  add_test(NAME sbsql_sblr_alignment_parser_profile_identity
+    COMMAND sbsql_sblr_alignment_parser_profile_identity)
+  set_tests_properties(sbsql_sblr_alignment_parser_profile_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;parser_component;not_runtime_acceptance" TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_fairness_grant_ownership fairness_grant_ownership_test.cpp)
   target_compile_features(sbsql_sblr_alignment_fairness_grant_ownership PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_fairness_grant_ownership PRIVATE sb_core_memory Threads::Threads)

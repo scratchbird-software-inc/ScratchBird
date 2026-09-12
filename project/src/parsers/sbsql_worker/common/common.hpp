@@ -97,7 +97,8 @@ struct ParserConfig : ipc::ParserClientConfig {
     common_resource_hash = "builtin.common.sbsql.v1";
     resource_compatibility_identity = "sbsql.resource.compat.v1";
     resource_version_identity = "sbsql.resource-pack.v1";
-    dialect_profile_uuid = "sbsql_v3";
+    // No system identity is inferred from the dialect label. Listener/HELLO
+    // admission supplies the exact binary profile before session publication.
     registry_version = kSbsqlWorkerRegistryCurrentVersion;
   }
 };

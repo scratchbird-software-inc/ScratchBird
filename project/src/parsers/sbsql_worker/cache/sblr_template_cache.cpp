@@ -558,6 +558,7 @@ std::size_t SblrTemplateCache::Size() const {
 std::string SblrTemplateCache::SnapshotJson() const {
   std::lock_guard lock(mutex_);
   std::ostringstream out;
+  out.exceptions(std::ios::badbit | std::ios::failbit);
   out << "{\"entries\":" << entries_.size()
       << ",\"max_entries\":" << max_entries_
       << ",\"invalidations\":" << invalidation_count_

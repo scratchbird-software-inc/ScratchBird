@@ -5962,6 +5962,13 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
                   "The stable parser HELLO did not contain canonical package and dialect identities.");
     return false;
   }
+  if (!config.MatchesDialectProfile(
+          scratchbird::core::platform::Uuid{admitted_dialect_profile_uuid})) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.PARSER_PROFILE_MISMATCH",
+                  "The configured dialect profile differs from the parser HELLO identity.");
+    return false;
+  }
   if (!SendHelloWithRequirements(require_transaction_routing_v2,
                                  &transaction_routing_v2_accepted,
                                  config.require_prepared_metadata_transfer_v1,
@@ -6197,10 +6204,10 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
                            descriptor_epoch == 0 ? name_resolution_epoch
                                                  : descriptor_epoch,
                            name_resolution_epoch);
-  // The admitted dialect UUID identifies the negotiated parser package and
-  // is carried separately in canonical SBLR/SBEE binding. Public name
-  // resolution uses the parser family's semantic identifier profile.
-  session->dialect_profile_uuid = config.dialect_profile_uuid;
+  // Retain the exact admitted dialect identity for canonical SBLR/SBEE.
+  // A catalog identifier-normalization profile is a separate authority;
+  // callers must not infer that profile from this identity or a dialect label.
+  session->dialect_profile_uuid = session->admitted_dialect_profile_uuid;
   session->search_path = config.default_search_path;
   session->transaction_context = "always_active";
   session->local_transaction_id = local_transaction_id;
