@@ -662,4 +662,3 @@ std::optional<CanonicalBytes> FreezeContextualReservationSkeletonV2(
 }
 
 }  // namespace scratchbird::parser::sbsql
-
