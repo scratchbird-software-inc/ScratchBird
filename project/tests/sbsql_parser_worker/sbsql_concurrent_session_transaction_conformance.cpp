@@ -1564,6 +1564,16 @@ void VerifyNeutralV2MultiTransactionRouting(
   Require(session.local_transaction_id == hidden_default_id &&
               session.transaction_uuid == hidden_default_uuid,
           "V2 finality on a non-default transaction swapped the default scalar");
+  Require(committed_t1.transaction_state->replacement_present &&
+              committed_t1.transaction_state->replacement_reason ==
+                  scratchbird::server::ServerTransactionResponseState::
+                      ReplacementReason::kOrdinaryReady &&
+              committed_t1.transaction_state->replacement.transaction_uuid !=
+                  t1.transaction_uuid &&
+              committed_t1.transaction_state->replacement.local_transaction_id !=
+                  t1.local_transaction_id &&
+              session.transactions_by_local_id.contains(t2.local_transaction_id),
+          "ordinary commit omitted its replacement or disturbed a sibling");
   const auto fetch_after_owner_finality = scratchbird::server::HandleFetch(
       &route.registry, FetchFrame(route.session_uuid, *cursor_uuid));
   Require(!fetch_after_owner_finality.accepted,
@@ -1612,6 +1622,42 @@ void VerifyNeutralV2MultiTransactionRouting(
                   policy_tx.lock_timeout_present &&
               replacement.lock_timeout_ms == policy_tx.lock_timeout_ms,
           "COMMIT RETAINING silently dropped admitted neutral transaction policy");
+
+  // Defaults must not override the finalized transaction's effective policy.
+  // Exercise ordinary commit AND rollback while unrelated transactions remain.
+  auto selected_policy_transaction = replacement;
+  for (const bool commit : {true, false}) {
+    const auto count_before = session.transactions_by_local_id.size();
+    const auto operation = commit ? "transaction.commit" : "transaction.rollback";
+    const auto opcode = commit ? "SBLR_TXN_COMMIT" : "SBLR_TXN_ROLLBACK";
+    const auto outcome = scratchbird::server::HandleExecuteSblr(
+        &route.registry, route.engine_state,
+        ExecuteFrameV2(route.session_uuid,
+                       TransactionEnvelope(operation, opcode), 1,
+                       &selected_policy_transaction));
+    Require(outcome.accepted && outcome.transaction_state.has_value() &&
+                outcome.transaction_state->finality_applied &&
+                outcome.transaction_state->replacement_present &&
+                outcome.transaction_state->replacement_reason ==
+                    scratchbird::server::ServerTransactionResponseState::
+                        ReplacementReason::kOrdinaryReady,
+            "ordinary finality did not return its server-created replacement");
+    const auto& next = outcome.transaction_state->replacement;
+    Require(next.transaction_uuid != selected_policy_transaction.transaction_uuid &&
+                next.local_transaction_id != selected_policy_transaction.local_transaction_id &&
+                next.isolation_level == selected_policy_transaction.isolation_level &&
+                next.read_only == selected_policy_transaction.read_only &&
+                next.wait_mode == selected_policy_transaction.wait_mode &&
+                next.lock_timeout_present == selected_policy_transaction.lock_timeout_present &&
+                next.lock_timeout_ms == selected_policy_transaction.lock_timeout_ms &&
+                session.transactions_by_local_id.size() == count_before &&
+                !session.transactions_by_local_id.contains(selected_policy_transaction.local_transaction_id) &&
+                session.transactions_by_local_id.contains(next.local_transaction_id) &&
+                session.transactions_by_local_id.contains(t2.local_transaction_id) &&
+                session.local_transaction_id == hidden_default_id,
+            "ordinary replacement lost policy, identity, sibling or cardinality invariants");
+    selected_policy_transaction = next;
+  }
 
   const std::size_t transaction_count_before_conflict =
       session.transactions_by_local_id.size();

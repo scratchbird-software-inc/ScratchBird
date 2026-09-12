@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -558,6 +559,76 @@ void CheckSblrFeatureNegotiates() {
           "SBWP startup with required SBLR feature did not reach authentication");
 }
 
+void CheckMultiplexRefusedBeforeAuthentication() {
+  ExpectError(EncodeFrame(kStartup,
+                         StartupPayload(kVersionP1Current, kVersionP1Current,
+                                        1u << 4, 0, 0, 0)),
+              "NATIVE_WIRE.CONNECT_INGRESS_DENIED");
+  ExpectError(EncodeFrame(kStartup,
+                         StartupPayload(kVersionP1Current, kVersionP1Current,
+                                        (1u << 4) | 1u, 0, 0, 0)),
+              "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD");
+}
+
+void CheckAuthenticatedIdentityAndTransactionRefusal() {
+  int fds[2]{-1, -1};
+  Require(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0, "socketpair failed");
+  scratchbird::parser::sbsql::ParserConfig config;
+  config.probe_mode = true;
+  config.embedded_engine_direct = true;
+  config.allow_uncredentialed_fixture_database = true;
+  config.embedded_auth_bypass_sysarch = true;
+  const std::filesystem::path database_path = MakeTempDatabasePath();
+  config.embedded_database_path = database_path.string();
+  scratchbird::parser::sbsql::ParserMetrics metrics;
+  scratchbird::parser::sbsql::SblrTemplateCache cache;
+  scratchbird::parser::sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
+  std::thread worker([&]() {
+    (void)session.ServeFd(fds[1]);
+    (void)::close(fds[1]);
+  });
+  Require(WriteAll(fds[0], EncodeFrame(kStartup,
+              StartupPayload(kVersionP1Current, kVersionP1Current, 0, 0, 0, 0))),
+          "identity startup write failed");
+  Require(ReadFrame(fds[0]).type == kAuthRequest, "missing auth request");
+  Require(WriteAll(fds[0], EncodeFrame(kAuthResponse, {})), "auth write failed");
+  Frame ready;
+  do {
+    ready = ReadFrame(fds[0]);
+    Require(ready.type != kError, "identity attach failed");
+  } while (ready.type != kReady);
+  Require(ready.payload.size() >= 76, "P1 ready payload missing");
+  bool transaction_uuid_present = false;
+  for (std::size_t i = 32; i < 48; ++i) {
+    transaction_uuid_present |= ready.payload[i] != 0;
+  }
+  Require(transaction_uuid_present, "live Ready returned zero transaction UUID");
+  auto rejected_query = EncodeFrame(kQuery, {});
+  // Choose a guaranteed different echo from this exact engine-issued Ready.
+  for (std::size_t i = 0; i < 8; ++i) rejected_query[32 + i] = ready.payload[48 + i];
+  rejected_query[39] ^= 0x80;
+  Require(WriteAll(fds[0], rejected_query), "mismatched transaction write failed");
+  const auto error = ReadFrame(fds[0]);
+  Require(error.type == kError &&
+              std::string(error.payload.begin(), error.payload.end()).find(
+                  "SBWP.TRANSACTION_ID_MISMATCH") != std::string::npos,
+          "mismatched transaction was not refused");
+  const auto after = ReadFrame(fds[0]);
+  Require(after.type == kReady && after.payload.size() >= 76 &&
+              std::equal(ready.payload.begin(), ready.payload.begin() + 57,
+                         after.payload.begin()),
+          "rejected transaction changed the current identity or state");
+  // If dispatch fell through, its extra response precedes Pong and fails this.
+  Require(WriteAll(fds[0], EncodeFrame(kPing, {1, 2, 3, 4})), "ping write failed");
+  Require(ReadFrame(fds[0]).type == kPong,
+          "transaction refusal fell through and produced an execution response");
+  (void)::shutdown(fds[0], SHUT_WR);
+  worker.join();
+  (void)::close(fds[0]);
+  std::error_code ec;
+  std::filesystem::remove_all(database_path.parent_path(), ec);
+}
+
 void CheckFrameFailClosedPaths() {
   ExpectError(EncodeFrame(kResetSession, {}), "SBWP.FEATURE.NOT_NEGOTIATED");
   ExpectError(EncodeFrame(kExtension, {}), "SBWP.FEATURE.NOT_NEGOTIATED");
@@ -833,6 +904,8 @@ int main() {
   ::signal(SIGPIPE, SIG_IGN);
   CheckStartupNegotiationFailures();
   CheckSblrFeatureNegotiates();
+  CheckMultiplexRefusedBeforeAuthentication();
+  CheckAuthenticatedIdentityAndTransactionRefusal();
   CheckFrameFailClosedPaths();
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();

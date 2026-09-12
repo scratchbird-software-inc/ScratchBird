@@ -391,7 +391,8 @@ enum class ParserTransactionFinality : std::uint8_t {
 enum class ParserTransactionReplacementReason : std::uint8_t {
   kNone = 0,
   kRetaining = 1,
-  kLastActiveReady = 2,
+  kOrdinaryReady = 2,
+  kLastActiveReady = kOrdinaryReady,  // Historical name, not a cardinality condition.
   kAutocommitReady = 3,
 };
 
