@@ -93,8 +93,7 @@ bool MgaCreatorVisible(
     }
     if (!context.transaction_uuid.is_nil() &&
         (!observer.identity.transaction_uuid.valid() ||
-         scratchbird::core::uuid::UuidToString(
-             observer.identity.transaction_uuid.value) !=
+         observer.identity.transaction_uuid.value !=
              context.transaction_uuid)) {
       observer_identity_mismatch = true;
       break;
@@ -110,8 +109,7 @@ bool MgaCreatorVisible(
     if (creator_tx == context.local_transaction_id) {
       if (!context.transaction_uuid.is_nil() &&
           (!entry.identity.transaction_uuid.valid() ||
-           scratchbird::core::uuid::UuidToString(
-               entry.identity.transaction_uuid.value) !=
+           entry.identity.transaction_uuid.value !=
                context.transaction_uuid)) {
         return false;
       }
@@ -324,144 +322,6 @@ void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::strin
 
 void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
-}
-
-namespace {
-
-EngineTypedValue DdlPublicationValue(const std::string& value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = value;
-  typed.is_null = false;
-  return typed;
-}
-
-std::string RowFieldValue(const EngineRowValue& row, const std::string& field_name) {
-  for (const auto& field : row.fields) {
-    if (field.first == field_name) { return field.second.encoded_value; }
-  }
-  return {};
-}
-
-void UpsertRowField(EngineRowValue* row, std::string field_name, const std::string& value) {
-  if (row == nullptr) { return; }
-  for (auto& field : row->fields) {
-    if (field.first == field_name) {
-      field.second = DdlPublicationValue(value);
-      return;
-    }
-  }
-  row->fields.push_back({std::move(field_name), DdlPublicationValue(value)});
-}
-
-EngineRowValue* FindPublicationRow(EngineApiResult* result,
-                                   const std::string& object_kind,
-                                   const std::string& object_uuid) {
-  if (result == nullptr) { return nullptr; }
-  for (auto& row : result->result_shape.rows) {
-    if (RowFieldValue(row, "object_uuid") == object_uuid &&
-        (object_kind.empty() || RowFieldValue(row, "object_kind") == object_kind)) {
-      return &row;
-    }
-  }
-  return nullptr;
-}
-
-}  // namespace
-
-void AddDdlPublicationResult(EngineApiResult* result,
-                             const std::string& operation_id,
-                             const std::string& object_kind,
-                             const std::string& object_uuid,
-                             const std::string& catalog_row_uuid,
-                             const std::string& invalidation_scope) {
-  if (result == nullptr || !result->ok || object_uuid.empty()) { return; }
-  const std::string effective_kind =
-      object_kind.empty() ? result->primary_object.object_kind : object_kind;
-  const std::string effective_catalog_row_uuid =
-      !catalog_row_uuid.empty() ? catalog_row_uuid : result->catalog_row_uuid;
-  const std::string effective_operation =
-      !operation_id.empty() ? operation_id : result->operation_id;
-  const std::string effective_invalidation_scope =
-      !invalidation_scope.empty() ? invalidation_scope : effective_kind;
-  const std::string publish_packet_id =
-      effective_operation + ":" + effective_kind + ":" + object_uuid;
-  constexpr const char* kPublishOrder =
-      "validate.prebuild.persist.name_registry.result_shape.invalidate";
-
-  result->result_shape.rows.reserve(result->result_shape.rows.size() + 1);
-  EngineRowValue* row = FindPublicationRow(result, effective_kind, object_uuid);
-  if (row == nullptr) {
-    AddApiBehaviorRow(result, {{"object_uuid", object_uuid},
-                               {"object_kind", effective_kind},
-                               {"state", "published"}});
-    row = &result->result_shape.rows.back();
-  }
-
-  UpsertRowField(row, "ddl_operation_id", effective_operation);
-  UpsertRowField(row, "ddl_result_object_uuid", object_uuid);
-  UpsertRowField(row, "ddl_result_object_kind", effective_kind);
-  UpsertRowField(row, "ddl_result_catalog_row_uuid", effective_catalog_row_uuid);
-  UpsertRowField(row, "ddl_publish_packet_id", publish_packet_id);
-  UpsertRowField(row, "ddl_publish_order", kPublishOrder);
-  UpsertRowField(row, "ddl_validation_before_publish", "true");
-  UpsertRowField(row, "ddl_prebuild_before_final_lock", "true");
-  UpsertRowField(row, "ddl_backfill_before_publish", "true");
-  UpsertRowField(row, "ddl_final_publish_short_section", "true");
-  UpsertRowField(row, "ddl_final_publish_lock_scope", "catalog_epoch_publish_only");
-  UpsertRowField(row, "ddl_partial_state_visible", "false");
-  UpsertRowField(row, "ddl_result_buffer_owner", "engine");
-  UpsertRowField(row, "ddl_uuid_result_shape", "uuid_first");
-  UpsertRowField(row, "ddl_epoch_invalidation", "catalog:" + effective_invalidation_scope);
-  UpsertRowField(row, "ddl_dependency_proof", effective_invalidation_scope);
-  UpsertRowField(row, "ddl_rollback_recovery_authority", "durable_transaction_inventory");
-  UpsertRowField(row, "ddl_parser_sql_authority", "false");
-  UpsertRowField(row, "ddl_mga_finality_authority", "durable_transaction_inventory");
-  UpsertRowField(row, "ddl_lifecycle_transition_registry",
-                 effective_operation + ":" + effective_kind + ":" + object_uuid);
-  UpsertRowField(row, "ddl_mga_root_mutation_registry",
-                 "local_transaction_id:" + std::to_string(result->local_transaction_id));
-  UpsertRowField(row, "ddl_implementation_flavour_registry",
-                 "engine_internal_api.sblr_uuid_bound");
-  UpsertRowField(row, "ddl_catalog_mutation_audit",
-                 "catalog.ddl.mutation:" + publish_packet_id);
-  UpsertRowField(row, "ddl_filespace_diagnostic",
-                 effective_kind == "filespace"
-                     ? "filespace_catalog_mutation_recorded:" + object_uuid
-                     : "not_filespace_scoped");
-
-  AddApiBehaviorEvidence(result, "ddl_publish_packet", publish_packet_id);
-  AddApiBehaviorEvidence(result, "ddl_publish_packet_order", kPublishOrder);
-  AddApiBehaviorEvidence(result, "ddl_validation_before_publish", "true");
-  AddApiBehaviorEvidence(result, "ddl_prebuild_before_final_lock", "true");
-  AddApiBehaviorEvidence(result, "ddl_backfill_before_publish", "true");
-  AddApiBehaviorEvidence(result, "ddl_final_publish_short_section", "true");
-  AddApiBehaviorEvidence(result, "ddl_final_publish_lock_scope", "catalog_epoch_publish_only");
-  AddApiBehaviorEvidence(result, "ddl_partial_state_visible", "false");
-  AddApiBehaviorEvidence(result, "ddl_uuid_returned", object_uuid);
-  AddApiBehaviorEvidence(result, "ddl_catalog_row_uuid", effective_catalog_row_uuid);
-  AddApiBehaviorEvidence(result, "ddl_result_buffer_owner", "engine");
-  AddApiBehaviorEvidence(result, "ddl_result_buffer_reserved", "true");
-  AddApiBehaviorEvidence(result, "ddl_uuid_result_shape", "uuid_first");
-  AddApiBehaviorEvidence(result, "ddl_epoch_invalidation", "catalog:" + effective_invalidation_scope);
-  AddApiBehaviorEvidence(result, "ddl_dependency_proof", effective_invalidation_scope);
-  AddApiBehaviorEvidence(result, "ddl_rollback_recovery_authority", "durable_transaction_inventory");
-  AddApiBehaviorEvidence(result, "ddl_dependency_invalidation_scope", effective_invalidation_scope);
-  AddApiBehaviorEvidence(result, "ddl_parser_sql_authority", "false");
-  AddApiBehaviorEvidence(result, "ddl_mga_finality_authority", "durable_transaction_inventory");
-  AddApiBehaviorEvidence(result, "ddl_lifecycle_transition_registry",
-                         effective_operation + ":" + effective_kind + ":" + object_uuid);
-  AddApiBehaviorEvidence(result, "ddl_mga_root_mutation_registry",
-                         "local_transaction_id:" + std::to_string(result->local_transaction_id));
-  AddApiBehaviorEvidence(result, "ddl_implementation_flavour_registry",
-                         "engine_internal_api.sblr_uuid_bound");
-  AddApiBehaviorEvidence(result, "ddl_catalog_mutation_audit",
-                         "catalog.ddl.mutation:" + publish_packet_id);
-  AddApiBehaviorEvidence(result, "ddl_filespace_diagnostic",
-                         effective_kind == "filespace"
-                             ? "filespace_catalog_mutation_recorded:" + object_uuid
-                             : "not_filespace_scoped");
 }
 
 std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,

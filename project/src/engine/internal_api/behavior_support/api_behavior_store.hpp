@@ -58,11 +58,14 @@ EngineTypedValue ApiBehaviorValue(std::string value);
 EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields);
 void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);
 void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id);
+// Legacy helper name: binds response identity only. It cannot certify executed
+// DDL stages or create a catalog row. Invalid bindings refuse the result while
+// preserving existing diagnostics; allocation failure leaves it unchanged.
 void AddDdlPublicationResult(EngineApiResult* result,
                              const std::string& operation_id,
                              const std::string& object_kind,
-                             const std::string& object_uuid,
-                             const std::string& catalog_row_uuid = {},
+                             const EngineUuid& object_uuid,
+                             const EngineUuid& catalog_row_uuid = {},
                              const std::string& invalidation_scope = {});
 std::vector<ApiBehaviorRecord> VisibleApiBehaviorRecords(const EngineRequestContext& context,
                                                          const std::string& object_kind,
@@ -122,7 +125,9 @@ TResult PersistedRecordResult(const TRequest& request,
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
   result.primary_object.uuid = persisted.record.object_uuid;
   result.primary_object.object_kind = persisted.record.object_kind;
-  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
+  // An event append has no catalog-row receipt. Do not mint one after the fact.
+  // The actual catalog mutation owner must supply its persisted row identity.
+  result.catalog_row_uuid = {};
   AddApiBehaviorEvidence(&result, "api_behavior_event", operation_id);
   AddApiBehaviorEvidence(&result, persisted.record.object_kind, persisted.record.object_uuid);
   AddApiBehaviorRow(&result, {{"object_uuid", persisted.record.object_uuid},
@@ -159,7 +164,9 @@ TResult PersistedRecordResultWithPayload(const TRequest& request,
   auto result = MakeApiBehaviorSuccess<TResult>(request.context, operation_id);
   result.primary_object.uuid = persisted.record.object_uuid;
   result.primary_object.object_kind = persisted.record.object_kind;
-  result.catalog_row_uuid = GenerateCrudEngineUuid("row");
+  // An event append has no catalog-row receipt. Do not mint one after the fact.
+  // The actual catalog mutation owner must supply its persisted row identity.
+  result.catalog_row_uuid = {};
   AddApiBehaviorEvidence(&result, "api_behavior_event", operation_id);
   AddApiBehaviorEvidence(&result, persisted.record.object_kind, persisted.record.object_uuid);
   AddApiBehaviorRow(&result, {{"object_uuid", persisted.record.object_uuid},

@@ -834,6 +834,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_access_statistics_binding PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_ddl_result_identity
+    ddl_result_identity_test.cpp
+    ../../src/engine/internal_api/behavior_support/ddl_result_identity.cpp
+    ../../src/engine/internal_api/api_unsupported.cpp)
+  target_compile_features(sbsql_sblr_alignment_ddl_result_identity PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_ddl_result_identity PRIVATE
+    ../../src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_ddl_result_identity PRIVATE
+    sb_core_diagnostic_catalog sb_core_uuid sb_core_platform)
+  add_test(NAME sbsql_sblr_alignment_ddl_result_identity
+    COMMAND sbsql_sblr_alignment_ddl_result_identity)
+  set_tests_properties(sbsql_sblr_alignment_ddl_result_identity PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;ddl;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_statistics_lifecycle
     ../optimizer/optimizer_deficiency_odf_028_gate.cpp)
   target_compile_features(sbsql_sblr_alignment_statistics_lifecycle PRIVATE cxx_std_23)
