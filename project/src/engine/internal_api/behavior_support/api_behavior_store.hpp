@@ -53,7 +53,9 @@ EngineApiDiagnostic AppendApiBehaviorEvent(const EngineRequestContext& context, 
 std::string MakeApiBehaviorRecordEvent(const ApiBehaviorRecord& record);
 std::string ApiBehaviorPrimaryName(const EngineApiRequest& request, const std::string& fallback);
 std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request);
-std::string ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind);
+// Explicit target identity or newly issued binary UUID. Related dependencies
+// must never be adopted implicitly as the primary object's identity.
+EngineUuid ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind);
 EngineTypedValue ApiBehaviorValue(std::string value);
 EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields);
 void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);

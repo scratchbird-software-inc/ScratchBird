@@ -259,15 +259,6 @@ std::string MakeApiBehaviorRecordEvent(const ApiBehaviorRecord& record) {
          (record.deleted ? "1" : "0");
 }
 
-std::string ApiBehaviorPrimaryName(const EngineApiRequest& request, const std::string& fallback) {
-  if (!request.localized_names.empty() && !request.localized_names.front().name.empty()) { return request.localized_names.front().name; }
-  for (const auto& option : request.option_envelopes) {
-    if (StartsWith(option, "name:")) { return option.substr(5); }
-  }
-  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
-  return fallback;
-}
-
 std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
   std::vector<std::string> payload;
   if (!request.target_database.uuid.is_nil()) { payload.push_back("database=" + request.target_database.uuid); }
@@ -291,12 +282,6 @@ std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
   const auto options = JoinOptions(request.option_envelopes);
   if (!options.empty()) { payload.push_back("options=" + options); }
   return JoinOptions(payload);
-}
-
-std::string ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind) {
-  if (!request.target_object.uuid.is_nil()) { return request.target_object.uuid; }
-  if (!request.related_objects.empty() && !request.related_objects.front().uuid.is_nil()) { return request.related_objects.front().uuid; }
-  return GenerateCrudEngineUuid(kind == "database" ? "database" : (kind == "schema" ? "schema" : "object"));
 }
 
 EngineTypedValue ApiBehaviorValue(std::string value) {

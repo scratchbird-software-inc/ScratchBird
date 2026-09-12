@@ -858,6 +858,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/engine/internal_api/api_unsupported.cpp)
   add_executable(sbsql_sblr_alignment_crud_binary_identity
     crud_binary_identity_test.cpp
+    ../../src/engine/internal_api/behavior_support/api_behavior_identity.cpp
     ../../src/engine/internal_api/crud_support/crud_identity.cpp)
   target_compile_features(sbsql_sblr_alignment_crud_binary_identity PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_crud_binary_identity PRIVATE

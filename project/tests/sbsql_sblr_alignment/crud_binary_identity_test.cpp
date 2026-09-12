@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "crud_support/crud_store.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "canonical_diagnostic_catalog.hpp"
 #include "time.hpp"
 
@@ -159,6 +160,45 @@ void SuppliedIdentity() {
   clock_fails=false;
   entropy_mode=1;
 }
+void PrimaryObjectBinding() {
+  static_assert(std::is_same_v<decltype(api::ApiBehaviorObjectUuid(
+      std::declval<const api::EngineApiRequest&>(),std::declval<const std::string&>())),
+      api::EngineUuid>);
+  api::EngineApiRequest request;
+  request.target_database.uuid=Expected(11);
+  request.target_schema.uuid=Expected(12);
+  request.related_objects.push_back({Expected(13),"object"});
+  request.related_objects.push_back({Expected(14),"object"});
+  for (const auto kind:{"object","database","schema","policy"}) {
+    const auto before=entropy_calls;
+    const auto generated=api::ApiBehaviorObjectUuid(request,kind);
+    Check(generated==Expected(12345) && entropy_calls==before+1,
+          "related/database/schema reference was adopted as primary identity");
+    Check(request.related_objects[0].uuid==Expected(13) && request.related_objects[1].uuid==Expected(14),
+          "primary identity issuance changed dependencies");
+  }
+  request.target_object.uuid=Expected(15);
+  clock_fails=true;
+  entropy_mode=0;
+  const auto before=entropy_calls,clock_before=clock_calls;
+  Check(api::ApiBehaviorObjectUuid(request,"object")==Expected(15),
+        "explicit primary target was replaced by dependency or issuance");
+  Check(entropy_calls==before && clock_calls==clock_before,
+        "explicit primary target unnecessarily requested a new identity");
+  request.target_object.uuid.bytes[6]=0x4c;
+  Refused([&]{return api::ApiBehaviorObjectUuid(request,"object");},"UUID.ENGINE_IDENTITY_NOT_V7");
+  request.target_object.uuid=Expected(15);
+  Check(api::ApiBehaviorPrimaryName(request,"missing-name")=="missing-name",
+        "system identity escaped as a display-cache name");
+  request.option_envelopes={"unrelated:value","name:explicit-option"};
+  Check(api::ApiBehaviorPrimaryName(request,"missing-name")=="explicit-option",
+        "explicit name metadata changed");
+  request.localized_names.push_back({"en","default","","localized-label",true});
+  Check(api::ApiBehaviorPrimaryName(request,"missing-name")=="localized-label",
+        "explicit localized display metadata changed");
+  clock_fails=false;
+  entropy_mode=1;
+}
 } // namespace
 
 // Fault/clock injection is confined to this test's linker. Product sources
@@ -184,7 +224,7 @@ __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
   return result;
 }
 int main() {
-  try { Generation(); SuppliedIdentity(); }
+  try { Generation(); SuppliedIdentity(); PrimaryObjectBinding(); }
   catch (const std::exception& error) {
     fail_after=-1;
     std::cerr<<"unexpected exception "<<error.what()<<'\n';
