@@ -35,10 +35,8 @@ namespace planner = scratchbird::engine::planner;
 namespace {
 void AppendSelectedAlternativeBinding(std::string& signature, std::uint32_t logical_node_id,
                                       const planner::CanonicalPlannerUuid& alternative_uuid) {
-  planner::CanonicalPlannerBindingBytes record("optimizer-selected-alternative-v2");
-  record.Number(logical_node_id);
-  record.Identity(alternative_uuid);
-  signature.append(std::move(record).Take());
+  executor::AppendPhysicalSelectedAlternativeBinding(
+      signature, logical_node_id, alternative_uuid);
 }
 }  // namespace
 
@@ -1259,13 +1257,6 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
     } else if (candidate.model_family_id != *model_family_id) {
       mixed_model_family_plan = true;
     }
-    if ((node_it->node_kind ==
-             planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
-         terms.mga_visibility_checks_expected == 0)) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1", node_id,
-                    candidate.alternative_uuid,
-                    "mga_visibility_cost_terms");
-    }
     if (candidate.property_enforcement_required) {
       ++result.property_enforcement_candidate_count;
     }
@@ -2312,8 +2303,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
         (node.node_kind ==
              planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
          (!capability.storage_read_capable ||
-          !capability.mga_visibility_capable ||
-          selection.cost.terms.mga_visibility_checks_expected == 0))) {
+          !capability.mga_visibility_capable))) {
       return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
                     selection.logical_node_id, selection.alternative_uuid,
                     alternative.capability_uuid,
@@ -2544,9 +2534,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
         !cost.complete_dimension_vector ||
         cost.memory_bytes_required != node.memory_bytes_required ||
         cost.spill_bytes_expected != node.spill_bytes_expected ||
-        static_cast<std::uint8_t>(cost.confidence) > 3 ||
-        (node.node_kind == executor::PhysicalNodeKind::kScan &&
-         cost.mga_visibility_checks_expected == 0)) {
+        static_cast<std::uint8_t>(cost.confidence) > 3) {
       return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
                     node.relational_node_id,
                     node.selected_alternative_uuid,

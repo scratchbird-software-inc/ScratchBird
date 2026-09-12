@@ -36,6 +36,22 @@ namespace scratchbird::engine::executor {
 
 using PhysicalUuid = scratchbird::core::platform::Uuid;
 
+// Shared by memo selection, publication and ABI verification. This opaque
+// content is not an issued UUID and must not be rendered as a diagnostic ID.
+inline void AppendPhysicalSelectedAlternativeBinding(
+    std::string& bytes, std::uint32_t logical_node_id,
+    const PhysicalUuid& alternative_uuid) {
+  const auto number = [&](std::uint64_t value) {
+    for (unsigned shift = 0; shift != 64; shift += 8)
+      bytes.push_back(static_cast<char>(value >> shift));
+  };
+  constexpr std::string_view domain = "optimizer-selected-alternative-v2";
+  number(domain.size());
+  bytes.append(domain);
+  number(logical_node_id);
+  bytes.append(reinterpret_cast<const char*>(alternative_uuid.bytes.data()), 16);
+}
+
 struct PhysicalMgaStatementContext {
   PhysicalUuid statement_uuid;
   PhysicalUuid owning_transaction_uuid;
@@ -777,9 +793,6 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                                 cost.scalar_score,
                                 &retained_selected_scalar_score)) {
           publication_field = "selected_scalar_score_overflow";
-        } else if (node.node_kind == PhysicalNodeKind::kScan &&
-                   cost.mga_visibility_checks_expected == 0) {
-          publication_field = "scan_mga_visibility_cost";
         }
         if (!publication_field.empty()) {
           return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
@@ -833,10 +846,8 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                       &PhysicalNodeRecord::relational_node_id);
     std::string selected_plan_signature;
     for (const auto* node : canonical_nodes) {
-      selected_plan_signature += std::to_string(node->relational_node_id) + "=";
-      selected_plan_signature.append(reinterpret_cast<const char*>(
-          node->selected_alternative_uuid.bytes.data()), 16);
-      selected_plan_signature.push_back(';');
+      AppendPhysicalSelectedAlternativeBinding(selected_plan_signature,
+          node->relational_node_id, node->selected_alternative_uuid);
     }
     if (selected_plan_signature != dag.selected_plan_signature ||
         retained_selected_scalar_score != dag.selected_scalar_score) {

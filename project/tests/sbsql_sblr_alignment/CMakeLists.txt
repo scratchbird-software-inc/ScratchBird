@@ -834,6 +834,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_access_statistics_binding PROPERTIES
     LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
     TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_prepare_metric_collection
+    prepare_metric_collection_test.cpp
+    ../../src/engine/optimizer/optimizer_prepare_metric_collector.cpp
+    ../../src/engine/optimizer/optimizer_planning_context.cpp
+    ../../src/engine/optimizer/canonical_relational_dag_planner.cpp
+    ../../src/engine/optimizer/optimizer_profile_factory.cpp
+    ../../src/engine/optimizer/optimizer_admission.cpp
+    ../../src/engine/optimizer/optimizer_contract.cpp)
+  target_compile_features(sbsql_sblr_alignment_prepare_metric_collection PRIVATE cxx_std_23)
+  target_compile_options(sbsql_sblr_alignment_prepare_metric_collection PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_prepare_metric_collection PRIVATE -Wl,--gc-sections)
+  target_include_directories(sbsql_sblr_alignment_prepare_metric_collection PRIVATE
+    $<TARGET_PROPERTY:sb_engine_executor,INCLUDE_DIRECTORIES>)
+  target_link_libraries(sbsql_sblr_alignment_prepare_metric_collection PRIVATE
+    sb_core_uuid sb_core_hash sb_engine_plan_shapes Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_prepare_metric_collection
+    COMMAND sbsql_sblr_alignment_prepare_metric_collection)
+  set_tests_properties(sbsql_sblr_alignment_prepare_metric_collection PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;optimizer;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_analyze_publication
     ../optimizer/optimizer_enterprise_analyze_statistics_gate.cpp
     ../../src/engine/optimizer/optimizer_production_analyze.cpp

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -243,7 +244,7 @@ struct CanonicalPreparedMetricValue {
 
 struct CanonicalPreparedMetricCollectionReceipt {
   std::uint16_t abi_version{1};
-  std::uint16_t stable_leg_ordinal{0};
+  std::uint32_t stable_leg_ordinal{0};
   std::uint32_t dependency_wave{0};
   internal_api::EngineUuid leg_uuid;
   std::string family_id;
@@ -269,7 +270,7 @@ struct CanonicalPreparedMetricCollectionReceipt {
 
 struct CanonicalPreparedLegPlanReceipt {
   std::uint16_t abi_version{1};
-  std::uint16_t stable_leg_ordinal{0};
+  std::uint32_t stable_leg_ordinal{0};
   internal_api::EngineUuid leg_uuid;
   std::string family_id;
   std::vector<internal_api::EngineUuid> dependency_leg_uuids;
@@ -314,6 +315,10 @@ struct CanonicalPreparedMetricCoordinatorReceipt {
 };
 
 struct CanonicalPreparedPhysicalPlan {
+  // Preserve selected runtime-object identity owners after the transient DAG
+  // is destroyed. These handles convey lifetime, not execution authority.
+  std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> profile_identity_owner;
+  std::shared_ptr<const ModelFamilyProfileIdentityOwnerV1> model_profile_identity_owner;
   std::uint16_t abi_version{1};
   internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
@@ -362,6 +367,10 @@ struct CanonicalPreparedPhysicalPlan {
 };
 
 struct CanonicalPreparePhysicalPlanRequest {
+  // Synchronous pre-publication cancellation probe. Not retained in the plan.
+  // Called after staging all fallible store allocation, under the store lock;
+  // must not re-enter this store. An exception prevents publication.
+  std::function<bool()> publication_cancelled;
   internal_api::EngineUuid prepared_plan_uuid;
   std::uint64_t prepare_generation{0};
   internal_api::EngineUuid parameter_shape_uuid;
@@ -427,12 +436,18 @@ class CanonicalPreparedPlanStore {
       CanonicalPreparedPlanStore* prepared_plan_store);
 
   bool PersistValidated(
-      std::shared_ptr<const CanonicalPreparedPhysicalPlan> prepared_plan) {
+      std::shared_ptr<const CanonicalPreparedPhysicalPlan> prepared_plan,
+      const std::function<bool()>& cancelled) {
     if (!prepared_plan) return false;
+    // Allocate the map node privately. Once cancellation has been checked,
+    // transferring its node handle cannot allocate or leave partial state.
+    decltype(plans_) staged;
+    const auto identity = prepared_plan->prepared_plan_uuid;
+    staged.emplace(identity, std::move(prepared_plan));
+    auto node = staged.extract(staged.begin());
     std::lock_guard lock(mutex_);
-    return plans_
-        .emplace(prepared_plan->prepared_plan_uuid, std::move(prepared_plan))
-        .second;
+    if (cancelled && cancelled()) return false;
+    return plans_.insert(std::move(node)).inserted;
   }
 
   mutable std::mutex mutex_;
@@ -761,7 +776,8 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
         request.prepare_metric_collection_receipts.empty() ||
         request.prepare_metric_collection_receipts.size() !=
             request.prepare_leg_plan_receipts.size() ||
-        request.prepare_metric_collection_receipts.size() > 8) {
+        request.prepare_metric_collection_receipts.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
       return refuse("prepare_metric_receipt_coverage");
     }
     const auto& coordinator =
@@ -775,7 +791,6 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
         coordinator.route_generation != dag.route_generation ||
         coordinator.cluster_scope_id.empty() ||
         coordinator.metric_thread_budget == 0 ||
-        coordinator.metric_thread_budget > 64 ||
         coordinator.maximum_observed_concurrency == 0 ||
         coordinator.maximum_observed_concurrency >
             coordinator.metric_thread_budget ||
@@ -841,7 +856,6 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
       return std::vector<std::string>{};
     };
     std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> completed_leg_uuids;
-    std::unordered_set<std::string> family_ids;
     std::unordered_set<internal_api::EngineUuid, internal_api::EngineUuidHash> metric_snapshot_uuids;
     std::map<internal_api::EngineUuid, std::uint32_t> completed_dependency_waves;
     for (std::size_t index = 0;
@@ -857,7 +871,6 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
           !canonical_uuid(metric.leg_uuid) ||
           !std::ranges::contains(kKnownFamilies,
                                 std::string_view(metric.family_id)) ||
-          !family_ids.insert(metric.family_id).second ||
           metric.required_metric_ids != required_metric_ids(metric.family_id) ||
           metric.required_metric_ids.empty() || metric.metrics.empty() ||
           !canonical_uuid(metric.metric_snapshot_uuid) ||
@@ -969,6 +982,8 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   }
 
   auto prepared = std::make_shared<CanonicalPreparedPhysicalPlan>();
+  prepared->profile_identity_owner = dag.profile_identity_owner;
+  prepared->model_profile_identity_owner = dag.model_profile_identity_owner;
   prepared->prepared_plan_uuid = request.prepared_plan_uuid;
   prepared->prepare_generation = request.prepare_generation;
   prepared->parameter_shape_uuid = request.parameter_shape_uuid;
@@ -1041,7 +1056,7 @@ inline CanonicalPreparePhysicalPlanResult PrepareCanonicalPhysicalPlan(
   prepared->execution_authority_granted = false;
 
   if (prepared_plan_store == nullptr ||
-      !prepared_plan_store->PersistValidated(prepared)) {
+      !prepared_plan_store->PersistValidated(prepared, request.publication_cancelled)) {
     return refuse("prepared_plan_store");
   }
 

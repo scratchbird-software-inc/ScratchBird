@@ -18,7 +18,7 @@
 namespace scratchbird::engine::optimizer {
 
 struct CanonicalPrepareMetricCollectionContext {
-  std::string leg_uuid;
+  internal_api::EngineUuid leg_uuid;
   std::string family_id;
   std::vector<std::string> required_metric_ids;
   std::vector<CanonicalPreparedLegPlanReceipt> completed_dependency_plans;
@@ -28,7 +28,7 @@ struct CanonicalPrepareMetricCollectionContext {
 
 struct CanonicalPrepareMetricCollectionOutput {
   bool collected{false};
-  std::string metric_snapshot_uuid;
+  internal_api::EngineUuid metric_snapshot_uuid;
   std::uint64_t metric_snapshot_generation{0};
   std::vector<CanonicalPreparedMetricValue> metrics;
   std::string diagnostic_id;
@@ -48,10 +48,10 @@ struct CanonicalPrepareLegPlanningContext {
 
 struct CanonicalPrepareLegPlanningOutput {
   bool planned{false};
-  std::string selected_leg_plan_uuid;
-  std::string selected_alternative_uuid;
-  std::string family_local_cost_vector_uuid;
-  std::vector<std::string> retained_alternative_uuids;
+  internal_api::EngineUuid selected_leg_plan_uuid;
+  internal_api::EngineUuid selected_alternative_uuid;
+  internal_api::EngineUuid family_local_cost_vector_uuid;
+  std::vector<internal_api::EngineUuid> retained_alternative_uuids;
   std::uint64_t estimated_output_rows{0};
   std::string diagnostic_id;
   std::string detail;
@@ -64,9 +64,9 @@ struct CanonicalPrepareLegPlanningOutput {
 };
 
 struct CanonicalPrepareMetricLegRequest {
-  std::string leg_uuid;
+  internal_api::EngineUuid leg_uuid;
   std::string family_id;
-  std::vector<std::string> dependency_leg_uuids;
+  std::vector<internal_api::EngineUuid> dependency_leg_uuids;
   std::vector<std::string> required_metric_ids;
   std::function<CanonicalPrepareMetricCollectionOutput(
       const CanonicalPrepareMetricCollectionContext&)>
@@ -80,10 +80,10 @@ struct CanonicalPrepareMetricLegRequest {
 };
 
 struct CanonicalPrepareWithMetricCollectionRequest {
-  std::string coordinator_policy_uuid;
+  internal_api::EngineUuid coordinator_policy_uuid;
   std::uint64_t coordinator_policy_generation{0};
-  std::string bound_sblr_tree_uuid;
-  std::string route_snapshot_uuid;
+  internal_api::EngineUuid bound_sblr_tree_uuid;
+  internal_api::EngineUuid route_snapshot_uuid;
   std::uint64_t route_epoch{0};
   std::uint64_t route_generation{0};
   std::string cluster_scope_id;
@@ -111,11 +111,21 @@ struct CanonicalPrepareWithMetricCollectionIssue {
   std::string detail;
 };
 
+enum class CanonicalPrepareMetricCollectionStatus {
+  kRefused,
+  kPrepared,
+  kResourceExhausted,
+  kInternalFailure,
+};
+
 struct CanonicalPrepareWithMetricCollectionResult {
+  CanonicalPrepareMetricCollectionStatus status{
+      CanonicalPrepareMetricCollectionStatus::kRefused};
   bool accepted{false};
   bool metrics_collected{false};
   bool legs_planned{false};
   bool prepared{false};
+  // Retained by the session prepared-plan store, not a durable catalog write.
   bool persisted{false};
   bool cancelled{false};
   bool timed_out{false};
