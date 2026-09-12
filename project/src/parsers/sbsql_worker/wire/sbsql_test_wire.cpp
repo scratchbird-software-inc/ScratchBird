@@ -8,6 +8,7 @@
 
 #include "wire/sbsql_test_wire.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "wire/contextual_operand_freeze.hpp"
 
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
@@ -10568,28 +10569,10 @@ std::optional<CanonicalBytes> FreezeContextualReservationSkeletonV2(
   CanonicalAppendU16(&frozen, lowered.exact_emulated_diagnostic ? 1 : 0);
   CanonicalAppendU16(&frozen, lowered.real_file_effects ? 1 : 0);
   CanonicalAppendU16(&frozen, lowered.parser_executes_sql ? 1 : 0);
-  CanonicalAppendU32(&frozen,
-                     static_cast<std::uint32_t>(lowered.operands.size()));
-  for (const auto& operand : lowered.operands) {
-    std::uint32_t descriptor_handle = 0;
-    const auto [end, error] = std::from_chars(
-        operand.name.data(), operand.name.data() + operand.name.size(),
-        descriptor_handle);
-    const bool contextual_descriptor =
-        (operand.type == "relational_descriptor_v1" ||
-         operand.type == "relational_descriptor_v2") &&
-        error == std::errc{} &&
-        end == operand.name.data() + operand.name.size() &&
-        contextual_descriptor_handles.contains(descriptor_handle);
-    if (contextual_descriptor) {
-      CanonicalAppendText(&frozen, "contextual_descriptor_patch_v2");
-      CanonicalAppendText(&frozen, operand.name);
-      continue;
-    }
-    CanonicalAppendText(&frozen, operand.type);
-    CanonicalAppendText(&frozen, operand.name);
-    CanonicalAppendText(&frozen, operand.value);
-  }
+  const auto frozen_operands = FreezeContextualOperandsV3(
+      lowered.operands, contextual_descriptor_handles);
+  if (!frozen_operands) return std::nullopt;
+  frozen.insert(frozen.end(), frozen_operands->begin(), frozen_operands->end());
   return frozen;
 }
 

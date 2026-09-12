@@ -4,6 +4,7 @@
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "binder/descriptor_authority.hpp"
+#include "wire/contextual_operand_freeze.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -258,9 +259,115 @@ void TestNumericBinding() {
   Require(!parser::MatchesNativeNumericDescriptorRecord(wrong, expected), "numeric binding accepted absent authority");
 }
 }
+namespace {
+void TestFrozenOperands() {
+  namespace parser = scratchbird::parser::sbsql;
+  const auto operand_for = [](const Descriptor& descriptor) {
+    parser::SblrOperand operand;
+    operand.type = "relational_descriptor_v3";
+    operand.name = "slot_" + std::to_string(descriptor.descriptor_id);
+    operand.canonical_value_kind = 213;
+    operand.canonical_value_body = Oracle(descriptor);
+    return operand;
+  };
+  auto descriptor = Fixture();
+  descriptor.descriptor_id = 17;
+  const auto operand = operand_for(descriptor);
+  const auto projection = parser::FreezeContextualOperandsV3({operand}, {});
+  Require(projection.has_value(), "immutable descriptor freeze refused");
+  // Independent field-by-field oracle, including embedded zero bytes.
+  Bytes expected{3, 0, 1, 0, 0, 0, 0};
+  for (const auto& field : {operand.type, operand.name, operand.value}) {
+    Append(expected, field.size(), 4);
+    expected.insert(expected.end(), field.begin(), field.end());
+  }
+  Append(expected, 213, 2); Append(expected, operand.canonical_value_body.size(), 4);
+  expected.insert(expected.end(), operand.canonical_value_body.begin(), operand.canonical_value_body.end());
+  Require(*projection == expected, "frozen projection differs from independent framing oracle");
+  const auto mutable_projection = parser::FreezeContextualOperandsV3({operand}, {17});
+  Require(mutable_projection == std::optional<Bytes>{{3, 0, 1, 0, 0, 0, 1, 17, 0, 0, 0}},
+          "mutable descriptor projection differs from exact handle oracle");
+  // Every byte is either rejected as structurally invalid or changes the
+  // immutable projection; an excluded descriptor must still pass decoding.
+  for (std::size_t byte = 0; byte < operand.canonical_value_body.size(); ++byte) {
+    auto changed = operand;
+    changed.canonical_value_body[byte] ^= 1;
+    const auto observed = parser::FreezeContextualOperandsV3({changed}, {});
+    Require(!observed || observed != projection, "freeze ignored changed binary descriptor byte");
+    Descriptor decoded;
+    const bool valid = wire::DecodeRelationalTypeDescriptorV1(
+        changed.canonical_value_body.data(), changed.canonical_value_body.size(), &decoded) &&
+        decoded.descriptor_id == 17;
+    const auto excluded = parser::FreezeContextualOperandsV3({changed}, {17});
+    Require(valid ? excluded == mutable_projection : !excluded,
+            "mutable descriptor exclusion skipped structural validation");
+  }
+  auto changed_descriptor = descriptor;
+  changed_descriptor.descriptor_uuid = Id(42);
+  Require(parser::FreezeContextualOperandsV3({operand_for(changed_descriptor)}, {17}) == mutable_projection,
+          "negotiated descriptor replacement changed reserved handle projection");
+  for (const auto name : {"17", "slot_017", "slot_0", "slot_18", "slot_17x"}) {
+    auto wrong = operand; wrong.name = name;
+    Require(!parser::FreezeContextualOperandsV3({wrong}, {17}), "freeze accepted inexact descriptor slot");
+  }
+  for (const auto type : {"relational_descriptor_v1", "relational_descriptor_v2", "other"}) {
+    auto wrong = operand; wrong.type = type;
+    Require(!parser::FreezeContextualOperandsV3({wrong}, {17}), "freeze accepted wrong descriptor type");
+  }
+  auto wrong = operand; wrong.canonical_value_kind = 0;
+  Require(!parser::FreezeContextualOperandsV3({wrong}, {17}), "freeze accepted wrong descriptor kind");
+  wrong = operand; wrong.value = "shadow";
+  Require(!parser::FreezeContextualOperandsV3({wrong}, {17}), "freeze accepted shadow descriptor value");
+  Require(!parser::FreezeContextualOperandsV3({operand, operand}, {}), "freeze accepted duplicate immutable handle");
+  Require(!parser::FreezeContextualOperandsV3({operand, operand}, {17}), "freeze accepted duplicate mutable handle");
+  Require(!parser::FreezeContextualOperandsV3({operand}, {18}), "freeze accepted missing mutable handle");
+  Require(!parser::FreezeContextualOperandsV3({operand}, {0}), "freeze accepted zero mutable handle");
+  parser::SblrOperand generic{"literal", "value", {}};
+  generic.canonical_value_kind = 4;
+  generic.canonical_value_body = {0, 1, 0, 2, 0};
+  const auto generic_frozen = parser::FreezeContextualOperandsV3({generic}, {});
+  for (std::size_t byte = 0; byte < generic.canonical_value_body.size(); ++byte) {
+    auto changed = generic; changed.canonical_value_body[byte] ^= 1;
+    Require(parser::FreezeContextualOperandsV3({changed}, {}) != generic_frozen,
+            "freeze ignored generic binary body byte");
+  }
+  auto changed = generic; ++changed.canonical_value_kind;
+  Require(parser::FreezeContextualOperandsV3({changed}, {}) != generic_frozen, "freeze ignored generic kind");
+  for (auto member : {&parser::SblrOperand::type, &parser::SblrOperand::name}) {
+    changed = generic; (changed.*member).push_back('\0');
+    Require(parser::FreezeContextualOperandsV3({changed}, {}) != generic_frozen, "freeze ignored field length");
+  }
+  Require(parser::FreezeContextualOperandsV3({operand, generic}, {}) !=
+          parser::FreezeContextualOperandsV3({generic, operand}, {}), "freeze ignored operand order");
+  parser::SblrOperand left{"ab", "c", "d"}, right{"a", "bc", "d"};
+  Require(parser::FreezeContextualOperandsV3({left}, {}) != parser::FreezeContextualOperandsV3({right}, {}),
+          "freeze conflated adjacent fields");
+  changed = generic; changed.value = "shadow";
+  Require(!parser::FreezeContextualOperandsV3({changed}, {}), "freeze accepted mixed binary and text value");
+  const std::vector<parser::SblrOperand> input{operand, generic};
+  const std::unordered_set<std::uint32_t> handles{17};
+  const auto expected_success = parser::FreezeContextualOperandsV3(input, handles);
+  std::size_t failure_sites = 0;
+  for (long site = 0; site < 1000; ++site) {
+    fail_after = site;
+    try {
+      const auto result = parser::FreezeContextualOperandsV3(input, handles);
+      fail_after = -1;
+      Require(result == expected_success, "allocation probe published partial frozen output");
+      break;
+    } catch (const std::bad_alloc&) {
+      fail_after = -1; ++failure_sites; ++faults;
+      Require(input[0].canonical_value_body == operand.canonical_value_body &&
+              input[1].canonical_value_body == generic.canonical_value_body && handles.contains(17),
+              "allocation failure changed reservation input");
+    }
+  }
+  Require(failure_sites > 0 && failure_sites < 1000, "freeze allocation fault sweep incomplete");
+}
+}
 int main() {
   try {
-    TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding();
+    TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {
