@@ -516,7 +516,7 @@ template <typename SourceRecord>
     if (!source.model_columnar_project_column_uuids.empty()) return false;
   }
   if constexpr (requires { source.model_search_analyzer_uuid; }) {
-    if (!source.model_search_analyzer_uuid.empty() ||
+    if (!source.model_search_analyzer_uuid.is_nil() ||
         source.model_search_analyzer_generation != 0) {
       return false;
     }
@@ -608,7 +608,7 @@ struct BoundStatement {
   bool requires_cluster_profile{false};
   bool exact_refusal_required{false};
   std::vector<scratchbird::core::platform::Uuid> resolved_object_uuids;
-  std::vector<std::string> descriptor_refs;
+  std::vector<scratchbird::core::platform::Uuid> descriptor_refs;
   std::vector<std::string> policy_refs;
   std::vector<std::string> required_rights;
   std::vector<std::string> required_authority_steps;
@@ -624,7 +624,7 @@ BoundStatement BindAst(const AstDocument& ast,
                        const CstDocument& cst,
                        const ParserConfig& config,
                        const SessionContext& session,
-                       const std::vector<std::string>& resolved_object_uuids = {},
+                       const std::vector<scratchbird::core::platform::Uuid>& resolved_object_uuids = {},
                        const NativeRelationalBindingContext* native_binding_context = nullptr);
 
 } // namespace scratchbird::parser::sbsql

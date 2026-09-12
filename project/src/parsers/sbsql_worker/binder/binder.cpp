@@ -15,6 +15,8 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -22,8 +24,11 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
-constexpr std::string_view kGenerateSeriesFunctionUuid =
-    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+using scratchbird::core::platform::Uuid;
+using scratchbird::core::uuid::IsEngineIdentityUuid;
+
+constexpr Uuid kGenerateSeriesFunctionUuid =
+    Uuid{{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x7e,0x2c,0xb4,0x37,0xeb,0xbb,0xc2,0xd4,0xf3,0x5b}};
 
 std::string ToLowerAscii(std::string value) {
   for (auto& ch : value) {
@@ -355,12 +360,8 @@ void PopulateAuthorityMetadata(BoundStatement* bound, const AstDocument& ast) {
                                    : "profile_gate.public_or_default";
   bound->granted_scope = "granted_scope.pending_server_authority";
   bound->required_rights.push_back(RequiredRightFor(ast));
-  if (bound->requires_descriptor_authority) {
-    bound->descriptor_refs.push_back("descriptor.pending_server_or_engine_authority");
-  }
-  if (bound->requires_security_authority) {
-    bound->policy_refs.push_back("policy.pending_server_security_authority");
-  }
+  // Required authority is tracked below, not represented by fabricated
+  // descriptor/policy references. Only actual bound evidence belongs there.
 
   bound->name_resolution_authority_key =
       bound->requires_name_resolution ? "authority.server.resolve_name_registry_public"
@@ -404,15 +405,6 @@ void AddBoundAstDiagnostic(BoundNativeRelationalDocument* document,
   document->messages.diagnostics.push_back(MakeDiagnostic(
       std::move(code), "ERROR", std::move(message), "sbp_sbsql.native_binder",
       std::move(fields)));
-}
-
-bool LooksLikeUuidV7(const std::string_view value) {
-  return LooksLikeCanonicalUuid(value) && value[14] == '7';
-}
-
-bool IsNonNullCanonicalUuid(const std::string_view value) {
-  return LooksLikeCanonicalUuid(value) &&
-         value != "00000000-0000-0000-0000-000000000000";
 }
 
 bool IsCanonicalStatementTimestamp(std::string_view value) {
@@ -538,13 +530,13 @@ BoundDescriptorAstRecord CopyBoundDescriptorAstRecord(
 BoundNativeRelationalDocument RefusedBoundAst(
     BoundNativeRelationalDocument document) {
   document.bound = false;
-  document.bound_ast_uuid.clear();
-  document.security_context_uuid.clear();
-  document.statement_uuid.clear();
+  document.bound_ast_uuid = {};
+  document.security_context_uuid = {};
+  document.statement_uuid = {};
   document.statement_timestamp.clear();
-  document.owning_transaction_uuid.clear();
-  document.statement_snapshot_uuid.clear();
-  document.statement_metadata_snapshot_uuid.clear();
+  document.owning_transaction_uuid = {};
+  document.statement_snapshot_uuid = {};
+  document.statement_metadata_snapshot_uuid = {};
   document.local_transaction_id = 0;
   document.snapshot_visible_through_local_transaction_id = 0;
   document.root_relation_id = 0;
@@ -655,26 +647,26 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.catalog_relation_sources, [](const auto& source) {
         return source.source_kind == NativeRelationSourceAstKind::kColumnar;
       });
-  if (!LooksLikeUuidV7(context.bound_ast_uuid)) {
+  if (!IsEngineIdentityUuid(context.bound_ast_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires a non-null UUIDv7 BoundAST identity");
     return RefusedBoundAst(std::move(bound));
   }
-  if (!IsNonNullCanonicalUuid(context.catalog_epoch_uuid)) {
+  if (!IsEngineIdentityUuid(context.catalog_epoch_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires an engine-supplied catalog epoch UUID");
     return RefusedBoundAst(std::move(bound));
   }
-  if (!LooksLikeCanonicalUuid(context.security_context_uuid)) {
+  if (!IsEngineIdentityUuid(context.security_context_uuid)) {
     AddBoundAstDiagnostic(
         &bound, "QOW-DIAG-BOUNDAST-SCOPE",
         "binding requires an engine-supplied security context UUID");
     return RefusedBoundAst(std::move(bound));
   }
-  if (!IsNonNullCanonicalUuid(context.statement_uuid) ||
-      !IsNonNullCanonicalUuid(context.owning_transaction_uuid) ||
-      !IsNonNullCanonicalUuid(context.statement_snapshot_uuid) ||
-      !IsNonNullCanonicalUuid(context.statement_metadata_snapshot_uuid)) {
+  if (!IsEngineIdentityUuid(context.statement_uuid) ||
+      !IsEngineIdentityUuid(context.owning_transaction_uuid) ||
+      !IsEngineIdentityUuid(context.statement_snapshot_uuid) ||
+      !IsEngineIdentityUuid(context.statement_metadata_snapshot_uuid)) {
     AddBoundAstDiagnostic(
         &bound, "QOW-DIAG-BOUNDAST-SCOPE",
         "binding requires non-null canonical engine-supplied MGA statement UUIDs");
@@ -687,12 +679,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     return RefusedBoundAst(std::move(bound));
   }
   const auto& authority = context.engine_statement_authority;
-  if (!IsNonNullCanonicalUuid(authority.statement_uuid) ||
-      !IsNonNullCanonicalUuid(authority.transaction_uuid) ||
-      !IsNonNullCanonicalUuid(authority.statement_snapshot_uuid) ||
-      !IsNonNullCanonicalUuid(
+  if (!IsEngineIdentityUuid(authority.statement_uuid) ||
+      !IsEngineIdentityUuid(authority.transaction_uuid) ||
+      !IsEngineIdentityUuid(authority.statement_snapshot_uuid) ||
+      !IsEngineIdentityUuid(
           authority.statement_metadata_snapshot_uuid) ||
-      !IsNonNullCanonicalUuid(authority.catalog_epoch_uuid) ||
+      !IsEngineIdentityUuid(authority.catalog_epoch_uuid) ||
       authority.local_transaction_id == 0) {
     AddBoundAstDiagnostic(
         &bound, "QOW-DIAG-BOUNDAST-SCOPE",
@@ -749,7 +741,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
   std::unordered_map<std::uint32_t, const NativeDescriptorBindingInput*>
       descriptor_by_id;
-  std::unordered_map<std::string, const NativeDescriptorBindingInput*>
+  std::map<Uuid, const NativeDescriptorBindingInput*>
       descriptor_by_uuid;
   // Descriptor IDs are occurrence-local DAG handles. A self join may bind the
   // same engine-owned catalog descriptor through two alias-distinct source
@@ -762,8 +754,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
                descriptor.codec_version != 0 ||
                descriptor.codec_generation != 0 ||
-               !descriptor.statement_receipt_uuid.empty() ||
-               !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+               !descriptor.statement_receipt_uuid.is_nil() ||
+               !descriptor.datatype_catalog_snapshot_uuid.is_nil() ||
                descriptor.datatype_catalog_generation != 0 ||
                descriptor.datatype_registry_generation != 0;
       };
@@ -775,10 +767,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                descriptor.codec_version != 0 &&
                descriptor.codec_generation != 0 &&
                descriptor.nullability != BoundNullability::kUnknown &&
-               LooksLikeCanonicalUuid(descriptor.descriptor_uuid) &&
-               LooksLikeCanonicalUuid(descriptor.type_uuid) &&
-               LooksLikeCanonicalUuid(descriptor.statement_receipt_uuid) &&
-               LooksLikeCanonicalUuid(
+               IsEngineIdentityUuid(descriptor.descriptor_uuid) &&
+               IsEngineIdentityUuid(descriptor.type_uuid) &&
+               IsEngineIdentityUuid(descriptor.statement_receipt_uuid) &&
+               IsEngineIdentityUuid(
                    descriptor.datatype_catalog_snapshot_uuid) &&
                descriptor.datatype_catalog_generation != 0 &&
                descriptor.datatype_registry_generation != 0;
@@ -834,10 +826,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool carries_any = carries_any_authoritative_field(descriptor);
     const bool carries_complete = carries_complete_authority(descriptor);
     if (descriptor.descriptor_id == 0 ||
-        !LooksLikeCanonicalUuid(descriptor.descriptor_uuid) ||
-        !LooksLikeCanonicalUuid(descriptor.type_uuid) ||
+        !IsEngineIdentityUuid(descriptor.descriptor_uuid) ||
+        !IsEngineIdentityUuid(descriptor.type_uuid) ||
         (descriptor.collation_uuid.has_value() &&
-         !LooksLikeCanonicalUuid(*descriptor.collation_uuid)) ||
+         !IsEngineIdentityUuid(*descriptor.collation_uuid)) ||
         (descriptor.width_precision_scale.scale.has_value() &&
          (!descriptor.width_precision_scale.precision.has_value() ||
           *descriptor.width_precision_scale.scale >
@@ -870,7 +862,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
                             "descriptor IDs must be unique and repeated UUID handles must carry identical immutable authority:" +
                                 std::to_string(descriptor.descriptor_id) + ":" +
-                                descriptor.descriptor_uuid + ":prior=" +
+                                scratchbird::core::uuid::UuidToString(descriptor.descriptor_uuid) + ":prior=" +
                                 (prior_descriptor == context.descriptors.end()
                                      ? std::string("absent")
                                      : std::to_string(
@@ -1056,7 +1048,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         function_binding == context.expressions.end() ||
         function_binding->descriptor_id != 1 ||
         function_binding->function_uuid !=
-            std::string(kGenerateSeriesFunctionUuid) ||
+            kGenerateSeriesFunctionUuid ||
         output_descriptor == descriptor_by_id.end() ||
         output_descriptor->second->nullability != BoundNullability::kNonNull ||
         output_descriptor->second->canonical_type_name != "int64") {
@@ -1088,7 +1080,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         source.table_function_argument_expression_ids;
     function_expression.result_descriptor_id = 1;
     function_expression.bound_function_uuid =
-        std::string(kGenerateSeriesFunctionUuid);
+        kGenerateSeriesFunctionUuid;
     bound.expressions.push_back(std::move(function_expression));
     bound.outputs.push_back(
         {1, source.relation_id, output_expression_id, "generate_series", 1,
@@ -1107,7 +1099,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_source.semantic_variant_id =
         "table-function.generate-series.v1";
     bound_source.bound_object_uuid =
-        std::string(kGenerateSeriesFunctionUuid);
+        kGenerateSeriesFunctionUuid;
     bound.relations.push_back(std::move(bound_source));
 
     BoundRelationAstRecord bound_match;
@@ -1253,7 +1245,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         function_binding == context.expressions.end() ||
         function_binding->descriptor_id != 1 ||
         function_binding->function_uuid !=
-            std::string(kGenerateSeriesFunctionUuid) ||
+            kGenerateSeriesFunctionUuid ||
         function_binding->bound_name_uuid.has_value() ||
         function_binding->structural_literal_occurrence_id != 0 ||
         function_binding->structural_parameter_occurrence_id != 0 ||
@@ -1292,7 +1284,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         relation.table_function_argument_expression_ids;
     function_expression.result_descriptor_id = 1;
     function_expression.bound_function_uuid =
-        std::string(kGenerateSeriesFunctionUuid);
+        kGenerateSeriesFunctionUuid;
     bound.expressions.push_back(std::move(function_expression));
 
     bound.outputs.push_back(
@@ -1308,7 +1300,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_relation.semantic_variant_id =
         "table-function.generate-series.v1";
     bound_relation.bound_object_uuid =
-        std::string(kGenerateSeriesFunctionUuid);
+        kGenerateSeriesFunctionUuid;
     bound.relations.push_back(std::move(bound_relation));
 
     BoundScopeAstRecord scope;
@@ -2157,7 +2149,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     std::size_t binding_offset = 0;
     std::vector<std::vector<std::uint32_t>> source_projection_ids;
-    std::unordered_set<std::string> ordinary_relation_object_uuids;
+    std::set<Uuid> ordinary_relation_object_uuids;
     for (std::size_t source_ordinal = 0; source_ordinal < source_count;
          ++source_ordinal) {
       const auto& ast_source = ast.catalog_relation_sources[source_ordinal];
@@ -2178,12 +2170,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation_binding.source_id != ast_source.source_id ||
           relation_binding.resolution_state !=
               NativeCatalogRelationResolutionState::kBound ||
-          !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
+          !IsEngineIdentityUuid(relation_binding.object_uuid) ||
           (!model && ordinary_multi_catalog_cross_join &&
            !ordinary_relation_object_uuids
                 .insert(relation_binding.object_uuid)
                 .second) ||
-          !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+          !IsEngineIdentityUuid(relation_binding.resolved_schema_uuid) ||
           relation_binding.catalog_generation_id == 0 ||
           relation_binding.security_epoch == 0 ||
           relation_binding.resource_epoch == 0 ||
@@ -2196,7 +2188,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ast_source.model_operation_expression_ids.size() != 1 ||
             relation_binding.resolved_object_type != object_type ||
             (ast_source.source_kind == NativeRelationSourceAstKind::kSearch &&
-             (!IsNonNullCanonicalUuid(context.search_analyzer_uuid) ||
+             (!IsEngineIdentityUuid(context.search_analyzer_uuid) ||
               context.search_analyzer_generation == 0)))) ||
           (!model && !accepted_relational_type)) {
         AddBoundAstDiagnostic(&bound, "SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -2266,7 +2258,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       for (std::size_t column_ordinal = 0;
            column_ordinal < relation_binding.columns.size(); ++column_ordinal) {
         const auto& column = relation_binding.columns[column_ordinal];
-        if (column.ordinal != column_ordinal || column.column_uuid.empty() ||
+        if (column.ordinal != column_ordinal || column.column_uuid.is_nil() ||
             !descriptor_by_id.contains(column.descriptor_id)) {
           AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
                                 "multimodel persisted source descriptor is incomplete");
@@ -2303,13 +2295,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const auto& expression = context.expressions[binding_offset];
         const auto expected_bound_name =
             derived_projection
-                ? std::optional<std::string>{
+                ? std::optional<Uuid>{
                       ast_source.source_kind ==
                                   NativeRelationSourceAstKind::kSearch &&
                               (column_ordinal == 1 || column_ordinal == 2)
                           ? context.search_analyzer_uuid
                           : relation_binding.object_uuid}
-                : std::optional<std::string>{
+                : std::optional<Uuid>{
                       relation_binding.columns[column_ordinal].column_uuid};
         if (expression.expression_id != binding_offset + 1 ||
             !descriptor_by_id.contains(expression.descriptor_id) ||
@@ -2399,7 +2391,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                 "multimodel operation binding is incomplete");
           return RefusedBoundAst(std::move(bound));
         }
-        std::optional<std::string> expected_bound_name;
+        std::optional<Uuid> expected_bound_name;
         if (alias_expression_ids.contains(ast_expression_id)) {
           expected_bound_name =
               context.catalog_relations[source_ordinal].object_uuid;
@@ -3161,8 +3153,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
         resolution.resolved_object_type != expected_object_type ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || resolution.columns.empty() ||
         resolution.columns.size() > 256) {
@@ -3195,11 +3187,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     std::unordered_map<std::string, const NativeCatalogColumnBindingInput*>
         column_by_name;
-    std::unordered_set<std::string> column_uuids;
+    std::set<Uuid> column_uuids;
     for (std::size_t ordinal = 0; ordinal < resolution.columns.size(); ++ordinal) {
       const auto& column = resolution.columns[ordinal];
       if (column.ordinal != ordinal ||
-          !IsNonNullCanonicalUuid(column.column_uuid) ||
+          !IsEngineIdentityUuid(column.column_uuid) ||
           !descriptor_by_id.contains(column.descriptor_id) ||
           column.canonical_name_key.empty() ||
           !column_by_name.emplace(column.canonical_name_key, &column).second ||
@@ -3227,7 +3219,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               BoundNullability::kNonNull ||
           ((has_match || has_nearest) &&
            (!resolution.spatial_crs_uuid.has_value() ||
-            !IsNonNullCanonicalUuid(*resolution.spatial_crs_uuid) ||
+            !IsEngineIdentityUuid(*resolution.spatial_crs_uuid) ||
             resolution.spatial_crs_generation == 0)) ||
           (!(has_match || has_nearest) &&
            (resolution.spatial_crs_uuid.has_value() ||
@@ -3294,7 +3286,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           return refuse_model("SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
                               "columnar projection vector is incomplete");
         }
-        std::unordered_set<std::string> selected_uuids;
+        std::set<Uuid> selected_uuids;
         for (const auto& presented : source.model_columnar_project_names) {
           if (presented.size() < 2) {
             return refuse_model("SB_MODEL_COLUMNAR_PROJECTION_INVALID_V1",
@@ -3415,9 +3407,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto& expression = context.expressions[binding_index++];
       if (!descriptor_by_id.contains(expression.descriptor_id) ||
           (expression.function_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+           !IsEngineIdentityUuid(*expression.function_uuid)) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) ||
+           !IsEngineIdentityUuid(*expression.bound_name_uuid)) ||
           (operation_roots.contains(ast_expression.expression_id) &&
            expression.function_uuid.has_value()) ||
           output_expression_ids.contains(expression.expression_id) ||
@@ -3638,7 +3630,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         context.relations.front().relation_id !=
             ast.relations.front().relation_id ||
         context.relations.front().semantic_variant_id != semantic ||
-        !IsNonNullCanonicalUuid(context.search_analyzer_uuid) ||
+        !IsEngineIdentityUuid(context.search_analyzer_uuid) ||
         context.search_analyzer_generation == 0) {
       return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                            "search AST or binding cohort is incomplete");
@@ -3671,8 +3663,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (resolution.source_id != search_source_ast->source_id ||
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.resolved_object_type != "search" ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || resolution.columns.size() != 2 ||
@@ -3680,8 +3672,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         resolution.columns[0].canonical_name_key != "body" ||
         resolution.columns[1].ordinal != 1 ||
         resolution.columns[1].canonical_name_key != "category" ||
-        !IsNonNullCanonicalUuid(resolution.columns[0].column_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.columns[1].column_uuid) ||
+        !IsEngineIdentityUuid(resolution.columns[0].column_uuid) ||
+        !IsEngineIdentityUuid(resolution.columns[1].column_uuid) ||
         !descriptor_by_id.contains(resolution.columns[0].descriptor_id) ||
         !descriptor_by_id.contains(resolution.columns[1].descriptor_id)) {
       return refuse_search("SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -3808,7 +3800,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           !descriptor_by_id.contains(expression.descriptor_id) ||
           expression.function_uuid.has_value() ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) ||
+           !IsEngineIdentityUuid(*expression.bound_name_uuid)) ||
           !ast_to_bound.emplace(ast_expression.expression_id,
                                 expression.expression_id).second) {
         return refuse_search("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -4163,8 +4155,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (resolution.source_id != vector_source_ast->source_id ||
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.resolved_object_type != "vector" ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || resolution.columns.size() != 2 ||
@@ -4172,8 +4164,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         resolution.columns[0].canonical_name_key != "embedding" ||
         resolution.columns[1].ordinal != 1 ||
         resolution.columns[1].canonical_name_key != "metadata" ||
-        !IsNonNullCanonicalUuid(resolution.columns[0].column_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.columns[1].column_uuid) ||
+        !IsEngineIdentityUuid(resolution.columns[0].column_uuid) ||
+        !IsEngineIdentityUuid(resolution.columns[1].column_uuid) ||
         !descriptor_by_id.contains(resolution.columns[0].descriptor_id) ||
         !descriptor_by_id.contains(resolution.columns[1].descriptor_id)) {
       return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -4354,7 +4346,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               (ordinal == 0 ? "uuid" : "real64") ||
           !descriptor->element_profile.empty() ||
           !expression.bound_name_uuid.has_value() ||
-          !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) {
+          !IsEngineIdentityUuid(*expression.bound_name_uuid)) {
         return refuse_vector("SB_MODEL_BINDING_INCOMPLETE_V1",
                              "vector public projection binding is invalid");
       }
@@ -4390,9 +4382,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            (ast_expression.operator_name == "VECTOR_NEAREST" ||
             ast_expression.operator_name == "VECTOR_FILTER")) ||
           (expression.function_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+           !IsEngineIdentityUuid(*expression.function_uuid)) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid)) ||
+           !IsEngineIdentityUuid(*expression.bound_name_uuid)) ||
           !ast_to_bound.emplace(ast_expression.expression_id,
                                 expression.expression_id).second) {
         return refuse_vector("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
@@ -4652,8 +4644,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (resolution.source_id != time_series_source_ast->source_id ||
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.resolved_object_type != "time_series" ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || !exact_projection) {
@@ -4743,7 +4735,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_source.security_epoch = resolution.security_epoch;
     bound_source.resource_epoch = resolution.resource_epoch;
     for (const auto& column : resolution.columns) {
-      if (!IsNonNullCanonicalUuid(column.column_uuid) ||
+      if (!IsEngineIdentityUuid(column.column_uuid) ||
           !descriptor_by_id.contains(column.descriptor_id)) {
         return refuse_time_series("SB_MODEL_BINDING_INCOMPLETE_V1",
                                   "time-series column binding is incomplete");
@@ -4793,9 +4785,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (!descriptor_by_id.contains(expression.descriptor_id) ||
           (functionless_time_series && expression.function_uuid.has_value()) ||
           (expression.function_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+           !IsEngineIdentityUuid(*expression.function_uuid)) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+           !IsEngineIdentityUuid(*expression.bound_name_uuid))) {
         return refuse_time_series("SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
                                   "time-series typed expression was substituted");
       }
@@ -4865,7 +4857,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           source_descriptor_ids[2], context.outputs[3].descriptor_id,
           source_descriptor_ids[3], sample_count_descriptor_id,
           context.outputs[6].descriptor_id};
-      const std::array<std::string, 7> expected_bound_names{
+      const std::array<Uuid, 7> expected_bound_names{
           resolution.columns[1].column_uuid,
           resolution.columns[2].column_uuid,
           resolution.columns[3].column_uuid,
@@ -5224,8 +5216,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (resolution.source_id != key_value_source_ast->source_id ||
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.resolved_object_type != "key_value" ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || resolution.columns.size() != 3 ||
@@ -5375,7 +5367,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_source.security_epoch = resolution.security_epoch;
     bound_source.resource_epoch = resolution.resource_epoch;
     for (const auto& column : resolution.columns) {
-      if (!IsNonNullCanonicalUuid(column.column_uuid) ||
+      if (!IsEngineIdentityUuid(column.column_uuid) ||
           !descriptor_by_id.contains(column.descriptor_id)) {
         return refuse_key_value(
             "SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -5420,12 +5412,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto& expression = context.expressions[binding_index++];
       if (!descriptor_by_id.contains(expression.descriptor_id) ||
           (expression.function_uuid.has_value() &&
-           (!IsNonNullCanonicalUuid(*expression.function_uuid) ||
+           (!IsEngineIdentityUuid(*expression.function_uuid) ||
             ast_expression.operator_name == "KV_KEY" ||
             ast_expression.operator_name == "KV_MULTI_GET" ||
             ast_expression.operator_name == "KV_PREFIX")) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+           !IsEngineIdentityUuid(*expression.bound_name_uuid))) {
         return refuse_key_value("SB_MODEL_BINDING_INCOMPLETE_V1",
                                 "key/value typed expression binding is invalid");
       }
@@ -5596,8 +5588,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (resolution.source_id != graph_source_ast->source_id ||
         resolution.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(resolution.object_uuid) ||
-        !IsNonNullCanonicalUuid(resolution.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(resolution.object_uuid) ||
+        !IsEngineIdentityUuid(resolution.resolved_schema_uuid) ||
         resolution.resolved_object_type != "graph" ||
         resolution.catalog_generation_id == 0 || resolution.security_epoch == 0 ||
         resolution.resource_epoch == 0 || resolution.columns.empty()) {
@@ -5770,7 +5762,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_source.resource_epoch = resolution.resource_epoch;
     for (const auto& column : resolution.columns) {
       if (column.ordinal >= resolution.columns.size() ||
-          !IsNonNullCanonicalUuid(column.column_uuid) ||
+          !IsEngineIdentityUuid(column.column_uuid) ||
           !descriptor_by_id.contains(column.descriptor_id)) {
         return refuse_graph("SB_MODEL_BINDING_INCOMPLETE_V1",
                             "graph projection column binding is incomplete");
@@ -5815,11 +5807,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto& expression = context.expressions[binding_index++];
       if (!descriptor_by_id.contains(expression.descriptor_id) ||
           (expression.function_uuid.has_value() &&
-           (!IsNonNullCanonicalUuid(*expression.function_uuid) ||
+           (!IsEngineIdentityUuid(*expression.function_uuid) ||
             ast_expression.operator_name == "GRAPH_MATCH" ||
             ast_expression.operator_name == "GRAPH_EXPAND")) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+           !IsEngineIdentityUuid(*expression.bound_name_uuid))) {
         return refuse_graph("SB_MODEL_BINDING_INCOMPLETE_V1",
                             "graph typed expression binding is invalid");
       }
@@ -5989,8 +5981,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         (resolution->source_id != document_source_ast->source_id ||
          resolution->resolution_state !=
              NativeCatalogRelationResolutionState::kBound ||
-         !IsNonNullCanonicalUuid(resolution->object_uuid) ||
-         !IsNonNullCanonicalUuid(resolution->resolved_schema_uuid) ||
+         !IsEngineIdentityUuid(resolution->object_uuid) ||
+         !IsEngineIdentityUuid(resolution->resolved_schema_uuid) ||
          (resolution->resolved_object_type != "document" &&
           resolution->resolved_object_type != "document_collection") ||
          resolution->catalog_generation_id == 0 ||
@@ -6092,7 +6084,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound_source.resource_epoch = resolution->resource_epoch;
       for (const auto& column : resolution->columns) {
         if (column.ordinal >= resolution->columns.size() ||
-            !IsNonNullCanonicalUuid(column.column_uuid) ||
+            !IsEngineIdentityUuid(column.column_uuid) ||
             !descriptor_by_id.contains(column.descriptor_id)) {
           return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
                                   "document collection column binding is incomplete");
@@ -6125,7 +6117,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             !descriptor_by_id.contains(expression.descriptor_id) ||
             (column != nullptr &&
              (column->ordinal != ordinal ||
-              !IsNonNullCanonicalUuid(column->column_uuid) ||
+              !IsEngineIdentityUuid(column->column_uuid) ||
               expression.descriptor_id != column->descriptor_id ||
               expression.bound_name_uuid != column->column_uuid))) {
           return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
@@ -6161,9 +6153,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (expression.descriptor_id == 0 ||
           !descriptor_by_id.contains(expression.descriptor_id) ||
           (expression.function_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.function_uuid)) ||
+           !IsEngineIdentityUuid(*expression.function_uuid)) ||
           (expression.bound_name_uuid.has_value() &&
-           !IsNonNullCanonicalUuid(*expression.bound_name_uuid))) {
+           !IsEngineIdentityUuid(*expression.bound_name_uuid))) {
         return refuse_document("SB_MODEL_BINDING_INCOMPLETE_V1",
                                 "document typed expression binding is invalid");
       }
@@ -6406,28 +6398,28 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         window_binding != context.relations.end() &&
         (strict_ordered_window || window_binding->semantic_variant_id ==
                                       "window.row-number.v1");
-    constexpr std::string_view kRowNumberFunctionUuid =
-        "019de5fc-2400-7539-bcce-00eef3ae7220";
-    constexpr std::string_view kRankFunctionUuid =
-        "019de5fc-2400-7b94-870d-0dd789ca70ab";
-    constexpr std::string_view kDenseRankFunctionUuid =
-        "019de5fc-2400-741d-bef0-f079fd3ba494";
-    constexpr std::string_view kPercentRankFunctionUuid =
-        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
-    constexpr std::string_view kCumeDistFunctionUuid =
-        "019de5fc-2400-721c-be64-2568b64a02b9";
-    constexpr std::string_view kNtileFunctionUuid =
-        "019de5fc-2400-7047-9474-232ca488c094";
-    constexpr std::string_view kLagFunctionUuid =
-        "019de5fc-2400-782c-8436-9ac310301738";
-    constexpr std::string_view kLeadFunctionUuid =
-        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
-    constexpr std::string_view kFirstValueFunctionUuid =
-        "019de5fc-2400-7264-90fb-d25bd0f806f2";
-    constexpr std::string_view kLastValueFunctionUuid =
-        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
-    constexpr std::string_view kNthValueFunctionUuid =
-        "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+    constexpr Uuid kRowNumberFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x75,0x39,0xbc,0xce,0x00,0xee,0xf3,0xae,0x72,0x20}};
+    constexpr Uuid kRankFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7b,0x94,0x87,0x0d,0x0d,0xd7,0x89,0xca,0x70,0xab}};
+    constexpr Uuid kDenseRankFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x74,0x1d,0xbe,0xf0,0xf0,0x79,0xfd,0x3b,0xa4,0x94}};
+    constexpr Uuid kPercentRankFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x86,0x86,0xfe,0x96,0xf3,0xf2,0x7b,0x5d,0xd6}};
+    constexpr Uuid kCumeDistFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x1c,0xbe,0x64,0x25,0x68,0xb6,0x4a,0x02,0xb9}};
+    constexpr Uuid kNtileFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x70,0x47,0x94,0x74,0x23,0x2c,0xa4,0x88,0xc0,0x94}};
+    constexpr Uuid kLagFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x2c,0x84,0x36,0x9a,0xc3,0x10,0x30,0x17,0x38}};
+    constexpr Uuid kLeadFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7a,0x06,0xbc,0x3c,0x67,0x47,0xcf,0x5b,0xe6,0x6f}};
+    constexpr Uuid kFirstValueFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0x64,0x90,0xfb,0xd2,0x5b,0xd0,0xf8,0x06,0xf2}};
+    constexpr Uuid kLastValueFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0x23,0xa5,0xbe,0x7e,0xd3,0xf1,0xa5,0xc3,0xec}};
+    constexpr Uuid kNthValueFunctionUuid =
+        Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x7d,0xc9,0x80,0xe6,0x9f,0x2c,0xcf,0x08,0x07,0x6f}};
     const auto aggregate_function_ast =
         aggregate_window && ast.window_invocations.size() == 1
             ? std::ranges::find_if(ast.expressions, [&](const auto& candidate) {
@@ -6518,12 +6510,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
-    const std::string_view expected_function_uuid =
+    const Uuid expected_function_uuid =
         aggregate_window
             ? (context.window_functions.size() == 1
-                   ? std::string_view{
-                         context.window_functions.front().function_uuid}
-                   : std::string_view{})
+                   ? context.window_functions.front().function_uuid
+                   : Uuid{})
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -6757,8 +6748,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             std::vector<std::uint32_t>{ast_source.source_id} ||
         relation_binding.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
-        !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(relation_binding.object_uuid) ||
+        !IsEngineIdentityUuid(relation_binding.resolved_schema_uuid) ||
         relation_binding.resolved_object_type.empty() ||
         relation_binding.catalog_generation_id == 0 ||
         relation_binding.security_epoch == 0 ||
@@ -6809,7 +6800,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           ast_expression->expression_kind !=
               NativeExpressionAstKind::kIdentifier ||
           ast_expression->spelling != column.canonical_name_key ||
-          column.ordinal != ordinal || column.column_uuid.empty() ||
+          column.ordinal != ordinal || column.column_uuid.is_nil() ||
           descriptor == descriptor_by_id.end() ||
           expression.expression_id != expected_binding ||
           expression.descriptor_id != column.descriptor_id ||
@@ -7050,7 +7041,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         function_binding.descriptor_id != function_binding_index + 1 ||
         !function_binding.function_uuid.has_value() ||
         *function_binding.function_uuid != expected_function_uuid ||
-        !IsNonNullCanonicalUuid(*function_binding.function_uuid) ||
+        !IsEngineIdentityUuid(*function_binding.function_uuid) ||
         function_binding.bound_name_uuid.has_value() ||
         window_function_binding.invocation_id != invocation.invocation_id ||
         window_function_binding.function_expression_id !=
@@ -8224,8 +8215,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               std::vector<std::uint32_t>{ast_source.source_id} ||
           relation_binding.resolution_state !=
               NativeCatalogRelationResolutionState::kBound ||
-          !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
-          !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+          !IsEngineIdentityUuid(relation_binding.object_uuid) ||
+          !IsEngineIdentityUuid(relation_binding.resolved_schema_uuid) ||
           relation_binding.resolved_object_type.empty() ||
           relation_binding.catalog_generation_id == 0 ||
           relation_binding.security_epoch == 0 ||
@@ -8302,7 +8293,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const auto descriptor = descriptor_by_id.find(column.descriptor_id);
         const auto expected_binding =
             static_cast<std::uint32_t>(binding_offset + 1);
-        if (column.ordinal != ordinal || column.column_uuid.empty() ||
+        if (column.ordinal != ordinal || column.column_uuid.is_nil() ||
             column.canonical_name_key.empty() ||
             descriptor == descriptor_by_id.end() ||
             expression.expression_id != expected_binding ||
@@ -8779,11 +8770,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ":operand_type=" +
             (operand_descriptor == descriptor_by_id.end()
                  ? std::string{}
-                 : operand_descriptor->second->type_uuid) +
+                 : scratchbird::core::uuid::UuidToString(operand_descriptor->second->type_uuid)) +
             ":selected_type=" +
             (selected_descriptor == descriptor_by_id.end()
                  ? std::string{}
-                 : selected_descriptor->second->type_uuid) +
+                 : scratchbird::core::uuid::UuidToString(selected_descriptor->second->type_uuid)) +
             ":expected_expression=" +
             std::to_string(expected_operand_expression_id) +
             ":operand_expression=" +
@@ -9952,11 +9943,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (relation_binding.source_id != source.source_id ||
         relation_binding.resolution_state !=
             NativeCatalogRelationResolutionState::kBound ||
-        !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
+        !IsEngineIdentityUuid(relation_binding.object_uuid) ||
         !IsCatalogRelationObjectType(relation_binding.resolved_object_type) ||
-        !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+        !IsEngineIdentityUuid(relation_binding.resolved_schema_uuid) ||
         (relation_binding.parent_object_uuid.has_value() &&
-         !IsNonNullCanonicalUuid(*relation_binding.parent_object_uuid)) ||
+         !IsEngineIdentityUuid(*relation_binding.parent_object_uuid)) ||
         relation_binding.catalog_generation_id == 0 ||
         relation_binding.security_epoch == 0 ||
         relation_binding.resource_epoch == 0 ||
@@ -9979,7 +9970,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       return RefusedBoundAst(std::move(bound));
     }
 
-    std::unordered_set<std::string> column_uuids;
+    std::set<Uuid> column_uuids;
     std::unordered_set<std::uint32_t> used_descriptor_ids;
     BoundCatalogRelationSourceAstRecord bound_source;
     bound_source.source_id = source.source_id;
@@ -10005,7 +9996,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto& column = relation_binding.columns[ordinal];
       const auto descriptor = descriptor_by_id.find(column.descriptor_id);
       if (column.ordinal != ordinal ||
-          !IsNonNullCanonicalUuid(column.column_uuid) ||
+          !IsEngineIdentityUuid(column.column_uuid) ||
           column.canonical_name_key.empty() ||
           !column_uuids.insert(column.column_uuid).second ||
           descriptor == descriptor_by_id.end() ||
@@ -10222,21 +10213,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  const auto input_descriptor =
                      descriptor_by_id.find(column.descriptor_id);
                  return input_descriptor != descriptor_by_id.end() &&
-                        IsNonNullCanonicalUuid(
+                        IsEngineIdentityUuid(
                             input_descriptor->second->descriptor_uuid) &&
                         input_descriptor->second->descriptor_generation == 1 &&
                         input_descriptor->second->type_uuid ==
-                            "019d0000-0000-7000-8000-00000000d712" &&
+                            Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x12}} &&
                         input_descriptor->second->type_generation == 1 &&
                         input_descriptor->second->codec_id ==
                             "datatype.int64.le.v1" &&
                         input_descriptor->second->codec_version == 1 &&
                         input_descriptor->second->codec_generation == 1 &&
-                        IsNonNullCanonicalUuid(
+                        IsEngineIdentityUuid(
                             input_descriptor->second->statement_receipt_uuid) &&
                         input_descriptor->second
                                 ->datatype_catalog_snapshot_uuid ==
-                            "019d0000-0000-7000-8000-00000000d701" &&
+                            Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
                         input_descriptor->second
                                 ->datatype_catalog_generation == 1 &&
                         input_descriptor->second
@@ -10246,18 +10237,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           !aggregate_grouped_sum_int128 ||
           (descriptor != descriptor_by_id.end() &&
            descriptor->second->descriptor_uuid ==
-               "019d0000-0000-7000-8000-00000000d714" &&
+               Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x14}} &&
            descriptor->second->descriptor_generation == 1 &&
            descriptor->second->type_uuid ==
-               "019d0000-0000-7000-8000-00000000d715" &&
+               Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x15}} &&
            descriptor->second->type_generation == 1 &&
            descriptor->second->codec_id == "datatype.int128.le.v1" &&
            descriptor->second->codec_version == 1 &&
            descriptor->second->codec_generation == 1 &&
-           IsNonNullCanonicalUuid(
+           IsEngineIdentityUuid(
                descriptor->second->statement_receipt_uuid) &&
            descriptor->second->datatype_catalog_snapshot_uuid ==
-               "019d0000-0000-7000-8000-00000000d701" &&
+               Uuid{{0x01,0x9d,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0xd7,0x01}} &&
            descriptor->second->datatype_catalog_generation == 1 &&
            descriptor->second->datatype_registry_generation == 1 &&
            std::ranges::all_of(
@@ -10303,10 +10294,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           expression == context.expressions.end() ||
           expression->descriptor_id != expected_aggregate_descriptor_id ||
           !expression->function_uuid.has_value() ||
-          !IsNonNullCanonicalUuid(*expression->function_uuid) ||
+          !IsEngineIdentityUuid(*expression->function_uuid) ||
           (aggregate_grouped_sum_int128 &&
            *expression->function_uuid !=
-               "019de5fc-2400-72e4-8549-82b2eef5a777") ||
+               Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0xe4,0x85,0x49,0x82,0xb2,0xee,0xf5,0xa7,0x77}}) ||
           expression->bound_name_uuid.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
@@ -11187,14 +11178,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         expression.expression_kind == NativeExpressionAstKind::kIdentifier;
     if (function_call != expression_binding.function_uuid.has_value() ||
         (expression_binding.function_uuid.has_value() &&
-         !LooksLikeCanonicalUuid(*expression_binding.function_uuid))) {
+         !IsEngineIdentityUuid(*expression_binding.function_uuid))) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                             "function UUID state does not match the expression kind");
       return RefusedBoundAst(std::move(bound));
     }
     if (identifier != expression_binding.bound_name_uuid.has_value() ||
         (expression_binding.bound_name_uuid.has_value() &&
-         !LooksLikeCanonicalUuid(*expression_binding.bound_name_uuid))) {
+         !IsEngineIdentityUuid(*expression_binding.bound_name_uuid))) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                             "identifier UUID state does not match the expression kind");
       return RefusedBoundAst(std::move(bound));
@@ -12574,7 +12565,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             having_argument_binding == expression_binding_by_id.end() ||
             projected_argument_binding == expression_binding_by_id.end() ||
             having_sum_binding->second->function_uuid !=
-                "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+                Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0xe4,0x85,0x49,0x82,0xb2,0xee,0xf5,0xa7,0x77}} ||
             projected_sum_binding->second->function_uuid !=
                 having_sum_binding->second->function_uuid ||
             having_sum_binding->second->descriptor_id !=
@@ -12647,7 +12638,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             having_count_binding == expression_binding_by_id.end() ||
             projected_count_binding == expression_binding_by_id.end() ||
             having_count_binding->second->function_uuid !=
-                "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+                Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x4a,0x9a,0xec,0x37,0x1f,0x8b,0x95,0xb7,0xea}} ||
             projected_count_binding->second->function_uuid !=
                 having_count_binding->second->function_uuid ||
             having_count_binding->second->descriptor_id !=
@@ -12692,7 +12683,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             having_count_binding == expression_binding_by_id.end() ||
             projected_count_binding == expression_binding_by_id.end() ||
             having_count_binding->second->function_uuid !=
-                "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+                Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x4a,0x9a,0xec,0x37,0x1f,0x8b,0x95,0xb7,0xea}} ||
             projected_count_binding->second->function_uuid !=
                 having_count_binding->second->function_uuid ||
             having_count_binding->second->descriptor_id !=
@@ -12742,7 +12733,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             having_count_binding == expression_binding_by_id.end() ||
             projected_count_binding == expression_binding_by_id.end() ||
             having_count_binding->second->function_uuid !=
-                "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+                Uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x78,0x4a,0x9a,0xec,0x37,0x1f,0x8b,0x95,0xb7,0xea}} ||
             projected_count_binding->second->function_uuid !=
                 having_count_binding->second->function_uuid ||
             having_count_binding->second->descriptor_id !=
@@ -12964,15 +12955,16 @@ BoundStatement BindAst(const AstDocument& ast,
                        const CstDocument& cst,
                        const ParserConfig& config,
                        const SessionContext& session,
-                       const std::vector<std::string>& resolved_object_uuids,
+                       const std::vector<Uuid>& resolved_object_uuids,
                        const NativeRelationalBindingContext* native_binding_context) {
   BoundStatement bound;
   bound.parser_api_major = config.parser_api_major;
   bound.protocol_version = config.protocol_version;
-  bound.parser_package_uuid = config.parser_uuid;
+  bound.parser_package_uuid = session.admitted_parser_package_uuid;
   bound.parser_package_version = config.bundle_contract_id;
   bound.parser_build_id = config.build_id;
-  bound.command_registry_snapshot_uuid = "sbsql-generated-registry.v1";
+  // A generated-registry label is not a snapshot identity. The owning
+  // admission path must supply its real registry projection before lowering.
   bound.session_uuid = session.session_uuid;
   bound.connection_uuid = session.connection_uuid;
   bound.database_uuid = session.database_uuid;
@@ -13042,7 +13034,7 @@ BoundStatement BindAst(const AstDocument& ast,
     bound.resolved_object_uuids.clear();
     for (const auto& source :
          bound.native_relational.catalog_relation_sources) {
-      if (!source.object_uuid.empty()) {
+      if (!source.object_uuid.is_nil()) {
         bound.resolved_object_uuids.push_back(source.object_uuid);
       }
     }
