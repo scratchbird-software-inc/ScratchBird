@@ -8,6 +8,7 @@
 
 #include "wire/sbsql_test_wire.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "engine/sblr/relational_identity_codec.hpp"
 #include "wire/contextual_operand_freeze.hpp"
 
 #include "ast/ast.hpp"
@@ -12148,7 +12149,18 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
       encoded_name = operand.name;
     }
     canonical_operand.name = std::move(encoded_name);
-    if (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty()) {
+    if (engine_sblr::IsRelationalContextIdentitySlot(operand.name)) {
+      scratchbird::core::platform::Uuid identity;
+      if (is_literal_reference || is_parameter_reference || is_variable_reference ||
+          !operand.value.empty() ||
+          !engine_sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name,
+              static_cast<engine_sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity))
+        return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::uuid_ref;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty()) {
       scratchbird::engine::internal_api::RelationalTypeDescriptor descriptor;
       if (is_literal_reference || is_parameter_reference || is_variable_reference ||
           !operand.value.empty() || operand.type != "relational_descriptor_v3" ||

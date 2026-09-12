@@ -4,6 +4,7 @@
 
 #include "lowering/lowering.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "engine/sblr/relational_identity_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 
 #include <limits>
@@ -47,6 +48,14 @@ inline std::optional<std::vector<std::uint8_t>> FreezeContextualOperandsV3(
         ((operand.canonical_value_kind != 0 ||
           !operand.canonical_value_body.empty()) && !operand.value.empty()))
       return std::nullopt;
+    if (engine::sblr::IsRelationalContextIdentitySlot(operand.name)) {
+      core::platform::Uuid identity;
+      if (!engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name,
+              static_cast<engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity))
+        return std::nullopt;
+    }
     if (operand.type == "relational_descriptor_v3" ||
         operand.canonical_value_kind == descriptor_kind) {
       engine::internal_api::RelationalTypeDescriptor descriptor;

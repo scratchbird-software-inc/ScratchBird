@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lowering/lowering.hpp"
+#include "lowering/relational_identity_operand.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 
@@ -33318,6 +33319,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
 
+  const auto emit_context_identity = [&](std::string_view name,
+                                         const scratchbird::core::platform::Uuid& identity) {
+    auto operand = MakeRelationalContextIdentityOperand(name, identity);
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+                                      "relational context requires an exact binary system identity");
+      return false;
+    }
+    envelope.operands.push_back(std::move(*operand));
+    return true;
+  };
+
   if (std::ranges::any_of(native.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCte;
       })) {
@@ -33762,25 +33775,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -33967,25 +33968,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -34228,25 +34217,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -34599,25 +34576,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -34908,25 +34873,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -35391,25 +35344,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -35687,25 +35628,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -35985,25 +35914,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -36269,25 +36186,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
 
     envelope.operands.push_back({"uint16", "relational_wire_version", "2"});
-    envelope.operands.push_back(
-        {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_catalog_epoch_uuid",
-         native.scopes.front().catalog_epoch_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_security_context_uuid",
-         native.security_context_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_uuid", native.statement_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_owning_transaction_uuid",
-         native.owning_transaction_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_snapshot_uuid",
-         native.statement_snapshot_uuid});
-    envelope.operands.push_back(
-        {"uuid", "relational_statement_metadata_snapshot_uuid",
-         native.statement_metadata_snapshot_uuid});
+    if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+    if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+    if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+    if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+    if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
     envelope.operands.push_back(
         {"uint64", "relational_local_transaction_id",
          std::to_string(native.local_transaction_id)});
@@ -41887,25 +41792,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
 
   envelope.operands.push_back(
       {"uint16", "relational_wire_version", "2"});
-  envelope.operands.push_back(
-      {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_catalog_epoch_uuid",
-       native.scopes.front().catalog_epoch_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_security_context_uuid",
-       native.security_context_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_statement_uuid", native.statement_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_owning_transaction_uuid",
-       native.owning_transaction_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_statement_snapshot_uuid",
-       native.statement_snapshot_uuid});
-  envelope.operands.push_back(
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       native.statement_metadata_snapshot_uuid});
+  if (!emit_context_identity("relational_bound_sblr_tree_uuid", native.bound_ast_uuid)) return envelope;
+  if (!emit_context_identity("relational_catalog_epoch_uuid", native.scopes.front().catalog_epoch_uuid)) return envelope;
+  if (!emit_context_identity("relational_security_context_uuid", native.security_context_uuid)) return envelope;
+  if (!emit_context_identity("relational_statement_uuid", native.statement_uuid)) return envelope;
+  if (!emit_context_identity("relational_owning_transaction_uuid", native.owning_transaction_uuid)) return envelope;
+  if (!emit_context_identity("relational_statement_snapshot_uuid", native.statement_snapshot_uuid)) return envelope;
+  if (!emit_context_identity("relational_statement_metadata_snapshot_uuid", native.statement_metadata_snapshot_uuid)) return envelope;
   envelope.operands.push_back(
       {"uint64", "relational_local_transaction_id",
        std::to_string(native.local_transaction_id)});
@@ -45081,13 +44974,13 @@ struct ParsedRelationalNode {
 
 struct ParsedRelationalGraph {
   std::uint16_t wire_version{0};
-  std::string bound_sblr_tree_uuid;
-  std::string catalog_epoch_uuid;
-  std::string security_context_uuid;
-  std::string statement_uuid;
-  std::string owning_transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
+  scratchbird::core::platform::Uuid bound_sblr_tree_uuid;
+  scratchbird::core::platform::Uuid catalog_epoch_uuid;
+  scratchbird::core::platform::Uuid security_context_uuid;
+  scratchbird::core::platform::Uuid statement_uuid;
+  scratchbird::core::platform::Uuid owning_transaction_uuid;
+  scratchbird::core::platform::Uuid statement_snapshot_uuid;
+  scratchbird::core::platform::Uuid statement_metadata_snapshot_uuid;
   std::string statement_timestamp;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
@@ -45516,6 +45409,7 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
                                    "operand_bytes");
     }
     if (operand.type != "relational_descriptor_v3" &&
+        !scratchbird::engine::sblr::IsRelationalContextIdentitySlot(operand.name) &&
         (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty())) {
       return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
                                    "binary operand body has the wrong relational slot",
@@ -45538,92 +45432,127 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (tree_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "bound SBLR tree identity is malformed or duplicated",
             "bound_sblr_tree_uuid");
       }
-      graph->bound_sblr_tree_uuid = operand.value;
+      graph->bound_sblr_tree_uuid = identity;
       tree_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_catalog_epoch_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (catalog_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "catalog epoch identity is malformed or duplicated",
             "catalog_epoch_uuid");
       }
-      graph->catalog_epoch_uuid = operand.value;
+      graph->catalog_epoch_uuid = identity;
       catalog_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_security_context_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (security_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "security context identity is malformed or duplicated",
             "security_context_uuid");
       }
-      graph->security_context_uuid = operand.value;
+      graph->security_context_uuid = identity;
       security_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (statement_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "statement identity is malformed or duplicated",
             "statement_uuid");
       }
-      graph->statement_uuid = operand.value;
+      graph->statement_uuid = identity;
       statement_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_owning_transaction_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (owning_transaction_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "owning transaction identity is malformed or duplicated",
             "owning_transaction_uuid");
       }
-      graph->owning_transaction_uuid = operand.value;
+      graph->owning_transaction_uuid = identity;
       owning_transaction_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_snapshot_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (statement_snapshot_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "statement snapshot identity is malformed or duplicated",
             "statement_snapshot_uuid");
       }
-      graph->statement_snapshot_uuid = operand.value;
+      graph->statement_snapshot_uuid = identity;
       statement_snapshot_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_metadata_snapshot_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, static_cast<scratchbird::engine::sblr::SblrValueKind>(operand.canonical_value_kind),
+              operand.canonical_value_body.data(), operand.canonical_value_body.size(), &identity);
       if (statement_metadata_snapshot_uuid_present ||
-          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+          !identity_valid) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "statement metadata snapshot identity is malformed or duplicated",
             "statement_metadata_snapshot_uuid");
       }
-      graph->statement_metadata_snapshot_uuid = operand.value;
+      graph->statement_metadata_snapshot_uuid = identity;
       statement_metadata_snapshot_uuid_present = true;
       continue;
     }

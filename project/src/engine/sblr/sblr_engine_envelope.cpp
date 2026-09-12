@@ -8,6 +8,7 @@
 
 #include "sblr_engine_envelope.hpp"
 #include "relational_descriptor_codec.hpp"
+#include "relational_identity_codec.hpp"
 #include "core/uuid/uuid.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
 #include "sblr_ddl_alter_timeseries_value_cache_runtime.hpp"
@@ -1547,6 +1548,17 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
   std::optional<ContextualTextLiteralExecuteV2> contextual_text_execute;
   for (std::size_t i = 0; i < envelope.operands.size(); ++i) {
     const auto& operand = envelope.operands[i];
+    if (IsRelationalContextIdentitySlot(operand.name)) {
+      core::platform::Uuid identity;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 ||
+          envelope.operation_version_minor > 1 || !operand.value.empty() ||
+          !DecodeRelationalContextIdentity(operand.type, operand.name, operand.value_kind,
+                                          operand.value_body.data(), operand.value_body.size(), &identity)) {
+        fail("SBLR.OPERAND_INVALID", "relational context requires its exact binary UUID reference slot");
+        break;
+      }
+    }
     if (operand.value_kind == SblrValueKind::relational_type_descriptor ||
         operand.type == "relational_descriptor_v3") {
       internal_api::RelationalTypeDescriptor descriptor;

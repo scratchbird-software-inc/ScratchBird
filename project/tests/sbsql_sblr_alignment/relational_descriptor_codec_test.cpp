@@ -5,6 +5,7 @@
 #include "engine/sblr/sblr_engine_envelope.hpp"
 #include "binder/descriptor_authority.hpp"
 #include "wire/contextual_operand_freeze.hpp"
+#include "lowering/relational_identity_operand.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -539,10 +540,118 @@ void TestReservationSnapshot() {
   Require(failure_sites > 0 && failure_sites < 1000, "full reservation allocation sweep incomplete");
 }
 }
+namespace {
+void TestContextIdentityOperands() {
+  namespace parser = scratchbird::parser::sbsql;
+  constexpr std::array<std::string_view, 7> expected_names{
+      "relational_bound_sblr_tree_uuid", "relational_catalog_epoch_uuid",
+      "relational_security_context_uuid", "relational_statement_uuid",
+      "relational_owning_transaction_uuid", "relational_statement_snapshot_uuid",
+      "relational_statement_metadata_snapshot_uuid"};
+  Require(wire::kRelationalContextIdentitySlots == expected_names, "context identity slots differ from contract");
+  auto envelope = wire::MakeSblrEnvelope("query.execute", "SBLR_QUERY_EXECUTE", "context.identity.fixture");
+  envelope.opcode_code = 4615; envelope.parser_package_uuid = Id(6); envelope.registry_snapshot_uuid = Id(7);
+  envelope.result_shape = "query_execute_result"; envelope.diagnostic_shape = "diagnostic_vector";
+  for (std::size_t slot = 0; slot < expected_names.size(); ++slot) {
+    const auto name = expected_names[slot]; const auto identity = Id(static_cast<std::uint8_t>(40 + slot));
+    const auto native = parser::MakeRelationalContextIdentityOperand(name, identity);
+    Require(native && native->type == "uuid" && native->name == name && native->value.empty() &&
+            native->canonical_value_kind == 1 && native->canonical_value_body == Bytes(identity.bytes.begin(), identity.bytes.end()),
+            "native identity operand changed binary bytes or used text");
+    Uuid decoded = Id(90);
+    fail_after = 0;
+    const bool decoded_without_allocation = wire::DecodeRelationalContextIdentity(
+        "uuid", name, wire::SblrValueKind::uuid_ref, identity.bytes.data(), 16, &decoded);
+    fail_after = -1;
+    Require(decoded_without_allocation && decoded == identity, "binary reference decode allocated or changed identity");
+    const auto decode = [&](const Bytes& bytes, wire::SblrValueKind kind = wire::SblrValueKind::uuid_ref,
+                            std::string_view type = "uuid") {
+      auto output = Id(90);
+      const bool ok = wire::DecodeRelationalContextIdentity(type, name, kind, bytes.data(), bytes.size(), &output);
+      if (!ok) Require(output == Id(90), "reference refusal modified published UUID");
+      return ok;
+    };
+    for (std::size_t size = 0; size < 24; ++size) {
+      if (size == 16) continue;
+      Bytes bytes(identity.bytes.begin(), identity.bytes.end()); bytes.resize(size);
+      Require(!decode(bytes), "context reference accepted inexact byte length");
+    }
+    for (unsigned kind = 0; kind <= 213; ++kind) {
+      if (kind == 1) continue;
+      Require(!decode(native->canonical_value_body, static_cast<wire::SblrValueKind>(kind)), "context reference accepted wrong value kind");
+    }
+    Require(!decode(native->canonical_value_body, wire::SblrValueKind::uuid_ref, "text"), "context reference accepted wrong type");
+    Require(!decode(Bytes(16, 0)), "context reference accepted nil");
+    Require(!wire::DecodeRelationalContextIdentity("uuid", name, wire::SblrValueKind::uuid_ref, nullptr, 16, &decoded), "context reference dereferenced null input");
+    Require(!wire::DecodeRelationalContextIdentity("uuid", name, wire::SblrValueKind::uuid_ref, identity.bytes.data(), 16, nullptr), "context reference accepted null output");
+    for (std::size_t byte = 0; byte < 16; ++byte) for (unsigned value = 0; value < 256; ++value) {
+      auto changed = identity; changed.bytes[byte] = static_cast<std::uint8_t>(value);
+      const bool expected = byte == 6 ? value >> 4 == 7 : byte == 8 ? value >> 6 == 2 : true;
+      auto output = Id(90);
+      Require(wire::DecodeRelationalContextIdentity("uuid", name, wire::SblrValueKind::uuid_ref,
+              changed.bytes.data(), 16, &output) == expected, "context identity version or variant policy differs");
+      Require(expected ? output == changed : output == Id(90), "context decoder lost raw bits or modified failed output");
+    }
+    wire::SblrOperand canonical;
+    canonical.ordinal = static_cast<std::uint32_t>(slot + 1); canonical.type = native->type;
+    canonical.name = native->name; canonical.value_kind = wire::SblrValueKind::uuid_ref;
+    canonical.value_body = native->canonical_value_body; envelope.operands.push_back(canonical);
+    const auto frozen = parser::FreezeContextualOperandsV3({*native}, {});
+    Require(frozen.has_value(), "valid binary context freeze refused");
+    auto invalid = *native; invalid.value = "uuid text shadow";
+    Require(!parser::FreezeContextualOperandsV3({invalid}, {}), "context freeze accepted text shadow");
+    invalid = *native; invalid.canonical_value_body[6] = 0x40;
+    Require(!parser::FreezeContextualOperandsV3({invalid}, {}), "context freeze accepted non-system identity");
+    std::size_t failure_sites = 0;
+    for (long site = 0; site < 20; ++site) {
+      fail_after = site;
+      try {
+        const auto made = parser::MakeRelationalContextIdentityOperand(name, identity); fail_after = -1;
+        Require(made && made->canonical_value_body == native->canonical_value_body,
+                "identity operand construction published partial result"); break;
+      } catch (const std::bad_alloc&) { fail_after = -1; ++faults; ++failure_sites; }
+    }
+    Require(failure_sites > 0 && failure_sites < 20, "identity operand allocation sweep incomplete");
+  }
+  const auto encoded = wire::EncodeSblrEnvelope(envelope);
+  const auto decoded = wire::DecodeSblrEnvelope(encoded);
+  Require(!encoded.empty() && decoded.ok && decoded.envelope.operands.size() == 7,
+          "context identity SBOP round trip refused");
+  for (std::size_t slot = 0; slot < envelope.operands.size(); ++slot) {
+    Require(decoded.envelope.operands[slot].value_body == envelope.operands[slot].value_body,
+            "SBOP changed context identity bytes");
+    auto wrong = envelope; wrong.operands[slot].type = "text";
+    Require(!wire::ValidateSblrEnvelope(wrong).ok, "SBOP accepted context name with wrong type");
+    wrong = envelope; wrong.operands[slot].value_kind = wire::SblrValueKind::literal_typed;
+    const auto type_id = Id(80); Bytes wrapper(type_id.bytes.begin(), type_id.bytes.end());
+    const std::string old_text = "019d0000-0000-7000-8000-000000000001";
+    Append(wrapper, old_text.size(), 8); wrapper.insert(wrapper.end(), old_text.begin(), old_text.end());
+    wrong.operands[slot].value_body = wrapper;
+    Require(!wire::ValidateSblrEnvelope(wrong).ok, "SBOP admitted retired typed-text context identity");
+    wrong = envelope; wrong.operands[slot].value = old_text;
+    Require(!wire::ValidateSblrEnvelope(wrong).ok, "SBOP admitted context identity text shadow");
+  }
+  auto wrong_root = envelope; wrong_root.operation_id = "engine.op.package_begin";
+  wrong_root.opcode = "SBLR_PACKAGE_BEGIN"; wrong_root.opcode_code = 1;
+  Require(!wire::ValidateSblrEnvelope(wrong_root).ok, "context identity escaped query root");
+  Require(!parser::MakeRelationalContextIdentityOperand("unknown_context", Id(1)), "unknown context slot admitted");
+  Require(!parser::MakeRelationalContextIdentityOperand(expected_names[0], Uuid{}), "nil context identity constructed");
+  // User UUID bytes are values, not one of the seven system reference roles.
+  auto user_value = envelope; user_value.operands.resize(1);
+  auto& literal = user_value.operands[0]; literal.name = "user_uuid_value";
+  literal.value_kind = wire::SblrValueKind::literal_typed;
+  const auto descriptor_id = Id(80); literal.value_body.assign(descriptor_id.bytes.begin(), descriptor_id.bytes.end());
+  Append(literal.value_body, 16, 8);
+  auto user_uuid = Id(81); user_uuid.bytes[6] = 0x40;
+  literal.value_body.insert(literal.value_body.end(), user_uuid.bytes.begin(), user_uuid.bytes.end());
+  Require(wire::ValidateSblrEnvelope(user_value).ok, "system context policy rejected earlier-version user UUID data");
+}
+}
 int main() {
   try {
     TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
     TestReservationSnapshot();
+    TestContextIdentityOperands();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {

@@ -8,6 +8,7 @@
 
 #include "sblr_dispatch.hpp"
 #include "relational_descriptor_codec.hpp"
+#include "relational_identity_codec.hpp"
 #include "canonical_query_result_metadata.hpp"
 #include "canonical_query_result_values.hpp"
 #include "sblr_event_notification.hpp"
@@ -1197,89 +1198,124 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (bound_sblr_tree_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty bound SBLR tree identity";
         return decoded;
       }
-      decoded.request.relational_dag.bound_sblr_tree_uuid = operand.value;
+      decoded.request.relational_dag.bound_sblr_tree_uuid = identity;
       bound_sblr_tree_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_catalog_epoch_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (bound_catalog_epoch_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty catalog epoch identity";
         return decoded;
       }
-      decoded.request.relational_dag.bound_catalog_epoch_uuid = operand.value;
+      decoded.request.relational_dag.bound_catalog_epoch_uuid = identity;
       bound_catalog_epoch_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_security_context_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (bound_security_context_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty security context identity";
         return decoded;
       }
       decoded.request.relational_dag.bound_security_context_uuid =
-          operand.value;
+          identity;
       bound_security_context_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (statement_uuid_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or malformed statement identity";
         return decoded;
       }
-      decoded.request.relational_dag.statement_uuid = operand.value;
+      decoded.request.relational_dag.statement_uuid = identity;
       statement_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_owning_transaction_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (owning_transaction_uuid_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail =
             "duplicate or malformed owning transaction identity";
         return decoded;
       }
-      decoded.request.relational_dag.owning_transaction_uuid = operand.value;
+      decoded.request.relational_dag.owning_transaction_uuid = identity;
       owning_transaction_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_snapshot_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (statement_snapshot_uuid_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or malformed statement snapshot identity";
         return decoded;
       }
-      decoded.request.relational_dag.statement_snapshot_uuid = operand.value;
+      decoded.request.relational_dag.statement_snapshot_uuid = identity;
       statement_snapshot_uuid_present = true;
       continue;
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_statement_metadata_snapshot_uuid") {
+      scratchbird::core::platform::Uuid identity;
+      const bool identity_valid = operand.value.empty() &&
+          scratchbird::engine::sblr::DecodeRelationalContextIdentity(
+              operand.type, operand.name, operand.value_kind,
+              operand.value_body.data(), operand.value_body.size(), &identity);
       if (statement_metadata_snapshot_uuid_present ||
-          !IsCanonicalNonNilUuid(operand.value)) {
+          !identity_valid) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail =
             "duplicate or malformed statement metadata snapshot identity";
         return decoded;
       }
       decoded.request.relational_dag.statement_metadata_snapshot_uuid =
-          operand.value;
+          identity;
       statement_metadata_snapshot_uuid_present = true;
       continue;
     }
@@ -11674,7 +11710,9 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   if (materialize_query_slots || materialize_typed_options) {
     for (auto& operand : request.envelope.operands) {
       if (materialize_query_slots &&
-          (operand.value_kind == SblrValueKind::relational_type_descriptor ||
+          ((operand.value_kind == SblrValueKind::uuid_ref &&
+            IsRelationalContextIdentitySlot(operand.name)) ||
+           operand.value_kind == SblrValueKind::relational_type_descriptor ||
            operand.value_kind == SblrValueKind::expression_node_table ||
            operand.value_kind == SblrValueKind::expression_node_ref ||
            operand.value_kind == SblrValueKind::parameter_node_table ||
