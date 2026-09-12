@@ -13,6 +13,15 @@ if(NOT TARGET sbl_parser_server_ipc_schema)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc ${CMAKE_CURRENT_BINARY_DIR}/parser_server_ipc_schema)
 endif()
 
+add_library(sbl_sbsql_reservation_projection STATIC
+  wire/contextual_reservation_freeze.cpp)
+target_compile_features(sbl_sbsql_reservation_projection PUBLIC cxx_std_20)
+target_include_directories(sbl_sbsql_reservation_projection PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(sbl_sbsql_reservation_projection PUBLIC
+  sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec)
+
 add_library(sbl_sbsql_parser_pipeline STATIC
   common/common.cpp
   registry/generated/sbsql_generated_registry.cpp
@@ -51,7 +60,8 @@ target_include_directories(sbl_sbsql_parser_pipeline PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC
-  sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec)
+  sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec
+  sbl_sbsql_reservation_projection)
 
 set(SBSQL_PARSER_WORKER_CORE_SOURCES
   embedded/embedded_engine_client.cpp

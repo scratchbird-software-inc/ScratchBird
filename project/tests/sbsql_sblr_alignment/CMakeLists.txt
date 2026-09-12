@@ -1518,7 +1518,8 @@ target_include_directories(sbsql_sblr_alignment_relational_descriptor_codec PRIV
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker
   ${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc)
-target_link_libraries(sbsql_sblr_alignment_relational_descriptor_codec PRIVATE sb_sblr_operation_wire_codec)
+target_link_libraries(sbsql_sblr_alignment_relational_descriptor_codec PRIVATE
+  sb_sblr_operation_wire_codec sbl_sbsql_reservation_projection)
 add_test(NAME sbsql_sblr_alignment_relational_descriptor_codec
   COMMAND sbsql_sblr_alignment_relational_descriptor_codec)
 set_tests_properties(sbsql_sblr_alignment_relational_descriptor_codec PROPERTIES

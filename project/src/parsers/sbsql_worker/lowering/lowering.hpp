@@ -47,8 +47,10 @@ struct SblrEnvelope {
   std::uint64_t catalog_epoch{0};
   std::uint64_t security_policy_epoch{0};
   std::uint64_t descriptor_epoch{0};
-  std::vector<std::string> resolved_object_uuids;
-  std::vector<std::string> descriptor_refs;
+  std::vector<scratchbird::core::platform::Uuid> resolved_object_uuids;
+  std::vector<scratchbird::core::platform::Uuid> descriptor_refs;
+  // Parser-local dependency labels, never resolved object identities.
+  std::vector<std::string> descriptor_requirements;
   std::vector<std::string> policy_refs;
   std::vector<std::string> required_rights;
   std::vector<std::string> required_authority_steps;

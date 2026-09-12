@@ -365,9 +365,184 @@ void TestFrozenOperands() {
   Require(failure_sites > 0 && failure_sites < 1000, "freeze allocation fault sweep incomplete");
 }
 }
+namespace {
+void TestReservationSnapshot() {
+  namespace parser = scratchbird::parser::sbsql;
+  parser::BoundStatement bound;
+  bound.bound = true; bound.native_relational_recognized = true;
+  bound.parser_api_major = 3; bound.protocol_version = 2;
+  bound.catalog_epoch = 5; bound.security_policy_epoch = 6; bound.descriptor_epoch = 7;
+  bound.parser_package_uuid = Id(1); bound.parser_package_version = "1.0";
+  bound.parser_build_id = "fixture"; bound.command_registry_snapshot_uuid = Id(2);
+  bound.session_uuid = Id(3); bound.connection_uuid = Id(4);
+  bound.database_uuid = Id(5); bound.dialect_profile_uuid = Id(6);
+  bound.resolved_object_uuids = {Id(7), Id(8)};
+  auto& native = bound.native_relational;
+  native.bound_ast_uuid = Id(9); native.security_context_uuid = Id(10);
+  native.statement_uuid = Id(11); native.owning_transaction_uuid = Id(12);
+  native.statement_snapshot_uuid = Id(13); native.statement_metadata_snapshot_uuid = Id(14);
+  native.scopes.resize(1); native.scopes[0].scope_id = 1;
+  native.scopes[0].catalog_epoch_uuid = Id(15);
+  native.expressions.resize(1); native.expressions[0].expression_id = 1;
+  native.expressions[0].bound_function_uuid = Id(16);
+  native.expressions[0].bound_name_uuid = Id(17);
+  native.window_invocations.resize(1);
+  native.window_invocations[0].bound_function_uuid = Id(18);
+  native.relations.resize(1); native.relations[0].bound_object_uuid = Id(19);
+  native.catalog_relation_sources.resize(1);
+  auto& source = native.catalog_relation_sources[0];
+  source.object_uuid = Id(20); source.resolved_schema_uuid = Id(21);
+  source.parent_object_uuid = Id(22); source.model_search_analyzer_uuid = Id(23);
+  source.model_spatial_crs_uuids = {Id(24), Id(25)};
+  source.model_columnar_project_column_uuids = {Id(26), Id(27)};
+  source.columns.resize(1); source.columns[0].column_uuid = Id(28);
+  auto descriptor = Fixture(0); descriptor.descriptor_id = 17;
+  descriptor.collation_uuid = Id(29);
+  native.descriptors.resize(1);
+  auto& binding = native.descriptors[0];
+  binding.descriptor_id = 17; binding.descriptor_uuid = descriptor.descriptor_uuid;
+  binding.type_uuid = descriptor.type_uuid; binding.collation_uuid = descriptor.collation_uuid;
+  binding.nullability = parser::BoundNullability::kNullable;
+  bound.descriptor_refs = {binding.descriptor_uuid};
+  parser::SblrEnvelope lowered;
+  lowered.descriptor_refs = bound.descriptor_refs;
+  lowered.resolved_object_uuids = {Id(30), Id(31)};
+  lowered.descriptor_requirements = {"parser.local.requirement"};
+  parser::SblrOperand operand{"relational_descriptor_v3", "slot_17", {}};
+  operand.canonical_value_kind = 213; operand.canonical_value_body = Oracle(descriptor);
+  lowered.operands.push_back(operand);
+  const auto freeze = [&](const auto& b, const auto& l) {
+    return parser::FreezeContextualReservationSkeletonV2(b, l, {});
+  };
+  const auto frozen = freeze(bound, lowered);
+  Require(frozen.has_value(), "full reservation projection refused");
+  Bytes prefix;
+  for (const auto value : {1, 1}) Append(prefix, value, 2);
+  for (const auto value : {1, 3, 2}) Append(prefix, value, 4);
+  for (const auto value : {5, 6, 7}) Append(prefix, value, 8);
+  prefix.insert(prefix.end(), bound.parser_package_uuid.bytes.begin(), bound.parser_package_uuid.bytes.end());
+  for (const auto text : {"1.0", "fixture"}) {
+    const std::string field(text); Append(prefix, field.size(), 4);
+    prefix.insert(prefix.end(), field.begin(), field.end());
+  }
+  for (const auto id : {Id(2), Id(3), Id(4), Id(5), Id(6)})
+    prefix.insert(prefix.end(), id.bytes.begin(), id.bytes.end());
+  Require(frozen->size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), frozen->begin()),
+          "full reservation metadata differs from independent binary prefix oracle");
+  const auto changed_snapshot = [&](const auto& b, const auto& l) {
+    const auto changed = freeze(b, l);
+    Require(changed && changed != frozen, "full reservation lost an immutable field");
+  };
+  for (auto member : {&parser::BoundStatement::parser_package_uuid,
+                      &parser::BoundStatement::command_registry_snapshot_uuid,
+                      &parser::BoundStatement::session_uuid, &parser::BoundStatement::connection_uuid,
+                      &parser::BoundStatement::database_uuid, &parser::BoundStatement::dialect_profile_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; (copy.*member).bytes[byte] ^= 1; changed_snapshot(copy, lowered);
+    }
+  }
+  for (auto member : {&parser::BoundNativeRelationalDocument::bound_ast_uuid,
+                      &parser::BoundNativeRelationalDocument::security_context_uuid,
+                      &parser::BoundNativeRelationalDocument::statement_uuid,
+                      &parser::BoundNativeRelationalDocument::owning_transaction_uuid,
+                      &parser::BoundNativeRelationalDocument::statement_snapshot_uuid,
+                      &parser::BoundNativeRelationalDocument::statement_metadata_snapshot_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; (copy.native_relational.*member).bytes[byte] ^= 1; changed_snapshot(copy, lowered);
+    }
+  }
+  for (auto member : {&parser::BoundDescriptorAstRecord::type_uuid,
+                      &parser::BoundDescriptorAstRecord::statement_receipt_uuid,
+                      &parser::BoundDescriptorAstRecord::datatype_catalog_snapshot_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; (copy.native_relational.descriptors[0].*member).bytes[byte] ^= 1;
+      changed_snapshot(copy, lowered);
+    }
+  }
+  // This is equality material, not identity admission: every raw bit,
+  // including variant/version bits, remains visible without text conversion.
+  for (std::size_t byte = 0; byte < 16; ++byte) {
+    auto copy = bound; copy.native_relational.descriptors[0].descriptor_uuid.bytes[byte] ^= 1;
+    auto l = lowered; copy.descriptor_refs[0] = copy.native_relational.descriptors[0].descriptor_uuid;
+    l.descriptor_refs = copy.descriptor_refs; changed_snapshot(copy, l);
+    copy = bound; copy.native_relational.scopes[0].catalog_epoch_uuid.bytes[byte] ^= 1; changed_snapshot(copy, lowered);
+    copy = bound; copy.native_relational.window_invocations[0].bound_function_uuid.bytes[byte] ^= 1;
+    changed_snapshot(copy, lowered);
+    copy = bound; copy.native_relational.catalog_relation_sources[0].columns[0].column_uuid.bytes[byte] ^= 1;
+    changed_snapshot(copy, lowered);
+  }
+  for (auto member : {&parser::BoundCatalogRelationSourceAstRecord::object_uuid,
+                      &parser::BoundCatalogRelationSourceAstRecord::resolved_schema_uuid,
+                      &parser::BoundCatalogRelationSourceAstRecord::model_search_analyzer_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; (copy.native_relational.catalog_relation_sources[0].*member).bytes[byte] ^= 1;
+      changed_snapshot(copy, lowered);
+    }
+  }
+  const auto optional_check = [&](auto access) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; access(copy)->bytes[byte] ^= 1; changed_snapshot(copy, lowered);
+    }
+    auto absent = bound; access(absent).reset(); changed_snapshot(absent, lowered);
+    auto present_nil = bound; access(present_nil) = Uuid{};
+    Require(freeze(absent, lowered) != freeze(present_nil, lowered), "optional nil conflated with absence");
+  };
+  optional_check([](auto& b) -> auto& { return b.native_relational.descriptors[0].collation_uuid; });
+  optional_check([](auto& b) -> auto& { return b.native_relational.expressions[0].bound_function_uuid; });
+  optional_check([](auto& b) -> auto& { return b.native_relational.expressions[0].bound_name_uuid; });
+  optional_check([](auto& b) -> auto& { return b.native_relational.relations[0].bound_object_uuid; });
+  optional_check([](auto& b) -> auto& { return b.native_relational.catalog_relation_sources[0].parent_object_uuid; });
+  const auto vector_check = [&](auto access) {
+    for (std::size_t index = 0; index < 2; ++index) for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto copy = bound; access(copy)[index].bytes[byte] ^= 1; changed_snapshot(copy, lowered);
+    }
+    auto copy = bound; std::swap(access(copy)[0], access(copy)[1]); changed_snapshot(copy, lowered);
+    copy = bound; access(copy).pop_back(); changed_snapshot(copy, lowered);
+  };
+  vector_check([](auto& b) -> auto& { return b.resolved_object_uuids; });
+  vector_check([](auto& b) -> auto& { return b.native_relational.catalog_relation_sources[0].model_spatial_crs_uuids; });
+  vector_check([](auto& b) -> auto& { return b.native_relational.catalog_relation_sources[0].model_columnar_project_column_uuids; });
+  for (std::size_t index = 0; index < 2; ++index) for (std::size_t byte = 0; byte < 16; ++byte) {
+    auto l = lowered; l.resolved_object_uuids[index].bytes[byte] ^= 1; changed_snapshot(bound, l);
+  }
+  auto l = lowered; l.descriptor_requirements[0] += ".changed"; changed_snapshot(bound, l);
+  auto copy = bound; copy.native_relational.scopes.clear(); changed_snapshot(copy, lowered);
+  copy = bound; copy.descriptor_refs[0] = Id(50);
+  Require(!freeze(copy, lowered), "full reservation accepted crossed bound descriptor reference");
+  l = lowered; l.descriptor_refs[0] = Id(50);
+  Require(!freeze(bound, l), "full reservation accepted crossed lowered descriptor reference");
+  copy = bound; copy.native_relational.descriptors.push_back(binding); copy.descriptor_refs.push_back(binding.descriptor_uuid);
+  l = lowered; l.descriptor_refs = copy.descriptor_refs;
+  Require(!freeze(copy, l), "full reservation accepted duplicate descriptor handles");
+  const std::unordered_set<std::uint32_t> mutable_handles{17};
+  const auto reserved = parser::FreezeContextualReservationSkeletonV2(bound, lowered, mutable_handles);
+  copy = bound; copy.native_relational.descriptors[0].descriptor_uuid = Id(50);
+  copy.descriptor_refs[0] = Id(50); l = lowered; l.descriptor_refs = copy.descriptor_refs;
+  auto negotiated = descriptor; negotiated.descriptor_uuid = Id(50);
+  l.operands[0].canonical_value_body = Oracle(negotiated);
+  Require(reserved && parser::FreezeContextualReservationSkeletonV2(copy, l, mutable_handles) == reserved,
+          "full reservation rejected exact contextual descriptor replacement");
+  copy.native_relational.statement_uuid = Id(51);
+  Require(parser::FreezeContextualReservationSkeletonV2(copy, l, mutable_handles) != reserved,
+          "contextual exclusion escaped into statement identity");
+  std::size_t failure_sites = 0;
+  for (long site = 0; site < 1000; ++site) {
+    fail_after = site;
+    try {
+      const auto result = freeze(bound, lowered); fail_after = -1;
+      Require(result == frozen, "full reservation published partial allocation result"); break;
+    } catch (const std::bad_alloc&) {
+      fail_after = -1; ++faults; ++failure_sites;
+      Require(freeze(bound, lowered) == frozen, "full reservation fault changed input state");
+    }
+  }
+  Require(failure_sites > 0 && failure_sites < 1000, "full reservation allocation sweep incomplete");
+}
+}
 int main() {
   try {
     TestLayout(); TestAllocationAtomicity(); TestOperationPlacement(); TestNumericBinding(); TestFrozenOperands();
+    TestReservationSnapshot();
     std::cout << "PASS relational descriptor checks=" << checks << " allocation_faults=" << faults << '\n';
     return 0;
   } catch (const std::exception& error) {

@@ -27316,11 +27316,11 @@ void PopulateConstraintDdlAuthority(SblrEnvelope* envelope, const ConstraintDdlI
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.constraint_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.key_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.constraint_subject");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.constraint_dependency");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.constraint_support_structure");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.constraint_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.key_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.constraint_subject");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.constraint_dependency");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.constraint_support_structure");
   AppendIfMissing(&envelope->policy_refs, "constraint_index_dependency_policy");
 }
 
@@ -27337,13 +27337,13 @@ void PopulateSynonymDdlAuthority(SblrEnvelope* envelope, const SynonymDdlInfo& i
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.catalog_synonym_descriptor_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_catalog_commit_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.synonym");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.object_dependency");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.synonym");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.object_dependency");
   if (info.create) {
-    AppendIfMissing(&envelope->descriptor_refs, "descriptor.synonym.target_uuid_and_kind.pending_engine_resolution");
+    AppendIfMissing(&envelope->descriptor_requirements, "descriptor.synonym.target_uuid_and_kind.pending_engine_resolution");
   } else {
-    AppendIfMissing(&envelope->descriptor_refs, "descriptor.drop.target_object.object_kind.synonym");
+    AppendIfMissing(&envelope->descriptor_requirements, "descriptor.drop.target_object.object_kind.synonym");
   }
 }
 
@@ -27364,13 +27364,13 @@ void PopulateSimpleCreateTableAuthority(SblrEnvelope* envelope, const SimpleCrea
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.mga_catalog_commit_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_table_authorization_policy");
   if (info.temporary) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.temporary_table");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.session_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.temporary_table");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.session_descriptor");
     AppendIfMissing(&envelope->policy_refs,
                     info.temporary_scope == "global"
                         ? "temporary_table_global_metadata_policy"
@@ -27396,9 +27396,9 @@ void PopulateSimpleCreateSchemaAuthority(SblrEnvelope* envelope, const SimpleCre
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.schema");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.schema_tree");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.schema");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.schema_tree");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_schema_authorization_policy");
 }
 
@@ -27420,11 +27420,11 @@ void PopulateSimpleCreateStatisticsAuthority(SblrEnvelope* envelope, const Simpl
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.optimizer.statistics_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.statistics");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.optimizer.statistics_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.statistics");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_statistics_authorization_policy");
 }
 
@@ -27447,11 +27447,11 @@ void PopulateSimpleCreateIndexAuthority(SblrEnvelope* envelope, const SimpleCrea
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.index");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.index_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.index");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.index_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_index_authorization_policy");
 }
 
@@ -27483,11 +27483,11 @@ void PopulateIndexTemplateDdlAuthority(SblrEnvelope* envelope, const IndexTempla
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs,
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements,
                   info.component_template ? "sys.catalog.component_template" : "sys.catalog.index_template");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.search.index_template_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.search.index_template_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
 }
 
 void PopulateCommentOnDdlAuthority(SblrEnvelope* envelope, const CommentOnDdlInfo& info) {
@@ -27508,9 +27508,9 @@ void PopulateCommentOnDdlAuthority(SblrEnvelope* envelope, const CommentOnDdlInf
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_comment");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_comment");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_comment_on_object_authorization_policy");
 }
 
@@ -27533,8 +27533,8 @@ void PopulateAlterRenameDdlAuthority(SblrEnvelope* envelope, const AlterRenameDd
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_alter_object_authorization_policy");
 }
 
@@ -27556,8 +27556,8 @@ void PopulateAlterTableColumnDdlAuthority(SblrEnvelope* envelope, const AlterTab
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.columns");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.columns");
   AppendIfMissing(&envelope->policy_refs, "ddl_alter_object_authorization_policy");
 }
 
@@ -27579,9 +27579,9 @@ void PopulateAlterDomainDdlAuthority(SblrEnvelope* envelope, const AlterDomainDd
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.domain");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.domain");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_alter_domain_authorization_policy");
 }
 
@@ -27604,9 +27604,9 @@ void PopulateAlterSequenceDdlAuthority(SblrEnvelope* envelope, const AlterSequen
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.sequence");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.sequence");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_alter_sequence_authorization_policy");
 }
 
@@ -27629,9 +27629,9 @@ void PopulateSimpleDropObjectAuthority(SblrEnvelope* envelope, const SimpleDropO
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-  AppendIfMissing(&envelope->descriptor_refs, info.catalog_authority);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.catalog_authority);
   AppendIfMissing(&envelope->policy_refs, "ddl_drop_object_authorization_policy");
 }
 
@@ -27653,9 +27653,9 @@ void PopulateSimpleCreateSequenceAuthority(SblrEnvelope* envelope, const SimpleC
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.sequence");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.sequence");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_sequence_authorization_policy");
 }
 
@@ -27685,11 +27685,11 @@ void PopulateSimpleCreateViewAuthority(SblrEnvelope* envelope, const SimpleCreat
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs,
+  AppendIfMissing(&envelope->descriptor_requirements,
                   info.materialized ? "sys.catalog.materialized_view"
                                     : "sys.catalog.view");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs,
                   info.materialized
                       ? "ddl_create_materialized_view_authorization_policy"
@@ -27714,10 +27714,10 @@ void PopulateSimpleCreateDomainAuthority(SblrEnvelope* envelope, const SimpleCre
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.domain");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.type_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.domain");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.type_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_domain_authorization_policy");
 }
 
@@ -27741,17 +27741,17 @@ void PopulateSimpleCreateExecutableObjectAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, info.catalog_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.routine_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, info.catalog_authority);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.routine_descriptor");
   if (info.parameter_def_present) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.routine.parameter_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.routine.parameter_descriptor");
   }
   if (info.parameter_is_cursor) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.server.cursor_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.routine.cursor_parameter_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.server.cursor_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.routine.cursor_parameter_descriptor");
   }
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_executable_object_authorization_policy");
 }
 
@@ -27780,10 +27780,10 @@ void PopulateRoutineInvocationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.execute");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.procedure");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.routine_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.executable_object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.procedure");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.routine_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.executable_object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "routine_execute_authorization_policy");
   AppendIfMissing(&envelope->resolved_object_uuids, info.routine_object_uuid);
 }
@@ -27815,10 +27815,10 @@ void PopulateCatalogDescriptorMutationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights,
                   info.mutating ? "right.catalog_mutate" : "right.observe");
-  AppendIfMissing(&envelope->descriptor_refs, info.descriptor_ref);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.descriptor_mutation_request");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.descriptor_ref);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.descriptor_mutation_request");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "catalog_descriptor_mutation_authorization_policy");
   if (!info.target_object_uuid.empty()) {
     AppendIfMissing(&envelope->resolved_object_uuids, info.target_object_uuid);
@@ -27854,9 +27854,9 @@ void PopulateTransactionLockAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_rights, "right.transaction_control");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.inventory");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.lock_advisory");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.lock_policy");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.inventory");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.lock_advisory");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.lock_policy");
   AppendIfMissing(&envelope->policy_refs, "transaction_lock_mga_policy");
   AppendIfMissing(&envelope->policy_refs, "LOCK_SURFACE_MGA_POLICY_MATRIX.csv");
   envelope->operands.push_back({"text", "lock_surface", info.lock_surface});
@@ -27895,8 +27895,8 @@ void PopulateShowCreateAuthority(SblrEnvelope* envelope, const ShowCreateRouteIn
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.observe");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "catalog_descriptor_visibility_policy");
 }
 
@@ -27917,9 +27917,9 @@ void PopulateSecurityDclAuthority(SblrEnvelope* envelope, const SecurityDclInfo&
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs,
+  AppendIfMissing(&envelope->descriptor_requirements,
                   info.membership ? "sys.security.membership" : "sys.security.privilege_grant");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs,
                   info.membership ? "security_membership_policy" : "security_privilege_grant_policy");
 }
@@ -27942,7 +27942,7 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   envelope->operation_family = security_mutation_route ? "sblr.security.mutation.v3"
                                                        : "sblr.policy.operation.v3";
   envelope->sblr_operation_key = envelope->operation_family;
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
@@ -27976,20 +27976,20 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.security_admin");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   if (info.operation_id == "security.session.set_role") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.security.role");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.security.session_role");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.security.role");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.security.session_role");
     AppendIfMissing(&envelope->policy_refs, "security_session_role_policy");
   } else if (info.operation_id == "security.role.create" ||
              info.operation_id == "security.group.create" ||
              info.operation_id == "security.principal.create" ||
              info.operation_id == "security.principal.alter") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.security.principal");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.security.principal");
     AppendIfMissing(&envelope->policy_refs, "security_principal_management_policy");
   } else {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.security.policy");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.security.policy_binding");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.security.policy");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.security.policy_binding");
     AppendIfMissing(&envelope->policy_refs, "security_policy_management_policy");
   }
 }
@@ -28009,7 +28009,7 @@ void PopulateAgentRuntimeAuthority(SblrEnvelope* envelope, const AgentRuntimeRou
                                                        : "resource.contract.control";
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28026,7 +28026,7 @@ void PopulateAgentRuntimeAuthority(SblrEnvelope* envelope, const AgentRuntimeRou
                     "authority.cluster.provider_dispatch_required");
     AppendIfMissing(&envelope->required_rights,
                     info.mutation ? "right.cluster_control" : "right.cluster_inspect");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.provider");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.provider");
     AppendIfMissing(&envelope->policy_refs, "cluster_provider_boundary_policy");
   } else if (info.mutation) {
     AppendIfMissing(&envelope->required_authority_steps,
@@ -28034,13 +28034,13 @@ void PopulateAgentRuntimeAuthority(SblrEnvelope* envelope, const AgentRuntimeRou
     AppendIfMissing(&envelope->required_rights,
                     info.operation_id == "agents.override" ? "right.agent_override"
                                                            : "right.agent_control");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.agent_evidence");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.agent_evidence");
     AppendIfMissing(&envelope->policy_refs, "agent_control_authorization_policy");
   } else {
     AppendIfMissing(&envelope->required_rights, "right.agent_state_read");
     AppendIfMissing(&envelope->policy_refs, "agent_state_observation_policy");
   }
-  AppendIfMissing(&envelope->descriptor_refs, "sys.agents");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.agents");
 }
 
 void PopulateManagementRuntimeAuthority(SblrEnvelope* envelope,
@@ -28055,7 +28055,7 @@ void PopulateManagementRuntimeAuthority(SblrEnvelope* envelope,
   envelope->resource_contract_key = "resource.contract.control";
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28067,11 +28067,11 @@ void PopulateManagementRuntimeAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.management_runtime_read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.management.runtime");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.management.runtime");
   if (info.runtime_component == "listeners") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.listener_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.listener_registry");
   } else {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.parser_package_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.parser_package_registry");
   }
   AppendIfMissing(&envelope->policy_refs, "management_runtime_observation_policy");
 }
@@ -28098,7 +28098,7 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
     envelope->exact_emulated_diagnostic = true;
     envelope->required_authority_steps.clear();
     envelope->required_rights.clear();
-    envelope->descriptor_refs.clear();
+    envelope->descriptor_requirements.clear();
     envelope->policy_refs.clear();
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.syntax_evidence_only");
@@ -28106,7 +28106,7 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
     AddVerifierError(
         &envelope->messages,
         "SBSQL.SURFACE.NOT_ADMITTED",
@@ -28163,7 +28163,7 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   }
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28181,15 +28181,15 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, std::string(PublicExactCommandRequiredRight(spec)));
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, std::string(spec.descriptor_ref));
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, std::string(spec.descriptor_ref));
   if (spec.requires_cluster_authority) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.provider");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.provider");
     AppendIfMissing(&envelope->policy_refs, "cluster_provider_boundary_policy");
   }
   if (!info.target_ref.empty()) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
-    AppendIfMissing(&envelope->descriptor_refs,
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
+    AppendIfMissing(&envelope->descriptor_requirements,
                     std::string("descriptor.") + std::string(spec.target_kind) +
                         ".pending_engine_resolution");
   }
@@ -28336,7 +28336,7 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
                         std::string(spec.surface_key);
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->operands.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
@@ -28361,9 +28361,9 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
                     "authority.engine.mga_transaction_context_required");
   }
   AppendIfMissing(&envelope->required_rights, std::string(spec.required_right));
-  AppendIfMissing(&envelope->descriptor_refs, "sys.engine.internal_api_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, std::string(spec.descriptor_ref));
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.engine.internal_api_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, std::string(spec.descriptor_ref));
   const auto admission_marker =
       EngineApiExternalAdmissionMarker(wire.admission);
   if (!admission_marker.empty()) {
@@ -28371,7 +28371,7 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
         {"text", std::string(admission_marker), std::string(spec.operation_id)});
   }
   if (spec.requires_cluster_authority) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.provider");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.provider");
     AppendIfMissing(&envelope->policy_refs, "cluster_provider_boundary_policy");
     AppendIfMissing(&envelope->policy_refs,
                     spec.mutation ? "cluster_control_authorization_policy"
@@ -28420,7 +28420,7 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
                                                      : "result.shape.command_status";
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28433,15 +28433,15 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
                   "authority.engine.mga_event_visibility_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.event.channel");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.event.notification_log");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.event.channel");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.event.notification_log");
   if (info.operation_id == "engine.op.event_channel_listen" ||
       info.operation_id == "engine.op.event_channel_unlisten" ||
       info.operation_id == "engine.op.event_subscription_list") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.event.subscription");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.event.subscription");
   }
   if (info.operation_id == "engine.op.event_channel_notify") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.event.publication");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.event.publication");
   }
   AppendIfMissing(&envelope->policy_refs, "event_notification_authorization_policy");
   if (info.operation_id == "engine.op.event_channel_create") {
@@ -28471,7 +28471,7 @@ void PopulateBridgeRouteAuthority(SblrEnvelope* envelope, const BridgeRouteInfo&
   envelope->trace_key = "trace.sbsql.bridge." + info.surface_variant;
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28495,13 +28495,13 @@ void PopulateBridgeRouteAuthority(SblrEnvelope* envelope, const BridgeRouteInfo&
                     "authority.server.transaction_context_required");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.mga_transaction_context_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.mga.transaction_inventory");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.mga.transaction_inventory");
   }
   if (info.cluster_route) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.cluster.provider_compile_time_gate_required");
     AppendIfMissing(&envelope->required_rights, "right.cluster_control");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.provider");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.provider");
     AppendIfMissing(&envelope->policy_refs, "cluster_provider_boundary_policy");
   } else {
     AppendIfMissing(&envelope->required_authority_steps,
@@ -28511,10 +28511,10 @@ void PopulateBridgeRouteAuthority(SblrEnvelope* envelope, const BridgeRouteInfo&
   if (info.capability_report) {
     AppendIfMissing(&envelope->required_rights, "right.bridge.inspect");
   }
-  AppendIfMissing(&envelope->descriptor_refs, "sys.bridge.connection");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.bridge.policy");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.udr_package_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.udr_runtime_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.bridge.connection");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.bridge.policy");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.udr_package_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.udr_runtime_descriptor");
   AppendIfMissing(&envelope->policy_refs, "bridge_connection_authorization_policy");
 }
 
@@ -28530,7 +28530,7 @@ void PopulateUdrPackageAuthority(SblrEnvelope* envelope, const UdrPackageRouteIn
   envelope->resource_contract_key = "resource.contract.control";
   envelope->required_authority_steps.clear();
   envelope->required_rights.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps,
@@ -28545,8 +28545,8 @@ void PopulateUdrPackageAuthority(SblrEnvelope* envelope, const UdrPackageRouteIn
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_udr_execution");
   AppendIfMissing(&envelope->required_rights, info.mutation ? "right.udr_manage"
                                                            : "right.udr_inspect");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.udr_package_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.udr_runtime_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.udr_package_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.udr_runtime_descriptor");
   AppendIfMissing(&envelope->policy_refs, info.mutation ? "udr_package_management_policy"
                                                        : "udr_package_observation_policy");
 }
@@ -28590,14 +28590,14 @@ void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info)
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
   if (info.has_on_conflict) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.unique_index_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.dml.conflict_policy_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.unique_index_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.dml.conflict_policy_descriptor");
   }
   if (info.requires_target_uuid) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   }
   AppendIfMissing(&envelope->policy_refs, "dml_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, info.read ? "row_visibility_policy"
@@ -28625,10 +28625,10 @@ void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProje
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.scalar_projection_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.scalar_projection_descriptor");
   for (const auto& item : info.items) {
     if (item.expression_kind == "parameter") {
-      AppendIfMissing(&envelope->descriptor_refs, "sys.query.parameter_descriptor");
+      AppendIfMissing(&envelope->descriptor_requirements, "sys.query.parameter_descriptor");
       AppendIfMissing(&envelope->required_authority_steps,
                       "authority.server.bind_parameter_descriptors_required");
       break;
@@ -28650,8 +28650,8 @@ void PopulateCastValueAuthority(SblrEnvelope* envelope, const CastValueRouteInfo
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.datatype.source_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.datatype.target_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.datatype.source_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.datatype.target_descriptor");
   AppendIfMissing(&envelope->policy_refs, "datatype_cast_authorization_policy");
 }
 
@@ -28668,7 +28668,7 @@ void PopulateValuesRowsetAuthority(SblrEnvelope* envelope, const ValuesRowsetInf
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.values_rowset_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.values_rowset_descriptor");
   AppendIfMissing(&envelope->policy_refs, "query_values_authorization_policy");
 }
 
@@ -28686,7 +28686,7 @@ void PopulateValuesSetOperationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.values_set_operation_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.values_set_operation_descriptor");
   AppendIfMissing(&envelope->policy_refs, "query_set_operation_authorization_policy");
 }
 
@@ -28707,10 +28707,10 @@ void PopulateTableJoinAuthority(SblrEnvelope* envelope, const TableJoinInfo& inf
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.table_join_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.table_join_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_join_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28732,10 +28732,10 @@ void PopulateTableSetOperationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.table_set_operation_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.table_set_operation_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_set_operation_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28757,10 +28757,10 @@ void PopulateTableSampleAuthority(SblrEnvelope* envelope, const TableSampleInfo&
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.sample_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.sample_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_sample_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28782,10 +28782,10 @@ void PopulatePivotAuthority(SblrEnvelope* envelope, const PivotRouteInfo& info) 
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.pivot_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.pivot_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_pivot_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28807,10 +28807,10 @@ void PopulateUnpivotAuthority(SblrEnvelope* envelope, const UnpivotRouteInfo& in
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.unpivot_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.unpivot_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_unpivot_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28832,10 +28832,10 @@ void PopulateRowNumberWindowAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.window_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.window_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_window_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28857,10 +28857,10 @@ void PopulateGroupByAggregateAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.aggregate_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.aggregate_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_aggregate_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28882,8 +28882,8 @@ void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& i
     AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
     AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope->required_rights, "right.observe");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.projection");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.projection");
     AppendIfMissing(&envelope->policy_refs, "catalog_projection_authorization_policy");
     return;
   }
@@ -28902,10 +28902,10 @@ void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& i
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.read");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.aggregate_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.aggregate_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_aggregate_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28932,14 +28932,14 @@ void PopulateMaterializedCteAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
   if (info.recursive) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.query.recursive_cte_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.query.values_rowset_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.query.recursive_cte_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.query.values_rowset_descriptor");
     AppendIfMissing(&envelope->policy_refs, "query_recursive_cte_authorization_policy");
   } else {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.query.cte_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.query.cte_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
     AppendIfMissing(&envelope->policy_refs, "query_cte_authorization_policy");
     AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
   }
@@ -28962,10 +28962,10 @@ void PopulateScalarSubqueryAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_security_authorization");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.subquery_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.object_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.subquery_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.object_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.row_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "query_subquery_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -28996,9 +28996,9 @@ void PopulateVectorSearchAuthority(SblrEnvelope* envelope,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.vector.collection_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.vector_search_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.vector.collection_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.vector_search_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "vector_search_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
@@ -29028,9 +29028,9 @@ void PopulateCreateVectorCollectionAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, "right.catalog_mutate");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.table");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.vector.collection_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.table");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.vector.collection_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "catalog_ddl_authorization_policy");
   AppendIfMissing(&envelope->policy_refs, "vector_collection_catalog_policy");
 }
@@ -29062,8 +29062,8 @@ void PopulateVectorCollectionOperationAuthority(
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_sql_text_execution");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.vector.collection_descriptor");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.vector.collection_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "vector_collection_operation_policy");
 }
 
@@ -29095,7 +29095,7 @@ void PopulateMultiModelNoSqlAuthority(SblrEnvelope* envelope,
                   "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_rights, info.mutation ? "right.write" : "right.read");
   for (const auto& descriptor_ref : info.descriptor_refs) {
-    AppendIfMissing(&envelope->descriptor_refs, descriptor_ref);
+    AppendIfMissing(&envelope->descriptor_requirements, descriptor_ref);
   }
   AppendIfMissing(&envelope->policy_refs, "multimodel_query_authorization_policy");
   if (info.mutation) {
@@ -29120,7 +29120,7 @@ void PopulateSbsfc079MultimodelGeneralResidualAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29138,7 +29138,7 @@ void PopulateSbsfc079MultimodelGeneralResidualAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   for (const auto& descriptor_ref : info.descriptor_refs) {
-    AppendIfMissing(&envelope->descriptor_refs, descriptor_ref);
+    AppendIfMissing(&envelope->descriptor_requirements, descriptor_ref);
   }
   AppendIfMissing(&envelope->policy_refs, "sbsfc079_multimodel_general_authorization_policy");
   AppendIfMissing(&envelope->required_rights, info.mutation ? "right.write" : "right.read");
@@ -29170,7 +29170,7 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
   AppendIfMissing(&envelope->policy_refs, "sbsfc077_exact_route_authorization_policy");
 
   if (info.requires_transaction_context) {
@@ -29180,20 +29180,20 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
   if (info.operation_id.rfind("transaction.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.mga_transaction_control_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.inventory");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.inventory");
     AppendIfMissing(&envelope->required_rights, "right.transaction_control");
   } else if (info.operation_id.rfind("query.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_security_authorization");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.query.plan_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.query.plan_descriptor");
     AppendIfMissing(&envelope->required_rights, "right.read");
   } else if (info.operation_id.rfind("nosql.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_security_authorization");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.multimodel.descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.multimodel.descriptor");
     AppendIfMissing(&envelope->required_rights, "right.read");
   } else if (info.operation_id.rfind("observability.", 0) == 0) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.observability.runtime");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.observability.runtime");
     AppendIfMissing(&envelope->required_rights, "right.observe");
   } else if (info.operation_id == "extensibility.invoke_udr_package") {
     AppendIfMissing(&envelope->required_authority_steps,
@@ -29210,21 +29210,21 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
                     "authority.engine.accepts_revalidated_sblr_uuid_only");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_udr_execution");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.udr_package_registry");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.parser_package_registry");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.sblr.envelope_descriptor");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.udr_package_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.parser_package_registry");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.sblr.envelope_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
     AppendIfMissing(&envelope->required_rights, "right.execute");
   } else if (info.operation_id.rfind("extensibility.", 0) == 0) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.acceleration.capability");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.acceleration.capability");
     AppendIfMissing(&envelope->required_rights, "right.execute");
   } else if (info.operation_id == "storage.manage_operation") {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.management_profile");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.management_profile");
     AppendIfMissing(&envelope->required_rights, "right.storage.manage");
   } else if (info.operation_id.rfind("filespace.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.server.transaction_context_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.filespace_lifecycle");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.filespace_lifecycle");
     AppendIfMissing(&envelope->required_rights, "right.filespace.lifecycle_control");
     if (info.operation_id == "filespace.preallocate") {
       AppendIfMissing(&envelope->required_rights, "right.agent_control");
@@ -29234,7 +29234,7 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
                     "authority.engine.cluster_profile_gate_not_private_execution");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.cluster.provider_dispatch_not_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.profile_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.profile_descriptor");
     AppendIfMissing(&envelope->required_rights, "right.observe");
   }
 
@@ -29270,7 +29270,7 @@ void PopulateSbsfc078ProceduralGeneralResidualAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29283,8 +29283,8 @@ void PopulateSbsfc078ProceduralGeneralResidualAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.procedural.ir_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.procedural.ir_descriptor");
   AppendIfMissing(&envelope->policy_refs, "sbsfc078_procedural_general_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.execute");
 
@@ -29293,7 +29293,7 @@ void PopulateSbsfc078ProceduralGeneralResidualAuthority(
                     "authority.server.transaction_context_required");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.mga_transaction_context_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.inventory");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.inventory");
   }
 }
 
@@ -29314,7 +29314,7 @@ void PopulateSbsfc080OperationalGeneralResidualAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29327,33 +29327,33 @@ void PopulateSbsfc080OperationalGeneralResidualAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
   AppendIfMissing(&envelope->policy_refs, "sbsfc080_operational_general_authorization_policy");
 
   if (info.operation_id.rfind("transaction.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.mga_transaction_control_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.transaction.inventory");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.transaction.inventory");
     AppendIfMissing(&envelope->required_rights, "right.transaction_control");
   } else if (info.operation_id.rfind("cluster.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.cluster_profile_gate_not_private_execution");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.cluster.provider_dispatch_not_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.cluster.profile_descriptor");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.cluster.profile_descriptor");
     AppendIfMissing(&envelope->required_rights, "right.observe");
   } else if (info.operation_id.rfind("storage.", 0) == 0) {
-    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.management_profile");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.storage.management_profile");
     AppendIfMissing(&envelope->required_rights, "right.storage.manage");
   } else if (info.operation_id.rfind("management.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_listener_or_parser_process_control");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.management.runtime");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.management.runtime");
     AppendIfMissing(&envelope->required_rights, "right.management_runtime_read");
   } else if (info.operation_id.rfind("observability.", 0) == 0) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.observability_api_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.observability.runtime");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.observability.runtime");
     AppendIfMissing(&envelope->required_rights, "right.observe");
   }
 
@@ -29382,7 +29382,7 @@ void PopulateSbsfc081DescriptorExpressionResidualAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29397,8 +29397,8 @@ void PopulateSbsfc081DescriptorExpressionResidualAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.query.plan_descriptor");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.query.plan_descriptor");
   AppendIfMissing(&envelope->policy_refs, "sbsfc081_descriptor_expression_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.query.plan.validate");
 }
@@ -29420,7 +29420,7 @@ void PopulateSbsfc082SurfaceDescriptorAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29435,8 +29435,8 @@ void PopulateSbsfc082SurfaceDescriptorAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, info.descriptor_ref);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.descriptor_ref);
   AppendIfMissing(&envelope->policy_refs, "sbsfc082_surface_descriptor_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.query.plan.validate");
 }
@@ -29458,7 +29458,7 @@ void PopulateSbsfc083GrammarSurfaceAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29473,8 +29473,8 @@ void PopulateSbsfc083GrammarSurfaceAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, info.descriptor_ref);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.descriptor_ref);
   AppendIfMissing(&envelope->policy_refs, "sbsfc083_grammar_surface_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.query.plan.validate");
 }
@@ -29496,7 +29496,7 @@ void PopulateSbsfc084GrammarSurfaceAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29511,8 +29511,8 @@ void PopulateSbsfc084GrammarSurfaceAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, info.descriptor_ref);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.descriptor_ref);
   AppendIfMissing(&envelope->policy_refs, "sbsfc084_grammar_surface_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.query.plan.validate");
 }
@@ -29534,7 +29534,7 @@ void PopulateSbsfc085GrammarSurfaceAuthority(
   envelope->parser_executes_sql = false;
   envelope->real_file_effects = false;
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
 
@@ -29549,8 +29549,8 @@ void PopulateSbsfc085GrammarSurfaceAuthority(
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required");
   AppendIfMissing(&envelope->required_authority_steps, info.api_authority);
-  AppendIfMissing(&envelope->descriptor_refs, "sys.sbsql.surface_registry");
-  AppendIfMissing(&envelope->descriptor_refs, info.descriptor_ref);
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.sbsql.surface_registry");
+  AppendIfMissing(&envelope->descriptor_requirements, info.descriptor_ref);
   AppendIfMissing(&envelope->policy_refs, "sbsfc085_grammar_surface_authorization_policy");
   AppendIfMissing(&envelope->required_rights, "right.query.plan.validate");
 }
@@ -32736,7 +32736,7 @@ void PopulateLifecycleAuthority(SblrEnvelope* envelope,
                                 const LifecycleMappingDescriptor& mapping,
                                 const SessionContext& session) {
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
   AppendIfMissing(&envelope->required_authority_steps,
@@ -32760,10 +32760,10 @@ void PopulateLifecycleAuthority(SblrEnvelope* envelope,
     envelope->required_rights.push_back(std::string(mapping.required_right));
   }
   if (mapping.bound_object_uuid_inputs == "database_uuid_from_context" &&
-      !session.database_uuid.empty()) {
+      !session.database_uuid.is_nil()) {
     envelope->resolved_object_uuids.push_back(session.database_uuid);
   } else if (!mapping.bound_object_uuid_inputs.empty()) {
-    envelope->descriptor_refs.push_back(std::string(mapping.bound_object_uuid_inputs));
+    envelope->descriptor_requirements.push_back(std::string(mapping.bound_object_uuid_inputs));
   }
 }
 
@@ -32882,7 +32882,7 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
   out << ',';
   AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
   out << ',';
-  AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+  AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
   out << ',';
@@ -32910,7 +32910,7 @@ void PopulateLanguageControlAuthority(SblrEnvelope* envelope,
   envelope->diagnostic_shape_key = "diagnostic.canonical_message_vector";
   envelope->resource_contract_key = "resource.contract.sbsql_language_resource";
   envelope->required_authority_steps.clear();
-  envelope->descriptor_refs.clear();
+  envelope->descriptor_requirements.clear();
   envelope->policy_refs.clear();
   envelope->required_rights.clear();
   AppendIfMissing(&envelope->required_authority_steps,
@@ -32921,11 +32921,11 @@ void PopulateLanguageControlAuthority(SblrEnvelope* envelope,
                   "authority.parser.no_sql_text_execution");
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
-  AppendIfMissing(&envelope->descriptor_refs, "sys.language.profile");
+  AppendIfMissing(&envelope->descriptor_requirements, "sys.language.profile");
   if (info.session_operation) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.server.session_language_context_required");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.session.language_context");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.session.language_context");
     AppendIfMissing(&envelope->required_rights,
                     info.operation_id == "language.session.show"
                         ? "right.observe"
@@ -32938,7 +32938,7 @@ void PopulateLanguageControlAuthority(SblrEnvelope* envelope,
                     "authority.security.language_bundle_admission_required");
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.parser.no_bundle_loading");
-    AppendIfMissing(&envelope->descriptor_refs, "sys.language.resource_bundle");
+    AppendIfMissing(&envelope->descriptor_requirements, "sys.language.resource_bundle");
     AppendIfMissing(&envelope->policy_refs, "language_resource_admission_policy");
     AppendIfMissing(&envelope->required_rights, "right.language_bundle_admin");
   }
@@ -33007,7 +33007,7 @@ std::string LanguageControlPayload(const SblrEnvelope& envelope,
   }
   AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
   out << ',';
-  AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+  AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
   out << ',';
@@ -33308,8 +33308,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "canonical relational lowering requires an accepted typed BoundAST");
     return envelope;
   }
-  if (bound.parser_package_uuid.empty() ||
-      bound.command_registry_snapshot_uuid.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(bound.parser_package_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(bound.command_registry_snapshot_uuid) ||
       envelope.catalog_epoch == 0 || envelope.security_policy_epoch == 0 ||
       envelope.descriptor_epoch == 0) {
     AddNativeRelationalLoweringError(
@@ -42676,7 +42676,7 @@ SblrEnvelope LowerExactDiagnosticRefusal(
       "authority.parser.no_executable_sblr",
       "authority.parser.no_sql_text_execution",
       "authority.parser.no_storage_or_finality"};
-  refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+  refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
   refusal.exact_emulated_diagnostic = true;
   refusal.messages = bound.messages;
   if (!refusal.messages.has_errors()) {
@@ -43073,7 +43073,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     refusal.resource_contract_key = "sbsql.command.no_execution.v1";
     refusal.trace_key = std::string(trace_key);
     refusal.resolved_object_uuids.clear();
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
     refusal.policy_refs.clear();
     refusal.required_rights.clear();
     refusal.required_authority_steps = {
@@ -43269,7 +43269,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     refusal.resource_contract_key = "sbsql.command.no_execution.v1";
     refusal.trace_key = "trace.sbsql.jobs_scheduler_exact_refusal";
     refusal.resolved_object_uuids.clear();
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
     refusal.policy_refs.clear();
     refusal.required_rights.clear();
     refusal.required_authority_steps = {
@@ -43322,7 +43322,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     refusal.resource_contract_key = "sbsql.command.no_execution.v1";
     refusal.trace_key = "trace.sbsql.archive_replication_exact_refusal";
     refusal.resolved_object_uuids.clear();
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
     refusal.policy_refs.clear();
     refusal.required_rights.clear();
     refusal.required_authority_steps = {
@@ -43391,7 +43391,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     envelope.resource_contract_key = "sbsql.command.no_execution.v1";
     envelope.trace_key = "trace.sbsql.cast_value_exact_refusal";
     envelope.resolved_object_uuids.clear();
-    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.descriptor_requirements = {"sys.sbsql.surface_registry"};
     envelope.policy_refs.clear();
     envelope.required_rights.clear();
     envelope.required_authority_steps = {
@@ -43430,7 +43430,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     envelope.resource_contract_key = "sbsql.command.no_execution.v1";
     envelope.trace_key = "trace.sbsql.create_schema_exact_refusal";
     envelope.resolved_object_uuids.clear();
-    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.descriptor_requirements = {"sys.sbsql.surface_registry"};
     envelope.policy_refs.clear();
     envelope.required_rights.clear();
     envelope.required_authority_steps = {
@@ -43494,7 +43494,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     envelope.resource_contract_key = "sbsql.command.no_execution.v1";
     envelope.trace_key = "trace.sbsql.constraint_ddl_exact_refusal";
     envelope.resolved_object_uuids.clear();
-    envelope.descriptor_refs = {"sys.sbsql.surface_registry"};
+    envelope.descriptor_requirements = {"sys.sbsql.surface_registry"};
     envelope.policy_refs.clear();
     envelope.required_rights.clear();
     envelope.required_authority_steps = {
@@ -43563,7 +43563,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc085GrammarSurfaceJson(out, sbsfc085_surface);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43605,7 +43605,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc084GrammarSurfaceJson(out, sbsfc084_surface);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43647,7 +43647,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc083GrammarSurfaceJson(out, sbsfc083_surface);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43689,7 +43689,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc082SurfaceDescriptorJson(out, sbsfc082_descriptor);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43731,7 +43731,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc081DescriptorExpressionResidualJson(out, sbsfc081_residual);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43773,7 +43773,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc079MultimodelGeneralResidualJson(out, sbsfc079_residual);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43815,7 +43815,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc080OperationalGeneralResidualJson(out, sbsfc080_residual);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43857,7 +43857,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc078ProceduralGeneralResidualJson(out, sbsfc078_residual);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -43929,7 +43929,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendSbsfc077NonGeneralResidualJson(out, sbsfc077_residual);
     AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
     out << ',';
-    AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+    AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
     out << ',';
@@ -44074,7 +44074,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         "authority.parser.no_executable_sblr",
         "authority.parser.no_sql_text_execution",
         "authority.parser.no_storage_or_finality"};
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
     refusal.exact_emulated_diagnostic = true;
     refusal.messages = envelope.messages;
     if (!refusal.messages.has_errors()) {
@@ -44111,7 +44111,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     refusal.resource_contract_key = "sbsql.command.no_execution.v1";
     refusal.trace_key = "trace.sbsql.multimodel_exact_refusal";
     refusal.resolved_object_uuids.clear();
-    refusal.descriptor_refs = {"sys.sbsql.surface_registry"};
+    refusal.descriptor_requirements = {"sys.sbsql.surface_registry"};
     refusal.policy_refs.clear();
     refusal.required_rights.clear();
     refusal.required_authority_steps = {
@@ -44263,8 +44263,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.jobs.scheduler");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.jobs.definition");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.jobs.scheduler");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.jobs.definition");
     AppendIfMissing(&envelope.required_rights,
                     job_route.run_job ? "right.job.execute" : "right.job.manage");
   }
@@ -44297,12 +44297,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.backup.archive_lifecycle");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.archive.manifest");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.storage.filespace");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.mga.relation_store");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.backup.archive_lifecycle");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.archive.manifest");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.storage.filespace");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.mga.relation_store");
     if (archive_route.changefeed) {
-      AppendIfMissing(&envelope.descriptor_refs, "sys.replication.changefeed");
+      AppendIfMissing(&envelope.descriptor_requirements, "sys.replication.changefeed");
     }
     if (archive_route.restore) {
       AppendIfMissing(&envelope.required_rights, "right.restore");
@@ -44323,7 +44323,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.server.cursor_descriptor");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.server.cursor_descriptor");
     AppendIfMissing(&envelope.required_rights, "right.execute");
   }
   if (prepared_control.active) {
@@ -44337,7 +44337,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.server.prepared_statement_descriptor");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.server.prepared_statement_descriptor");
     AppendIfMissing(&envelope.required_rights, "right.execute");
   }
   if (transaction_characteristics.active) {
@@ -44349,7 +44349,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.transaction_session_defaults");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.transaction_session_defaults");
     AppendIfMissing(&envelope.required_rights, "right.transaction_control");
   }
   if (IsSupportedObservabilityInspectOperation(envelope.operation_id)) {
@@ -44377,7 +44377,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
                     "authority.parser.no_sql_text_execution");
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.parser.no_storage_or_finality");
-    AppendIfMissing(&envelope.descriptor_refs, "sys.cluster.provider");
+    AppendIfMissing(&envelope.descriptor_requirements, "sys.cluster.provider");
     AppendIfMissing(&envelope.required_rights, "right.observe");
   }
   if (IsSupportedCatalogDescriptorOperation(envelope.operation_id)) {
@@ -44886,7 +44886,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendTransactionCharacteristicsJson(out, transaction_characteristics);
   AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
   out << ',';
-  AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+  AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
   out << ',';
@@ -49430,8 +49430,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.vector.collection_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.vector.collection_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.VECTOR_SEARCH_AUTHORITY_INVALID",
                        "Vector SEARCH SBLR must carry UUID-bound vector query authority without parser execution");
     }
@@ -49471,7 +49471,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                          "authority.parser.no_sql_text_execution") ||
                !HasValue(envelope.required_authority_steps,
                          "authority.parser.no_storage_or_finality") ||
-               !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+               !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.EXACT_COMMAND_AUTHORITY_INVALID",
                        "Exact command SBLR must carry source-derived route authority without parser execution or private execution");
@@ -49481,7 +49481,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                    "authority.engine.cluster_provider_boundary_required") ||
          !HasValue(envelope.required_authority_steps,
                    "authority.cluster.provider_dispatch_required") ||
-         !HasValue(envelope.descriptor_refs, "sys.cluster.provider"))) {
+         !HasValue(envelope.descriptor_requirements, "sys.cluster.provider"))) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.EXACT_COMMAND_CLUSTER_BOUNDARY_INVALID",
                        "Cluster exact command SBLR must route through the public cluster provider boundary");
@@ -49551,8 +49551,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                          "authority.parser.no_sql_text_execution") ||
                !HasValue(envelope.required_authority_steps,
                          "authority.parser.no_storage_or_finality") ||
-               !HasValue(envelope.descriptor_refs, "sys.engine.internal_api_registry") ||
-               !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+               !HasValue(envelope.descriptor_requirements, "sys.engine.internal_api_registry") ||
+               !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.ENGINE_API_COMMAND_AUTHORITY_INVALID",
                        "Engine API command SBLR must carry production-domain route authority without parser execution or private execution");
@@ -49562,7 +49562,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                    "authority.engine.cluster_provider_boundary_required") ||
          !HasValue(envelope.required_authority_steps,
                    "authority.cluster.provider_dispatch_required") ||
-         !HasValue(envelope.descriptor_refs, "sys.cluster.provider"))) {
+         !HasValue(envelope.descriptor_requirements, "sys.cluster.provider"))) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.ENGINE_API_COMMAND_CLUSTER_BOUNDARY_INVALID",
                        "Cluster engine API command SBLR must route through the public cluster provider boundary");
@@ -49635,9 +49635,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.udr.no_transaction_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.bridge.connection") ||
-        !HasValue(envelope.descriptor_refs, "sys.bridge.policy") ||
-        !HasValue(envelope.descriptor_refs, "sys.udr_package_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.bridge.connection") ||
+        !HasValue(envelope.descriptor_requirements, "sys.bridge.policy") ||
+        !HasValue(envelope.descriptor_requirements, "sys.udr_package_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.BRIDGE_AUTHORITY_INVALID",
                        "Bridge SBLR must carry trusted UDR route authority without parser execution or finality");
@@ -49647,7 +49647,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                    "authority.server.transaction_context_required") ||
          !HasValue(envelope.required_authority_steps,
                    "authority.engine.mga_transaction_context_required") ||
-         !HasValue(envelope.descriptor_refs, "sys.mga.transaction_inventory"))) {
+         !HasValue(envelope.descriptor_requirements, "sys.mga.transaction_inventory"))) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.BRIDGE_TRANSACTION_CONTEXT_MISSING",
                        "Bridge SBLR transaction routes must preserve local MGA transaction context");
@@ -49656,7 +49656,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       if (!HasValue(envelope.required_authority_steps,
                     "authority.cluster.provider_compile_time_gate_required") ||
           !HasValue(envelope.required_rights, "right.cluster_control") ||
-          !HasValue(envelope.descriptor_refs, "sys.cluster.provider")) {
+          !HasValue(envelope.descriptor_requirements, "sys.cluster.provider")) {
         AddVerifierError(&result.messages,
                          "SBSQL.SBLR.BRIDGE_CLUSTER_GATE_INVALID",
                          "Cluster bridge SBLR must route through the compile-time cluster provider gate");
@@ -49700,8 +49700,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.vector.collection_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.vector.collection_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.CREATE_VECTOR_COLLECTION_AUTHORITY_INVALID",
                        "CREATE VECTOR COLLECTION SBLR must carry vector catalog descriptor authority without parser-owned storage");
@@ -49730,7 +49730,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.vector.collection_descriptor")) {
+        !HasValue(envelope.descriptor_requirements, "sys.vector.collection_descriptor")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.VECTOR_COLLECTION_OPERATION_AUTHORITY_INVALID",
                        "Vector collection operation SBLR must carry UUID-bound vector collection authority");
@@ -49762,7 +49762,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.MULTIMODEL_NOSQL_AUTHORITY_INVALID",
                        "Multimodel NoSQL SBLR must carry UUID-bound descriptor authority without parser execution");
@@ -49801,7 +49801,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC077_AUTHORITY_INVALID",
                        "SBSFC-077 exact routes must carry parser-to-engine route authority and runtime evidence without replay");
@@ -49841,7 +49841,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.cluster.provider_dispatch_not_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC079_AUTHORITY_INVALID",
                        "SBSFC-079 multimodel/general residual exact routes must carry NoSQL API evidence without parser execution, replay, cluster provider dispatch, or recovery authority");
@@ -49878,7 +49878,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC080_AUTHORITY_INVALID",
                        "SBSFC-080 operational/control residual exact routes must carry API evidence without replay, parser execution, cluster provider dispatch, private cluster execution, or recovery authority");
@@ -49936,8 +49936,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.cluster.provider_dispatch_not_required") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.query_plan_validation_api_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.plan_descriptor")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.plan_descriptor")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC081_AUTHORITY_INVALID",
                        "SBSFC-081 descriptor/expression residual exact routes must carry query-plan descriptor validation evidence without replay, parser execution, cluster provider dispatch, private cluster execution, or recovery authority");
@@ -49981,7 +49981,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.cluster.provider_dispatch_not_required") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.query_plan_validation_api_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC082_AUTHORITY_INVALID",
                        "SBSFC-082 surface descriptor exact routes must carry descriptor-validation evidence without replay, parser execution, cluster provider dispatch, private cluster execution, or recovery authority");
@@ -50025,7 +50025,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.cluster.provider_dispatch_not_required") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.query_plan_validation_api_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC083_AUTHORITY_INVALID",
                        "SBSFC-083 grammar surface exact routes must carry descriptor-validation evidence without replay, parser execution, cluster provider dispatch, private cluster execution, or recovery authority");
@@ -50069,7 +50069,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.cluster.provider_dispatch_not_required") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.query_plan_validation_api_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC084_AUTHORITY_INVALID",
                        "SBSFC-084 grammar surface exact routes must carry descriptor-validation evidence without replay, parser execution, cluster provider dispatch, private cluster execution, or recovery authority");
@@ -50114,7 +50114,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.cluster.provider_dispatch_not_required") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.query_plan_validation_api_required") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC085_AUTHORITY_INVALID",
                        "SBSFC-085 grammar surface exact routes must carry descriptor-validation evidence without replay, parser execution, cluster provider dispatch, private cluster execution, transaction finality, or recovery authority");
@@ -50148,8 +50148,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.sbsql.surface_registry") ||
-        !HasValue(envelope.descriptor_refs, "sys.procedural.ir_descriptor")) {
+        !HasValue(envelope.descriptor_requirements, "sys.sbsql.surface_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.procedural.ir_descriptor")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC078_AUTHORITY_INVALID",
                        "SBSFC-078 exact routes must carry procedural/general IR evidence without parser execution or recovery authority");
@@ -50159,8 +50159,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (envelope.payload.find("\"catalog_authority\":\"sys.constraint_descriptor\"") == std::string::npos ||
         envelope.payload.find("\"logical_constraint_authority\":true") == std::string::npos ||
         envelope.payload.find("\"index_is_derivative_support\":true") == std::string::npos ||
-        !HasValue(envelope.descriptor_refs, "sys.constraint_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.constraint_support_structure")) {
+        !HasValue(envelope.descriptor_requirements, "sys.constraint_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.constraint_support_structure")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CONSTRAINT_CATALOG_ENVELOPE_INVALID",
                        "Constraint DDL SBLR must lower to catalog descriptor authority with derivative support structures");
     }
@@ -50178,8 +50178,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"target_object_kind\":\"synonym\"") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.synonym") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.synonym") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SYNONYM_CATALOG_ENVELOPE_INVALID",
                        "SYNONYM DDL SBLR must carry catalog descriptor authority without text authority");
     }
@@ -50205,8 +50205,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.optimizer.statistics_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.optimizer.statistics_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_STATISTICS_CATALOG_ENVELOPE_INVALID",
                        "CREATE STATISTICS SBLR must carry statistics descriptor authority without text authority");
     }
@@ -50241,9 +50241,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_table_visibility_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.index") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.index_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.index") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.index_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_INDEX_CATALOG_ENVELOPE_INVALID",
                        "CREATE INDEX SBLR must carry index descriptor, table UUID authority, and non-authoritative create-object name data");
     }
@@ -50279,8 +50279,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.search.index_template_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.search.index_template_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_INDEX_TEMPLATE_CATALOG_ENVELOPE_INVALID",
                        "INDEX TEMPLATE SBLR must carry template descriptor authority without text authority");
     }
@@ -50320,9 +50320,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_comment") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_comment") ||
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.COMMENT_ON_CATALOG_ENVELOPE_INVALID",
                        "COMMENT ON SBLR must carry comment catalog authority, target UUID authority, and user comment payload without SQL/name authority");
     }
@@ -50351,8 +50351,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.ALTER_RENAME_CATALOG_ENVELOPE_INVALID",
                        "RENAME/ALTER RENAME SBLR must carry object UUID authority, name-registry authority, and new-name user payload without SQL/source-name authority");
     }
@@ -50381,8 +50381,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.DROP_OBJECT_CATALOG_ENVELOPE_INVALID",
                        "DROP object SBLR must carry object UUID authority, descriptor authority, and name-registry retirement without SQL/source-name authority");
     }
@@ -50408,8 +50408,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.sequence") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.sequence") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_SEQUENCE_CATALOG_ENVELOPE_INVALID",
                        "CREATE SEQUENCE SBLR must carry sequence descriptor authority without text authority");
     }
@@ -50454,9 +50454,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs,
+        !HasValue(envelope.descriptor_requirements,
                   materialized ? "sys.catalog.materialized_view" : "sys.catalog.view") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_VIEW_CATALOG_ENVELOPE_INVALID",
                        "CREATE VIEW SBLR must carry view descriptor authority without text authority");
     }
@@ -50485,9 +50485,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.domain") ||
-        !HasValue(envelope.descriptor_refs, "sys.type_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.domain") ||
+        !HasValue(envelope.descriptor_requirements, "sys.type_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_DOMAIN_CATALOG_ENVELOPE_INVALID",
                        "CREATE DOMAIN SBLR must carry domain descriptor authority without text authority");
     }
@@ -50545,8 +50545,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.mga_catalog_commit_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CREATE_EXECUTABLE_OBJECT_CATALOG_ENVELOPE_INVALID",
                        "CREATE executable object SBLR must carry descriptor and name-registry authority without body/source-text authority");
     }
@@ -50576,9 +50576,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.engine.executable_object_invoke_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.procedure") ||
-        !HasValue(envelope.descriptor_refs, "sys.routine_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry")) {
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.procedure") ||
+        !HasValue(envelope.descriptor_requirements, "sys.routine_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.ROUTINE_INVOCATION_ENVELOPE_INVALID",
                        "EXECUTE PROCEDURE SBLR must carry UUID-bound routine invocation authority without parser SQL execution");
     }
@@ -50617,7 +50617,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_agent_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.agents") ||
+        !HasValue(envelope.descriptor_requirements, "sys.agents") ||
         envelope.payload.find("\"management_envelope_kind\":\"agent_runtime\"") ==
             std::string::npos ||
         (!targetless_agent_operation && !cluster_operation &&
@@ -50661,7 +50661,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_listener_or_parser_process_control") ||
-        !HasValue(envelope.descriptor_refs, "sys.management.runtime") ||
+        !HasValue(envelope.descriptor_requirements, "sys.management.runtime") ||
         (!sbsfc080_route &&
          (envelope.payload.find("\"management_envelope_kind\":\"parser_listener_runtime\"") ==
               std::string::npos ||
@@ -50697,7 +50697,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_udr_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.udr_package_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.udr_package_registry") ||
         (!dynamic_udr_route &&
          (envelope.payload.find("\"runtime_component\":\"udr_packages\"") ==
               std::string::npos ||
@@ -50725,8 +50725,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                    "authority.udr.dynamic_sbsql_generates_sblr_uuid_only") ||
          !HasValue(envelope.required_authority_steps,
                    "authority.engine.accepts_revalidated_sblr_uuid_only") ||
-         !HasValue(envelope.descriptor_refs, "sys.parser_package_registry") ||
-         !HasValue(envelope.descriptor_refs, "sys.sblr.envelope_descriptor") ||
+         !HasValue(envelope.descriptor_requirements, "sys.parser_package_registry") ||
+         !HasValue(envelope.descriptor_requirements, "sys.sblr.envelope_descriptor") ||
          envelope.payload.find("\"dynamic_sbsql_udr_route\":true") == std::string::npos ||
          envelope.payload.find("\"parser_support_udr_required\":true") == std::string::npos ||
          envelope.payload.find("\"dynamic_sbsql_to_sblr_uuid\":true") == std::string::npos ||
@@ -50768,8 +50768,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.event.channel") ||
-        !HasValue(envelope.descriptor_refs, "sys.event.notification_log") ||
+        !HasValue(envelope.descriptor_requirements, "sys.event.channel") ||
+        !HasValue(envelope.descriptor_requirements, "sys.event.notification_log") ||
         envelope.payload.find("\"event_envelope_kind\":\"event_notification_route\"") ==
             std::string::npos ||
         envelope.payload.find("\"event_authority\":\"engine.event_notification\"") ==
@@ -50801,7 +50801,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "NOTIFY/POST event routes must carry payload as typed user data");
     }
     if (list_subscriptions &&
-        !HasValue(envelope.descriptor_refs, "sys.event.subscription")) {
+        !HasValue(envelope.descriptor_requirements, "sys.event.subscription")) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.EVENT_SUBSCRIPTION_DESCRIPTOR_MISSING",
                        "SHOW EVENT SUBSCRIPTIONS requires the server event-subscription descriptor");
@@ -50840,8 +50840,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.jobs.scheduler") ||
-        !HasValue(envelope.descriptor_refs, "sys.jobs.definition") ||
+        !HasValue(envelope.descriptor_requirements, "sys.jobs.scheduler") ||
+        !HasValue(envelope.descriptor_requirements, "sys.jobs.definition") ||
         envelope.payload.find("\"jobs_scheduler_control\":true") == std::string::npos ||
         (envelope.operation_id != "jobs.scheduler.alter_schedule" &&
          envelope.payload.find("\"job_uuid\"") == std::string::npos) ||
@@ -50904,10 +50904,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.backup.archive_lifecycle") ||
-        !HasValue(envelope.descriptor_refs, "sys.archive.manifest") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.filespace") ||
-        !HasValue(envelope.descriptor_refs, "sys.mga.relation_store") ||
+        !HasValue(envelope.descriptor_requirements, "sys.backup.archive_lifecycle") ||
+        !HasValue(envelope.descriptor_requirements, "sys.archive.manifest") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.filespace") ||
+        !HasValue(envelope.descriptor_requirements, "sys.mga.relation_store") ||
         envelope.payload.find("\"archive_replication_control\":true") ==
             std::string::npos ||
         envelope.payload.find("\"archive_replication_operation_id\"") ==
@@ -50967,7 +50967,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.language.profile") ||
+        !HasValue(envelope.descriptor_requirements, "sys.language.profile") ||
         envelope.payload.find("\"language_control\":true") == std::string::npos ||
         envelope.payload.find("\"language_operation_id\"") == std::string::npos ||
         envelope.payload.find("\"parser_updates_session_language\":false") ==
@@ -50994,7 +50994,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       if (!right_ok ||
           !HasValue(envelope.required_authority_steps,
                     "authority.server.session_language_context_required") ||
-          !HasValue(envelope.descriptor_refs, "sys.session.language_context") ||
+          !HasValue(envelope.descriptor_requirements, "sys.session.language_context") ||
           envelope.payload.find("\"server_session_language_context_required\":true") ==
               std::string::npos ||
           (envelope.operation_id == "language.session.set" &&
@@ -51013,7 +51013,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                     "authority.security.language_bundle_admission_required") ||
           !HasValue(envelope.required_authority_steps,
                     "authority.parser.no_bundle_loading") ||
-          !HasValue(envelope.descriptor_refs, "sys.language.resource_bundle") ||
+          !HasValue(envelope.descriptor_requirements, "sys.language.resource_bundle") ||
           !HasValue(envelope.policy_refs, "language_resource_admission_policy") ||
           envelope.payload.find("\"resource_bundle_operation\":true") ==
               std::string::npos ||
@@ -51054,7 +51054,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.server.cursor_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.server.cursor_descriptor") ||
         envelope.payload.find("\"session_cursor_control\":true") == std::string::npos ||
         envelope.payload.find("\"cursor_name\"") == std::string::npos ||
         envelope.payload.find("\"cursor_lookup_scope\":\"session\"") == std::string::npos ||
@@ -51187,8 +51187,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry") ||
         envelope.payload.find("\"catalog_envelope_kind\":\"show_create\"") == std::string::npos ||
         envelope.payload.find("\"catalog_read_only\":true") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51223,9 +51223,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.descriptor_mutation_request") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.descriptor_mutation_request") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry") ||
         envelope.payload.find("\"catalog_envelope_kind\":\"catalog_descriptor_mutation\"") == std::string::npos ||
         envelope.payload.find("\"catalog_descriptor_mutation\":true") == std::string::npos ||
         envelope.payload.find("\"mga_catalog_commit_required\":true") == std::string::npos ||
@@ -51259,8 +51259,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                   "authority.parser.no_sql_text_execution") ||
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.transaction.inventory") ||
-        !HasValue(envelope.descriptor_refs, "sys.transaction.lock_advisory") ||
+        !HasValue(envelope.descriptor_requirements, "sys.transaction.inventory") ||
+        !HasValue(envelope.descriptor_requirements, "sys.transaction.lock_advisory") ||
         !HasValue(envelope.policy_refs, "transaction_lock_mga_policy") ||
         envelope.payload.find("\"transaction_envelope_kind\":\"transaction_lock_control\"") == std::string::npos ||
         envelope.payload.find("\"mga_visibility_impact\":false") == std::string::npos ||
@@ -51290,7 +51290,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.security_privilege_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.security.privilege_grant") ||
+        !HasValue(envelope.descriptor_requirements, "sys.security.privilege_grant") ||
         envelope.payload.find("\"security_envelope_kind\":\"privilege_dcl\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
         envelope.payload.find("\"grantee_uuid\"") == std::string::npos ||
@@ -51317,7 +51317,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.engine.security_membership_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.security.membership") ||
+        !HasValue(envelope.descriptor_requirements, "sys.security.membership") ||
         envelope.payload.find("\"security_envelope_kind\":\"membership_dcl\"") == std::string::npos ||
         envelope.payload.find("\"member_principal_uuid\"") == std::string::npos ||
         envelope.payload.find("\"container_uuid\"") == std::string::npos ||
@@ -51368,7 +51368,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.name_registry") ||
+        !HasValue(envelope.descriptor_requirements, "sys.name_registry") ||
         (envelope.payload.find("\"security_envelope_kind\":\"policy_or_role\"") == std::string::npos &&
          envelope.payload.find("\"security_envelope_kind\":\"principal_or_policy_ddl\"") == std::string::npos) ||
         envelope.payload.find("\"security_operation_id\"") == std::string::npos ||
@@ -51379,7 +51379,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (envelope.operation_id == "security.session.set_role") {
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_session_role_api_required") ||
-          !HasValue(envelope.descriptor_refs, "sys.security.role") ||
+          !HasValue(envelope.descriptor_requirements, "sys.security.role") ||
           envelope.payload.find("\"role_uuid\"") == std::string::npos) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_ROLE_AUTHORITY_INVALID",
                          "SET ROLE SBLR must carry UUID-bound role authority");
@@ -51399,7 +51399,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
               : envelope.payload.find("\"name_text_included\":false") != std::string::npos;
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_principal_api_required") ||
-          !HasValue(envelope.descriptor_refs, "sys.security.principal") ||
+          !HasValue(envelope.descriptor_requirements, "sys.security.principal") ||
           envelope.payload.find("\"principal_uuid\"") == std::string::npos ||
           !principal_name_policy_valid) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_PRINCIPAL_AUTHORITY_INVALID",
@@ -51418,7 +51418,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
               : envelope.payload.find("\"name_text_included\":false") != std::string::npos;
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_policy_api_required") ||
-          !HasValue(envelope.descriptor_refs, "sys.security.policy") ||
+          !HasValue(envelope.descriptor_requirements, "sys.security.policy") ||
           !policy_uuid_binding_valid ||
           !policy_name_policy_valid) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_POLICY_UUID_INVALID",
@@ -51451,7 +51451,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
          envelope.payload.find("parameter_value_embedded\":false") == std::string::npos ||
          envelope.payload.find("parser_bound_parameter_value\":false") == std::string::npos ||
          envelope.payload.find("parameter_name_text_included\":false") == std::string::npos ||
-         !HasValue(envelope.descriptor_refs, "sys.query.parameter_descriptor") ||
+         !HasValue(envelope.descriptor_requirements, "sys.query.parameter_descriptor") ||
          !HasValue(envelope.required_authority_steps,
                    "authority.server.bind_parameter_descriptors_required"))) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.PARAMETER_DESCRIPTOR_INVALID",
@@ -51467,7 +51467,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.values_rowset_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.values_rowset_descriptor") ||
         envelope.payload.find("\"query_operation\":\"values\"") == std::string::npos ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"values_row_count\"") == std::string::npos ||
@@ -51488,7 +51488,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.values_set_operation_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.values_set_operation_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"set_operation\"") == std::string::npos ||
         envelope.payload.find("\"relation_count\":\"2\"") == std::string::npos ||
@@ -51519,8 +51519,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.table_join_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.table_join_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         !supported_join_operation ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51548,8 +51548,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.table_set_operation_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.table_set_operation_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"set_operation\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51575,8 +51575,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.sample_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.sample_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"sample\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51616,8 +51616,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.window_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.window_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51647,8 +51647,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.aggregate_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.aggregate_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"count_all\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51756,8 +51756,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.aggregate_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.aggregate_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"group_by\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51804,8 +51804,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.cte_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.cte_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"materialized_cte\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51830,8 +51830,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.recursive_cte_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.values_rowset_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.recursive_cte_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.values_rowset_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"recursive_cte\"") == std::string::npos ||
         envelope.payload.find("\"cte_strategy\":\"recursive_fixed_point_materialized\"") == std::string::npos ||
@@ -51860,8 +51860,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
-        !HasValue(envelope.descriptor_refs, "sys.query.subquery_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.query.subquery_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"scalar_subquery\"") == std::string::npos ||
         envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
@@ -51894,8 +51894,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.server.transaction_context_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
-        !HasValue(envelope.descriptor_refs, "sys.catalog.object_descriptor") ||
-        !HasValue(envelope.descriptor_refs, "sys.storage.row_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.catalog.object_descriptor") ||
+        !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"dml_envelope_kind\"") == std::string::npos ||
         envelope.payload.find("\"parser_authorizes\":false") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
@@ -51973,8 +51973,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
          envelope.payload.find("\"on_conflict_target_column\"") == std::string::npos ||
          envelope.payload.find("\"on_conflict_action\"") == std::string::npos ||
          envelope.payload.find("\"on_conflict_policy_descriptor_bound\":true") == std::string::npos ||
-         !HasValue(envelope.descriptor_refs, "sys.storage.unique_index_descriptor") ||
-         !HasValue(envelope.descriptor_refs, "sys.dml.conflict_policy_descriptor") ||
+         !HasValue(envelope.descriptor_requirements, "sys.storage.unique_index_descriptor") ||
+         !HasValue(envelope.descriptor_requirements, "sys.dml.conflict_policy_descriptor") ||
          !HasValue(envelope.policy_refs, "row_conflict_policy"))) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.ON_CONFLICT_AUTHORITY_INVALID",
                        "INSERT ON CONFLICT must bind conflict target/action descriptors and use engine DML authority");

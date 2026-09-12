@@ -11,6 +11,10 @@
 
 namespace scratchbird::parser::sbsql {
 
+std::optional<std::vector<std::uint8_t>> FreezeContextualReservationSkeletonV2(
+    const BoundStatement& bound, const SblrEnvelope& lowered,
+    const std::unordered_set<std::uint32_t>& mutable_descriptor_handles);
+
 // Local immutable reservation material, never execution or receipt authority.
 // A return value is published only after the entire ordered projection passes.
 inline std::optional<std::vector<std::uint8_t>> FreezeContextualOperandsV3(
