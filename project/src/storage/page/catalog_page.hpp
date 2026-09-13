@@ -51,7 +51,7 @@ struct NativeCatalogRoot {
 enum class NativeCatalogRootError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
-  binding_mismatch, io_failure, encrypted_requires_crypto_authority
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority, history_mismatch
 };
 struct NativeCatalogRootResult {
   NativeCatalogRootError error = NativeCatalogRootError::invalid_family;
@@ -68,6 +68,28 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     scratchbird::storage::disk::FileDevice&,
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::storage::disk::FilespaceRootReference&) noexcept;
+
+struct NativeCatalogFilespaceDevice {
+  scratchbird::core::platform::Uuid filespace_uuid;
+  scratchbird::core::platform::Uuid page_size_profile_uuid;
+  scratchbird::storage::disk::FileDevice* device = nullptr;
+};
+struct NativeCatalogRootRangeResult {
+  NativeCatalogRootError error = NativeCatalogRootError::invalid_reference;
+  // Exact requested head through terminal, newest first. Never a partial range.
+  std::vector<NativeCatalogRootResult> roots;
+  scratchbird::core::platform::u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error == NativeCatalogRootError::none && !roots.empty(); }
+};
+// Verifies actual immutable links, not inventory finality or retention authority.
+// Acquires device guards in binary filespace UUID order. The caller must not
+// already hold an unordered subset of those guards. Never opens/closes devices.
+NativeCatalogRootRangeResult ReadNativeCatalogRootRangeFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<NativeCatalogFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const scratchbird::storage::disk::FilespaceRootReference& terminal,
+    scratchbird::core::platform::u64 maximum_retained_image_bytes) noexcept;
 
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;

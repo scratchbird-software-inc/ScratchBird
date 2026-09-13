@@ -510,4 +510,91 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     catch (...) { return Fail(Error::io_failure); }
 }
 
+NativeCatalogRootRangeResult ReadNativeCatalogRootRangeFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<NativeCatalogFilespaceDevice>& filespaces,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const scratchbird::storage::disk::FilespaceRootReference& terminal,
+    scratchbird::core::platform::u64 maximum_retained_image_bytes) noexcept {
+  using namespace native_catalog;
+  const auto fail=[](Error error) { return NativeCatalogRootRangeResult{error,{},0}; };
+  const auto valid_ref=[](const disk::FilespaceRootReference& ref) {
+    return (ref.kind==2 || ref.kind==8) && ref.page_type==5 && V7(ref.object_uuid)
+        && Reference({ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid});
+  };
+  const auto exact=[](const disk::FilespaceRootReference& a,const disk::FilespaceRootReference& b) {
+    return a.kind==b.kind && a.page_type==b.page_type && Same(a.object_uuid,b.object_uuid)
+        && Same(a.filespace_uuid,b.filespace_uuid) && Same(a.page_size_profile_uuid,b.page_size_profile_uuid)
+        && a.page_number==b.page_number && a.page_generation==b.page_generation;
+  };
+  try {
+    if (!V7(database_uuid) || !valid_ref(head) || !valid_ref(terminal)
+        || head.kind!=terminal.kind || !Same(head.object_uuid,terminal.object_uuid))
+      return fail(Error::invalid_reference);
+    if (!maximum_retained_image_bytes) return fail(Error::resource_exhausted);
+    if (filespaces.empty()) return fail(Error::invalid_filespace);
+    auto ordered=filespaces;
+    std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b) {
+      return a.filespace_uuid.bytes<b.filespace_uuid.bytes;
+    });
+    for (std::size_t i=0;i<ordered.size();++i) {
+      const auto& fs=ordered[i];
+      if (!V7(fs.filespace_uuid) || !disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)
+          || !fs.device || (i && Same(fs.filespace_uuid,ordered[i-1].filespace_uuid)))
+        return fail(Error::invalid_filespace);
+      for (std::size_t j=0;j<i;++j)
+        if (fs.device==ordered[j].device) return fail(Error::invalid_filespace);
+    }
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;
+    guards.reserve(ordered.size());
+    for (const auto& fs:ordered) guards.push_back(fs.device->AcquireOperationGuard());
+    for (const auto& fs:ordered) {
+      const disk::FilespaceBootstrapBinding binding{database_uuid,fs.filespace_uuid,fs.page_size_profile_uuid};
+      const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*fs.device,&binding);
+      if (!zero.ok()) {
+        if (zero.error==disk::FilespacePageZeroError::resource_exhausted) return fail(Error::resource_exhausted);
+        if (zero.error==disk::FilespacePageZeroError::hash_provider_failure) return fail(Error::hash_failure);
+        if (zero.error==disk::FilespacePageZeroError::io_failure) return fail(Error::io_failure);
+        return fail(Error::invalid_filespace);
+      }
+    }
+    NativeCatalogRootRangeResult result;
+    auto next=head;
+    for (;;) {
+      const auto fs=std::lower_bound(ordered.begin(),ordered.end(),next.filespace_uuid,
+          [](const auto& a,const auto& uuid) { return a.filespace_uuid.bytes<uuid.bytes; });
+      if (fs==ordered.end() || !Same(fs->filespace_uuid,next.filespace_uuid)
+          || !Same(fs->page_size_profile_uuid,next.page_size_profile_uuid)) return fail(Error::invalid_filespace);
+      const auto* profile=disk::FindCanonicalFilespacePageProfile(next.page_size_profile_uuid);
+      if (!profile || profile->page_size_bytes>maximum_retained_image_bytes-result.retained_image_bytes)
+        return fail(Error::resource_exhausted);
+      for (const auto& previous:result.roots)
+        if (Same(previous.root->header.filespace_uuid,next.filespace_uuid)
+            && previous.root->header.page_number==next.page_number) return fail(Error::history_mismatch);
+      auto read=ReadNativeCatalogRootFromOpenDevice(*fs->device,database_uuid,next);
+      if (!read.ok()) return fail(read.error);
+      if (!result.roots.empty()) {
+        const auto& newer=*result.roots.back().root; const auto& older=*read.root;
+        const auto digest=scratchbird::core::hash::ComputeSha256Digest(read.bytes);
+        if (!digest.ok()) return fail(Error::hash_failure);
+        if (digest.digest!=newer.predecessor_sha256) return fail(Error::invalid_integrity);
+        if (older.root_kind!=newer.root_kind || !Same(older.object_uuid,newer.object_uuid)
+            || newer.catalog_generation<=1 || older.catalog_generation!=newer.catalog_generation-1
+            || older.schema_epoch>newer.schema_epoch || older.security_epoch>newer.security_epoch
+            || older.resource_epoch>newer.resource_epoch) return fail(Error::history_mismatch);
+      }
+      result.retained_image_bytes+=read.bytes.size();
+      result.roots.push_back(std::move(read));
+      if (exact(next,terminal)) { result.error=Error::none; return result; }
+      const auto& root=*result.roots.back().root;
+      if (!root.predecessor) return fail(Error::history_mismatch);
+      const auto& prior=*root.predecessor;
+      next={head.kind,5,prior.filespace_uuid,prior.page_number,prior.page_generation,
+            prior.page_size_profile_uuid,root.object_uuid};
+    }
+  } catch (const std::bad_alloc&) { return fail(Error::resource_exhausted); }
+    catch (const std::length_error&) { return fail(Error::resource_exhausted); }
+    catch (...) { return fail(Error::io_failure); }
+}
+
 }  // namespace scratchbird::storage::page

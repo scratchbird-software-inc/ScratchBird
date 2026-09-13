@@ -6,6 +6,7 @@
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -17,16 +18,21 @@
 #include <string>
 #include <string_view>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 namespace {
 long allocation_budget=-1;
+unsigned long observed_allocations=0;
+bool count_allocations=false;
 unsigned hash_fault=0,reads=0,read_fault=0;
+unsigned full_digest_fault=0;
 std::size_t observed_read_bytes=0;
 bool track_reads=false;
 const std::vector<unsigned char>* replace_on_second_read=nullptr;
 }
 void* operator new(std::size_t bytes) {
+  if(count_allocations) ++observed_allocations;
   if(allocation_budget==0) { allocation_budget=-1; throw std::bad_alloc(); }
   if(allocation_budget>0) --allocation_budget;
   if(auto* p=std::malloc(bytes?bytes:1)) return p;
@@ -38,6 +44,11 @@ void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p,std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
+extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
+extern "C" int __wrap_EVP_Digest(const void* b,size_t n,unsigned char* out,unsigned int* count,const EVP_MD* md,ENGINE* e) {
+  if(full_digest_fault && --full_digest_fault==0) return 0;
+  return __real_EVP_Digest(b,n,out,count,md,e);
+}
 extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new() {
   if(hash_fault==1) { hash_fault=0; return nullptr; } return __real_EVP_MD_CTX_new();
 }
@@ -480,8 +491,182 @@ void CatalogRootFiles() {
     Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process verifies exact durable root");
   }
 }
+std::array<byte,32> WholeRootHash(const Bytes& bytes) {
+  std::array<byte,32> out{};
+  Check(SHA256(bytes.data(),bytes.size(),out.data())!=nullptr,"independent complete root image digest");
+  return out;
+}
+disk::FilespaceRootReference RootRef(const page::NativeCatalogRoot& root) {
+  const auto& h=root.header;
+  return {2,5,h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid,root.object_uuid};
+}
+page::NativeCatalogPageReference PageRef(const page::NativeCatalogRoot& root) {
+  const auto& h=root.header; return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
+}
+struct RootRangeFixture {
+  Fixture files;
+  disk::FileDevice first,second;
+  std::array<page::NativeCatalogRoot,3> roots;
+  std::array<Bytes,3> images;
+  std::vector<page::NativeCatalogFilespaceDevice> devices;
+  RootRangeFixture() {
+    roots[0]=RootExample(); roots[1]=RootExample(1); roots[2]=RootExample();
+    roots[1].header.filespace_uuid=Id(7); roots[1].header.page_number=34;
+    roots[1].header.page_generation=202; roots[1].header.page_uuid=Id(93);
+    for(auto& target:roots[1].roots) target.page.filespace_uuid=Id(7);
+    roots[2].header.page_number=35; roots[2].header.page_generation=302; roots[2].header.page_uuid=Id(94);
+    for(unsigned i=0;i<3;++i) {
+      roots[i].catalog_generation=i+1; roots[i].schema_epoch=2+i;
+      roots[i].security_epoch=3+i; roots[i].resource_epoch=i;
+      if(i) { roots[i].predecessor=PageRef(roots[i-1]); roots[i].predecessor_sha256=WholeRootHash(images[i-1]); }
+      images[i]=RootOracle(roots[i]);
+    }
+    Check(first.Open((files.root/"first").string(),disk::FileOpenMode::create_new).ok()
+      &&second.Open((files.root/"second").string(),disk::FileOpenMode::create_new).ok(),"own two filespaces of one node");
+    auto a=Example(),b=Example(1); b.bootstrap.filespace_uuid=Id(7); b.page_uuid=Id(4);
+    for(auto& ref:b.roots) ref.filespace_uuid=Id(7);
+    a.roots[1]=RootRef(roots[2]); b.roots[1]=RootRef(roots[1]); const byte zero=0;
+    const auto ab=Oracle(a),bb=Oracle(b);
+    Check(first.WriteAt(0,ab.data(),ab.size()).ok()&&second.WriteAt(0,bb.data(),bb.size()).ok()
+      &&first.WriteAt(a.total_pages*sizes[0]-1,&zero,1).ok()
+      &&second.WriteAt(b.total_pages*sizes[1]-1,&zero,1).ok(),"persist actual mixed-profile page zeros");
+    Restore();
+    devices={{Id(7),Profile(1),&second},{Id(2),Profile(0),&first}};
+  }
+  void Write(unsigned i,const Bytes& bytes) {
+    auto& device=i==1?second:first;
+    Check(device.WriteAt(roots[i].header.page_number*roots[i].header.page_size_bytes,bytes.data(),bytes.size()).ok(),"write own range root fixture");
+  }
+  void Restore() { for(unsigned i=0;i<3;++i) Write(i,images[i]);
+    Check(first.Sync().ok()&&second.Sync().ok(),"sync actual range fixture"); }
+  page::NativeCatalogRootRangeResult Read(u64 budget=32768,unsigned terminal=0) {
+    return page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(roots[2]),RootRef(roots[terminal]),budget);
+  }
+};
+void RangeReject(const page::NativeCatalogRootRangeResult& r,RootError error,
+                 std::source_location at=std::source_location::current()) {
+  Check(!r.ok()&&r.roots.empty()&&!r.retained_image_bytes&&r.error==error,"range fails without prefix actual="+
+    std::to_string(static_cast<unsigned>(r.error))+" expected="+std::to_string(static_cast<unsigned>(error)),at);
+}
+void CatalogRootRanges() {
+  RootRangeFixture f;
+  auto r=f.Read(); Check(r.ok()&&r.roots.size()==3&&r.retained_image_bytes==32768,"actual mixed-profile root range");
+  for(unsigned i=0;i<3;++i) Check(r.roots[i].bytes==f.images[2-i],"exact ordered independent range images");
+  auto ordered=f.devices; std::reverse(f.devices.begin(),f.devices.end());
+  Check(f.Read().ok(),"input order does not control filespace locking"); f.devices=ordered;
+  Check(f.Read(8192,2).ok(),"one-root exact head/terminal range");
+  Check(f.Read(24576,1).ok(),"explicit retained terminal stops before older history");
+  for(u64 budget:{0ull,8191ull,8192ull,24575ull,24576ull,32767ull}) RangeReject(f.Read(budget),RootError::resource_exhausted);
+  for(const auto [budget,expected_reads]:std::array<std::pair<u64,unsigned>,3>{{{8191,4},{8192,7},{24576,10}}}) {
+    reads=0; track_reads=true; r=f.Read(budget); track_reads=false;
+    RangeReject(r,RootError::resource_exhausted);
+    Check(reads==expected_reads,"byte allowance checked before reading the next root image");
+  }
+  {auto middle=f.roots[1],head=f.roots[2];
+    middle.header.filespace_uuid=Id(2); middle.header.page_size_profile_uuid=Profile(0);
+    middle.header.page_size_bytes=sizes[0];
+    for(auto& target:middle.roots) { target.page.filespace_uuid=Id(2); target.page.page_size_profile_uuid=Profile(0); }
+    const auto image=RootOracle(middle);
+    Check(f.first.WriteAt(middle.header.page_number*sizes[0],image.data(),image.size()).ok(),"actual same-filespace predecessor image");
+    head.predecessor=PageRef(middle); head.predecessor_sha256=WholeRootHash(image); f.Write(2,RootOracle(head));
+    r=f.Read(24576); Check(r.ok()&&r.roots.size()==3&&r.retained_image_bytes==24576
+      &&r.roots[1].bytes==image,"actual three-generation same-filespace range"); f.Restore();}
+  auto bad_terminal=RootRef(f.roots[0]); ++bad_terminal.page_generation;
+  RangeReject(page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),f.devices,RootRef(f.roots[2]),bad_terminal,65536),RootError::history_mismatch);
+  bad_terminal=RootRef(f.roots[0]); bad_terminal.object_uuid=Id(99);
+  RangeReject(page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),f.devices,RootRef(f.roots[2]),bad_terminal,65536),RootError::invalid_reference);
+  f.devices.pop_back(); RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  f.devices.push_back(f.devices[0]); RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  f.devices[1].device=f.devices[0].device; RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  f.devices[0].device=nullptr; RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  f.devices[0].page_size_profile_uuid=Profile(0); RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  RangeReject(page::ReadNativeCatalogRootRangeFromOpenDevices(Id(99),f.devices,RootRef(f.roots[2]),RootRef(f.roots[0]),32768),RootError::invalid_filespace);
+  // An unused device cannot smuggle a second node into an owning-node range.
+  disk::FileDevice other; Check(other.Open((f.files.root/"other-node").string(),disk::FileOpenMode::create_new).ok(),"other-node fixture");
+  auto z=Example(); z.bootstrap.database_uuid=Id(99); z.bootstrap.filespace_uuid=Id(88);
+  for(auto& ref:z.roots) ref.filespace_uuid=Id(88);
+  const auto zb=Oracle(z); const byte zero=0;
+  Check(other.WriteAt(0,zb.data(),zb.size()).ok()&&other.WriteAt(z.total_pages*sizes[0]-1,&zero,1).ok(),"other-node actual pagezero");
+  f.devices.push_back({Id(88),Profile(0),&other}); RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
+  reads=0; track_reads=true; r=f.Read(); track_reads=false;
+  Check(r.ok()&&reads==13,"two filespace probes and three actual root reads");
+  for(unsigned fault=1;fault<=13;++fault) {
+    reads=0; read_fault=fault; track_reads=true; r=f.Read(); track_reads=false;
+    RangeReject(r,RootError::io_failure); Check(!read_fault,"range actual read fault consumed");
+  }
+  for(unsigned fault:{1u,2u}) { full_digest_fault=fault; r=f.Read();
+    RangeReject(r,RootError::hash_failure); Check(!full_digest_fault,"actual predecessor full-image hash failure"); }
+  for(unsigned i:{0u,1u}) {
+    auto damaged=f.images[i]; damaged[700]^=1; f.Write(i,damaged);
+    Check(!f.Read().ok(),"deep image corruption not accepted as missing history");
+    r=f.Read(); Check(r.roots.empty()&&!r.retained_image_bytes,"deep corruption emits no prefix"); f.Restore();
+  }
+  // Reseal both sides so these tests exercise links/epochs, not just checksums.
+  for(unsigned field=0;field<6;++field) {
+    auto middle=f.roots[1],head=f.roots[2];
+    if(field==0) middle.catalog_generation=4;
+    if(field==1) middle.schema_epoch=head.schema_epoch+1;
+    if(field==2) middle.security_epoch=head.security_epoch+1;
+    if(field==3) middle.resource_epoch=head.resource_epoch+1;
+    if(field==4) middle.object_uuid=Id(99);
+    if(field==5) middle.predecessor=PageRef(head); // cycle; no digest fixed point is needed to reject it.
+    const auto bytes=RootOracle(middle); f.Write(1,bytes); head.predecessor_sha256=WholeRootHash(bytes);
+    f.Write(2,RootOracle(head));
+    RangeReject(f.Read(),field==4?RootError::binding_mismatch:RootError::history_mismatch); f.Restore();
+  }
+  {auto head=f.roots[2]; head.predecessor_sha256[0]^=1; f.Write(2,RootOracle(head));
+    RangeReject(f.Read(),RootError::invalid_integrity); f.Restore();}
+  // Retained ranges do not claim authority over images older than their terminal.
+  {auto damaged=f.images[0]; damaged[500]^=1; f.Write(0,damaged);
+    Check(f.Read(24576,1).ok(),"unrequested older image is outside the proven range"); f.Restore();}
+  bool saw_failure=false,saw_success=false;
+  const auto head=RootRef(f.roots[2]),terminal=RootRef(f.roots[0]);
+  observed_allocations=0; count_allocations=true;
+  r=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),f.devices,head,terminal,32768);
+  count_allocations=false;
+  const auto allocation_count=observed_allocations;
+  Check(r.ok()&&allocation_count>0,"measure actual range allocation positions");
+  for(unsigned long budget=0;budget<=allocation_count;++budget) {
+    allocation_budget=budget;
+    r=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),f.devices,head,terminal,32768);
+    allocation_budget=-1;
+    if(r.ok()) { saw_success=true; break; }
+    RangeReject(r,RootError::resource_exhausted); saw_failure=true;
+  }
+  Check(saw_failure&&saw_success,"all allocation failure positions through successful complete range");
+  std::atomic<bool> concurrent_ok=true;
+  auto reverse=f.devices; std::reverse(reverse.begin(),reverse.end());
+  auto reader=[&](const auto& devices) { for(unsigned i=0;i<16;++i) {
+    const auto result=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,head,terminal,32768);
+    if(!result.ok()||result.roots.size()!=3||result.retained_image_bytes!=32768) concurrent_ok=false;
+  }};
+  std::thread a([&]{reader(f.devices);}),b([&]{reader(reverse);}); a.join(); b.join();
+  Check(concurrent_ok,"concurrent reversed-order range readers complete");
+  for(unsigned i=0;i<3;++i) {
+    Bytes bytes(f.images[i].size()); auto& device=i==1?f.second:f.first;
+    Check(device.ReadAt(f.roots[i].header.page_number*f.roots[i].header.page_size_bytes,bytes.data(),bytes.size()).ok()
+      &&bytes==f.images[i],"range reads/failures did not mutate durable roots");
+  }
+  Exclusive(f.first.path()); Exclusive(f.second.path());
+  Check(f.first.Close().ok()&&f.second.Close().ok(),"close node filespaces before fresh process range read");
+  const auto first=(f.files.root/"first").string(),second=(f.files.root/"second").string();
+  const auto pid=::fork(); Check(pid>=0,"fork range reopen verifier");
+  if(pid==0) { ::execl("/proc/self/exe","pagezero_test","--range-probe",first.c_str(),second.c_str(),nullptr); ::_exit(125); }
+  int status=0; Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process validates mixed-profile retained range");
+}
 }  // namespace
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--range-probe") {
+    disk::FileDevice first,second;
+    if(!first.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()
+        ||!second.Open(argv[3],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    const std::vector<page::NativeCatalogFilespaceDevice> devices{{Id(7),Profile(1),&second},{Id(2),Profile(0),&first}};
+    auto initial=RootExample(),head=RootExample(); head.header.page_number=35; head.header.page_generation=302;
+    const auto r=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(head),RootRef(initial),32768);
+    return r.ok()&&r.roots.size()==3&&r.retained_image_bytes==32768
+      &&r.roots[0].root->catalog_generation==3&&r.roots[1].root->catalog_generation==2
+      &&r.roots[2].root->catalog_generation==1?0:4;
+  }
   if(argc==3&&std::string_view(argv[1])=="--probe") { disk::FileDevice d; return Locked(d.Open(argv[2],disk::FileOpenMode::open_existing))?0:1; }
   if(argc==4&&std::string_view(argv[1])=="--catalog-probe") {
     if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
@@ -490,7 +675,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles();
+  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges();
     std::cout<<"PASS checks="<<checks<<" page_zero_and_catalog_root_image_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
