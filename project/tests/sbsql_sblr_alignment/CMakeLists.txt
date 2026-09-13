@@ -472,6 +472,18 @@ set_tests_properties(sbsql_sblr_alignment_native_row_version_identity PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;real_storage;independent_process;not_e2e" TIMEOUT 120)
 endif()
 
+# Complete pre-mutation MERGE classification; no SQL/IPC ownership qualification.
+add_executable(sbsql_sblr_alignment_merge_classification
+  merge_classification_test.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api/dml/merge_classification.cpp)
+target_include_directories(sbsql_sblr_alignment_merge_classification PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_compile_features(sbsql_sblr_alignment_merge_classification PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_merge_classification PRIVATE sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_merge_classification COMMAND sbsql_sblr_alignment_merge_classification)
+set_tests_properties(sbsql_sblr_alignment_merge_classification PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;merge;not_e2e" TIMEOUT 60)
+
 # Existing DML/physical-index regressions linked to their actual implementations.
 # These do not exercise SQL, IPC or durable MGA/security ownership.
 foreach(dml_binary_fixture IN ITEMS locator target_plan hot_point_cache)

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "dml/merge_classification.hpp"
 
 namespace scratchbird::engine::internal_api {
 
@@ -16,6 +17,7 @@ namespace scratchbird::engine::internal_api {
 struct EngineMergeRowsRequest : EngineApiRequest {
   EngineObjectReference target_table;
   EnginePredicateEnvelope match_predicate;
+  MergeMatchPolicy match_policy = MergeMatchPolicy::all_targets;
   std::vector<EngineRowValue> input_rows;
   std::vector<std::pair<std::string, EngineTypedValue>> update_assignments;
   std::string merge_surface_variant = "merge";
@@ -29,6 +31,7 @@ struct EngineMergeRowsResult : EngineApiResult {
   EngineApiU64 matched_count = 0;
   EngineApiU64 inserted_count = 0;
   EngineApiU64 updated_count = 0;
+  EngineApiU64 deleted_count = 0;
   EngineApiU64 merged_count = 0;
 };
 EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request);

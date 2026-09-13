@@ -430,6 +430,7 @@ add_library(sb_engine_internal_api
   dml/dml_operation_path_proof.cpp
   dml/dml_row_locator_stream.cpp
   dml/dml_target_access_plan.cpp
+  dml/merge_classification.cpp
   dml/global_aggregate_projection.cpp
   dml/hot_cold_row_split_api.cpp
   dml/index_apply_locality_bridge.cpp

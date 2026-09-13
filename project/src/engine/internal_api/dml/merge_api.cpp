@@ -16,8 +16,12 @@
 #include "dml/update_api.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "observability/dml_summary_counters.hpp"
 
 #include "metric_producer.hpp"
+#include "uuid.hpp"
+
+#include <algorithm>
 #include "physical_plan.hpp"
 #include "relational_planner.hpp"
 
@@ -261,6 +265,11 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
     plan_request.estimated_rows = 1;
     return plan_request;
   }
+  if (predicate.predicate_kind == "row_uuid_in_list") {
+    plan_request.row_uuids = predicate.row_uuids;
+    plan_request.estimated_rows = predicate.row_uuids.size();
+    return plan_request;
+  }
   if (predicate.predicate_kind == "column_equals" &&
       !predicate.canonical_predicate_envelope.empty() &&
       !predicate.bound_values.empty()) {
@@ -371,18 +380,16 @@ void AddMergeHotPointAdmissionEvidence(
 struct MergeMatchLookupResult {
   bool ok = true;
   EngineApiDiagnostic diagnostic;
-  std::optional<CrudRowVersionRecord> row;
+  std::vector<CrudRowVersionRecord> rows;
 };
 
-struct MergeTargetKeyLookup {
+struct MergeTargetSnapshot {
   bool enabled = false;
   std::string column;
   std::vector<CrudRowVersionRecord> visible_rows;
-  std::unordered_map<std::string, std::size_t> first_row_index_by_key;
-  std::size_t duplicate_keys = 0;
 };
 
-bool MergePredicateEligibleForTargetKeyLookup(
+bool MergePredicateEligibleForTargetSnapshot(
     const EnginePredicateEnvelope& predicate,
     const std::string& source_table_uuid) {
   return !source_table_uuid.empty() &&
@@ -391,77 +398,33 @@ bool MergePredicateEligibleForTargetKeyLookup(
          predicate.bound_values.empty();
 }
 
-MergeTargetKeyLookup BuildMergeTargetKeyLookup(
+MergeTargetSnapshot BuildMergeTargetSnapshot(
     const MgaRelationReadView& state,
     const std::string& table_uuid,
     const EngineRequestContext& context,
     const EnginePredicateEnvelope& predicate,
     const std::string& source_table_uuid) {
-  MergeTargetKeyLookup lookup;
-  if (!MergePredicateEligibleForTargetKeyLookup(predicate, source_table_uuid)) {
+  MergeTargetSnapshot lookup;
+  if (!MergePredicateEligibleForTargetSnapshot(predicate, source_table_uuid)) {
     return lookup;
   }
   lookup.enabled = true;
   lookup.column = predicate.canonical_predicate_envelope;
   lookup.visible_rows = VisibleMgaRowsForContext(state, table_uuid, context);
-  lookup.first_row_index_by_key.reserve(lookup.visible_rows.size());
-  for (std::size_t index = 0; index < lookup.visible_rows.size(); ++index) {
-    const std::string key = CrudFieldValue(lookup.visible_rows[index].values,
-                                           lookup.column);
-    const auto [ignored, inserted] =
-        lookup.first_row_index_by_key.emplace(key, index);
-    if (!inserted) {
-      ++lookup.duplicate_keys;
-    }
-  }
   return lookup;
 }
 
-std::optional<std::string> MergeSourceKeyForLookup(
-    const MergeTargetKeyLookup& lookup,
-    const EngineRowValue& source_row) {
-  if (!lookup.enabled || lookup.column.empty()) {
-    return std::nullopt;
-  }
-  for (const auto& [field, value] : source_row.fields) {
-    if (field == lookup.column) {
-      return value.encoded_value;
-    }
-  }
-  return std::nullopt;
-}
-
-MergeMatchLookupResult FindMergeMatchWithTargetKeyLookup(
-    const MergeTargetKeyLookup& lookup,
-    const EngineRowValue& source_row,
+MergeMatchLookupResult FindMergeMatchesInSnapshot(
+    const MergeTargetSnapshot& lookup,
     const EnginePredicateEnvelope& predicate,
     std::vector<EngineEvidenceReference>* evidence) {
   MergeMatchLookupResult result;
-  evidence->push_back({"merge_row_candidate_stream", "target_key_map"});
-  evidence->push_back({"merge_target_key_map_mga_visibility", "pre_filtered"});
-  evidence->push_back({"merge_target_key_map_security_visibility",
-                       "context_filtered"});
-  evidence->push_back({"index_or_cache_finality_authority", "false"});
-  const auto key = MergeSourceKeyForLookup(lookup, source_row);
-  if (!key) {
-    evidence->push_back({"merge_target_key_map_result", "source_key_missing"});
-    return result;
-  }
-  const auto found = lookup.first_row_index_by_key.find(*key);
-  if (found == lookup.first_row_index_by_key.end() ||
-      found->second >= lookup.visible_rows.size()) {
-    evidence->push_back({"merge_target_key_map_result", "not_found"});
-    return result;
-  }
-  const CrudRowVersionRecord& candidate = lookup.visible_rows[found->second];
-  if (!CrudRowMatchesPredicate(candidate, predicate)) {
-    evidence->push_back({"merge_target_key_map_result",
-                         "predicate_recheck_miss"});
-    return result;
-  }
-  evidence->push_back({"merge_target_key_map_result", "matched"});
-  evidence->push_back({"mga_visibility_recheck", "required"});
-  result.row = candidate;
+  // Encoded text equality is not descriptor equality. Until the owning key
+  // codec supplies a canonical key, test every visible snapshot candidate.
+  for (const auto& candidate : lookup.visible_rows)
+    if (CrudRowMatchesPredicate(candidate, predicate)) result.rows.push_back(candidate);
+  evidence->push_back({"merge_row_candidate_stream", "visible_snapshot_predicate_scan"});
+  evidence->push_back({"merge_snapshot_matches", std::to_string(result.rows.size())});
   return result;
 }
 
@@ -487,9 +450,10 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
           return result;
         }
       }
-      result.row = FindVisibleMgaRowForContext(state, table_uuid, plan.row_uuid, context);
-      if (result.row) {
-        AddMergeHotPointAdmissionEvidence(plan_request, result.row->row_uuid, evidence);
+      if (const auto row = FindVisibleMgaRowForContext(state, table_uuid, plan.row_uuid, context);
+          row && CrudRowMatchesPredicate(*row, predicate)) {
+        result.rows.push_back(*row);
+        AddMergeHotPointAdmissionEvidence(plan_request, row->row_uuid, evidence);
       }
       return result;
     case DmlTargetAccessKind::row_uuid_list:
@@ -504,6 +468,9 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
           return result;
         }
       }
+      for (const auto& identity : plan.row_uuids)
+        if (const auto row = FindVisibleMgaRowForContext(state, table_uuid, identity, context);
+            row && CrudRowMatchesPredicate(*row, predicate)) result.rows.push_back(*row);
       return result;
     case DmlTargetAccessKind::unique_index_lookup:
     case DmlTargetAccessKind::nonunique_index_lookup: {
@@ -512,7 +479,7 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
           table_uuid,
           predicate,
           context,
-          plan.access_kind == DmlTargetAccessKind::unique_index_lookup ? 1 : 0);
+          0);
       evidence->insert(evidence->end(), indexed.evidence.begin(), indexed.evidence.end());
       evidence->push_back({"merge_row_candidate_stream", "indexed_predicate"});
       evidence->push_back({"index_lookup", indexed.index_evidence_id});
@@ -531,10 +498,16 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
         }
         evidence->push_back({"merge_row_locator_stream",
                              "consumed_row_uuid_after_index_probe"});
-        if (!indexed.rows.empty()) {
-          result.row = indexed.rows.front();
-          AddMergeHotPointAdmissionEvidence(plan_request, result.row->row_uuid, evidence);
+        for (const auto& row : indexed.rows)
+          if (CrudRowMatchesPredicate(row, predicate)) result.rows.push_back(row);
+        if (plan.access_kind == DmlTargetAccessKind::unique_index_lookup && result.rows.size() > 1) {
+          result.ok = false;
+          result.rows.clear();
+          result.diagnostic = MakeInvalidRequestDiagnostic("dml.merge_rows", "unique_index_returned_multiple_matches");
+          return result;
         }
+        if (result.rows.size() == 1)
+          AddMergeHotPointAdmissionEvidence(plan_request, result.rows.front().row_uuid, evidence);
         return result;
       }
       if (indexed.index_refused) {
@@ -563,8 +536,7 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
       const auto rows = VisibleMgaRowsForContext(state, table_uuid, context);
       for (const auto& row : rows) {
         if (CrudRowMatchesPredicate(row, predicate)) {
-          result.row = row;
-          return result;
+          result.rows.push_back(row);
         }
       }
       return result;
@@ -573,8 +545,12 @@ MergeMatchLookupResult FindMergeMatchWithPlan(
     case DmlTargetAccessKind::range_index_lookup:
     case DmlTargetAccessKind::summary_pruned:
       evidence->push_back({"merge_row_candidate_stream", "refused"});
+      result.ok = false;
+      result.diagnostic = MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_target_route_not_executed");
       return result;
   }
+  result.ok = false;
+  result.diagnostic = MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_target_route_invalid");
   return result;
 }
 
@@ -582,9 +558,8 @@ struct MergeActionPartition {
   std::size_t source_ordinal = 0;
   EngineRowValue source_row;
   EnginePredicateEnvelope predicate;
-  std::optional<CrudRowVersionRecord> matched_row;
+  std::vector<CrudRowVersionRecord> matched_rows;
   DmlTargetAccessPlan plan;
-  bool matched = false;
 };
 
 std::string BoolText(bool value) {
@@ -606,21 +581,6 @@ EnginePredicateEnvelope RowUuidSetPredicate(const std::vector<EngineUuid>& row_u
   return predicate;
 }
 
-std::string TypedValueDigest(const EngineTypedValue& value) {
-  return value.descriptor.canonical_type_name + ":" +
-         value.descriptor.encoded_descriptor + ":" +
-         (value.is_null ? "null" : value.encoded_value);
-}
-
-std::string AssignmentsDigest(
-    const std::vector<std::pair<std::string, EngineTypedValue>>& assignments) {
-  std::string digest;
-  for (const auto& [field, value] : assignments) {
-    digest += field + "=" + TypedValueDigest(value) + ";";
-  }
-  return digest;
-}
-
 void AppendMergeUpdateOptions(const EngineMergeRowsRequest& request,
                               EngineUpdateRowsRequest* update) {
   if (update == nullptr) return;
@@ -631,15 +591,17 @@ void AppendMergeUpdateOptions(const EngineMergeRowsRequest& request,
   }
 }
 
-using MergeReturningRowsByOrdinal = std::map<std::size_t, EngineRowValue>;
+using MergeReturningRowsByOrdinal = std::map<std::pair<std::size_t, EngineUuid>, EngineRowValue>;
 
-void AddRowsByUuid(const EngineResultShape& shape,
+bool AddRowsByUuid(const EngineResultShape& shape,
                    std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash>* rows_by_uuid) {
+  std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> staged;
   for (const auto& row : shape.rows) {
-    if (!row.requested_row_uuid.is_nil()) {
-      (*rows_by_uuid)[row.requested_row_uuid] = row;
-    }
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(row.requested_row_uuid) ||
+        !staged.emplace(row.requested_row_uuid, row).second) return false;
   }
+  *rows_by_uuid = std::move(staged);
+  return true;
 }
 
 void AppendEvidence(std::vector<EngineEvidenceReference>* target,
@@ -720,6 +682,10 @@ void AddMutationOptimizerEvidence(const char* mutation_kind,
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_MERGE_API_BEHAVIOR
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_MERGE_MULTI_ACTION_ODFR_020
 EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
+  if (request.match_policy != MergeMatchPolicy::all_targets &&
+      request.match_policy != MergeMatchPolicy::single_target)
+    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+        MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_match_policy_invalid"));
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "local_transaction_id_required"));
   }
@@ -784,7 +750,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     }
     source_rows = MergeRowsFromSourceTable(state, request.context, source_table_uuid);
   }
-  if (source_rows.empty()) {
+  if (source_rows.empty() && source_table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
   }
   const std::string table_uuid = target.uuid;
@@ -844,21 +810,19 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   const EnginePredicateEnvelope base_merge_predicate =
       !request.match_predicate.predicate_kind.empty() ? request.match_predicate
                                                       : request.predicate;
-  const MergeTargetKeyLookup target_key_lookup =
-      BuildMergeTargetKeyLookup(state,
+  const MergeTargetSnapshot target_snapshot =
+      BuildMergeTargetSnapshot(state,
                                 table_uuid,
                                 request.context,
                                 base_merge_predicate,
                                 source_table_uuid);
-  if (target_key_lookup.enabled) {
-    result.evidence.push_back({"merge_target_key_map", "prepared"});
-    result.evidence.push_back({"merge_target_key_map_column",
-                               target_key_lookup.column});
-    result.evidence.push_back({"merge_target_key_map_visible_rows",
-                               std::to_string(target_key_lookup.visible_rows.size())});
-    result.evidence.push_back({"merge_target_key_map_duplicate_keys",
-                               std::to_string(target_key_lookup.duplicate_keys)});
-    result.evidence.push_back({"merge_target_key_map_authority",
+  if (target_snapshot.enabled) {
+    result.evidence.push_back({"merge_target_snapshot", "prepared"});
+    result.evidence.push_back({"merge_target_snapshot_column",
+                               target_snapshot.column});
+    result.evidence.push_back({"merge_target_snapshot_visible_rows",
+                               std::to_string(target_snapshot.visible_rows.size())});
+    result.evidence.push_back({"merge_target_snapshot_authority",
                                "candidate_stream_only"});
   }
   std::vector<MergeActionPartition> partitions;
@@ -873,6 +837,10 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     if (const auto* error = DmlRowIdentityPredicateError(predicate))
       return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context,
           "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", error));
+    if (predicate.predicate_kind == "column_equals" &&
+        (predicate.canonical_predicate_envelope.empty() || predicate.bound_values.size() != 1))
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_equality_binding_incomplete"));
     if (predicate.predicate_kind.empty()) {
       return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "match_predicate_required"));
     }
@@ -895,11 +863,11 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       rejected.evidence = std::move(result.evidence);
       return rejected;
     }
-    const bool use_target_key_lookup =
-        target_key_lookup.enabled &&
+    const bool use_target_snapshot =
+        target_snapshot.enabled &&
         plan.access_kind == DmlTargetAccessKind::table_scan;
     if (plan.access_kind == DmlTargetAccessKind::table_scan &&
-        !use_target_key_lookup) {
+        !use_target_snapshot) {
       repeated_full_scan = true;
       result.evidence.push_back({"merge_target_access_fallback",
                                  unsupported_predicate
@@ -911,11 +879,8 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       unique_conflict_proof_index_backed = true;
     }
     const auto lookup =
-        use_target_key_lookup
-            ? FindMergeMatchWithTargetKeyLookup(target_key_lookup,
-                                                source_row,
-                                                predicate,
-                                                &result.evidence)
+        use_target_snapshot
+            ? FindMergeMatchesInSnapshot(target_snapshot, predicate, &result.evidence)
             : FindMergeMatchWithPlan(state,
                                      table_uuid,
                                      predicate,
@@ -939,10 +904,9 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     partition.source_ordinal = source_ordinal;
     partition.source_row = source_row;
     partition.predicate = std::move(predicate);
-    partition.matched_row = lookup.row;
+    partition.matched_rows = lookup.rows;
     partition.plan = std::move(plan);
-    partition.matched = partition.matched_row.has_value();
-    if (partition.matched) {
+    if (!partition.matched_rows.empty()) {
       ++matched_source_rows;
     } else {
       ++unmatched_source_rows;
@@ -957,8 +921,8 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     result.evidence.push_back({"merge_unique_conflict_proof", "index_backed"});
   }
   result.evidence.push_back({"merge_returning", "affected_rows"});
-  result.evidence.push_back({"merge_output_order", "source_order"});
-  result.evidence.push_back({"merge_action_execution", "action_batches"});
+  result.evidence.push_back({"merge_output_order", "source_ordinal_then_target_uuid"});
+  result.evidence.push_back({"merge_action_execution", "source_ordered_action_batches"});
   result.evidence.push_back({"mga_visibility_recheck", "required"});
   result.evidence.push_back({"security_recheck", "required"});
   result.evidence.push_back({"mga_finality_authority", "engine_transaction_inventory"});
@@ -966,51 +930,56 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
 
   std::vector<EngineRowValue> insert_rows;
   std::vector<std::size_t> insert_ordinals;
-  std::map<std::string, MergeUpdateActionBatch> update_batches_by_digest;
-  MergeDeleteActionBatch delete_batch;
+  std::map<std::size_t, MergeUpdateActionBatch> update_batches_by_source;
+  std::map<std::size_t, MergeDeleteActionBatch> delete_batches_by_source;
   const std::string update_assignment_plan =
       MergeOptionValue(request, "assignment_plan:");
   if (!update_assignment_plan.empty()) {
     result.evidence.push_back({"merge_update_assignment_plan", "descriptor_bound"});
-    result.evidence.push_back({"merge_update_batch_key", "assignment_plan"});
+    result.evidence.push_back({"merge_update_batch_key", "source_occurrence"});
   }
-  for (const MergeActionPartition& partition : partitions) {
-    if (partition.matched_row) {
-      ++result.matched_count;
-      if (delete_branch_requested) {
-        delete_batch.members.push_back({partition.source_ordinal,
-                                        partition.matched_row->row_uuid,
-                                        partition.source_row});
-        continue;
-      }
-      if (!request.update_when_matched) { continue; }
-      auto assignments =
-          !request.update_assignments.empty() ? request.update_assignments
-                                              : (update_assignment_plan.empty()
-                                                     ? partition.source_row.fields
-                                                     : std::vector<std::pair<std::string, EngineTypedValue>>{});
-      const auto digest = update_assignment_plan.empty()
-                              ? AssignmentsDigest(assignments)
-                              : "assignment_plan:" + update_assignment_plan;
-      auto& batch = update_batches_by_digest[digest];
-      if (batch.assignments.empty()) {
-        batch.assignments = std::move(assignments);
-      }
-      batch.members.push_back({partition.source_ordinal,
-                               partition.matched_row->row_uuid,
-                               partition.source_row});
-      continue;
+  std::vector<MergeSourceClassification> source_classification;
+  source_classification.reserve(partitions.size());
+  for (const auto& partition : partitions) {
+    MergeSourceClassification source;
+    source.source_ordinal = partition.source_ordinal;
+    source.unmatched_action = request.insert_when_not_matched ? MergeActionKind::insert : MergeActionKind::no_action;
+    const auto matched_action = delete_branch_requested ? MergeActionKind::delete_row :
+        request.update_when_matched ? MergeActionKind::update : MergeActionKind::no_action;
+    for (const auto& target_row : partition.matched_rows)
+      source.targets.push_back({target_row.row_uuid, matched_action});
+    source_classification.push_back(std::move(source));
+  }
+  const auto classification = ClassifyMergeMatchSets(source_classification,
+      merge_surface_variant == "upsert" ? MergeMatchPolicy::single_target : request.match_policy);
+  if (!classification.ok)
+    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+        MakeInvalidRequestDiagnostic("dml.merge_rows", classification.error));
+  result.matched_count = classification.matched_pairs;
+  for (const auto& action : classification.actions) {
+    const auto& partition = partitions[action.source_ordinal];
+    if (action.action == MergeActionKind::delete_row) {
+      delete_batches_by_source[action.source_ordinal].members.push_back(
+          {action.source_ordinal, action.target_row_uuid, partition.source_row});
+    } else if (action.action == MergeActionKind::update) {
+      auto& batch = update_batches_by_source[action.source_ordinal];
+      if (batch.members.empty())
+        batch.assignments = !request.update_assignments.empty() ? request.update_assignments :
+            (update_assignment_plan.empty() ? partition.source_row.fields :
+                std::vector<std::pair<std::string, EngineTypedValue>>{});
+      batch.members.push_back({action.source_ordinal, action.target_row_uuid, partition.source_row});
+    } else if (action.action == MergeActionKind::insert) {
+      insert_ordinals.push_back(action.source_ordinal);
+      insert_rows.push_back(partition.source_row);
     }
-    if (!request.insert_when_not_matched) { continue; }
-    insert_ordinals.push_back(partition.source_ordinal);
-    insert_rows.push_back(partition.source_row);
   }
 
   MergeReturningRowsByOrdinal returning_rows_by_ordinal;
   EngineApiU64 update_batch_count = 0;
-  for (const auto& [digest, batch] : update_batches_by_digest) {
-    (void)digest;
-    if (batch.members.empty()) { continue; }
+  EngineApiU64 insert_batch_count = 0;
+  EngineApiU64 delete_batch_count = 0;
+  const auto execute_update_batch = [&](const MergeUpdateActionBatch& batch)
+      -> std::optional<EngineMergeRowsResult> {
     std::vector<EngineUuid> row_uuids;
     row_uuids.reserve(batch.members.size());
     for (const auto& member : batch.members) {
@@ -1030,44 +999,52 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     result.updated_count += updated.updated_count;
     result.merged_count += updated.updated_count;
     std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> rows_by_uuid;
-    AddRowsByUuid(updated.result_shape, &rows_by_uuid);
+    if (!AddRowsByUuid(updated.result_shape, &rows_by_uuid) ||
+        updated.updated_count != batch.members.size() || rows_by_uuid.size() != batch.members.size())
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_update_effect_identity_mismatch"));
     for (const auto& member : batch.members) {
       const auto found = rows_by_uuid.find(member.matched_row_uuid);
       if (found != rows_by_uuid.end()) {
-        returning_rows_by_ordinal[member.source_ordinal] = found->second;
-      }
+        returning_rows_by_ordinal[{member.source_ordinal, member.matched_row_uuid}] = found->second;
+      } else return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_update_returned_foreign_target"));
     }
     AppendEvidence(&result.evidence, updated.evidence);
+    AddDmlSummaryCounters(&result.dml_summary, updated.dml_summary);
     if (updated.updated_count != 0) {
       result.evidence.push_back({"merge_action", "update"});
     }
     result.evidence.push_back({"merge_action", "update_batch"});
-  }
 
-  if (update_batch_count != 0 &&
-      MergeOptionEnabled(
-          request,
-          "orh121.fault_injection.partial_merge_batch.after_update_batch")) {
-    auto interrupted = MakeCrudDiagnosticResult<EngineMergeRowsResult>(
-        request.context,
-        "dml.merge_rows",
-        MakeInvalidRequestDiagnostic(
-            "dml.merge_rows",
-            "fault_injection.partial_merge_batch.after_update_batch"));
-    interrupted.evidence = std::move(result.evidence);
-    interrupted.evidence.push_back(
-        {"merge_fault_injection", "partial_batch_after_update_batch"});
-    interrupted.evidence.push_back(
-        {"merge_fault_injection_recovery_required", "rollback_reopen"});
-    interrupted.evidence.push_back(
-        {"merge_fault_injection_mga_authority",
-         "engine_transaction_inventory"});
-    interrupted.evidence.push_back(
-        {"merge_fault_injection_parser_or_reference_authority", "false"});
-    return interrupted;
-  }
+    if (update_batch_count != 0 &&
+        MergeOptionEnabled(
+            request,
+            "orh121.fault_injection.partial_merge_batch.after_update_batch")) {
+      auto interrupted = MakeCrudDiagnosticResult<EngineMergeRowsResult>(
+          request.context,
+          "dml.merge_rows",
+          MakeInvalidRequestDiagnostic(
+              "dml.merge_rows",
+              "fault_injection.partial_merge_batch.after_update_batch"));
+      interrupted.evidence = std::move(result.evidence);
+      interrupted.evidence.push_back(
+          {"merge_fault_injection", "partial_batch_after_update_batch"});
+      interrupted.evidence.push_back(
+          {"merge_fault_injection_recovery_required", "rollback_reopen"});
+      interrupted.evidence.push_back(
+          {"merge_fault_injection_mga_authority",
+           "engine_transaction_inventory"});
+      interrupted.evidence.push_back(
+          {"merge_fault_injection_parser_or_reference_authority", "false"});
+      return interrupted;
+    }
+    return std::nullopt;
+  };
 
-  if (!insert_rows.empty()) {
+  const auto execute_insert_batch = [&](std::span<const EngineRowValue> insert_rows,
+                                        std::span<const std::size_t> insert_ordinals)
+      -> std::optional<EngineMergeRowsResult> {
     EngineInsertRowsRequest insert;
     insert.context = request.context;
     insert.target_table = target;
@@ -1079,20 +1056,29 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     }
     result.inserted_count += inserted.inserted_count;
     result.merged_count += inserted.inserted_count;
+    std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> inserted_by_uuid;
+    if (!AddRowsByUuid(inserted.result_shape, &inserted_by_uuid) ||
+        inserted.inserted_count != insert_ordinals.size() || inserted_by_uuid.size() != insert_ordinals.size())
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_insert_effect_identity_mismatch"));
     for (std::size_t index = 0;
          index < insert_ordinals.size() && index < inserted.result_shape.rows.size();
          ++index) {
-      returning_rows_by_ordinal[insert_ordinals[index]] =
+      returning_rows_by_ordinal[{insert_ordinals[index], inserted.result_shape.rows[index].requested_row_uuid}] =
           inserted.result_shape.rows[index];
     }
     AppendEvidence(&result.evidence, inserted.evidence);
+    AddDmlSummaryCounters(&result.dml_summary, inserted.dml_summary);
     if (inserted.inserted_count != 0) {
       result.evidence.push_back({"merge_action", "insert"});
     }
     result.evidence.push_back({"merge_action", "insert_batch"});
-  }
+    ++insert_batch_count;
+    return std::nullopt;
+  };
 
-  if (!delete_batch.members.empty()) {
+  const auto execute_delete_batch = [&](const MergeDeleteActionBatch& delete_batch)
+      -> std::optional<EngineMergeRowsResult> {
     std::vector<EngineUuid> row_uuids;
     row_uuids.reserve(delete_batch.members.size());
     for (const auto& member : delete_batch.members) {
@@ -1106,20 +1092,45 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     if (!deleted.ok) {
       return MergeFailureFromDelete(request, deleted);
     }
+    result.deleted_count += deleted.deleted_count;
     result.merged_count += deleted.deleted_count;
     std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> rows_by_uuid;
-    AddRowsByUuid(deleted.result_shape, &rows_by_uuid);
+    if (!AddRowsByUuid(deleted.result_shape, &rows_by_uuid) ||
+        deleted.deleted_count != delete_batch.members.size() || rows_by_uuid.size() != delete_batch.members.size())
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_delete_effect_identity_mismatch"));
     for (const auto& member : delete_batch.members) {
       const auto found = rows_by_uuid.find(member.matched_row_uuid);
       if (found != rows_by_uuid.end()) {
-        returning_rows_by_ordinal[member.source_ordinal] = found->second;
-      }
+        returning_rows_by_ordinal[{member.source_ordinal, member.matched_row_uuid}] = found->second;
+      } else return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows", "merge_delete_returned_foreign_target"));
     }
     AppendEvidence(&result.evidence, deleted.evidence);
+    AddDmlSummaryCounters(&result.dml_summary, deleted.dml_summary);
     if (deleted.deleted_count != 0) {
       result.evidence.push_back({"merge_action", "delete"});
     }
     result.evidence.push_back({"merge_action", "delete_batch"});
+    ++delete_batch_count;
+    return std::nullopt;
+  };
+
+  // Classification is complete before the first call. Physical batches never
+  // move an action across another source occurrence.
+  std::size_t next_insert = 0;
+  for (std::size_t ordinal = 0; ordinal < partitions.size(); ++ordinal) {
+    if (const auto found = update_batches_by_source.find(ordinal); found != update_batches_by_source.end())
+      if (auto failure = execute_update_batch(found->second)) return std::move(*failure);
+    if (const auto found = delete_batches_by_source.find(ordinal); found != delete_batches_by_source.end())
+      if (auto failure = execute_delete_batch(found->second)) return std::move(*failure);
+    if (next_insert < insert_ordinals.size() && insert_ordinals[next_insert] == ordinal) {
+      if (auto failure = execute_insert_batch(
+          std::span<const EngineRowValue>(insert_rows.data() + next_insert, 1),
+          std::span<const std::size_t>(insert_ordinals.data() + next_insert, 1)))
+        return std::move(*failure);
+      ++next_insert;
+    }
   }
 
   std::vector<EngineRowValue> affected_rows;
@@ -1129,8 +1140,9 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     affected_rows.push_back(std::move(row));
   }
   result.evidence.push_back({"merge_update_batch_count", std::to_string(update_batch_count)});
-  result.evidence.push_back({"merge_insert_batch_count", insert_rows.empty() ? "0" : "1"});
-  result.evidence.push_back({"merge_delete_batch_count", delete_batch.members.empty() ? "0" : "1"});
+  result.evidence.push_back({"merge_insert_batch_count", std::to_string(insert_batch_count)});
+  result.evidence.push_back({"merge_delete_batch_count", std::to_string(delete_batch_count)});
+  result.dml_summary.rows_changed = result.merged_count;
   result.result_shape.result_kind = "dml_affected_rows";
   result.result_shape.rows = std::move(affected_rows);
   result.evidence.push_back({"merge_surface",
