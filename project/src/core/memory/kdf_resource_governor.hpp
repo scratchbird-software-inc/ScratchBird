@@ -3,18 +3,16 @@
 #pragma once
 
 #include "hierarchical_memory_budget_ledger.hpp"
+#include "../common/scrypt_work_estimate.hpp"
 
 namespace scratchbird::core::memory {
 
 // Private runtime interfaces, never parser/transport authority. A cost is
 // supplied by the owning algorithm adapter, not by a SQL parameter or client.
 struct KdfResourceCost { u64 memory_bytes = 0, work_units = 0; };
-struct ScryptWorkEstimate {
-  u64 workspace_bytes = 0, salsa208_calls = 0, sha256_blocks = 0, work_units = 0;
-};
-enum class ScryptEstimateCode { ok, invalid_parameters, overflow };
-ScryptEstimateCode EstimateScryptWork(u64 password_bytes, u64 salt_bytes,
-    u64 n, u64 r, u64 p, u64 output_bytes, ScryptWorkEstimate& out) noexcept;
+using ScryptWorkEstimate = scratchbird::core::crypto::ScryptWorkEstimate;
+using ScryptEstimateCode = scratchbird::core::crypto::ScryptEstimateCode;
+using scratchbird::core::crypto::EstimateScryptWork;
 
 struct KdfResourcePolicy {
   u64 call_memory_bytes = 0, call_work_units = 0;

@@ -11,6 +11,7 @@ find_package(OpenSSL REQUIRED)
 add_library(sb_core_hash
   blake3_digest.cpp
   hash_digest.cpp
+  scrypt_kdf.cpp
 )
 
 target_compile_features(sb_core_hash PUBLIC cxx_std_17)

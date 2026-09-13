@@ -2,48 +2,16 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "kdf_resource_governor.hpp"
 
-#include <limits>
 #include <utility>
 
 namespace scratchbird::core::memory {
 namespace {
-bool Add(u64 a, u64 b, u64& out) noexcept {
-  if (b > std::numeric_limits<u64>::max() - a) return false;
-  out = a + b; return true;
-}
-bool Mul(u64 a, u64 b, u64& out) noexcept {
-  if (a && b > std::numeric_limits<u64>::max() / a) return false;
-  out = a * b; return true;
-}
-u64 Ceil(u64 n, u64 d) noexcept { return n / d + (n % d != 0); }
 bool Valid(const KdfResourceOwner& owner) {
   return MemorySystemUuidValid(owner.process) && MemorySystemUuidValid(owner.database) &&
       MemorySystemUuidValid(owner.session) && MemorySystemUuidValid(owner.statement) &&
       MemorySystemUuidValid(owner.receipt);
 }
 } // namespace
-
-ScryptEstimateCode EstimateScryptWork(u64 password_bytes, u64 salt_bytes,
-    u64 n, u64 r, u64 p, u64 output_bytes, ScryptWorkEstimate& out) noexcept {
-  // Failure never leaves a plausible partial cost for accidental admission.
-  out = {};
-  if (n < 2 || (n & (n - 1)) || !r || !p || r > 0xffffffffULL || p > 0xffffffffULL ||
-      !output_bytes || output_bytes > 65535 || r > ((u64{1} << 30) - 1) / p ||
-      (r < 4 && n >= (u64{1} << (16 * r)))) return ScryptEstimateCode::invalid_parameters;
-  ScryptWorkEstimate value;
-  u64 rp, rows, row_bytes, blocks, initial, final, factor;
-  const auto password_blocks = Ceil(password_bytes, 64);
-  const auto salt_blocks = Ceil(salt_bytes, 64);
-  if (!Mul(r,p,rp) || !Add(n,p,rows) || !Add(rows,2,rows) || !Mul(128,r,row_bytes) ||
-      !Mul(rows,row_bytes,value.workspace_bytes) || !Mul(4,rp,blocks) ||
-      !Mul(blocks,n,value.salsa208_calls) || !Add(password_blocks,salt_blocks,factor) ||
-      !Add(factor,6,factor) || !Mul(blocks,factor,initial) ||
-      !Mul(2,rp,factor) || !Add(factor,password_blocks,factor) || !Add(factor,6,factor) ||
-      !Mul(Ceil(output_bytes,32),factor,final) || !Add(initial,final,value.sha256_blocks) ||
-      !Add(value.salsa208_calls,value.sha256_blocks,value.work_units)) return ScryptEstimateCode::overflow;
-  out = value;
-  return ScryptEstimateCode::ok;
-}
 
 struct KdfResourceGovernor::State {
   std::mutex mutex;

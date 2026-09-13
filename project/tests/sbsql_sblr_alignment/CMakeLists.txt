@@ -7899,6 +7899,17 @@ set_tests_properties(sbsql_sblr_alignment_physical_memory_allocation_ownership P
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_hierarchical_budget_publication hierarchical_budget_publication_test.cpp)
   add_executable(sbsql_sblr_alignment_kdf_resource_governor kdf_resource_governor_test.cpp)
+  add_executable(sbsql_sblr_alignment_scrypt_native_execution scrypt_native_execution_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_scrypt_native_execution PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_scrypt_native_execution PRIVATE sb_core_hash sb_core_memory Threads::Threads)
+  target_link_options(sbsql_sblr_alignment_scrypt_native_execution PRIVATE
+    "-Wl,--wrap=malloc" "-Wl,--wrap=calloc" "-Wl,--wrap=realloc" "-Wl,--wrap=OPENSSL_cleanse")
+  add_test(NAME sbsql_sblr_alignment_scrypt_native_execution COMMAND sbsql_sblr_alignment_scrypt_native_execution)
+  add_test(NAME sbsql_sblr_alignment_scrypt_native_large_rfc COMMAND sbsql_sblr_alignment_scrypt_native_execution --large-rfc)
+  set_tests_properties(sbsql_sblr_alignment_scrypt_native_large_rfc PROPERTIES
+    LABELS "sbsql_sblr_alignment;crypto;resource_heavy;memory_1gib;component_regression;not_runtime_acceptance" RUN_SERIAL TRUE TIMEOUT 240)
+  set_tests_properties(sbsql_sblr_alignment_scrypt_native_execution PROPERTIES
+    LABELS "sbsql_sblr_alignment;crypto;memory;ownership;cancellation;component_regression;not_runtime_acceptance" TIMEOUT 180)
   target_compile_features(sbsql_sblr_alignment_kdf_resource_governor PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_kdf_resource_governor PRIVATE sb_core_memory Threads::Threads)
   add_test(NAME sbsql_sblr_alignment_kdf_resource_governor COMMAND sbsql_sblr_alignment_kdf_resource_governor)
