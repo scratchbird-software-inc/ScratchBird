@@ -10,11 +10,64 @@
 
 // SB-CATALOG-PAGE-BODY-ANCHOR
 #include "runtime_platform.hpp"
+#include "native_common_page_header.hpp"
+#include "filespace_page_zero.hpp"
 
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace scratchbird::storage::page {
+
+struct NativeCatalogPageReference {
+  scratchbird::core::platform::Uuid filespace_uuid;
+  scratchbird::core::platform::u64 page_number = 0;
+  scratchbird::core::platform::u64 page_generation = 0;
+  scratchbird::core::platform::Uuid page_size_profile_uuid;
+};
+struct NativeCatalogRootReference {
+  scratchbird::core::platform::u16 role = 0;
+  scratchbird::core::platform::u32 page_type = 0;
+  NativeCatalogPageReference page;
+  scratchbird::core::platform::Uuid object_uuid;
+};
+// Canonical root family; deliberately distinct from prototype SBCAT001 leaves.
+// Logical image validation does not grant crypto, MGA or target-family authority.
+struct NativeCatalogRoot {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::u16 root_kind = 2;
+  scratchbird::core::platform::Uuid object_uuid;
+  scratchbird::core::platform::Uuid creator_transaction_uuid;
+  scratchbird::core::platform::u64 creator_local_transaction_id = 0;
+  scratchbird::core::platform::u64 catalog_generation = 0;
+  scratchbird::core::platform::u64 schema_epoch = 0;
+  scratchbird::core::platform::u64 security_epoch = 0;
+  scratchbird::core::platform::u64 resource_epoch = 0;
+  std::optional<NativeCatalogPageReference> predecessor;
+  std::array<scratchbird::core::platform::byte, 32> predecessor_sha256{};
+  std::vector<NativeCatalogRootReference> roots;
+};
+enum class NativeCatalogRootError {
+  none, invalid_header, invalid_family, invalid_reference, invalid_roots,
+  invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority
+};
+struct NativeCatalogRootResult {
+  NativeCatalogRootError error = NativeCatalogRootError::invalid_family;
+  std::optional<NativeCatalogRoot> root;
+  std::vector<scratchbird::core::platform::byte> bytes;
+  bool ok() const { return error == NativeCatalogRootError::none && root.has_value(); }
+};
+NativeCatalogRootResult EncodeNativeCatalogRoot(const NativeCatalogRoot&) noexcept;
+NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<scratchbird::core::platform::byte>&) noexcept;
+// A supplied PageRefV2 must be resolved through the owning node's filespace
+// authority. This verifies that exact target; it never opens another node or
+// treats a valid root image as permission to serve its referenced catalogs.
+NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
+    scratchbird::storage::disk::FileDevice&,
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::storage::disk::FilespaceRootReference&) noexcept;
 
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;

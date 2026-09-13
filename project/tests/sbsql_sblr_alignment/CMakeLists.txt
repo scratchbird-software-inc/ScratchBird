@@ -162,13 +162,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
   target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_disk OpenSSL::Crypto)
+  target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_page OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
     "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread")
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;binary_uuid;node_ownership"
+    LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;canonical_catalog_root;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_bootstrap filespace_bootstrap_test.cpp)
   target_compile_features(sbsql_sblr_alignment_filespace_bootstrap PRIVATE cxx_std_23)

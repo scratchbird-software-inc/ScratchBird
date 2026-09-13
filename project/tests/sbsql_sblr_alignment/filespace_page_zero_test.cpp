@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_page_zero.hpp"
+#include "catalog_page.hpp"
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -285,9 +286,211 @@ void Files() {
   const byte z=0; Check(d.WriteAt(v.total_pages*sizes[0],&z,1).ok(),"actual unaccounted appended byte");
   r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"partial trailing page refused");
 }
+namespace page=scratchbird::storage::page;
+using RootError=page::NativeCatalogRootError;
+page::NativeCatalogRoot RootExample(unsigned p=0) {
+  page::NativeCatalogRoot r;
+  r.header={sizes[p],5,Id(1),Id(2),Id(90),12,102,0,Profile(p)};
+  r.object_uuid=Id(42); r.creator_transaction_uuid=Id(91);
+  r.creator_local_transaction_id=17; r.catalog_generation=1;
+  r.schema_epoch=2; r.security_epoch=3;
+  for(unsigned role=1;role<=6;++role)
+    r.roots.push_back({static_cast<disk::u16>(role),role%2?6u:512u,
+      {Id(2),20+role,7,Profile(p)},Id(static_cast<byte>(100+role))});
+  return r;
+}
+void RootSeal(Bytes& b) {
+  std::fill(b.begin()+304,b.begin()+336,0);
+  std::array<byte,32> digest{};
+  Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent catalog SHA256");
+  std::copy(digest.begin(),digest.end(),b.begin()+304);
+}
+Bytes RootOracle(const page::NativeCatalogRoot& r) {
+  Bytes b(r.header.page_size_bytes,0); const auto& h=r.header;
+  const std::string_view cm="SBPGV002",fm="SBCROOT1";
+  std::copy(cm.begin(),cm.end(),b.begin()); Number(b,8,4,128);
+  Number(b,12,4,h.page_size_bytes); Number(b,16,4,h.page_type);
+  Number(b,20,2,1); Number(b,22,2,1); PutUuid(b,24,h.database_uuid);
+  PutUuid(b,40,h.filespace_uuid); PutUuid(b,56,h.page_uuid);
+  Number(b,72,8,h.page_number); Number(b,80,8,h.page_generation);
+  Number(b,88,8,h.flags); PutUuid(b,104,h.page_size_profile_uuid); Number(b,120,2,1);
+  u64 fnv=14695981039346656037ull;
+  for(unsigned i=0;i<128;++i) { fnv^=b[i]; fnv*=1099511628211ull; }
+  Number(b,96,8,fnv);
+  std::copy(fm.begin(),fm.end(),b.begin()+128); Number(b,136,2,1); Number(b,138,2,256);
+  Number(b,140,4,384+80*r.roots.size()); Number(b,144,2,r.root_kind);
+  Number(b,146,2,r.roots.size()); Number(b,152,8,r.catalog_generation);
+  Number(b,160,8,r.schema_epoch); Number(b,168,8,r.security_epoch);
+  Number(b,176,8,r.resource_epoch); Number(b,184,8,r.creator_local_transaction_id);
+  PutUuid(b,192,r.object_uuid); PutUuid(b,208,r.creator_transaction_uuid);
+  auto put_ref=[&](std::size_t at,const page::NativeCatalogPageReference& ref) {
+    PutUuid(b,at,ref.filespace_uuid); Number(b,at+16,8,ref.page_number);
+    Number(b,at+24,8,ref.page_generation); PutUuid(b,at+32,ref.page_size_profile_uuid);
+  };
+  if(r.predecessor) put_ref(224,*r.predecessor);
+  std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),b.begin()+272);
+  for(std::size_t i=0;i<r.roots.size();++i) {
+    const auto& ref=r.roots[i]; const auto at=384+80*i;
+    Number(b,at,2,ref.role); Number(b,at+4,4,ref.page_type); put_ref(at+8,ref.page);
+    PutUuid(b,at+56,ref.object_uuid);
+  }
+  RootSeal(b); return b;
+}
+void RootReject(const Bytes& b,RootError expected,std::source_location at=std::source_location::current()) {
+  const auto r=page::DecodeNativeCatalogRoot(b);
+  Check(!r.ok()&&!r.root&&r.bytes.empty()&&r.error==expected,"atomic catalog root refusal actual="+
+    std::to_string(static_cast<unsigned>(r.error))+" expected="+
+    std::to_string(static_cast<unsigned>(expected)),at);
+}
+void RootInvalid(const page::NativeCatalogRoot& r,RootError error) {
+  RootReject(RootOracle(r),error); const auto e=page::EncodeNativeCatalogRoot(r);
+  Check(!e.ok()&&!e.root&&e.bytes.empty()&&e.error==error,"invalid root emits no image");
+}
+void CatalogRoots() {
+  for(unsigned p=0;p<5;++p) for(unsigned kind:{2u,8u}) {
+    auto r=RootExample(p); r.root_kind=static_cast<disk::u16>(kind);
+    if(kind==8) r.roots.erase(r.roots.begin(),r.roots.end()-1);
+    for(unsigned generation:{1u,2u}) {
+      r.catalog_generation=generation;
+      if(generation==2) {
+        r.predecessor=page::NativeCatalogPageReference{Id(2),10,1,Profile(p)};
+        r.predecessor_sha256.fill(9);
+      }
+      const auto expected=RootOracle(r); const auto e=page::EncodeNativeCatalogRoot(r);
+      Check(e.ok()&&e.bytes==expected,"all profiles/kinds/generations independent root bytes");
+      const auto d=page::DecodeNativeCatalogRoot(expected);
+      Check(d.ok()&&RootOracle(*d.root)==expected,"independent root decode");
+    }
+  }
+  const auto good=RootOracle(RootExample());
+  for(std::size_t at=0;at<good.size();++at) {
+    auto b=good; b[at]^=1; const auto r=page::DecodeNativeCatalogRoot(b);
+    Check(!r.ok()&&!r.root&&r.bytes.empty(),"every byte corruption rejected without partial root");
+  }
+  for(unsigned at:{128u,136u,138u,140u,148u,336u,383u,864u,8191u}) {
+    auto b=good; b[at]^=1; RootSeal(b); RootReject(b,RootError::invalid_family);
+  }
+  for(unsigned at:{386u,387u,456u,463u}) {
+    auto b=good; b[at]=1; RootSeal(b); RootReject(b,RootError::invalid_roots);
+  }
+  for(std::size_t size:{0u,127u,383u,8191u,8193u,131073u}) {
+    auto b=good; b.resize(size); RootReject(b,RootError::invalid_header);
+  }
+  {auto r=RootExample(); r.root_kind=7; Check(!page::EncodeNativeCatalogRoot(r).ok(),"unknown kind producer");}
+  {auto r=RootExample(); r.header.page_type=6; RootInvalid(r,RootError::invalid_header);}
+  {auto r=RootExample(); r.object_uuid.bytes[6]=0x41; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.creator_transaction_uuid={}; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.creator_local_transaction_id=0; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.catalog_generation=0; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.schema_epoch=0; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.security_epoch=0; RootInvalid(r,RootError::invalid_family);}
+  {auto r=RootExample(); r.catalog_generation=2; RootInvalid(r,RootError::invalid_reference);}
+  {auto r=RootExample(); r.predecessor_sha256[0]=1; RootInvalid(r,RootError::invalid_reference);}
+  {auto r=RootExample(); r.roots[0].role=2; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].page_type=5; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].object_uuid={}; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].page.page_number=12; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].page.page_generation=0; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].page.page_number=std::numeric_limits<u64>::max(); RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[0].page.page_size_profile_uuid=Profile(1); RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[1].page=r.roots[0].page; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots[1].object_uuid=r.roots[0].object_uuid; RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.catalog_generation=2;
+    r.predecessor=page::NativeCatalogPageReference{Id(2),12,1,Profile(0)};
+    r.predecessor_sha256[0]=1; RootInvalid(r,RootError::invalid_reference);
+    r.predecessor->page_number=21; RootInvalid(r,RootError::invalid_roots);
+    r.predecessor->page_number=10; r.predecessor->page_size_profile_uuid=Profile(1);
+    RootInvalid(r,RootError::invalid_reference);}
+  {auto r=RootExample(); r.roots[0].page.filespace_uuid=Id(88); r.roots[0].page.page_size_profile_uuid=Profile(1);
+    Check(page::EncodeNativeCatalogRoot(r).ok(),"cross-filespace profile retained, not opened");
+    r.roots[1].page.filespace_uuid=Id(88); RootInvalid(r,RootError::invalid_roots);}
+  for(unsigned fault=1;fault<=5;++fault) {
+    auto value=RootExample(); hash_fault=fault; const auto e=page::EncodeNativeCatalogRoot(value);
+    Check(!e.ok()&&e.bytes.empty()&&!e.root&&e.error==RootError::hash_failure&&!hash_fault,"root encode digest failure");
+    hash_fault=fault; RootReject(good,RootError::hash_failure); Check(!hash_fault,"root decode digest fault consumed");
+  }
+  for(unsigned i=0;i<2;++i) {
+    const auto value=RootExample(); allocation_budget=0;
+    const auto r=i? page::DecodeNativeCatalogRoot(good):page::EncodeNativeCatalogRoot(value);
+    allocation_budget=-1;
+    Check(!r.ok()&&!r.root&&r.bytes.empty()&&r.error==RootError::resource_exhausted,"root allocation failure atomicity");
+  }
+}
+void CatalogRootFiles() {
+  Fixture fixture;
+  for(unsigned p=0;p<5;++p) {
+    auto z=Example(p); auto root=RootExample(p); const auto image=RootOracle(root);
+    const auto path=(fixture.root/("catalog-"+std::to_string(p))).string();
+    disk::FileDevice device; Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own root file");
+    const auto pagezero=Oracle(z); const byte zero=0;
+    Check(device.WriteAt(0,pagezero.data(),pagezero.size()).ok()
+      &&device.WriteAt(z.total_pages*sizes[p]-1,&zero,1).ok(),"real root filespace capacity");
+    const auto& ref=z.roots[1];
+    Check(device.WriteAt(ref.page_number*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"real root persisted");
+    auto r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.ok()&&r.bytes==image,"read exact canonical catalog target, no prototype fallback");
+    auto feature=ref; feature.kind=8;
+    Check(page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),feature).ok(),"shared feature root selects catalog role6");
+    Exclusive(path);
+    for(unsigned fault=1;fault<=3;++fault) {
+      reads=0; read_fault=fault; track_reads=true;
+      r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref); track_reads=false;
+      Check(!r.ok()&&!r.root&&r.bytes.empty()&&r.error==RootError::io_failure&&!read_fault,"root actual pread failure");
+    }
+    for(unsigned field=0;field<4;++field) {
+      auto bad=ref;
+      if(field==0) ++bad.page_generation;
+      if(field==1) bad.object_uuid=Id(99);
+      if(field==2) bad.filespace_uuid=Id(99);
+      if(field==3) bad.page_size_profile_uuid=Profile((p+1)%5);
+      r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),bad);
+      Check(!r.ok()&&!r.root&&r.bytes.empty(),"exact owner/generation/filespace/profile binding");
+    }
+    Check(!page::ReadNativeCatalogRootFromOpenDevice(device,Id(99),ref).ok(),"other database refused");
+    auto changed=root; changed.header.flags=1; auto badimage=RootOracle(changed);
+    Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"encrypted-header fixture");
+    r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.error==RootError::encrypted_requires_crypto_authority&&!r.root&&r.bytes.empty(),"no plaintext encrypted root admission");
+    changed=root; changed.root_kind=8; changed.roots.erase(changed.roots.begin(),changed.roots.end()-1);
+    badimage=RootOracle(changed);
+    Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"dedicated feature root persisted");
+    Check(page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),feature).ok(),"dedicated feature root read");
+    r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.error==RootError::binding_mismatch&&!r.root,"dedicated feature root cannot stand in for catalog");
+    changed=root; changed.header.database_uuid=Id(99); badimage=RootOracle(changed);
+    Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"other node root image fixture");
+    r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.error==RootError::binding_mismatch&&!r.root,"actual image node binding checked");
+    changed=root; changed.roots[0].page.page_number=z.total_pages; badimage=RootOracle(changed);
+    Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"outside-capacity target fixture");
+    r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.error==RootError::invalid_reference&&!r.root,"actual local target capacity checked");
+    Check(device.WriteAt(ref.page_number*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"restore own root fixture");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"reopen canonical root read-only");
+    r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
+    Check(r.ok()&&r.bytes==image&&device.read_only(),"read-only reopen actual root");
+    Bytes actual(image.size()); Check(device.ReadAt(ref.page_number*sizes[p],actual.data(),actual.size()).ok()
+      &&actual==image,"root reader did not mutate persisted image"); Exclusive(path);
+    Check(device.Close().ok(),"close root fixture");
+    Check(!page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref).ok(),"closed root device refused");
+    const auto pid=::fork(); Check(pid>=0,"fork root reopen verifier");
+    if(pid==0) { const auto profile=std::to_string(p);
+      ::execl("/proc/self/exe","pagezero_test","--catalog-probe",path.c_str(),profile.c_str(),nullptr); ::_exit(125); }
+    int status=0;
+    Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process verifies exact durable root");
+  }
+}
 }  // namespace
 int main(int argc,char** argv) {
   if(argc==3&&std::string_view(argv[1])=="--probe") { disk::FileDevice d; return Locked(d.Open(argv[2],disk::FileOpenMode::open_existing))?0:1; }
-  try { Codecs(); Files(); std::cout<<"PASS checks="<<checks<<" page_zero_metadata_only=true\n"; return 0; }
+  if(argc==4&&std::string_view(argv[1])=="--catalog-probe") {
+    if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
+    const auto p=static_cast<unsigned>(argv[3][0]-'0'); disk::FileDevice d;
+    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
+    return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
+  }
+  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles();
+    std::cout<<"PASS checks="<<checks<<" page_zero_and_catalog_root_image_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
