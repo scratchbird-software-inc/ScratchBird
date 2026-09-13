@@ -28,21 +28,37 @@ struct EngineProjectionFunctionArgument {
   // metadata; descriptor admission belongs to the bound query runtime.
   std::vector<std::uint8_t> binary_value;
   EngineValueState state = EngineValueState::value;
+  // Preserve the complete supplied descriptor across the adapter. This is a
+  // record of the binding, not an independently issued catalog/security receipt.
+  EngineDescriptor descriptor;
 };
 
 inline EngineProjectionFunctionArgument MakeProjectionFunctionArgument(
     std::string name, const EngineTypedValue& value) {
-  return {std::move(name), value.descriptor.canonical_type_name,
-          value.encoded_value, value.isSqlNull(), value.binary_value, value.state};
+  EngineProjectionFunctionArgument argument;
+  argument.name = std::move(name);
+  argument.descriptor = value.descriptor;
+  argument.type_name = argument.descriptor.canonical_type_name;
+  argument.encoded_value = value.encoded_value;
+  argument.binary_value = value.binary_value;
+  argument.is_null = value.isSqlNull();
+  argument.state = value.state;
+  return argument;
 }
 
 inline EngineProjectionFunctionArgument MakeProjectionFunctionArgument(
     std::string name, EngineTypedValue&& value) {
-  // The only fallible descriptor copy precedes moving either payload. This
+  // All fallible descriptor copies precede moving either payload. This
   // transfers vector storage, not a resource or final-publication capability.
-  return {std::move(name), value.descriptor.canonical_type_name,
-          std::move(value.encoded_value), value.isSqlNull(),
-          std::move(value.binary_value), value.state};
+  EngineProjectionFunctionArgument argument;
+  argument.name = std::move(name);
+  argument.descriptor = value.descriptor;
+  argument.type_name = argument.descriptor.canonical_type_name;
+  argument.is_null = value.isSqlNull();
+  argument.state = value.state;
+  argument.encoded_value = std::move(value.encoded_value);
+  argument.binary_value = std::move(value.binary_value);
+  return argument;
 }
 
 struct EngineProjectionExpression {

@@ -516,6 +516,9 @@ bool QowBindCanonicalParameterSlotsV1(
     const auto nullability =
         descriptor_field(slot.encoded_descriptor, "nullability");
     if (!scratchbird::core::uuid::IsEngineIdentityUuid(slot.descriptor_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(slot.type_uuid) ||
+        (!slot.collation_uuid.is_nil() &&
+         !scratchbird::core::uuid::IsEngineIdentityUuid(slot.collation_uuid)) ||
         slot.descriptor_kind != "scalar" || slot.canonical_type_name.empty() ||
         slot.canonical_type_name == "unknown" ||
         slot.encoded_descriptor.empty() ||
@@ -530,11 +533,7 @@ bool QowBindCanonicalParameterSlotsV1(
     }
     names.push_back(supplied.first);
     const auto& value = supplied.second;
-    if (value.descriptor.descriptor_uuid !=
-            slot.descriptor_uuid ||
-        value.descriptor.descriptor_kind != slot.descriptor_kind ||
-        value.descriptor.canonical_type_name != slot.canonical_type_name ||
-        value.descriptor.encoded_descriptor != slot.encoded_descriptor) {
+    if (value.descriptor != slot) {
       return refuse("parameter_wrong_type",
                     "typed parameter value does not match its declared descriptor");
     }

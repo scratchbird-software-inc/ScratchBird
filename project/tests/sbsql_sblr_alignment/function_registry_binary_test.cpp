@@ -1323,11 +1323,13 @@ void ProjectionBinaryValues() {
     const auto copied = api::MakeProjectionFunctionArgument("value", result);
     Check(copied.binary_value == result.binary_value && copied.encoded_value.empty() &&
           copied.state == result.state && copied.type_name == type, "actual canonical producer copies raw payload and state");
+    Check(copied.descriptor == result.descriptor, "copy producer retains complete descriptor record");
     auto move_source = result;
     const auto* old_data = move_source.binary_value.data();
     const auto moved = api::MakeProjectionFunctionArgument("value", std::move(move_source));
     Check(moved.binary_value == result.binary_value && (size == 0 || moved.binary_value.data() == old_data) &&
           move_source.binary_value.empty(), "nested producer transfers actual vector storage without another payload copy");
+    Check(moved.descriptor == result.descriptor, "move producer retains complete descriptor record");
     for (unsigned fault = 0; fault < 10; ++fault) {
       auto bad = argument;
       if (fault == 0) bad.encoded_value = "00";
@@ -1408,13 +1410,27 @@ void ProjectionBinaryValues() {
   }
   {
     api::EngineTypedValue value; value.descriptor.canonical_type_name.assign(200, 'x');
+    value.descriptor.descriptor_kind.assign(160, 's');
+    value.descriptor.encoded_descriptor = "precision=38;scale=18;rounding=half_even;" + std::string(200, 'm');
+    value.descriptor.descriptor_uuid = Base();
+    value.descriptor.type_uuid = Base(); value.descriptor.type_uuid.bytes[15] ^= 1;
+    value.descriptor.collation_uuid = Base(); value.descriptor.collation_uuid.bytes[15] ^= 2;
     value.encoded_value = "retained text"; value.binary_value = {0, 1, 255};
-    fail_after = 0; bool threw = false;
-    try {(void)api::MakeProjectionFunctionArgument("value", std::move(value));} catch (const std::bad_alloc&) {threw = true;}
-    fail_after = -1;
-    if (threw) ++allocation_faults;
-    Check(threw && value.encoded_value == "retained text" && value.binary_value == std::vector<std::uint8_t>({0, 1, 255}),
-          "fallible producer metadata preparation precedes either source payload move");
+    bool completed = false; unsigned faults = 0;
+    for (long budget = 0; budget < 20; ++budget) {
+      auto source = value;
+      api::EngineProjectionFunctionArgument output;
+      fail_after = budget;
+      try {output = api::MakeProjectionFunctionArgument("value", std::move(source)); fail_after = -1; completed = true;}
+      catch (const std::bad_alloc&) {fail_after = -1; ++faults;}
+      Check(source.descriptor == value.descriptor && (completed ? output.descriptor == value.descriptor &&
+            output.binary_value == value.binary_value && output.encoded_value == value.encoded_value :
+            source.binary_value == value.binary_value && source.encoded_value == value.encoded_value),
+            "all descriptor preparation failures precede payload moves and success retains full binding");
+      if (completed) break;
+    }
+    allocation_faults += faults;
+    Check(completed && faults >= 4, "each fallible complete-descriptor copy was exercised");
   }
   // Exercise the same adapter used by dispatch, actual binary binding, real
   // SHA3 execution and response adaptation; this is not SQL/IPC qualification.

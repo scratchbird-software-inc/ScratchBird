@@ -43,6 +43,10 @@ api::EngineDescriptor Descriptor(const unsigned suffix,
        static_cast<std::uint8_t>(suffix)};
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
+  // Private fixture identities; this test supplies no catalog authority.
+  descriptor.type_uuid.bytes =
+      {0x01, 0x9f, 0, 0, 0, 0, 0x72, 0, 0x80, 0, 0, 0, 0, 0, 0x27,
+       static_cast<std::uint8_t>(descriptor.canonical_type_name == "int64" ? 1 : 2)};
   descriptor.encoded_descriptor =
       "type=" + descriptor.canonical_type_name + ";nullability=" +
       (nullable ? "nullable" : "non_null");
@@ -204,6 +208,43 @@ bool ValidateBinaryIdentity() {
   return passed;
 }
 
+bool ValidateCompleteDescriptor() {
+  bool passed = true;
+  for (unsigned field = 0; field < 2; ++field) {
+    for (unsigned index = 0; index < 16; ++index) {
+      auto fixture = CanonicalFixture();
+      auto& descriptor = fixture.parameters[0].second.descriptor;
+      auto& identity = field == 0 ? descriptor.type_uuid : descriptor.collation_uuid;
+      identity.bytes[index] ^= 1;
+      passed &= Require(AtomicRefusal(fixture, "parameter_wrong_type"), "type/collation substitution must not pass descriptor binding");
+    }
+    for (unsigned version = 0; version < 16; ++version) {
+      auto fixture = CanonicalFixture();
+      auto& descriptor = fixture.descriptors[0];
+      auto& identity = field == 0 ? descriptor.type_uuid : descriptor.collation_uuid;
+      identity = descriptor.descriptor_uuid;
+      identity.bytes[6] = static_cast<std::uint8_t>((version << 4) | 1);
+      fixture.parameters[0].second.descriptor = descriptor;
+      std::vector<api::EngineTypedValue> values;
+      std::string reason, detail;
+      passed &= Require(Bind(fixture, &values, &reason, &detail) == (version == 7), "type and present collation identities require UUIDv7");
+    }
+  }
+  auto fixture = CanonicalFixture();
+  fixture.descriptors[0].type_uuid = {};
+  fixture.parameters[0].second.descriptor = fixture.descriptors[0];
+  passed &= Require(AtomicRefusal(fixture, "parameter_descriptor_invalid"), "missing type identity cannot authorize typed parameter execution");
+  for (unsigned field = 0; field < 3; ++field) {
+    auto mismatch = CanonicalFixture();
+    auto& descriptor = mismatch.parameters[0].second.descriptor;
+    if (field == 0) descriptor.descriptor_kind = "other";
+    if (field == 1) descriptor.canonical_type_name = "uint64";
+    if (field == 2) descriptor.encoded_descriptor += ";precision=12";
+    passed &= Require(AtomicRefusal(mismatch, "parameter_wrong_type"), "complete descriptor metadata must remain bound");
+  }
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-026-V1
@@ -212,6 +253,7 @@ int main() {
   passed &= ValidatePositiveBinding();
   passed &= ValidateRefusals();
   passed &= ValidateBinaryIdentity();
+  passed &= ValidateCompleteDescriptor();
   std::cout << checks << " typed parameter binding checks: " << (passed ? "passed" : "failed") << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
