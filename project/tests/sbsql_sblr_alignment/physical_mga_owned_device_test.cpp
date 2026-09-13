@@ -5,6 +5,7 @@
 #include "local_transaction_store.hpp"
 #include "isolation.hpp"
 #include "transaction_recovery.hpp"
+#include "transaction_evidence.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "transaction_cleanup.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -1242,6 +1243,51 @@ void ArchiveAndRecoveryCommitOrder() {
     Check(archived.ok() && archived.entry.archived_from_state == resolved.entry.state &&
         mga::HasCommittedInventoryOutcome(archived.entry) == commit &&
         *mga::ValidateLocalTransactionInventoryStructure(archived.inventory) == '\0', "archived operator outcome changed finality");
+
+    // Persist/reopen the admitted decision through the actual native inventory.
+    // This tests storage and classification, not operator authentication.
+    Fixture native;
+    const auto native_tx = native.Begin();
+    auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&native.device, page_size);
+    Check(loaded.ok(), "load native terminal decision fixture");
+    loaded.inventory.entries.back().state = mga::TransactionState::limbo;
+    const auto native_resolved = mga::ResolveLimboLocalTransactionWithOperatorDecision(
+        loaded.inventory, native_tx.local_id, decision, 1790000000500ull, policy);
+    Check(native_resolved.ok(), "resolve native admitted terminal decision");
+    const auto native_archived = mga::ArchiveLocalTransaction(native_resolved.inventory, native_tx.local_id);
+    Check(native_archived.ok() && db::PersistLocalTransactionInventoryToOpenDevice(
+        &native.device, page_size, native_archived.inventory).ok(), "persist native terminal archive");
+    Check(native.device.Close().ok() && native.device.Open(native.path, disk::FileOpenMode::open_existing).ok(),
+        "reopen native terminal archive");
+    loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&native.device, page_size);
+    Check(loaded.ok(), "load native reopened terminal archive");
+    const auto bytes_before = native.Bytes();
+    const auto restore = mga::ClassifyTransactionInventoryForRestore(loaded.inventory, "schema", "snapshot", false);
+    const auto replayed = mga::ApplyLocalTransactionInventoryRecovery(loaded.inventory, 1790000000600ull);
+    const bool failed_terminal = decision == mga::LimboOperatorDecision::fail_terminal;
+    Check(restore.ok() == !failed_terminal && restore.restore_allowed == !failed_terminal &&
+        !restore.records.empty() && restore.records.back().observed_state == "archived" &&
+        restore.records.back().terminal_state == mga::TransactionStateName(native_resolved.entry.state),
+        "native reopened restore lost exact archived outcome");
+    Check(replayed.ok() && replayed.write_admission_must_remain_fenced == failed_terminal &&
+        !replayed.inventory_changed && replayed.recovered_inventory.entries.back().archived_from_state == native_resolved.entry.state &&
+        replayed.recovered_inventory.entries.back().commit_sequence == native_resolved.entry.commit_sequence &&
+        replayed.recovered_inventory.publication_base == loaded.inventory.publication_base && native.Bytes() == bytes_before,
+        "native archived recovery changed finality, provenance or physical bytes");
+    mga::TransactionInventoryCompactionRequest compact;
+    compact.inventory = loaded.inventory;
+    compact.inventory_authoritative = true;
+    compact.oldest_required_local_transaction_id = mga::MakeLocalTransactionId(loaded.inventory.next_local_transaction_id);
+    const auto compacted = mga::CompactLocalTransactionInventory(compact);
+    Check(compacted.ok() && compacted.compacted_entry_count == (failed_terminal ? 0u : 1u) &&
+        db::PersistLocalTransactionInventoryToOpenDevice(&native.device, page_size, compacted.inventory).ok(),
+        "native compaction lost terminal review hold or could not publish");
+    Check(native.device.Close().ok() && native.device.Open(native.path, disk::FileOpenMode::open_existing).ok(),
+        "reopen compacted native inventory");
+    loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&native.device, page_size);
+    Check(loaded.ok() && mga::LookupLocalTransaction(loaded.inventory, native_tx.local_id).ok() == failed_terminal &&
+        mga::ClassifyLocalTransactionInventoryForRecovery(loaded.inventory).write_admission_must_remain_fenced == failed_terminal,
+        "native compaction/reopen erased failed-terminal write fence");
   }
 }
 

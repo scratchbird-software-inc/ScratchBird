@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "transaction_snapshot.hpp"
 #include "transaction_inventory_validation.hpp"
+#include "transaction_evidence.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
 #include "transaction_cleanup.hpp"
 #include "uuid.hpp"
@@ -61,6 +62,114 @@ struct Fixture {
 };
 static void AdditionalCases();
 static void InventoryAdmissionCases();
+static void ArchivedRecoveryCases() {
+  Fixture fixture;
+  auto inventory = fixture.inventory;
+  auto& entry = inventory.entries.front();
+  entry.state = mga::TransactionState::archived;
+  entry.archived_from_state = mga::TransactionState::failed_terminal;
+  entry.commit_sequence = 0;
+  Check(*mga::ValidateLocalTransactionInventoryStructure(inventory) == '\0', "failed archive fixture admission");
+  const auto failed = mga::ClassifyLocalTransactionForRecovery(entry);
+  Check(failed.fail_closed && failed.action == mga::TransactionRecoveryAction::fail_closed_ambiguous,
+      "archived failed-terminal transaction escaped recovery review");
+  for (const bool rollback_only : {false, true}) {
+    entry.rollback_only = rollback_only;
+    for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+      const auto origin = static_cast<mga::TransactionState>(encoded);
+      entry.archived_from_state = origin;
+      const auto classified = mga::ClassifyLocalTransactionForRecovery(entry);
+      const bool safe = origin == mga::TransactionState::committed || origin == mga::TransactionState::rolled_back;
+      Check(classified.observed_state == mga::TransactionState::archived && classified.fail_closed == !safe &&
+          classified.action == (safe ? mga::TransactionRecoveryAction::no_action :
+              mga::TransactionRecoveryAction::fail_closed_ambiguous), "archive origin recovery matrix changed outcome");
+    }
+    entry.state = mga::TransactionState::failed_terminal;
+    entry.archived_from_state = mga::TransactionState::none;
+    Check(mga::ClassifyLocalTransactionForRecovery(entry).fail_closed,
+        "rollback-only failed-terminal state escaped recovery review");
+    entry.state = mga::TransactionState::archived;
+  }
+  entry.rollback_only = false;
+  for (const auto origin : {mga::TransactionState::committed, mga::TransactionState::rolled_back,
+                           mga::TransactionState::failed_terminal}) {
+    entry.archived_from_state = origin;
+    entry.commit_sequence = origin == mga::TransactionState::committed ? 1 : 0;
+    const auto classified = mga::ClassifyTransactionInventoryForRestore(inventory, "schema", "snapshot", false);
+    const bool safe = origin != mga::TransactionState::failed_terminal;
+    Check(classified.ok() == safe && classified.restore_allowed == safe && classified.records.size() == inventory.entries.size(),
+        "restore discarded archive finality");
+    const auto& evidence = classified.records.front();
+    Check(evidence.observed_state == "archived" && evidence.terminal &&
+          evidence.terminal_state == mga::TransactionStateName(origin) &&
+          evidence.restore_classification == (safe ? "restore_terminal_evidence" : "refuse_fail_closed"),
+        "lineage lost exact archived terminal outcome");
+    const auto recovery = mga::ApplyLocalTransactionInventoryRecovery(inventory, 1200);
+    Check(recovery.ok() && recovery.write_admission_must_remain_fenced == !safe &&
+          recovery.recovered_inventory.entries.front().state == mga::TransactionState::archived &&
+          recovery.recovered_inventory.entries.front().archived_from_state == origin &&
+          recovery.recovered_inventory.entries.front().commit_sequence == entry.commit_sequence,
+        "recovery rewrote archived finality");
+    mga::TransactionInventoryCompactionRequest compact;
+    compact.inventory = inventory;
+    compact.inventory_authoritative = true;
+    compact.oldest_required_local_transaction_id = mga::MakeLocalTransactionId(inventory.next_local_transaction_id);
+    const auto compacted = mga::CompactLocalTransactionInventory(compact);
+    Check(compacted.ok() && compacted.compacted_entry_count == (safe ? 1u : 0u) &&
+        mga::LookupLocalTransaction(compacted.inventory, entry.identity.local_id).ok() == !safe,
+        "compaction discarded unresolved failed-terminal review authority");
+  }
+  for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+    entry.state = static_cast<mga::TransactionState>(encoded);
+    entry.archived_from_state = mga::TransactionState::rolled_back;
+    Check(mga::ClassifyLocalTransactionForRecovery(entry).fail_closed == (entry.state != mga::TransactionState::archived),
+        "nonarchived recovery accepted misplaced archive origin");
+  }
+  auto malformed = fixture.inventory;
+  malformed.entries.push_back(malformed.entries.front());
+  const auto invalid = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+  Check(!invalid.ok() && !invalid.restore_allowed && invalid.records.empty() &&
+      invalid.diagnostic.diagnostic_code == "SB-MGA-RESTORE-CLASSIFICATION-REFUSED",
+      "restore published a prefix from duplicate native inventory");
+  for (const auto origin : {mga::TransactionState::none, mga::TransactionState::active,
+                           mga::TransactionState::prepared, mga::TransactionState::archived,
+                           static_cast<mga::TransactionState>(65535)}) {
+    malformed = fixture.inventory;
+    malformed.entries.front().state = mga::TransactionState::archived;
+    malformed.entries.front().archived_from_state = origin;
+    const auto lineage = mga::BuildTransactionLineageEvidence(malformed, "schema", "snapshot");
+    Check(!lineage.empty() && !lineage.front().terminal && lineage.front().terminal_state.empty() &&
+        lineage.front().restore_classification == "refuse_fail_closed", "invalid archive lineage invented terminal evidence");
+    const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+    Check(!refused.ok() && !refused.restore_allowed && refused.records.empty(), "invalid archive restore published records");
+  }
+  const std::vector<std::function<void(mga::LocalTransactionInventory&)>> invalid_sequences{
+    [](auto& v) { v.next_commit_sequence = 0; },
+    [](auto& v) { v.entries[0].begin_visible_through_commit_sequence = v.next_commit_sequence; },
+    [](auto& v) { v.entries[0].commit_sequence = 0; },
+    [](auto& v) { v.entries[0].commit_sequence = v.next_commit_sequence; },
+    [](auto& v) { v.entries[1].commit_sequence = 1; },
+    [](auto& v) { v.entries[1].state = mga::TransactionState::committed; v.entries[1].commit_sequence = 1; },
+    [](auto& v) { v.entries[0].state = mga::TransactionState::rolled_back; },
+    [](auto& v) { v.entries[0].archived_from_state = mga::TransactionState::committed; }
+  };
+  for (const auto& mutate : invalid_sequences) {
+    malformed = fixture.inventory; mutate(malformed);
+    for (unsigned order = 0; order < 2; ++order) {
+      std::reverse(malformed.entries.begin(), malformed.entries.end());
+      const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+      Check(!refused.ok() && !refused.restore_allowed && refused.records.empty(), "invalid restore sequence admitted a record prefix");
+    }
+  }
+  const auto empty = mga::MakeEmptyLocalTransactionInventory();
+  const auto empty_restore = mga::ClassifyTransactionInventoryForRestore(empty, "schema", "snapshot", false);
+  Check(empty_restore.ok() && empty_restore.restore_allowed && empty_restore.records.empty(), "valid empty restore inventory refused");
+  Check(!mga::ClassifyTransactionInventoryForRestore(empty, "schema", "snapshot", true).restore_allowed &&
+        !mga::ClassifyTransactionInventoryForRestore(empty, "", "snapshot", false).restore_allowed &&
+        !mga::ClassifyTransactionInventoryForRestore(empty, "schema", "", false).restore_allowed,
+        "archive repair bypassed WAL or restore context refusals");
+  std::cout << "archived_recovery origin_cases=131072 misplaced_cases=65536\n";
+}
 static void ArchivedCreatorProjectionCases() {
   Fixture fixture;
   mga::RowVersionMetadata row;
@@ -121,6 +230,7 @@ static void ArchivedCreatorProjectionCases() {
   }
 }
 int main() try {
+  ArchivedRecoveryCases();
   ArchivedCreatorProjectionCases();
   Fixture f;
   const auto plain = mga::ComputeLocalTransactionHorizons(f.inventory);
@@ -267,7 +377,7 @@ static void InventoryAdmissionCases() {
     });
   }
   Check(mutations.size() == 43, "immutable malformed inventory profile count");
-  std::array<unsigned, 5> missed{};
+  std::array<unsigned, 6> missed{};
   unsigned cases = 0;
   for (const auto& [name, mutate] : mutations) {
     for (unsigned position = 0; position < 2; ++position) {
@@ -295,6 +405,8 @@ static void InventoryAdmissionCases() {
         request.inventory_complete = true;
         const auto cleanup = mga::ComputeAuthoritativeCleanupHorizon(request);
         if (cleanup.ok() || cleanup.cleanup_horizon_authoritative || cleanup.cleanup_horizon.valid()) ++missed[4];
+        const auto restore = mga::ClassifyTransactionInventoryForRestore(inventory, "schema", "snapshot", false);
+        if (restore.ok() || restore.restore_allowed || !restore.records.empty()) ++missed[5];
         Check(mga::SnapshotVectorDescriptorEqual(
             mga::ResolvePublishedSnapshotVector(f.snapshot.snapshot_uuid).descriptor, f.snapshot),
             "malformed inventory admission must not mutate live snapshot authority");
@@ -306,7 +418,7 @@ static void InventoryAdmissionCases() {
   for (const auto count : missed) std::cout << count << ',';
   std::cout << '\n';
   Check(cases == 172 && std::all_of(missed.begin(), missed.end(), [](auto n) { return n == 0; }),
-        "all malformed inventories rejected at all five authoritative consumers");
+        "all malformed inventories rejected at all six authoritative consumers");
   // All existing non-none state values; both typed scopes and all RFC variant nibbles.
   unsigned positives = 0;
   for (unsigned state = 1; state <= 13; ++state) {

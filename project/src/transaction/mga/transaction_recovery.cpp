@@ -134,6 +134,24 @@ TransactionRecoveryClassification ClassifyLocalTransactionForRecovery(const Tran
   classification.local_id = entry.identity.local_id;
   classification.observed_state = entry.state;
 
+  // Archival changes placement/lifecycle, never the terminal decision. Check
+  // origin before rollback-only so that malformed or failed evidence cannot
+  // acquire a new final outcome through recovery.
+  const auto outcome = InventoryVisibilityState(entry);
+  if ((entry.state == TransactionState::archived && outcome == TransactionState::none) ||
+      (entry.state != TransactionState::archived && entry.archived_from_state != TransactionState::none)) {
+    classification.action = TransactionRecoveryAction::fail_closed_ambiguous;
+    classification.fail_closed = true;
+    classification.stable_reason = "invalid_archived_transaction_origin";
+    return classification;
+  }
+  if (outcome == TransactionState::failed_terminal) {
+    classification.action = TransactionRecoveryAction::fail_closed_ambiguous;
+    classification.fail_closed = true;
+    classification.stable_reason = "failed_terminal_requires_review";
+    return classification;
+  }
+
   if (entry.rollback_only && entry.state != TransactionState::committed &&
       entry.state != TransactionState::committing &&
       entry.state != TransactionState::rolled_back &&

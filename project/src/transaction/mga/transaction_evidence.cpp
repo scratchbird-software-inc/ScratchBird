@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_evidence.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include "uuid.hpp"
 
@@ -61,15 +62,15 @@ std::string EventClassForState(TransactionState state) {
 }
 
 bool RestoreSafeTerminal(TransactionState state) {
-  return state == TransactionState::committed || state == TransactionState::rolled_back ||
-         state == TransactionState::archived;
+  return state == TransactionState::committed || state == TransactionState::rolled_back;
 }
 
-std::string RestoreClassificationFor(const TransactionRecoveryClassification& classification) {
+std::string RestoreClassificationFor(const TransactionRecoveryClassification& classification,
+                                     TransactionState outcome) {
   if (classification.fail_closed) {
     return "refuse_fail_closed";
   }
-  if (RestoreSafeTerminal(classification.observed_state)) {
+  if (RestoreSafeTerminal(outcome)) {
     return "restore_terminal_evidence";
   }
   if (classification.action == TransactionRecoveryAction::complete_rollback) {
@@ -85,17 +86,18 @@ TransactionLineageEvidenceRecord BuildRecord(const TransactionInventoryEntry& en
                                              std::string schema_epoch,
                                              std::string snapshot_capsule) {
   const auto classification = ClassifyLocalTransactionForRecovery(entry);
+  const auto outcome = InventoryVisibilityState(entry);
   TransactionLineageEvidenceRecord record;
   record.local_id = entry.identity.local_id;
   record.transaction_uuid = UuidToString(entry.identity.transaction_uuid.value);
   record.event_class = EventClassForState(entry.state);
   record.observed_state = TransactionStateName(entry.state);
-  record.terminal_state = IsTerminalTransactionState(entry.state) ? TransactionStateName(entry.state) : "";
+  record.terminal_state = IsTerminalTransactionState(outcome) ? TransactionStateName(outcome) : "";
   record.schema_epoch = std::move(schema_epoch);
   record.snapshot_capsule = std::move(snapshot_capsule);
-  record.restore_classification = RestoreClassificationFor(classification);
+  record.restore_classification = RestoreClassificationFor(classification, outcome);
   record.refusal_condition = classification.fail_closed ? classification.stable_reason : "";
-  record.terminal = IsTerminalTransactionState(entry.state);
+  record.terminal = IsTerminalTransactionState(outcome);
   record.evidence_written = entry.evidence_record_written;
   record.wal_required = false;
   return record;
@@ -139,6 +141,13 @@ TransactionRestoreClassificationResult ClassifyTransactionInventoryForRestore(
                                                          "SB-MGA-RESTORE-CONTEXT-MISSING",
                                                          "transaction.evidence.restore_context_missing",
                                                          "schema_epoch and snapshot_capsule are required");
+    return result;
+  }
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    result.status = EvidenceErrorStatus();
+    result.restore_allowed = false;
+    result.diagnostic = MakeTransactionEvidenceDiagnostic(result.status,
+        "SB-MGA-RESTORE-CLASSIFICATION-REFUSED", "transaction.evidence.inventory_invalid", reason);
     return result;
   }
   result.records = BuildTransactionLineageEvidence(inventory, std::move(schema_epoch), std::move(snapshot_capsule));

@@ -411,6 +411,7 @@ TransactionInventoryCompactionResult CompactLocalTransactionInventory(
   for (const auto& entry : request.inventory.entries) {
     const bool can_drop = request.drop_archived_entries &&
                           entry.state == TransactionState::archived &&
+                          entry.archived_from_state != TransactionState::failed_terminal &&
                           entry.identity.local_id.valid() &&
                           entry.identity.local_id.value < request.oldest_required_local_transaction_id.value;
     if (can_drop) {
