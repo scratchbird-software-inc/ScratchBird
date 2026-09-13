@@ -1640,4 +1640,126 @@ DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                         "storage.database.physical_mga_cow");
 }
 
+NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
+    FileDevice& device, const TypedUuid& relation_uuid, u64 page_number,
+    const VisibilitySnapshot& snapshot, bool latest_committed,
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity,
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin) {
+  namespace catalog = scratchbird::core::catalog;
+  const auto guard = device.AcquireOperationGuard();
+  const auto native = ReadPhysicalMgaCowRowsFromOpenDevice(device, relation_uuid,
+      page_number, snapshot, latest_committed, reader_identity, snapshot_pin);
+  if (!native.ok()) return Propagate<NativeCatalogVersionReadResult>(native.status, native.diagnostic);
+  std::map<scratchbird::core::platform::Uuid, catalog::CatalogMetadataVersion> decoded;
+  for (const auto& row : native.row_page.rows) {
+    if (row.deleted || row.cells.size() != 1 || row.cells[0].column_ordinal != 1 ||
+        row.cells[0].value.type_id != scratchbird::core::datatypes::CanonicalTypeId::binary ||
+        row.cells[0].value.is_null)
+      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.cell_shape_invalid");
+    const auto value = catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
+    if (!value.ok()) return Propagate<NativeCatalogVersionReadResult>(value.status, value.diagnostic);
+    if (!SameUuid(value.record.record.header.row_uuid, row.row_uuid) ||
+        !SameUuid(value.record.creator_transaction_uuid, row.transaction_uuid) ||
+        value.record.creator_local_transaction_id != row.local_transaction_id)
+      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
+    decoded.emplace(row.version_uuid, value.record);
+  }
+  if (native.recovery_required_count != 0)
+    return ErrorResult<NativeCatalogVersionReadResult>("SB-ROW-VISIBILITY-REQUIRES-RECOVERY", "catalog.native_version.recovery_required");
+  NativeCatalogVersionReadResult result;
+  for (const auto& row : native.visible_rows) {
+    const auto found = decoded.find(row.version_uuid);
+    if (found == decoded.end())
+      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.version_missing");
+    const auto creator = LookupLocalTransaction(native.inventory, MakeLocalTransactionId(row.local_transaction_id));
+    if (!creator.ok()) return Propagate<NativeCatalogVersionReadResult>(creator.status, creator.diagnostic);
+    NativeCatalogVersionRow visible;
+    visible.metadata = found->second;
+    visible.version_uuid = row.version_uuid; visible.previous_version_uuid = row.previous_version_uuid;
+    visible.provisional = !scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry);
+    visible.effective_lifecycle = visible.metadata.lifecycle;
+    visible.effective_status = visible.metadata.status;
+    if (visible.provisional) {
+      visible.effective_status = catalog::CatalogObjectStatus::proposed;
+      visible.effective_lifecycle = visible.metadata.record.header.deleted ? catalog::CatalogObjectLifecycle::dropping :
+          visible.metadata.definition_version == 1 ? catalog::CatalogObjectLifecycle::creating : catalog::CatalogObjectLifecycle::altering;
+    }
+    result.rows.push_back(std::move(visible));
+  }
+  result.status = CowStoreOkStatus(); return result;
+}
+
+PhysicalMgaCowMutationResult WriteNativeCatalogVersionToOpenDevice(
+    FileDevice& device, const NativeCatalogVersionMutation& request) {
+  namespace catalog = scratchbird::core::catalog;
+  const auto guard = device.AcquireOperationGuard();
+  const auto encoded = catalog::EncodeCatalogMetadataVersion(request.metadata);
+  if (!encoded.ok()) return Propagate<PhysicalMgaCowMutationResult>(encoded.status, encoded.diagnostic);
+  if (!request.transaction.valid() || request.transaction.scope != scratchbird::transaction::mga::TransactionScope::local_node ||
+      request.metadata.authority_scope == catalog::CatalogAuthorityScope::cluster ||
+      !SameUuid(request.transaction.transaction_uuid, request.metadata.creator_transaction_uuid) ||
+      request.transaction.local_id.value != request.metadata.creator_local_transaction_id ||
+      (!request.expected_version_uuid.is_nil() && !scratchbird::core::uuid::IsEngineIdentityUuid(request.expected_version_uuid)))
+    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_version.writer_binding_invalid");
+  VisibilitySnapshot snapshot;
+  snapshot.reader_transaction = request.transaction.local_id;
+  const auto current = ReadNativeCatalogVersionsFromOpenDevice(device, request.relation_uuid,
+      request.page_number, snapshot, false, request.transaction);
+  if (!current.ok()) return Propagate<PhysicalMgaCowMutationResult>(current.status, current.diagnostic);
+  // Visibility is not uniqueness authority: another transaction's active or
+  // prepared row is hidden from this reader but still reserves its object UUID.
+  // The device guard spans inspection and staging. Global catalog placement
+  // must additionally enforce the same identity across pages/relations.
+  const auto retained = ReadPhysicalMgaCowRowsFromOpenDevice(device, request.relation_uuid,
+      request.page_number, snapshot, false, request.transaction);
+  if (!retained.ok()) return Propagate<PhysicalMgaCowMutationResult>(retained.status, retained.diagnostic);
+  for (const auto& row : retained.row_page.rows) {
+    if (row.row_uuid.value == request.metadata.record.header.row_uuid.value) continue;
+    const auto creator = LookupLocalTransaction(retained.inventory, MakeLocalTransactionId(row.local_transaction_id));
+    if (!creator.ok()) return Propagate<PhysicalMgaCowMutationResult>(creator.status, creator.diagnostic);
+    const auto outcome = scratchbird::transaction::mga::InventoryVisibilityState(creator.entry);
+    if (outcome == scratchbird::transaction::mga::TransactionState::rolled_back ||
+        outcome == scratchbird::transaction::mga::TransactionState::failed_terminal) continue;
+    const auto candidate = catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
+    if (!candidate.ok()) return Propagate<PhysicalMgaCowMutationResult>(candidate.status, candidate.diagnostic);
+    if (candidate.record.record.header.object_uuid.value == request.metadata.record.header.object_uuid.value)
+      return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_version.object_row_collision");
+  }
+  const NativeCatalogVersionRow* previous = nullptr;
+  for (const auto& row : current.rows) {
+    if (row.metadata.record.header.row_uuid.value == request.metadata.record.header.row_uuid.value) previous = &row;
+    else if (row.metadata.record.header.object_uuid.value == request.metadata.record.header.object_uuid.value)
+      return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_version.object_row_collision");
+  }
+  if (request.expected_version_uuid.is_nil()) {
+    if (previous || request.metadata.definition_version != 1 || request.metadata.record.header.deleted)
+      return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_version.create_precondition");
+  } else {
+    if (!previous || previous->version_uuid != request.expected_version_uuid ||
+        previous->metadata.record.header.object_uuid.value != request.metadata.record.header.object_uuid.value ||
+        previous->metadata.record.header.kind != request.metadata.record.header.kind ||
+        previous->metadata.record.header.deleted ||
+        previous->metadata.definition_version == std::numeric_limits<u64>::max() ||
+        request.metadata.definition_version != previous->metadata.definition_version + 1 ||
+        request.metadata.schema_epoch < previous->metadata.schema_epoch ||
+        request.metadata.security_epoch < previous->metadata.security_epoch ||
+        request.metadata.resource_epoch < previous->metadata.resource_epoch ||
+        request.metadata.catalog_generation < previous->metadata.catalog_generation ||
+        request.metadata.dependency_generation < previous->metadata.dependency_generation ||
+        request.metadata.invalidation_generation < previous->metadata.invalidation_generation)
+      return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.DEFINITION_VERSION_STALE", "catalog.native_version.replace_precondition");
+  }
+  PhysicalMgaCowMutation mutation;
+  mutation.relation_uuid = request.relation_uuid; mutation.row_uuid = request.metadata.record.header.row_uuid;
+  mutation.page_number = request.page_number; mutation.transaction_uuid = request.transaction.transaction_uuid;
+  mutation.existing_local_transaction_id = request.transaction.local_id; mutation.use_existing_transaction = true;
+  // Retirement is itself versioned metadata. Preserve its creator/audit fields
+  // in an ordinary successor, not a payload-free physical DELETE marker.
+  mutation.kind = previous ? PhysicalMgaCowMutationKind::update : PhysicalMgaCowMutationKind::insert;
+  scratchbird::core::datatypes::DatatypeBinaryValue cell;
+  cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary; cell.payload = encoded.bytes;
+  mutation.cells.push_back({1, std::move(cell)});
+  return WritePhysicalMgaCowUnpublishedMutationToOpenDevice(device, mutation);
+}
+
 }  // namespace scratchbird::storage::database

@@ -8,6 +8,7 @@
 #include "transaction_inventory_validation.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "uuid.hpp"
+#include "hash_digest.hpp"
 #include <cerrno>
 #include <algorithm>
 #include <array>
@@ -512,6 +513,230 @@ void TransactionStartCommitOrder() {
     Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reclaim begin-snapshot owner");
     f.Finish(reader, false);
   }
+}
+
+int VerifyCatalogVersion(const char* path) {
+  std::ifstream oracle(std::string(path) + ".catalog-oracle", std::ios::binary);
+  std::array<platform::byte, 24> header{};
+  oracle.read(reinterpret_cast<char*>(header.data()), header.size());
+  if (!oracle) return 31;
+  const auto page = platform::LoadLittle64(header.data());
+  TypedUuid relation; relation.kind = UuidKind::object;
+  std::copy(header.begin() + 8, header.end(), relation.value.bytes.begin());
+  const std::vector<platform::byte> expected(std::istreambuf_iterator<char>(oracle), {});
+  disk::FileDevice device;
+  if (!device.Open(path, disk::FileOpenMode::open_existing).ok()) return 32;
+  const auto rows = db::ReadNativeCatalogVersionsFromOpenDevice(device, relation, page, {}, true);
+  if (!rows.ok() || rows.rows.size() != 1 || rows.rows[0].provisional) return 33;
+  const auto actual = scratchbird::core::catalog::EncodeCatalogMetadataVersion(rows.rows[0].metadata);
+  return actual.ok() && actual.bytes == expected ? 0 : 34;
+}
+
+void NativeCatalogMetadataVersions() {
+  namespace catalog = scratchbird::core::catalog;
+  Fixture f;
+  const auto created = f.Begin();
+  catalog::CatalogMetadataVersion metadata;
+  metadata.record.header.kind = catalog::CatalogRecordKind::sql_object;
+  metadata.record.header.row_uuid = Id(UuidKind::row);
+  metadata.record.header.object_uuid = Id(UuidKind::object);
+  metadata.record.header.parent_uuid = Id(UuidKind::schema);
+  metadata.owner_uuid = Id(UuidKind::principal); metadata.audit_uuid = Id(UuidKind::object);
+  metadata.owning_schema_uuid = metadata.record.header.parent_uuid;
+  metadata.creator_transaction_uuid = created.transaction_uuid;
+  metadata.creator_local_transaction_id = created.local_id.value;
+  metadata.definition_version = metadata.schema_epoch = metadata.security_epoch = 1;
+  metadata.catalog_generation = metadata.dependency_generation = metadata.invalidation_generation = 1;
+  metadata.lifecycle = catalog::CatalogObjectLifecycle::active; metadata.status = catalog::CatalogObjectStatus::active;
+  metadata.trace_search_key = "NATIVE-CATALOG-VERSION-TEST";
+  metadata.object_subtype = "application"; metadata.retention_class = "catalog_history";
+  constexpr char payload[] = "opaque-family-storage-oracle\0\r\n";
+  metadata.record.payload.assign(payload, sizeof(payload) - 1);
+  // Deliberately an opaque storage oracle, not a valid SQL object definition.
+  // Family/name/dependency/audit admission is the owning catalog operation;
+  // these checks prove native bytes/version/finality, not successful SQL DDL.
+  const auto encoded = catalog::EncodeCatalogMetadataVersion(metadata);
+  Check(encoded.ok(), "encode native metadata version");
+  Check(encoded.bytes.size() == 384 + metadata.trace_search_key.size() + metadata.object_subtype.size() +
+      metadata.retention_class.size() + 96 + metadata.record.payload.size(), "independent metadata extent");
+  Check(std::equal(encoded.bytes.begin(), encoded.bytes.begin() + 8, "SBCMV001") &&
+      platform::LoadLittle16(encoded.bytes.data() + 10) == 384 &&
+      platform::LoadLittle64(encoded.bytes.data() + 88) == created.local_id.value &&
+      std::equal(created.transaction_uuid.value.bytes.begin(), created.transaction_uuid.value.bytes.end(), encoded.bytes.begin() + 112),
+      "independent metadata UUID/counter offsets");
+  const auto decoded = catalog::DecodeCatalogMetadataVersion(encoded.bytes);
+  Check(decoded.ok() && decoded.bytes == encoded.bytes && decoded.record.record.payload == metadata.record.payload &&
+      decoded.record.owner_uuid.value == metadata.owner_uuid.value, "metadata roundtrip changed binary fields");
+  for (std::size_t i = 0; i < encoded.bytes.size(); ++i) {
+    auto changed = encoded.bytes; changed[i] ^= 1;
+    const auto bad = catalog::DecodeCatalogMetadataVersion(changed);
+    Check(!bad.ok() && bad.bytes.empty() && bad.record.record.header.row_uuid.value.is_nil(), "modified envelope admitted partial metadata");
+  }
+  // A valid outer checksum is not a substitute for semantic/canonical checks.
+  for (std::size_t offset : {24u, 283u, 288u, 368u, 272u, 32u, 16u}) {
+    auto changed = encoded.bytes; changed[offset] ^= 1;
+    std::fill(changed.begin() + 320, changed.begin() + 352, 0);
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(changed);
+    Check(digest.ok(), "reseal adversarial catalog envelope");
+    std::copy(digest.digest.begin(), digest.digest.end(), changed.begin() + 320);
+    const auto bad = catalog::DecodeCatalogMetadataVersion(changed);
+    Check(!bad.ok() && bad.bytes.empty(), "resealed invalid metadata accepted");
+  }
+  auto missing = metadata; missing.creator_transaction_uuid = {};
+  Check(!catalog::EncodeCatalogMetadataVersion(missing).ok(), "missing catalog creator accepted");
+  missing = metadata; missing.definition_version = 0;
+  Check(!catalog::EncodeCatalogMetadataVersion(missing).ok(), "missing definition version accepted");
+  missing = metadata; missing.owning_schema_uuid.kind = UuidKind::object;
+  Check(!catalog::EncodeCatalogMetadataVersion(missing).ok(), "mistyped owning schema accepted");
+  const auto write = [&](const auto& tx, const auto& value, platform::Uuid expected = {}) {
+    return db::WriteNativeCatalogVersionToOpenDevice(f.device, {f.relation, f.first_page, tx, value, expected});
+  };
+  const auto staged = write(created, metadata);
+  Check(staged.ok() && staged.row_version.row_uuid.value == metadata.record.header.row_uuid.value &&
+      !staged.row_version.version_uuid.is_nil(), "native catalog create omitted real row/version receipt");
+  mga::VisibilitySnapshot own; own.reader_transaction = created.local_id;
+  auto rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, own, false, created);
+  Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].provisional &&
+      rows.rows[0].effective_lifecycle == catalog::CatalogObjectLifecycle::creating, "own catalog proposal visibility");
+  rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, {}, true);
+  Check(rows.ok() && rows.rows.empty(), "uncommitted catalog metadata leaked");
+  const auto contender = f.Begin();
+  auto duplicate = metadata;
+  duplicate.record.header.row_uuid = Id(UuidKind::row);
+  duplicate.creator_transaction_uuid = contender.transaction_uuid;
+  duplicate.creator_local_transaction_id = contender.local_id.value;
+  const auto collision_before = f.Bytes(); const auto collision_writes = write_calls;
+  Check(!write(contender, duplicate).ok() && f.Bytes() == collision_before && write_calls == collision_writes,
+      "hidden active catalog object allowed a second authoritative row");
+  f.Finish(contender, false);
+  f.Finish(created, true);
+  const auto reader = f.Begin();
+  auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  const auto captured = mga::CreateLocalTransactionSnapshot(inventory.inventory, reader.local_id);
+  Check(inventory.ok() && captured.ok(), "capture native catalog snapshot");
+  const auto old_snapshot = mga::SnapshotPolicyForIsolation(mga::IsolationLevel::repeatable_read, captured.snapshot);
+  const auto replacement_tx = f.Begin();
+  auto replacement = metadata;
+  replacement.creator_transaction_uuid = replacement_tx.transaction_uuid;
+  replacement.creator_local_transaction_id = replacement_tx.local_id.value;
+  replacement.definition_version = replacement.schema_epoch = replacement.catalog_generation = 2;
+  replacement.dependency_generation = replacement.invalidation_generation = 2;
+  replacement.trace_search_key = "NATIVE-CATALOG-VERSION-REPLACED";
+  const auto replaced = write(replacement_tx, replacement, staged.row_version.version_uuid);
+  Check(replaced.ok() && replaced.row_version.previous_version_uuid == staged.row_version.version_uuid,
+      "catalog replacement lost native chain precondition");
+  f.Finish(replacement_tx, true);
+  rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, old_snapshot, false, reader);
+  Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].metadata.definition_version == 1 &&
+      rows.rows[0].metadata.trace_search_key == metadata.trace_search_key, "old snapshot exposed replaced metadata");
+  const auto third_tx = f.Begin();
+  auto third = replacement; third.creator_transaction_uuid = third_tx.transaction_uuid;
+  third.creator_local_transaction_id = third_tx.local_id.value; third.definition_version = 3;
+  const auto before = f.Bytes(); const auto writes_before = write_calls;
+  Check(!write(third_tx, third, staged.row_version.version_uuid).ok() && f.Bytes() == before && write_calls == writes_before,
+      "stale metadata base overwrote newer definition");
+  const auto provisional = write(third_tx, third, replaced.row_version.version_uuid);
+  Check(provisional.ok(), "stage rollback catalog version"); f.Finish(third_tx, false);
+  rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, {}, true);
+  Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].metadata.definition_version == 2 && !rows.rows[0].provisional,
+      "rolled back catalog replacement became visible");
+  const auto drop_tx = f.Begin();
+  auto dropped = third; dropped.creator_transaction_uuid = dropped.retired_transaction_uuid = drop_tx.transaction_uuid;
+  dropped.creator_local_transaction_id = drop_tx.local_id.value;
+  dropped.record.header.deleted = true; dropped.lifecycle = catalog::CatalogObjectLifecycle::dropped;
+  dropped.status = catalog::CatalogObjectStatus::retired;
+  const auto retirement = write(drop_tx, dropped, replaced.row_version.version_uuid);
+  Check(retirement.ok() && !retirement.row_version.deleted && !retirement.row_version.cells.empty(),
+      "catalog retirement discarded metadata payload");
+  f.Finish(drop_tx, true);
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen native catalog versions");
+  rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, {}, true);
+  Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].metadata.record.header.deleted &&
+      rows.rows[0].metadata.retired_transaction_uuid.value == drop_tx.transaction_uuid.value &&
+      rows.rows[0].metadata.audit_uuid.value == metadata.audit_uuid.value, "retirement identity/evidence lost after reopen");
+  rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, old_snapshot, false, reader);
+  Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].metadata.definition_version == 1,
+      "retirement erased old metadata snapshot");
+  f.Finish(reader, false);
+  const auto expected_retirement = catalog::EncodeCatalogMetadataVersion(dropped);
+  Check(expected_retirement.ok(), "encode independent retirement oracle");
+  std::array<platform::byte, 24> oracle_header{};
+  platform::StoreLittle64(oracle_header.data(), f.first_page);
+  std::copy(f.relation.value.bytes.begin(), f.relation.value.bytes.end(), oracle_header.begin() + 8);
+  std::ofstream oracle(f.path + ".catalog-oracle", std::ios::binary);
+  oracle.write(reinterpret_cast<const char*>(oracle_header.data()), oracle_header.size());
+  oracle.write(reinterpret_cast<const char*>(expected_retirement.bytes.data()), expected_retirement.bytes.size());
+  oracle.close();
+  Check(oracle.good() && f.device.Close().ok(), "release catalog node for fresh reader");
+  const auto child = ::fork(); Check(child >= 0, "fork catalog reader");
+  if (child == 0) { ::execl("/proc/self/exe", "catalog-probe", "--catalog-probe", f.path.c_str(), nullptr); ::_exit(99); }
+  int status = 0; pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0, "fresh process changed native catalog retirement");
+  Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reclaim catalog node");
+
+  for (unsigned fault = 0; fault != 6; ++fault) {
+    const auto bad_tx = f.Begin();
+    auto bad_metadata = metadata;
+    bad_metadata.record.header.row_uuid = Id(UuidKind::row);
+    bad_metadata.creator_transaction_uuid = bad_tx.transaction_uuid;
+    bad_metadata.creator_local_transaction_id = bad_tx.local_id.value;
+    if (fault == 0) bad_metadata.creator_transaction_uuid = created.transaction_uuid;
+    if (fault == 1) bad_metadata.creator_local_transaction_id = created.local_id.value;
+    const auto wire = catalog::EncodeCatalogMetadataVersion(bad_metadata);
+    Check(wire.ok(), "encode malformed native binding fixture");
+    auto native = f.Mutation(bad_tx, bad_metadata.record.header.row_uuid, f.first_page + 1 + fault, "");
+    native.cells[0].value.type_id = types::CanonicalTypeId::binary;
+    native.cells[0].value.payload = wire.bytes;
+    if (fault == 2) native.row_uuid = Id(UuidKind::row);
+    if (fault == 3) native.cells[0].column_ordinal = 2;
+    if (fault == 4) {
+      native.cells[0].value.type_id = types::CanonicalTypeId::character;
+      native.cells[0].value.payload.assign({'n', 'o', 't', '-', 'c', 'a', 't', 'a', 'l', 'o', 'g'});
+    }
+    if (fault == 5) native.cells[0].value.payload.back() ^= 1;
+    const auto staged_bad = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, native);
+    Check(staged_bad.ok(), "stage adversarial native row " + std::to_string(fault) + ":" +
+        staged_bad.diagnostic.diagnostic_code + ":" + staged_bad.diagnostic.message_key);
+    // Even hidden active or rolled-back versions must not turn corruption into empty success.
+    for (bool rolled_back : {false, true}) {
+      if (rolled_back) f.Finish(bad_tx, false);
+      const auto before_bad_read = f.Bytes(); const auto bad_writes = write_calls;
+      const auto invalid = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, native.page_number, {}, true);
+      Check(!invalid.ok() && invalid.rows.empty() && f.Bytes() == before_bad_read && write_calls == bad_writes,
+          "hidden invalid catalog row published absence or mutated storage");
+    }
+  }
+  Fixture conflicts;
+  const auto pending = conflicts.Begin();
+  auto reserved = metadata;
+  reserved.creator_transaction_uuid = pending.transaction_uuid;
+  reserved.creator_local_transaction_id = pending.local_id.value;
+  const auto stage = [&](const auto& tx, const auto& value) {
+    return db::WriteNativeCatalogVersionToOpenDevice(conflicts.device,
+        {conflicts.relation, conflicts.first_page, tx, value, {}});
+  };
+  Check(stage(pending, reserved).ok(), "reserve second catalog object");
+  const auto prepare_base = db::LoadLocalTransactionInventoryFromOpenDevice(&conflicts.device, page_size);
+  Check(prepare_base.ok(), "load pending catalog inventory");
+  const auto prepared = mga::PrepareLocalTransaction(prepare_base.inventory, pending.local_id);
+  Check(prepared.ok() && db::PersistLocalTransactionInventoryToOpenDevice(
+      &conflicts.device, page_size, prepared.inventory).ok(), "prepare catalog reservation");
+  const auto second = conflicts.Begin();
+  auto retry = reserved; retry.record.header.row_uuid = Id(UuidKind::row);
+  retry.creator_transaction_uuid = second.transaction_uuid;
+  retry.creator_local_transaction_id = second.local_id.value;
+  const auto reserved_bytes = conflicts.Bytes(); const auto reserved_writes = write_calls;
+  Check(!stage(second, retry).ok() && conflicts.Bytes() == reserved_bytes && write_calls == reserved_writes,
+      "prepared hidden catalog reservation ignored");
+  conflicts.Finish(pending, false);
+  Check(stage(second, retry).ok(), "rolled-back creator permanently reserved object UUID");
+  conflicts.Finish(second, true);
+  const auto committed_rows = db::ReadNativeCatalogVersionsFromOpenDevice(conflicts.device,
+      conflicts.relation, conflicts.first_page, {}, true);
+  Check(committed_rows.ok() && committed_rows.rows.size() == 1 &&
+      committed_rows.rows[0].metadata.record.header.row_uuid.value == retry.record.header.row_uuid.value,
+      "rollback release did not publish the actual replacement row");
 }
 
 void NativeInventoryPublicationConcurrency() {
@@ -1086,12 +1311,13 @@ void Run() {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--catalog-probe") return VerifyCatalogVersion(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--start-snapshot-probe") return VerifyStartSnapshot(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--finality-probe") return VerifyFinalityOracle(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--probe") {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

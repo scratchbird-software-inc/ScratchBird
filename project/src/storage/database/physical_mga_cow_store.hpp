@@ -10,6 +10,7 @@
 
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
+#include "catalog_record_codec.hpp"
 #include "row_data_page.hpp"
 #include "row_version.hpp"
 #include "runtime_platform.hpp"
@@ -42,6 +43,36 @@ enum class PhysicalMgaCowFinalizeDecision : u16 {
   commit,
   rollback,
   invalid
+};
+
+// Trusted native catalog staging. It neither authorizes DDL nor resolves a
+// family/name/dependency. Callers supply the owning catalog relation/page and
+// actual metadata; receipts come from the native MGA mutation, never an event.
+struct NativeCatalogVersionMutation {
+  TypedUuid relation_uuid;
+  u64 page_number = 0;
+  scratchbird::transaction::mga::TransactionIdentity transaction;
+  scratchbird::core::catalog::CatalogMetadataVersion metadata;
+  // Nil means create; replacement requires the exact observed native version.
+  scratchbird::core::platform::Uuid expected_version_uuid;
+};
+
+struct NativeCatalogVersionRow {
+  scratchbird::core::catalog::CatalogMetadataVersion metadata;
+  scratchbird::core::platform::Uuid version_uuid;
+  scratchbird::core::platform::Uuid previous_version_uuid;
+  bool provisional = false;
+  scratchbird::core::catalog::CatalogObjectLifecycle effective_lifecycle = scratchbird::core::catalog::CatalogObjectLifecycle::creating;
+  scratchbird::core::catalog::CatalogObjectStatus effective_status = scratchbird::core::catalog::CatalogObjectStatus::proposed;
+};
+
+struct NativeCatalogVersionReadResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  // Includes visible retirement records so owning inspection/history code
+  // can retain their evidence. Normal object lookup must omit retired rows.
+  std::vector<NativeCatalogVersionRow> rows;
+  bool ok() const { return status.ok(); }
 };
 
 // Path-free mutation fields for an already-owned node device. A storage
@@ -219,5 +250,14 @@ DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                                               std::string diagnostic_code,
                                               std::string message_key,
                                               std::string detail = {});
+
+PhysicalMgaCowMutationResult WriteNativeCatalogVersionToOpenDevice(
+    scratchbird::storage::disk::FileDevice& device, const NativeCatalogVersionMutation& mutation);
+NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
+    scratchbird::storage::disk::FileDevice& device, const TypedUuid& relation_uuid,
+    u64 page_number, const scratchbird::transaction::mga::VisibilitySnapshot& snapshot,
+    bool latest_committed,
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity = {},
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr);
 
 }  // namespace scratchbird::storage::database
