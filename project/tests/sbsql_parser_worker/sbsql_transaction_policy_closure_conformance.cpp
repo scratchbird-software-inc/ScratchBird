@@ -266,6 +266,8 @@ void RequireReadOnlyMGAHelpers(const api::EngineRequestContext& context,
   Require(found_lineage, "read_only_active lineage evidence missing");
 
   mga::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row.row_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::row, 1779810600100).value;
   metadata.identity.creator_transaction = lookup.entry.identity;

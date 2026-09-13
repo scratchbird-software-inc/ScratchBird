@@ -69,6 +69,8 @@ txn::RowVersionMetadata Version(txn::RowIdentity row,
                                 txn::TransactionState creator_state,
                                 bool payload_present) {
   txn::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = row;
   metadata.identity.creator_transaction = creator.identity;
   metadata.identity.version_sequence = sequence;
@@ -421,6 +423,7 @@ bool PreparedAndHotKeyChangeProof() {
   hot.old_visible_version = old_version;
   hot.new_version = new_version;
   hot.old_version_uuid = old_version_uuid;
+  hot.old_visible_version.identity.version_uuid = old_version_uuid.value;
   hot.new_previous_version_uuid = old_version_uuid;
   hot.visibility_snapshot = visibility;
   hot.exact_index_keys_unchanged = true;

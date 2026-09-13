@@ -128,6 +128,8 @@ int main() {
   entry.identity = Valid().intent.transaction;
 
   mga::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = Valid().intent.row;
   metadata.identity.creator_transaction = Valid().intent.transaction;
   metadata.identity.version_sequence = 2;

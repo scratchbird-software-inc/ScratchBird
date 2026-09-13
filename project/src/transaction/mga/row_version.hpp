@@ -78,9 +78,11 @@ struct RowVersionIdentity {
   RowIdentity row;
   TransactionIdentity creator_transaction;
   u64 version_sequence = kInvalidRowVersionSequence;
+  scratchbird::core::platform::Uuid version_uuid;
 
   constexpr bool valid() const {
-    return row.valid() && creator_transaction.valid() && version_sequence != kInvalidRowVersionSequence;
+    return row.valid() && creator_transaction.valid() && version_sequence != kInvalidRowVersionSequence &&
+           !version_uuid.is_nil();
   }
 };
 
@@ -170,7 +172,8 @@ RowIdentityResult MakeRowIdentity(TypedUuid row_uuid);
 RowIdentityResult ValidateRowIdentity(const RowIdentity& identity);
 RowVersionIdentityResult MakeRowVersionIdentity(RowIdentity row,
                                                 TransactionIdentity creator_transaction,
-                                                u64 version_sequence);
+                                                u64 version_sequence,
+                                                scratchbird::core::platform::Uuid version_uuid);
 RowVersionIdentityResult ValidateRowVersionIdentity(const RowVersionIdentity& identity);
 RowVersionMetadataResult ValidateRowVersionMetadata(const RowVersionMetadata& metadata);
 VisibilityResult EvaluateVisibility(const RowVersionMetadata& metadata,

@@ -47,7 +47,9 @@ const TransactionInventoryEntry* Creator(const InventoryIndex& entries,u64 local
 }
 bool Fields(const TableContentGenerationVersion& v,const Id& database) {
   return v.database_uuid==database && Uuid(v.schema_uuid) && Uuid(v.table_uuid) &&
-    Uuid(v.catalog_row_uuid) && Uuid(v.generation_uuid) && Uuid(v.root_set_uuid) &&
+    Uuid(v.catalog_row_uuid) && Uuid(v.catalog_version_uuid) &&
+    v.catalog_version_uuid!=v.catalog_row_uuid &&
+    Uuid(v.generation_uuid) && Uuid(v.root_set_uuid) &&
     Uuid(v.statistics_generation_uuid) && Uuid(v.batch_uuid) &&
     Uuid(v.creator_transaction_uuid) && v.creator_local_transaction_id!=0 &&
     v.publication_effect_sequence!=0 && v.descriptor_generation!=0 &&
@@ -94,6 +96,7 @@ TableContentGenerationSelection ResolveTableContentGeneration(
     std::map<Id,Id> table_rows;
     std::map<Id,Id> row_tables;
     std::set<Id> batches;
+    std::set<Id> catalog_versions;
     u64 previous_sequence=0;
     // Validate complete publications before considering a requested table.
     for(std::size_t start=0;start<history.size();) {
@@ -111,7 +114,8 @@ TableContentGenerationSelection ResolveTableContentGeneration(
            version.creator_local_transaction_id!=first.creator_local_transaction_id ||
            version.publication_effect_sequence!=first.publication_effect_sequence ||
            version.batch_target_count!=first.batch_target_count || version.batch_ordinal!=ordinal ||
-           !targets.insert(version.table_uuid).second)
+           !targets.insert(version.table_uuid).second ||
+           !catalog_versions.insert(version.catalog_version_uuid).second)
           return Fail(Code::corrupt_history);
         if(ordinal!=0) {
           const auto& prior=history[start+ordinal-1];
@@ -188,6 +192,7 @@ TableContentGenerationSelection ResolveTableContentGeneration(
       metadata.identity.row.row_uuid.value.bytes=version.catalog_row_uuid;
       metadata.identity.creator_transaction=creator->identity;
       metadata.identity.version_sequence=version.publication_effect_sequence;
+      metadata.identity.version_uuid.bytes=version.catalog_version_uuid;
       metadata.state=state;
       metadata.creator_transaction_state=creator->state;
       metadata.payload_present=true;

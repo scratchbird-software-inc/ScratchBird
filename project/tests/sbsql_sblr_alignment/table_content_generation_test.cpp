@@ -62,6 +62,7 @@ Version V(const Id& database,Id table,Id generation,Id predecessor,
           mga::TransactionIdentity tx,unsigned seq,unsigned count=1,unsigned ordinal=0){
   Version v;v.database_uuid=database;v.schema_uuid=IdOf(10);v.table_uuid=table;
   v.catalog_row_uuid=IdOf(1000+table[15]);v.generation_uuid=generation;
+  v.catalog_version_uuid=IdOf(5000+seq*256+ordinal);
   v.predecessor_generation_uuid=predecessor;v.root_set_uuid=IdOf(2000+seq*4+ordinal);
   v.statistics_generation_uuid=IdOf(3000+seq*4+ordinal);v.batch_uuid=IdOf(4000+seq);
   v.creator_transaction_uuid=tx.transaction_uuid.value.bytes;v.creator_local_transaction_id=tx.local_id.value;
@@ -132,12 +133,14 @@ void Run(){
   {auto h=history;h[2].publication_effect_sequence=10;malformed(h);}
   {auto h=history;h[2].predecessor_generation_uuid=b0;malformed(h);}
   {auto h=history;h[2].generation_uuid=a0;malformed(h);}
+  {auto h=history;h[2].catalog_version_uuid=h[0].catalog_version_uuid;malformed(h);}
+  {auto h=history;h[2].catalog_version_uuid=h[2].catalog_row_uuid;malformed(h);}
   {auto h=history;h[2].catalog_row_uuid=IdOf(5000);malformed(h);}
   {auto h=std::vector<Version>(history.begin(),history.begin()+2);h[1].catalog_row_uuid=h[0].catalog_row_uuid;malformed(h);}
   {auto h=history;h[2].creator_transaction_uuid=birth.transaction_uuid.value.bytes;malformed(h);}
   {auto h=history;h[0].creator_local_transaction_id=999;h[1].creator_local_transaction_id=999;malformed(h,Code::inventory_required);}
   {auto h=history;h.back().predecessor_generation_uuid=IdOf(6553);malformed(h);}
-  for(auto member:{&Version::database_uuid,&Version::schema_uuid,&Version::table_uuid,&Version::catalog_row_uuid,&Version::generation_uuid,&Version::root_set_uuid,&Version::statistics_generation_uuid,&Version::batch_uuid,&Version::creator_transaction_uuid}){
+  for(auto member:{&Version::database_uuid,&Version::schema_uuid,&Version::table_uuid,&Version::catalog_row_uuid,&Version::catalog_version_uuid,&Version::generation_uuid,&Version::root_set_uuid,&Version::statistics_generation_uuid,&Version::batch_uuid,&Version::creator_transaction_uuid}){
     auto h=history;(h[0].*member)[6]=0x40;malformed(h);
     h=history;(h[0].*member)[8]=0;malformed(h);
   }

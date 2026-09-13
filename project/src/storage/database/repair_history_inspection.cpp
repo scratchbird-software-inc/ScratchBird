@@ -307,12 +307,13 @@ RepairHistoryInspectionResult InspectRepairHistory(
   for (const auto& ordinary : request.ordinary_versions) {
     const auto validated = mga::ValidateRowVersionMetadata(ordinary.metadata);
     if (!validated.ok()) {
-      result.status = validated.status;
-      result.inspection_ready = false;
-      result.diagnostic = validated.diagnostic;
-      return result;
+      RepairHistoryInspectionResult failed;
+      failed.status = validated.status;
+      failed.diagnostic = validated.diagnostic;
+      return failed;
     }
     if (!ordinary.version_uuid.valid() ||
+        ordinary.version_uuid.value != ordinary.metadata.identity.version_uuid ||
         ordinary.version_uuid.kind != UuidKind::row ||
         !ordinary.page_uuid.valid() ||
         ordinary.page_uuid.kind != UuidKind::page ||
@@ -356,10 +357,10 @@ RepairHistoryInspectionResult InspectRepairHistory(
   for (const auto& event : request.repair_events) {
     const auto serialized = SerializeRepairEventRecord(event);
     if (!serialized.ok()) {
-      result.status = serialized.status;
-      result.inspection_ready = false;
-      result.diagnostic = serialized.diagnostic;
-      return result;
+      RepairHistoryInspectionResult failed;
+      failed.status = serialized.status;
+      failed.diagnostic = serialized.diagnostic;
+      return failed;
     }
     if (!RepairEventMatchesFilters(request, event)) {
       continue;

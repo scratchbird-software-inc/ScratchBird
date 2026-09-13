@@ -58,6 +58,7 @@ bool SameMetadataIdentity(const RowVersionMetadata& left,
          SameTransactionIdentity(left.identity.creator_transaction,
                                  right.identity.creator_transaction) &&
          left.identity.version_sequence == right.identity.version_sequence &&
+         left.identity.version_uuid == right.identity.version_uuid &&
          SameTypedUuid(left.chain.previous_version_uuid,
                        right.chain.previous_version_uuid) &&
          SameTypedUuid(left.chain.next_version_uuid,
@@ -189,7 +190,9 @@ RepairIdentityDecision ValidateInputMetadata(
   if (!IsTypedEngineIdentity(request.original_version_uuid, UuidKind::row) ||
       !IsTypedEngineIdentity(request.candidate_version_uuid, UuidKind::row) ||
       request.original_row.version_uuid != request.original_version_uuid.value ||
-      request.candidate_row.version_uuid != request.candidate_version_uuid.value) {
+      request.candidate_row.version_uuid != request.candidate_version_uuid.value ||
+      request.original_metadata.identity.version_uuid != request.original_version_uuid.value ||
+      request.candidate_metadata.identity.version_uuid != request.candidate_version_uuid.value) {
     return Refused(request,
                    "SB-REPAIR-IDENTITY-VERSION-UUID-INVALID",
                    "storage.repair_identity.version_uuid_invalid");

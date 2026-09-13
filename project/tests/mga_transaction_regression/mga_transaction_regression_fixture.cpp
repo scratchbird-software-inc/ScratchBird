@@ -80,6 +80,8 @@ RowVersionMetadata VersionFor(const TransactionInventoryEntry& entry,
                               TransactionState transaction_state,
                               bool payload_present = true) {
   RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = row;
   metadata.identity.creator_transaction = entry.identity;
   metadata.identity.version_sequence = sequence;

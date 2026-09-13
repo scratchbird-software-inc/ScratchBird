@@ -91,6 +91,8 @@ txn::TransactionIdentity TransactionIdentity(u64 local_id) {
 
 txn::RowVersionMetadata RetainedHistoryMetadata() {
   txn::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row.row_uuid = MakeUuid(UuidKind::row, 20);
   metadata.identity.creator_transaction = TransactionIdentity(10);
   metadata.identity.version_sequence = 1;

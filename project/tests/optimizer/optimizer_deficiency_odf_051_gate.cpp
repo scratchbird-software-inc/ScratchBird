@@ -318,6 +318,8 @@ void NormalMgaVisibilityRecheckRemainsAuthority() {
           "ODF-051 setup map became authority");
 
   mga::RowVersionMetadata row_version;
+  row_version.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row_version.identity.row = Row(51100);
   row_version.identity.creator_transaction = Tx(7, 51101);
   row_version.identity.version_sequence = 1;

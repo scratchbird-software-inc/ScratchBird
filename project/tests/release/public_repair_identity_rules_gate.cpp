@@ -69,6 +69,8 @@ txn::RowVersionMetadata Metadata(const Fixture& fixture,
                                  txn::RowVersionState row_state,
                                  txn::TransactionState transaction_state) {
   txn::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = sequence == 1 ? fixture.old_version_uuid.value
+                                                : fixture.new_version_uuid.value;
   metadata.identity.row.row_uuid = fixture.row_uuid;
   metadata.identity.creator_transaction =
       TransactionIdentity(transaction_uuid, local_id);
@@ -211,6 +213,7 @@ bool PageRewriteRoundTripProof(const Fixture& fixture) {
                   "SB-REPAIR-IDENTITY-VERSION-UUID-INVALID",
               "repair evidence must bind the version UUID in the native row") && ok;
   changed_version.candidate_row.version_uuid = fixture.new_version_uuid.value;
+  changed_version.candidate_metadata.identity.version_uuid = fixture.new_version_uuid.value;
   const auto refused = page::EvaluateRepairIdentityRule(changed_version);
   ok = Expect(!refused.ok(),
               "page rewrite changing version UUID should fail closed") && ok;

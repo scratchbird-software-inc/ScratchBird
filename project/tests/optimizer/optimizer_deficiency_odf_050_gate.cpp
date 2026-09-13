@@ -455,6 +455,8 @@ mga::RowVersionMetadata VersionMetadata(
     platform::u64 previous_sequence,
     platform::TypedUuid previous_version_uuid) {
   mga::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = row;
   metadata.identity.creator_transaction = creator;
   metadata.identity.version_sequence = sequence;
@@ -492,6 +494,7 @@ void InvalidHotPlusProofFailsClosed() {
       9,
       old_version_uuid);
   input.old_version_uuid = old_version_uuid;
+  input.old_visible_version.identity.version_uuid = old_version_uuid.value;
   input.new_previous_version_uuid = old_version_uuid;
   input.visibility_snapshot.reader_transaction = mga::MakeLocalTransactionId(7);
   input.visibility_snapshot.allow_reader_own_uncommitted = true;

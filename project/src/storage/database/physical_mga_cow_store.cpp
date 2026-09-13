@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -378,6 +379,7 @@ RowVersionMetadata MetadataForRow(const RowDataRecord& row,
   metadata.identity.row.row_uuid = row.row_uuid;
   metadata.identity.creator_transaction = entry.identity;
   metadata.identity.version_sequence = row.row_version;
+  metadata.identity.version_uuid = row.version_uuid;
   metadata.chain.previous_version_uuid = {UuidKind::row, row.previous_version_uuid};
   metadata.chain.next_version_uuid = {UuidKind::row, row.next_version_uuid};
   metadata.chain.previous_version_sequence = row.previous_row_version;
@@ -757,6 +759,8 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
                                                    loaded_inventory.diagnostic);
   }
 
+  LocalTransactionId owned_transaction;
+  const auto perform = [&]() -> PhysicalMgaCowMutationResult {
   LocalTransactionInventory active_inventory = loaded_inventory.inventory;
   TransactionInventoryEntry active_entry;
   if (request.use_existing_transaction) {
@@ -785,6 +789,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     if (!begin.ok()) {
       return Propagate<PhysicalMgaCowMutationResult>(begin.status, begin.diagnostic);
     }
+    owned_transaction = begin.entry.identity.local_id;
     const auto persisted_active =
         PersistLocalTransactionInventoryToOpenDevice(&device,
                                                      context.page_size,
@@ -924,6 +929,53 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   result.evidence.push_back(std::string("physical_mga_cow.kind=") +
                             PhysicalMgaCowMutationKindName(request.kind));
   return result;
+  };
+  PhysicalMgaCowMutationResult operation;
+  std::exception_ptr pending_exception;
+  try {
+    operation = perform();
+  } catch (...) {
+    pending_exception = std::current_exception();
+  }
+  if ((!operation.ok() || pending_exception) && owned_transaction.valid()) {
+    const auto compensate = [&]() -> PhysicalMgaCowMutationResult {
+      const auto current = LoadLocalTransactionInventoryFromOpenDevice(&device, context.page_size);
+      if (!current.ok())
+        return Propagate<PhysicalMgaCowMutationResult>(current.status, current.diagnostic);
+      const auto found = std::find_if(current.inventory.entries.begin(), current.inventory.entries.end(),
+          [&](const auto& entry) { return entry.identity.local_id.value == owned_transaction.value; });
+      if (found == current.inventory.entries.end()) {
+        PhysicalMgaCowMutationResult absent; absent.status = CowStoreOkStatus();
+        absent.evidence.push_back("physical_mga_cow.failed_owned_transaction_not_published=true");
+        return absent;
+      }
+      if (!SameUuid(found->identity.transaction_uuid, request.transaction_uuid))
+        return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+            "storage.physical_mga_cow.failed_transaction_identity_mismatch");
+      const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      const auto rolled = RollbackLocalTransaction(current.inventory, owned_transaction, static_cast<u64>(millis));
+      if (!rolled.ok())
+        return Propagate<PhysicalMgaCowMutationResult>(rolled.status, rolled.diagnostic);
+      const auto persisted = PersistLocalTransactionInventoryToOpenDevice(&device, context.page_size, rolled.inventory);
+      if (!persisted.ok())
+        return Propagate<PhysicalMgaCowMutationResult>(persisted.status, persisted.diagnostic);
+      PhysicalMgaCowMutationResult compensated; compensated.status = CowStoreOkStatus();
+      compensated.evidence.push_back("physical_mga_cow.failed_owned_transaction_rolled_back=true");
+      return compensated;
+    };
+    auto compensation = compensate();
+    if (!compensation.ok()) {
+      compensation.diagnostic.arguments.push_back({"mutation_failure_code", operation.diagnostic.diagnostic_code});
+      compensation.diagnostic.arguments.push_back({"mutation_failure_key", operation.diagnostic.message_key});
+      if (pending_exception)
+        compensation.diagnostic.arguments.push_back({"mutation_exception", "propagation_interrupted_by_rollback_failure"});
+      return compensation;
+    }
+    operation.evidence.insert(operation.evidence.end(), compensation.evidence.begin(), compensation.evidence.end());
+  }
+  if (pending_exception) std::rethrow_exception(pending_exception);
+  return operation;
 }
 
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
@@ -1427,6 +1479,11 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     if (!SameUuid(creator.entry.identity.transaction_uuid, row.transaction_uuid))
       return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
           "storage.physical_mga_cow.creator_identity_mismatch");
+    auto metadata = MetadataForRow(row, creator.entry);
+    const auto valid_metadata = scratchbird::transaction::mga::ValidateRowVersionMetadata(metadata);
+    if (!valid_metadata.ok())
+      return Propagate<PhysicalMgaCowReadResult>(valid_metadata.status, valid_metadata.diagnostic);
+    result.version_metadata.push_back(std::move(metadata));
     by_row[row.row_uuid.value.bytes].push_back(row);
   }
   for (auto& entry : by_row) {

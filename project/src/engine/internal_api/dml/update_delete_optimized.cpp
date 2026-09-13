@@ -2415,6 +2415,7 @@ mga::RowVersionMetadata MakeHotProofRowMetadata(
   metadata.identity.row.row_uuid = row_uuid;
   metadata.identity.creator_transaction = creator.identity;
   metadata.identity.version_sequence = version_sequence;
+  metadata.identity.version_uuid = row.version_uuid;
   metadata.chain.previous_version_uuid = previous_version_uuid;
   metadata.chain.previous_version_sequence = previous_sequence;
   metadata.state = row_state;

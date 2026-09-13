@@ -131,11 +131,13 @@ RowIdentityResult ValidateRowIdentity(const RowIdentity& identity) {
 
 RowVersionIdentityResult MakeRowVersionIdentity(RowIdentity row,
                                                 TransactionIdentity creator_transaction,
-                                                u64 version_sequence) {
+                                                u64 version_sequence,
+                                                scratchbird::core::platform::Uuid version_uuid) {
   RowVersionIdentity identity;
   identity.row = row;
   identity.creator_transaction = creator_transaction;
   identity.version_sequence = version_sequence;
+  identity.version_uuid = version_uuid;
   return ValidateRowVersionIdentity(identity);
 }
 
@@ -143,6 +145,13 @@ RowVersionIdentityResult ValidateRowVersionIdentity(const RowVersionIdentity& id
   RowVersionIdentityResult result;
   result.status = RowVersionOkStatus();
   result.identity = identity;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity.version_uuid) ||
+      identity.version_uuid == identity.row.row_uuid.value) {
+    result.status = RowVersionErrorStatus();
+    result.diagnostic = MakeRowVersionDiagnostic(result.status, "CATALOG.INVALID_INPUT",
+        "row_version.invalid_version_uuid");
+    return result;
+  }
 
   RowIdentityResult row_result = ValidateRowIdentity(identity.row);
   if (!row_result.ok()) {
@@ -368,6 +377,11 @@ HotStableRowHeadDecisionResult EvaluateHotStableRowHeadDecision(
     return HotStableRowHeadRefusal("SB-MGA-HOT-STABLE-HEAD-NEW-METADATA-INVALID",
                                    "row_version.hot_stable_head.new_metadata_invalid",
                                    new_metadata.diagnostic.diagnostic_code);
+  }
+  if (input.old_visible_version.identity.version_uuid != input.old_version_uuid.value ||
+      input.new_version.identity.version_uuid == input.old_visible_version.identity.version_uuid) {
+    return HotStableRowHeadRefusal("CATALOG.INVALID_INPUT",
+                                   "row_version.hot_stable_head.version_identity_mismatch");
   }
 
   if (!TypedUuidMatches(input.old_visible_version.identity.row.row_uuid,

@@ -9,6 +9,8 @@
 #include "row_data_physical_sweep.hpp"
 
 #include <algorithm>
+#include <limits>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -69,29 +71,14 @@ bool SameUuid(const TypedUuid& lhs, const TypedUuid& rhs) {
 
 bool EvidenceMatchesRow(const mga::LocalCleanupReclaimEvidenceRecord& evidence,
                         const RowDataRecord& row) {
-  return SameUuid(evidence.row_version_identity.row.row_uuid, row.row_uuid) &&
+  return evidence.row_version_identity.version_uuid == row.version_uuid &&
+         SameUuid(evidence.row_version_identity.row.row_uuid, row.row_uuid) &&
          SameUuid(evidence.row_version_identity.creator_transaction
                       .transaction_uuid,
                   row.transaction_uuid) &&
          evidence.row_version_identity.creator_transaction.local_id.value ==
              row.local_transaction_id &&
          evidence.row_version_identity.version_sequence == row.row_version;
-}
-
-const mga::LocalCleanupReclaimEvidenceRecord* MatchingEvidence(
-    const std::vector<mga::LocalCleanupReclaimEvidenceRecord>& evidence_records,
-    const RowDataRecord& row) {
-  for (const auto& evidence : evidence_records) {
-    if (EvidenceMatchesRow(evidence, row)) {
-      return &evidence;
-    }
-  }
-  return nullptr;
-}
-
-bool EvidenceIdSeen(const std::vector<std::string>& seen,
-                    const std::string& evidence_id) {
-  return std::find(seen.begin(), seen.end(), evidence_id) != seen.end();
 }
 
 }  // namespace
@@ -129,35 +116,52 @@ RowDataPhysicalSweepResult ApplyRowDataPhysicalSweep(
                       "storage.row_data_page.physical_sweep_evidence_required");
   }
 
+  const auto horizon = request.sweep.cleanup.authoritative_cleanup_horizon_local_transaction_id;
+  std::map<scratchbird::core::platform::Uuid, std::size_t> evidence_index;
+  if (horizon == 0 || evidence_records.size() != request.sweep.cleanup.reclaimed_row_version_count)
+    return SweepError("CATALOG.INVALID_INPUT", "storage.row_data_page.physical_sweep_evidence_count_invalid");
+  for (std::size_t index = 0; index < evidence_records.size(); ++index) {
+    const auto& evidence = evidence_records[index];
+    if (!mga::ValidateRowVersionIdentity(evidence.row_version_identity).ok() ||
+        evidence.creator_transaction.value != evidence.row_version_identity.creator_transaction.local_id.value ||
+        evidence.authoritative_cleanup_horizon_local_transaction_id != horizon ||
+        !evidence_index.emplace(evidence.row_version_identity.version_uuid, index).second)
+      return SweepError("CATALOG.INVALID_INPUT", "storage.row_data_page.physical_sweep_evidence_identity_invalid");
+  }
+  const auto validated = BuildRowDataPageBody(request.page, request.page_size);
+  if (!validated.ok()) {
+    RowDataPhysicalSweepResult failed;
+    failed.status = validated.status; failed.diagnostic = validated.diagnostic;
+    return failed;
+  }
   RowDataPhysicalSweepResult result;
   result.scanned_row_count = scanned;
-  result.free_space_before = request.page.free_space_bytes;
-  RowDataPageBody compacted = request.page;
+  result.free_space_before = validated.body.free_space_bytes;
+  RowDataPageBody compacted = validated.body;
   compacted.rows.clear();
   compacted.slots.clear();
-  compacted.compaction_generation =
-      compacted.compaction_generation == 0 ? compacted.page_generation + 1
-                                           : compacted.compaction_generation + 1;
-
-  std::vector<std::string> matched_evidence_ids;
+  std::vector<bool> matched_evidence(evidence_records.size(), false);
   for (const RowDataRecord& row : request.page.rows) {
-    const auto* evidence = MatchingEvidence(evidence_records, row);
-    if (evidence == nullptr) {
+    const auto found = evidence_index.find(row.version_uuid);
+    if (found == evidence_index.end()) {
       compacted.rows.push_back(row);
       ++result.retained_row_count;
       continue;
     }
+    const auto& evidence = evidence_records[found->second];
+    if (matched_evidence[found->second] || !EvidenceMatchesRow(evidence, row))
+      return SweepError("CATALOG.INVALID_INPUT", "storage.row_data_page.physical_sweep_evidence_row_mismatch");
+    matched_evidence[found->second] = true;
     ++result.removed_row_count;
     ++result.reclaimed_slot_count;
-    matched_evidence_ids.push_back(evidence->stable_evidence_id);
-    result.reclaim_evidence_ids.push_back(evidence->stable_evidence_id);
+    result.reclaim_evidence_ids.push_back(evidence.stable_evidence_id);
   }
 
-  for (const auto& evidence : evidence_records) {
-    if (!EvidenceIdSeen(matched_evidence_ids, evidence.stable_evidence_id)) {
+  for (std::size_t index = 0; index < evidence_records.size(); ++index) {
+    if (!matched_evidence[index]) {
       return SweepError("SB-ROW-DATA-PHYSICAL-SWEEP-EVIDENCE-NOT-ON-PAGE",
                         "storage.row_data_page.physical_sweep_evidence_not_on_page",
-                        evidence.stable_evidence_id);
+                        evidence_records[index].stable_evidence_id);
     }
   }
   if (result.removed_row_count !=
@@ -169,11 +173,16 @@ RowDataPhysicalSweepResult ApplyRowDataPhysicalSweep(
                                              .reclaimed_row_version_count));
   }
 
+  if (result.removed_row_count != 0) {
+    if (compacted.compaction_generation == std::numeric_limits<u64>::max())
+      return SweepError("CATALOG.INVALID_INPUT", "storage.row_data_page.physical_sweep_generation_exhausted");
+    ++compacted.compaction_generation;
+  }
   const auto rebuilt = BuildRowDataPageBody(compacted, request.page_size);
   if (!rebuilt.ok()) {
-    result.status = rebuilt.status;
-    result.diagnostic = rebuilt.diagnostic;
-    return result;
+    RowDataPhysicalSweepResult failed;
+    failed.status = rebuilt.status; failed.diagnostic = rebuilt.diagnostic;
+    return failed;
   }
   result.status = SweepOkStatus();
   result.page = rebuilt.body;

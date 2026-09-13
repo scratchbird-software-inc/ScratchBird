@@ -16,6 +16,7 @@ using ContentGenerationUuid = std::array<scratchbird::core::platform::byte, 16>;
 // Producers must authenticate complete catalog batches and rollback evidence.
 struct TableContentGenerationVersion {
   ContentGenerationUuid database_uuid{}, schema_uuid{}, table_uuid{}, catalog_row_uuid{};
+  ContentGenerationUuid catalog_version_uuid{};
   ContentGenerationUuid generation_uuid{}, predecessor_generation_uuid{};
   ContentGenerationUuid root_set_uuid{}, statistics_generation_uuid{}, batch_uuid{};
   ContentGenerationUuid creator_transaction_uuid{};

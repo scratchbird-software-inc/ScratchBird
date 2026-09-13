@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Native storage and independent-process reopen; not SQL/IPC qualification.
 #include "row_data_page.hpp"
+#include "row_data_physical_sweep.hpp"
+#include "repair_history_inspection.hpp"
 #include "page_header.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "database_lifecycle.hpp"
@@ -178,6 +180,10 @@ void SaveOracle(const fs::path& root,const page::RowDataRecord& row,p::u32 expec
 }
 void Reopen(const fs::path& root) {
   const auto result=db::ReadPhysicalMgaCowRows(ReadRequest(root));Good(result);
+  Check(result.version_metadata.size()==result.row_page.rows.size(),"native owner omitted version metadata");
+  for(std::size_t i=0;i<result.version_metadata.size();++i)
+    Check(result.version_metadata[i].identity.version_uuid==result.row_page.rows[i].version_uuid,
+          "native metadata substituted a version identity");
   Check(result.visible_rows.size()==1,"independent reopen did not return one row");
   std::ifstream in(root/"expected.bin",std::ios::binary);
   for(const auto& id:{result.visible_rows[0].row_uuid.value,result.visible_rows[0].version_uuid,
@@ -319,6 +325,85 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto duplicate_result=db::WritePhysicalMgaCowUnpublishedMutationBatch(duplicate_batch);
   Check(!duplicate_result.ok() && duplicate_result.written_rows==0,
         "batch uniqueness declaration bypassed native version identity validation");
+  // Real native owner metadata and durable inventory feed the actual MGA
+  // decision and page-image sweep. This does not claim durable cleanup writes.
+  const auto cleanup_source=db::ReadPhysicalMgaCowRows(ReadRequest(root));Good(cleanup_source);
+  Check(cleanup_source.version_metadata.size()==cleanup_source.row_page.rows.size(),
+        "cleanup owner metadata is incomplete");
+  db::RepairHistoryInspectionRequest history;
+  for(const auto& metadata:cleanup_source.version_metadata) {
+    db::RepairOrdinaryVersionRecord record;record.metadata=metadata;
+    record.version_uuid={p::UuidKind::row,metadata.identity.version_uuid};
+    record.page_uuid={p::UuidKind::page,parsed_header.header.page_uuid};
+    record.page_number=RowPage;history.ordinary_versions.push_back(record);
+  }
+  const auto inspected=db::InspectRepairHistory(history);Good(inspected);
+  Check(inspected.ordinary_version_count==history.ordinary_versions.size(),"repair inspection omitted native metadata");
+  for(unsigned mode=0;mode<2;++mode) {
+    auto bad=history;
+    if(mode==0)bad.ordinary_versions.back().version_uuid.value=Id(998);
+    else bad.ordinary_versions.back().metadata.identity.version_uuid={};
+    const auto refused=db::InspectRepairHistory(bad);
+    Check(!refused.ok() && refused.rows.empty() && !refused.inspection_ready,
+          "repair inspection accepted detached version or published partial metadata");
+  }
+  mga::LocalGarbageCollectionSweepRequest cleanup;
+  cleanup.workset.inventory=cleanup_source.inventory;
+  cleanup.workset.inventory_authoritative=true;cleanup.workset.inventory_complete=true;
+  cleanup.workset.emit_reclaim_evidence_records=true;cleanup.workset.max_reclaim_evidence_records=16;
+  cleanup.workset.retain_row_versions_in_result=false;
+  for(const auto& metadata:cleanup_source.version_metadata) {
+    if(metadata.state==mga::RowVersionState::rolled_back)cleanup.workset.row_versions.push_back(metadata);
+  }
+  Check(cleanup.workset.row_versions.size()==1,"actual rolled-back cleanup candidate absent");
+  cleanup.family=mga::LocalCleanupSweepFamily::explicit_request;cleanup.engine_mga_authoritative=true;
+  cleanup.max_candidate_row_versions=16;
+  const auto decision=mga::RunLocalGarbageCollectionSweep(cleanup);Good(decision);
+  Check(decision.cleanup.reclaimed_row_version_count==1 &&
+        decision.cleanup.reclaim_evidence_records[0].row_version_identity.version_uuid==undone.row_version.version_uuid,
+        "MGA cleanup lost owning native version identity");
+  page::RowDataPhysicalSweepRequest sweep;sweep.page=cleanup_source.row_page;sweep.sweep=decision;
+  sweep.page_size=8192;sweep.engine_mga_authoritative=true;sweep.max_reclaim_rows=16;
+  const auto staged=page::ApplyRowDataPhysicalSweep(sweep);Good(staged);
+  Check(staged.removed_row_count==1 && staged.page.rows.size()+1==sweep.page.rows.size(),
+        "exact native version was not removed from staged page");
+  Check(std::none_of(staged.page.rows.begin(),staged.page.rows.end(),[&](const auto& row){
+        return row.version_uuid==undone.row_version.version_uuid;}),"wrong version survived staged cleanup");
+  const auto refuses=[&](const page::RowDataPhysicalSweepRequest& bad) {
+    const auto failed=page::ApplyRowDataPhysicalSweep(bad);
+    Check(!failed.ok() && failed.page.rows.empty() && failed.serialized.empty() &&
+          failed.removed_row_count==0 && !failed.physical_storage_mutated,
+          "invalid reclaim evidence published partial cleanup");
+  };
+  for(unsigned mode=0;mode<6;++mode) {
+    auto bad=sweep;auto& evidence=bad.sweep.cleanup.reclaim_evidence_records[0];
+    if(mode==0)evidence.row_version_identity.version_uuid=Id(555);
+    if(mode==1)evidence.row_version_identity.version_uuid={};
+    if(mode==2)++evidence.authoritative_cleanup_horizon_local_transaction_id;
+    if(mode==3)++evidence.creator_transaction.value;
+    if(mode>=4) {
+      auto extra=evidence;
+      if(mode==5)extra.row_version_identity.version_uuid=Id(556);
+      bad.sweep.cleanup.reclaim_evidence_records.push_back(extra);
+      // Both records deliberately share the original display label. A label
+      // set must not certify the unused/duplicate entry with a count of one.
+      bad.sweep.cleanup.reclaimed_row_version_count=1;
+    }
+    refuses(bad);
+  }
+  auto exhausted=sweep;exhausted.page.compaction_generation=std::numeric_limits<p::u64>::max();refuses(exhausted);
+  auto noop=sweep;noop.sweep.cleanup.reclaim_evidence_records.clear();noop.sweep.cleanup.reclaimed_row_version_count=0;
+  const auto no_change=page::ApplyRowDataPhysicalSweep(noop);Good(no_change);
+  const auto original_page=page::BuildRowDataPageBody(noop.page,8192);Good(original_page);
+  Check(!no_change.physical_storage_mutated && no_change.serialized==original_page.serialized,
+        "empty cleanup changed the page generation or bytes");
+  auto identity=cleanup.workset.row_versions.front().identity;
+  for(unsigned version=0;version<16;++version)if(version!=7) {
+    auto bad=identity;bad.version_uuid.bytes[6]=static_cast<p::byte>(version<<4);
+    Check(!mga::ValidateRowVersionIdentity(bad).ok(),"metadata admitted a non-v7 version identity");
+  }
+  identity.version_uuid=identity.row.row_uuid.value;
+  Check(!mga::ValidateRowVersionIdentity(identity).ok(),"metadata substituted logical row for version identity");
   std::cout<<"PASS native insert/update/rollback/delete/batch and independent-process reopen checks="<<checks<<'\n';
 }
 int main(int argc,char** argv) {

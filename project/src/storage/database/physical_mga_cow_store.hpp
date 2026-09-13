@@ -154,6 +154,9 @@ struct PhysicalMgaCowReadResult {
   u64 recovery_required_count = 0;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
+  // Complete page metadata bound to the same validated native page/inventory.
+  // This low-level ownership result is not a user-visible row projection.
+  std::vector<scratchbird::transaction::mga::RowVersionMetadata> version_metadata;
 
   bool ok() const {
     return status.ok();

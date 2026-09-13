@@ -78,6 +78,8 @@ txn::RowVersionMetadata Metadata(const Fixture& fixture,
                                  txn::RowVersionState row_state,
                                  txn::TransactionState transaction_state) {
   txn::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = sequence == 1 ? fixture.version_one_uuid.value
+                                                : fixture.version_two_uuid.value;
   metadata.identity.row.row_uuid = fixture.row_uuid;
   metadata.identity.creator_transaction =
       TransactionIdentity(transaction_uuid, local_id);

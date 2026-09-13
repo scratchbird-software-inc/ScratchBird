@@ -314,6 +314,8 @@ static void AdditionalCases() {
   const auto row_id = uuid::GenerateEngineIdentityV7(platform::UuidKind::row, 2000);
   Check(row_id.ok(), "row identity issuance");
   mga::RowVersionMetadata row;
+  row.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.identity.row.row_uuid = row_id.value;
   row.identity.creator_transaction = f.inventory.entries[0].identity;
   row.identity.version_sequence = 1;

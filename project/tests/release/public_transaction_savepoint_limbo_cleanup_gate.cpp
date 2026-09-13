@@ -376,6 +376,8 @@ txn::RowVersionMetadata Version(const txn::TransactionInventoryEntry& entry,
                                 u64 successor_local_id,
                                 bool* ok) {
   txn::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = RowIdentity(2000 + sequence, ok);
   metadata.identity.creator_transaction = entry.identity;
   metadata.identity.version_sequence = sequence;

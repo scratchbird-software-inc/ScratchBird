@@ -102,6 +102,8 @@ mga::RowVersionMetadata Version(const mga::RowIdentity& row,
                                 platform::u64 next_sequence = 0,
                                 platform::u64 successor_local_id = 0) {
   mga::RowVersionMetadata metadata;
+  metadata.identity.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   metadata.identity.row = row;
   metadata.identity.creator_transaction = creator.identity;
   metadata.identity.version_sequence = sequence;
