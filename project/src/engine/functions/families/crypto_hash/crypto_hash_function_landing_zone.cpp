@@ -435,42 +435,51 @@ FunctionCallResult GenSaltFunction(const FunctionCallRequest& request) {
 }
 
 FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
-  if (request.arguments.size() < 2 || request.arguments.size() > 6) {
-    return RefuseFunctionInvalidInput(request, "scrypt expects password, salt, and optional N/r/p/key_length");
+  const auto invalid=[&] {return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "CRYPTO.PASSWORD.INVALID_PARAMETER", "scrypt requires six exact typed arguments and valid RFC7914 parameters");};
+  if(request.arguments.size()!=6)return invalid();
+  using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+  constexpr std::array<std::string_view,6> types{"character","binary","uint64","uint32","uint32","uint16"};
+  for(std::size_t i=0;i<6;++i) {
+    const auto& value=request.arguments[i].value;
+    if(value.descriptor_id!=types[i]||!value.uuid_value.is_nil()||value.has_int64_value||value.has_real64_value)return invalid();
+    if(i!=0&&(!value.charset_name.empty()||!value.collation_name.empty()))return invalid();
+    if(value.is_null) {
+      if(value.payload_kind!=Kind::none||value.has_uint64_value||!value.binary_value.empty()||!value.text_value.empty()||!value.encoded_value.empty())return invalid();
+    } else if(i==0) {
+      if(value.payload_kind!=Kind::text||value.has_uint64_value||!value.binary_value.empty()||
+         (!value.encoded_value.empty()&&value.encoded_value!=value.text_value))return invalid();
+    } else if(i==1) {
+      if(value.payload_kind!=Kind::binary||value.has_uint64_value||!value.text_value.empty()||!value.encoded_value.empty())return invalid();
+    } else {
+      if(value.payload_kind!=Kind::unsigned_integer||!value.has_uint64_value||!value.binary_value.empty())return invalid();
+      const auto maximum=i==2?std::numeric_limits<std::uint64_t>::max():(i==5?std::uint64_t{65535}:std::uint64_t{0xffffffff});
+      if(value.uint64_value>maximum)return invalid();
+      const auto decimal=std::to_string(value.uint64_value);
+      if((!value.text_value.empty()&&value.text_value!=decimal)||(!value.encoded_value.empty()&&value.encoded_value!=decimal))return invalid();
+    }
   }
-  if (AnyNull(request)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-  const auto password = RawBytesFromValue(request.arguments[0].value);
-  const auto salt = RawBytesFromValue(request.arguments[1].value);
-  if (password.size() > kMaxCryptoInputBytes || salt.size() > kMaxCryptoInputBytes) {
-    return RefuseFunctionInvalidInput(request, "scrypt input exceeds crypto scalar budget");
-  }
-  std::uint64_t n = 1024;
-  std::uint64_t r = 8;
-  std::uint64_t p = 1;
-  std::uint64_t key_len = 32;
-  if (request.arguments.size() > 2 && !ParseUint64(request.arguments[2].value, &n)) return RefuseFunctionInvalidInput(request, "scrypt N must be uint64");
-  if (request.arguments.size() > 3 && !ParseUint64(request.arguments[3].value, &r)) return RefuseFunctionInvalidInput(request, "scrypt r must be uint64");
-  if (request.arguments.size() > 4 && !ParseUint64(request.arguments[4].value, &p)) return RefuseFunctionInvalidInput(request, "scrypt p must be uint64");
-  if (request.arguments.size() > 5 && !ParseUint64(request.arguments[5].value, &key_len)) {
-    return RefuseFunctionInvalidInput(request, "scrypt key length must be uint64");
-  }
-  if (n < 2 || (n & (n - 1)) != 0 || r == 0 || p == 0 || key_len == 0 || key_len > 128) {
-    return RefuseFunctionInvalidInput(request, "scrypt parameters are outside SBSFC-057 scalar bounds");
-  }
-  std::vector<std::uint8_t> key(static_cast<std::size_t>(key_len));
-  if (EVP_PBE_scrypt(reinterpret_cast<const char*>(BytesPtr(password)),
-                     password.size(),
-                     BytesPtr(salt),
-                     salt.size(),
-                     n,
-                     r,
-                     p,
-                     kScryptMaxMemory,
-                     reinterpret_cast<unsigned char*>(key.data()),
-                     key.size()) != 1) {
-    return DependencyUnavailable(request, "OpenSSL EVP_PBE_scrypt rejected the requested bounded parameters");
-  }
-  return MakeFunctionSuccess(request, {MakeTextValue("character", HexEncode(key))});
+  if(AnyNull(request))return MakeFunctionSuccess(request,{MakeNullValue("binary")});
+  const auto& password=request.arguments[0].value.text_value;
+  const auto& salt=request.arguments[1].value.binary_value;
+  const auto n=request.arguments[2].value.uint64_value;
+  const auto r=request.arguments[3].value.uint64_value;
+  const auto p=request.arguments[4].value.uint64_value;
+  const auto key_len=request.arguments[5].value.uint64_value;
+  if(n<2||(n&(n-1))!=0||r==0||p==0||key_len==0||r>((std::uint64_t{1}<<30)-1)/p||
+     (r<4&&n>=(std::uint64_t{1}<<(16*r))))return invalid();
+  if(password.size()>kMaxCryptoInputBytes||salt.size()>kMaxCryptoInputBytes)return invalid();
+  struct Secret {
+    std::vector<std::uint8_t> bytes;
+    ~Secret(){if(!bytes.empty())OPENSSL_cleanse(bytes.data(),bytes.size());}
+  } key{std::vector<std::uint8_t>(static_cast<std::size_t>(key_len))};
+  const unsigned char empty=0;
+  if(EVP_PBE_scrypt(password.data(),password.size(),salt.empty()?&empty:salt.data(),salt.size(),
+                    n,r,p,kScryptMaxMemory,key.bytes.data(),key.bytes.size())!=1)return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+      "CRYPTO.PROFILE.UNAVAILABLE", "Core scrypt provider did not produce a derived key");
+  return MakeFunctionSuccess(request,{MakeBinaryValue("binary",key.bytes)});
 }
 
 std::uint64_t Read32LE(const std::uint8_t* p) {
