@@ -61,7 +61,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_function_registry_binary PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_function_registry_binary PRIVATE
     ../../src/engine/functions ../../src/engine ../../src/engine/executor)
-  target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid Threads::Threads)
+  target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid sb_core_hash Threads::Threads)
   target_link_options(sbsql_sblr_alignment_function_registry_binary PRIVATE
     "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest")
   add_test(NAME sbsql_sblr_alignment_function_registry_binary

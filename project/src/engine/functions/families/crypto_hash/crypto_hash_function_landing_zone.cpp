@@ -10,6 +10,7 @@
 
 #include "common/function_result_helpers.hpp"
 #include "uuid.hpp"
+#include "blake3_digest.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -258,8 +259,8 @@ FunctionCallResult DependencyUnavailable(const FunctionCallRequest& request, std
                                       std::move(detail));
 }
 
-FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_MD* md,
-                                  std::size_t expected_size) {
+template <typename DigestProvider>
+FunctionCallResult DigestFunction(const FunctionCallRequest& request, DigestProvider provider) {
   const auto invalid=[&] { return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::execution_failed,
       "CRYPTO.HASH.INVALID_INPUT", "fixed digest requires one canonical binary value"); };
@@ -275,7 +276,7 @@ FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_
   }
   if (value.payload_kind != scratchbird::engine::sblr::SblrValuePayloadKind::binary ||
       value.binary_value.size() > kMaxCryptoInputBytes) return invalid();
-  auto digest = DigestBytes(md, value.binary_value, expected_size);
+  auto digest = provider(value.binary_value);
   if (!digest) return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
       "CRYPTO.PROFILE.UNAVAILABLE", "Core fixed digest provider did not produce its exact output size");
@@ -594,7 +595,11 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
     return DependencyUnavailable(request, "bcrypt password-hash provider is not available in the local core build; exact fail-closed behavior is implemented");
   }
   if (IdIs(id, {"blake3"})) {
-    return DependencyUnavailable(request, "standalone blake3 provider/header is not available in the local core build; exact fail-closed behavior is implemented");
+    return DigestFunction(request, [](const auto& bytes) {
+      const auto digest = scratchbird::core::hash::ComputeBlake3Digest(bytes);
+      return std::optional<std::vector<std::uint8_t>>(
+          std::in_place, digest.begin(), digest.end());
+    });
   }
   if (IdIs(id, {"crypt", "crypt_password_salt"})) {
     return DependencyUnavailable(request, "system crypt password-hash provider is not pinned for ScratchBird core; exact fail-closed behavior is implemented");
@@ -602,9 +607,15 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
   if (IdIs(id, {"pgcrypto"})) return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
       "CRYPTO.PACKAGE.NOT_CALLABLE", "pgcrypto is a package capability, not a scalar function");
-  if (IdIs(id, {"blake2b"})) return DigestFunction(request, EVP_blake2b512(), 64);
-  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, EVP_sha3_256(), 32);
-  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, EVP_sha3_512(), 64);
+  if (IdIs(id, {"blake2b"})) return DigestFunction(request, [](const auto& bytes) {
+    return DigestBytes(EVP_blake2b512(), bytes, 64);
+  });
+  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, [](const auto& bytes) {
+    return DigestBytes(EVP_sha3_256(), bytes, 32);
+  });
+  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, [](const auto& bytes) {
+    return DigestBytes(EVP_sha3_512(), bytes, 64);
+  });
   if (IdIs(id, {"hmac", "hmac_value_key_algo"})) return HmacFunction(request);
   if (IdIs(id, {"gen_random_bytes"})) return RandomBytesFunction(request, false);
   if (IdIs(id, {"gen_random_bytes_n"})) return RandomBytesFunction(request, true);

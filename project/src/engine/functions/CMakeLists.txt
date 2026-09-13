@@ -72,6 +72,7 @@ target_include_directories(sb_engine_functions PUBLIC
 target_link_libraries(sb_engine_functions PUBLIC
   sb_engine_sblr
   sb_core_uuid
+  sb_core_hash
   OpenSSL::Crypto
 )
 
