@@ -12,6 +12,7 @@
 #include "internal_api/api_types.hpp"
 #include "uuid.hpp"
 #include "blake3_digest.hpp"
+#include "scrypt_kdf.hpp"
 #include "../../../../core/common/crypto_random.hpp"
 
 #include <openssl/evp.h>
@@ -461,7 +462,7 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
       if((!value.text_value.empty()&&value.text_value!=decimal)||(!value.encoded_value.empty()&&value.encoded_value!=decimal))return invalid();
     }
   }
-  const auto cancelled=[&] {
+  auto cancelled=[&] {
     const auto* owner=request.context.engine_request_context;
     return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();
   };
@@ -480,18 +481,40 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
   const auto r=request.arguments[3].value.uint64_value;
   const auto p=request.arguments[4].value.uint64_value;
   const auto key_len=request.arguments[5].value.uint64_value;
-  if(n<2||(n&(n-1))!=0||r==0||p==0||key_len==0||r>((std::uint64_t{1}<<30)-1)/p||
-     (r<4&&n>=(std::uint64_t{1}<<(16*r))))return invalid();
-  if(password.size()>kMaxCryptoInputBytes||salt.size()>kMaxCryptoInputBytes)return invalid();
+  namespace crypto=scratchbird::core::crypto;
+  crypto::ScryptWorkEstimate cost;
+  const auto estimate=crypto::EstimateScryptWork(password.size(),salt.size(),n,r,p,key_len,cost);
+  if(estimate==crypto::ScryptEstimateCode::invalid_parameters)return invalid();
+  // This retained implementation guard is not an engine resource receipt.
+  // The owning engine's shared memory/CPU policy must replace it; never treat
+  // an arithmetic/working-capacity refusal as an invalid RFC parameter tuple.
+  if(estimate!=crypto::ScryptEstimateCode::ok||cost.workspace_bytes>kScryptMaxMemory||
+      cost.workspace_bytes>std::numeric_limits<std::size_t>::max()||
+      password.size()>kMaxCryptoInputBytes||salt.size()>kMaxCryptoInputBytes)
+    return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "RESOURCE.BUDGET_EXCEEDED", "scrypt working capacity was exceeded");
   struct Secret {
     std::vector<std::uint8_t> bytes;
     ~Secret(){if(!bytes.empty())OPENSSL_cleanse(bytes.data(),bytes.size());}
   } key{std::vector<std::uint8_t>(static_cast<std::size_t>(key_len))};
-  const unsigned char empty=0;
-  if(EVP_PBE_scrypt(password.data(),password.size(),salt.empty()?&empty:salt.data(),salt.size(),
-                    n,r,p,kScryptMaxMemory,key.bytes.data(),key.bytes.size())!=1)return RefuseFunctionWithDiagnostic(request,
-      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
-      "CRYPTO.PROFILE.UNAVAILABLE", "Core scrypt provider did not produce a derived key");
+  crypto::ScryptExecutionCode status;
+  {
+    // The native primitive owns erasure after accepting these disjoint extents.
+    // Until that point the workspace contains only zeroes. Its allocation is
+    // freed before any result preparation or final function publication probe.
+    std::vector<std::uint8_t> workspace(static_cast<std::size_t>(cost.workspace_bytes));
+    status=crypto::DeriveScryptKey(
+      {reinterpret_cast<const std::uint8_t*>(password.data()),password.size()},
+      {salt.data(),salt.size()},n,static_cast<std::uint32_t>(r),static_cast<std::uint32_t>(p),
+      {workspace.data(),workspace.size()},{key.bytes.data(),key.bytes.size()},
+      {[](void* context){return (*static_cast<const decltype(cancelled)*>(context))();},
+       &cancelled});
+  }
+  if(status==crypto::ScryptExecutionCode::cancelled)return cancel_result();
+  if(status!=crypto::ScryptExecutionCode::ok)return RefuseFunctionWithDiagnostic(request,
+    scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+    "CRYPTO.PROFILE.UNAVAILABLE", "Core scrypt rejected its prepared invocation");
   // Prepare metadata and the single result slot before copying key material.
   // Avoid allocating initializer-list copies of secret values: every populated
   // but unpublished key allocation must have a cleanup owner through the fence.
