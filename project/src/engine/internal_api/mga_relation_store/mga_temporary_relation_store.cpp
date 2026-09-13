@@ -348,7 +348,7 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   for (const auto& entry : loaded.inventory.entries) {
     if (!entry.identity.local_id.valid()) { continue; }
     transaction_states[entry.identity.local_id.value] =
-        MgaTransactionStateName(entry.state);
+        MgaTransactionStateName(scratchbird::transaction::mga::InventoryVisibilityState(entry));
   }
   auto classify_event = [&](std::uint64_t creator_tx) {
     if (creator_tx == 0) { return EventAuthority::kCommitted; }
@@ -357,7 +357,7 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
       ++result.fenced_event_count;
       return EventAuthority::kFenced;
     }
-    if (found->second == "committed" || found->second == "archived") {
+    if (found->second == "committed") {
       return EventAuthority::kCommitted;
     }
     if (found->second == "rolled_back") {

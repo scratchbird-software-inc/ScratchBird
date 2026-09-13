@@ -223,7 +223,8 @@ txn::RowVersionMetadata Version(txn::RowIdentity row,
   metadata.identity.creator_transaction = creator.identity;
   metadata.identity.version_sequence = sequence;
   metadata.state = state;
-  metadata.creator_transaction_state = creator_state;
+  metadata.creator_transaction_state = creator_state == txn::TransactionState::archived
+      ? txn::InventoryVisibilityState(creator) : creator_state;
   metadata.payload_present = payload_present;
   return metadata;
 }

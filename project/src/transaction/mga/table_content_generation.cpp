@@ -23,8 +23,8 @@ TableContentGenerationSelection Fail(Code code) {
 }
 RowVersionState RowState(TransactionState state) {
   switch(state) {
-    case TransactionState::committed:
-    case TransactionState::archived: return RowVersionState::committed;
+    case TransactionState::committed: return RowVersionState::committed;
+    case TransactionState::archived: return RowVersionState::unknown;
     case TransactionState::rolled_back:
     case TransactionState::failed_terminal: return RowVersionState::rolled_back;
     case TransactionState::prepared: return RowVersionState::prepared;

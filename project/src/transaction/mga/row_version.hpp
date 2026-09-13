@@ -92,6 +92,8 @@ struct RowVersionMetadata {
   RowVersionChainLinks chain;
   LocalTransactionId successor_transaction_local_id;
   RowVersionState state = RowVersionState::unknown;
+  // Resolved native visibility state, using archived terminal origin when
+  // applicable. Bare archived state is not sufficient row authority.
   TransactionState creator_transaction_state = TransactionState::none;
   bool payload_present = false;
   u64 creator_commit_sequence = 0;

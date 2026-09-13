@@ -6,6 +6,7 @@
 #include "isolation.hpp"
 #include "transaction_recovery.hpp"
 #include "transaction_inventory_validation.hpp"
+#include "transaction_cleanup.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
@@ -352,6 +353,11 @@ void PublishedSnapshotNativeVisibility() {
     };
     Payload(read(), "before-snapshot");
     f.Finish(writer, true);
+    const auto before_archive = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(before_archive.ok(), "load pinned writer archive authority");
+    const auto archive_writer = mga::ArchiveLocalTransaction(before_archive.inventory, writer.local_id);
+    Check(archive_writer.ok() && db::PersistLocalTransactionInventoryToOpenDevice(
+        &f.device, page_size, archive_writer.inventory).ok(), "archive committed pinned writer");
     // The writer was below the captured committed high water but in flight.
     // Re-reading today's inventory must not expose its later update/delete.
     Payload(read(), "before-snapshot");
@@ -1181,6 +1187,9 @@ void ArchiveAndRecoveryCommitOrder() {
     Check(loaded.ok() && loaded.inventory.entries.back().archived_from_state == archived.entry.archived_from_state,
         "native archive origin lost after reopen");
     const auto rows = f.Read(f.first_page);
+    Check(!rows.rows.empty() && rows.rows.front().metadata.creator_transaction_state ==
+        (commit ? mga::TransactionState::committed : mga::TransactionState::rolled_back),
+        "native archive reopen failed to project exact creator outcome");
     if (commit) Payload(rows, "archive-outcome");
     else Check(rows.visible_rows.empty() && rows.rolled_back_version_count == 1, "archived rollback resurrected a row");
     mga::TransactionInventoryCompactionRequest request;
@@ -1505,6 +1514,24 @@ void Run() {
   marker_snapshot.allow_reader_own_uncommitted = false;
   Check(mga::EvaluateVersionEffectVisibility(marker, marker_snapshot).decision == mga::VisibilityDecision::wait_for_transaction, "disabled own-write marker visibility ignored");
   f.Finish(rolled, false); Payload(f.Read(f.first_page), "replacement");
+  const auto before_marker_archive = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(before_marker_archive.ok(), "load rollback marker archive authority");
+  const auto archived_marker = mga::ArchiveLocalTransaction(before_marker_archive.inventory, rolled.local_id);
+  Check(archived_marker.ok() && db::PersistLocalTransactionInventoryToOpenDevice(
+      &f.device, page_size, archived_marker.inventory).ok(), "persist rollback marker archive");
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen archived rollback marker");
+  const auto marker_rows = f.Read(f.first_page); Payload(marker_rows, "replacement");
+  const auto rollback_marker = std::find_if(marker_rows.rows.begin(), marker_rows.rows.end(), [&](const auto& candidate) {
+    return candidate.metadata.identity.creator_transaction.local_id.value == rolled.local_id.value;
+  });
+  Check(rollback_marker != marker_rows.rows.end() && rollback_marker->row.deleted &&
+      rollback_marker->metadata.creator_transaction_state == mga::TransactionState::rolled_back &&
+      rollback_marker->decision == mga::VisibilityDecision::invisible,
+      "native archived rollback deletion suppressed prior committed row");
+  const auto marker_horizons = mga::ComputeLocalTransactionHorizons(archived_marker.inventory);
+  Check(marker_horizons.ok() && mga::EvaluateLocalCleanupWithHorizons(
+      rollback_marker->metadata, marker_horizons.horizons).decision == mga::CleanupEligibilityDecision::eligible_authoritative,
+      "resolved native rollback marker could not pass cleanup horizons");
 
   auto batch_tx = f.Begin(); db::PhysicalMgaCowMutationBatch batch;
   batch.mutations.push_back(f.Mutation(batch_tx, Id(UuidKind::row), f.first_page + 1, "page-one"));

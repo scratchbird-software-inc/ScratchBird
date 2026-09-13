@@ -831,9 +831,12 @@ EngineApiDiagnostic OverlayMgaTransactionAuthority(
   }
   const auto loaded = ResolveStatementTransactionInventory(context);
   if (!loaded.ok()) return loaded.diagnostic;
+  state->transactions.clear();
+  state->max_transaction_id = loaded.snapshot->inventory.next_local_transaction_id - 1;
   for (const auto& entry : loaded.snapshot->inventory.entries) {
     if (!entry.identity.local_id.valid()) { continue; }
-    state->transactions[entry.identity.local_id.value] = MgaTransactionStateName(entry.state);
+    state->transactions[entry.identity.local_id.value] = MgaTransactionStateName(
+        scratchbird::transaction::mga::InventoryVisibilityState(entry));
     state->max_transaction_id = std::max(state->max_transaction_id, entry.identity.local_id.value);
   }
   if (context.local_transaction_id != 0) {
@@ -883,8 +886,7 @@ bool TextMigrationLineageCreatorVisible(
       inventory.snapshot->inventory,
       MakeLocalTransactionId(candidate_creator_tx));
   if (!exact.ok()) return false;
-  if (exact.entry.state == TransactionState::committed ||
-      exact.entry.state == TransactionState::archived) {
+  if (scratchbird::transaction::mga::HasCommittedInventoryOutcome(exact.entry)) {
     return true;
   }
   return candidate_creator_tx == migration_creator_tx &&

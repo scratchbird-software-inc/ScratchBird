@@ -61,7 +61,67 @@ struct Fixture {
 };
 static void AdditionalCases();
 static void InventoryAdmissionCases();
+static void ArchivedCreatorProjectionCases() {
+  Fixture fixture;
+  mga::RowVersionMetadata row;
+  const auto row_id = uuid::GenerateDurableEngineIdentityV7(platform::UuidKind::row, 1100);
+  const auto version_id = uuid::GenerateDurableEngineIdentityV7(platform::UuidKind::row, 1101);
+  Check(row_id.ok() && version_id.ok(), "archive projection identities");
+  row.identity.row.row_uuid = row_id.value;
+  row.identity.version_uuid = version_id.value.value;
+  row.identity.creator_transaction = fixture.inventory.entries.front().identity;
+  row.identity.version_sequence = 1;
+  row.state = mga::RowVersionState::committed;
+  row.creator_transaction_state = mga::TransactionState::archived;
+  row.payload_present = true;
+  const auto horizons = mga::ComputeLocalTransactionHorizons(fixture.inventory);
+  Check(horizons.ok(), "archive projection cleanup horizons");
+  Check(!mga::ValidateRowVersionMetadata(row).ok(), "unqualified archived creator accepted as row metadata authority");
+  Check(mga::EvaluateVisibility(row, {}).decision != mga::VisibilityDecision::visible,
+      "unqualified archive made row visible");
+  Check(mga::EvaluateLocalCleanupWithHorizons(row, horizons.horizons).decision != mga::CleanupEligibilityDecision::eligible_authoritative,
+      "unqualified archive authorized cleanup");
+  row.state = mga::RowVersionState::delete_marker; row.payload_present = false;
+  Check(mga::EvaluateVersionEffectVisibility(row, {}).decision != mga::VisibilityDecision::visible,
+      "unqualified archive made delete effect visible");
+  for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+    auto entry = fixture.inventory.entries.front();
+    const auto origin = static_cast<mga::TransactionState>(encoded);
+    entry.state = mga::TransactionState::archived; entry.archived_from_state = origin;
+    const bool terminal = origin == mga::TransactionState::committed || origin == mga::TransactionState::rolled_back ||
+        origin == mga::TransactionState::failed_terminal;
+    Check(mga::InventoryVisibilityState(entry) == (terminal ? origin : mga::TransactionState::none) &&
+        mga::HasCommittedInventoryOutcome(entry) == (origin == mga::TransactionState::committed),
+        "archive projection accepted unknown/nonterminal origin or changed terminal outcome");
+    entry.state = mga::TransactionState::committed;
+    Check(mga::InventoryVisibilityState(entry) == (origin == mga::TransactionState::none ?
+        mga::TransactionState::committed : mga::TransactionState::none), "nonarchived creator accepted an archive origin");
+  }
+  for (const auto origin : {mga::TransactionState::committed, mga::TransactionState::rolled_back,
+                           mga::TransactionState::failed_terminal}) {
+    auto entry = fixture.inventory.entries.front();
+    entry.state = mga::TransactionState::archived; entry.archived_from_state = origin;
+    row.creator_transaction_state = mga::InventoryVisibilityState(entry);
+    row.creator_commit_sequence = origin == mga::TransactionState::committed ? entry.commit_sequence : 0;
+    for (const bool deleted : {false, true}) {
+      row.state = deleted ? mga::RowVersionState::delete_marker : origin == mga::TransactionState::committed ?
+          mga::RowVersionState::committed : mga::RowVersionState::rolled_back;
+      row.payload_present = !deleted;
+      Check(mga::ValidateRowVersionMetadata(row).ok(), "valid archive projection refused metadata");
+      const auto effect = mga::EvaluateVersionEffectVisibility(row, {});
+      Check(effect.ok() && (effect.decision == mga::VisibilityDecision::visible) == (origin == mga::TransactionState::committed),
+          "resolved archived row or deletion effect changed outcome");
+      if (origin == mga::TransactionState::failed_terminal)
+        Check(mga::EvaluateLocalCleanupWithHorizons(row, horizons.horizons).decision != mga::CleanupEligibilityDecision::eligible_authoritative,
+            "failed-terminal origin granted cleanup authority");
+      else
+        Check(mga::EvaluateLocalCleanupWithHorizons(row, horizons.horizons).decision == mga::CleanupEligibilityDecision::eligible_authoritative,
+            "resolved commit/rollback version remained blocked after cleanup horizons");
+    }
+  }
+}
 int main() try {
+  ArchivedCreatorProjectionCases();
   Fixture f;
   const auto plain = mga::ComputeLocalTransactionHorizons(f.inventory);
   Check(plain.ok() && plain.horizons.oldest_snapshot_transaction.value == 3,

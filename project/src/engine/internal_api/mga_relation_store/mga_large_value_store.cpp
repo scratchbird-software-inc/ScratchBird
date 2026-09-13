@@ -299,7 +299,7 @@ MgaTemporaryLargeValueRecoveryResult ClassifyMgaTemporaryLargeValueRecovery(
       ++result.fenced_event_count;
       return std::string("fenced");
     }
-    if (found->second == "committed" || found->second == "archived") {
+    if (found->second == "committed") {
       return std::string("committed");
     }
     if (found->second == "rolled_back") {

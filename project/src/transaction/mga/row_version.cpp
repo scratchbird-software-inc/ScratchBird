@@ -199,7 +199,8 @@ RowVersionMetadataResult ValidateRowVersionMetadata(const RowVersionMetadata& me
     return result;
   }
 
-  if (metadata.creator_transaction_state == TransactionState::none) {
+  if (metadata.creator_transaction_state == TransactionState::none ||
+      metadata.creator_transaction_state == TransactionState::archived) {
     result.status = RowVersionErrorStatus();
     result.diagnostic = MakeRowVersionDiagnostic(result.status,
                                                  "SB-ROW-UNKNOWN-CREATOR-TRANSACTION-STATE",
@@ -256,8 +257,7 @@ VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
   auto state = metadata.state;
   if (evaluate_delete_effect && state == RowVersionState::delete_marker) {
     switch (metadata.creator_transaction_state) {
-      case TransactionState::committed:
-      case TransactionState::archived: state = RowVersionState::committed; break;
+      case TransactionState::committed: state = RowVersionState::committed; break;
       case TransactionState::rolled_back:
       case TransactionState::failed_terminal: state = RowVersionState::rolled_back; break;
       case TransactionState::prepared: state = RowVersionState::prepared; break;
@@ -308,8 +308,7 @@ VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
   }
 
   if (!(state == RowVersionState::committed &&
-        (metadata.creator_transaction_state == TransactionState::committed ||
-         metadata.creator_transaction_state == TransactionState::archived))) {
+        metadata.creator_transaction_state == TransactionState::committed)) {
     result.status = RowVersionWarningStatus();
     result.decision = VisibilityDecision::wait_for_transaction;
     result.diagnostic = MakeRowVersionDiagnostic(result.status,

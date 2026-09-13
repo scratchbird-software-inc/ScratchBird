@@ -719,7 +719,7 @@ std::string LowerAsciiCopy(std::string value) {
 std::uint64_t UpdateMaxCommittedCrudTransactionId(const MgaRelationReadView& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
-    if (status == "committed" || status == "archived") {
+    if (status == "committed") {
       max_committed = std::max(max_committed, tx);
     }
   }
@@ -760,7 +760,7 @@ bool UpdateRowVersionVisibleWithHighWater(
   }
   const auto it = state.transactions.find(row.creator_tx);
   if (it == state.transactions.end()) { return false; }
-  if (it->second != "committed" && it->second != "archived") { return false; }
+  if (it->second != "committed") { return false; }
   return visible_through == 0 || row.creator_tx <= visible_through;
 }
 
@@ -2292,7 +2292,7 @@ bool HotPlusExactIndexKeysUnchanged(
 
 mga::TransactionState RowVersionStateToCreatorState(
     const mga::TransactionInventoryEntry& entry) {
-  return entry.state;
+  return mga::InventoryVisibilityState(entry);
 }
 
 mga::RowVersionState RowVersionStateForCreator(
@@ -2301,14 +2301,13 @@ mga::RowVersionState RowVersionStateForCreator(
   if (deleted) {
     return mga::RowVersionState::delete_marker;
   }
-  switch (entry.state) {
+  switch (mga::InventoryVisibilityState(entry)) {
     case mga::TransactionState::active:
       return mga::RowVersionState::uncommitted;
     case mga::TransactionState::preparing:
     case mga::TransactionState::prepared:
       return mga::RowVersionState::prepared;
     case mga::TransactionState::committed:
-    case mga::TransactionState::archived:
       return mga::RowVersionState::committed;
     case mga::TransactionState::rolling_back:
     case mga::TransactionState::rolled_back:
@@ -2319,6 +2318,7 @@ mga::RowVersionState RowVersionStateForCreator(
     case mga::TransactionState::recovering:
       return mga::RowVersionState::recovery_required;
     case mga::TransactionState::none:
+    case mga::TransactionState::archived:
     case mga::TransactionState::created:
     case mga::TransactionState::read_only_active:
     default:
@@ -2383,6 +2383,7 @@ mga::RowVersionMetadata MakeHotProofRowMetadata(
   metadata.chain.previous_version_sequence = previous_sequence;
   metadata.state = row_state;
   metadata.creator_transaction_state = creator_state;
+  metadata.creator_commit_sequence = creator.commit_sequence;
   metadata.payload_present = !row.deleted && !row.values.empty();
   return metadata;
 }

@@ -389,7 +389,6 @@ RowVersionState RowStateForEntry(const RowDataRecord& row,
   }
   switch (creator_state) {
     case TransactionState::committed:
-    case TransactionState::archived:
       return RowVersionState::committed;
     case TransactionState::rolled_back:
     case TransactionState::failed_terminal:
@@ -408,6 +407,8 @@ RowVersionState RowStateForEntry(const RowDataRecord& row,
     case TransactionState::read_only_active:
     case TransactionState::none:
       return RowVersionState::uncommitted;
+    case TransactionState::archived:
+      return RowVersionState::unknown;
   }
   return RowVersionState::unknown;
 }

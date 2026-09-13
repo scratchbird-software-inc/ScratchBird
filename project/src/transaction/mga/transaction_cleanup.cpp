@@ -145,13 +145,11 @@ TransactionCleanupDecisionResult EvaluateHold(const RowVersionMetadata& metadata
 }
 
 bool IsKnownFinalCreatorOutcome(const RowVersionMetadata& metadata) {
-  if (metadata.creator_transaction_state == TransactionState::archived) {
-    return metadata.state == RowVersionState::committed ||
-           metadata.state == RowVersionState::delete_marker ||
-           metadata.state == RowVersionState::rolled_back;
+  if (metadata.state == RowVersionState::delete_marker) {
+    return metadata.creator_transaction_state == TransactionState::committed ||
+           metadata.creator_transaction_state == TransactionState::rolled_back;
   }
-  if (metadata.state == RowVersionState::committed ||
-      metadata.state == RowVersionState::delete_marker) {
+  if (metadata.state == RowVersionState::committed) {
     return metadata.creator_transaction_state == TransactionState::committed;
   }
   if (metadata.state == RowVersionState::rolled_back) {

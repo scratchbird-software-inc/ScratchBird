@@ -255,7 +255,7 @@ std::string MakeSecondaryIndexDeltaEvidenceReference(
 std::uint64_t MaxCommittedLocalTransactionId(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
-    if (status == "committed" || status == "archived") {
+    if (status == "committed") {
       max_committed = std::max(max_committed, tx);
     }
   }
@@ -494,12 +494,12 @@ std::string Dpc033DiagnosticDetail(
   return detail;
 }
 
-bool IsDpc025CommittedTerminal(TransactionState state) {
-  return state == TransactionState::committed ||
-         state == TransactionState::archived;
+bool IsDpc025CommittedTerminal(const scratchbird::transaction::mga::TransactionInventoryEntry& entry) {
+  return scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry);
 }
 
-bool IsDpc025RolledBackTerminal(TransactionState state) {
+bool IsDpc025RolledBackTerminal(const scratchbird::transaction::mga::TransactionInventoryEntry& entry) {
+  const auto state = scratchbird::transaction::mga::InventoryVisibilityState(entry);
   return state == TransactionState::rolled_back ||
          state == TransactionState::failed_terminal;
 }
@@ -981,8 +981,7 @@ EngineApiDiagnostic CommitMgaSecondaryIndexDeltaLedgerTransaction(
   const auto transaction = LookupLocalTransaction(
       inventory.inventory, MakeLocalTransactionId(local_transaction_id));
   if (!transaction.ok() ||
-      (transaction.entry.state != TransactionState::committed &&
-       transaction.entry.state != TransactionState::archived)) {
+      !scratchbird::transaction::mga::HasCommittedInventoryOutcome(transaction.entry)) {
     return MakeInvalidRequestDiagnostic(
         "mga.secondary_index_delta_ledger",
         "committed_inventory_finality_required_for_derived_promotion");
@@ -1197,7 +1196,7 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
         record.delta.local_transaction_id);
     const bool inventory_committed =
         transaction != state.transactions.end() &&
-        (transaction->second == "committed" || transaction->second == "archived");
+        transaction->second == "committed";
     const bool recoverably_committed =
         (record.commit_state ==
              idx::SecondaryIndexDeltaLedgerCommitState::committed_premerge &&
@@ -1496,7 +1495,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
                         "mga.secondary_index_delta_recovery.missing_transaction_authority",
                         "precommit delta has no durable MGA transaction inventory entry");
         }
-        if (IsDpc025CommittedTerminal(lookup.entry.state)) {
+        if (IsDpc025CommittedTerminal(lookup.entry)) {
           ++result.committed_premerge_count;
           ++result.retained_count;
           result.recovery_class =
@@ -1509,7 +1508,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
             ++result.promoted_count;
             changed = true;
           }
-        } else if (IsDpc025RolledBackTerminal(lookup.entry.state)) {
+        } else if (IsDpc025RolledBackTerminal(lookup.entry)) {
           if (request.repair_enabled) {
             keep_record = false;
             ++result.removed_count;
@@ -1531,10 +1530,10 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
                         "mga.secondary_index_delta_recovery.missing_transaction_authority",
                         "committed_premerge delta has no durable MGA transaction inventory entry");
         }
-        if (IsDpc025CommittedTerminal(lookup.entry.state)) {
+        if (IsDpc025CommittedTerminal(lookup.entry)) {
           ++result.committed_premerge_count;
           ++result.retained_count;
-        } else if (IsDpc025RolledBackTerminal(lookup.entry.state)) {
+        } else if (IsDpc025RolledBackTerminal(lookup.entry)) {
           keep_record = false;
           ++result.removed_count;
           changed = true;
@@ -1928,8 +1927,7 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
       const auto transaction = state.transactions.find(
           record.delta.local_transaction_id);
       if (transaction == state.transactions.end() ||
-          (transaction->second != "committed" &&
-           transaction->second != "archived")) {
+          transaction->second != "committed") {
         continue;
       }
       // The durable transaction inventory is finality authority.  The

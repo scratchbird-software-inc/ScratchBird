@@ -585,8 +585,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
              transaction->second == "preparing" ||
              transaction->second == "prepared";
     }
-    if (transaction->second != "committed" &&
-        transaction->second != "archived") {
+    if (transaction->second != "committed") {
       return false;
     }
     if (snapshot_vector->visible_committed_high_watermark == 0 ||
@@ -1580,8 +1579,7 @@ bool StreamingCountCreatorVisible(
            transaction->second == "preparing" ||
            transaction->second == "prepared";
   }
-  if (transaction->second != "committed" &&
-      transaction->second != "archived") {
+  if (transaction->second != "committed") {
     return false;
   }
   if (snapshot.visible_committed_high_watermark == 0 ||

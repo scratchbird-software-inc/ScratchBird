@@ -54,14 +54,21 @@ struct LocalTransactionInventory {
   std::optional<TransactionInventoryPublicationBase> publication_base;
 };
 
-inline bool HasCommittedInventoryOutcome(const TransactionInventoryEntry& entry) {
-  return entry.state == TransactionState::committed ||
-      (entry.state == TransactionState::archived && entry.archived_from_state == TransactionState::committed);
+// Derived visibility state, never an unqualified archived state. The native
+// entry retains its lifecycle state and exact archived origin separately.
+inline TransactionState InventoryVisibilityState(const TransactionInventoryEntry& entry) {
+  if (entry.state != TransactionState::archived)
+    return entry.archived_from_state == TransactionState::none ? entry.state : TransactionState::none;
+  switch (entry.archived_from_state) {
+    case TransactionState::committed:
+    case TransactionState::rolled_back:
+    case TransactionState::failed_terminal: return entry.archived_from_state;
+    default: return TransactionState::none;
+  }
 }
 
-inline TransactionState InventoryVisibilityState(const TransactionInventoryEntry& entry) {
-  return entry.state == TransactionState::archived && entry.archived_from_state != TransactionState::committed
-      ? entry.archived_from_state : entry.state;
+inline bool HasCommittedInventoryOutcome(const TransactionInventoryEntry& entry) {
+  return InventoryVisibilityState(entry) == TransactionState::committed;
 }
 
 struct TransactionInventoryResult {
