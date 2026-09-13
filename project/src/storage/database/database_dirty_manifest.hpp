@@ -14,6 +14,7 @@
 #include "native_common_page_header.hpp"
 #include "filespace_page_zero.hpp"
 #include "transaction_inventory_page.hpp"
+#include "catalog_page.hpp"
 
 #include <array>
 #include <optional>
@@ -62,7 +63,7 @@ enum class NativeCheckpointError {
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
   binding_mismatch, io_failure, encrypted_requires_crypto_authority,
   incomplete, inventory_failure, inventory_mismatch, creator_not_committed,
-  history_mismatch
+  history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -91,6 +92,28 @@ struct NativeCheckpointInventoryResult {
 // No overall root selection: other families and predecessor/recovery authority
 // are independently required. No publication-CAS base is issued here.
 NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeCheckpointCatalogResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeCatalogRootError catalog_error =
+      scratchbird::storage::page::NativeCatalogRootError::none;
+  NativeCheckpointInventoryResult checkpoint_inventory;
+  // First is the catalog. Feature selects the same image or the second image.
+  std::vector<scratchbird::storage::page::NativeCatalogRootResult> catalogs;
+  std::size_t feature_root_index = 0;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept {
+    return error == NativeCheckpointError::none && checkpoint_inventory.ok()
+        && !catalogs.empty() && feature_root_index < catalogs.size();
+  }
+};
+// Exact checkpoint/inventory and catalog/feature image/creator binding.
+// Not leaf/index serving, snapshot admission, whole-root selection or a CAS base.
+NativeCheckpointCatalogResult VerifyNativeCheckpointCatalogRootsFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
