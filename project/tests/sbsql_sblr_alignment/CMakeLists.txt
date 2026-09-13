@@ -10,6 +10,15 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+add_executable(sbsql_sblr_alignment_numeric_consumer_reference numeric_consumer_reference_test.cpp)
+target_compile_features(sbsql_sblr_alignment_numeric_consumer_reference PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_numeric_consumer_reference PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_numeric_consumer_reference
+  COMMAND sbsql_sblr_alignment_numeric_consumer_reference)
+set_tests_properties(sbsql_sblr_alignment_numeric_consumer_reference PROPERTIES
+  LABELS "sbsql_sblr_alignment;numeric_reference;production_linkage;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_real128_reference real128_reference_test.cpp)
 target_compile_features(sbsql_sblr_alignment_real128_reference PRIVATE cxx_std_17)
 target_include_directories(sbsql_sblr_alignment_real128_reference PRIVATE

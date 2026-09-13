@@ -18,7 +18,6 @@ add_library(sb_core_datatypes
   datatype_metrics_redaction.cpp
   datatype_operations.cpp
   datatype_physical_encoding.cpp
-  datatype_runtime_closure.cpp
   datatype_temporal_wire.cpp
   datatype_wire_metadata.cpp
   reference_compatibility_metadata.cpp

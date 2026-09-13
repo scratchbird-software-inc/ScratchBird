@@ -195,8 +195,8 @@ GROUPS = (
                 ),
             ),
             SourceEvidence(
-                "project/src/core/datatypes/datatype_runtime_closure.cpp",
-                ("RuntimeNumericType", "DatatypeSortKeyResult", "DatatypeHashResult"),
+                "project/src/core/datatypes/datatype_operations.cpp",
+                ("ApplyNumericOperation", "DatatypeSortKeyResult", "DatatypeHashResult"),
             ),
             SourceEvidence(
                 "project/tests/database_lifecycle/canonical_datatype_families_conformance.cpp",

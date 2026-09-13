@@ -4444,7 +4444,6 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "datatypes",
         "Exact numeric and datatype runtime closure",
         (
-            "src/core/datatypes/datatype_runtime_closure.cpp",
             "src/core/datatypes/datatype_operations.cpp",
             "libraries/sbl_numeric/sbl_numeric.cpp",
             "src/engine/internal_api/domain_support/domain_store.cpp",

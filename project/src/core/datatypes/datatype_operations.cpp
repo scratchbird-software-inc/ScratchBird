@@ -790,14 +790,30 @@ bool CanonicalizeReal128Text(const std::string& input, std::string* out) {
   return true;
 }
 
-DatatypeNumericOperationResult NumericFailure(std::string detail) {
+DatatypeNumericOperationResult NumericFailure(
+    std::string detail,
+    std::string diagnostic_code = "SB_DATATYPE_NUMERIC_OPERATION_REJECTED") {
   DatatypeNumericOperationResult result;
   result.status = ErrorStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-                                                      "SB_DATATYPE_NUMERIC_OPERATION_REJECTED",
+                                                      std::move(diagnostic_code),
                                                       "datatype.numeric_operation.rejected",
                                                       std::move(detail));
   return result;
+}
+
+DatatypeNumericFacts NumericFacts(
+    const scratchbird::libraries::sbl_numeric::NumericResult& result) {
+  DatatypeNumericFacts facts;
+  facts.inexact = result.inexact;
+  facts.underflow = result.underflow;
+  facts.overflow = result.overflow;
+  facts.invalid = result.invalid;
+  facts.divide_by_zero = result.divide_by_zero;
+  facts.subnormal = result.subnormal;
+  facts.unordered = result.status ==
+      scratchbird::libraries::sbl_numeric::NumericStatusCode::unordered;
+  return facts;
 }
 
 I128 DecimalToSignedInteger(const ParsedDecimal& value) {
@@ -1393,7 +1409,7 @@ const char* DatatypeNumericOperationKindName(DatatypeNumericOperationKind operat
     case DatatypeNumericOperationKind::divide: return "divide";
     case DatatypeNumericOperationKind::compare: return "compare";
   }
-  return "canonicalize";
+  return "unknown";
 }
 
 const char* DatatypeRoundingModeName(DatatypeRoundingMode rounding) {
@@ -1402,7 +1418,15 @@ const char* DatatypeRoundingModeName(DatatypeRoundingMode rounding) {
     case DatatypeRoundingMode::half_up: return "half_up";
     case DatatypeRoundingMode::truncate: return "truncate";
   }
-  return "half_even";
+  return "unknown";
+}
+
+const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering) {
+  switch (null_ordering) {
+    case DatatypeNullOrdering::nulls_first: return "nulls_first";
+    case DatatypeNullOrdering::nulls_last: return "nulls_last";
+  }
+  return "unknown";
 }
 
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
@@ -1759,6 +1783,13 @@ DatatypeSetOperationResult ApplySetOperation(const DatatypeSetOperationRequest& 
 DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperationRequest& request) {
   namespace numeric = scratchbird::libraries::sbl_numeric;
 
+  const auto invalid_request = [&](std::string detail) {
+    auto failed = NumericFailure(std::move(detail),
+        request.type_id == CanonicalTypeId::real128 ? "NUMERIC.REAL128.INVALID" :
+        "SB_DATATYPE_NUMERIC_OPERATION_REJECTED");
+    failed.numeric_facts.invalid = true;
+    return failed;
+  };
   DatatypeNumericOperationResult result;
   result.status = OkStatus();
   result.value = {request.type_id, {}, false};
@@ -1776,6 +1807,7 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     case DatatypeRoundingMode::half_even: backend_request.context.rounding = numeric::RoundingMode::half_even; break;
     case DatatypeRoundingMode::half_up: backend_request.context.rounding = numeric::RoundingMode::half_up; break;
     case DatatypeRoundingMode::truncate: backend_request.context.rounding = numeric::RoundingMode::truncate; break;
+    default: return invalid_request("invalid_rounding_mode");
   }
   switch (request.operation) {
     case DatatypeNumericOperationKind::canonicalize: backend_request.operation = numeric::NumericOperation::canonicalize; break;
@@ -1784,6 +1816,7 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
     case DatatypeNumericOperationKind::multiply: backend_request.operation = numeric::NumericOperation::multiply; break;
     case DatatypeNumericOperationKind::divide: backend_request.operation = numeric::NumericOperation::divide; break;
     case DatatypeNumericOperationKind::compare: backend_request.operation = numeric::NumericOperation::compare; break;
+    default: return invalid_request("invalid_numeric_operation");
   }
   switch (request.type_id) {
     case CanonicalTypeId::int128:
@@ -1802,18 +1835,29 @@ DatatypeNumericOperationResult ApplyNumericOperation(const DatatypeNumericOperat
       backend_request.type = numeric::NumericType::real128;
       break;
     default:
-      return NumericFailure("unsupported_numeric_type");
+      return invalid_request("unsupported_numeric_type");
+  }
+  if (request.left.type_id != request.type_id ||
+      (request.operation != DatatypeNumericOperationKind::canonicalize &&
+       request.right.type_id != request.type_id)) {
+    return invalid_request("numeric_argument_type_mismatch");
   }
   backend_request.left.type = backend_request.type;
   backend_request.right.type = backend_request.type;
 
   const numeric::NumericResult backend_result = numeric::ApplyNumericOperation(backend_request);
+  result.numeric_facts = NumericFacts(backend_result);
   if (backend_result.status == numeric::NumericStatusCode::null_result) {
     result.value = {CanonicalTypeId::null_type, {}, true};
     return result;
   }
   if (backend_result.status != numeric::NumericStatusCode::ok) {
-    return NumericFailure(backend_result.diagnostic_code.empty() ? "numeric_backend_failed" : backend_result.diagnostic_code);
+    auto failed = NumericFailure(
+        backend_result.diagnostic_code.empty() ? "numeric_backend_failed" : backend_result.diagnostic_code,
+        request.type_id == CanonicalTypeId::real128 && !backend_result.diagnostic_code.empty()
+            ? backend_result.diagnostic_code : "SB_DATATYPE_NUMERIC_OPERATION_REJECTED");
+    failed.numeric_facts = result.numeric_facts;
+    return failed;
   }
   result.comparison = backend_result.comparison;
   if (request.operation == DatatypeNumericOperationKind::compare) {
@@ -1828,6 +1872,13 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   DatatypeComparisonResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
+      request.null_ordering != DatatypeNullOrdering::nulls_last) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "invalid_null_ordering");
+    return result;
+  }
 
   if (!CanonicalCharacterValueValid(request.left) || !CanonicalCharacterValueValid(request.right)) {
     result.status = ErrorStatus();
@@ -1850,6 +1901,20 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
                                                         "SB_DATATYPE_COMPARISON_REJECTED",
                                                         "datatype.comparison.rejected",
                                                         "type_mismatch");
+    return result;
+  }
+  if (request.left.type_id == CanonicalTypeId::real128) {
+    DatatypeNumericOperationRequest numeric;
+    numeric.operation = DatatypeNumericOperationKind::compare;
+    numeric.type_id = CanonicalTypeId::real128;
+    numeric.left = request.left;
+    numeric.right = request.right;
+    numeric.context = request.numeric_context;
+    const auto compared = ApplyNumericOperation(numeric);
+    result.status = compared.status;
+    result.comparison = compared.comparison;
+    result.diagnostic = compared.diagnostic;
+    result.numeric_facts = compared.numeric_facts;
     return result;
   }
   if (IsOpaqueRenderOnly(request.left.type_id)) {
@@ -2101,6 +2166,13 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   DatatypeSortKeyResult result;
   result.status = OkStatus();
   result.diagnostic = MakeDatatypeOperationDiagnostic(result.status, "SB_DATATYPE_OK", "datatype.ok");
+  if (request.null_ordering != DatatypeNullOrdering::nulls_first &&
+      request.null_ordering != DatatypeNullOrdering::nulls_last) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+        "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "invalid_null_ordering");
+    return result;
+  }
   if (!CanonicalCharacterValueValid(request.value)) {
     result.status = ErrorStatus();
     result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,

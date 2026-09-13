@@ -150,11 +150,22 @@ struct DatatypeNumericOperationRequest {
   DatatypeNumericContext context;
 };
 
+struct DatatypeNumericFacts {
+  bool inexact = false;
+  bool underflow = false;
+  bool overflow = false;
+  bool invalid = false;
+  bool divide_by_zero = false;
+  bool subnormal = false;
+  bool unordered = false;
+};
+
 struct DatatypeNumericOperationResult {
   Status status;
   DatatypeOperationValue value;
   int comparison = 0;
   DiagnosticRecord diagnostic;
+  DatatypeNumericFacts numeric_facts;
 
   bool ok() const {
     return status.ok();
@@ -167,12 +178,15 @@ struct DatatypeComparisonRequest {
   DatatypeNullOrdering null_ordering = DatatypeNullOrdering::nulls_first;
   bool case_insensitive_character_compare = false;
   DatatypeTextSeedAuthority text_seed;
+  // Execution mechanism only: the caller retains descriptor/context authority.
+  DatatypeNumericContext numeric_context;
 };
 
 struct DatatypeComparisonResult {
   Status status;
   int comparison = 0;
   DiagnosticRecord diagnostic;
+  DatatypeNumericFacts numeric_facts;
 
   bool ok() const {
     return status.ok();
