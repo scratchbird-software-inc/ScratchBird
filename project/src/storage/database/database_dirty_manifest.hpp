@@ -11,7 +11,12 @@
 // SB-DIRTY-MANIFEST-ANCHOR
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
+#include "native_common_page_header.hpp"
+#include "filespace_page_zero.hpp"
+#include "transaction_inventory_page.hpp"
 
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,6 +28,70 @@ using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::u16;
 using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
+
+// MGA-CANONICAL-CHECKPOINT-IMAGE-001. Image and exact-reference evidence,
+// not a caller-asserted checkpoint selection or transaction-finality receipt.
+struct NativeCheckpointRootReference {
+  u16 role = 0;
+  u32 page_type = 0;
+  scratchbird::storage::disk::NativePageReference page;
+  scratchbird::core::platform::Uuid object_uuid;
+  std::array<scratchbird::core::platform::byte,32> sha256{};
+};
+struct NativeCheckpointRoot {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::Uuid object_uuid;
+  u64 checkpoint_generation = 0;
+  u64 root_set_generation = 0;
+  u64 selected_local_transaction_id = 0;
+  u64 stable_local_transaction_id = 0;
+  u64 local_durable_transaction_id = 0;
+  u64 cluster_quorum_transaction_id = 0;
+  scratchbird::core::platform::Uuid timeline_uuid;
+  scratchbird::core::platform::Uuid creator_transaction_uuid;
+  u64 creator_local_transaction_id = 0;
+  u64 flags = 0;
+  std::optional<scratchbird::storage::disk::NativePageReference> predecessor;
+  std::array<scratchbird::core::platform::byte,32> predecessor_sha256{};
+  bool completed = false;
+  std::vector<NativeCheckpointRootReference> roots;
+};
+enum class NativeCheckpointError {
+  none, invalid_header, invalid_family, invalid_reference, invalid_roots,
+  invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
+  binding_mismatch, io_failure, encrypted_requires_crypto_authority,
+  incomplete, inventory_failure, inventory_mismatch, creator_not_committed
+};
+struct NativeCheckpointRootResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_family;
+  std::optional<NativeCheckpointRoot> root;
+  std::vector<scratchbird::core::platform::byte> bytes;
+  bool ok() const noexcept { return error == NativeCheckpointError::none && root.has_value(); }
+};
+NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot&) noexcept;
+NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchbird::core::platform::byte>&) noexcept;
+NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
+    scratchbird::storage::disk::FileDevice&,
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::storage::disk::FilespaceRootReference&) noexcept;
+
+struct NativeCheckpointInventoryResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeInventoryError inventory_error = scratchbird::storage::page::NativeInventoryError::none;
+  std::optional<NativeCheckpointRoot> checkpoint;
+  scratchbird::transaction::mga::LocalTransactionInventory inventory;
+  u64 inventory_generation = 0;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error == NativeCheckpointError::none && checkpoint.has_value(); }
+};
+// Actual checkpoint -> head digest -> complete inventory -> creator outcome.
+// No overall root selection: other families and predecessor/recovery authority
+// are independently required. No publication-CAS base is issued here.
+NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
 
 inline constexpr u32 kDirtyObjectManifestFormatVersion = 1;
 

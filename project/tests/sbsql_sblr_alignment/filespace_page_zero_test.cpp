@@ -4,6 +4,7 @@
 #include "catalog_page.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "transaction_inventory_page.hpp"
+#include "database_dirty_manifest.hpp"
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -1047,7 +1048,186 @@ void CanonicalInventoryChains() {
   if(child==0){::execl("/proc/self/exe","inventory-chain-probe","--inventory-chain-probe",fixture.root.c_str(),nullptr);::_exit(125);}
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual canonical inventory chain");
 }
+db::NativeCheckpointRoot CheckpointExample(unsigned profile=0) {
+  db::NativeCheckpointRoot r;r.header={sizes[profile],0x300,Id(1),Id(2),Id(96),19,109,0,Profile(profile)};
+  r.object_uuid=Id(49);r.checkpoint_generation=1;r.root_set_generation=8;
+  r.selected_local_transaction_id=17;r.stable_local_transaction_id=12;r.local_durable_transaction_id=16;
+  r.timeline_uuid=Id(97);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;r.completed=true;
+  constexpr unsigned type[]={0,769,770,9,3,5,10,11,8,5,771,773,775,776,777,779};
+  for(unsigned role=1;role<=10;++role) {
+    db::NativeCheckpointRootReference root;root.role=role;root.page_type=type[role];
+    root.page={Id(2),30+role,80+role,Profile(profile)};root.object_uuid=Id(static_cast<byte>(110+role));
+    const std::string fixture="checkpoint-target-image-oracle-"+std::to_string(role);
+    Check(SHA256(reinterpret_cast<const byte*>(fixture.data()),fixture.size(),root.sha256.data())!=nullptr,"independent target digest fixture");
+    r.roots.push_back(root);
+  }
+  return r;
+}
+void CheckpointSeal(Bytes& b,bool root_set=true) {
+  std::array<byte,32> digest{};
+  if(root_set) {
+    std::size_t used=0;for(unsigned i=0;i<4;++i)used|=static_cast<std::size_t>(b[140+i])<<(8*i);
+    Check(used>=512&&used<=b.size(),"independent checkpoint root extent before sealing");
+    const std::string_view domain="SBCPSET1";Bytes material(domain.begin(),domain.end());
+    material.insert(material.end(),b.begin()+160,b.begin()+256);
+    material.insert(material.end(),b.begin()+512,b.begin()+used);
+    Check(SHA256(material.data(),material.size(),digest.data())!=nullptr,"independent checkpoint root-set SHA256");
+    std::copy(digest.begin(),digest.end(),b.begin()+336);
+  }
+  std::fill(b.begin()+368,b.begin()+400,0);
+  Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent checkpoint full SHA256");
+  std::copy(digest.begin(),digest.end(),b.begin()+368);
+}
+Bytes CheckpointOracle(const db::NativeCheckpointRoot& r) {
+  auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  const std::string_view magic="SBCPNT01";std::copy(magic.begin(),magic.end(),b.begin()+128);
+  Number(b,136,2,1);Number(b,138,2,384);Number(b,140,4,512+112*r.roots.size());PutUuid(b,144,r.object_uuid);
+  Number(b,160,8,r.checkpoint_generation);Number(b,168,8,r.root_set_generation);Number(b,176,8,r.selected_local_transaction_id);
+  Number(b,184,8,r.stable_local_transaction_id);Number(b,192,8,r.local_durable_transaction_id);Number(b,200,8,r.cluster_quorum_transaction_id);
+  PutUuid(b,208,r.timeline_uuid);PutUuid(b,224,r.creator_transaction_uuid);Number(b,240,8,r.creator_local_transaction_id);Number(b,248,8,r.flags);
+  const auto ref=[&](std::size_t at,const disk::NativePageReference& p){PutUuid(b,at,p.filespace_uuid);Number(b,at+16,8,p.page_number);Number(b,at+24,8,p.page_generation);PutUuid(b,at+32,p.page_size_profile_uuid);};
+  if(r.predecessor)ref(256,*r.predecessor);std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),b.begin()+304);Number(b,400,8,r.completed?1:0);
+  for(std::size_t i=0;i<r.roots.size();++i){const auto& root=r.roots[i];const auto at=512+112*i;Number(b,at,2,root.role);Number(b,at+4,4,root.page_type);ref(at+8,root.page);PutUuid(b,at+56,root.object_uuid);std::copy(root.sha256.begin(),root.sha256.end(),b.begin()+at+72);}
+  CheckpointSeal(b);return b;
+}
+void CheckpointReject(const db::NativeCheckpointRootResult& r) {Check(!r.ok()&&!r.root&&r.bytes.empty(),"checkpoint refuses without partial root");}
+void CanonicalCheckpoints() {
+  using E=db::NativeCheckpointError;
+  for(unsigned profile=0;profile<5;++profile) {
+    auto r=CheckpointExample(profile);const auto expected=CheckpointOracle(r);const auto encoded=db::EncodeNativeCheckpointRoot(r);
+    Check(encoded.ok()&&encoded.bytes==expected,"independent checkpoint image all profiles");
+    const auto decoded=db::DecodeNativeCheckpointRoot(expected);Check(decoded.ok()&&decoded.root->completed&&decoded.root->roots.size()==10,"decode complete checkpoint image");
+    r.completed=false;const auto incomplete=CheckpointOracle(r);const auto inspection=db::DecodeNativeCheckpointRoot(incomplete);
+    Check(inspection.ok()&&!inspection.root->completed&&db::EncodeNativeCheckpointRoot(r).bytes==incomplete,"incomplete remains inspection data not completed root");
+  }
+  auto r=CheckpointExample();const auto good=CheckpointOracle(r);
+  for(std::size_t at=0;at<good.size();++at){auto b=good;b[at]^=1;CheckpointReject(db::DecodeNativeCheckpointRoot(b));}
+  for(std::size_t at:{128u,136u,138u,140u,400u,408u,511u,514u,616u,1632u}) {
+    auto b=good;b[at]=255;CheckpointSeal(b,false);CheckpointReject(db::DecodeNativeCheckpointRoot(b));
+  }
+  for(std::size_t at:{144u,160u,168u,176u,208u,224u,240u}) {
+    auto b=good;std::fill_n(b.begin()+at,(at==144||at==208||at==224)?16:8,0);CheckpointSeal(b);CheckpointReject(db::DecodeNativeCheckpointRoot(b));
+  }
+  for(std::size_t at:{184u,192u,200u,240u,248u}){auto b=good;Number(b,at,8,255);CheckpointSeal(b);CheckpointReject(db::DecodeNativeCheckpointRoot(b));}
+  for(std::size_t at:{512u,516u,520u,536u,544u,552u,568u,584u}) {
+    auto b=good;std::fill_n(b.begin()+at,at==584?32:at==520||at==552||at==568?16:at==536||at==544?8:2,0);CheckpointSeal(b);CheckpointReject(db::DecodeNativeCheckpointRoot(b));
+  }
+  auto changed=good;changed[336]^=1;CheckpointSeal(changed,false);CheckpointReject(db::DecodeNativeCheckpointRoot(changed));
+  for(std::size_t size:{0u,127u,8191u,8193u}){auto b=good;b.resize(size);CheckpointReject(db::DecodeNativeCheckpointRoot(b));}
+  auto alias=r;alias.roots[8]=alias.roots[4];alias.roots[8].role=9;
+  Check(db::EncodeNativeCheckpointRoot(alias).ok(),"exact catalog/feature shared root admitted");
+  for(unsigned field=0;field<4;++field){auto bad=alias;if(field==0)++bad.roots[8].page.page_generation;if(field==1)bad.roots[8].object_uuid=Id(199);if(field==2)bad.roots[8].sha256[0]^=1;if(field==3)bad.roots[8].page.page_size_profile_uuid=Profile(1);CheckpointReject(db::EncodeNativeCheckpointRoot(bad));CheckpointReject(db::DecodeNativeCheckpointRoot(CheckpointOracle(bad)));}
+  auto successor=r;successor.checkpoint_generation=2;successor.header.page_number=20;successor.header.page_generation=110;
+  successor.predecessor=disk::NativePageReference{r.header.filespace_uuid,r.header.page_number,r.header.page_generation,r.header.page_size_profile_uuid};
+  Check(SHA256(good.data(),good.size(),successor.predecessor_sha256.data())!=nullptr,"actual predecessor full-image hash");
+  Check(db::EncodeNativeCheckpointRoot(successor).bytes==CheckpointOracle(successor),"generation-linked checkpoint image");
+  auto missing=successor;missing.predecessor.reset();CheckpointReject(db::EncodeNativeCheckpointRoot(missing));
+  auto cluster=r;auto root=cluster.roots.back();root.role=14;root.page_type=777;root.page.page_number=49;root.object_uuid=Id(198);cluster.roots.push_back(root);cluster.flags=4;cluster.cluster_quorum_transaction_id=15;
+  Check(db::EncodeNativeCheckpointRoot(cluster).ok()&&db::DecodeNativeCheckpointRoot(CheckpointOracle(cluster)).ok(),"cluster checkpoint framing not cluster authority");
+  cluster.flags=0;CheckpointReject(db::EncodeNativeCheckpointRoot(cluster));
+  for(unsigned mode=0;mode<2;++mode) {
+    observed_allocations=0;count_allocations=true;auto measured=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(r);count_allocations=false;
+    const auto count=observed_allocations;Check(measured.ok(),"measure complete checkpoint allocations");bool success=false;
+    for(unsigned long budget=0;budget<=count;++budget){allocation_budget=budget;const auto result=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(r);allocation_budget=-1;if(result.ok()){success=true;break;}CheckpointReject(result);Check(result.error==E::resource_exhausted,"checkpoint allocation diagnostic");}
+    Check(success,"every checkpoint allocation position");
+    for(unsigned fault=1;fault<=4;++fault){hash_fault=fault;const auto result=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(r);Check(hash_fault==0&&result.error==E::hash_failure,"checkpoint hashing failure");CheckpointReject(result);}
+  }
+}
+void CanonicalCheckpointFiles() {
+  using E=db::NativeCheckpointError;Fixture fixture;
+  for(unsigned profile=0;profile<5;++profile) {
+    auto r=CheckpointExample(profile);const auto image=CheckpointOracle(r);auto z=Example(profile);const auto zero=Oracle(z);
+    disk::FileDevice device;const auto path=(fixture.root/("checkpoint-"+std::to_string(profile))).string();
+    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own checkpoint filespace");const byte padding=0;
+    Check(device.WriteAt(0,zero.data(),zero.size()).ok()&&device.WriteAt(z.total_pages*sizes[profile]-1,&padding,1).ok()
+      &&device.WriteAt(19*sizes[profile],image.data(),image.size()).ok()&&device.Sync().ok(),"persist actual checkpoint image");
+    auto read=[&]{return db::ReadNativeCheckpointRootFromOpenDevice(device,Id(1),z.roots[8]);};
+    auto result=read();Check(result.ok()&&result.bytes==image&&result.root->completed,"actual pagezero-bound checkpoint read");
+    for(unsigned field=0;field<5;++field){auto bad=z.roots[8];if(field==0)++bad.page_generation;if(field==1)bad.object_uuid=Id(200);if(field==2)bad.kind=2;if(field==3)bad.filespace_uuid=Id(200);if(field==4)bad.page_size_profile_uuid=Profile((profile+1)%5);CheckpointReject(db::ReadNativeCheckpointRootFromOpenDevice(device,Id(1),bad));}
+    if(profile==0) {
+      reads=0;track_reads=true;result=read();track_reads=false;const auto count=reads;Check(result.ok(),"measure complete checkpoint reads");
+      for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;result=read();track_reads=false;Check(read_fault==0,"actual checkpoint read fault consumed");CheckpointReject(result);}
+      auto incomplete=r;incomplete.completed=false;const auto bytes=CheckpointOracle(incomplete);
+      Check(device.WriteAt(19*sizes[profile],bytes.data(),bytes.size()).ok()&&device.Sync().ok(),"persist incomplete checkpoint");
+      result=read();Check(result.ok()&&!result.root->completed,"device reader cannot upgrade incomplete marker");
+      auto encrypted=r;encrypted.header.flags=1;const auto opaque=CheckpointOracle(encrypted);
+      Check(device.WriteAt(19*sizes[profile],opaque.data(),opaque.size()).ok()&&device.Sync().ok(),"persist raw-encrypted checkpoint fixture");
+      result=read();CheckpointReject(result);Check(result.error==E::encrypted_requires_crypto_authority,"checkpoint needs crypto authority");
+      Check(device.WriteAt(19*sizes[profile],image.data(),image.size()).ok()&&device.Sync().ok(),"restore isolated complete fixture");
+      Exclusive(path);
+    }
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"checkpoint readonly reopen");
+    result=read();Check(result.ok()&&result.bytes==image,"checkpoint survives actual close and reopen");
+  }
+}
+void CanonicalCheckpointInventoryPair() {
+  using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice device;
+  const auto path=(fixture.root/"checkpoint-inventory").string();const auto z=Example();const auto zero=Oracle(z);const byte padding=0;
+  Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,zero.data(),zero.size()).ok()
+    &&device.WriteAt(z.total_pages*sizes[0]-1,&padding,1).ok(),"create canonical checkpoint/inventory node fixture");
+  auto inventory=InventoryExample();inventory.inventory.next_local_transaction_id=18;inventory.inventory.next_commit_sequence=2;
+  auto& entry=inventory.inventory.entries.front();entry.identity.local_id=mga::MakeLocalTransactionId(17);
+  entry.identity.transaction_uuid.value=Id(98);entry.state=mga::TransactionState::committed;entry.commit_sequence=1;
+  auto checkpoint=CheckpointExample();checkpoint.roots.front().page=InventoryRef(inventory);checkpoint.roots.front().object_uuid=inventory.object_uuid;
+  const auto persist=[&](const auto& actual_inventory,auto actual_checkpoint,u64 horizon) {
+    const auto image=InventoryOracle(actual_inventory,horizon,horizon,horizon);
+    Check(SHA256(image.data(),image.size(),actual_checkpoint.roots.front().sha256.data())!=nullptr,"actual canonical inventory head digest");
+    const auto root=CheckpointOracle(actual_checkpoint);
+    Check(device.WriteAt(14*sizes[0],image.data(),image.size()).ok()&&device.WriteAt(19*sizes[0],root.data(),root.size()).ok()
+      &&device.Sync().ok(),"persist actual checkpoint-to-inventory binding");
+    return root;
+  };
+  const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(0),&device}};
+  const auto read=[&](u64 budget=16384){return db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,z.roots[8],budget);};
+  const auto empty=[&](const auto& r){Check(!r.ok()&&!r.checkpoint&&r.inventory.entries.empty()&&!r.inventory.publication_base
+    &&r.inventory_generation==0&&r.retained_image_bytes==0,"failed checkpoint inventory pair returns no authority prefix");};
+  persist(inventory,checkpoint,18);auto result=read();
+  Check(result.ok()&&result.inventory.entries.size()==1&&result.inventory_generation==19&&result.retained_image_bytes==16384
+    &&!result.inventory.publication_base,"actual checkpoint and complete inventory creator binding");
+  result=read(16383);empty(result);Check(result.error==E::inventory_failure
+    &&result.inventory_error==page::NativeInventoryError::resource_exhausted,"pair budget includes checkpoint and chain");
+  for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::limbo,
+      mga::TransactionState::failed_terminal,mga::TransactionState::rolled_back}) {
+    auto bad=inventory;bad.inventory.entries[0].state=state;bad.inventory.entries[0].commit_sequence=0;
+    const auto horizon=state==mga::TransactionState::rolled_back?18:17;
+    auto image=InventoryOracle(bad,horizon,state==mga::TransactionState::failed_terminal?18:horizon,state==mga::TransactionState::failed_terminal?18:horizon);
+    auto root=checkpoint;Check(SHA256(image.data(),image.size(),root.roots.front().sha256.data())!=nullptr,"reseal actual noncommitted inventory");const auto bytes=CheckpointOracle(root);
+    Check(device.WriteAt(14*sizes[0],image.data(),image.size()).ok()&&device.WriteAt(19*sizes[0],bytes.data(),bytes.size()).ok()&&device.Sync().ok(),"persist noncommitted creator case");
+    result=read();empty(result);Check(result.error==E::creator_not_committed,"noncommitted creator cannot certify checkpoint inventory");
+  }
+  for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}) {
+    auto archived=inventory;auto& e=archived.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;
+    if(origin!=mga::TransactionState::committed)e.commit_sequence=0;
+    persist(archived,checkpoint,18);result=read();
+    if(origin==mga::TransactionState::committed)Check(result.ok()&&result.inventory.entries[0].archived_from_state==origin,"exact archived committed creator admitted");
+    else{empty(result);Check(result.error==E::creator_not_committed,"archive location is not checkpoint commit authority");}
+  }
+  auto mismatch=checkpoint;mismatch.creator_transaction_uuid=Id(199);persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"binary checkpoint creator UUID mismatch");
+  auto global=inventory;global.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;
+  persist(global,checkpoint,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"global transaction cannot certify standalone checkpoint");
+  mismatch=checkpoint;mismatch.selected_local_transaction_id=18;persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"selected transaction boundary must bind inventory next counter");
+  mismatch=checkpoint;mismatch.completed=false;persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::incomplete,"incomplete checkpoint cannot certify inventory pair");
+  const auto root_bytes=persist(inventory,checkpoint,18);auto bad_hash=root_bytes;bad_hash[512+72]^=1;CheckpointSeal(bad_hash);
+  Check(device.WriteAt(19*sizes[0],bad_hash.data(),bad_hash.size()).ok()&&device.Sync().ok(),"persist wrong expected inventory hash with valid checkpoint seals");
+  result=read();empty(result);Check(result.error==E::invalid_integrity,"checkpoint expected hash binds actual inventory bytes");
+  persist(inventory,checkpoint,18);
+  reads=0;track_reads=true;result=read();track_reads=false;const auto read_count=reads;Check(result.ok(),"measure complete bound pair reads");
+  for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;result=read();track_reads=false;Check(read_fault==0,"pair actual read fault consumed");empty(result);}
+  observed_allocations=0;count_allocations=true;result=read();count_allocations=false;const auto allocation_count=observed_allocations;Check(result.ok(),"measure bound pair allocations");bool success=false;
+  for(unsigned long budget=0;budget<=allocation_count;++budget){allocation_budget=budget;result=read();allocation_budget=-1;if(result.ok()){success=true;break;}empty(result);Check(result.error==E::resource_exhausted||(result.error==E::inventory_failure&&result.inventory_error==page::NativeInventoryError::resource_exhausted),"pair allocation refusal classified");}
+  Check(success,"every bound pair allocation position");
+  Exclusive(path);Check(device.Close().ok(),"close complete pair before fresh process");
+  const auto child=::fork();Check(child>=0,"fork independent checkpoint inventory reader");
+  if(child==0){::execl("/proc/self/exe","checkpoint-inventory-probe","--checkpoint-inventory-probe",path.c_str(),nullptr);::_exit(125);}
+  int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies persisted checkpoint inventory pair");
+}
 int main(int argc,char** argv) {
+  if(argc==3&&std::string_view(argv[1])=="--checkpoint-inventory-probe") {
+    disk::FileDevice device;if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    const auto r=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),{{Id(2),Profile(0),&device}},Example().roots[8],16384);
+    return r.ok()&&r.inventory_generation==19&&r.inventory.entries.size()==1
+      &&r.inventory.entries[0].identity.transaction_uuid.value==Id(98)&&r.inventory.entries[0].state==mga::TransactionState::committed?0:3;
+  }
   if(argc==3&&std::string_view(argv[1])=="--inventory-chain-probe") {
     disk::FileDevice first,second;const std::filesystem::path root=argv[2];
     if(!first.Open((root/"inventory-primary").string(),disk::FileOpenMode::open_existing_read_only).ok()
@@ -1082,7 +1262,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
