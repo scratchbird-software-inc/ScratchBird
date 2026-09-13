@@ -9,6 +9,7 @@
 #include "transaction_inventory_validation.hpp"
 #include "transaction_cleanup.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "page_header.hpp"
 #include "startup_state.hpp"
@@ -721,6 +722,124 @@ void NativeCatalogMetadataVersions() {
     }
   }
   Fixture conflicts;
+  {
+    Fixture schema_node;
+    const auto birth=schema_node.Begin();
+    catalog::CatalogSchemaDefinition schema;
+    schema.schema_object_uuid=Id(UuidKind::object);
+    schema.database_catalog_object_uuid=Id(UuidKind::object);
+    schema.default_filespace_uuid=Id(UuidKind::filespace);
+    schema.origin_transaction_uuid=birth.transaction_uuid;
+    schema.origin_local_transaction_id=birth.local_id.value;
+    auto definition=metadata;
+    definition.record.header.kind=catalog::CatalogRecordKind::schema;
+    definition.record.header.row_uuid=Id(UuidKind::row);
+    definition.record.header.object_uuid=schema.schema_object_uuid;
+    definition.record.header.parent_uuid=schema.database_catalog_object_uuid;
+    definition.owning_schema_uuid={};
+    definition.default_name_uuid=Id(UuidKind::object);
+    definition.name_vector_uuid=Id(UuidKind::object);
+    definition.creator_transaction_uuid=birth.transaction_uuid;
+    definition.creator_local_transaction_id=birth.local_id.value;
+    const auto set_payload=[&](auto& m,const auto& d){const auto e=catalog::EncodeCatalogSchemaDefinition(d);
+      Check(e.ok(),"encode complete mutable schema definition");m.record.payload.assign(e.bytes.begin(),e.bytes.end());};
+    set_payload(definition,schema);
+    const auto create=db::WriteNativeCatalogVersionToOpenDevice(schema_node.device,
+        {schema_node.relation,schema_node.first_page,birth,definition,{}});
+    Check(create.ok(),"stage actual mutable schema version");
+    auto hidden=db::ReadNativeCatalogVersionsFromOpenDevice(schema_node.device,schema_node.relation,schema_node.first_page,{},true);
+    Check(hidden.ok()&&hidden.rows.empty(),"uncommitted schema does not leak");
+    schema_node.Finish(birth,true);
+    const auto alter=schema_node.Begin();
+    auto successor=definition;successor.definition_version=2;
+    successor.creator_transaction_uuid=alter.transaction_uuid;successor.creator_local_transaction_id=alter.local_id.value;
+    for(unsigned fault=0;fault<2;++fault){auto changed=schema;
+      if(fault==0){changed.origin_transaction_uuid=alter.transaction_uuid;changed.origin_local_transaction_id=alter.local_id.value;}
+      if(fault==1)changed.database_catalog_object_uuid=Id(UuidKind::object);
+      auto invalid=successor;if(fault==1)invalid.record.header.parent_uuid=changed.database_catalog_object_uuid;
+      set_payload(invalid,changed);Check(catalog::EncodeCatalogMetadataVersion(invalid).ok(),"individually valid schema successor fixture");
+      const auto before=schema_node.Bytes();const auto before_writes=write_calls;
+      const auto rejected=db::WriteNativeCatalogVersionToOpenDevice(schema_node.device,
+          {schema_node.relation,schema_node.first_page,alter,invalid,create.row_version.version_uuid});
+      Check(!rejected.ok()&&schema_node.Bytes()==before&&write_calls==before_writes,"schema successor changed original database/creation authority");
+    }
+    auto changed=schema;changed.default_charset_uuid=Id(UuidKind::object);changed.default_collation_uuid=Id(UuidKind::object);
+    set_payload(successor,changed);
+    const auto replacement=db::WriteNativeCatalogVersionToOpenDevice(schema_node.device,
+        {schema_node.relation,schema_node.first_page,alter,successor,create.row_version.version_uuid});
+    Check(replacement.ok(),"actual schema default replacement stages");
+    schema_node.Finish(alter,false);
+    auto original=db::ReadNativeCatalogVersionsFromOpenDevice(schema_node.device,schema_node.relation,schema_node.first_page,{},true);
+    Check(original.ok()&&original.rows.size()==1&&original.rows[0].metadata.record.payload==definition.record.payload,
+        "schema rollback preserves original defaults and creator");
+    const auto commit_alter=schema_node.Begin();successor.creator_transaction_uuid=commit_alter.transaction_uuid;
+    successor.creator_local_transaction_id=commit_alter.local_id.value;
+    const auto committed=db::WriteNativeCatalogVersionToOpenDevice(schema_node.device,
+        {schema_node.relation,schema_node.first_page,commit_alter,successor,create.row_version.version_uuid});
+    Check(committed.ok(),"schema defaults stage after prior rollback");schema_node.Finish(commit_alter,true);
+    Check(schema_node.device.Close().ok()&&schema_node.device.Open(schema_node.path,disk::FileOpenMode::open_existing).ok(),"reopen native schema node");
+    const auto reread=db::ReadNativeCatalogVersionsFromOpenDevice(schema_node.device,schema_node.relation,schema_node.first_page,{},true);
+    Check(reread.ok()&&reread.rows.size()==1&&reread.rows[0].metadata.record.payload==successor.record.payload,
+        "native schema defaults survive actual commit and reopen");
+    const auto payload=catalog::DecodeCatalogSchemaDefinition(reread.rows[0].metadata.record.payload);
+    Check(payload.ok()&&payload.definition->origin_transaction_uuid.value==birth.transaction_uuid.value&&
+        payload.definition->origin_local_transaction_id==birth.local_id.value&&
+        payload.definition->default_charset_uuid.value==changed.default_charset_uuid.value,
+        "native schema retains creation separately from new version creator");
+    const auto schema_reader=schema_node.Begin();
+    const auto retire_tx=schema_node.Begin();auto retired_schema=successor;
+    retired_schema.definition_version=3;retired_schema.creator_transaction_uuid=retire_tx.transaction_uuid;
+    retired_schema.creator_local_transaction_id=retire_tx.local_id.value;
+    retired_schema.retired_transaction_uuid=retire_tx.transaction_uuid;retired_schema.record.header.deleted=true;
+    retired_schema.lifecycle=catalog::CatalogObjectLifecycle::dropped;retired_schema.status=catalog::CatalogObjectStatus::retired;
+    const auto retired_version=db::WriteNativeCatalogVersionToOpenDevice(schema_node.device,
+        {schema_node.relation,schema_node.first_page,retire_tx,retired_schema,committed.row_version.version_uuid});
+    Check(retired_version.ok(),"actual schema retirement preserves complete family definition");schema_node.Finish(retire_tx,true);
+    mga::VisibilitySnapshot before_retirement;before_retirement.reader_transaction=schema_reader.local_id;
+    before_retirement.visible_through_local_transaction_id=commit_alter.local_id.value;
+    before_retirement.visible_through_local_transaction_id_is_boundary=true;
+    const auto old_schema=db::ReadNativeCatalogVersionsFromOpenDevice(schema_node.device,schema_node.relation,
+        schema_node.first_page,before_retirement,false,schema_reader);
+    Check(old_schema.ok()&&old_schema.rows.size()==1&&!old_schema.rows[0].metadata.record.header.deleted&&
+        old_schema.rows[0].metadata.record.payload==successor.record.payload,"schema retirement preserves prior reader definition");
+    schema_node.Finish(schema_reader,false);
+    const auto expected_schema=catalog::EncodeCatalogMetadataVersion(retired_schema);Check(expected_schema.ok(),"encode complete expected schema retirement");
+    std::array<platform::byte,24> schema_header{};platform::StoreLittle64(schema_header.data(),schema_node.first_page);
+    std::copy(schema_node.relation.value.bytes.begin(),schema_node.relation.value.bytes.end(),schema_header.begin()+8);
+    std::ofstream schema_oracle(schema_node.path+".catalog-oracle",std::ios::binary);
+    schema_oracle.write(reinterpret_cast<const char*>(schema_header.data()),schema_header.size());
+    schema_oracle.write(reinterpret_cast<const char*>(expected_schema.bytes.data()),expected_schema.bytes.size());schema_oracle.close();
+    Check(schema_oracle.good()&&schema_node.device.Close().ok(),"release mutable schema node for fresh process");
+    const auto schema_child=::fork();Check(schema_child>=0,"fork actual schema catalog reader");
+    if(schema_child==0){::execl("/proc/self/exe","schema-catalog-probe","--catalog-probe",schema_node.path.c_str(),nullptr);::_exit(99);}
+    int schema_status=0;pid_t schema_waited;
+    do{schema_waited=::waitpid(schema_child,&schema_status,0);}while(schema_waited<0&&errno==EINTR);
+    Check(schema_waited==schema_child&&WIFEXITED(schema_status)&&WEXITSTATUS(schema_status)==0,
+        "independent process lost complete mutable schema retirement");
+    Fixture poisoned;
+    const auto poison_birth=poisoned.Begin();auto poison_definition=definition;auto poison_schema=schema;
+    poison_schema.origin_transaction_uuid=poison_birth.transaction_uuid;poison_schema.origin_local_transaction_id=poison_birth.local_id.value;
+    poison_definition.creator_transaction_uuid=poison_birth.transaction_uuid;poison_definition.creator_local_transaction_id=poison_birth.local_id.value;
+    set_payload(poison_definition,poison_schema);
+    Check(db::WriteNativeCatalogVersionToOpenDevice(poisoned.device,
+        {poisoned.relation,poisoned.first_page,poison_birth,poison_definition,{}}).ok(),"stage native schema history corruption fixture");
+    poisoned.Finish(poison_birth,true);const auto poison_writer=poisoned.Begin();auto forged=poison_definition;
+    forged.definition_version=2;forged.creator_transaction_uuid=poison_writer.transaction_uuid;forged.creator_local_transaction_id=poison_writer.local_id.value;
+    poison_schema.origin_transaction_uuid=poison_writer.transaction_uuid;poison_schema.origin_local_transaction_id=poison_writer.local_id.value;
+    set_payload(forged,poison_schema);const auto encoded_forged=catalog::EncodeCatalogMetadataVersion(forged);
+    Check(encoded_forged.ok(),"individually valid but historically forged schema envelope");
+    auto raw=poisoned.Mutation(poison_writer,forged.record.header.row_uuid,poisoned.first_page,"");
+    raw.kind=db::PhysicalMgaCowMutationKind::update;raw.cells[0].value.type_id=types::CanonicalTypeId::binary;
+    raw.cells[0].value.payload=encoded_forged.bytes;
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(poisoned.device,raw).ok(),"stage physical history bypassing family admission");
+    for(const bool rolled_back:{false,true}){
+      if(rolled_back)poisoned.Finish(poison_writer,false);
+      const auto before=poisoned.Bytes();const auto before_writes=write_calls;
+      const auto invalid=db::ReadNativeCatalogVersionsFromOpenDevice(poisoned.device,poisoned.relation,poisoned.first_page,{},true);
+      Check(!invalid.ok()&&invalid.rows.empty()&&before==poisoned.Bytes()&&before_writes==write_calls,
+          "hidden or rolled-back schema history corruption became successful absence");
+    }
+  }
   // Exercise the native read boundary with real physical effects that bypass
   // catalog writer admission. A hidden competing row cannot turn a committed
   // identity into an apparently unambiguous catalog object.

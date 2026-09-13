@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog_record_codec.hpp"
+#include "catalog_schema_definition.hpp"
 
 #include "uuid.hpp"
 #include "hash_digest.hpp"
@@ -254,6 +255,9 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
       return MetadataError("object_reference_kind_invalid");
   const bool retired = value.record.header.deleted;
+  if (value.record.header.kind == CatalogRecordKind::schema &&
+      !CatalogSchemaDefinitionMatchesMetadata(value))
+    return MetadataError("schema_definition_binding_invalid");
   if ((IsSuppliedIdentity(value.retired_transaction_uuid) &&
        ((value.status != CatalogObjectStatus::retired && value.status != CatalogObjectStatus::quarantined) ||
         value.retired_transaction_uuid.value != value.creator_transaction_uuid.value)) ||

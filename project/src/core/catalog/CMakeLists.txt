@@ -21,6 +21,7 @@ add_library(sb_core_catalog
   catalog_database_record_codec.cpp
   catalog_filespace_record_codec.cpp
   catalog_schema_record_codec.cpp
+  catalog_schema_definition.cpp
   catalog_localized_record_codec.cpp
   catalog_resource_record_codec.cpp
   catalog_name_record_codec.cpp

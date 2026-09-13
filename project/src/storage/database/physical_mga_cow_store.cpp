@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "physical_mga_cow_store.hpp"
+#include "catalog_schema_definition.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1766,6 +1767,12 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body) {
     if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.version_duplicate");
   }
+  for (const auto& row : body.rows) {
+    const auto prior=decoded.metadata.find(row.previous_version_uuid);
+    if (prior!=decoded.metadata.end() && !catalog::CatalogSchemaDefinitionPreservesOrigin(
+        prior->second,decoded.metadata.at(row.version_uuid)))
+      return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.schema_origin_changed");
+  }
   decoded.status=CowStoreOkStatus(); return decoded;
 }
 using LeafError=NativeCatalogLeafError;
@@ -2132,7 +2139,8 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
       if (previous!=by_version.end()) {
         const auto& before=metadata_at(previous->second);
         const auto& after=metadata_at(i);
-        if (before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
+        if (!catalog::CatalogSchemaDefinitionPreservesOrigin(before,after) ||
+            before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
             after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
             after.catalog_generation<before.catalog_generation || after.dependency_generation<before.dependency_generation ||
             after.invalidation_generation<before.invalidation_generation) return fail(E::invalid_chain);
@@ -2290,6 +2298,7 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
         previous->metadata.record.header.object_uuid.value != request.metadata.record.header.object_uuid.value ||
         previous->metadata.record.header.kind != request.metadata.record.header.kind ||
         previous->metadata.record.header.deleted ||
+        !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,request.metadata) ||
         previous->metadata.definition_version == std::numeric_limits<u64>::max() ||
         request.metadata.definition_version != previous->metadata.definition_version + 1 ||
         request.metadata.schema_epoch < previous->metadata.schema_epoch ||

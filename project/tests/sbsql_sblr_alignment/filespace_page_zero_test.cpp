@@ -4,6 +4,7 @@
 #include "catalog_page.hpp"
 #include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "disk_device.hpp"
@@ -1918,6 +1919,26 @@ void CheckpointCatalogRelations() {
       selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,false,true);
       for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.effective_lifecycle==catalog::CatalogObjectLifecycle::altering,"own successor is provisional altering");
       owned.transaction_uuid=writer.identity.transaction_uuid;owned.local_transaction_id=15;rewrite(owned,[](auto&){});const auto history_images=images;
+      // Complete mutable schemas also preserve origin across different loaded
+      // filespace pages, not just within a single native row page.
+      const auto as_schema=[&](auto& row,const auto& origin,u64 origin_number){rewrite(row,[&](auto& metadata){
+        catalog::CatalogSchemaDefinition d;d.schema_object_uuid=metadata.record.header.object_uuid;
+        d.database_catalog_object_uuid={platform::UuidKind::object,Id(246)};
+        d.parent_schema_uuid={platform::UuidKind::object,Id(164)};
+        d.origin_transaction_uuid=origin;d.origin_local_transaction_id=origin_number;
+        metadata.record.header.kind=catalog::CatalogRecordKind::schema;metadata.record.header.parent_uuid=d.parent_schema_uuid;
+        metadata.default_name_uuid={platform::UuidKind::object,Id(248)};metadata.name_vector_uuid={platform::UuidKind::object,Id(249)};
+        const auto e=catalog::EncodeCatalogSchemaDefinition(d);Check(e.ok(),"complete schema cross-page fixture");
+        metadata.record.payload.assign(e.bytes.begin(),e.bytes.end());});};
+      as_schema(images.leaves[0].body.rows[0],old.transaction_uuid,old.local_transaction_id);
+      as_schema(images.leaves[3].body.rows[0],old.transaction_uuid,old.local_transaction_id);
+      persist(false,19,19);selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);
+      as_schema(images.leaves[3].body.rows[0],writer.identity.transaction_uuid,15);
+      persist(false,19,19);loaded=read(budget);Check(loaded.ok(),"origin corruption remains individually valid on separate pages");
+      selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"cross-page schema origin replacement refused");
+      selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page schema origin replacement refused");
+      images=history_images;
       // An unindexed row on another page still reserves its object identity.
       // Outcome comes from native inventory, not visibility or lifecycle text.
       const auto duplicate_inventory=inventory;
