@@ -358,9 +358,10 @@ bool ProfilesAgree(const NativeCatalogPageReference& a, const NativeCatalogPageR
   return !Same(a.filespace_uuid,b.filespace_uuid) || Same(a.page_size_profile_uuid,b.page_size_profile_uuid);
 }
 Error Validate(const NativeCatalogRoot& r) {
-  if (!disk::EncodeNativeCommonPageHeader(r.header).ok() || r.header.page_type!=5)
+  const auto type=disk::CanonicalPageZeroRootPageType(r.root_kind);
+  if (!disk::EncodeNativeCommonPageHeader(r.header).ok() || r.header.page_type!=type)
     return Error::invalid_header;
-  if ((r.root_kind!=2 && r.root_kind!=8) || !V7(r.object_uuid)
+  if ((r.root_kind!=2 && r.root_kind!=6 && r.root_kind!=7 && r.root_kind!=8) || !V7(r.object_uuid)
       || !V7(r.creator_transaction_uuid) || !r.creator_local_transaction_id
       || !r.catalog_generation || !r.schema_epoch || !r.security_epoch)
     return Error::invalid_family;
@@ -375,7 +376,8 @@ Error Validate(const NativeCatalogRoot& r) {
   if (r.roots.size()!=(r.root_kind==2?6u:1u)) return Error::invalid_roots;
   for (std::size_t i=0;i<r.roots.size();++i) {
     const auto& target=r.roots[i];
-    if (target.role!=(r.root_kind==2?i+1:6) || (target.page_type!=6 && target.page_type!=0x200)
+    const auto role=r.root_kind==2?i+1:r.root_kind==6?5:r.root_kind==7?4:6;
+    if (target.role!=role || (target.page_type!=6 && target.page_type!=0x200)
         || !V7(target.object_uuid) || !Reference(target.page) || SameSlot(self,target.page)
         || !ProfilesAgree(self,target.page)) return Error::invalid_roots;
     if (r.predecessor && (SameSlot(*r.predecessor,target.page)
@@ -430,7 +432,8 @@ NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<byte>& b) noex
   try {
     if (b.size()<entries) return Fail(Error::invalid_header);
     const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if (!common.ok() || common.header->page_type!=5 || b.size()!=common.header->page_size_bytes)
+    if (!common.ok() || (common.header->page_type!=5 && common.header->page_type!=10 && common.header->page_type!=11)
+        || b.size()!=common.header->page_size_bytes)
       return Fail(Error::invalid_header);
     const byte* f=b.data()+family;
     const auto count=LoadLittle16(f+18); const std::size_t used=entries+80*count;
@@ -449,8 +452,8 @@ NativeCatalogRootResult DecodeNativeCatalogRoot(const std::vector<byte>& b) noex
     if (!Zero(f+96,48)) r.predecessor=GetRef(f+96);
     std::copy_n(f+144,32,r.predecessor_sha256.begin());
     // Bound cardinality before allocating or interpreting any target.
-    if ((r.root_kind==2 && count!=6) || (r.root_kind==8 && count!=1)
-        || (r.root_kind!=2 && r.root_kind!=8)) return Fail(Error::invalid_roots);
+    if ((r.root_kind==2 && count!=6) || (r.root_kind!=2 && count!=1)
+        || (r.root_kind!=2 && r.root_kind!=6 && r.root_kind!=7 && r.root_kind!=8)) return Fail(Error::invalid_roots);
     for (unsigned i=0;i<count;++i) {
       const byte* e=b.data()+entries+80*i;
       if (!Zero(e+2,2) || !Zero(e+72,8)) return Fail(Error::invalid_roots);
@@ -469,8 +472,8 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     const scratchbird::storage::disk::FilespaceRootReference& ref) noexcept {
   using namespace native_catalog;
   try {
-    if (!V7(database_uuid) || !V7(ref.object_uuid) || ref.page_type!=5
-        || (ref.kind!=2 && ref.kind!=8)
+    if (!V7(database_uuid) || !V7(ref.object_uuid) || ref.page_type!=disk::CanonicalPageZeroRootPageType(ref.kind)
+        || (ref.kind!=2 && ref.kind!=6 && ref.kind!=7 && ref.kind!=8)
         || !Reference({ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid}))
       return Fail(Error::invalid_reference);
     auto guard=device.AcquireOperationGuard();
@@ -497,7 +500,8 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     if (!Same(h.database_uuid,database_uuid) || !Same(h.filespace_uuid,ref.filespace_uuid)
         || !Same(h.page_size_profile_uuid,ref.page_size_profile_uuid)
         || h.page_number!=ref.page_number || h.page_generation!=ref.page_generation
-        || !Same(r.object_uuid,ref.object_uuid) || (ref.kind==2 && r.root_kind!=2))
+        || h.page_type!=ref.page_type || !Same(r.object_uuid,ref.object_uuid)
+        || (ref.kind==8 ? (r.root_kind!=2 && r.root_kind!=8) : r.root_kind!=ref.kind))
       return Fail(Error::binding_mismatch);
     if (r.predecessor && Same(r.predecessor->filespace_uuid,h.filespace_uuid)
         && r.predecessor->page_number>=z.total_pages) return Fail(Error::invalid_reference);
@@ -519,7 +523,8 @@ NativeCatalogRootRangeResult ReadNativeCatalogRootRangeFromOpenDevices(
   using namespace native_catalog;
   const auto fail=[](Error error) { return NativeCatalogRootRangeResult{error,{},0}; };
   const auto valid_ref=[](const disk::FilespaceRootReference& ref) {
-    return (ref.kind==2 || ref.kind==8) && ref.page_type==5 && V7(ref.object_uuid)
+    return (ref.kind==2 || ref.kind==6 || ref.kind==7 || ref.kind==8)
+        && ref.page_type==disk::CanonicalPageZeroRootPageType(ref.kind) && V7(ref.object_uuid)
         && Reference({ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid});
   };
   const auto exact=[](const disk::FilespaceRootReference& a,const disk::FilespaceRootReference& b) {
@@ -589,7 +594,7 @@ NativeCatalogRootRangeResult ReadNativeCatalogRootRangeFromOpenDevices(
       const auto& root=*result.roots.back().root;
       if (!root.predecessor) return fail(Error::history_mismatch);
       const auto& prior=*root.predecessor;
-      next={head.kind,5,prior.filespace_uuid,prior.page_number,prior.page_generation,
+      next={head.kind,head.page_type,prior.filespace_uuid,prior.page_number,prior.page_generation,
             prior.page_size_profile_uuid,root.object_uuid};
     }
   } catch (const std::bad_alloc&) { return fail(Error::resource_exhausted); }

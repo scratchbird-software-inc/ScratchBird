@@ -66,7 +66,7 @@ enum class NativeCheckpointError {
   incomplete, inventory_failure, inventory_mismatch, creator_not_committed,
   history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed,
   allocation_failure, allocation_creator_mismatch, allocation_creator_not_committed,
-  allocation_record_creator_mismatch
+  allocation_record_creator_mismatch, policy_relation_mismatch
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -126,6 +126,25 @@ struct NativeCheckpointAllocationResult {
     return error == NativeCheckpointError::none && checkpoint_inventory.ok() && allocation.ok();
   }
 };
+
+struct NativeCheckpointPolicyRootsResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeCatalogRootError catalog_error =
+      scratchbird::storage::page::NativeCatalogRootError::none;
+  NativeCheckpointCatalogResult catalog;
+  // Configuration, then security. These images grant neither private-row
+  // access nor configuration activation; their actual consumers own that work.
+  std::array<scratchbird::storage::page::NativeCatalogRootResult, 2> policies;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept {
+    return error == NativeCheckpointError::none && catalog.ok() && policies[0].ok() && policies[1].ok();
+  }
+};
+NativeCheckpointPolicyRootsResult VerifyNativeCheckpointPolicyRootsFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
 // MGA-CURRENT-CHECKPOINT-ALLOCATION-BINDING-001. Actual current primary roots,
 // map digest and inventory creator binding; no reuse grant or publication base.
 NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpenDevices(

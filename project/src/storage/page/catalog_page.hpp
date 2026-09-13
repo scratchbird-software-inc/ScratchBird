@@ -27,7 +27,8 @@ struct NativeCatalogRootReference {
   NativeCatalogPageReference page;
   scratchbird::core::platform::Uuid object_uuid;
 };
-// Canonical root family; deliberately distinct from prototype SBCAT001 leaves.
+// Canonical catalog/feature/configuration/security root family; deliberately
+// distinct from prototype SBCAT001 leaves. Exact native page type binds kind.
 // Logical image validation does not grant crypto, MGA or target-family authority.
 struct NativeCatalogRoot {
   scratchbird::storage::disk::NativeCommonPageHeader header;

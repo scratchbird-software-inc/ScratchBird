@@ -883,6 +883,64 @@ NativeCheckpointCatalogResult VerifyNativeCheckpointCatalogRootsFromOpenDevices(
    catch(...){return fail(Error::io_failure);}
 }
 
+NativeCheckpointPolicyRootsResult VerifyNativeCheckpointPolicyRootsFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept {
+  using namespace native_checkpoint;
+  namespace mga=scratchbird::transaction::mga;
+  const auto fail=[](Error error){NativeCheckpointPolicyRootsResult r;r.error=error;return r;};
+  try {
+    if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
+    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
+    auto catalog=VerifyNativeCheckpointCatalogRootsFromOpenDevices(database_uuid,locked.ordered,checkpoint,
+                                                                  maximum_retained_image_bytes);
+    if(!catalog.ok()) {
+      auto failure=fail(catalog.error);failure.catalog_error=catalog.catalog_error;
+      failure.catalog.error=catalog.error;
+      failure.catalog.checkpoint_inventory.error=catalog.checkpoint_inventory.error;
+      failure.catalog.checkpoint_inventory.inventory_error=catalog.checkpoint_inventory.inventory_error;
+      return failure;
+    }
+    NativeCheckpointPolicyRootsResult result;result.retained_image_bytes=catalog.retained_image_bytes;
+    const auto& pair=catalog.checkpoint_inventory;
+    for(std::size_t index=0;index<2;++index) {
+      const u16 kind=static_cast<u16>(index+6);
+      const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),
+                                     [kind](const auto& root){return root.role==kind;});
+      if(target==pair.checkpoint->roots.end())return fail(Error::invalid_roots);
+      const auto fs=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),target->page.filespace_uuid,
+          [](const auto& file,const auto& id){return file.filespace_uuid<id;});
+      if(fs==locked.ordered.end()||fs->filespace_uuid!=target->page.filespace_uuid||
+          fs->page_size_profile_uuid!=target->page.page_size_profile_uuid)return fail(Error::invalid_filespace);
+      const auto* profile=disk::FindCanonicalFilespacePageProfile(target->page.page_size_profile_uuid);
+      if(!profile||profile->page_size_bytes>maximum_retained_image_bytes-result.retained_image_bytes)
+        return fail(Error::resource_exhausted);
+      const disk::FilespaceRootReference ref{kind,target->page_type,target->page.filespace_uuid,
+          target->page.page_number,target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
+      auto root=scratchbird::storage::page::ReadNativeCatalogRootFromOpenDevice(*fs->device,database_uuid,ref);
+      if(!root.ok()){auto failure=fail(Error::catalog_failure);failure.catalog_error=root.error;return failure;}
+      const auto digest=hash::ComputeSha256Digest(root.bytes);
+      if(!digest.ok())return fail(Error::hash_failure);
+      if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
+      const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(root.root->creator_local_transaction_id));
+      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.root->creator_transaction_uuid||
+          (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
+        return fail(Error::catalog_creator_mismatch);
+      if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::catalog_creator_not_committed);
+      const auto& actual=root.root->roots.front();
+      const auto& expected=catalog.catalogs.front().root->roots[index==0?4:3];
+      if(actual.role!=expected.role||actual.page_type!=expected.page_type||actual.page!=expected.page||
+          actual.object_uuid!=expected.object_uuid)return fail(Error::policy_relation_mismatch);
+      result.retained_image_bytes+=root.bytes.size();result.policies[index]=std::move(root);
+    }
+    result.catalog=std::move(catalog);result.error=Error::none;return result;
+  }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}
+   catch(...){return fail(Error::io_failure);}
+}
+
 NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,

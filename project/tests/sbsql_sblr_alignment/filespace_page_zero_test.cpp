@@ -588,9 +588,12 @@ void RootInvalid(const page::NativeCatalogRoot& r,RootError error) {
   Check(!e.ok()&&!e.root&&e.bytes.empty()&&e.error==error,"invalid root emits no image");
 }
 void CatalogRoots() {
-  for(unsigned p=0;p<5;++p) for(unsigned kind:{2u,8u}) {
+  for(unsigned p=0;p<5;++p) for(unsigned kind:{2u,6u,7u,8u}) {
     auto r=RootExample(p); r.root_kind=static_cast<disk::u16>(kind);
-    if(kind==8) r.roots.erase(r.roots.begin(),r.roots.end()-1);
+    if(kind!=2) {
+      const auto target=r.roots[kind==6?4:kind==7?3:5];r.roots={target};
+      r.header.page_type=kind==6?10:kind==7?11:5;
+    }
     for(unsigned generation:{1u,2u}) {
       r.catalog_generation=generation;
       if(generation==2) {
@@ -617,7 +620,7 @@ void CatalogRoots() {
   for(std::size_t size:{0u,127u,383u,8191u,8193u,131073u}) {
     auto b=good; b.resize(size); RootReject(b,RootError::invalid_header);
   }
-  {auto r=RootExample(); r.root_kind=7; Check(!page::EncodeNativeCatalogRoot(r).ok(),"unknown kind producer");}
+  {auto r=RootExample(); r.root_kind=9; Check(!page::EncodeNativeCatalogRoot(r).ok(),"unknown kind producer");}
   {auto r=RootExample(); r.header.page_type=6; RootInvalid(r,RootError::invalid_header);}
   {auto r=RootExample(); r.object_uuid.bytes[6]=0x41; RootInvalid(r,RootError::invalid_family);}
   {auto r=RootExample(); r.creator_transaction_uuid={}; RootInvalid(r,RootError::invalid_family);}
@@ -728,7 +731,7 @@ std::array<byte,32> WholeRootHash(const Bytes& bytes) {
 }
 disk::FilespaceRootReference RootRef(const page::NativeCatalogRoot& root) {
   const auto& h=root.header;
-  return {2,5,h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid,root.object_uuid};
+  return {root.root_kind,h.page_type,h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid,root.object_uuid};
 }
 page::NativeCatalogPageReference PageRef(const page::NativeCatalogRoot& root) {
   const auto& h=root.header; return {h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
@@ -1804,6 +1807,130 @@ void CanonicalCheckpointAllocation() {
   }
 }
 
+void CanonicalPolicyRoots() {
+  using E=db::NativeCheckpointError;
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
+    const auto path1=(fixture.root/"policy-primary").string(),path2=(fixture.root/"policy-secondary").string();
+    auto z1=Example(p),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);
+    for(auto& ref:z2.roots)ref.filespace_uuid=Id(7);
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own policy-root filespaces");
+    const auto prepare=[&](auto& device,const auto& zero){const auto bytes=Oracle(zero);const byte pad=0;
+      Check(device.WriteAt(0,bytes.data(),bytes.size()).ok()&&device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&pad,1).ok(),"actual policy-root filespace capacity");};
+    prepare(first,z1);prepare(second,z2);
+    auto inventory=InventoryExample(p);inventory.inventory.next_local_transaction_id=18;inventory.inventory.next_commit_sequence=4;
+    auto& e=inventory.inventory.entries.front();e.identity.local_id=mga::MakeLocalTransactionId(11);e.identity.transaction_uuid.value=Id(91);
+    e.state=mga::TransactionState::committed;e.commit_sequence=1;
+    auto active=e;active.identity.local_id=mga::MakeLocalTransactionId(16);active.identity.transaction_uuid.value=Id(99);
+    active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto policy_creator=e;policy_creator.identity.local_id=mga::MakeLocalTransactionId(12);
+    policy_creator.identity.transaction_uuid.value=Id(92);policy_creator.commit_sequence=2;
+    auto creator=e;creator.identity.local_id=mga::MakeLocalTransactionId(17);creator.identity.transaction_uuid.value=Id(98);creator.commit_sequence=3;
+    inventory.inventory.entries.push_back(policy_creator);
+    inventory.inventory.entries.push_back(active);inventory.inventory.entries.push_back(creator);
+    auto catalog=RootExample(p);catalog.creator_local_transaction_id=11;
+    std::array<page::NativeCatalogRoot,2> policies{catalog,catalog};
+    for(unsigned index=0;index<2;++index){auto& root=policies[index];
+      root.root_kind=static_cast<disk::u16>(index+6);root.header.page_type=index?11:10;
+      root.header.page_number=16+index;root.header.page_generation=106+index;root.header.page_uuid=Id(86+index);
+      root.object_uuid=Id(46+index);root.roots={catalog.roots[index?3:4]};
+      root.creator_transaction_uuid=Id(92);root.creator_local_transaction_id=12;
+      if(index){root.header.filespace_uuid=Id(7);root.header.page_size_bytes=sizes[q];root.header.page_size_profile_uuid=Profile(q);}
+    }
+    const auto checkpoint=CheckpointExample(p);
+    const auto put=[&](auto& device,u64 page,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(page*size,bytes.data(),bytes.size());
+      Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist exact policy-root image");};
+    const auto persist=[&](const auto& values,bool stale_digest=false){auto cp=checkpoint;
+      const auto inv=InventoryOracle(inventory,16,16,16),cat=RootOracle(catalog);
+      cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(inv);
+      const auto bind=[&](auto& target,const auto& root,const Bytes& bytes){target.page=PageRef(root);target.object_uuid=root.object_uuid;target.sha256=WholeRootHash(bytes);};
+      bind(cp.roots[4],catalog,cat);cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
+      for(unsigned i=0;i<2;++i){const auto bytes=RootOracle(values[i]);
+        bind(cp.roots[5+i],policies[i],stale_digest?RootOracle(policies[i]):bytes);
+        put(i?second:first,16+i,i?sizes[q]:sizes[p],bytes);}
+      put(first,12,sizes[p],cat);put(first,14,sizes[p],inv);put(first,19,sizes[p],CheckpointOracle(cp));
+    };
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 budget=4*sizes[p]+sizes[q];
+    const auto read=[&](u64 limit){return db::VerifyNativeCheckpointPolicyRootsFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&r.retained_image_bytes==0&&r.catalog.catalogs.empty()&&
+      !r.catalog.checkpoint_inventory.checkpoint&&r.catalog.checkpoint_inventory.inventory.entries.empty()&&
+      !r.catalog.checkpoint_inventory.inventory.publication_base&&!r.policies[0].root&&!r.policies[1].root&&
+      r.policies[0].bytes.empty()&&r.policies[1].bytes.empty(),"policy-root join refuses without verified prefix");};
+    persist(policies);observed_allocations=0;count_allocations=true;reads=0;track_reads=true;
+    auto result=read(budget);count_allocations=false;track_reads=false;const auto allocations=observed_allocations;const auto read_count=reads;
+    Check(result.ok()&&result.retained_image_bytes==budget&&result.policies[0].bytes==RootOracle(policies[0])&&
+      result.policies[1].bytes==RootOracle(policies[1])&&result.catalog.catalogs.size()==1&&
+      !result.catalog.checkpoint_inventory.inventory.publication_base,"actual mixed-profile checkpoint configuration/security roots");
+    result=read(budget-1);empty(result);Check(result.error==E::resource_exhausted,"policy-root shared budget includes final image");
+    for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;result=read(budget);track_reads=false;read_fault=0;empty(result);}
+    bool digest_end=false;
+    for(unsigned fault=1;fault<32;++fault){full_digest_fault=fault;result=read(budget);
+      if(full_digest_fault){full_digest_fault=0;Check(result.ok(),"policy-root full-image hash sweep reached end");digest_end=true;break;}
+      empty(result);Check(result.error==E::hash_failure
+        ||(result.error==E::inventory_failure&&result.catalog.checkpoint_inventory.inventory_error==page::NativeInventoryError::hash_failure)
+        ||(result.error==E::catalog_failure&&result.catalog_error==RootError::hash_failure),
+        "checkpoint/catalog/policy full digest provider failures");}
+    Check(digest_end,"all policy-root full-image hash calls faulted");
+    if(p==0){bool success=false;
+      for(unsigned long fault=0;fault<=allocations;++fault){allocation_budget=static_cast<long>(fault);result=read(budget);allocation_budget=-1;
+        if(result.ok()){
+          Check(result.retained_image_bytes==budget&&result.policies[0].bytes==RootOracle(policies[0])&&
+            result.policies[1].bytes==RootOracle(policies[1]),"allocation sweep success retains exact policy images");
+          if(fault==allocations)success=true;
+        }else empty(result);}
+      Check(success,"all measured policy-root join allocation failures");std::cout<<"policy-root allocation fault positions="<<allocations<<std::endl;
+    }
+    for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}){
+      auto& archived=inventory.inventory.entries[1];archived.state=mga::TransactionState::archived;archived.archived_from_state=origin;
+      archived.commit_sequence=origin==mga::TransactionState::committed?2:0;
+      persist(policies);result=read(budget);
+      if(origin==mga::TransactionState::committed)Check(result.ok(),"archived committed policy creator retained");
+      else{empty(result);Check(result.error==E::catalog_creator_not_committed,"archived noncommit cannot authorize dedicated policy roots");}
+    }
+    inventory.inventory.entries[1]=policy_creator;
+    inventory.inventory.entries[1].identity.scope=mga::TransactionScope::cluster_global;
+    persist(policies);result=read(budget);empty(result);
+    Check(result.error==E::catalog_creator_mismatch,"cluster creator cannot authorize standalone policy root");
+    inventory.inventory.entries[1]=policy_creator;
+    for(unsigned index=0;index<2;++index){
+      for(unsigned mutation=0;mutation<6;++mutation){auto changed=policies;auto& r=changed[index];
+        if(mutation==0)r.roots[0].page.page_number++;
+        if(mutation==1)r.roots[0].page.page_generation++;
+        if(mutation==2)r.roots[0].object_uuid=Id(200);
+        if(mutation==3)r.roots[0].page_type=r.roots[0].page_type==6?0x200:6;
+        if(mutation==4)r.creator_transaction_uuid=Id(200);
+        if(mutation==5){r.creator_transaction_uuid=Id(99);r.creator_local_transaction_id=16;}
+        Check(page::DecodeNativeCatalogRoot(RootOracle(r)).ok(),"wrong policy binding remains individually valid native image");
+        persist(changed);result=read(budget);empty(result);
+        Check(result.error==(mutation<4?E::policy_relation_mismatch:mutation==4?E::catalog_creator_mismatch:E::catalog_creator_not_committed),
+              "exact policy relation or creator refusal");
+      }
+      auto changed=policies;changed[index].security_epoch++;persist(changed,true);result=read(budget);empty(result);
+      Check(result.error==E::invalid_integrity,"resealed dedicated root still binds checkpoint digest");
+      // Kind and canonical type are inseparable even when all target fields are valid.
+      auto wrong=policies[index];wrong.header.page_type=index?10:11;
+      RootInvalid(wrong,RootError::invalid_header);
+      wrong=policies[index];wrong.roots[0].role=index?5:4;RootInvalid(wrong,RootError::invalid_roots);
+      wrong=policies[index];wrong.roots.push_back(wrong.roots[0]);RootInvalid(wrong,RootError::invalid_roots);
+      // Both dedicated families retain real immutable history with their own type.
+      auto newer=policies[index];newer.catalog_generation=2;newer.header.page_number=18;
+      newer.header.page_uuid=Id(190+index);newer.header.page_generation++;
+      newer.predecessor=PageRef(policies[index]);newer.predecessor_sha256=WholeRootHash(RootOracle(policies[index]));
+      auto& device=index?second:first;const auto size=index?sizes[q]:sizes[p];
+      put(device,policies[index].header.page_number,size,RootOracle(policies[index]));put(device,18,size,RootOracle(newer));
+      const auto range=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(newer),RootRef(policies[index]),2*size);
+      Check(range.ok()&&range.roots.size()==2&&range.roots[0].bytes==RootOracle(newer)&&
+            range.roots[1].bytes==RootOracle(policies[index]),"dedicated policy root history preserves native type and exact images");
+      auto bad_ref=RootRef(policies[index]);bad_ref.kind=8;bad_ref.page_type=5;
+      Check(!page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),bad_ref).ok(),"feature reference cannot adopt dedicated policy root");
+    }
+    persist(policies);
+    Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&
+      second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"read-only policy filespace reopen");
+    Check(read(budget).ok()&&first.read_only()&&second.read_only(),"reopened policy roots preserve ownership mode");
+  }
+}
+
 void CanonicalCheckpointHistory() {
   using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice first,second;
   const auto path1=(fixture.root/"history-first").string(),path2=(fixture.root/"history-second").string();
@@ -2181,6 +2308,10 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--policy-roots-only") {
+    try{CanonicalPolicyRoots();std::cout<<"policy-root checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--checkpoint-allocation-only") {
     try {CanonicalCheckpointAllocation();std::cout<<"checkpoint allocation checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
