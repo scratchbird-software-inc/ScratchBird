@@ -1180,7 +1180,7 @@ void CanonicalCheckpointInventoryPair() {
   const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(0),&device}};
   const auto read=[&](u64 budget=16384){return db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,z.roots[8],budget);};
   const auto empty=[&](const auto& r){Check(!r.ok()&&!r.checkpoint&&r.inventory.entries.empty()&&!r.inventory.publication_base
-    &&r.inventory_generation==0&&r.retained_image_bytes==0,"failed checkpoint inventory pair returns no authority prefix");};
+    &&r.inventory_generation==0&&r.retained_image_bytes==0&&std::all_of(r.checkpoint_sha256.begin(),r.checkpoint_sha256.end(),[](byte b){return b==0;}),"failed checkpoint inventory pair returns no authority prefix");};
   persist(inventory,checkpoint,18);auto result=read();
   Check(result.ok()&&result.inventory.entries.size()==1&&result.inventory_generation==19&&result.retained_image_bytes==16384
     &&!result.inventory.publication_base,"actual checkpoint and complete inventory creator binding");
@@ -1221,7 +1221,108 @@ void CanonicalCheckpointInventoryPair() {
   if(child==0){::execl("/proc/self/exe","checkpoint-inventory-probe","--checkpoint-inventory-probe",path.c_str(),nullptr);::_exit(125);}
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies persisted checkpoint inventory pair");
 }
+disk::FilespaceRootReference CheckpointRef(const db::NativeCheckpointRoot& r) {
+  return {9,0x300,r.header.filespace_uuid,r.header.page_number,r.header.page_generation,r.header.page_size_profile_uuid,r.object_uuid};
+}
+void CanonicalCheckpointHistory() {
+  using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice first,second;
+  const auto path1=(fixture.root/"history-first").string(),path2=(fixture.root/"history-second").string();
+  auto z1=Example(),z2=Example(1);z2.bootstrap.filespace_uuid=Id(7);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
+  Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own checkpoint history filespaces");
+  const auto prepare=[&](disk::FileDevice& d,const auto& z){const auto bytes=Oracle(z);const byte padding=0;Check(d.WriteAt(0,bytes.data(),bytes.size()).ok()&&d.WriteAt(z.total_pages*z.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare actual history filespace");};
+  prepare(first,z1);prepare(second,z2);
+  std::array<db::NativeCheckpointRoot,3> roots{CheckpointExample(),CheckpointExample(1),CheckpointExample()};
+  std::array<page::NativeTransactionInventoryPage,3> inventories{InventoryExample(),InventoryExample(1),InventoryExample()};
+  for(unsigned i=0;i<3;++i) {
+    auto& r=roots[i];auto& inv=inventories[i];
+    // Unchanged roots still belong to the first filespace/profile. Only this
+    // checkpoint and its new inventory head move to the second filespace.
+    if(i)r.roots=roots[0].roots;
+    if(i==1){r.header.filespace_uuid=Id(7);inv.header.filespace_uuid=Id(7);}
+    r.header.page_number=i==0?19:i==1?23:24;r.header.page_generation=109+i;r.header.page_uuid=Id(static_cast<byte>(150+i));
+    r.checkpoint_generation=i+1;r.root_set_generation=8+i;r.selected_local_transaction_id=17+i;
+    r.stable_local_transaction_id=12+i;r.local_durable_transaction_id=16+i;
+    r.creator_local_transaction_id=17+i;r.creator_transaction_uuid=Id(static_cast<byte>(98+i));
+    inv.header.page_number=i==2?15:14;inv.header.page_generation=104+i;inv.header.page_uuid=Id(static_cast<byte>(160+i));
+    inv.inventory_generation=19+i;inv.inventory.next_local_transaction_id=18+i;inv.inventory.next_commit_sequence=2+i;inv.inventory.entries.clear();
+    for(unsigned n=0;n<=i;++n){mga::TransactionInventoryEntry e;e.identity.local_id=mga::MakeLocalTransactionId(17+n);
+      e.identity.transaction_uuid={scratchbird::core::platform::UuidKind::transaction,Id(static_cast<byte>(98+n))};e.identity.scope=mga::TransactionScope::local_node;e.state=mga::TransactionState::committed;e.commit_sequence=n+1;inv.inventory.entries.push_back(e);}
+    r.roots.front().page=InventoryRef(inv);r.roots.front().object_uuid=inv.object_uuid;
+  }
+  const auto persist=[&](auto values,const auto& invs){
+    std::array<Bytes,3> images;
+    for(unsigned i=0;i<3;++i){auto& r=values[i];const auto& inv=invs[i];const auto boundary=inv.inventory.next_local_transaction_id;
+      const auto bytes=InventoryOracle(inv,boundary,boundary,boundary);
+      Check(SHA256(bytes.data(),bytes.size(),r.roots.front().sha256.data())!=nullptr,"actual history inventory head hash");
+      if(i){const auto& previous=values[i-1];r.predecessor=disk::NativePageReference{previous.header.filespace_uuid,previous.header.page_number,previous.header.page_generation,previous.header.page_size_profile_uuid};Check(SHA256(images[i-1].data(),images[i-1].size(),r.predecessor_sha256.data())!=nullptr,"actual retained predecessor hash");}
+      images[i]=CheckpointOracle(r);auto& device=i==1?second:first;
+      Check(device.WriteAt(inv.header.page_number*inv.header.page_size_bytes,bytes.data(),bytes.size()).ok()
+        &&device.WriteAt(r.header.page_number*r.header.page_size_bytes,images[i].data(),images[i].size()).ok()&&device.Sync().ok(),"persist actual checkpoint history");
+    }
+    return images;
+  };
+  auto images=persist(roots,inventories);
+  const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(1),&second},{Id(2),Profile(0),&first}};
+  const auto head=CheckpointRef(roots[2]),terminal=CheckpointRef(roots[0]);
+  const auto read=[&](u64 budget=65536){return db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),devices,head,terminal,budget);};
+  const auto empty=[&](const auto& r){Check(!r.ok()&&r.checkpoints.empty()&&r.retained_image_bytes==0,"history failure exposes no verified prefix");};
+  auto result=read();Check(result.ok()&&result.checkpoints.size()==3&&result.retained_image_bytes==65536,"complete mixed-filespace checkpoint history error="+std::to_string(static_cast<unsigned>(result.error)));
+  for(unsigned i=0;i<3;++i){std::array<byte,32> digest{};Check(SHA256(images[2-i].data(),images[2-i].size(),digest.data())!=nullptr,"independent actual checkpoint history digest");Check(result.checkpoints[i].checkpoint_sha256==digest&&!result.checkpoints[i].inventory.publication_base,"history digests are actual complete bytes without CAS authority");}
+  result=read(65535);empty(result);
+  auto one=db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),devices,head,head,16384);Check(one.ok()&&one.checkpoints.size()==1,"exact singleton retained history");
+  auto bounded=db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),devices,head,CheckpointRef(roots[1]),49152);Check(bounded.ok()&&bounded.checkpoints.size()==2,"exact non-genesis retained terminal");
+  // New checkpoint images may reuse one unchanged immutable inventory and
+  // root set; publication generations are not checkpoint/page generations.
+  std::array<Bytes,3> repeated_images;std::array<db::NativeCheckpointRoot,3> repeated_roots;
+  const auto first_inventory=InventoryOracle(inventories[0],18,18,18);
+  for(unsigned i=0;i<3;++i){auto repeated=roots[0];repeated.header=roots[i].header;repeated.checkpoint_generation=i+1;
+    Check(SHA256(first_inventory.data(),first_inventory.size(),repeated.roots.front().sha256.data())!=nullptr,"same immutable inventory head digest");
+    if(i){const auto& previous=repeated_roots[i-1];repeated.predecessor=disk::NativePageReference{previous.header.filespace_uuid,previous.header.page_number,previous.header.page_generation,previous.header.page_size_profile_uuid};Check(SHA256(repeated_images[i-1].data(),repeated_images[i-1].size(),repeated.predecessor_sha256.data())!=nullptr,"reused-root predecessor digest");}
+    repeated_images[i]=CheckpointOracle(repeated);repeated_roots[i]=repeated;auto& device=i==1?second:first;
+    Check(device.WriteAt(repeated.header.page_number*repeated.header.page_size_bytes,repeated_images[i].data(),repeated_images[i].size()).ok()&&device.Sync().ok(),"persist checkpoint retaining unchanged roots");
+  }
+  result=read();Check(result.ok()&&result.retained_image_bytes==57344&&result.checkpoints[0].inventory_generation==19
+    &&result.checkpoints[0].checkpoint->root_set_generation==8,"unchanged immutable roots may retain publication generations");
+  images=persist(roots,inventories);
+  auto absent=terminal;++absent.page_generation;empty(db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),devices,head,absent,65536));
+  for(unsigned field=0;field<9;++field){auto bad_roots=roots;auto bad_inventories=inventories;
+    if(field==0)bad_roots[1].timeline_uuid=Id(199);
+    if(field==1)bad_roots[1].checkpoint_generation=4;
+    if(field==2)bad_roots[1].root_set_generation=11;
+    if(field==3)bad_roots[1].root_set_generation=10;
+    if(field==4)bad_roots[1].stable_local_transaction_id=15;
+    if(field==5)bad_inventories[1].inventory_generation=22;
+    if(field==6)bad_inventories[1].inventory_generation=21;
+    if(field==7)bad_inventories[1].inventory.next_commit_sequence=5;
+    if(field==8)bad_roots[1].header.page_uuid=bad_roots[0].header.page_uuid;
+    persist(bad_roots,bad_inventories);result=read();empty(result);Check(result.error==E::history_mismatch,"resealed history semantic drift refused");
+  }
+  auto incomplete=roots;incomplete[0].completed=false;persist(incomplete,inventories);result=read();empty(result);Check(result.error==E::incomplete,"late incomplete predecessor discards newer prefix");
+  images=persist(roots,inventories);auto wrong=images[2];wrong[304]^=1;CheckpointSeal(wrong);
+  Check(first.WriteAt(24*sizes[0],wrong.data(),wrong.size()).ok()&&first.Sync().ok(),"persist wrong predecessor digest with valid image seals");
+  result=read();empty(result);Check(result.error==E::invalid_integrity,"history compares actual predecessor bytes");
+  images=persist(roots,inventories);
+  reads=0;track_reads=true;result=read();track_reads=false;const auto count=reads;Check(result.ok(),"measure complete history reads");
+  for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;result=read();track_reads=false;Check(read_fault==0,"history read fault consumed");empty(result);}
+  observed_allocations=0;count_allocations=true;result=read();count_allocations=false;const auto allocations=observed_allocations;Check(result.ok(),"measure complete history allocations");bool success=false;
+  for(unsigned long budget=0;budget<=allocations;++budget){allocation_budget=budget;result=read();allocation_budget=-1;if(result.ok()){success=true;break;}empty(result);Check(result.error==E::resource_exhausted||(result.error==E::inventory_failure&&result.inventory_error==page::NativeInventoryError::resource_exhausted),"history allocation failure diagnostic");}
+  Check(success,"all history allocation positions through completion");
+  std::atomic<unsigned> completed=0;auto reverse=devices;std::reverse(reverse.begin(),reverse.end());
+  const auto concurrent=[&](const auto& owners){for(unsigned i=0;i<8;++i){const auto r=db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),owners,head,terminal,65536);if(r.ok()&&r.checkpoints.size()==3)++completed;}};
+  std::thread a([&]{concurrent(devices);}),b([&]{concurrent(reverse);});a.join();b.join();Check(completed==16,"history guards are ordered across nested inventory reads");
+  Exclusive(path1);Exclusive(path2);Check(first.Close().ok()&&second.Close().ok(),"release history before fresh executable");
+  const auto child=::fork();Check(child>=0,"fork native history reader");
+  if(child==0){::execl("/proc/self/exe","checkpoint-history-probe","--checkpoint-history-probe",fixture.root.c_str(),nullptr);::_exit(125);}
+  int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies complete retained history");
+}
 int main(int argc,char** argv) {
+  if(argc==3&&std::string_view(argv[1])=="--checkpoint-history-probe") {
+    const std::filesystem::path path=argv[2];disk::FileDevice first,second;
+    if(!first.Open((path/"history-first").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((path/"history-second").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    auto initial=CheckpointExample(),head=initial;head.header.page_number=24;head.header.page_generation=111;
+    const auto r=db::VerifyNativeCheckpointHistoryFromOpenDevices(Id(1),{{Id(2),Profile(0),&first},{Id(7),Profile(1),&second}},CheckpointRef(head),CheckpointRef(initial),65536);
+    return r.ok()&&r.checkpoints.size()==3&&r.checkpoints.front().inventory.next_commit_sequence==4&&r.checkpoints.back().inventory.next_commit_sequence==2?0:3;
+  }
   if(argc==3&&std::string_view(argv[1])=="--checkpoint-inventory-probe") {
     disk::FileDevice device;if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 2;
     const auto r=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),{{Id(2),Profile(0),&device}},Example().roots[8],16384);
@@ -1262,7 +1363,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

@@ -16,6 +16,7 @@
 #include <map>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -666,6 +667,23 @@ hash::HashDigestResult FullDigest(const std::vector<byte>& b) {
   const hash::HashDigestSegment parts[]={{b.data(),digest_at},{zero.data(),zero.size()},{b.data()+digest_at+32,b.size()-digest_at-32}};
   return hash::ComputeSha256DigestParts(parts,3);
 }
+struct LockedFilespaces {
+  Error error=Error::invalid_filespace;
+  std::vector<disk::NativeFilespaceDevice> ordered;
+  std::vector<std::unique_lock<std::recursive_mutex>> guards;
+};
+LockedFilespaces LockFilespaces(const std::vector<disk::NativeFilespaceDevice>& devices) {
+  LockedFilespaces result;result.ordered=devices;auto& ordered=result.ordered;
+  if(ordered.empty())return result;
+  std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid.bytes<b.filespace_uuid.bytes;});
+  for(std::size_t i=0;i<ordered.size();++i){const auto& fs=ordered[i];
+    if(!V7(fs.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)
+      ||!fs.device||(i&&fs.filespace_uuid==ordered[i-1].filespace_uuid))return result;
+    for(std::size_t j=0;j<i;++j)if(fs.device==ordered[j].device)return result;}
+  result.guards.reserve(ordered.size());
+  for(const auto& fs:ordered)result.guards.push_back(fs.device->AcquireOperationGuard());
+  result.error=Error::none;return result;
+}
 } // namespace native_checkpoint
 
 NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot& r) noexcept {
@@ -763,14 +781,8 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
   const auto fail=[](Error error){NativeCheckpointInventoryResult r;r.error=error;return r;};
   try {
     if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
-    auto ordered=devices;
-    std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid.bytes<b.filespace_uuid.bytes;});
-    for(std::size_t i=0;i<ordered.size();++i){const auto& fs=ordered[i];
-      if(!V7(fs.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)
-        ||!fs.device||(i&&fs.filespace_uuid==ordered[i-1].filespace_uuid))return fail(Error::invalid_filespace);
-      for(std::size_t j=0;j<i;++j)if(fs.device==ordered[j].device)return fail(Error::invalid_filespace);}
-    std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(ordered.size());
-    for(const auto& fs:ordered)guards.push_back(fs.device->AcquireOperationGuard());
+    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
+    const auto& ordered=locked.ordered;
     const auto fs=std::lower_bound(ordered.begin(),ordered.end(),checkpoint.filespace_uuid,
       [](const auto& a,const auto& id){return a.filespace_uuid.bytes<id.bytes;});
     if(fs==ordered.end()||fs->filespace_uuid!=checkpoint.filespace_uuid||fs->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
@@ -796,10 +808,62 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
     if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid
       ||(!(root.flags&4)&&creator.entry.identity.scope!=scratchbird::transaction::mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
     if(!scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::creator_not_committed);
+    const auto checkpoint_digest=hash::ComputeSha256Digest(loaded.bytes);
+    if(!checkpoint_digest.ok())return fail(Error::hash_failure);
     NativeCheckpointInventoryResult result;result.error=Error::none;
+    result.checkpoint_sha256=checkpoint_digest.digest;
     result.inventory_generation=chain.pages.front().page->inventory_generation;
     result.retained_image_bytes=loaded.bytes.size()+chain.retained_image_bytes;
     result.checkpoint=std::move(loaded.root);result.inventory=std::move(chain.inventory);return result;
+  }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}
+   catch(...){return fail(Error::io_failure);}
+}
+
+NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const scratchbird::storage::disk::FilespaceRootReference& terminal,
+    u64 maximum_retained_image_bytes) noexcept {
+  using namespace native_checkpoint;
+  const auto fail=[](Error error){NativeCheckpointHistoryResult r;r.error=error;return r;};
+  const auto page_ref=[](const disk::FilespaceRootReference& r){return disk::NativePageReference{r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid};};
+  try {
+    if(!V7(database_uuid)||!V7(head.object_uuid)||head.object_uuid!=terminal.object_uuid
+      ||head.kind!=9||terminal.kind!=9||head.page_type!=0x300||terminal.page_type!=0x300
+      ||!RefValid(page_ref(head))||!RefValid(page_ref(terminal))||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
+    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
+    NativeCheckpointHistoryResult result;auto next=head;
+    std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;
+    for(;;) {
+      if(result.retained_image_bytes>=maximum_retained_image_bytes)return fail(Error::resource_exhausted);
+      if(!slots.emplace(next.filespace_uuid,next.page_number).second)return fail(Error::history_mismatch);
+      auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,next,
+        maximum_retained_image_bytes-result.retained_image_bytes);
+      if(!pair.ok()){auto error=fail(pair.error);error.inventory_error=pair.inventory_error;return error;}
+      const auto& older=*pair.checkpoint;
+      if(!page_ids.insert(older.header.page_uuid).second)return fail(Error::history_mismatch);
+      if(!result.checkpoints.empty()) {
+        const auto& newer_pair=result.checkpoints.back();const auto& newer=*newer_pair.checkpoint;
+        if(newer.predecessor_sha256!=pair.checkpoint_sha256)return fail(Error::invalid_integrity);
+        if(older.object_uuid!=newer.object_uuid||older.timeline_uuid!=newer.timeline_uuid
+          ||newer.checkpoint_generation<=1||older.checkpoint_generation!=newer.checkpoint_generation-1
+          ||older.root_set_generation>newer.root_set_generation||older.selected_local_transaction_id>newer.selected_local_transaction_id
+          ||older.stable_local_transaction_id>newer.stable_local_transaction_id||older.local_durable_transaction_id>newer.local_durable_transaction_id
+          ||older.cluster_quorum_transaction_id>newer.cluster_quorum_transaction_id||pair.inventory_generation>newer_pair.inventory_generation
+          ||pair.inventory.next_local_transaction_id>newer_pair.inventory.next_local_transaction_id
+          ||pair.inventory.next_commit_sequence>newer_pair.inventory.next_commit_sequence)return fail(Error::history_mismatch);
+        if((older.root_set_generation==newer.root_set_generation&&older.roots!=newer.roots)
+          ||(pair.inventory_generation==newer_pair.inventory_generation&&older.roots.front()!=newer.roots.front()))return fail(Error::history_mismatch);
+      }
+      result.retained_image_bytes+=pair.retained_image_bytes;result.checkpoints.push_back(std::move(pair));
+      if(page_ref(next)==page_ref(terminal)){result.error=Error::none;return result;}
+      const auto& current=*result.checkpoints.back().checkpoint;
+      if(!current.predecessor)return fail(Error::history_mismatch);
+      const auto& previous=*current.predecessor;
+      next={9,0x300,previous.filespace_uuid,previous.page_number,previous.page_generation,previous.page_size_profile_uuid,current.object_uuid};
+    }
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
    catch(...){return fail(Error::io_failure);}

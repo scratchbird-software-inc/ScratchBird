@@ -37,6 +37,7 @@ struct NativeCheckpointRootReference {
   scratchbird::storage::disk::NativePageReference page;
   scratchbird::core::platform::Uuid object_uuid;
   std::array<scratchbird::core::platform::byte,32> sha256{};
+  bool operator==(const NativeCheckpointRootReference&) const = default;
 };
 struct NativeCheckpointRoot {
   scratchbird::storage::disk::NativeCommonPageHeader header;
@@ -60,7 +61,8 @@ enum class NativeCheckpointError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
   binding_mismatch, io_failure, encrypted_requires_crypto_authority,
-  incomplete, inventory_failure, inventory_mismatch, creator_not_committed
+  incomplete, inventory_failure, inventory_mismatch, creator_not_committed,
+  history_mismatch
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -79,6 +81,7 @@ struct NativeCheckpointInventoryResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;
   scratchbird::storage::page::NativeInventoryError inventory_error = scratchbird::storage::page::NativeInventoryError::none;
   std::optional<NativeCheckpointRoot> checkpoint;
+  std::array<scratchbird::core::platform::byte,32> checkpoint_sha256{};
   scratchbird::transaction::mga::LocalTransactionInventory inventory;
   u64 inventory_generation = 0;
   u64 retained_image_bytes = 0;
@@ -91,6 +94,22 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeCheckpointHistoryResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeInventoryError inventory_error = scratchbird::storage::page::NativeInventoryError::none;
+  std::vector<NativeCheckpointInventoryResult> checkpoints;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error == NativeCheckpointError::none && !checkpoints.empty(); }
+};
+// Exact head-through-terminal retained history; no partial range, inferred
+// retention boundary, overall root-family admission or publication receipt.
+NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const scratchbird::storage::disk::FilespaceRootReference& terminal,
     u64 maximum_retained_image_bytes) noexcept;
 
 inline constexpr u32 kDirtyObjectManifestFormatVersion = 1;
