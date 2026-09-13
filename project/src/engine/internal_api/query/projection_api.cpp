@@ -9,6 +9,7 @@
 #include "query/projection_api.hpp"
 
 #include "datatype_operations.hpp"
+#include "../../../core/uuid/uuid.hpp"
 
 #ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 #include "behavior_support/api_behavior_store.hpp"
@@ -472,18 +473,6 @@ bool QowBindCanonicalParameterSlotsV1(
     *refusal_detail = std::move(detail);
     return false;
   };
-  const auto canonical_uuid = [](const std::string& value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
-  };
   const auto descriptor_field = [](const std::string& encoded,
                                    const std::string& key) {
     const std::string prefix = key + "=";
@@ -526,7 +515,7 @@ bool QowBindCanonicalParameterSlotsV1(
     const auto& supplied = supplied_parameters[index];
     const auto nullability =
         descriptor_field(slot.encoded_descriptor, "nullability");
-    if (!canonical_uuid(slot.descriptor_uuid) ||
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(slot.descriptor_uuid) ||
         slot.descriptor_kind != "scalar" || slot.canonical_type_name.empty() ||
         slot.canonical_type_name == "unknown" ||
         slot.encoded_descriptor.empty() ||
@@ -835,7 +824,8 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
   result.result_shape.result_kind = "scalar_projection_rows";
 
   EngineRowValue row;
-  row.requested_row_uuid = "scalar-projection-row-0";
+  // A computed scalar row has no source storage row identity. Do not invent
+  // a durable UUID (or a text marker) for its position in the result batch.
   for (std::uint64_t index = 0; index < projection_count; ++index) {
     const std::string prefix = "projection_" + std::to_string(index) + "_";
     std::string name = SecurityOptionValue(request, prefix + "name:");

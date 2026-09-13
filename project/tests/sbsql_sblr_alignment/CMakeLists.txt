@@ -11,6 +11,21 @@ else()
 endif()
 
 # Canonical outer layout coverage does not establish endpoint admission.
+add_executable(sbsql_sblr_alignment_projection_parameter_binding
+  ../sbsql_parser_worker/qow_qry_026.cpp
+  ../../src/engine/internal_api/query/projection_api.cpp)
+target_compile_features(sbsql_sblr_alignment_projection_parameter_binding PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_projection_parameter_binding PRIVATE
+  SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY=1)
+target_include_directories(sbsql_sblr_alignment_projection_parameter_binding PRIVATE
+  ../../src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_projection_parameter_binding PRIVATE sb_core_datatypes)
+add_test(NAME sbsql_sblr_alignment_projection_parameter_binding
+  COMMAND sbsql_sblr_alignment_projection_parameter_binding)
+set_tests_properties(sbsql_sblr_alignment_projection_parameter_binding PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;parameter_binding;component_regression;not_runtime_acceptance"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_system_variable_registry
   system_variable_registry_test.cpp)
 target_compile_features(sbsql_sblr_alignment_system_variable_registry PRIVATE cxx_std_23)

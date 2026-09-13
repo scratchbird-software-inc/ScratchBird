@@ -27,7 +27,9 @@ bool QowBindCanonicalParameterSlotsV1(
 
 namespace {
 
+unsigned checks = 0;
 bool Require(const bool condition, const std::string_view message) {
+  ++checks;
   if (!condition) std::cerr << message << '\n';
   return condition;
 }
@@ -36,9 +38,9 @@ api::EngineDescriptor Descriptor(const unsigned suffix,
                                  std::string type,
                                  const bool nullable) {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical =
-      "019f0000-0000-7200-8000-0000000026" +
-      std::string(suffix < 10 ? "0" : "") + std::to_string(suffix);
+  descriptor.descriptor_uuid.bytes =
+      {0x01, 0x9f, 0, 0, 0, 0, 0x72, 0, 0x80, 0, 0, 0, 0, 0, 0x26,
+       static_cast<std::uint8_t>(suffix)};
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor =
@@ -108,13 +110,13 @@ bool ValidatePositiveBinding() {
          Require(reason.empty() && detail.empty(),
                  "successful parameter binding emitted refusal state") &&
          Require(values.size() == 2 && values[0].encoded_value == "41" &&
-                     values[0].descriptor.descriptor_uuid.canonical ==
-                         fixture.descriptors[0].descriptor_uuid.canonical,
+                     values[0].descriptor.descriptor_uuid ==
+                         fixture.descriptors[0].descriptor_uuid,
                  "non-NULL parameter descriptor/value identity was not preserved") &&
          Require(values[1].state == api::EngineValueState::sql_null &&
                      values[1].is_null && values[1].encoded_value.empty() &&
-                     values[1].descriptor.descriptor_uuid.canonical ==
-                         fixture.descriptors[1].descriptor_uuid.canonical,
+                     values[1].descriptor.descriptor_uuid ==
+                         fixture.descriptors[1].descriptor_uuid,
                  "nullable parameter did not preserve canonical SQL NULL state");
 }
 
@@ -166,6 +168,42 @@ bool ValidateRefusals() {
   return passed;
 }
 
+bool ValidateBinaryIdentity() {
+  static_assert(sizeof(api::EngineUuid) == 16);
+  bool passed = true;
+  for (unsigned version = 0; version < 16; ++version) {
+    auto fixture = CanonicalFixture();
+    fixture.descriptors[0].descriptor_uuid.bytes[6] = static_cast<std::uint8_t>((version << 4) | 2);
+    fixture.parameters[0].second.descriptor = fixture.descriptors[0];
+    std::vector<api::EngineTypedValue> values;
+    std::string reason, detail;
+    const bool ok = Bind(fixture, &values, &reason, &detail);
+    passed &= Require(ok == (version == 7), "descriptor authority requires UUIDv7, not a user UUID version");
+    if (!ok) passed &= Require(values.empty() && reason == "parameter_descriptor_invalid", "invalid descriptor version published no parameters");
+  }
+  for (unsigned variant = 0; variant < 256; ++variant) {
+    auto fixture = CanonicalFixture();
+    fixture.descriptors[0].descriptor_uuid.bytes[8] = static_cast<std::uint8_t>(variant);
+    fixture.parameters[0].second.descriptor = fixture.descriptors[0];
+    std::vector<api::EngineTypedValue> values;
+    std::string reason, detail;
+    const bool ok = Bind(fixture, &values, &reason, &detail);
+    passed &= Require(ok == ((variant & 0xc0) == 0x80), "descriptor validates the exact RFC variant bits");
+  }
+  {
+    auto fixture = CanonicalFixture();
+    fixture.descriptors[0].descriptor_uuid = {};
+    fixture.parameters[0].second.descriptor = fixture.descriptors[0];
+    passed &= Require(AtomicRefusal(fixture, "parameter_descriptor_invalid"), "nil descriptor cannot authorize a parameter");
+  }
+  for (unsigned index = 0; index < 16; ++index) {
+    auto fixture = CanonicalFixture();
+    fixture.parameters[0].second.descriptor.descriptor_uuid.bytes[index] ^= 1;
+    passed &= Require(AtomicRefusal(fixture, "parameter_wrong_type"), "parameter descriptor comparison must retain every identity byte");
+  }
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-026-V1
@@ -173,5 +211,7 @@ int main() {
   bool passed = true;
   passed &= ValidatePositiveBinding();
   passed &= ValidateRefusals();
+  passed &= ValidateBinaryIdentity();
+  std::cout << checks << " typed parameter binding checks: " << (passed ? "passed" : "failed") << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
