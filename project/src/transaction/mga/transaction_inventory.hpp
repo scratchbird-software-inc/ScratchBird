@@ -25,9 +25,12 @@ using scratchbird::core::platform::u64;
 struct TransactionInventoryEntry {
   TransactionIdentity identity;
   TransactionState state = TransactionState::none;
+  TransactionState archived_from_state = TransactionState::none;
   u64 begin_unix_epoch_millis = 0;
   u64 final_unix_epoch_millis = 0;
   u64 begin_visible_through_local_transaction_id = kInvalidLocalTransactionId;
+  u64 begin_visible_through_commit_sequence = 0;
+  u64 commit_sequence = 0;
   bool evidence_record_required = true;
   bool evidence_record_written = false;
   bool rollback_only = false;
@@ -35,8 +38,19 @@ struct TransactionInventoryEntry {
 
 struct LocalTransactionInventory {
   u64 next_local_transaction_id = 1;
+  u64 next_commit_sequence = 1;
   std::vector<TransactionInventoryEntry> entries;
 };
+
+inline bool HasCommittedInventoryOutcome(const TransactionInventoryEntry& entry) {
+  return entry.state == TransactionState::committed ||
+      (entry.state == TransactionState::archived && entry.archived_from_state == TransactionState::committed);
+}
+
+inline TransactionState InventoryVisibilityState(const TransactionInventoryEntry& entry) {
+  return entry.state == TransactionState::archived && entry.archived_from_state != TransactionState::committed
+      ? entry.archived_from_state : entry.state;
+}
 
 struct TransactionInventoryResult {
   Status status;

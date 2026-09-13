@@ -26,6 +26,8 @@ struct LocalTransactionSnapshot {
   LocalTransactionId oldest_active_transaction;
   LocalTransactionId oldest_snapshot_transaction;
   bool allow_reader_own_uncommitted = true;
+  u64 visible_through_commit_sequence = 0;
+  u64 transaction_start_visible_through_commit_sequence = 0;
 };
 
 struct TransactionSnapshotResult {

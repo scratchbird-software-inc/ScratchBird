@@ -70,6 +70,7 @@ bool SameMetadataIdentity(const RowVersionMetadata& left,
              right.successor_transaction_local_id.value &&
          left.state == right.state &&
          left.creator_transaction_state == right.creator_transaction_state &&
+         left.creator_commit_sequence == right.creator_commit_sequence &&
          left.payload_present == right.payload_present;
 }
 

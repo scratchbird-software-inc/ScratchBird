@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "table_content_generation.hpp"
+#include "transaction_inventory_validation.hpp"
 #include <algorithm>
 #include <iterator>
 #include <map>
@@ -65,6 +66,7 @@ TableContentGenerationSelection ResolveTableContentGeneration(
     const std::vector<TableContentGenerationRollbackInterval>& rollbacks,
     const LocalTransactionInventory& inventory) noexcept {
   try {
+    if (*ValidateLocalTransactionInventoryStructure(inventory)) return Fail(Code::inventory_required);
     if(!Uuid(context.database_uuid) || !Uuid(context.table_uuid) ||
        !context.snapshot.visible_through_local_transaction_id_is_boundary ||
        (context.snapshot.reader_transaction.valid() ? !Uuid(context.reader_transaction_uuid)
@@ -172,10 +174,10 @@ TableContentGenerationSelection ResolveTableContentGeneration(
       const auto* creator=Creator(entries,version.creator_local_transaction_id,version.creator_transaction_uuid);
       if(creator->identity.scope!=TransactionScope::local_node)
         return Fail(Code::cluster_authority_required);
-      const auto state=RowState(creator->state);
+      const auto state=RowState(InventoryVisibilityState(*creator));
       if(state==RowVersionState::limbo || state==RowVersionState::recovery_required)
         return Fail(Code::recovery_required);
-      if((creator->state==TransactionState::committed || creator->state==TransactionState::archived) &&
+      if(HasCommittedInventoryOutcome(*creator) &&
          (creator->rollback_only || (creator->evidence_record_required && !creator->evidence_record_written)))
         return Fail(Code::inventory_required);
       bool invalidated=false;
@@ -194,7 +196,8 @@ TableContentGenerationSelection ResolveTableContentGeneration(
       metadata.identity.version_sequence=version.publication_effect_sequence;
       metadata.identity.version_uuid.bytes=version.catalog_version_uuid;
       metadata.state=state;
-      metadata.creator_transaction_state=creator->state;
+      metadata.creator_transaction_state=InventoryVisibilityState(*creator);
+      metadata.creator_commit_sequence=creator->commit_sequence;
       metadata.payload_present=true;
       const auto visibility=EvaluateVisibility(metadata,context.snapshot);
       if(visibility.decision==VisibilityDecision::unknown) return Fail(Code::inventory_required);

@@ -94,6 +94,7 @@ struct RowVersionMetadata {
   RowVersionState state = RowVersionState::unknown;
   TransactionState creator_transaction_state = TransactionState::none;
   bool payload_present = false;
+  u64 creator_commit_sequence = 0;
 };
 
 struct VisibilitySnapshot {
@@ -106,6 +107,8 @@ struct VisibilitySnapshot {
   // from a later inventory after an excluded transaction has committed.
   std::vector<u64> active_excluded_local_transaction_ids;
   std::vector<u64> in_doubt_excluded_local_transaction_ids;
+  u64 visible_through_commit_sequence = 0;
+  bool visible_through_commit_sequence_is_boundary = false;
 };
 
 struct RowIdentityResult {

@@ -44,8 +44,7 @@ Status SnapshotErrorStatus() {
 u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory) {
   u64 latest = kInvalidLocalTransactionId;
   for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if ((entry.state == TransactionState::committed ||
-         entry.state == TransactionState::archived) &&
+    if (HasCommittedInventoryOutcome(entry) &&
         entry.identity.local_id.valid() &&
         entry.identity.local_id.value > latest) {
       latest = entry.identity.local_id.value;
@@ -301,12 +300,17 @@ TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionI
   result.snapshot.oldest_active_transaction = horizons.horizons.oldest_active_transaction;
   result.snapshot.oldest_snapshot_transaction = horizons.horizons.oldest_snapshot_transaction;
   result.snapshot.allow_reader_own_uncommitted = true;
+  result.snapshot.visible_through_commit_sequence = inventory.next_commit_sequence - 1;
+  result.snapshot.transaction_start_visible_through_commit_sequence =
+      lookup.entry.begin_visible_through_commit_sequence;
   result.visibility_snapshot.reader_transaction = reader_transaction;
   result.visibility_snapshot.visible_through_local_transaction_id =
       result.snapshot.visible_through_local_transaction.value;
   result.visibility_snapshot.visible_through_local_transaction_id_is_boundary = true;
   result.visibility_snapshot.allow_reader_own_uncommitted = true;
   result.visibility_snapshot.recovery_context = false;
+  result.visibility_snapshot.visible_through_commit_sequence = inventory.next_commit_sequence - 1;
+  result.visibility_snapshot.visible_through_commit_sequence_is_boundary = true;
   for (const auto& entry : inventory.entries) {
     if (IsActiveSnapshotExclusion(entry.state)) {
       result.visibility_snapshot.active_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);

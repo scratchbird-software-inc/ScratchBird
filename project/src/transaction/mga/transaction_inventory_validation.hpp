@@ -17,11 +17,28 @@ inline const char* ValidateLocalTransactionInventoryStructure(
     const LocalTransactionInventory& inventory) {
   if (inventory.next_local_transaction_id == kInvalidLocalTransactionId)
     return "next_transaction_invalid";
+  if (inventory.next_commit_sequence == 0) return "next_commit_sequence_invalid";
+  std::set<u64> commit_sequences;
   std::set<u64> local_ids;
   using BinaryIdentity = std::array<scratchbird::core::platform::byte, 16>;
   static_assert(sizeof(BinaryIdentity) == 16);
   std::set<BinaryIdentity> transaction_ids;
   for (const auto& entry : inventory.entries) {
+    if (entry.begin_visible_through_commit_sequence >= inventory.next_commit_sequence)
+      return "begin_commit_sequence_invalid";
+    if (entry.state == TransactionState::archived) {
+      if (entry.archived_from_state != TransactionState::committed &&
+          entry.archived_from_state != TransactionState::rolled_back &&
+          entry.archived_from_state != TransactionState::failed_terminal)
+        return "archive_origin_invalid";
+    } else if (entry.archived_from_state != TransactionState::none) return "nonarchived_origin";
+    const bool committed = HasCommittedInventoryOutcome(entry);
+    if (committed) {
+      if (entry.commit_sequence == 0 || entry.commit_sequence >= inventory.next_commit_sequence ||
+          entry.commit_sequence <= entry.begin_visible_through_commit_sequence)
+        return "commit_sequence_invalid";
+      if (!commit_sequences.insert(entry.commit_sequence).second) return "duplicate_commit_sequence";
+    } else if (entry.commit_sequence != 0) return "noncommitted_commit_sequence";
     if (!entry.identity.valid() ||
         !scratchbird::core::uuid::IsEngineIdentityUuid(entry.identity.transaction_uuid.value))
       return "invalid_transaction_identity";

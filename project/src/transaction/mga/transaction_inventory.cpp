@@ -7,7 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_inventory.hpp"
+#include "transaction_inventory_validation.hpp"
 
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -85,8 +87,7 @@ bool ContainsTransactionUuid(const LocalTransactionInventory& inventory, const T
 u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory) {
   u64 latest = kInvalidLocalTransactionId;
   for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if ((entry.state == TransactionState::committed ||
-         entry.state == TransactionState::archived) &&
+    if (HasCommittedInventoryOutcome(entry) &&
         entry.identity.local_id.valid() &&
         entry.identity.local_id.value > latest) {
       latest = entry.identity.local_id.value;
@@ -122,6 +123,11 @@ TransactionInventoryResult BeginLocalTransactionWithState(LocalTransactionInvent
                           "transaction.inventory.next_id_invalid");
   }
 
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.structure_invalid", reason);
+  if (inventory.next_local_transaction_id == std::numeric_limits<u64>::max())
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.number_exhausted");
+
   const LocalTransactionId local_id = MakeLocalTransactionId(inventory.next_local_transaction_id);
   if (ContainsTransactionUuid(inventory, transaction_uuid)) {
     return InventoryError("SB-TXN-DUPLICATE-TRANSACTION-UUID",
@@ -141,6 +147,7 @@ TransactionInventoryResult BeginLocalTransactionWithState(LocalTransactionInvent
   entry.begin_unix_epoch_millis = begin_unix_epoch_millis;
   entry.begin_visible_through_local_transaction_id =
       LatestCommittedLocalTransactionId(inventory);
+  entry.begin_visible_through_commit_sequence = inventory.next_commit_sequence - 1;
 
   DiagnosticRecord diagnostic;
   if (!TransitionOrFail(&entry, TransactionState::created, &diagnostic) ||
@@ -210,6 +217,10 @@ TransactionInventoryResult PrepareLocalTransaction(LocalTransactionInventory inv
 TransactionInventoryResult CommitLocalTransaction(LocalTransactionInventory inventory,
                                                   LocalTransactionId local_id,
                                                   u64 final_unix_epoch_millis) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.structure_invalid", reason);
+  if (inventory.next_commit_sequence == std::numeric_limits<u64>::max())
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.commit_sequence_exhausted");
   if (!local_id.valid()) {
     return InventoryError("SB-TXN-LOCAL-ID-NOT-FOUND",
                           "transaction.inventory.commit_id_invalid");
@@ -240,6 +251,7 @@ TransactionInventoryResult CommitLocalTransaction(LocalTransactionInventory inve
   }
 
   entry->final_unix_epoch_millis = final_unix_epoch_millis;
+  entry->commit_sequence = inventory.next_commit_sequence++;
   entry->evidence_record_written = true;
   const TransactionInventoryEntry committed_entry = *entry;
 
@@ -252,6 +264,8 @@ TransactionInventoryResult CommitLocalTransaction(LocalTransactionInventory inve
 
 TransactionInventoryResult ArchiveLocalTransaction(LocalTransactionInventory inventory,
                                                    LocalTransactionId local_id) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.structure_invalid", reason);
   if (!local_id.valid()) {
     return InventoryError("SB-TXN-LOCAL-ID-NOT-FOUND",
                           "transaction.inventory.archive_id_invalid");
@@ -270,6 +284,7 @@ TransactionInventoryResult ArchiveLocalTransaction(LocalTransactionInventory inv
   }
 
   DiagnosticRecord diagnostic;
+  const auto origin = entry->state;
   if (!TransitionOrFail(entry, TransactionState::archived, &diagnostic)) {
     TransactionInventoryResult result;
     result.status = InventoryErrorStatus();
@@ -277,6 +292,7 @@ TransactionInventoryResult ArchiveLocalTransaction(LocalTransactionInventory inv
     return result;
   }
 
+  entry->archived_from_state = origin;
   const TransactionInventoryEntry archived_entry = *entry;
   TransactionInventoryResult result;
   result.status = InventoryOkStatus();
@@ -385,9 +401,12 @@ TransactionInventoryCompactionResult CompactLocalTransactionInventory(
     return CompactionError("SB-TXN-INVENTORY-COMPACTION-HORIZON-INVALID",
                            "transaction.inventory.compaction_horizon_invalid");
   }
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(request.inventory); *reason)
+    return CompactionError("CATALOG.INVALID_INPUT", "transaction.inventory.structure_invalid", reason);
   TransactionInventoryCompactionResult result;
   result.status = InventoryOkStatus();
   result.inventory.next_local_transaction_id = request.inventory.next_local_transaction_id;
+  result.inventory.next_commit_sequence = request.inventory.next_commit_sequence;
   for (const auto& entry : request.inventory.entries) {
     const bool can_drop = request.drop_archived_entries &&
                           entry.state == TransactionState::archived &&

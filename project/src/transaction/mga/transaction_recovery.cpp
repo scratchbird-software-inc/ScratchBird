@@ -7,7 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_recovery.hpp"
+#include "transaction_inventory_validation.hpp"
 
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -200,6 +202,13 @@ TransactionRecoveryClassification ClassifyLocalTransactionForRecovery(const Tran
 
 TransactionRecoveryResult ClassifyLocalTransactionInventoryForRecovery(const LocalTransactionInventory& inventory) {
   TransactionRecoveryResult result;
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    result.status = RecoveryErrorStatus();
+    result.write_admission_must_remain_fenced = true;
+    result.diagnostic = MakeTransactionRecoveryDiagnostic(result.status,
+        "SB-SNTXN-RECOVERY-STATE-AMBIGUOUS", "transaction.recovery.inventory_invalid", reason);
+    return result;
+  }
   result.status = RecoveryOkStatus();
   result.recovered_inventory = inventory;
   for (const TransactionInventoryEntry& entry : inventory.entries) {
@@ -226,6 +235,18 @@ TransactionRecoveryResult ApplyLocalTransactionInventoryRecovery(LocalTransactio
     return result;
   }
 
+  u64 commit_count = 0;
+  for (const auto& classification : result.classifications)
+    if (!classification.fail_closed && classification.action == TransactionRecoveryAction::complete_commit)
+      ++commit_count;
+  if (commit_count > std::numeric_limits<u64>::max() - inventory.next_commit_sequence) {
+    result.status = RecoveryErrorStatus();
+    result.write_admission_must_remain_fenced = true;
+    result.diagnostic = MakeTransactionRecoveryDiagnostic(result.status,
+        "CATALOG.INVALID_INPUT", "transaction.recovery.commit_sequence_exhausted");
+    return result;
+  }
+
   result.recovered_inventory = std::move(inventory);
   for (TransactionInventoryEntry& entry : result.recovered_inventory.entries) {
     const auto classification = ClassifyLocalTransactionForRecovery(entry);
@@ -243,6 +264,8 @@ TransactionRecoveryResult ApplyLocalTransactionInventoryRecovery(LocalTransactio
       return result;
     }
     if (entry.state != before) {
+      if (entry.state == TransactionState::committed)
+        entry.commit_sequence = result.recovered_inventory.next_commit_sequence++;
       result.inventory_changed = true;
     }
   }
@@ -256,6 +279,10 @@ TransactionInventoryResult ResolveLimboLocalTransactionWithOperatorDecision(
     LimboOperatorDecision decision,
     u64 final_unix_epoch_millis,
     LimboOperatorResolutionPolicy policy) {
+  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason)
+    return RecoveryInventoryError("CATALOG.INVALID_INPUT", "transaction.recovery.inventory_invalid", reason);
+  if (decision == LimboOperatorDecision::commit && inventory.next_commit_sequence == std::numeric_limits<u64>::max())
+    return RecoveryInventoryError("CATALOG.INVALID_INPUT", "transaction.recovery.commit_sequence_exhausted");
   if (!local_id.valid()) {
     return RecoveryInventoryError("SB-SNTXN-LIMBO-LOCAL-ID-INVALID",
                                   "transaction.recovery.limbo_local_id_invalid");
@@ -313,6 +340,8 @@ TransactionInventoryResult ResolveLimboLocalTransactionWithOperatorDecision(
     return result;
   }
 
+  if (entry->state == TransactionState::committed)
+    entry->commit_sequence = inventory.next_commit_sequence++;
   const TransactionInventoryEntry resolved_entry = *entry;
   TransactionInventoryResult result;
   result.status = RecoveryOkStatus();

@@ -339,8 +339,7 @@ scratchbird::transaction::mga::CopyOnWriteMutationKind ToTransactionCowKind(
 u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory) {
   u64 latest = kInvalidLocalTransactionId;
   for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if ((entry.state == TransactionState::committed ||
-         entry.state == TransactionState::archived) &&
+    if (scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry) &&
         entry.identity.local_id.valid() &&
         entry.identity.local_id.value > latest) {
       latest = entry.identity.local_id.value;
@@ -399,8 +398,10 @@ RowVersionMetadata MetadataForRow(const RowDataRecord& row,
   metadata.chain.next_version_uuid = {UuidKind::row, row.next_version_uuid};
   metadata.chain.previous_version_sequence = row.previous_row_version;
   metadata.chain.next_version_sequence = row.next_row_version;
-  metadata.state = RowStateForEntry(row, entry.state);
-  metadata.creator_transaction_state = entry.state;
+  const auto state = scratchbird::transaction::mga::InventoryVisibilityState(entry);
+  metadata.state = RowStateForEntry(row, state);
+  metadata.creator_transaction_state = state;
+  metadata.creator_commit_sequence = entry.commit_sequence;
   metadata.payload_present = !row.cells.empty();
   return metadata;
 }
@@ -1485,6 +1486,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
       visibility_snapshot.visible_through_local_transaction_id != 0 ||
       visibility_snapshot.visible_through_local_transaction_id_is_boundary ||
       !visibility_snapshot.allow_reader_own_uncommitted || visibility_snapshot.recovery_context ||
+      visibility_snapshot.visible_through_commit_sequence != 0 ||
+      visibility_snapshot.visible_through_commit_sequence_is_boundary ||
       !visibility_snapshot.active_excluded_local_transaction_ids.empty() ||
       !visibility_snapshot.in_doubt_excluded_local_transaction_ids.empty()))
     return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
@@ -1581,9 +1584,13 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
       PhysicalMgaCowReadRow observed;
       observed.row = row;
       observed.metadata = MetadataForRow(row, creator.entry);
-      observed.decision = EvaluateVersionEffectVisibility(observed.metadata, snapshot).decision;
-      if (creator.entry.state == TransactionState::rolled_back ||
-          creator.entry.state == TransactionState::failed_terminal) {
+      const auto visibility = EvaluateVersionEffectVisibility(observed.metadata, snapshot);
+      if (!visibility.ok() && visibility.decision != VisibilityDecision::wait_for_transaction &&
+          visibility.decision != VisibilityDecision::requires_recovery)
+        return Propagate<PhysicalMgaCowReadResult>(visibility.status, visibility.diagnostic);
+      observed.decision = visibility.decision;
+      if (observed.metadata.creator_transaction_state == TransactionState::rolled_back ||
+          observed.metadata.creator_transaction_state == TransactionState::failed_terminal) {
         ++result.rolled_back_version_count;
         result.rows.push_back(std::move(observed));
         continue;

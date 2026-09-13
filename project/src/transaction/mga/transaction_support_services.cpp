@@ -53,7 +53,7 @@ const TransactionInventoryEntry* FindInventoryEntry(const LocalTransactionInvent
 }
 
 bool IsCommittedOrArchived(const TransactionInventoryEntry& entry) {
-  return entry.state == TransactionState::committed || entry.state == TransactionState::archived;
+  return HasCommittedInventoryOutcome(entry) && entry.commit_sequence != 0;
 }
 
 bool IsStatementReservableState(TransactionState state) {

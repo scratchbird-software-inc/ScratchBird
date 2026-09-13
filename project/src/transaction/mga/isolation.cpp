@@ -256,10 +256,13 @@ VisibilitySnapshot SnapshotPolicyForIsolation(IsolationLevel level,
   visibility.visible_through_local_transaction_id =
       snapshot.transaction_start_visible_through_local_transaction.value;
   visibility.visible_through_local_transaction_id_is_boundary = true;
+  visibility.visible_through_commit_sequence_is_boundary = true;
+  visibility.visible_through_commit_sequence = snapshot.transaction_start_visible_through_commit_sequence;
   visibility.allow_reader_own_uncommitted = true;
   visibility.recovery_context = false;
   if (level == IsolationLevel::read_committed) {
     visibility.visible_through_local_transaction_id = snapshot.visible_through_local_transaction.value;
+    visibility.visible_through_commit_sequence = snapshot.visible_through_commit_sequence;
   }
   return visibility;
 }

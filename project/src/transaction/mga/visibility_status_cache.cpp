@@ -14,8 +14,8 @@ namespace scratchbird::transaction::mga {
 namespace {
 
 bool IsInventoryCommittedEvidence(const TransactionInventoryEntry& entry) {
-  return (entry.state == TransactionState::committed ||
-          entry.state == TransactionState::archived) &&
+  return HasCommittedInventoryOutcome(entry) &&
+         entry.commit_sequence != 0 &&
          entry.evidence_record_written;
 }
 

@@ -255,6 +255,8 @@ static void InventoryAdmissionCases() {
         auto inventory = f.inventory;
         auto& entry = inventory.entries[0];
         entry.state = static_cast<mga::TransactionState>(state);
+        entry.commit_sequence = (state == 6 || state == 12) ? 1 : 0;
+        entry.archived_from_state = state == 12 ? mga::TransactionState::committed : mga::TransactionState::none;
         entry.identity.scope = static_cast<mga::TransactionScope>(scope);
         entry.identity.transaction_uuid.value.bytes[8] = static_cast<platform::byte>(
             (entry.identity.transaction_uuid.value.bytes[8] & 15U) | (variant << 4U));
@@ -279,6 +281,8 @@ static void InventoryAdmissionCases() {
   for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
     auto inventory = f.inventory;
     inventory.entries[0].state = static_cast<mga::TransactionState>(encoded);
+    inventory.entries[0].commit_sequence = (encoded == 6 || encoded == 12) ? 1 : 0;
+    inventory.entries[0].archived_from_state = encoded == 12 ? mga::TransactionState::committed : mga::TransactionState::none;
     Check((*mga::ValidateLocalTransactionInventoryStructure(inventory) == '\0') ==
         (encoded >= 1 && encoded <= 13), "complete u16 state membership domain");
     inventory = f.inventory;

@@ -207,6 +207,7 @@ u64 PublishGeneration(const txn::LocalTransactionInventory& inventory) {
 bool SameInventory(const txn::LocalTransactionInventory& lhs,
                    const txn::LocalTransactionInventory& rhs) {
   if (lhs.next_local_transaction_id != rhs.next_local_transaction_id ||
+      lhs.next_commit_sequence != rhs.next_commit_sequence ||
       lhs.entries.size() != rhs.entries.size()) {
     return false;
   }
@@ -214,14 +215,16 @@ bool SameInventory(const txn::LocalTransactionInventory& lhs,
     const auto& left = lhs.entries[i];
     const auto& right = rhs.entries[i];
     if (left.identity.local_id.value != right.identity.local_id.value ||
-        UuidText(left.identity.transaction_uuid) !=
-            UuidText(right.identity.transaction_uuid) ||
+        left.identity.transaction_uuid.value != right.identity.transaction_uuid.value ||
         left.identity.scope != right.identity.scope ||
         left.state != right.state ||
+        left.archived_from_state != right.archived_from_state ||
         left.begin_unix_epoch_millis != right.begin_unix_epoch_millis ||
         left.final_unix_epoch_millis != right.final_unix_epoch_millis ||
         left.begin_visible_through_local_transaction_id !=
             right.begin_visible_through_local_transaction_id ||
+        left.begin_visible_through_commit_sequence != right.begin_visible_through_commit_sequence ||
+        left.commit_sequence != right.commit_sequence ||
         left.evidence_record_required != right.evidence_record_required ||
         left.evidence_record_written != right.evidence_record_written ||
         left.rollback_only != right.rollback_only) {
@@ -232,7 +235,7 @@ bool SameInventory(const txn::LocalTransactionInventory& lhs,
 }
 
 // Independent byte oracle: deliberately uses explicit shifts, not production
-// encoder helpers. Offsets come from Core TRANSACTION_INVENTORY_BINARY_PUBLICATION_V3.
+// encoder helpers. Offsets come from Core TRANSACTION_INVENTORY_BINARY_PUBLICATION_V4.
 void Put(std::string& bytes, std::size_t offset, u64 value, std::size_t count) {
   for (std::size_t i = 0; i < count; ++i)
     bytes[offset + i] = static_cast<char>((value >> (8 * i)) & 255);
@@ -249,10 +252,10 @@ std::string WithDigest(std::string body) {
 std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view phase,
                                     const txn::LocalTransactionInventory& old_inventory,
                                     const txn::LocalTransactionInventory& new_inventory) {
-  std::string bytes(80 + (old_inventory.entries.size() + new_inventory.entries.size()) * 64, '\0');
-  bytes.replace(0, 8, "SBTXP003");
-  Put(bytes, 8, 3, 2);
-  Put(bytes, 10, 80, 2);
+  std::string bytes(96 + (old_inventory.entries.size() + new_inventory.entries.size()) * 72, '\0');
+  bytes.replace(0, 8, "SBTXP004");
+  Put(bytes, 8, 4, 2);
+  Put(bytes, 10, 96, 2);
   Put(bytes, 12, phase == "publishing" ? 1 : 2, 4);
   Put(bytes, 16, PublishGeneration(new_inventory), 8);
   Put(bytes, 24, bytes.size() + 32, 8);
@@ -261,7 +264,9 @@ std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view pha
   Put(bytes, 48, old_inventory.entries.size(), 8);
   Put(bytes, 56, new_inventory.entries.size(), 8);
   bytes.replace(64, 16, reinterpret_cast<const char*>(fixture.database_uuid.value.bytes.data()), 16);
-  std::size_t offset = 80;
+  Put(bytes, 80, old_inventory.next_commit_sequence, 8);
+  Put(bytes, 88, new_inventory.next_commit_sequence, 8);
+  std::size_t offset = 96;
   for (const auto* inventory : {&old_inventory, &new_inventory}) {
     for (const auto& entry : inventory->entries) {
       Put(bytes, offset, entry.identity.local_id.value, 8);
@@ -271,11 +276,16 @@ std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view pha
       Put(bytes, offset + 26, static_cast<u16>(entry.state), 2);
       Put(bytes, offset + 28, (entry.evidence_record_required ? 1 : 0) |
                               (entry.evidence_record_written ? 2 : 0) |
-                              (entry.rollback_only ? 4 : 0), 4);
+                              (entry.rollback_only ? 4 : 0) |
+                              ((entry.archived_from_state == txn::TransactionState::committed ? 1u :
+                                entry.archived_from_state == txn::TransactionState::rolled_back ? 2u :
+                                entry.archived_from_state == txn::TransactionState::failed_terminal ? 3u : 0u) << 3), 4);
       Put(bytes, offset + 32, entry.begin_unix_epoch_millis, 8);
       Put(bytes, offset + 40, entry.final_unix_epoch_millis, 8);
       Put(bytes, offset + 48, entry.begin_visible_through_local_transaction_id, 8);
-      offset += 64;
+      Put(bytes, offset + 56, entry.begin_visible_through_commit_sequence, 8);
+      Put(bytes, offset + 64, entry.commit_sequence, 8);
+      offset += 72;
     }
   }
   return bytes;
@@ -475,7 +485,7 @@ bool TestChecksumTamperFailsClosed() {
   ok = PersistInventory(fixture, new_inventory) && ok;
   std::string journal = ReadText(JournalPath(fixture));
   Require(journal.size() > 128, "binary publication missing");
-  journal[80 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
+  journal[96 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
   WriteTextAndSync(JournalPath(fixture), journal);
   CorruptPrimaryInventoryRoot(fixture);
   const auto loaded = LoadInventory(fixture);
@@ -495,9 +505,21 @@ bool TestBinaryPublicationContract() {
   // Preserve flags, state/scope and arbitrary timestamp bytes, not just UUIDs.
   new_inventory.entries[1].identity.scope = txn::TransactionScope::cluster_global;
   new_inventory.entries[1].state = txn::TransactionState::read_only_active;
+  new_inventory.entries[1].commit_sequence = 0;
   new_inventory.entries[1].evidence_record_required = false;
   new_inventory.entries[1].rollback_only = true;
   new_inventory.entries[1].begin_visible_through_local_transaction_id = 1;
+  const auto archived = txn::ArchiveLocalTransaction(new_inventory, new_inventory.entries[0].identity.local_id);
+  ok = Require(archived.ok(), "archive actual committed fixture transaction") && ok;
+  if (!archived.ok()) return false;
+  new_inventory = archived.inventory;
+  const auto abort_begin = txn::BeginLocalTransaction(new_inventory, MakeUuid(UuidKind::transaction, 7301), kBaseMillis + 7301);
+  if (!Require(abort_begin.ok(), "begin archived rollback fixture")) return false;
+  const auto aborted = txn::RollbackLocalTransaction(abort_begin.inventory, abort_begin.entry.identity.local_id, kBaseMillis + 7302);
+  if (!Require(aborted.ok(), "rollback archive fixture")) return false;
+  const auto archived_abort = txn::ArchiveLocalTransaction(aborted.inventory, abort_begin.entry.identity.local_id);
+  if (!Require(archived_abort.ok(), "archive actual rolled-back fixture transaction")) return false;
+  new_inventory = archived_abort.inventory;
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
   const auto golden = BuildPublishJournal(fixture, "committed", old_inventory, new_inventory);
@@ -526,6 +548,10 @@ bool TestBinaryPublicationContract() {
   { auto bad = new_inventory; bad.entries[0].state = static_cast<txn::TransactionState>(65535);
     invalid_write(bad); }
   { auto bad = new_inventory; bad.next_local_transaction_id = 0; invalid_write(bad); }
+  { auto bad = new_inventory; bad.next_commit_sequence = 0; invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[0].commit_sequence = 0; invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[1].commit_sequence = 2; invalid_write(bad); }
+  { auto bad = new_inventory; bad.entries[0].begin_visible_through_commit_sequence = bad.next_commit_sequence; invalid_write(bad); }
 
   // An unsupported journal must be refused before writing even when the
   // primary page chain is intact; no automatic prototype conversion.
@@ -555,16 +581,17 @@ bool TestBinaryPublicationContract() {
     Put(body, offset, value, width);
     refused(WithDigest(body)); // Valid integrity: exercise semantic admission.
   };
-  mutate(8, 2, 2); mutate(10, 96, 2);
+  mutate(8, 2, 2); mutate(8, 3, 2); mutate(10, 80, 2);
   mutate(12, 0, 4); mutate(12, 3, 4);
   mutate(16, 0, 8); mutate(16, 999, 8);
   mutate(24, 0, 8); mutate(24, ~u64{0}, 8);
   mutate(32, 0, 8); mutate(40, 0, 8);
   mutate(48, ~u64{0}, 8); mutate(56, ~u64{0}, 8);
+  mutate(80, 0, 8); mutate(88, 0, 8);
   // Every persisted UUID slot rejects all other version/variant combinations,
   // including the database binding and the unselected old snapshot.
   std::vector<std::size_t> uuid_offsets{64};
-  for (std::size_t row = 80; row < golden.size() - 32; row += 64)
+  for (std::size_t row = 96; row < golden.size() - 32; row += 72)
     uuid_offsets.push_back(row + 8);
   for (const auto offset : uuid_offsets) {
     for (unsigned version = 0; version < 16; ++version)
@@ -576,17 +603,18 @@ bool TestBinaryPublicationContract() {
         refused(WithDigest(body));
       }
   }
-  for (std::size_t row = 80; row < golden.size() - 32; row += 64) {
+  for (std::size_t row = 96; row < golden.size() - 32; row += 72) {
     mutate(row, 0, 8);
     mutate(row + 24, 2, 2);
     mutate(row + 26, 0, 2); mutate(row + 26, 14, 2);
-    mutate(row + 28, 8, 4);
-    mutate(row + 56, 1, 8);
+    mutate(row + 28, 32, 4);
+    mutate(row + 56, ~u64{0}, 8);
+    mutate(row + 64, ~u64{0}, 8);
   }
-  mutate(80 + 64, 1, 8); // Duplicate local number in old snapshot.
+  mutate(96 + 72, 1, 8); // Duplicate local number in old snapshot.
   {
     auto body = golden.substr(0, golden.size() - 32);
-    body.replace(80 + 64 + 8, 16, body.substr(80 + 8, 16));
+    body.replace(96 + 72 + 8, 16, body.substr(96 + 8, 16));
     refused(WithDigest(body)); // Duplicate UUID with different local number.
   }
   {

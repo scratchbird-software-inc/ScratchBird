@@ -4659,8 +4659,10 @@ DatabaseLifecycleResult ReadTransactionInventoryPageWithoutJournal(
       inventory_generation = parsed.body.inventory_generation;
       loaded.next_local_transaction_id =
           parsed.body.inventory.next_local_transaction_id;
+      loaded.next_commit_sequence = parsed.body.inventory.next_commit_sequence;
     } else if (loaded.next_local_transaction_id !=
-               parsed.body.inventory.next_local_transaction_id) {
+               parsed.body.inventory.next_local_transaction_id ||
+               loaded.next_commit_sequence != parsed.body.inventory.next_commit_sequence) {
       return LifecycleError(
           "SB-DB-BOOTSTRAP-SECURITY-INVENTORY-NEXT-ID-MISMATCH",
           "storage.database_lifecycle.bootstrap_inventory_next_id_mismatch",

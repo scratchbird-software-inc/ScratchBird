@@ -3,6 +3,9 @@
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
+#include "isolation.hpp"
+#include "transaction_recovery.hpp"
+#include "transaction_inventory_validation.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "uuid.hpp"
 #include <cerrno>
@@ -110,10 +113,12 @@ struct Fixture {
     }
   }
   ~Fixture() { device.Close(); std::error_code error; std::filesystem::remove_all(root, error); }
-  mga::TransactionIdentity Begin() {
+  mga::TransactionIdentity Begin(bool read_only = false) {
     auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&device, page_size);
     Check(loaded.ok(), "load owned inventory");
-    auto begun = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
+    auto begun = read_only
+        ? mga::BeginLocalReadOnlyTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull)
+        : mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
     Check(begun.ok(), "begin actual MGA transaction");
     Check(db::PersistLocalTransactionInventoryToOpenDevice(&device, page_size, begun.inventory).ok(), "persist active inventory");
     return begun.entry.identity;
@@ -365,7 +370,7 @@ void PublishedSnapshotNativeVisibility() {
         f.first_page, {}, false, {}, &pin));
     no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
         f.first_page, {}, true, reader, &pin));
-    for (unsigned field = 0; field != 7; ++field) {
+    for (unsigned field = 0; field != 9; ++field) {
       mga::VisibilitySnapshot raw;
       if (field == 0) raw.reader_transaction = reader.local_id;
       if (field == 1) raw.visible_through_local_transaction_id = marker.local_id.value;
@@ -374,6 +379,8 @@ void PublishedSnapshotNativeVisibility() {
       if (field == 4) raw.recovery_context = true;
       if (field == 5) raw.active_excluded_local_transaction_ids = {writer.local_id.value};
       if (field == 6) raw.in_doubt_excluded_local_transaction_ids = {writer.local_id.value};
+      if (field == 7) raw.visible_through_commit_sequence = 1;
+      if (field == 8) raw.visible_through_commit_sequence_is_boundary = true;
       no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
           f.first_page, raw, false, reader, &pin));
     }
@@ -407,6 +414,173 @@ void PublishedSnapshotNativeVisibility() {
           "terminal owner reused snapshot pin");
     }
     pin.Release(); f.Finish(foreign, false);
+  }
+}
+
+int VerifyStartSnapshot(const std::string& path) {
+  std::ifstream oracle(path + ".start-oracle", std::ios::binary);
+  std::array<platform::byte, 72> bytes{};
+  if (!oracle.read(reinterpret_cast<char*>(bytes.data()), bytes.size()) || oracle.peek() != EOF) return 21;
+  const auto reader_number = platform::LoadLittle64(bytes.data());
+  const auto writer_number = platform::LoadLittle64(bytes.data() + 8);
+  const auto expected_begin = platform::LoadLittle64(bytes.data() + 16);
+  const auto expected_writer_commit = platform::LoadLittle64(bytes.data() + 24);
+  const auto page = platform::LoadLittle64(bytes.data() + 32);
+  TypedUuid relation; relation.kind = UuidKind::object;
+  std::copy(bytes.begin() + 40, bytes.begin() + 56, relation.value.bytes.begin());
+  TypedUuid reader_uuid; reader_uuid.kind = UuidKind::transaction;
+  std::copy(bytes.begin() + 56, bytes.end(), reader_uuid.value.bytes.begin());
+  disk::FileDevice device;
+  if (!device.Open(path, disk::FileOpenMode::open_existing).ok()) return 22;
+  const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&device, page_size);
+  if (!inventory.ok()) return 23;
+  const auto reader = mga::LookupLocalTransaction(inventory.inventory, mga::MakeLocalTransactionId(reader_number));
+  const auto writer = mga::LookupLocalTransaction(inventory.inventory, mga::MakeLocalTransactionId(writer_number));
+  if (!reader.ok() || !writer.ok() || reader.entry.identity.transaction_uuid.value != reader_uuid.value ||
+      reader.entry.begin_visible_through_commit_sequence != expected_begin ||
+      writer.entry.commit_sequence != expected_writer_commit ||
+      inventory.inventory.next_commit_sequence != expected_writer_commit + 1) return 24;
+  const auto captured = mga::CreateLocalTransactionSnapshot(inventory.inventory, reader.entry.identity.local_id);
+  if (!captured.ok()) return 25;
+  const auto boundary = mga::SnapshotPolicyForIsolation(mga::IsolationLevel::repeatable_read, captured.snapshot);
+  const auto rows = db::ReadPhysicalMgaCowRowsFromOpenDevice(device, relation, page, boundary,
+      false, reader.entry.identity);
+  if (!rows.ok() || rows.visible_rows.size() != 1 || rows.visible_rows[0].cells.size() != 1) return 26;
+  const auto& payload = rows.visible_rows[0].cells[0].value.payload;
+  return std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()) == "begin-visible" ? 0 : 27;
+}
+
+void TransactionStartCommitOrder() {
+  for (bool deleted : {false, true}) for (bool read_only : {false, true}) {
+    Fixture f;
+    const auto initial = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(initial.ok(), "load initial commit order");
+    const auto first_commit = initial.inventory.next_commit_sequence;
+    const auto row = Id(UuidKind::row);
+    const auto base = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(base, row, f.first_page, "begin-visible")).ok(), "write transaction-start base");
+    f.Finish(base, true);
+    const auto writer = f.Begin();
+    auto replacement = f.Mutation(writer, row, f.first_page, "committed-later");
+    replacement.kind = deleted ? db::PhysicalMgaCowMutationKind::delete_row : db::PhysicalMgaCowMutationKind::update;
+    if (deleted) replacement.cells.clear();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, replacement).ok(), "stage transaction-start successor");
+    const auto marker = f.Begin(); f.Finish(marker, true);
+    const auto reader = f.Begin(read_only);
+    f.Finish(writer, true);
+    Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen transaction-start inventory");
+    const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(inventory.ok() && inventory.inventory.next_commit_sequence == first_commit + 3, "durable next commit sequence");
+    const auto own = mga::LookupLocalTransaction(inventory.inventory, reader.local_id);
+    const auto committed = mga::LookupLocalTransaction(inventory.inventory, writer.local_id);
+    Check(own.ok() && own.entry.begin_visible_through_commit_sequence == first_commit + 1 &&
+        committed.ok() && committed.entry.commit_sequence == first_commit + 2, "durable begin/commit sequence order");
+    const auto captured = mga::CreateLocalTransactionSnapshot(inventory.inventory, reader.local_id);
+    Check(captured.ok(), "reconstruct from durable begin boundary");
+    for (auto level : {mga::IsolationLevel::repeatable_read, mga::IsolationLevel::serializable}) {
+      auto boundary = mga::SnapshotPolicyForIsolation(level, captured.snapshot);
+      Check(boundary.visible_through_commit_sequence_is_boundary &&
+          boundary.visible_through_commit_sequence == first_commit + 1, "isolation dropped durable begin order");
+      Payload(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page,
+          boundary, false, reader), "begin-visible");
+    }
+    const auto current = mga::SnapshotPolicyForIsolation(mga::IsolationLevel::read_committed, captured.snapshot);
+    const auto rows = db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page, current, false, reader);
+    Check(rows.ok(), "read-committed current boundary");
+    if (deleted) Check(rows.visible_rows.empty(), "read committed missed later DELETE");
+    else Payload(rows, "committed-later");
+    std::array<platform::byte, 72> expected{};
+    platform::StoreLittle64(expected.data(), reader.local_id.value);
+    platform::StoreLittle64(expected.data() + 8, writer.local_id.value);
+    platform::StoreLittle64(expected.data() + 16, first_commit + 1);
+    platform::StoreLittle64(expected.data() + 24, first_commit + 2);
+    platform::StoreLittle64(expected.data() + 32, f.first_page);
+    std::copy(f.relation.value.bytes.begin(), f.relation.value.bytes.end(), expected.begin() + 40);
+    std::copy(reader.transaction_uuid.value.bytes.begin(), reader.transaction_uuid.value.bytes.end(), expected.begin() + 56);
+    std::ofstream oracle(f.path + ".start-oracle", std::ios::binary);
+    oracle.write(reinterpret_cast<const char*>(expected.data()), expected.size()); oracle.close();
+    Check(oracle.good() && f.device.Close().ok(), "publish independent begin-order oracle and release owner");
+    const auto child = ::fork(); Check(child >= 0, "fork fresh begin-snapshot reader");
+    if (child == 0) { ::execl("/proc/self/exe", "start-snapshot-probe", "--start-snapshot-probe", f.path.c_str(), nullptr); ::_exit(99); }
+    int status = 0; pid_t waited;
+    do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0, "fresh process lost transaction-start visibility");
+    Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reclaim begin-snapshot owner");
+    f.Finish(reader, false);
+  }
+}
+
+void ArchiveAndRecoveryCommitOrder() {
+  for (bool commit : {false, true}) {
+    Fixture f;
+    const auto tx = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(tx, Id(UuidKind::row), f.first_page, "archive-outcome")).ok(), "write archive outcome row");
+    f.Finish(tx, commit);
+    const auto prior = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(prior.ok(), "load prearchive inventory");
+    const auto archived = mga::ArchiveLocalTransaction(prior.inventory, tx.local_id);
+    Check(archived.ok() && archived.entry.archived_from_state ==
+        (commit ? mga::TransactionState::committed : mga::TransactionState::rolled_back), "archive lost exact terminal origin");
+    Check(archived.inventory.next_commit_sequence == prior.inventory.next_commit_sequence &&
+        (archived.entry.commit_sequence != 0) == commit, "archive changed finality or commit order");
+    Check(db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, archived.inventory).ok(), "persist archive origin");
+    Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen archive outcome");
+    const auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(loaded.ok() && loaded.inventory.entries.back().archived_from_state == archived.entry.archived_from_state,
+        "native archive origin lost after reopen");
+    const auto rows = f.Read(f.first_page);
+    if (commit) Payload(rows, "archive-outcome");
+    else Check(rows.visible_rows.empty() && rows.rolled_back_version_count == 1, "archived rollback resurrected a row");
+    mga::TransactionInventoryCompactionRequest request;
+    request.inventory = loaded.inventory; request.inventory_authoritative = true;
+    request.oldest_required_local_transaction_id = mga::MakeLocalTransactionId(loaded.inventory.next_local_transaction_id);
+    const auto compacted = mga::CompactLocalTransactionInventory(request);
+    Check(compacted.ok() && compacted.compacted_entry_count == 1 &&
+        compacted.inventory.entries.size() + 1 == loaded.inventory.entries.size() &&
+        !mga::LookupLocalTransaction(compacted.inventory, tx.local_id).ok() &&
+        compacted.inventory.next_commit_sequence == loaded.inventory.next_commit_sequence, "compaction reset commit order");
+    const auto next = mga::BeginLocalTransaction(compacted.inventory, Id(UuidKind::transaction), 1790000000500ull);
+    Check(next.ok() && next.entry.begin_visible_through_commit_sequence == loaded.inventory.next_commit_sequence - 1,
+        "compacted begin guessed commit order from remaining rows");
+    const auto finalized = mga::CommitLocalTransaction(next.inventory, next.entry.identity.local_id, 1790000000600ull);
+    Check(finalized.ok() && finalized.entry.commit_sequence == loaded.inventory.next_commit_sequence, "compacted commit reused old order");
+  }
+  // Pure recovery-kernel cases model admitted durable states. They do not
+  // establish operator/evidence authentication or cluster-provider authority.
+  auto begun = mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(),
+      Id(UuidKind::transaction), 1790000000100ull);
+  Check(begun.ok(), "begin recovery counter test");
+  auto input = begun.inventory;
+  input.entries[0].state = mga::TransactionState::committing;
+  input.entries[0].evidence_record_written = true;
+  const auto recovered = mga::ApplyLocalTransactionInventoryRecovery(input, 1790000000200ull);
+  Check(recovered.ok() && recovered.recovered_inventory.entries[0].commit_sequence == 1 &&
+      recovered.recovered_inventory.next_commit_sequence == 2, "recovered commit omitted sequence");
+  const auto replay = mga::ApplyLocalTransactionInventoryRecovery(recovered.recovered_inventory, 1790000000300ull);
+  Check(replay.ok() && !replay.inventory_changed && replay.recovered_inventory.next_commit_sequence == 2,
+      "recovery replay consumed another sequence");
+  input.next_commit_sequence = std::numeric_limits<u64>::max();
+  const auto exhausted = mga::ApplyLocalTransactionInventoryRecovery(input, 1790000000200ull);
+  Check(!exhausted.ok() && !exhausted.inventory_changed && exhausted.recovered_inventory.entries[0].commit_sequence == 0,
+      "recovery overflow partially committed inventory");
+  auto ordinary = begun.inventory; ordinary.next_commit_sequence = std::numeric_limits<u64>::max();
+  Check(!mga::CommitLocalTransaction(ordinary, begun.entry.identity.local_id, 1790000000200ull).ok(), "ordinary commit sequence wrapped");
+  for (auto decision : {mga::LimboOperatorDecision::commit, mga::LimboOperatorDecision::rollback,
+                        mga::LimboOperatorDecision::fail_terminal}) {
+    auto limbo = begun.inventory; limbo.entries[0].state = mga::TransactionState::limbo;
+    mga::LimboOperatorResolutionPolicy policy;
+    policy.operator_decision_authoritative = true; policy.operator_evidence_reference = "component-admitted-operator-decision";
+    const auto resolved = mga::ResolveLimboLocalTransactionWithOperatorDecision(limbo, begun.entry.identity.local_id,
+        decision, 1790000000200ull, policy);
+    const bool commit = decision == mga::LimboOperatorDecision::commit;
+    Check(resolved.ok() && resolved.entry.commit_sequence == (commit ? 1u : 0u) &&
+        resolved.inventory.next_commit_sequence == (commit ? 2u : 1u), "operator resolution commit order differs from outcome");
+    const auto archived = mga::ArchiveLocalTransaction(resolved.inventory, begun.entry.identity.local_id);
+    Check(archived.ok() && archived.entry.archived_from_state == resolved.entry.state &&
+        mga::HasCommittedInventoryOutcome(archived.entry) == commit &&
+        *mga::ValidateLocalTransactionInventoryStructure(archived.inventory) == '\0', "archived operator outcome changed finality");
   }
 }
 
@@ -792,11 +966,12 @@ void Run() {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--start-snapshot-probe") return VerifyStartSnapshot(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--finality-probe") return VerifyFinalityOracle(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--probe") {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

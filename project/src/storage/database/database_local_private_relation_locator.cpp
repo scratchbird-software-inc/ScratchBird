@@ -13,6 +13,7 @@
 #include "page_manager.hpp"
 #include "row_data_page.hpp"
 #include "startup_state.hpp"
+#include "transaction_inventory_validation.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -1121,8 +1122,7 @@ bool ValidateMigratedSecurityChainReadback(
         creator.entry.identity.transaction_uuid.kind != UuidKind::transaction ||
         creator.entry.identity.transaction_uuid.value !=
             batch.transaction_uuid ||
-        (creator.entry.state != mga::TransactionState::committed &&
-         creator.entry.state != mga::TransactionState::archived)) {
+        !mga::HasCommittedInventoryOutcome(creator.entry)) {
       return RefuseBatch(refusal, "migrated_chain_mga_visibility_invalid");
     }
     ++observed_count;
@@ -1515,6 +1515,11 @@ SelectDatabaseLocalPrivateSecurityLocatorForVisibilityV1(
         "storage.database_local_private_security_locator.visibility_invalid",
         "visibility_request_invalid");
   }
+  if (const auto reason = mga::ValidateLocalTransactionInventoryStructure(*request.inventory); *reason) {
+    return Refuse<DatabaseLocalPrivateSecurityLocatorVisibilityResultV1>(
+        kDatabaseLocalPrivateSecurityLocatorInvalid,
+        "storage.database_local_private_security_locator.visibility_invalid", reason);
+  }
   const auto& inspected = *request.inspected;
   const auto& anchored =
       inspected.locators[inspected.anchored_locator_slot];
@@ -1542,9 +1547,7 @@ SelectDatabaseLocalPrivateSecurityLocatorForVisibilityV1(
       found.entry.identity.transaction_uuid.kind == UuidKind::transaction &&
       found.entry.identity.transaction_uuid.value ==
           anchored.creator_transaction_uuid) {
-    const bool committed =
-        found.entry.state == mga::TransactionState::committed ||
-        found.entry.state == mga::TransactionState::archived;
+    const bool committed = mga::HasCommittedInventoryOutcome(found.entry);
     if (committed) {
       creator_visible = request.use_latest_committed_snapshot ||
                         ((!request.visibility_snapshot
@@ -1555,6 +1558,17 @@ SelectDatabaseLocalPrivateSecurityLocatorForVisibilityV1(
                          anchored.creator_local_transaction_id <=
                              request.visibility_snapshot
                                  .visible_through_local_transaction_id);
+      if (!request.use_latest_committed_snapshot) {
+        const auto& snapshot = request.visibility_snapshot;
+        const auto excluded = [&](const auto& values) {
+          return std::find(values.begin(), values.end(), anchored.creator_local_transaction_id) != values.end();
+        };
+        creator_visible = creator_visible &&
+            (!snapshot.visible_through_commit_sequence_is_boundary ||
+             (found.entry.commit_sequence != 0 && found.entry.commit_sequence <= snapshot.visible_through_commit_sequence)) &&
+            !excluded(snapshot.active_excluded_local_transaction_ids) &&
+            !excluded(snapshot.in_doubt_excluded_local_transaction_ids);
+      }
     } else if (!request.use_latest_committed_snapshot &&
                found.entry.state == mga::TransactionState::active &&
                request.visibility_snapshot.allow_reader_own_uncommitted &&
@@ -1823,7 +1837,7 @@ PublishDatabaseLocalPrivateSecurityLocatorSuccessorV1(
           "storage.database_local_private_security_locator.candidate_creator_invalid",
           "candidate_creator_inventory_identity_missing");
     }
-    const auto slot_state = slot_creator.entry.state;
+    const auto slot_state = mga::InventoryVisibilityState(slot_creator.entry);
     if (slot_state == mga::TransactionState::active) {
       if (slot_locator.creator_local_transaction_id !=
               request.creator_local_transaction_id ||
@@ -1883,7 +1897,8 @@ PublishDatabaseLocalPrivateSecurityLocatorSuccessorV1(
           "storage.database_local_private_security_locator.anchored_creator_invalid",
           "anchored_creator_inventory_identity_missing");
     }
-    if (anchored_creator.entry.state == mga::TransactionState::active) {
+    const auto anchored_state = mga::InventoryVisibilityState(anchored_creator.entry);
+    if (anchored_state == mga::TransactionState::active) {
       if (anchored.creator_local_transaction_id !=
               request.creator_local_transaction_id ||
           anchored.creator_transaction_uuid !=
@@ -1894,14 +1909,14 @@ PublishDatabaseLocalPrivateSecurityLocatorSuccessorV1(
             "another_private_security_writer_active");
       }
       same_transaction_staged_candidate = true;
-    } else if (anchored_creator.entry.state ==
+    } else if (anchored_state ==
                    mga::TransactionState::rolled_back ||
-               anchored_creator.entry.state ==
+               anchored_state ==
                    mga::TransactionState::failed_terminal) {
       terminal_candidate_reuse = true;
-    } else if (anchored_creator.entry.state !=
+    } else if (anchored_state !=
                    mga::TransactionState::committed &&
-               anchored_creator.entry.state !=
+               anchored_state !=
                    mga::TransactionState::archived) {
       return Refuse<DatabaseLocalPrivateSecurityLocatorSuccessorResultV1>(
           kDatabaseLocalPrivateSecurityLocatorInvalid,
@@ -2361,11 +2376,11 @@ MigrateLegacyDatabaseLocalPrivateSecurityLocatorInTemporaryImageV1(
           "storage.database_local_private_security_locator.migration_inventory_identity_invalid",
           std::to_string(page_number));
     }
-    if (creator.entry.state == mga::TransactionState::committed ||
-        creator.entry.state == mga::TransactionState::archived) {
+    const auto creator_state = mga::InventoryVisibilityState(creator.entry);
+    if (mga::HasCommittedInventoryOutcome(creator.entry)) {
       security_page.committed_visible = true;
-    } else if (creator.entry.state == mga::TransactionState::rolled_back ||
-               creator.entry.state == mga::TransactionState::failed_terminal) {
+    } else if (creator_state == mga::TransactionState::rolled_back ||
+               creator_state == mga::TransactionState::failed_terminal) {
       security_page.committed_visible = false;
     } else {
       return Refuse<DatabaseLocalPrivateSecurityLocatorMigrationResultV1>(

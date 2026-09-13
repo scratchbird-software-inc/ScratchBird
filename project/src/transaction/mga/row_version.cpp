@@ -327,6 +327,19 @@ VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
   }
 
   const auto creator = metadata.identity.creator_transaction.local_id.value;
+  if (snapshot.visible_through_commit_sequence_is_boundary) {
+    if (metadata.creator_commit_sequence == 0) {
+      result.status = RowVersionErrorStatus();
+      result.decision = VisibilityDecision::unknown;
+      result.diagnostic = MakeRowVersionDiagnostic(result.status,
+          "CATALOG.INVALID_INPUT", "row_version.creator_commit_sequence_missing");
+      return result;
+    }
+    if (metadata.creator_commit_sequence > snapshot.visible_through_commit_sequence) {
+      result.decision = VisibilityDecision::invisible;
+      return result;
+    }
+  }
   const auto excluded = [creator](const auto& values) {
     return std::find(values.begin(), values.end(), creator) != values.end();
   };

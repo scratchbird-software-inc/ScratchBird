@@ -29,7 +29,7 @@ using scratchbird::transaction::mga::LocalTransactionHorizons;
 using scratchbird::transaction::mga::LocalTransactionInventory;
 
 inline constexpr u32 kTransactionInventoryPageDigestBytes = 32;
-inline constexpr u32 kTransactionInventoryPageBodyHeaderBytes = 144;
+inline constexpr u32 kTransactionInventoryPageBodyHeaderBytes = 152;
 using TransactionInventoryPageDigest =
     std::array<byte, kTransactionInventoryPageDigestBytes>;
 

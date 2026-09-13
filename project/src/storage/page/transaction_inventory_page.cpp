@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_inventory_page.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include "hash_digest.hpp"
 #include "page_header.hpp"
@@ -41,7 +42,7 @@ using scratchbird::transaction::mga::kInvalidLocalTransactionId;
 using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 namespace core_hash = scratchbird::core::hash;
 
-inline constexpr std::array<byte, 8> kTxnInvMagic = {'S', 'B', 'T', 'I', 'P', '0', '0', '2'};
+inline constexpr std::array<byte, 8> kTxnInvMagic = {'S', 'B', 'T', 'I', 'P', '0', '0', '3'};
 inline constexpr std::array<byte, 8> kTxnInvV1WeakMagic = {'S', 'B', 'T', 'I', 'P', '0', '0', '1'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
@@ -58,6 +59,7 @@ inline constexpr u32 kOffsetPreviousPageNumber = 104;
 inline constexpr u32 kOffsetChainDigest = 112;
 inline constexpr u32 kEntryBytes = 72;
 inline constexpr u32 kEntryOffsetBeginVisibleThrough = 48;
+inline constexpr u32 kOffsetNextCommitSequence = 144;
 
 namespace EntryFlag {
 inline constexpr u32 evidence_required = 1u << 0;
@@ -90,6 +92,10 @@ u32 EntryFlags(const TransactionInventoryEntry& entry) {
   if (entry.evidence_record_required) { flags |= EntryFlag::evidence_required; }
   if (entry.evidence_record_written) { flags |= EntryFlag::evidence_written; }
   if (entry.rollback_only) { flags |= EntryFlag::rollback_only; }
+  const u32 origin = entry.archived_from_state == TransactionState::committed ? 1u :
+      entry.archived_from_state == TransactionState::rolled_back ? 2u :
+      entry.archived_from_state == TransactionState::failed_terminal ? 3u : 0u;
+  flags |= origin << 3;
   return flags;
 }
 
@@ -176,6 +182,7 @@ TransactionInventoryPageDigest ComputeTransactionInventoryPageChainDigest(
   AppendU64(&canonical, body.next_page_number);
   AppendU64(&canonical, body.inventory_generation);
   AppendU64(&canonical, body.inventory.next_local_transaction_id);
+  AppendU64(&canonical, body.inventory.next_commit_sequence);
   AppendU64(&canonical, body.horizons.oldest_interesting_transaction.value);
   AppendU64(&canonical, body.horizons.oldest_active_transaction.value);
   AppendU64(&canonical, body.horizons.oldest_snapshot_transaction.value);
@@ -192,6 +199,8 @@ TransactionInventoryPageDigest ComputeTransactionInventoryPageChainDigest(
     AppendU64(&canonical, entry.begin_unix_epoch_millis);
     AppendU64(&canonical, entry.final_unix_epoch_millis);
     AppendU64(&canonical, entry.begin_visible_through_local_transaction_id);
+    AppendU64(&canonical, entry.begin_visible_through_commit_sequence);
+    AppendU64(&canonical, entry.commit_sequence);
   }
   return Sha256OrEmpty(canonical);
 }
@@ -217,6 +226,8 @@ u32 MaxTransactionInventoryEntriesPerPage(u32 page_size) {
 
 TransactionInventoryPageBodyResult BuildTransactionInventoryPageBody(const TransactionInventoryPageBody& body,
                                                                      u32 page_size) {
+  if (const auto reason = scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(body.inventory); *reason)
+    return TxnPageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.inventory_invalid", reason);
   if (page_size <= kPageHeaderSerializedBytes + kTransactionInventoryPageBodyHeaderBytes) {
     return TxnPageError("SB-TXN-INVENTORY-PAGE-BODY-INVALID",
                         "transaction_inventory_page.page_size_too_small",
@@ -264,6 +275,7 @@ TransactionInventoryPageBodyResult BuildTransactionInventoryPageBody(const Trans
   StoreLittle32(result.serialized.data() + kOffsetEntryCount, static_cast<u32>(body.inventory.entries.size()));
   StoreLittle64(result.serialized.data() + kOffsetNextPageNumber, body.next_page_number);
   StoreLittle64(result.serialized.data() + kOffsetNextLocalId, body.inventory.next_local_transaction_id);
+  StoreLittle64(result.serialized.data() + kOffsetNextCommitSequence, body.inventory.next_commit_sequence);
   StoreLittle64(result.serialized.data() + kOffsetOit, result.body.horizons.oldest_interesting_transaction.value);
   StoreLittle64(result.serialized.data() + kOffsetOat, result.body.horizons.oldest_active_transaction.value);
   StoreLittle64(result.serialized.data() + kOffsetOst, result.body.horizons.oldest_snapshot_transaction.value);
@@ -288,6 +300,8 @@ TransactionInventoryPageBodyResult BuildTransactionInventoryPageBody(const Trans
     StoreLittle64(result.serialized.data() + offset + 40, entry.final_unix_epoch_millis);
     StoreLittle64(result.serialized.data() + offset + kEntryOffsetBeginVisibleThrough,
                   entry.begin_visible_through_local_transaction_id);
+    StoreLittle64(result.serialized.data() + offset + 56, entry.begin_visible_through_commit_sequence);
+    StoreLittle64(result.serialized.data() + offset + 64, entry.commit_sequence);
     offset += kEntryBytes;
   }
 
@@ -333,7 +347,7 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
   const u32 body_bytes = LoadLittle32(serialized.data() + kOffsetBodyBytes);
   const auto stored_chain_digest = LoadDigest(serialized, kOffsetChainDigest);
   if (body_bytes > serialized.size() || body_bytes < kTransactionInventoryPageBodyHeaderBytes ||
-      kTransactionInventoryPageBodyHeaderBytes + entry_count * kEntryBytes > body_bytes) {
+      static_cast<u64>(kTransactionInventoryPageBodyHeaderBytes) + static_cast<u64>(entry_count) * kEntryBytes != body_bytes) {
     return TxnPageError("SB-TXN-INVENTORY-PAGE-BODY-INVALID",
                         "transaction_inventory_page.body_bytes_invalid");
   }
@@ -356,6 +370,7 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
                         std::to_string(page_number));
   }
   result.body.inventory.next_local_transaction_id = LoadLittle64(serialized.data() + kOffsetNextLocalId);
+  result.body.inventory.next_commit_sequence = LoadLittle64(serialized.data() + kOffsetNextCommitSequence);
   result.body.horizons.oldest_interesting_transaction = MakeLocalTransactionId(LoadLittle64(serialized.data() + kOffsetOit));
   result.body.horizons.oldest_active_transaction = MakeLocalTransactionId(LoadLittle64(serialized.data() + kOffsetOat));
   result.body.horizons.oldest_snapshot_transaction = MakeLocalTransactionId(LoadLittle64(serialized.data() + kOffsetOst));
@@ -374,13 +389,20 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
     entry.identity.scope = static_cast<TransactionScope>(LoadLittle16(serialized.data() + offset + 24));
     entry.state = static_cast<TransactionState>(LoadLittle16(serialized.data() + offset + 26));
     const u32 flags = LoadLittle32(serialized.data() + offset + 28);
+    if ((flags & ~31u) != 0)
+      return TxnPageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.entry_flags_invalid");
     entry.evidence_record_required = (flags & EntryFlag::evidence_required) != 0;
     entry.evidence_record_written = (flags & EntryFlag::evidence_written) != 0;
     entry.rollback_only = (flags & EntryFlag::rollback_only) != 0;
+    const auto origin = (flags >> 3) & 3u;
+    entry.archived_from_state = origin == 1 ? TransactionState::committed :
+        origin == 2 ? TransactionState::rolled_back : origin == 3 ? TransactionState::failed_terminal : TransactionState::none;
     entry.begin_unix_epoch_millis = LoadLittle64(serialized.data() + offset + 32);
     entry.final_unix_epoch_millis = LoadLittle64(serialized.data() + offset + 40);
     entry.begin_visible_through_local_transaction_id =
         LoadLittle64(serialized.data() + offset + kEntryOffsetBeginVisibleThrough);
+    entry.begin_visible_through_commit_sequence = LoadLittle64(serialized.data() + offset + 56);
+    entry.commit_sequence = LoadLittle64(serialized.data() + offset + 64);
     if (!entry.identity.valid()) {
       return TxnPageError("SB-TXN-INVENTORY-PAGE-BODY-INVALID",
                           "transaction_inventory_page.parsed_identity_invalid",
@@ -391,6 +413,8 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
   }
   const auto computed_chain_digest =
       ComputeTransactionInventoryPageChainDigest(result.body);
+  if (const auto reason = scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(result.body.inventory); *reason)
+    return TxnPageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.inventory_invalid", reason);
   if (!DigestEqual(computed_chain_digest, stored_chain_digest)) {
     return TxnPageError("SB-TXN-INVENTORY-PAGE-CHAIN-DIGEST-MISMATCH",
                         "transaction_inventory_page.chain_digest_mismatch",

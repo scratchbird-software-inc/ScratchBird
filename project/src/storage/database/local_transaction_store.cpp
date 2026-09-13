@@ -14,6 +14,7 @@
 #include "page_manager.hpp"
 #include "startup_state.hpp"
 #include "transaction_inventory_page.hpp"
+#include "transaction_inventory_validation.hpp"
 #include "uuid.hpp"
 #include "whole_store_crash_injection.hpp"
 
@@ -428,9 +429,9 @@ bool ReplacePublishJournalAtomically(const std::filesystem::path& temp_path,
 #endif
 }
 
-// TRANSACTION_INVENTORY_BINARY_PUBLICATION_V3: exact Core durable-format carrier.
-constexpr std::size_t kPublishHeaderBytes = 80;
-constexpr std::size_t kPublishEntryBytes = 64;
+// TRANSACTION_INVENTORY_BINARY_PUBLICATION_V4: exact Core durable-format carrier.
+constexpr std::size_t kPublishHeaderBytes = 96;
+constexpr std::size_t kPublishEntryBytes = 72;
 constexpr std::size_t kPublishDigestBytes = 32;
 constexpr std::size_t kPublishMaxBytes = 64 * 1024 * 1024;
 using scratchbird::core::platform::LoadLittle16;
@@ -452,6 +453,7 @@ std::optional<scratchbird::core::platform::Uuid> PublicationDatabaseIdentity(Fil
 }
 
 bool ValidPublicationInventory(const LocalTransactionInventory& inventory) {
+  if (*scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(inventory)) return false;
   if (inventory.next_local_transaction_id == 0) { return false; }
   std::set<u64> numbers;
   std::set<std::array<byte, 16>> identities;
@@ -489,8 +491,8 @@ std::string BuildPublishJournal(FileDevice* device,
   const auto count = old_inventory.entries.size() + new_inventory.entries.size();
   std::string bytes(kPublishHeaderBytes + count * kPublishEntryBytes + kPublishDigestBytes, '\0');
   auto* out = reinterpret_cast<byte*>(bytes.data());
-  std::memcpy(out, "SBTXP003", 8);
-  StoreLittle16(out + 8, 3);
+  std::memcpy(out, "SBTXP004", 8);
+  StoreLittle16(out + 8, 4);
   StoreLittle16(out + 10, kPublishHeaderBytes);
   StoreLittle32(out + 12, phase == "publishing" ? 1 : 2);
   StoreLittle64(out + 16, generation);
@@ -500,6 +502,8 @@ std::string BuildPublishJournal(FileDevice* device,
   StoreLittle64(out + 48, old_inventory.entries.size());
   StoreLittle64(out + 56, new_inventory.entries.size());
   std::copy(database->bytes.begin(), database->bytes.end(), out + 64);
+  StoreLittle64(out + 80, old_inventory.next_commit_sequence);
+  StoreLittle64(out + 88, new_inventory.next_commit_sequence);
   std::size_t offset = kPublishHeaderBytes;
   for (const auto* inventory : {&old_inventory, &new_inventory}) {
     for (const auto& entry : inventory->entries) {
@@ -511,10 +515,15 @@ std::string BuildPublishJournal(FileDevice* device,
       StoreLittle16(row + 26, static_cast<u16>(entry.state));
       StoreLittle32(row + 28, (entry.evidence_record_required ? 1u : 0u) |
                               (entry.evidence_record_written ? 2u : 0u) |
-                              (entry.rollback_only ? 4u : 0u));
+                              (entry.rollback_only ? 4u : 0u) |
+                              ((entry.archived_from_state == TransactionState::committed ? 1u :
+                                entry.archived_from_state == TransactionState::rolled_back ? 2u :
+                                entry.archived_from_state == TransactionState::failed_terminal ? 3u : 0u) << 3));
       StoreLittle64(row + 32, entry.begin_unix_epoch_millis);
       StoreLittle64(row + 40, entry.final_unix_epoch_millis);
       StoreLittle64(row + 48, entry.begin_visible_through_local_transaction_id);
+      StoreLittle64(row + 56, entry.begin_visible_through_commit_sequence);
+      StoreLittle64(row + 64, entry.commit_sequence);
       offset += kPublishEntryBytes;
     }
   }
@@ -640,7 +649,7 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
   }
   if (content.size() > kPublishMaxBytes) { return invalid("size_limit"); }
   const auto* bytes = reinterpret_cast<const byte*>(content.data());
-  if (std::memcmp(bytes, "SBTXP003", 8) != 0 || LoadLittle16(bytes + 8) != 3 ||
+  if (std::memcmp(bytes, "SBTXP004", 8) != 0 || LoadLittle16(bytes + 8) != 4 ||
       LoadLittle16(bytes + 10) != kPublishHeaderBytes) { return invalid("unsupported_format"); }
   const auto total = LoadLittle64(bytes + 24);
   if (total > content.size()) {
@@ -678,6 +687,8 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
   journal.generation = LoadLittle64(bytes + 16);
   journal.old_inventory.next_local_transaction_id = LoadLittle64(bytes + 32);
   journal.new_inventory.next_local_transaction_id = LoadLittle64(bytes + 40);
+  journal.old_inventory.next_commit_sequence = LoadLittle64(bytes + 80);
+  journal.new_inventory.next_commit_sequence = LoadLittle64(bytes + 88);
   if (journal.new_inventory.next_local_transaction_id == 0 ||
       journal.generation != std::max<u64>(1, journal.new_inventory.next_local_transaction_id - 1)) {
     return invalid("generation_invalid");
@@ -694,13 +705,18 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
       entry.identity.scope = static_cast<TransactionScope>(LoadLittle16(row + 24));
       entry.state = static_cast<TransactionState>(LoadLittle16(row + 26));
       const auto flags = LoadLittle32(row + 28);
-      if ((flags & ~7u) != 0 || LoadLittle64(row + 56) != 0) { return false; }
+      if ((flags & ~31u) != 0) { return false; }
       entry.evidence_record_required = (flags & 1u) != 0;
       entry.evidence_record_written = (flags & 2u) != 0;
       entry.rollback_only = (flags & 4u) != 0;
+      const auto origin = (flags >> 3) & 3u;
+      entry.archived_from_state = origin == 1 ? TransactionState::committed :
+          origin == 2 ? TransactionState::rolled_back : origin == 3 ? TransactionState::failed_terminal : TransactionState::none;
       entry.begin_unix_epoch_millis = LoadLittle64(row + 32);
       entry.final_unix_epoch_millis = LoadLittle64(row + 40);
       entry.begin_visible_through_local_transaction_id = LoadLittle64(row + 48);
+      entry.begin_visible_through_commit_sequence = LoadLittle64(row + 56);
+      entry.commit_sequence = LoadLittle64(row + 64);
       inventory.entries.push_back(entry);
       offset += kPublishEntryBytes;
     }
@@ -866,6 +882,7 @@ LocalTransactionStoreResult LoadInventoryChain(FileDevice* device,
   u64 chain_generation = 0;
   u32 page_count = 0;
   u64 next_local_id = 1;
+  u64 next_commit_sequence = 1;
   while (page_number != 0) {
     if (++page_count > 4096 || visited.count(page_number) != 0) {
       return StorePageError("SB-TXN-INVENTORY-PAGE-CHAIN-INVALID",
@@ -893,6 +910,10 @@ LocalTransactionStoreResult LoadInventoryChain(FileDevice* device,
     page_chain->push_back(page_number);
     if (page_number == kTransactionInventoryPageNumber) {
       next_local_id = page_body.inventory.next_local_transaction_id;
+      next_commit_sequence = page_body.inventory.next_commit_sequence;
+    } else if (next_local_id != page_body.inventory.next_local_transaction_id ||
+               next_commit_sequence != page_body.inventory.next_commit_sequence) {
+      return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.chain_counter_mismatch");
     }
     inventory->entries.insert(inventory->entries.end(),
                               page_body.inventory.entries.begin(),
@@ -901,6 +922,9 @@ LocalTransactionStoreResult LoadInventoryChain(FileDevice* device,
     page_number = page_body.next_page_number;
   }
   inventory->next_local_transaction_id = next_local_id;
+  inventory->next_commit_sequence = next_commit_sequence;
+  if (const auto reason = scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(*inventory); *reason)
+    return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.inventory_invalid", reason);
   return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
 }
 
@@ -939,9 +963,10 @@ LocalTransactionStoreResult CollectExistingChainOrInitial(FileDevice* device,
   }
   existing_inventory->entries.clear();
   existing_inventory->next_local_transaction_id = 1;
+  existing_inventory->next_commit_sequence = 1;
   const auto loaded = LoadInventoryChain(device, page_size, existing_inventory, existing_chain);
   if (loaded.ok()) { return loaded; }
-  if (replacement.entries.empty() && replacement.next_local_transaction_id == 1) {
+  if (replacement.entries.empty() && replacement.next_local_transaction_id == 1 && replacement.next_commit_sequence == 1) {
     *existing_inventory = scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory();
     existing_chain->clear();
     existing_chain->push_back(kTransactionInventoryPageNumber);
@@ -1249,6 +1274,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
 
     LocalTransactionInventory page_inventory;
     page_inventory.next_local_transaction_id = inventory.next_local_transaction_id;
+    page_inventory.next_commit_sequence = inventory.next_commit_sequence;
     const std::size_t begin = page_index * capacity;
     const std::size_t end = std::min<std::size_t>(inventory.entries.size(), begin + capacity);
     if (begin < end) {
