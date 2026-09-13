@@ -136,8 +136,9 @@ Fixture CreateFixture(const std::filesystem::path& path) {
 void Rollback(const Fixture& fixture) {
   db::PhysicalMgaCowFinalizeRequest finalize;
   finalize.database_path = fixture.database_path.string();
-  finalize.local_transaction_id =
-      mga::MakeLocalTransactionId(fixture.context.local_transaction_id);
+  finalize.transaction = {mga::MakeLocalTransactionId(fixture.context.local_transaction_id),
+      {scratchbird::core::platform::UuidKind::transaction, fixture.context.transaction_uuid},
+      mga::TransactionScope::local_node};
   finalize.decision = db::PhysicalMgaCowFinalizeDecision::rollback;
   finalize.final_unix_epoch_millis = 1788210001000ull;
   Require(db::FinalizePhysicalMgaCowTransaction(finalize).ok(),

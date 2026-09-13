@@ -171,6 +171,21 @@ bool IsTypedEngineIdentity(const TypedUuid& typed, UuidKind kind) {
          scratchbird::core::uuid::IsEngineIdentityUuid(typed.value);
 }
 
+PhysicalMgaCowFinalizeResult ValidateFinalization(
+    const PhysicalMgaCowFinalization& request) {
+  if (!request.transaction.local_id.valid() ||
+      !IsTypedEngineIdentity(request.transaction.transaction_uuid, UuidKind::transaction) ||
+      request.transaction.scope != scratchbird::transaction::mga::TransactionScope::local_node ||
+      (request.decision != PhysicalMgaCowFinalizeDecision::commit &&
+       request.decision != PhysicalMgaCowFinalizeDecision::rollback) ||
+      request.final_unix_epoch_millis == 0)
+    return ErrorResult<PhysicalMgaCowFinalizeResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.finalization_input_invalid");
+  PhysicalMgaCowFinalizeResult result;
+  result.status = CowStoreOkStatus();
+  return result;
+}
+
 DiskDevicePolicy ReadWritePolicy(u32 page_size) {
   DiskDevicePolicy policy;
   policy.page_size = page_size;
@@ -716,6 +731,7 @@ const char* PhysicalMgaCowFinalizeDecisionName(PhysicalMgaCowFinalizeDecision de
   switch (decision) {
     case PhysicalMgaCowFinalizeDecision::commit: return "commit";
     case PhysicalMgaCowFinalizeDecision::rollback: return "rollback";
+    case PhysicalMgaCowFinalizeDecision::invalid: return "invalid";
   }
   return "unknown";
 }
@@ -1337,22 +1353,25 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
 
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
     const PhysicalMgaCowFinalizeRequest& request) {
+  const auto valid = ValidateFinalization(request);
+  if (!valid.ok()) return valid;
   if (request.database_path.empty()) {
     return ErrorResult<PhysicalMgaCowFinalizeResult>(
         "SB-PHYSICAL-MGA-COW-PATH-REQUIRED",
         "storage.physical_mga_cow.path_required");
   }
-  if (!request.local_transaction_id.valid()) {
-    return ErrorResult<PhysicalMgaCowFinalizeResult>(
-        "SB-PHYSICAL-MGA-COW-LOCAL-ID-INVALID",
-        "storage.physical_mga_cow.local_id_invalid");
-  }
-
   FileDevice device;
   const auto open = device.Open(request.database_path, FileOpenMode::open_existing);
   if (!open.ok()) {
     return Propagate<PhysicalMgaCowFinalizeResult>(open.status, open.diagnostic);
   }
+  return FinalizePhysicalMgaCowTransactionToOpenDevice(device, request);
+}
+
+PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransactionToOpenDevice(
+    FileDevice& device, const PhysicalMgaCowFinalization& request) {
+  const auto valid = ValidateFinalization(request);
+  if (!valid.ok()) return valid;
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowFinalizeResult>(context.status,
@@ -1365,13 +1384,21 @@ PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
                                                    loaded_inventory.diagnostic);
   }
 
+  const auto current = LookupLocalTransaction(loaded_inventory.inventory,
+      request.transaction.local_id);
+  if (!current.ok() ||
+      !SameUuid(current.entry.identity.transaction_uuid, request.transaction.transaction_uuid) ||
+      current.entry.identity.scope != request.transaction.scope)
+    return ErrorResult<PhysicalMgaCowFinalizeResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.finalization_identity_mismatch");
+
   const auto finalized =
       request.decision == PhysicalMgaCowFinalizeDecision::commit
           ? CommitLocalTransaction(loaded_inventory.inventory,
-                                   request.local_transaction_id,
+                                   request.transaction.local_id,
                                    request.final_unix_epoch_millis)
           : RollbackLocalTransaction(loaded_inventory.inventory,
-                                     request.local_transaction_id,
+                                     request.transaction.local_id,
                                      request.final_unix_epoch_millis);
   if (!finalized.ok()) {
     return Propagate<PhysicalMgaCowFinalizeResult>(finalized.status,

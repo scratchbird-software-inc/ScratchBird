@@ -187,8 +187,9 @@ void Finalize(const api::EngineRequestContext& context,
               std::uint64_t final_time) {
   db::PhysicalMgaCowFinalizeRequest finalize;
   finalize.database_path = context.database_path;
-  finalize.local_transaction_id =
-      mga::MakeLocalTransactionId(context.local_transaction_id);
+  finalize.transaction = {mga::MakeLocalTransactionId(context.local_transaction_id),
+      {scratchbird::core::platform::UuidKind::transaction, context.transaction_uuid},
+      mga::TransactionScope::local_node};
   finalize.decision = decision;
   finalize.final_unix_epoch_millis = final_time;
   const auto finalized = db::FinalizePhysicalMgaCowTransaction(finalize);

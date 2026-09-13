@@ -130,7 +130,9 @@ struct Fixture {
   void Finalize(db::PhysicalMgaCowFinalizeDecision decision) {
     db::PhysicalMgaCowFinalizeRequest request;
     request.database_path = context.database_path;
-    request.local_transaction_id = mga::MakeLocalTransactionId(context.local_transaction_id);
+    request.transaction = {mga::MakeLocalTransactionId(context.local_transaction_id),
+      {scratchbird::core::platform::UuidKind::transaction, context.transaction_uuid},
+      mga::TransactionScope::local_node};
     request.decision = decision; request.final_unix_epoch_millis = 1788210002000;
     Require(db::FinalizePhysicalMgaCowTransaction(request).ok(), "inventory finalization");
   }

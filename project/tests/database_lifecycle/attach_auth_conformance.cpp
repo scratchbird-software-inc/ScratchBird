@@ -258,8 +258,9 @@ void CommitSecurityMutationTransaction(
     std::uint64_t final_time) {
   db::PhysicalMgaCowFinalizeRequest finalize;
   finalize.database_path = transaction.context.database_path;
-  finalize.local_transaction_id =
-      mga::MakeLocalTransactionId(transaction.context.local_transaction_id);
+  finalize.transaction = {mga::MakeLocalTransactionId(transaction.context.local_transaction_id),
+      {scratchbird::core::platform::UuidKind::transaction, transaction.context.transaction_uuid},
+      mga::TransactionScope::local_node};
   finalize.decision = db::PhysicalMgaCowFinalizeDecision::commit;
   finalize.final_unix_epoch_millis = final_time;
   Require(db::FinalizePhysicalMgaCowTransaction(finalize).ok(),

@@ -275,10 +275,8 @@ bool EndToEndInsertUpdateDeleteRollbackReopen() {
   }
 
   const auto insert_commit = database::FinalizePhysicalMgaCowTransaction(
-      {fixture.database_path.string(),
-       insert.transaction_entry.identity.local_id,
-       database::PhysicalMgaCowFinalizeDecision::commit,
-       kBaseMillis + 1100});
+      {{insert.transaction_entry.identity, database::PhysicalMgaCowFinalizeDecision::commit, kBaseMillis + 1100},
+       fixture.database_path.string()});
   if (!insert_commit.ok()) {
     PrintDiagnostic(insert_commit.diagnostic);
   }
@@ -330,10 +328,8 @@ bool EndToEndInsertUpdateDeleteRollbackReopen() {
   }
 
   const auto update_commit = database::FinalizePhysicalMgaCowTransaction(
-      {fixture.database_path.string(),
-       update.transaction_entry.identity.local_id,
-       database::PhysicalMgaCowFinalizeDecision::commit,
-       kBaseMillis + 2100});
+      {{update.transaction_entry.identity, database::PhysicalMgaCowFinalizeDecision::commit, kBaseMillis + 2100},
+       fixture.database_path.string()});
   ok = Require(update_commit.ok(), "update commit should persist inventory") && ok;
   if (!ok) {
     RemoveRoot(fixture.root);
@@ -365,10 +361,8 @@ bool EndToEndInsertUpdateDeleteRollbackReopen() {
                "rolled back update"));
   ok = Require(rollback_update.ok(), "rollback candidate update should write") && ok;
   const auto rollback_done = database::FinalizePhysicalMgaCowTransaction(
-      {fixture.database_path.string(),
-       rollback_update.transaction_entry.identity.local_id,
-       database::PhysicalMgaCowFinalizeDecision::rollback,
-       kBaseMillis + 3100});
+      {{rollback_update.transaction_entry.identity, database::PhysicalMgaCowFinalizeDecision::rollback, kBaseMillis + 3100},
+       fixture.database_path.string()});
   ok = Require(rollback_done.ok(), "rollback should persist inventory") && ok;
   if (!ok) {
     RemoveRoot(fixture.root);
@@ -405,10 +399,8 @@ bool EndToEndInsertUpdateDeleteRollbackReopen() {
     return false;
   }
   const auto delete_commit = database::FinalizePhysicalMgaCowTransaction(
-      {fixture.database_path.string(),
-       delete_row.transaction_entry.identity.local_id,
-       database::PhysicalMgaCowFinalizeDecision::commit,
-       kBaseMillis + 4100});
+      {{delete_row.transaction_entry.identity, database::PhysicalMgaCowFinalizeDecision::commit, kBaseMillis + 4100},
+       fixture.database_path.string()});
   ok = Require(delete_commit.ok(), "delete commit should persist inventory") && ok;
   if (!ok) {
     RemoveRoot(fixture.root);

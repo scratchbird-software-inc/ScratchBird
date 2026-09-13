@@ -39,7 +39,8 @@ enum class PhysicalMgaCowMutationKind : u16 {
 
 enum class PhysicalMgaCowFinalizeDecision : u16 {
   commit,
-  rollback
+  rollback,
+  invalid
 };
 
 // Path-free mutation fields for an already-owned node device. A storage
@@ -76,11 +77,14 @@ struct PhysicalMgaCowMutationBatchRequest {
   bool engine_generated_unique_insert_rows = false;
 };
 
-struct PhysicalMgaCowFinalizeRequest {
-  std::string database_path;
-  scratchbird::transaction::mga::LocalTransactionId local_transaction_id;
-  PhysicalMgaCowFinalizeDecision decision = PhysicalMgaCowFinalizeDecision::commit;
+struct PhysicalMgaCowFinalization {
+  scratchbird::transaction::mga::TransactionIdentity transaction;
+  PhysicalMgaCowFinalizeDecision decision = PhysicalMgaCowFinalizeDecision::invalid;
   u64 final_unix_epoch_millis = 0;
+};
+
+struct PhysicalMgaCowFinalizeRequest : PhysicalMgaCowFinalization {
+  std::string database_path;
 };
 
 struct PhysicalMgaCowReadRequest {
@@ -185,6 +189,11 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     PhysicalMgaCowMutationBatch batch);
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
     const PhysicalMgaCowFinalizeRequest& request);
+// Exact identity is checked against this retained node's current inventory.
+// The caller retains ownership on success, refusal, IO failure and exception.
+PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransactionToOpenDevice(
+    scratchbird::storage::disk::FileDevice& device,
+    const PhysicalMgaCowFinalization& request);
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
     const PhysicalMgaCowReadRequest& request);
 // Borrow the caller's already-owned device without reopening or releasing it.

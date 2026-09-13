@@ -170,7 +170,7 @@ db::PhysicalMgaCowMutationRequest Mutation(const fs::path& root,db::PhysicalMgaC
 }
 void Finish(const fs::path& root,const db::PhysicalMgaCowMutationResult& mutation,bool commit) {
   db::PhysicalMgaCowFinalizeRequest finish;
-  finish.database_path=(root/"native.sbdb").string();finish.local_transaction_id=mutation.transaction_entry.identity.local_id;
+  finish.database_path=(root/"native.sbdb").string();finish.transaction=mutation.transaction_entry.identity;
   finish.decision=commit?db::PhysicalMgaCowFinalizeDecision::commit:db::PhysicalMgaCowFinalizeDecision::rollback;
   finish.final_unix_epoch_millis=Now();Good(db::FinalizePhysicalMgaCowTransaction(finish));
 }
@@ -480,7 +480,7 @@ void Storage(const fs::path& root,const std::string& self) {
   identity.version_uuid=identity.row.row_uuid.value;
   Check(!mga::ValidateRowVersionIdentity(identity).ok(),"metadata substituted logical row for version identity");
   db::PhysicalMgaCowFinalizeRequest abort_batch;
-  abort_batch.database_path=create.path;abort_batch.local_transaction_id=started.entry.identity.local_id;
+  abort_batch.database_path=create.path;abort_batch.transaction=started.entry.identity;
   abort_batch.decision=db::PhysicalMgaCowFinalizeDecision::rollback;abort_batch.final_unix_epoch_millis=Now();
   Good(db::FinalizePhysicalMgaCowTransaction(abort_batch));
   auto batch_read=ReadRequest(root);batch_read.page_number=RowPage+1;

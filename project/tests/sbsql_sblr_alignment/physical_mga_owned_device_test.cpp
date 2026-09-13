@@ -7,8 +7,11 @@
 #include "uuid.hpp"
 #include <cerrno>
 #include <algorithm>
+#include <array>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <source_location>
 #include <stdexcept>
 #include <string_view>
@@ -116,12 +119,19 @@ struct Fixture {
     return begun.entry.identity;
   }
   void Finish(mga::TransactionIdentity tx, bool commit) {
-    auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&device, page_size);
-    Check(loaded.ok(), "reload before finality");
-    auto final = commit ? mga::CommitLocalTransaction(loaded.inventory, tx.local_id, 1790000000300ull)
-                        : mga::RollbackLocalTransaction(loaded.inventory, tx.local_id, 1790000000300ull);
-    Check(final.ok(), "actual MGA finality");
-    Check(db::PersistLocalTransactionInventoryToOpenDevice(&device, page_size, final.inventory).ok(), "persist final inventory");
+    db::PhysicalMgaCowFinalization request;
+    request.transaction = tx;
+    request.decision = commit ? db::PhysicalMgaCowFinalizeDecision::commit
+                              : db::PhysicalMgaCowFinalizeDecision::rollback;
+    request.final_unix_epoch_millis = 1790000000300ull;
+    const auto final = db::FinalizePhysicalMgaCowTransactionToOpenDevice(device, request);
+    Check(final.ok(), "actual retained-device MGA finality");
+    Check(final.transaction_entry.identity.local_id.value == tx.local_id.value &&
+          final.transaction_entry.identity.transaction_uuid.value == tx.transaction_uuid.value,
+          "finality receipt changed transaction identity");
+    Check(final.transaction_entry.state == (commit ? mga::TransactionState::committed
+                                                  : mga::TransactionState::rolled_back),
+          "finality receipt lost exact terminal state");
   }
   db::PhysicalMgaCowMutation Mutation(mga::TransactionIdentity tx, TypedUuid row, u64 page, std::string_view value) {
     db::PhysicalMgaCowMutation mutation;
@@ -167,6 +177,148 @@ void Payload(const db::PhysicalMgaCowReadResult& read, std::string_view expected
   Check(read.visible_rows.size() == 1 && read.visible_rows[0].cells.size() == 1, "exact visible row count");
   const auto& bytes = read.visible_rows[0].cells[0].value.payload;
   Check(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()) == expected, "persisted payload mismatch");
+}
+
+// Independent-process oracle contains only explicitly expected terminal
+// identities/states, never an image copied from the implementation's result.
+void WriteFinalityOracle(const std::string& path,
+    const std::vector<std::pair<mga::TransactionIdentity, mga::TransactionState>>& expected) {
+  std::ofstream out(path + ".finality-oracle", std::ios::binary | std::ios::trunc);
+  for (const auto& [tx, state] : expected) {
+    std::array<platform::byte, 25> row{};
+    platform::StoreLittle64(row.data(), tx.local_id.value);
+    std::copy(tx.transaction_uuid.value.bytes.begin(), tx.transaction_uuid.value.bytes.end(), row.begin() + 8);
+    row[24] = static_cast<platform::byte>(state);
+    out.write(reinterpret_cast<const char*>(row.data()), row.size());
+  }
+  out.close(); Check(out.good(), "write independent finality oracle");
+}
+int VerifyFinalityOracle(const std::string& path) {
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(path);
+  if (!inventory.ok()) return 10;
+  std::ifstream in(path + ".finality-oracle", std::ios::binary);
+  if (!in) return 11;
+  unsigned count = 0;
+  std::array<platform::byte, 25> row{};
+  while (in.read(reinterpret_cast<char*>(row.data()), row.size())) {
+    const auto found = mga::LookupLocalTransaction(inventory.inventory,
+        mga::MakeLocalTransactionId(platform::LoadLittle64(row.data())));
+    if (!found.ok() || found.entry.identity.scope != mga::TransactionScope::local_node ||
+        found.entry.identity.transaction_uuid.kind != UuidKind::transaction ||
+        !std::equal(row.begin() + 8, row.begin() + 24, found.entry.identity.transaction_uuid.value.bytes.begin()) ||
+        static_cast<platform::byte>(found.entry.state) != row[24]) return 12;
+    ++count;
+  }
+  return in.eof() && in.gcount() == 0 && count == 3 ? 0 : 13;
+}
+void FinalizationIdentityAndOwnership() {
+  Fixture f;
+  const auto committed = f.Begin(), rolled_back = f.Begin();
+  const auto row = f.Mutation(committed, Id(UuidKind::row), f.first_page, "finalization-identity");
+  Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, row).ok(), "write finality row");
+  db::PhysicalMgaCowFinalization request{committed, db::PhysicalMgaCowFinalizeDecision::commit, 1790000000300ull};
+  const auto before = f.Bytes();
+  const auto writes_before = write_calls, syncs_before = sync_calls;
+  const auto no_receipt = [&](const db::PhysicalMgaCowFinalizeResult& result) {
+    Check(!result.ok() && result.evidence.empty() && result.inventory.entries.empty() &&
+          !result.transaction_entry.identity.valid(), "failed finalization fabricated finality receipt");
+  };
+  const auto reject = [&](const db::PhysicalMgaCowFinalization& bad) {
+    const auto result = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, bad);
+    no_receipt(result);
+    Check(result.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT", "invalid finalization diagnostic");
+    Check(f.Bytes() == before && write_calls == writes_before && sync_calls == syncs_before,
+          "invalid finalization changed native storage");
+    Check(f.device.is_open(), "invalid finalization released node ownership");
+  };
+  reject({});
+  auto bad = request; bad.transaction.local_id = {}; reject(bad);
+  bad = request; bad.transaction.local_id.value = std::numeric_limits<u64>::max(); reject(bad);
+  bad = request; bad.transaction.transaction_uuid = {}; reject(bad);
+  bad = request; bad.transaction.transaction_uuid = Id(UuidKind::transaction); reject(bad);
+  bad = request; bad.transaction.local_id = rolled_back.local_id; reject(bad);
+  bad = request; bad.transaction.transaction_uuid = rolled_back.transaction_uuid; reject(bad);
+  bad = request; bad.transaction.transaction_uuid.kind = UuidKind::object; reject(bad);
+  for (unsigned version = 0; version < 16; ++version) if (version != 7) {
+    bad = request; bad.transaction.transaction_uuid.value.bytes[6] = static_cast<platform::byte>(version << 4); reject(bad);
+  }
+  for (const unsigned variant : {0u, 0x40u, 0xc0u}) {
+    bad = request; bad.transaction.transaction_uuid.value.bytes[8] = static_cast<platform::byte>(variant); reject(bad);
+  }
+  for (const auto scope : {mga::TransactionScope::unknown, mga::TransactionScope::cluster_global,
+                          static_cast<mga::TransactionScope>(65535)}) {
+    bad = request; bad.transaction.scope = scope; reject(bad);
+  }
+  for (const unsigned decision : {2u, 3u, 65535u}) {
+    bad = request; bad.decision = static_cast<db::PhysicalMgaCowFinalizeDecision>(decision); reject(bad);
+  }
+  bad = request; bad.final_unix_epoch_millis = 0; reject(bad);
+  db::PhysicalMgaCowFinalizeRequest path_request;
+  static_cast<db::PhysicalMgaCowFinalization&>(path_request) = request;
+  path_request.database_path = f.path;
+  const auto blocked_path = db::FinalizePhysicalMgaCowTransaction(path_request);
+  no_receipt(blocked_path);
+  Check(OwnershipError(blocked_path.diagnostic), "path finalizer bypassed retained node owner");
+  f.Locked();
+  f.Finish(committed, true); f.Finish(rolled_back, false);
+  Payload(f.Read(f.first_page), "finalization-identity");
+  const auto terminal_bytes = f.Bytes();
+  no_receipt(db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, request));
+  request.decision = db::PhysicalMgaCowFinalizeDecision::rollback;
+  no_receipt(db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, request));
+  Check(f.Bytes() == terminal_bytes, "terminal replay rewrote finality");
+
+  const auto read_only = f.Begin();
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing_read_only).ok(),
+        "open retained read-only node");
+  request = {read_only, db::PhysicalMgaCowFinalizeDecision::commit, 1790000000300ull};
+  const auto read_only_bytes = f.Bytes();
+  const auto read_only_result = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, request);
+  no_receipt(read_only_result);
+  Check(read_only_result.diagnostic.diagnostic_code == "STORAGE.READ_ONLY_DEVICE" && f.Bytes() == read_only_bytes,
+        "read-only finalization changed storage or lost diagnostic");
+  f.Locked();
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "restore writable node");
+  f.Finish(read_only, false);
+
+  for (const bool fail_sync : {false, true}) {
+    const auto tx = f.Begin();
+    request = {tx, db::PhysicalMgaCowFinalizeDecision::commit, 1790000000300ull};
+    const auto failures_before = fail_sync ? sync_faults : write_faults;
+    if (fail_sync) reject_sync = true; else reject_write = true;
+    const auto failed = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, request);
+    no_receipt(failed);
+    Check(!failed.diagnostic.diagnostic_code.empty() &&
+          (fail_sync ? sync_faults : write_faults) == failures_before + 1 && !reject_write && !reject_sync,
+          "finalization did not exercise actual inventory write/sync failure");
+    f.Locked();
+    // A failed persistence call does not prove absence of durable finality.
+    // Reload through real recovery before deciding how to resolve the owner.
+    const auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(loaded.ok(), "reload inventory after finalization IO failure");
+    const auto current = mga::LookupLocalTransaction(loaded.inventory, tx.local_id);
+    Check(current.ok() && current.entry.identity.transaction_uuid.value == tx.transaction_uuid.value,
+          "IO failure lost exact transaction owner");
+    Check(current.entry.state == mga::TransactionState::active || current.entry.state == mga::TransactionState::committed,
+          "IO failure left an unexplained transaction state");
+    if (current.entry.state == mga::TransactionState::active) f.Finish(tx, false);
+  }
+  WriteFinalityOracle(f.path, {{committed, mga::TransactionState::committed},
+      {rolled_back, mga::TransactionState::rolled_back}, {read_only, mga::TransactionState::rolled_back}});
+  Check(f.device.Close().ok(), "close finalized owner before independent reopen");
+  const auto child = ::fork(); Check(child >= 0, "fork independent finality reader");
+  if (child == 0) { ::execl("/proc/self/exe", "finality-probe", "--finality-probe", f.path.c_str(), nullptr); ::_exit(99); }
+  int status = 0; pid_t waited;
+  do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+  Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "independent process failed exact native finality oracle");
+  // The path adapter delegates the same checked owner after exclusion ends.
+  Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen to begin path finality");
+  const auto path_tx = f.Begin(); Check(f.device.Close().ok(), "release path fixture owner");
+  static_cast<db::PhysicalMgaCowFinalization&>(path_request) =
+      {path_tx, db::PhysicalMgaCowFinalizeDecision::rollback, 1790000000300ull};
+  Check(db::FinalizePhysicalMgaCowTransaction(path_request).ok(), "path adapter did not perform real finalization");
+  no_receipt(db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, request));
 }
 void OwnedMutationFailureFinality() {
   for (auto fault : {OwnedFault::row_write, OwnedFault::row_sync,
@@ -441,10 +593,11 @@ void Run() {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--finality-probe") return VerifyFinalityOracle(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--probe") {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
