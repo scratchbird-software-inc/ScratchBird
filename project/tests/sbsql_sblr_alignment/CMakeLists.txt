@@ -11,6 +11,16 @@ else()
 endif()
 
 # Canonical outer layout coverage does not establish endpoint admission.
+add_executable(sbsql_sblr_alignment_system_variable_registry
+  system_variable_registry_test.cpp)
+target_compile_features(sbsql_sblr_alignment_system_variable_registry PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_system_variable_registry PRIVATE sb_core_platform)
+add_test(NAME sbsql_sblr_alignment_system_variable_registry
+  COMMAND sbsql_sblr_alignment_system_variable_registry)
+set_tests_properties(sbsql_sblr_alignment_system_variable_registry PROPERTIES
+  LABELS "sbsql_sblr_alignment;binary_uuid;seed_registry;not_runtime_acceptance"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_allocation_recovery
   ../database_lifecycle/storage_allocation_conformance.cpp)
 target_compile_features(sbsql_sblr_alignment_allocation_recovery PRIVATE cxx_std_23)

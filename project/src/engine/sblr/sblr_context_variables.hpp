@@ -9,6 +9,7 @@
 #pragma once
 
 #include "sblr_runtime.hpp"
+#include "../../wire/system_variable_registry.hpp"
 
 #include <string>
 #include <string_view>
@@ -16,16 +17,12 @@
 
 namespace scratchbird::engine::sblr {
 
-struct SblrContextVariableEntry {
-  std::string variable_id;
-  std::string variable_uuid;
-  std::string family;
-  std::string canonical_name;
-  std::string descriptor_id;
-  std::string visibility;
-};
+using SblrContextVariableEntry = scratchbird::wire::SystemVariableEntry;
 
-const std::vector<SblrContextVariableEntry>& StandardSblrContextVariableRegistry();
+inline constexpr std::span<const SblrContextVariableEntry>
+StandardSblrContextVariableRegistry() noexcept {
+  return scratchbird::wire::StandardSystemVariableRegistry();
+}
 SblrResult ResolveSblrContextVariable(std::string_view variable_id, const SblrExecutionContext& context);
 
 }  // namespace scratchbird::engine::sblr

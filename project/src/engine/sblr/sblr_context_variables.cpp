@@ -133,44 +133,6 @@ std::optional<std::string> SessionConfigValue(const SblrExecutionContext& contex
 
 }  // namespace
 
-const std::vector<SblrContextVariableEntry>& StandardSblrContextVariableRegistry() {
-  static const std::vector<SblrContextVariableEntry> vars = {
-      {"ctx_current_user_uuid", "019b6cf8-b000-740c-add4-4ac7f3cf1904", "security", "CURRENT_USER_UUID", "uuid", "self"},
-      {"ctx_current_role_uuid", "019b6cf8-b000-77ed-a794-1bbeb27dc114", "security", "CURRENT_ROLE_UUID", "uuid", "self"},
-      {"ctx_current_group_uuid_set", "019b6cf8-b000-7968-afb5-98d99a3f8ceb", "security", "CURRENT_GROUP_UUID_SET", "uuid_array", "policy_gated"},
-      {"ctx_current_schema_uuid", "019b6cf8-b000-736e-a86b-f2b968da482d", "schema", "CURRENT_SCHEMA_UUID", "uuid", "self"},
-      {"ctx_current_database_uuid", "019b6cf8-b000-7ebc-a37d-ebe685cf140a", "database", "CURRENT_DATABASE_UUID", "uuid", "self"},
-      {"ctx_current_cluster_uuid", "019b6cf8-b000-702d-aac7-748980637d4e", "cluster", "CURRENT_CLUSTER_UUID", "uuid", "cluster_policy"},
-      {"ctx_current_node_uuid", "019b6cf8-b000-71c5-acef-9952f5fc85f7", "node", "CURRENT_NODE_UUID", "uuid", "self"},
-      {"ctx_current_session_uuid", "019b6cf8-b000-7eae-a9d1-d3d8e83f84d6", "session", "CURRENT_SESSION_UUID", "uuid", "self"},
-      {"ctx_current_attachment_uuid", "019b6cf8-b000-737e-ac48-c49abfdb84eb", "session", "CURRENT_ATTACHMENT_UUID", "uuid", "self"},
-      {"ctx_current_transaction_uuid", "019b6cf8-b000-7001-a841-b06863305d2c", "transaction", "CURRENT_TRANSACTION_UUID", "uuid", "self"},
-      {"ctx_current_local_transaction_id", "019b6cf8-b000-7a9c-adbc-c7ecf9766993", "transaction", "CURRENT_LOCAL_TRANSACTION_ID", "uint64", "self"},
-      {"ctx_current_statement_uuid", "019b6cf8-b000-791a-ae03-da4eb6dfb07a", "statement", "CURRENT_STATEMENT_UUID", "uuid", "self"},
-      {"ctx_statement_timestamp", "019b6cf8-b000-71fc-a68a-a60373f5f3c9", "time", "STATEMENT_TIMESTAMP", "timestamp_tz", "self"},
-      {"ctx_transaction_timestamp", "019b6cf8-b000-7cf6-a94b-b87e46ecfd39", "time", "TRANSACTION_TIMESTAMP", "timestamp_tz", "self"},
-      {"ctx_current_timestamp", "019b6cf8-b000-7a98-a164-2862f244dcbe", "time", "CURRENT_TIMESTAMP", "timestamp_tz", "self"},
-      {"ctx_current_monotonic_ns", "019b6cf8-b000-7d8a-ae59-6c256e1cca5f", "time", "CURRENT_MONOTONIC_NS", "uint128", "self"},
-      {"ctx_parser_profile_uuid", "019b6cf8-b000-724a-a9a1-dcdfbb8fc457", "parser", "CURRENT_PARSER_PROFILE_UUID", "uuid", "self"},
-      {"ctx_client_protocol_uuid", "019b6cf8-b000-7051-a081-500a1099c7eb", "parser", "CURRENT_CLIENT_PROTOCOL_UUID", "uuid", "self"},
-      {"ctx_restricted_open_mode", "019b6cf8-b000-76b6-a820-7eb9409d5605", "mode", "CURRENT_RESTRICTED_OPEN_MODE", "boolean", "self"},
-      {"ctx_read_only_mode", "019b6cf8-b000-7d2c-aad7-d3d2633c2caa", "mode", "CURRENT_READ_ONLY_MODE", "boolean", "self"},
-      {"ctx_current_sqlstate", "019b6cf8-b000-7d6e-9a86-c74277d99930", "diagnostic", "CURRENT_SQLSTATE", "character", "self"},
-      {"ctx_current_diagnostic_id", "019b6cf8-b000-791f-bdf4-ec2264bbf3fd", "diagnostic", "CURRENT_DIAGNOSTIC_ID", "character", "self"},
-      {"ctx_last_row_count", "019b6cf8-b000-7e42-9472-beb8d6691579", "diagnostic", "LAST_ROW_COUNT", "uint64", "self"},
-      {"ctx_last_identity_value", "019b6cf8-b000-7e21-bf7a-fe75f261be07", "diagnostic", "LAST_IDENTITY_VALUE", "character", "self"},
-      {"ctx_current_engine_version", "019b6cf8-b000-78a6-8f0e-7b0a9f5e7f10", "runtime", "CURRENT_ENGINE_VERSION", "character", "self"},
-      {"ctx_current_timezone", "019b6cf8-b000-79c1-b2e4-8c34f6c71622", "session", "CURRENT_TIMEZONE", "character", "self"},
-      {"ctx_current_transaction_isolation", "019b6cf8-b000-768d-a5f0-21c29f529d21", "transaction", "CURRENT_TRANSACTION_ISOLATION", "character", "self"},
-      {"context.current_user", "018f0000-0000-7000-8000-000000002001", "legacy", "CURRENT_USER", "uuid", "self"},
-      {"context.current_transaction", "018f0000-0000-7000-8000-000000002002", "legacy", "CURRENT_TRANSACTION", "uuid", "self"},
-      {"context.current_role", "018f0000-0000-7000-8000-000000002003", "legacy", "CURRENT_ROLE", "uuid", "self"},
-      {"context.session_dialect", "018f0000-0000-7000-8000-000000002004", "legacy", "SESSION_DIALECT", "uuid", "self"},
-      {"context.database_uuid", "018f0000-0000-7000-8000-000000002005", "legacy", "DATABASE_UUID", "uuid", "self"},
-      {"context.node_uuid", "018f0000-0000-7000-8000-000000002006", "legacy", "NODE_UUID", "uuid", "self"},
-  };
-  return vars;
-}
 
 SblrResult ResolveSblrContextVariable(std::string_view variable_id, const SblrExecutionContext& context) {
   if (MatchesAny(variable_id,
