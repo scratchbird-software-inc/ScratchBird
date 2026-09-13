@@ -162,7 +162,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
   target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_page OpenSSL::Crypto)
+  target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
     "-Wl,--wrap=EVP_Digest"
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"

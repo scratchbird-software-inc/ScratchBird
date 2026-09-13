@@ -15,6 +15,7 @@
 #include "page_manager.hpp"
 #include "startup_state.hpp"
 #include "uuid.hpp"
+#include "hash_digest_parts.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1704,6 +1705,136 @@ DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                         "storage.database.physical_mga_cow");
 }
 
+namespace {
+struct DecodedNativeCatalogRows {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::map<scratchbird::core::platform::Uuid,
+      scratchbird::core::catalog::CatalogMetadataVersion> metadata;
+  bool ok() const { return status.ok(); }
+};
+DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body) {
+  namespace catalog = scratchbird::core::catalog;
+  DecodedNativeCatalogRows decoded;
+  for (const auto& row : body.rows) {
+    if (row.deleted || row.cells.size() != 1 || row.cells[0].column_ordinal != 1 ||
+        row.cells[0].value.type_id != scratchbird::core::datatypes::CanonicalTypeId::binary ||
+        row.cells[0].value.is_null || row.cells[0].value.payload_is_toast_reference)
+      return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.cell_shape_invalid");
+    const auto value = catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
+    if (!value.ok()) return Propagate<DecodedNativeCatalogRows>(value.status, value.diagnostic);
+    if (!SameUuid(value.record.record.header.row_uuid, row.row_uuid) ||
+        !SameUuid(value.record.creator_transaction_uuid, row.transaction_uuid) ||
+        value.record.creator_local_transaction_id != row.local_transaction_id)
+      return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
+    if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
+      return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.version_duplicate");
+  }
+  decoded.status=CowStoreOkStatus(); return decoded;
+}
+using LeafError=NativeCatalogLeafError;
+NativeCatalogLeafResult LeafFailure(LeafError error) { return {error,std::nullopt,{},{}}; }
+LeafError LeafMetadataError(const DecodedNativeCatalogRows& decoded) {
+  return decoded.diagnostic.diagnostic_code=="SB-CORE-HASH-SHA256-FAILED"
+      ?LeafError::hash_failure:LeafError::invalid_metadata;
+}
+bool ValidLeafBinding(const scratchbird::storage::disk::NativeCommonPageHeader& header,
+                      const RowDataPageBody& body) {
+  return header.page_number==body.page_number
+      && header.page_generation==body.page_generation && !body.next_page_number
+      && body.compaction_generation
+      && std::all_of(body.rows.begin(),body.rows.end(),[](const auto& row) { return row.stable_slot_id!=0; });
+}
+scratchbird::core::hash::HashDigestResult LeafDigest(const std::vector<scratchbird::core::platform::byte>& image) {
+  const std::array<scratchbird::core::platform::byte,32> zero{};
+  const scratchbird::core::hash::HashDigestSegment parts[]={{image.data(),image.size()-32},{zero.data(),zero.size()}};
+  return scratchbird::core::hash::ComputeSha256DigestParts(parts,2);
+}
+}  // namespace
+
+NativeCatalogLeafResult EncodeNativeCatalogLeaf(const NativeCatalogLeafPage& page) noexcept {
+  try {
+    const auto header=scratchbird::storage::disk::EncodeNativeCommonPageHeader(page.header);
+    if (!header.ok() || page.header.page_type!=6) return LeafFailure(LeafError::invalid_header);
+    if (!ValidLeafBinding(page.header,page.body)) return LeafFailure(LeafError::invalid_body);
+    auto body=BuildRowDataPageBody(page.body,page.header.page_size_bytes-32);
+    if (!body.ok()) return LeafFailure(LeafError::invalid_body);
+    auto decoded=DecodeNativeCatalogRows(body.body);
+    if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
+    std::vector<scratchbird::core::platform::byte> bytes(page.header.page_size_bytes,0);
+    std::copy(header.bytes->begin(),header.bytes->end(),bytes.begin());
+    std::copy(body.serialized.begin(),body.serialized.end(),bytes.begin()+128);
+    const auto digest=LeafDigest(bytes); if (!digest.ok()) return LeafFailure(LeafError::hash_failure);
+    std::copy(digest.digest.begin(),digest.digest.end(),bytes.end()-32);
+    return {LeafError::none,NativeCatalogLeafPage{page.header,std::move(body.body)},std::move(decoded.metadata),std::move(bytes)};
+  } catch (const std::bad_alloc&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (const std::length_error&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (...) { return LeafFailure(LeafError::invalid_body); }
+}
+
+NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::core::platform::byte>& bytes) noexcept {
+  try {
+    const auto header=scratchbird::storage::disk::DecodeNativeCommonPageHeader(bytes.data(),std::min<std::size_t>(bytes.size(),128));
+    if (!header.ok() || header.header->page_type!=6 || bytes.size()!=header.header->page_size_bytes)
+      return LeafFailure(LeafError::invalid_header);
+    const auto digest=LeafDigest(bytes); if (!digest.ok()) return LeafFailure(LeafError::hash_failure);
+    if (!std::equal(digest.digest.begin(),digest.digest.end(),bytes.end()-32)) return LeafFailure(LeafError::invalid_integrity);
+    std::vector<scratchbird::core::platform::byte> body_bytes(bytes.begin()+128,bytes.end()-32);
+    auto body=ParseRowDataPageBody(body_bytes,header.header->page_number);
+    if (!body.ok() || !ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
+    // The generic row reader also supports other owners. The catalog family
+    // requires the exact canonical body, including its zero unused region.
+    const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
+    if (!canonical.ok() || canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
+    auto decoded=DecodeNativeCatalogRows(body.body);
+    if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
+    return {LeafError::none,NativeCatalogLeafPage{*header.header,std::move(body.body)},std::move(decoded.metadata),bytes};
+  } catch (const std::bad_alloc&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (const std::length_error&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (...) { return LeafFailure(LeafError::invalid_body); }
+}
+
+NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
+    FileDevice& device,const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::storage::page::NativeCatalogRootReference& ref) noexcept {
+  namespace disk=scratchbird::storage::disk;
+  try {
+    const auto& p=ref.page; const auto* profile=disk::FindCanonicalFilespacePageProfile(p.page_size_profile_uuid);
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid)
+        || !scratchbird::core::uuid::IsEngineIdentityUuid(ref.object_uuid)
+        || !scratchbird::core::uuid::IsEngineIdentityUuid(p.filespace_uuid)
+        || ref.role<1 || ref.role>6 || ref.page_type!=6 || !profile || !p.page_number || !p.page_generation
+        || p.page_number>=std::numeric_limits<u64>::max()/profile->page_size_bytes
+        || !disk::CheckFileDeviceExtent(p.page_number*profile->page_size_bytes,profile->page_size_bytes).ok())
+      return LeafFailure(LeafError::binding_mismatch);
+    const auto guard=device.AcquireOperationGuard();
+    const disk::FilespaceBootstrapBinding binding{database_uuid,p.filespace_uuid,p.page_size_profile_uuid};
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device,&binding);
+    if (!zero.ok()) {
+      if (zero.error==disk::FilespacePageZeroError::resource_exhausted) return LeafFailure(LeafError::resource_exhausted);
+      if (zero.error==disk::FilespacePageZeroError::hash_provider_failure) return LeafFailure(LeafError::hash_failure);
+      if (zero.error==disk::FilespacePageZeroError::io_failure) return LeafFailure(LeafError::io_failure);
+      return LeafFailure(LeafError::invalid_filespace);
+    }
+    if (zero.record->bootstrap.filespace_role>5 || p.page_number>=zero.record->total_pages)
+      return LeafFailure(LeafError::invalid_filespace);
+    if (zero.record->bootstrap.flags & disk::FilespaceBootstrapFlag::payload_encrypted)
+      return LeafFailure(LeafError::encrypted_requires_crypto_authority);
+    std::vector<scratchbird::core::platform::byte> bytes(profile->page_size_bytes);
+    const auto io=device.ReadAt(p.page_number*profile->page_size_bytes,bytes.data(),bytes.size());
+    if (!io.ok() || io.bytes_transferred!=bytes.size()) return LeafFailure(LeafError::io_failure);
+    const disk::NativeCommonPageHeaderBinding expected{binding,p.page_number,p.page_generation,6,std::nullopt};
+    const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&expected);
+    if (!header.ok()) return LeafFailure(LeafError::binding_mismatch);
+    if (header.header->flags & 1u) return LeafFailure(LeafError::encrypted_requires_crypto_authority);
+    auto result=DecodeNativeCatalogLeaf(bytes); if (!result.ok()) return result;
+    if (result.page->body.relation_uuid.value!=ref.object_uuid) return LeafFailure(LeafError::binding_mismatch);
+    return result;
+  } catch (const std::bad_alloc&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (const std::length_error&) { return LeafFailure(LeafError::resource_exhausted); }
+    catch (...) { return LeafFailure(LeafError::io_failure); }
+}
+
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     FileDevice& device, const TypedUuid& relation_uuid, u64 page_number,
     const VisibilitySnapshot& snapshot, bool latest_committed,
@@ -1714,20 +1845,9 @@ NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
   const auto native = ReadPhysicalMgaCowRowsFromOpenDevice(device, relation_uuid,
       page_number, snapshot, latest_committed, reader_identity, snapshot_pin);
   if (!native.ok()) return Propagate<NativeCatalogVersionReadResult>(native.status, native.diagnostic);
-  std::map<scratchbird::core::platform::Uuid, catalog::CatalogMetadataVersion> decoded;
-  for (const auto& row : native.row_page.rows) {
-    if (row.deleted || row.cells.size() != 1 || row.cells[0].column_ordinal != 1 ||
-        row.cells[0].value.type_id != scratchbird::core::datatypes::CanonicalTypeId::binary ||
-        row.cells[0].value.is_null)
-      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.cell_shape_invalid");
-    const auto value = catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
-    if (!value.ok()) return Propagate<NativeCatalogVersionReadResult>(value.status, value.diagnostic);
-    if (!SameUuid(value.record.record.header.row_uuid, row.row_uuid) ||
-        !SameUuid(value.record.creator_transaction_uuid, row.transaction_uuid) ||
-        value.record.creator_local_transaction_id != row.local_transaction_id)
-      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
-    decoded.emplace(row.version_uuid, value.record);
-  }
+  const auto catalog_rows=DecodeNativeCatalogRows(native.row_page);
+  if (!catalog_rows.ok()) return Propagate<NativeCatalogVersionReadResult>(catalog_rows.status,catalog_rows.diagnostic);
+  const auto& decoded=catalog_rows.metadata;
   if (native.recovery_required_count != 0)
     return ErrorResult<NativeCatalogVersionReadResult>("SB-ROW-VISIBILITY-REQUIRES-RECOVERY", "catalog.native_version.recovery_required");
   NativeCatalogVersionReadResult result;

@@ -11,6 +11,7 @@
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_page.hpp"
 #include "row_data_page.hpp"
 #include "row_version.hpp"
 #include "runtime_platform.hpp"
@@ -18,6 +19,8 @@
 #include "transaction_snapshot.hpp"
 
 #include <string>
+#include <map>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::storage::disk {
@@ -38,6 +41,33 @@ enum class PhysicalMgaCowMutationKind : u16 {
   update,
   delete_row
 };
+
+struct NativeCatalogLeafPage {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::storage::page::RowDataPageBody body;
+};
+enum class NativeCatalogLeafError {
+  none, invalid_header, invalid_body, invalid_metadata, invalid_integrity,
+  hash_failure, resource_exhausted, invalid_filespace, binding_mismatch,
+  io_failure, encrypted_requires_crypto_authority
+};
+struct NativeCatalogLeafResult {
+  NativeCatalogLeafError error = NativeCatalogLeafError::invalid_body;
+  std::optional<NativeCatalogLeafPage> page;
+  std::map<scratchbird::core::platform::Uuid,
+           scratchbird::core::catalog::CatalogMetadataVersion> metadata;
+  std::vector<scratchbird::core::platform::byte> bytes;
+  bool ok() const noexcept { return error == NativeCatalogLeafError::none && page.has_value(); }
+};
+// Logical image and common metadata binding only. No inventory finality,
+// family/name/security admission, allocation or publication receipt is implied.
+NativeCatalogLeafResult EncodeNativeCatalogLeaf(const NativeCatalogLeafPage&) noexcept;
+NativeCatalogLeafResult DecodeNativeCatalogLeaf(
+    const std::vector<scratchbird::core::platform::byte>&) noexcept;
+NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
+    scratchbird::storage::disk::FileDevice&,
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::storage::page::NativeCatalogRootReference&) noexcept;
 
 enum class PhysicalMgaCowFinalizeDecision : u16 {
   commit,

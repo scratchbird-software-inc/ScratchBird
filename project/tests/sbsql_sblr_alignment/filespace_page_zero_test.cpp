@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_page_zero.hpp"
 #include "catalog_page.hpp"
+#include "physical_mga_cow_store.hpp"
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -654,8 +655,210 @@ void CatalogRootRanges() {
   if(pid==0) { ::execl("/proc/self/exe","pagezero_test","--range-probe",first.c_str(),second.c_str(),nullptr); ::_exit(125); }
   int status=0; Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process validates mixed-profile retained range");
 }
+namespace db=scratchbird::storage::database;
+namespace catalog=scratchbird::core::catalog;
+namespace platform=scratchbird::core::platform;
+db::NativeCatalogLeafPage LeafExample(unsigned p=0) {
+  db::NativeCatalogLeafPage leaf; leaf.header=RootExample(p).header;
+  leaf.header.page_type=6; leaf.header.page_number=21; leaf.header.page_generation=7; leaf.header.page_uuid=Id(150);
+  auto& b=leaf.body; b.relation_uuid={platform::UuidKind::object,Id(101)};
+  b.segment_id=1; b.segment_generation=2; b.compaction_generation=3;
+  b.page_number=21; b.page_generation=7;
+  for(unsigned i=0;i<2;++i) {
+    page::RowDataRecord row; row.row_uuid={platform::UuidKind::row,Id(static_cast<byte>(160+i))};
+    row.version_uuid=Id(static_cast<byte>(170+i)); row.transaction_uuid={platform::UuidKind::transaction,Id(162)};
+    row.local_transaction_id=13; row.internal_row_ordinal=i+1; row.stable_slot_id=i+1;
+    catalog::CatalogMetadataVersion metadata;
+    metadata.record.header.kind=catalog::CatalogRecordKind::sql_object;
+    metadata.record.header.row_uuid=row.row_uuid;
+    metadata.record.header.object_uuid={platform::UuidKind::object,Id(static_cast<byte>(180+i))};
+    metadata.record.header.parent_uuid={platform::UuidKind::schema,Id(164)};
+    metadata.owning_schema_uuid=metadata.record.header.parent_uuid;
+    metadata.owner_uuid={platform::UuidKind::principal,Id(165)}; metadata.audit_uuid={platform::UuidKind::object,Id(166)};
+    metadata.creator_transaction_uuid=row.transaction_uuid; metadata.creator_local_transaction_id=13;
+    metadata.definition_version=metadata.schema_epoch=metadata.security_epoch=metadata.catalog_generation=1;
+    metadata.dependency_generation=metadata.invalidation_generation=1;
+    metadata.lifecycle=catalog::CatalogObjectLifecycle::active; metadata.status=catalog::CatalogObjectStatus::active;
+    metadata.trace_search_key="LEAF-STORAGE-ORACLE"; metadata.object_subtype="application"; metadata.retention_class="catalog_history";
+    // Opaque common-envelope storage fixture, not an admitted SQL definition.
+    metadata.record.payload="opaque-leaf-family-oracle";
+    const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata); Check(encoded.ok(),"leaf metadata fixture");
+    page::RowDataCell cell; cell.column_ordinal=1;
+    cell.value.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary; cell.value.payload=encoded.bytes;
+    row.cells.push_back(cell); b.rows.push_back(row);
+  }
+  return leaf;
+}
+u64 BodyFnv(const byte* b,std::size_t n) {
+  u64 hash=1469598103934665603ull; for(std::size_t i=0;i<n;++i) {hash^=b[i];hash*=1099511628211ull;} return hash;
+}
+void LeafSeal(Bytes& b) {
+  std::fill(b.end()-32,b.end(),0); const auto digest=WholeRootHash(b);
+  std::copy(digest.begin(),digest.end(),b.end()-32);
+}
+Bytes LeafOracle(const db::NativeCatalogLeafPage& leaf) {
+  const auto& h=leaf.header; const auto& body=leaf.body; Bytes b(h.page_size_bytes,0);
+  const std::string_view cm="SBPGV002",rm="SBROW003",vm="SBDVAL01";
+  std::copy(cm.begin(),cm.end(),b.begin()); Number(b,8,4,128); Number(b,12,4,h.page_size_bytes);
+  Number(b,16,4,h.page_type); Number(b,20,2,1); Number(b,22,2,1);
+  PutUuid(b,24,h.database_uuid); PutUuid(b,40,h.filespace_uuid); PutUuid(b,56,h.page_uuid);
+  Number(b,72,8,h.page_number); Number(b,80,8,h.page_generation); Number(b,88,8,h.flags);
+  PutUuid(b,104,h.page_size_profile_uuid); Number(b,120,2,1);
+  u64 common=14695981039346656037ull; for(unsigned i=0;i<128;++i) {common^=b[i];common*=1099511628211ull;} Number(b,96,8,common);
+  std::copy(rm.begin(),rm.end(),b.begin()+128); Number(b,136,4,96); Number(b,140,4,body.rows.size());
+  Number(b,152,8,body.next_page_number); PutUuid(b,168,body.relation_uuid.value);
+  Number(b,184,8,body.page_generation); Number(b,192,8,body.segment_id);
+  Number(b,200,8,body.segment_generation); Number(b,208,8,body.compaction_generation);
+  struct Slot {unsigned stable,offset,size;u64 hash;bool deleted;}; std::vector<Slot> slots;
+  unsigned at=224;
+  for(unsigned i=0;i<body.rows.size();++i) {
+    const auto& row=body.rows[i]; const auto start=at;
+    PutUuid(b,at,row.row_uuid.value); PutUuid(b,at+16,row.transaction_uuid.value);
+    Number(b,at+32,8,row.local_transaction_id); Number(b,at+40,8,row.row_version);
+    Number(b,at+48,2,row.deleted?1:0); Number(b,at+50,2,row.cells.size()); Number(b,at+52,4,i+1);
+    Number(b,at+60,4,row.stable_slot_id); PutUuid(b,at+72,row.version_uuid);
+    Number(b,at+88,8,row.previous_row_version); Number(b,at+96,8,row.next_row_version);
+    PutUuid(b,at+104,row.previous_version_uuid); PutUuid(b,at+120,row.next_version_uuid); at+=136;
+    for(const auto& cell:row.cells) {
+      const auto& payload=cell.value.payload; const unsigned value=at+16;
+      Number(b,at,2,cell.column_ordinal); Number(b,at+4,4,32+payload.size());
+      std::copy(vm.begin(),vm.end(),b.begin()+value); Number(b,value+8,4,static_cast<unsigned>(cell.value.type_id));
+      Number(b,value+12,2,(cell.value.is_null?1:0)|(cell.value.payload_is_toast_reference?2:0));
+      Number(b,value+14,2,32); Number(b,value+16,4,payload.size());
+      Number(b,value+24,8,BodyFnv(payload.data(),payload.size()));
+      std::copy(payload.begin(),payload.end(),b.begin()+value+32);
+      Number(b,at+8,8,BodyFnv(b.data()+value,32+payload.size())); at+=48+payload.size();
+    }
+    Number(b,start+56,4,at-start); const auto hash=BodyFnv(b.data()+start,at-start); Number(b,start+64,8,hash);
+    slots.push_back({row.stable_slot_id,start-128,at-start,hash,row.deleted});
+  }
+  Number(b,216,4,at-128);
+  for(const auto& slot:slots) {
+    Number(b,at,4,slot.stable); Number(b,at+4,4,slot.offset); Number(b,at+8,4,slot.size);
+    Number(b,at+12,4,slot.deleted?1:0); Number(b,at+16,8,slot.hash); at+=24;
+  }
+  Number(b,144,4,at-128); Number(b,220,4,b.size()-32-at);
+  Number(b,160,8,BodyFnv(b.data()+128,b.size()-160)); LeafSeal(b); return b;
+}
+void LeafReject(const db::NativeCatalogLeafResult& r,db::NativeCatalogLeafError error,
+                std::source_location at=std::source_location::current()) {
+  Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty()&&r.error==error,"leaf rejects without partial page/metadata actual="+
+    std::to_string(static_cast<unsigned>(r.error))+" expected="+std::to_string(static_cast<unsigned>(error)),at);
+}
+void CatalogLeaves() {
+  using Error=db::NativeCatalogLeafError;
+  for(unsigned p=0;p<5;++p) {
+    auto leaf=LeafExample(p); const auto expected=LeafOracle(leaf);
+    const auto e=db::EncodeNativeCatalogLeaf(leaf);
+    Check(e.ok()&&e.bytes==expected&&e.metadata.size()==2,"all profiles exact independent catalog leaf bytes");
+    const auto d=db::DecodeNativeCatalogLeaf(expected);
+    Check(d.ok()&&LeafOracle(*d.page)==expected&&d.metadata.size()==2,"independent canonical leaf decode");
+    for(const auto& row:leaf.body.rows) Check(d.metadata.at(row.version_uuid).record.header.row_uuid.value==row.row_uuid.value,
+      "metadata keyed by actual native version UUID");
+    leaf.body.rows.clear(); const auto empty=db::EncodeNativeCatalogLeaf(leaf);
+    Check(empty.ok()&&empty.bytes==LeafOracle(leaf)&&empty.metadata.empty(),"empty allocated leaf, not absent table success");
+  }
+  const auto leaf=LeafExample(); const auto good=LeafOracle(leaf);
+  for(std::size_t at=0;at<good.size();++at) {
+    auto b=good; b[at]^=1; const auto r=db::DecodeNativeCatalogLeaf(b);
+    Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty(),"every leaf byte corruption fails without prefix");
+  }
+  for(std::size_t size:{0u,127u,8191u,8193u}) {auto b=good;b.resize(size);LeafReject(db::DecodeNativeCatalogLeaf(b),Error::invalid_header);}
+  for(unsigned mode=0;mode<9;++mode) {
+    auto bad=leaf;
+    if(mode==0) bad.header.page_type=5;
+    if(mode==1) bad.body.page_generation=8;
+    if(mode==2) bad.body.next_page_number=99;
+    if(mode==3) bad.body.compaction_generation=0;
+    if(mode==4) bad.body.rows[1].stable_slot_id=0;
+    if(mode==5) bad.body.rows[1].transaction_uuid.value=Id(99);
+    if(mode==6) ++bad.body.rows[1].local_transaction_id;
+    if(mode==7) bad.body.rows[1].cells[0].column_ordinal=2;
+    if(mode==8) bad.body.rows[1].deleted=true;
+    const auto expected=mode==0?Error::invalid_header:mode<5?Error::invalid_body:Error::invalid_metadata;
+    LeafReject(db::EncodeNativeCatalogLeaf(bad),expected);
+    LeafReject(db::DecodeNativeCatalogLeaf(LeafOracle(bad)),expected);
+  }
+  {auto bad=leaf;++bad.body.page_number;LeafReject(db::EncodeNativeCatalogLeaf(bad),Error::invalid_body);}
+  {auto b=good; b[b.size()-33]=1; Number(b,160,8,0); Number(b,160,8,BodyFnv(b.data()+128,b.size()-160)); LeafSeal(b);
+    LeafReject(db::DecodeNativeCatalogLeaf(b),Error::invalid_body);}
+  for(unsigned i=0;i<2;++i) {
+    allocation_budget=0; const auto r=i?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
+    allocation_budget=-1; LeafReject(r,Error::resource_exhausted);
+  }
+  for(unsigned fault=1;fault<=5;++fault) {
+    hash_fault=fault; const auto r=db::DecodeNativeCatalogLeaf(good);
+    LeafReject(r,Error::hash_failure); Check(!hash_fault,"leaf digest provider fault consumed");
+  }
+  for(unsigned mode=0;mode<2;++mode) {
+    full_digest_fault=1; auto r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
+    LeafReject(r,Error::hash_failure); Check(!full_digest_fault,"nested metadata hash failure propagated");
+    observed_allocations=0;count_allocations=true;
+    r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);
+    count_allocations=false;const auto count=observed_allocations;Check(r.ok(),"leaf allocation baseline");
+    bool succeeded=false;
+    for(unsigned long position=0;position<=count;++position) {
+      allocation_budget=position;r=mode?db::DecodeNativeCatalogLeaf(good):db::EncodeNativeCatalogLeaf(leaf);allocation_budget=-1;
+      if(r.ok()) {succeeded=true;break;} LeafReject(r,Error::resource_exhausted);
+    }
+    Check(succeeded,"every leaf allocation position through complete page");
+  }
+}
+void CatalogLeafFiles() {
+  using Error=db::NativeCatalogLeafError; Fixture fixture;
+  for(unsigned p=0;p<5;++p) {
+    auto leaf=LeafExample(p); const auto image=LeafOracle(leaf); auto z=Example(p,p==0?5:1);
+    const auto ref=RootExample(p).roots[0]; const auto pagezero=Oracle(z);
+    const auto path=(fixture.root/("leaf-"+std::to_string(p))).string(); disk::FileDevice device;
+    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own canonical leaf file"); const byte zero=0;
+    Check(device.WriteAt(0,pagezero.data(),pagezero.size()).ok()&&device.WriteAt(z.total_pages*sizes[p]-1,&zero,1).ok()
+      &&device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"actual canonical leaf persisted");
+    auto r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
+    Check(r.ok()&&r.bytes==image&&r.metadata.size()==2,"read actual bound leaf in primary/secondary filespace");
+    if(p!=0) {
+      const auto root_image=RootOracle(RootExample(p));
+      Check(device.WriteAt(12*sizes[p],root_image.data(),root_image.size()).ok()&&device.Sync().ok(),"persist owning canonical catalog root");
+      const auto actual_root=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),z.roots[1]);
+      Check(actual_root.ok(),"resolve actual root before leaf traversal");
+      r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),actual_root.root->roots[0]);
+      Check(r.ok()&&r.bytes==image&&r.metadata.size()==2,"actual pagezero to root to leaf to bound metadata");
+    }
+    for(unsigned field=0;field<4;++field) {
+      auto bad=ref;
+      if(field==0) ++bad.page.page_generation;
+      if(field==1) bad.object_uuid=Id(99);
+      if(field==2) bad.page.page_number=22;
+      if(field==3) bad.page.filespace_uuid=Id(99);
+      r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),bad);
+      Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty(),"wrong actual leaf binding no partial metadata");
+    }
+    for(unsigned fault=1;fault<=3;++fault) {
+      reads=0;read_fault=fault;track_reads=true;r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);track_reads=false;
+      LeafReject(r,Error::io_failure);Check(!read_fault,"actual leaf pread fault consumed");
+    }
+    auto encrypted=leaf;encrypted.header.flags=1;const auto encrypted_image=LeafOracle(encrypted);
+    Check(device.WriteAt(21*sizes[p],encrypted_image.data(),encrypted_image.size()).ok(),"encrypted leaf fixture");
+    LeafReject(db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref),Error::encrypted_requires_crypto_authority);
+    Check(device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"restore own leaf fixture");
+    Exclusive(path); Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"readonly leaf reopen");
+    r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
+    Check(r.ok()&&r.bytes==image&&device.read_only(),"actual reopened leaf metadata");
+    Bytes actual(image.size());Check(device.ReadAt(21*sizes[p],actual.data(),actual.size()).ok()&&actual==image,"leaf reads/faults never mutate image");
+    Check(device.Close().ok(),"close leaf file");LeafReject(db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref),Error::invalid_filespace);
+    const auto pid=::fork();Check(pid>=0,"fork leaf reopen verifier");
+    if(pid==0) {const auto profile=std::to_string(p);::execl("/proc/self/exe","pagezero_test","--leaf-probe",path.c_str(),profile.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process validates exact leaf bytes and metadata");
+  }
+}
 }  // namespace
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--leaf-probe") {
+    if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
+    const auto p=static_cast<unsigned>(argv[3][0]-'0');disk::FileDevice d;
+    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    const auto r=db::ReadNativeCatalogLeafFromOpenDevice(d,Id(1),RootExample(p).roots[0]);
+    return r.ok()&&r.metadata.size()==2&&r.bytes==LeafOracle(LeafExample(p))?0:4;
+  }
   if(argc==4&&std::string_view(argv[1])=="--range-probe") {
     disk::FileDevice first,second;
     if(!first.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()
@@ -675,7 +878,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges();
+  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" page_zero_and_catalog_root_image_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
