@@ -10,6 +10,7 @@
 
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
+#include "sbl_numeric.hpp"
 #include "../../../core/uuid/uuid.hpp"
 
 #include <algorithm>
@@ -568,6 +569,105 @@ bool QowNormalizeCanonicalTimezoneScalarV1(
   return true;
 }
 
+namespace {
+// Value execution only. The caller supplies the bound descriptors and admitted
+// context; this adapter does not issue catalog identities or resource grants.
+bool ApplyCanonicalBinary128Scalar(
+    const EngineTypedValue& left, const EngineTypedValue& right,
+    const EngineDescriptor& descriptor,
+    scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
+    const scratchbird::core::datatypes::DatatypeNumericContext& context,
+    EngineTypedValue* output, std::string* detail,
+    scratchbird::core::datatypes::DatatypeNumericFacts* facts) {
+  namespace dt = scratchbird::core::datatypes;
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  // Stage before publishing: callers may reuse either operand as output.
+  // Any failure, including C++ allocation unwind, leaves no successful value.
+  struct Publication {
+    EngineTypedValue* output;
+    bool published = false;
+    ~Publication() {
+      if (!published) {
+        *output = EngineTypedValue{};
+        output->state = EngineValueState::error;
+      }
+    }
+  } publication{output};
+  if (facts) *facts = {};
+  detail->clear();
+  const auto invalid = [&](const char* reason) {
+    if (facts) facts->invalid = true;
+    *detail = reason;
+    return false;
+  };
+  numeric::Real128BinaryRequest request;
+  switch (operation) {
+    case dt::DatatypeNumericOperationKind::canonicalize: request.operation = numeric::NumericOperation::canonicalize; break;
+    case dt::DatatypeNumericOperationKind::add: request.operation = numeric::NumericOperation::add; break;
+    case dt::DatatypeNumericOperationKind::subtract: request.operation = numeric::NumericOperation::subtract; break;
+    case dt::DatatypeNumericOperationKind::multiply: request.operation = numeric::NumericOperation::multiply; break;
+    case dt::DatatypeNumericOperationKind::divide: request.operation = numeric::NumericOperation::divide; break;
+    default: return invalid("NUMERIC.REAL128.INVALID");
+  }
+  switch (context.rounding) {
+    case dt::DatatypeRoundingMode::half_even: request.context.rounding = numeric::RoundingMode::half_even; break;
+    case dt::DatatypeRoundingMode::half_up: request.context.rounding = numeric::RoundingMode::half_up; break;
+    case dt::DatatypeRoundingMode::truncate: request.context.rounding = numeric::RoundingMode::truncate; break;
+    default: return invalid("NUMERIC.REAL128.INVALID");
+  }
+  request.context.allow_special_values = context.allow_special_values;
+  if (!numeric::Real128BackendAvailable()) {
+    *detail = "NUMERIC.BACKEND.UNAVAILABLE";
+    return false;
+  }
+  const bool binary = operation != dt::DatatypeNumericOperationKind::canonicalize;
+  const auto descriptor_valid = [](const EngineDescriptor& d) {
+    std::uint32_t width = 0;
+    return QowCanonicalDescriptorIdentityV1(d) && d.descriptor_kind == "scalar" &&
+        dt::CanonicalTypeIdFromStableName(d.canonical_type_name) == dt::CanonicalTypeId::real128 &&
+        QowCanonicalDescriptorU32FieldV1(d.encoded_descriptor, "width", &width) && width == 128;
+  };
+  if (!descriptor_valid(descriptor) || !descriptor_valid(left.descriptor) ||
+      (binary && !descriptor_valid(right.descriptor)) ||
+      context.precision != 38 || context.scale != 0)
+    return invalid("NUMERIC.REAL128.INVALID");
+  const auto shape_valid = [](const EngineTypedValue& value) {
+    if (value.isSqlNull()) return value.is_null && QowCanonicalSqlNullStateV1(value);
+    return value.state == EngineValueState::value && !value.is_null &&
+        value.encoded_value.empty() && value.binary_value.size() == 16;
+  };
+  if (!shape_valid(left) || (binary && !shape_valid(right)))
+    return invalid("NUMERIC.ENCODING.NONCANONICAL");
+  EngineTypedValue staged;
+  staged.descriptor = descriptor;
+  if (left.isSqlNull() || (binary && right.isSqlNull())) {
+    if (QowCanonicalDescriptorFieldV1(descriptor.encoded_descriptor, "nullability") == "non_null")
+      return invalid("NUMERIC.REAL128.INVALID");
+    staged.setState(EngineValueState::sql_null);
+  } else {
+    request.left.emplace();
+    std::copy_n(left.binary_value.begin(), 16, request.left->begin());
+    if (binary) {
+      request.right.emplace();
+      std::copy_n(right.binary_value.begin(), 16, request.right->begin());
+    }
+    const auto result = numeric::ApplyReal128BinaryOperation(request);
+    if (facts) *facts = {result.numeric.inexact, result.numeric.underflow,
+        result.numeric.overflow, result.numeric.invalid, result.numeric.divide_by_zero,
+        result.numeric.subnormal, result.numeric.status == numeric::NumericStatusCode::unordered};
+    if (result.numeric.status != numeric::NumericStatusCode::ok || !result.bytes) {
+      *detail = result.numeric.diagnostic_code.empty() ? "NUMERIC.REAL128.INVALID" : result.numeric.diagnostic_code;
+      return false;
+    }
+    staged.binary_value.assign(result.bytes->begin(), result.bytes->end());
+    staged.setState(EngineValueState::value);
+  }
+  *output = std::move(staged);
+  publication.published = true;
+  return true;
+}
+}  // namespace
+
 // QOW-SOURCE-QRY-008-OVERFLOW-V1
 bool QowApplyCanonicalNumericScalarV1(
     const EngineTypedValue& left_value,
@@ -576,9 +676,14 @@ bool QowApplyCanonicalNumericScalarV1(
     const scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
     const scratchbird::core::datatypes::DatatypeNumericContext& context,
     EngineTypedValue* output_value,
-    std::string* refusal_detail) {
+    std::string* refusal_detail,
+    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts) {
   namespace dt = scratchbird::core::datatypes;
   if (output_value == nullptr || refusal_detail == nullptr) return false;
+  if (dt::CanonicalTypeIdFromStableName(result_descriptor.canonical_type_name) == dt::CanonicalTypeId::real128)
+    return ApplyCanonicalBinary128Scalar(left_value, right_value, result_descriptor,
+        operation, context, output_value, refusal_detail, numeric_facts);
+  if (numeric_facts) *numeric_facts = {};
   *output_value = EngineTypedValue{};
   output_value->state = EngineValueState::error;
   refusal_detail->clear();
@@ -780,6 +885,7 @@ bool QowApplyCanonicalNumericScalarV1(
   numeric_request.right.is_null = right_value.isSqlNull();
   numeric_request.context = context;
   const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
+  if (numeric_facts) *numeric_facts = numeric_result.numeric_facts;
   if (!numeric_result.ok()) {
     for (const auto& argument : numeric_result.diagnostic.arguments) {
       if (argument.key == "detail" && !argument.value.empty()) {
@@ -1345,10 +1451,13 @@ bool QowEvaluateCanonicalTypedExpressionV1(
                  EngineCanonicalExpressionOperation::numeric_divide) {
         operation = dt::DatatypeNumericOperationKind::divide;
       }
-      return QowApplyCanonicalNumericScalarV1(
+      const bool accepted = QowApplyCanonicalNumericScalarV1(
           request.left_value, request.right_value, request.result_descriptor,
           operation, request.numeric_context, &result->value,
-          refusal_detail);
+          refusal_detail, &result->numeric_facts);
+      if (!accepted && refusal_detail->rfind("NUMERIC.", 0) == 0)
+        result->diagnostic_id = *refusal_detail;
+      return accepted;
     }
     case EngineCanonicalExpressionOperation::numeric_modulo: {
       const auto result_type = dt::CanonicalTypeIdFromStableName(
@@ -2824,8 +2933,19 @@ EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& req
 }
 
 EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyNumericOperationRequest& request) {
+  const std::string operation_text = !request.numeric_operation.empty()
+      ? request.numeric_operation
+      : OptionValue(request, "numeric_operation:");
+  dt::DatatypeNumericOperationKind operation;
+  if (!NumericOperationKind(operation_text, &operation)) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeInvalidRequestDiagnostic("query.apply_numeric_operation", "numeric_operation_unsupported:" + operation_text));
+  }
+  const bool binary_operation = operation != dt::DatatypeNumericOperationKind::canonicalize;
   const EngineTypedValue left = RequestInputValue(request, request.left_value);
-  const EngineTypedValue right = RequestSecondValue(request, request.right_value);
+  const EngineTypedValue right = binary_operation ? RequestSecondValue(request, request.right_value) : EngineTypedValue{};
   const EngineDescriptor result_descriptor =
       request.descriptors.empty() ? left.descriptor : request.descriptors.front();
   const bool canonical_descriptor_route =
@@ -2834,7 +2954,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
       !result_descriptor.descriptor_uuid.is_nil();
   if (canonical_descriptor_route &&
       (!QowCanonicalDescriptorIdentityV1(left.descriptor) ||
-       !QowCanonicalDescriptorIdentityV1(right.descriptor) ||
+       (binary_operation && !QowCanonicalDescriptorIdentityV1(right.descriptor)) ||
        !QowCanonicalDescriptorIdentityV1(result_descriptor))) {
     return ApiFailure<EngineApplyNumericOperationResult>(
         request.context,
@@ -2846,7 +2966,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   }
   if (canonical_descriptor_route &&
       ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
-       (right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)))) {
+       (binary_operation && right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)))) {
     return ApiFailure<EngineApplyNumericOperationResult>(
         request.context,
         "query.apply_numeric_operation",
@@ -2854,16 +2974,6 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
             "QOW-DIAG-QRY-008-NULL-REFUSAL-V1",
             "engine.query.typed_scalar_null_refused",
             "SQL NULL scalar operands cannot carry substitute payload bytes"));
-  }
-  const std::string operation_text = !request.numeric_operation.empty()
-      ? request.numeric_operation
-      : OptionValue(request, "numeric_operation:");
-  dt::DatatypeNumericOperationKind operation;
-  if (!NumericOperationKind(operation_text, &operation)) {
-    return ApiFailure<EngineApplyNumericOperationResult>(
-        request.context,
-        "query.apply_numeric_operation",
-        MakeInvalidRequestDiagnostic("query.apply_numeric_operation", "numeric_operation_unsupported:" + operation_text));
   }
   const auto value_state_valid = [](const EngineTypedValue& value) {
     return value.isSqlNull()
@@ -3034,24 +3144,29 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
     }
     EngineTypedValue output;
     std::string refusal_detail;
+    dt::DatatypeNumericFacts numeric_facts;
     if (!QowApplyCanonicalNumericScalarV1(
             left, right, result_descriptor, operation, numeric_request.context,
-            &output, &refusal_detail)) {
+            &output, &refusal_detail, &numeric_facts)) {
       const bool overflow_refusal =
           refusal_detail.find("overflow") != std::string::npos ||
           refusal_detail.find("out_of_range") != std::string::npos;
-      return ApiFailure<EngineApplyNumericOperationResult>(
+      auto failure = ApiFailure<EngineApplyNumericOperationResult>(
           request.context,
           "query.apply_numeric_operation",
           MakeEngineApiDiagnostic(
-              overflow_refusal
+              refusal_detail.rfind("NUMERIC.", 0) == 0 ? refusal_detail : overflow_refusal
                   ? "QOW-DIAG-QRY-008-OVERFLOW-REFUSAL-V1"
                   : "QOW-DIAG-QRY-008-NUMERIC-REFUSAL-V1",
               "engine.query.typed_scalar_numeric_refused",
-              std::move(refusal_detail)));
+              refusal_detail));
+      failure.numeric_facts = numeric_facts;
+      failure.value.setState(EngineValueState::error);
+      return failure;
     }
     auto result = ApiSuccess<EngineApplyNumericOperationResult>(
         request.context, "query.apply_numeric_operation");
+    result.numeric_facts = numeric_facts;
     result.value = std::move(output);
     result.result_shape.result_kind = "typed_value";
     result.result_shape.columns.push_back(result.value.descriptor);
@@ -3066,13 +3181,17 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
 
   const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
   if (!numeric_result.ok()) {
-    return ApiFailure<EngineApplyNumericOperationResult>(
+    auto failure = ApiFailure<EngineApplyNumericOperationResult>(
         request.context,
         "query.apply_numeric_operation",
         DatatypeDiagnosticToApi("query.apply_numeric_operation", numeric_result.diagnostic));
+    failure.numeric_facts = numeric_result.numeric_facts;
+    failure.value.setState(EngineValueState::error);
+    return failure;
   }
 
   auto result = ApiSuccess<EngineApplyNumericOperationResult>(request.context, "query.apply_numeric_operation");
+  result.numeric_facts = numeric_result.numeric_facts;
   result.value.descriptor.descriptor_kind = "scalar";
   result.value.descriptor.canonical_type_name = dt::CanonicalTypeName(numeric_result.value.type_id);
   result.value.encoded_value = numeric_result.value.encoded_value;

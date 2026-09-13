@@ -132,6 +132,7 @@ struct EngineCanonicalExpressionEvaluationResult {
   // Stable refusal identity for the selected canonical operation. This is
   // populated before evaluation so all failure exits remain deterministic.
   std::string diagnostic_id;
+  scratchbird::core::datatypes::DatatypeNumericFacts numeric_facts;
 };
 
 // Descriptor/scalar primitives are implemented by the lower expression
@@ -250,7 +251,8 @@ bool QowApplyCanonicalNumericScalarV1(
     scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
     const scratchbird::core::datatypes::DatatypeNumericContext& context,
     EngineTypedValue* output_value,
-    std::string* refusal_detail);
+    std::string* refusal_detail,
+    scratchbird::core::datatypes::DatatypeNumericFacts* numeric_facts = nullptr);
 inline bool QowPredicateConsumerPassesV1(
     const EngineSqlTruthValue truth_value,
     const EnginePredicateConsumer consumer,
@@ -372,6 +374,7 @@ struct EngineApplyNumericOperationRequest : EngineApiRequest {
 struct EngineApplyNumericOperationResult : EngineApiResult {
   EngineTypedValue value;
   int comparison = 0;
+  scratchbird::core::datatypes::DatatypeNumericFacts numeric_facts;
 };
 EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyNumericOperationRequest& request);
 

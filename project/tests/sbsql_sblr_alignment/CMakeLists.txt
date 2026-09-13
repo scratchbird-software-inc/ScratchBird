@@ -10,6 +10,16 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+add_executable(sbsql_sblr_alignment_real128_typed_expression real128_typed_expression_test.cpp)
+target_compile_features(sbsql_sblr_alignment_real128_typed_expression PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_real128_typed_expression PRIVATE
+  sb_engine_typed_scalar_descriptor_contract)
+add_test(NAME sbsql_sblr_alignment_real128_typed_expression
+  COMMAND sbsql_sblr_alignment_real128_typed_expression)
+set_tests_properties(sbsql_sblr_alignment_real128_typed_expression PROPERTIES
+  LABELS "sbsql_sblr_alignment;numeric_reference;production_linkage;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_real128_binary_codec real128_binary_codec_test.cpp)
 target_compile_features(sbsql_sblr_alignment_real128_binary_codec PRIVATE cxx_std_17)
 target_include_directories(sbsql_sblr_alignment_real128_binary_codec PRIVATE
