@@ -12,6 +12,7 @@
 #include "uuid.hpp"
 
 #include <string>
+#include <set>
 #include <string_view>
 #include <utility>
 
@@ -27,7 +28,7 @@ EngineApiDiagnostic OkDiagnostic() {
 }
 
 EngineApiDiagnostic Refusal(std::string_view reason) {
-  return MakeEngineApiDiagnostic("SB-DML-ROW-LOCATOR-STREAM-REFUSED",
+  return MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
                                  "dml.row_locator_stream.refused",
                                  std::string(reason),
                                  true);
@@ -36,16 +37,8 @@ EngineApiDiagnostic Refusal(std::string_view reason) {
 EngineApiDiagnostic PhysicalScanDiagnostic(
     const platform::DiagnosticRecord& diagnostic,
     std::string_view fallback_detail) {
-  return MakeEngineApiDiagnostic(
-      diagnostic.diagnostic_code.empty()
-          ? "SB-DML-ROW-LOCATOR-PHYSICAL-SCAN-REFUSED"
-          : diagnostic.diagnostic_code,
-      diagnostic.message_key.empty()
-          ? "dml.row_locator_stream.physical_scan_refused"
-          : diagnostic.message_key,
-      diagnostic.remediation_hint.empty() ? std::string(fallback_detail)
-                                          : diagnostic.remediation_hint,
-      true);
+  return MakeEngineApiDiagnosticFromNative(diagnostic, "CATALOG.INVALID_INPUT",
+      "dml.row_locator_stream.physical_scan_refused", std::string(fallback_detail));
 }
 
 void AddEvidence(DmlRowLocatorStreamResult* result,
@@ -58,15 +51,13 @@ DmlRowLocatorStreamResult Fail(std::string_view reason,
                                DmlRowLocatorStreamResult result = {}) {
   result.ok = false;
   result.source = DmlRowLocatorStreamSource::refused;
+  result.locators.clear();
+  result.table_scan_fallback = false;
   result.diagnostic = Refusal(reason);
   AddEvidence(&result, "dml_row_locator_stream_refusal", std::string(reason));
   AddEvidence(&result, "runtime_route_capability", "false");
   AddEvidence(&result, "index_benchmark_clean", "false");
   return result;
-}
-
-std::string TypedUuidText(const platform::TypedUuid& typed) {
-  return typed.valid() ? uuid::UuidToString(typed.value) : std::string{};
 }
 
 bool AccessPlanIsRowUuid(const DmlTargetAccessPlan& plan) {
@@ -169,8 +160,8 @@ void CopyPhysicalLocators(const DmlRowLocatorStreamRequest& request,
                           DmlRowLocatorStreamResult* result) {
   for (const auto& locator : scan.locators) {
     DmlRowLocator row;
-    row.row_uuid = TypedUuidText(locator.row_uuid);
-    row.version_uuid = TypedUuidText(locator.version_uuid);
+    row.row_uuid = locator.row_uuid.value;
+    row.version_uuid = locator.version_uuid.value;
     row.index_uuid = request.access_plan.index_uuid;
     row.leaf_page_number = locator.leaf_page_number;
     row.cell_ordinal = locator.cell_ordinal;
@@ -188,6 +179,10 @@ DmlRowLocatorStreamResult BuildPhysicalStream(
   if (request.physical_tree == nullptr) {
     return Fail("physical_index_tree_required", std::move(result));
   }
+  if (request.physical_tree->index_uuid.kind != platform::UuidKind::object ||
+      !uuid::IsEngineIdentityUuid(request.physical_tree->index_uuid.value) ||
+      request.physical_tree->index_uuid.value != request.access_plan.index_uuid)
+    return Fail("physical_index_identity_mismatch", std::move(result));
   if (ConsumerRequiresUniquePoint(request.consumer) &&
       source != DmlRowLocatorStreamSource::physical_unique_btree_point) {
     return Fail("on_conflict_requires_unique_index_locator_stream",
@@ -217,10 +212,22 @@ DmlRowLocatorStreamResult BuildPhysicalStream(
     return result;
   }
 
+  for (const auto& locator : scan.locators) {
+    if (locator.row_uuid.kind != platform::UuidKind::row ||
+        locator.version_uuid.kind != platform::UuidKind::row ||
+        !uuid::IsEngineIdentityUuid(locator.row_uuid.value) ||
+        !uuid::IsEngineIdentityUuid(locator.version_uuid.value) ||
+        locator.row_uuid.value == locator.version_uuid.value ||
+        locator.leaf_page_number == 0 || !locator.mga_recheck_required ||
+        !locator.security_recheck_required || locator.visibility_authority ||
+        locator.authorization_authority || locator.transaction_finality_authority ||
+        locator.recovery_authority || !locator.tombstone_excluded)
+      return Fail("invalid_physical_locator_identity_or_authority", std::move(result));
+  }
+  CopyPhysicalLocators(request, scan, &result);
   result.ok = true;
   result.source = source;
   result.diagnostic = OkDiagnostic();
-  CopyPhysicalLocators(request, scan, &result);
   AddCommonAcceptedEvidence(request, &result);
   AddPhysicalScanEvidence(scan, &result);
   if (source == DmlRowLocatorStreamSource::physical_unique_btree_point) {
@@ -304,6 +311,23 @@ DmlRowLocatorStreamResult BuildDmlRowLocatorStream(
     }
     return Fail("access_plan_not_safe", std::move(result));
   }
+  const auto& plan = request.access_plan;
+  if (!uuid::IsEngineIdentityUuid(plan.database_uuid) ||
+      !uuid::IsEngineIdentityUuid(plan.relation_uuid) ||
+      (!plan.row_uuid.is_nil() && !uuid::IsEngineIdentityUuid(plan.row_uuid)) ||
+      (!plan.index_uuid.is_nil() && !uuid::IsEngineIdentityUuid(plan.index_uuid)))
+    return Fail("invalid_binary_plan_identity", std::move(result));
+  std::set<EngineUuid> rows;
+  for (const auto& row : plan.row_uuids)
+    if (!uuid::IsEngineIdentityUuid(row) || !rows.insert(row).second)
+      return Fail("invalid_or_duplicate_binary_row_list", std::move(result));
+  if ((plan.access_kind == DmlTargetAccessKind::row_uuid_singleton &&
+       (plan.row_uuid.is_nil() || !plan.row_uuids.empty() || !plan.index_uuid.is_nil())) ||
+      (plan.access_kind == DmlTargetAccessKind::row_uuid_list &&
+       (!plan.row_uuid.is_nil() || !plan.index_uuid.is_nil())) ||
+      (AccessPlanIsIndexBacked(plan) &&
+       (plan.index_uuid.is_nil() || !plan.row_uuid.is_nil() || !plan.row_uuids.empty())))
+    return Fail("inconsistent_binary_plan_identity", std::move(result));
   if (!request.access_plan_engine_authority_proof) {
     return Fail("access_plan_engine_authority_proof_required",
                 std::move(result));

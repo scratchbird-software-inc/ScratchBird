@@ -84,7 +84,7 @@ struct HotPointLookupCacheEntry {
   bool invalidated_by_dependency = false;
   std::string invalidation_diagnostic_code;
   std::string invalidation_event_kind;
-  std::string invalidation_dependency_uuid;
+  TypedUuid invalidation_dependency_uuid;
 };
 
 struct HotPointLookupInvalidationEvent {
@@ -120,6 +120,7 @@ struct HotPointLookupCacheResult {
   bool cache_hit = false;
   bool admitted = false;
   std::size_t partition = 0;
+  // Opaque binary key, not a display string or serialized UUID.
   std::string cache_key;
   std::string diagnostic_code;
   std::vector<std::string> evidence;

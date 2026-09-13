@@ -17,6 +17,14 @@ namespace dml = scratchbird::engine::internal_api;
 
 namespace {
 
+dml::EngineUuid Id(unsigned value) {
+  dml::EngineUuid id;
+  id.bytes[6] = 0x70; id.bytes[8] = 0x80;
+  id.bytes[14] = static_cast<unsigned char>(value >> 8);
+  id.bytes[15] = static_cast<unsigned char>(value);
+  return id;
+}
+
 bool Require(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << message << '\n';
@@ -35,7 +43,8 @@ bool Contains(const std::string& text, const std::string& token) {
 
 dml::DmlTargetAccessPlanRequest BaseRequest() {
   dml::DmlTargetAccessPlanRequest request;
-  request.relation_uuid = "rel.odf030.customer";
+  request.database_uuid = Id(1);
+  request.relation_uuid = Id(2);
   request.access_descriptor_present = true;
   request.predicate_descriptor_digest = "predicate.digest.odf030.v1";
   request.observed_catalog_epoch = 10;
@@ -68,7 +77,7 @@ bool AcceptedKindsAreClassified() {
   {
     auto request = BaseRequest();
     request.predicate_kind = "row_uuid_eq";
-    request.row_uuid = "row.odf030.1";
+    request.row_uuid = Id(3);
     const auto plan = dml::BuildDmlTargetAccessPlan(request);
     if (!AcceptedPlanHasRequiredRecheckEvidence(plan) ||
         !Require(plan.access_kind == dml::DmlTargetAccessKind::row_uuid_singleton,
@@ -82,7 +91,7 @@ bool AcceptedKindsAreClassified() {
   {
     auto request = BaseRequest();
     request.predicate_kind = "unique_eq";
-    request.index_uuid = "idx.odf030.customer.email.unique";
+    request.index_uuid = Id(4);
     request.index_unique = true;
     request.estimated_rows = 7;
     const auto plan = dml::BuildDmlTargetAccessPlan(request);
@@ -98,7 +107,7 @@ bool AcceptedKindsAreClassified() {
   {
     auto request = BaseRequest();
     request.predicate_kind = "scalar_eq";
-    request.index_uuid = "idx.odf030.customer.region";
+    request.index_uuid = Id(5);
     request.index_unique = false;
     request.estimated_rows = 12;
     const auto plan = dml::BuildDmlTargetAccessPlan(request);
@@ -114,7 +123,7 @@ bool AcceptedKindsAreClassified() {
   {
     auto request = BaseRequest();
     request.predicate_kind = "scalar_range";
-    request.index_uuid = "idx.odf030.customer.created_at";
+    request.index_uuid = Id(6);
     request.estimated_rows = 48;
     const auto plan = dml::BuildDmlTargetAccessPlan(request);
     if (!AcceptedPlanHasRequiredRecheckEvidence(plan) ||
@@ -169,7 +178,7 @@ bool AcceptedKindsAreClassified() {
 bool UnsafeRoutesRefuseWithExactDiagnostics() {
   {
     auto request = BaseRequest();
-    request.relation_uuid.clear();
+    request.relation_uuid = {};
     request.relation_present = false;
     request.access_descriptor_present = false;
     request.predicate_descriptor_digest.clear();
@@ -234,9 +243,15 @@ bool UnsafeRoutesRefuseWithExactDiagnostics() {
 bool EvidenceHasNoRuntimeDocDependency() {
   auto request = BaseRequest();
   request.predicate_kind = "row_uuid_eq";
-  request.row_uuid = "row.odf030.no.docs";
+  request.row_uuid = Id(7);
   const auto serialized =
       dml::SerializeDmlTargetAccessPlanEvidence(dml::BuildDmlTargetAccessPlan(request));
+  auto escaped_plan = dml::BuildDmlTargetAccessPlan(request);
+  escaped_plan.predicate_kind = std::string("control\0\x01", 9);
+  const auto escaped = dml::SerializeDmlTargetAccessPlanEvidence(escaped_plan);
+  if (!Require(escaped.find("control\\u0000\\u0001") != std::string::npos &&
+               escaped.find('\0') == std::string::npos,
+               "target-plan evidence did not escape control bytes")) return false;
   for (const auto& forbidden : {"docs/", "execution-plans", "findings", "audit",
                                 "contracts", "references"}) {
     if (!Require(!Contains(serialized, forbidden),

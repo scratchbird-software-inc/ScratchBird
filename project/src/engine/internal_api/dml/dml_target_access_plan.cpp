@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -53,9 +54,9 @@ bool HasPredicateOrAccessDescriptor(const DmlTargetAccessPlanRequest& request) {
          request.explicit_table_scan_fallback ||
          !request.predicate_kind.empty() ||
          !request.predicate_descriptor_digest.empty() ||
-         !request.row_uuid.empty() ||
+         !request.row_uuid.is_nil() ||
          !request.row_uuids.empty() ||
-         !request.index_uuid.empty() ||
+         !request.index_uuid.is_nil() ||
          request.summary_prune.requested;
 }
 
@@ -101,17 +102,40 @@ std::uint64_t CurrentOrObservedEpoch(std::uint64_t current,
   return current != 0 ? current : observed;
 }
 
-platform::TypedUuid ParseTypedUuidOrEmpty(platform::UuidKind kind,
-                                          const std::string& text) {
-  if (text.empty()) {
-    return {};
-  }
-  const auto durable = uuid::ParseDurableEngineIdentityUuid(kind, text);
-  if (durable.ok()) {
-    return durable.value;
-  }
-  const auto parsed = uuid::ParseTypedUuid(kind, text);
-  return parsed.ok() ? parsed.value : platform::TypedUuid{};
+platform::TypedUuid BindTypedUuidOrEmpty(platform::UuidKind kind,
+                                         const EngineUuid& identity) {
+  return uuid::IsEngineIdentityUuid(identity) ? platform::TypedUuid{kind, identity}
+                                             : platform::TypedUuid{};
+}
+
+// These are structural checks, not catalog, MGA or security provenance.
+const char* InvalidTargetIdentity(const DmlTargetAccessPlanRequest& request) {
+  if (!uuid::IsEngineIdentityUuid(request.database_uuid) ||
+      !uuid::IsEngineIdentityUuid(request.relation_uuid))
+    return "invalid binary node/relation identity";
+  if ((!request.row_uuid.is_nil() && !uuid::IsEngineIdentityUuid(request.row_uuid)) ||
+      (!request.index_uuid.is_nil() && !uuid::IsEngineIdentityUuid(request.index_uuid)))
+    return "invalid binary row/index identity";
+  std::set<EngineUuid> seen;
+  for (const auto& row : request.row_uuids)
+    if (!uuid::IsEngineIdentityUuid(row) || !seen.insert(row).second)
+      return "invalid or duplicate binary row-list identity";
+  if ((!request.row_uuid.is_nil() && !request.row_uuids.empty()) ||
+      (!request.index_uuid.is_nil() && (!request.row_uuid.is_nil() || !request.row_uuids.empty())))
+    return "ambiguous target identities";
+  if ((request.predicate_kind == "row_uuid_eq" || request.predicate_kind == "row_uuid_match") &&
+      request.row_uuid.is_nil())
+    return "missing singleton row identity";
+  if (request.predicate_kind == "row_uuid_in_list" && !request.row_uuid.is_nil())
+    return "singleton identity supplied for row list";
+  return nullptr;
+}
+
+void AppendProbeComponent(std::string& key, std::string_view value) {
+  const auto size = static_cast<std::uint64_t>(value.size());
+  for (unsigned byte = 0; byte < 8; ++byte)
+    key.push_back(static_cast<char>((size >> (byte * 8)) & 0xffu));
+  key.append(value);
 }
 
 std::optional<idx::HotPointProbeClass> HotPointProbeClassForAccessKind(
@@ -159,26 +183,25 @@ idx::HotPointLookupCacheKey BuildDmlHotPointLookupCacheKey(
     const DmlTargetAccessPlanRequest& request) {
   idx::HotPointLookupCacheKey key;
   key.probe_class = probe_class;
-  key.database_uuid = ParseTypedUuidOrEmpty(platform::UuidKind::database,
+  key.database_uuid = BindTypedUuidOrEmpty(platform::UuidKind::database,
                                             request.database_uuid);
-  key.object_uuid = ParseTypedUuidOrEmpty(platform::UuidKind::object,
+  key.object_uuid = BindTypedUuidOrEmpty(platform::UuidKind::object,
                                           request.relation_uuid);
-  key.index_uuid = ParseTypedUuidOrEmpty(platform::UuidKind::object,
+  key.index_uuid = BindTypedUuidOrEmpty(platform::UuidKind::object,
                                          request.index_uuid);
-  key.encoded_probe_key =
-      "mutation=" + request.mutation_kind +
-      "|predicate=" + request.predicate_kind +
-      "|descriptor=" + request.predicate_descriptor_digest +
-      "|row_uuid=" + request.row_uuid +
-      "|index_uuid=" + request.index_uuid;
+  AppendProbeComponent(key.encoded_probe_key, request.mutation_kind);
+  AppendProbeComponent(key.encoded_probe_key, request.predicate_kind);
+  AppendProbeComponent(key.encoded_probe_key, request.predicate_descriptor_digest);
+  key.encoded_probe_key.append(reinterpret_cast<const char*>(request.row_uuid.bytes.data()),
+                               request.row_uuid.bytes.size());
   key.statistics_snapshot_id =
       "stats_epoch:" +
       std::to_string(CurrentOrObservedEpoch(request.current_stats_epoch,
                                            request.observed_stats_epoch));
   key.descriptor_set_digest =
-      request.relation_uuid + "|" + request.predicate_descriptor_digest;
+      request.predicate_descriptor_digest;
   key.index_definition_digest =
-      request.index_uuid + "|" + request.index_family + "|" +
+      request.index_family + "|" +
       (request.index_unique ? "unique" : "nonunique");
   key.security_policy_digest =
       request.security_policy_digest.empty()
@@ -222,12 +245,12 @@ idx::HotPointLookupCacheKey BuildDmlHotPointLookupCacheKey(
 idx::HotPointLookupCacheEntry BuildDmlHotPointLookupCacheEntry(
     const idx::HotPointLookupCacheKey& key,
     const DmlTargetAccessPlanRequest& request,
-    const std::string& actual_row_uuid) {
+    const EngineUuid& actual_row_uuid) {
   idx::HotPointLookupCacheEntry entry;
   entry.key = key;
   idx::HotPointLookupCandidate candidate;
   candidate.locator.table_uuid = key.object_uuid;
-  candidate.locator.row_uuid = ParseTypedUuidOrEmpty(platform::UuidKind::row,
+  candidate.locator.row_uuid = BindTypedUuidOrEmpty(platform::UuidKind::row,
                                                      actual_row_uuid);
   candidate.locator.local_transaction_id = request.local_transaction_id;
   candidate.proof_kind = "dml_target_access_successful_row_locator";
@@ -290,31 +313,12 @@ void AddHotPointLookupCacheEvidence(const DmlTargetAccessPlanRequest& request,
                            (lookup.cache_hit ? "hit" : "miss"));
   plan->evidence.push_back("hot_point_lookup_cache_diagnostic=" +
                            lookup.diagnostic_code);
-  plan->evidence.push_back("hot_point_lookup_cache_key=" + lookup.cache_key);
+  plan->evidence.push_back("hot_point_lookup_cache_key_encoding=binary");
   for (const auto& evidence : lookup.evidence) {
     plan->evidence.push_back("hot_point_lookup_cache_evidence=" + evidence);
   }
-  if (!lookup.cache_hit &&
-      plan->access_kind == DmlTargetAccessKind::row_uuid_singleton &&
-      !request.row_uuid.empty() &&
-      decision.admission_allowed &&
-      request.mutation_kind != "dml.merge_rows") {
-    const auto put =
-        cache.Put(BuildDmlHotPointLookupCacheEntry(key, request, request.row_uuid));
-    plan->evidence.push_back("hot_point_lookup_cache_admission=" +
-                             put.diagnostic_code);
-    plan->evidence.push_back("hot_point_lookup_cache_admitted=" +
-                             std::string(BoolText(put.admitted)));
-    plan->evidence.push_back("hot_point_lookup_cache_actual_row_locator=" +
-                             request.row_uuid);
-    for (const auto& evidence : put.evidence) {
-      plan->evidence.push_back("hot_point_lookup_cache_admission_evidence=" +
-                               evidence);
-    }
-    return;
-  }
   plan->evidence.push_back(
-      "hot_point_lookup_cache_admission=deferred_until_successful_row_locator");
+      "hot_point_lookup_cache_admission=requires_successful_row_locator");
 }
 
 planner::PhysicalAccessKind PhysicalKindForIndex(const DmlTargetAccessPlanRequest& request,
@@ -334,7 +338,7 @@ void AddDiagnostic(std::vector<std::string>* diagnostics, const char* diagnostic
 
 void AddCommonEvidence(const DmlTargetAccessPlanRequest& request,
                        DmlTargetAccessPlan* plan) {
-  plan->evidence.push_back("relation_uuid=" + request.relation_uuid);
+  plan->evidence.push_back("relation_identity=binary16");
   plan->evidence.push_back("predicate_kind=" + request.predicate_kind);
   plan->evidence.push_back("mga_visibility_recheck=required");
   plan->evidence.push_back("security_recheck=required");
@@ -351,6 +355,7 @@ void FinishAccepted(DmlTargetAccessKind access_kind,
   plan->access_kind = access_kind;
   plan->physical_access_kind = planner::PhysicalAccessKindName(physical_kind);
   plan->executor_capability = opt::RequiredExecutorCapabilityForAccessKind(physical_kind);
+  plan->database_uuid = request.database_uuid;
   plan->relation_uuid = request.relation_uuid;
   plan->predicate_kind = request.predicate_kind;
   plan->predicate_descriptor_digest = request.predicate_descriptor_digest;
@@ -363,8 +368,8 @@ void FinishAccepted(DmlTargetAccessKind access_kind,
                            DmlTargetAccessKindName(access_kind));
   plan->evidence.push_back("physical_access_kind=" + plan->physical_access_kind);
   plan->evidence.push_back("executor_capability=" + plan->executor_capability);
-  if (!request.index_uuid.empty()) {
-    plan->evidence.push_back("index_uuid=" + request.index_uuid);
+  if (!request.index_uuid.is_nil()) {
+    plan->evidence.push_back("index_identity=binary16");
     plan->evidence.push_back(std::string("index_unique=") +
                              (request.index_unique ? "true" : "false"));
   }
@@ -386,7 +391,13 @@ std::string JsonEscape(std::string_view input) {
       case '\n': out << "\\n"; break;
       case '\r': out << "\\r"; break;
       case '\t': out << "\\t"; break;
-      default: out << ch;
+      default:
+        if (ch < 0x20) {
+          static constexpr char hex[] = "0123456789abcdef";
+          out << "\\u00" << hex[ch >> 4] << hex[ch & 0x0f];
+        } else {
+          out << ch;
+        }
     }
   }
   return out.str();
@@ -410,14 +421,10 @@ const char* DmlTargetAccessKindName(DmlTargetAccessKind kind) {
 
 DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& request) {
   DmlTargetAccessPlan plan;
-  plan.relation_uuid = request.relation_uuid;
-  plan.predicate_kind = request.predicate_kind;
-  plan.predicate_descriptor_digest = request.predicate_descriptor_digest;
-  plan.row_uuid = request.row_uuid;
-  plan.row_uuids = request.row_uuids;
-  plan.index_uuid = request.index_uuid;
+  if (const auto* reason = InvalidTargetIdentity(request))
+    AddDiagnostic(&plan.diagnostics, reason);
 
-  if (!request.relation_present || request.relation_uuid.empty()) {
+  if (!request.relation_present || request.relation_uuid.is_nil()) {
     AddDiagnostic(&plan.diagnostics, kMissingRelation);
   }
   if (!HasPredicateOrAccessDescriptor(request)) {
@@ -458,6 +465,12 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
     return plan;
   }
 
+  if (request.predicate_kind == "row_uuid_in_list" && request.row_uuids.empty()) {
+    FinishAccepted(DmlTargetAccessKind::row_uuid_list,
+                   planner::PhysicalAccessKind::kRowUuidLookup, request, &plan);
+    plan.estimated_rows = 0;
+    return plan;
+  }
   if (request.summary_prune.requested) {
     FinishAccepted(DmlTargetAccessKind::summary_pruned,
                    planner::PhysicalAccessKind::kBitmapSummaryScan,
@@ -467,7 +480,7 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
   }
   if (request.predicate_kind == "row_uuid_eq" ||
       request.predicate_kind == "row_uuid_match" ||
-      !request.row_uuid.empty()) {
+      !request.row_uuid.is_nil()) {
     FinishAccepted(DmlTargetAccessKind::row_uuid_singleton,
                    planner::PhysicalAccessKind::kRowUuidLookup,
                    request,
@@ -475,8 +488,7 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
     plan.estimated_rows = 1;
     return plan;
   }
-  if (request.predicate_kind == "row_uuid_in_list" &&
-      !request.row_uuids.empty()) {
+  if (request.predicate_kind == "row_uuid_in_list") {
     FinishAccepted(DmlTargetAccessKind::row_uuid_list,
                    planner::PhysicalAccessKind::kRowUuidLookup,
                    request,
@@ -484,7 +496,7 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
     plan.estimated_rows = static_cast<std::uint64_t>(request.row_uuids.size());
     return plan;
   }
-  if (IsEqualityPredicate(request.predicate_kind) && !request.index_uuid.empty()) {
+  if (IsEqualityPredicate(request.predicate_kind) && !request.index_uuid.is_nil()) {
     const bool unique = request.index_unique || request.predicate_kind == "unique_eq";
     FinishAccepted(unique ? DmlTargetAccessKind::unique_index_lookup
                           : DmlTargetAccessKind::nonunique_index_lookup,
@@ -496,7 +508,7 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
     }
     return plan;
   }
-  if (IsRangePredicate(request.predicate_kind) && !request.index_uuid.empty()) {
+  if (IsRangePredicate(request.predicate_kind) && !request.index_uuid.is_nil()) {
     FinishAccepted(DmlTargetAccessKind::range_index_lookup,
                    PhysicalKindForIndex(request, false),
                    request,
@@ -519,29 +531,37 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
 
 void AdmitDmlHotPointLookupCacheSuccessfulRowLocator(
     const DmlTargetAccessPlanRequest& request,
-    const std::string& actual_row_uuid,
+    const EngineUuid& actual_row_uuid,
     std::vector<std::string>* evidence) {
   auto add = [evidence](std::string item) {
     if (evidence != nullptr) {
       evidence->push_back(std::move(item));
     }
   };
-  if (!request.index_uuid.empty() && !request.index_unique) {
+  const auto plan = BuildDmlTargetAccessPlan(request);
+  if (!plan.ok ||
+      (plan.access_kind != DmlTargetAccessKind::row_uuid_singleton &&
+       plan.access_kind != DmlTargetAccessKind::unique_index_lookup) ||
+      (!request.row_uuid.is_nil() && request.row_uuid != actual_row_uuid)) {
+    add("hot_point_lookup_cache_admission=refused_plan_or_row_identity");
+    return;
+  }
+  if (!request.index_uuid.is_nil() && !request.index_unique) {
     add("hot_point_lookup_cache_admission=refused_nonunique_locator_stream");
     return;
   }
   const auto probe_class =
-      HotPointProbeClassForAccessKind(request.index_uuid.empty()
+      HotPointProbeClassForAccessKind(request.index_uuid.is_nil()
                                           ? DmlTargetAccessKind::row_uuid_singleton
                                           : DmlTargetAccessKind::unique_index_lookup);
   if (!probe_class.has_value()) {
     return;
   }
-  if (actual_row_uuid.empty()) {
+  if (actual_row_uuid.is_nil()) {
     add("hot_point_lookup_cache_admission=refused_empty_actual_row_uuid");
     return;
   }
-  auto row_uuid = ParseTypedUuidOrEmpty(platform::UuidKind::row,
+  auto row_uuid = BindTypedUuidOrEmpty(platform::UuidKind::row,
                                         actual_row_uuid);
   if (!row_uuid.valid()) {
     add("hot_point_lookup_cache_admission=refused_invalid_actual_row_uuid");
@@ -562,7 +582,7 @@ void AdmitDmlHotPointLookupCacheSuccessfulRowLocator(
       cache.Put(BuildDmlHotPointLookupCacheEntry(key, request, actual_row_uuid));
   add("hot_point_lookup_cache_admission=" + put.diagnostic_code);
   add("hot_point_lookup_cache_admitted=" + std::string(BoolText(put.admitted)));
-  add("hot_point_lookup_cache_actual_row_locator=" + actual_row_uuid);
+  add("hot_point_lookup_cache_actual_row_locator=binary16");
   for (const auto& item : put.evidence) {
     add("hot_point_lookup_cache_admission_evidence=" + item);
   }
@@ -575,11 +595,11 @@ std::string SerializeDmlTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan
   out << "\"access_kind\":\"" << DmlTargetAccessKindName(plan.access_kind) << "\",";
   out << "\"physical_access_kind\":\"" << JsonEscape(plan.physical_access_kind) << "\",";
   out << "\"executor_capability\":\"" << JsonEscape(plan.executor_capability) << "\",";
-  out << "\"relation_uuid\":\"" << JsonEscape(plan.relation_uuid) << "\",";
+  out << "\"relation_identity_present\":" << (plan.relation_uuid.is_nil() ? "false" : "true") << ",";
   out << "\"predicate_kind\":\"" << JsonEscape(plan.predicate_kind) << "\",";
-  out << "\"row_uuid\":\"" << JsonEscape(plan.row_uuid) << "\",";
+  out << "\"row_identity_present\":" << (plan.row_uuid.is_nil() ? "false" : "true") << ",";
   out << "\"row_uuid_count\":" << plan.row_uuids.size() << ",";
-  out << "\"index_uuid\":\"" << JsonEscape(plan.index_uuid) << "\",";
+  out << "\"index_identity_present\":" << (plan.index_uuid.is_nil() ? "false" : "true") << ",";
   out << "\"estimated_rows\":" << plan.estimated_rows << ",";
   out << "\"diagnostics\":[";
   for (std::size_t index = 0; index < plan.diagnostics.size(); ++index) {

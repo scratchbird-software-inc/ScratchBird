@@ -7,17 +7,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "hot_point_lookup_cache.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <functional>
-#include <iomanip>
 #include <map>
-#include <sstream>
+#include <string_view>
 #include <utility>
+#include <type_traits>
 
 namespace scratchbird::core::index {
 namespace {
+
+using scratchbird::core::platform::UuidKind;
 
 constexpr const char* kDiagHit = "SB_INDEX_HOT_POINT_LOOKUP_CACHE_HIT";
 constexpr const char* kDiagMiss = "SB_INDEX_HOT_POINT_LOOKUP_CACHE_MISS";
@@ -33,33 +36,30 @@ constexpr const char* kDiagContentionRefused =
 constexpr const char* kDiagAdmitted = "SB_INDEX_HOT_POINT_LOOKUP_CACHE_ADMITTED";
 constexpr const char* kDiagReset = "SB_INDEX_HOT_POINT_LOOKUP_CACHE_PARTITION_RESET";
 
-std::string UuidKey(const TypedUuid& uuid) {
-  if (!uuid.valid()) {
-    return "invalid";
-  }
-  std::ostringstream out;
-  out << static_cast<unsigned>(uuid.kind) << ':';
-  out << std::hex << std::setfill('0');
-  for (auto value : uuid.value.bytes) {
-    out << std::setw(2) << static_cast<unsigned>(value);
-  }
-  return out.str();
+void AppendU64(std::string& out, u64 value) {
+  for (unsigned byte = 0; byte < 8; ++byte)
+    out.push_back(static_cast<char>((value >> (8 * byte)) & 0xffu));
 }
-
-void AppendUuidVector(std::ostringstream& out,
-                      const char* label,
-                      std::vector<TypedUuid> uuids) {
-  std::vector<std::string> keys;
-  keys.reserve(uuids.size());
-  for (const auto& uuid : uuids) {
-    keys.push_back(UuidKey(uuid));
-  }
-  std::sort(keys.begin(), keys.end());
-  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-  out << '|' << label << '=';
-  for (const auto& key : keys) {
-    out << key << ';';
-  }
+void AppendComponent(std::string& out, std::string_view value) {
+  AppendU64(out, value.size());
+  out.append(value);
+}
+void AppendIdentity(std::string& out, const TypedUuid& identity) {
+  out.push_back(static_cast<char>(identity.kind));
+  out.append(reinterpret_cast<const char*>(identity.value.bytes.data()), identity.value.bytes.size());
+}
+bool ValidIdentity(const TypedUuid& identity) {
+  return static_cast<unsigned>(identity.kind) < static_cast<unsigned>(UuidKind::unknown) &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(identity.value);
+}
+bool ValidKey(const HotPointLookupCacheKey& key) {
+  const auto probe = static_cast<u32>(key.probe_class);
+  return probe >= 1 && probe <= 4 &&
+      key.database_uuid.kind == UuidKind::database && ValidIdentity(key.database_uuid) &&
+      key.object_uuid.kind == UuidKind::object && ValidIdentity(key.object_uuid) &&
+      (key.index_uuid.value.is_nil()
+          ? key.probe_class == HotPointProbeClass::row_uuid_lookup
+          : key.index_uuid.kind == UuidKind::object && ValidIdentity(key.index_uuid));
 }
 
 bool SameUuid(const TypedUuid& left, const TypedUuid& right) {
@@ -200,29 +200,46 @@ HotPointLookupCacheResult AdaptiveHotPointLookupCache::Put(
     return result;
   }
 
-  if (config_.max_entries_per_partition != 0 &&
-      partition.entries.size() >= config_.max_entries_per_partition) {
-    partition.entries.erase(partition.entries.begin());
-  }
   entry.valid = true;
   entry.invalidated_by_dependency = false;
   entry.invalidation_diagnostic_code.clear();
   entry.invalidation_event_kind.clear();
-  entry.invalidation_dependency_uuid.clear();
-  partition.entries[result.cache_key] = std::move(entry);
-  ++partition.counters.puts;
-  partition.counters.entry_count = partition.entries.size();
+  entry.invalidation_dependency_uuid = {};
+  // Allocate the replacement node and success result before changing the
+  // live partition or evicting a previously usable candidate.
+  std::map<std::string, HotPointLookupCacheEntry> staged;
+  staged.emplace(result.cache_key, std::move(entry));
   result.ok = true;
   result.admitted = true;
   result.diagnostic_code = kDiagAdmitted;
   result.evidence.push_back("hot_point_lookup_cache_admitted");
   result.evidence.push_back("admission_metadata_only=true");
+  const auto existing = partition.entries.find(result.cache_key);
+  if (existing != partition.entries.end()) {
+    static_assert(std::is_nothrow_move_assignable_v<HotPointLookupCacheEntry>);
+    existing->second = std::move(staged.begin()->second);
+  } else {
+    const auto victim = config_.max_entries_per_partition != 0 &&
+        partition.entries.size() >= config_.max_entries_per_partition
+        ? partition.entries.begin() : partition.entries.end();
+    // Compatible node allocators and the nonthrowing string comparison permit
+    // publication without allocating another map node.
+    partition.entries.insert(staged.extract(staged.begin()));
+    if (victim != partition.entries.end()) partition.entries.erase(victim);
+  }
+  ++partition.counters.puts;
+  partition.counters.entry_count = partition.entries.size();
   return result;
 }
 
 HotPointLookupCacheResult AdaptiveHotPointLookupCache::Lookup(
     const HotPointLookupCacheKey& key) {
   HotPointLookupCacheResult result;
+  if (!ValidKey(key)) {
+    result.diagnostic_code = kDiagAuthorityRefused;
+    result.evidence.push_back("lookup_failed_open=invalid_binary_identity");
+    return result;
+  }
   result.cache_key = BuildHotPointLookupCacheKey(key);
   result.partition = PartitionForKey(key);
   AddPartitionEvidence(&result);
@@ -262,9 +279,8 @@ HotPointLookupCacheResult AdaptiveHotPointLookupCache::Lookup(
         result.evidence.push_back("invalidation_kind=" +
                                   exact->second.invalidation_event_kind);
       }
-      if (!exact->second.invalidation_dependency_uuid.empty()) {
-        result.evidence.push_back("invalidation_dependency=" +
-                                  exact->second.invalidation_dependency_uuid);
+      if (exact->second.invalidation_dependency_uuid.valid()) {
+        result.evidence.push_back("invalidation_dependency=binary16");
       }
       return result;
     }
@@ -347,13 +363,13 @@ HotPointLookupInvalidationResult AdaptiveHotPointLookupCache::Invalidate(
   result.evidence.push_back("hot_point_lookup_cache_invalidation");
   result.evidence.push_back("invalidation_kind=" + event.event_kind);
   if (event.dependency_uuid.valid()) {
-    result.evidence.push_back("dependency_uuid=" + UuidKey(event.dependency_uuid));
+    result.evidence.push_back("dependency_identity=binary16");
   }
   if (event.object_uuid.valid()) {
-    result.evidence.push_back("object_uuid=" + UuidKey(event.object_uuid));
+    result.evidence.push_back("object_identity=binary16");
   }
   if (event.index_uuid.valid()) {
-    result.evidence.push_back("index_uuid=" + UuidKey(event.index_uuid));
+    result.evidence.push_back("index_identity=binary16");
   }
 
   for (auto& partition_ptr : partitions_) {
@@ -367,8 +383,8 @@ HotPointLookupInvalidationResult AdaptiveHotPointLookupCache::Invalidate(
         entry.invalidation_diagnostic_code = result.diagnostic_code;
         entry.invalidation_event_kind = event.event_kind;
         entry.invalidation_dependency_uuid = event.dependency_uuid.valid()
-                                                 ? UuidKey(event.dependency_uuid)
-                                                 : UuidKey(event.object_uuid.valid()
+                                                 ? event.dependency_uuid
+                                                 : (event.object_uuid.valid()
                                                                ? event.object_uuid
                                                                : event.index_uuid);
         ++partition.counters.dependency_invalidations;
@@ -458,33 +474,23 @@ const char* HotPointProbeClassName(HotPointProbeClass probe_class) {
 }
 
 std::string BuildHotPointLookupCacheKey(const HotPointLookupCacheKey& key) {
-  std::ostringstream out;
-  out << BuildHotPointLookupStableProbeKey(key)
-      << "|stats_snapshot=" << key.statistics_snapshot_id
-      << "|descriptor_set=" << key.descriptor_set_digest
-      << "|index_definition=" << key.index_definition_digest
-      << "|security_policy=" << key.security_policy_digest
-      << "|redaction_policy=" << key.redaction_policy_digest
-      << "|access_policy=" << key.access_policy_digest
-      << "|collation_profile=" << key.collation_profile_digest
-      << "|catalog_epoch=" << key.catalog_epoch
-      << "|index_epoch=" << key.index_epoch
-      << "|statistics_epoch=" << key.statistics_epoch
-      << "|security_epoch=" << key.security_epoch
-      << "|policy_epoch=" << key.policy_epoch
-      << "|object_epoch=" << key.object_epoch
-      << "|compatibility_epoch=" << key.compatibility_epoch;
-  return out.str();
+  auto out = BuildHotPointLookupStableProbeKey(key);
+  for (const auto* component : {&key.statistics_snapshot_id, &key.descriptor_set_digest,
+      &key.index_definition_digest, &key.security_policy_digest, &key.redaction_policy_digest,
+      &key.access_policy_digest, &key.collation_profile_digest}) AppendComponent(out, *component);
+  for (const auto epoch : {key.catalog_epoch, key.index_epoch, key.statistics_epoch,
+      key.security_epoch, key.policy_epoch, key.object_epoch, key.compatibility_epoch}) AppendU64(out, epoch);
+  return out;
 }
 
 std::string BuildHotPointLookupStableProbeKey(const HotPointLookupCacheKey& key) {
-  std::ostringstream out;
-  out << "probe_class=" << HotPointProbeClassName(key.probe_class)
-      << "|database_uuid=" << UuidKey(key.database_uuid)
-      << "|object_uuid=" << UuidKey(key.object_uuid)
-      << "|index_uuid=" << UuidKey(key.index_uuid)
-      << "|encoded_probe_key=" << key.encoded_probe_key;
-  return out.str();
+  std::string out;
+  AppendU64(out, static_cast<u64>(key.probe_class));
+  AppendIdentity(out, key.database_uuid);
+  AppendIdentity(out, key.object_uuid);
+  AppendIdentity(out, key.index_uuid);
+  AppendComponent(out, key.encoded_probe_key);
+  return out;
 }
 
 bool HotPointLookupKeyEpochCompatible(const HotPointLookupCacheKey& cached,
@@ -509,8 +515,11 @@ bool HotPointLookupCandidateSafeForCache(
     const HotPointLookupCandidate& candidate) {
   return candidate.candidate_locator_only &&
          candidate.equality_proof_metadata_only &&
-         candidate.locator.table_uuid.valid() &&
-         candidate.locator.row_uuid.valid() &&
+         ValidIdentity(candidate.locator.table_uuid) &&
+         candidate.locator.row_uuid.kind == UuidKind::row && ValidIdentity(candidate.locator.row_uuid) &&
+         (candidate.locator.version_uuid.value.is_nil() ||
+          (candidate.locator.version_uuid.kind == UuidKind::row && ValidIdentity(candidate.locator.version_uuid) &&
+           candidate.locator.version_uuid.value != candidate.locator.row_uuid.value)) &&
          candidate.requires_mga_visibility_recheck &&
          candidate.requires_security_authorization_recheck &&
          !candidate.visibility_finality_authority &&
@@ -520,14 +529,17 @@ bool HotPointLookupCandidateSafeForCache(
 }
 
 bool HotPointLookupEntrySafeForCache(const HotPointLookupCacheEntry& entry) {
-  if (entry.candidates.empty()) {
+  if (!ValidKey(entry.key) || entry.candidates.empty()) {
     return false;
   }
   for (const auto& candidate : entry.candidates) {
-    if (!HotPointLookupCandidateSafeForCache(candidate)) {
+    if (!HotPointLookupCandidateSafeForCache(candidate) ||
+        !SameUuid(candidate.locator.table_uuid, entry.key.object_uuid)) {
       return false;
     }
   }
+  for (const auto& dependency : entry.dependency_uuids)
+    if (!ValidIdentity(dependency)) return false;
   return true;
 }
 

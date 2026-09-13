@@ -1426,14 +1426,14 @@ void AddTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan,
 }
 
 void AddDmlHotPointAdmissionEvidence(const DmlTargetAccessPlanRequest& plan_request,
-                                     const std::string& row_uuid,
+                                     const EngineUuid& row_uuid,
                                      std::vector<EngineEvidenceReference>* evidence) {
   std::vector<std::string> cache_evidence;
   DmlTargetAccessPlanRequest locator_request = plan_request;
-  if (locator_request.row_uuid.empty()) {
+  if (locator_request.row_uuid.is_nil() && locator_request.index_uuid.is_nil()) {
     locator_request.row_uuid = row_uuid;
     locator_request.predicate_kind = "row_uuid_match";
-    locator_request.predicate_descriptor_digest = "row_uuid_match:" + row_uuid;
+    locator_request.predicate_descriptor_digest = "row_uuid_match";
     locator_request.row_uuids.clear();
   }
   AdmitDmlHotPointLookupCacheSuccessfulRowLocator(locator_request,
@@ -1483,37 +1483,16 @@ DmlRowLocatorStreamResult BuildRouteLocatorStream(
 DmlTargetAccessPlan BuildRowUuidLocatorPlanFromRows(
     const DmlTargetAccessPlanRequest& base_request,
     const std::vector<CrudRowVersionRecord>& rows) {
-  if (rows.empty()) {
-    DmlTargetAccessPlan plan;
-    plan.ok = true;
-    plan.access_kind = DmlTargetAccessKind::row_uuid_list;
-    plan.physical_access_kind = "row_uuid_lookup";
-    plan.executor_capability = "row_uuid_lookup";
-    plan.relation_uuid = base_request.relation_uuid;
-    plan.predicate_kind = "row_uuid_in_list";
-    plan.predicate_descriptor_digest =
-        "irc052_empty_persisted_index_locator_stream";
-    plan.index_uuid = base_request.index_uuid;
-    plan.estimated_rows = 0;
-    plan.evidence.push_back("dml_target_access_kind=row_uuid_list");
-    plan.evidence.push_back("physical_index_tree_available=false");
-    plan.evidence.push_back("irc060_required_for_physical_scan=true");
-    return plan;
-  }
-
   DmlTargetAccessPlanRequest locator_request = base_request;
-  locator_request.index_uuid.clear();
+  locator_request.index_uuid = {};
   locator_request.index_unique = false;
   locator_request.index_family = "btree";
-  locator_request.predicate_kind = rows.size() == 1 ? "row_uuid_match"
-                                                    : "row_uuid_in_list";
-  locator_request.predicate_descriptor_digest =
-      "irc052_persisted_index_row_uuid_locator_stream:" +
-      std::to_string(rows.size());
-  locator_request.row_uuid = rows.size() == 1 ? rows.front().row_uuid : "";
+  locator_request.predicate_kind = rows.size() == 1 ? "row_uuid_match" : "row_uuid_in_list";
+  locator_request.predicate_descriptor_digest = "persisted_index_row_locator_projection";
+  locator_request.row_uuid = rows.size() == 1 ? rows.front().row_uuid : EngineUuid{};
   locator_request.row_uuids.clear();
-  for (const auto& row : rows) {
-    locator_request.row_uuids.push_back(row.row_uuid);
+  if (rows.size() > 1) {
+    for (const auto& row : rows) locator_request.row_uuids.push_back(row.row_uuid);
   }
   locator_request.estimated_rows = static_cast<std::uint64_t>(rows.size());
   return BuildDmlTargetAccessPlan(locator_request);

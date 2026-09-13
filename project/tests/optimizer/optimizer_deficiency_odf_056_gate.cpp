@@ -48,8 +48,8 @@ platform::TypedUuid TestUuid(platform::UuidKind kind, unsigned char salt) {
   return uuid;
 }
 
-std::string TestUuidText(platform::UuidKind kind, unsigned char salt) {
-  return uuid::UuidToString(TestUuid(kind, salt).value);
+dml::EngineUuid TestBinaryUuid(platform::UuidKind kind, unsigned char salt) {
+  return TestUuid(kind, salt).value;
 }
 
 bool EvidenceHas(const std::vector<std::string>& evidence,
@@ -135,7 +135,7 @@ std::vector<std::string> RuntimeValues(
   if (result.entry.has_value()) {
     values.push_back(result.entry->invalidation_diagnostic_code);
     values.push_back(result.entry->invalidation_event_kind);
-    values.push_back(result.entry->invalidation_dependency_uuid);
+    // Invalidation identity is a typed binary field, not runtime text.
     for (const auto& candidate : result.entry->candidates) {
       values.push_back(candidate.proof_kind);
       values.push_back(candidate.posting_list_digest);
@@ -165,13 +165,22 @@ void RowUuidHitMissAndKeyComponents() {
 
   const auto put = cache.Put(Entry(key));
   Require(put.ok && put.admitted, "ODF-056 row UUID cache admission failed");
-  Require(put.cache_key.find("catalog_epoch=101") != std::string::npos &&
-              put.cache_key.find("index_epoch=202") != std::string::npos &&
-              put.cache_key.find("statistics_epoch=303") != std::string::npos &&
-              put.cache_key.find("security_epoch=404") != std::string::npos &&
-              put.cache_key.find("policy_epoch=505") != std::string::npos &&
-              put.cache_key.find("security.policy.56") != std::string::npos,
-          "ODF-056 cache key omitted epoch/security/policy components");
+  for (auto epoch : {&idx::HotPointLookupCacheKey::catalog_epoch,
+      &idx::HotPointLookupCacheKey::index_epoch, &idx::HotPointLookupCacheKey::statistics_epoch,
+      &idx::HotPointLookupCacheKey::security_epoch, &idx::HotPointLookupCacheKey::policy_epoch,
+      &idx::HotPointLookupCacheKey::object_epoch, &idx::HotPointLookupCacheKey::compatibility_epoch}) {
+    auto changed = key; ++(changed.*epoch);
+    Require(idx::BuildHotPointLookupCacheKey(changed) != put.cache_key && !cache.Lookup(changed).cache_hit,
+            "ODF-056 binary key omitted an epoch binding");
+  }
+  for (auto digest : {&idx::HotPointLookupCacheKey::statistics_snapshot_id,
+      &idx::HotPointLookupCacheKey::descriptor_set_digest, &idx::HotPointLookupCacheKey::index_definition_digest,
+      &idx::HotPointLookupCacheKey::security_policy_digest, &idx::HotPointLookupCacheKey::redaction_policy_digest,
+      &idx::HotPointLookupCacheKey::access_policy_digest, &idx::HotPointLookupCacheKey::collation_profile_digest}) {
+    auto changed = key; (changed.*digest).push_back('\0');
+    Require(idx::BuildHotPointLookupCacheKey(changed) != put.cache_key && !cache.Lookup(changed).cache_hit,
+            "ODF-056 binary key omitted a metadata binding");
+  }
 
   const auto hit = cache.Lookup(key);
   Require(hit.ok && hit.cache_hit &&
@@ -364,11 +373,11 @@ void RuntimeEvidenceHasNoDocumentationTokens() {
 void DmlTargetAccessUsesLiveHotPointCacheRoute() {
   dml::DmlTargetAccessPlanRequest row_request;
   row_request.mutation_kind = "dml.update_rows";
-  row_request.database_uuid = TestUuidText(platform::UuidKind::database, 0x41);
-  row_request.relation_uuid = TestUuidText(platform::UuidKind::object, 0x42);
+  row_request.database_uuid = TestBinaryUuid(platform::UuidKind::database, 0x41);
+  row_request.relation_uuid = TestBinaryUuid(platform::UuidKind::object, 0x42);
   row_request.predicate_kind = "row_uuid_match";
   row_request.predicate_descriptor_digest = "row.uuid.digest.56";
-  row_request.row_uuid = TestUuidText(platform::UuidKind::row, 0x43);
+  row_request.row_uuid = TestBinaryUuid(platform::UuidKind::row, 0x43);
   row_request.access_descriptor_present = true;
   row_request.security_policy_digest = "security.policy.56";
   row_request.redaction_policy_digest = "redaction.policy.56";
@@ -397,9 +406,17 @@ void DmlTargetAccessUsesLiveHotPointCacheRoute() {
           "ODF-056 DML row UUID route did not reach hot-point cache");
   Require(EvidenceContains(row_first.evidence,
                            "hot_point_lookup_cache_lookup=miss") &&
-              EvidenceContains(row_first.evidence,
+              !EvidenceContains(row_first.evidence,
                                "hot_point_lookup_cache_admitted=true"),
-          "ODF-056 DML row UUID route did not admit a cacheable point probe");
+          "ODF-056 planning admitted an unobserved row");
+  const auto unobserved = dml::BuildDmlTargetAccessPlan(row_request);
+  Require(EvidenceContains(unobserved.evidence, "hot_point_lookup_cache_lookup=miss"),
+          "ODF-056 planning poisoned the next lookup");
+  std::vector<std::string> admission_evidence;
+  dml::AdmitDmlHotPointLookupCacheSuccessfulRowLocator(
+      row_request, row_request.row_uuid, &admission_evidence);
+  Require(EvidenceContains(admission_evidence, "hot_point_lookup_cache_admitted=true"),
+          "ODF-056 post-lookup binary candidate admission failed");
 
   const auto row_second = dml::BuildDmlTargetAccessPlan(row_request);
   Require(EvidenceContains(row_second.evidence,
@@ -415,8 +432,8 @@ void DmlTargetAccessUsesLiveHotPointCacheRoute() {
   unique_request.mutation_kind = "dml.delete_rows";
   unique_request.predicate_kind = "unique_eq";
   unique_request.predicate_descriptor_digest = "unique.digest.56";
-  unique_request.row_uuid.clear();
-  unique_request.index_uuid = TestUuidText(platform::UuidKind::object, 0x44);
+  unique_request.row_uuid = {};
+  unique_request.index_uuid = TestBinaryUuid(platform::UuidKind::object, 0x44);
   unique_request.index_family = "btree";
   unique_request.index_unique = true;
   unique_request.compatibility_epoch = 2007;

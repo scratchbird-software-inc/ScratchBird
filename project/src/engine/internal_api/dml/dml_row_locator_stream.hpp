@@ -61,9 +61,9 @@ struct DmlRowLocatorStreamRequest {
 };
 
 struct DmlRowLocator {
-  std::string row_uuid;
-  std::string version_uuid;
-  std::string index_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
+  EngineUuid index_uuid;
   std::uint64_t leaf_page_number = 0;
   std::uint32_t cell_ordinal = 0;
   bool from_physical_index = false;

@@ -472,6 +472,36 @@ set_tests_properties(sbsql_sblr_alignment_native_row_version_identity PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;real_storage;independent_process;not_e2e" TIMEOUT 120)
 endif()
 
+# Existing DML/physical-index regressions linked to their actual implementations.
+# These do not exercise SQL, IPC or durable MGA/security ownership.
+foreach(dml_binary_fixture IN ITEMS locator target_plan hot_point_cache)
+  if(dml_binary_fixture STREQUAL "locator")
+    set(dml_binary_fixture_source ../database_lifecycle/dml_conflict_merge_locator_stream_gate.cpp)
+  elseif(dml_binary_fixture STREQUAL "target_plan")
+    set(dml_binary_fixture_source ../optimizer/optimizer_deficiency_odf_030_gate.cpp)
+  else()
+    set(dml_binary_fixture_source ../optimizer/optimizer_deficiency_odf_056_gate.cpp)
+  endif()
+  set(dml_binary_target sbsql_sblr_alignment_dml_binary_${dml_binary_fixture})
+  add_executable(${dml_binary_target} ${dml_binary_fixture_source}
+    ${CMAKE_SOURCE_DIR}/src/engine/internal_api/dml/dml_target_access_plan.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/internal_api/dml/dml_row_locator_stream.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/internal_api/api_unsupported.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/optimizer/optimizer_hot_point_lookup.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/optimizer/physical_plan.cpp
+    ${CMAKE_SOURCE_DIR}/src/engine/planner/logical_plan.cpp)
+  target_include_directories(${dml_binary_target} PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/engine/internal_api
+    ${CMAKE_SOURCE_DIR}/src/engine/optimizer ${CMAKE_SOURCE_DIR}/src/engine/planner
+    ${CMAKE_SOURCE_DIR}/src/engine/sblr)
+  target_compile_features(${dml_binary_target} PRIVATE cxx_std_23)
+  target_link_libraries(${dml_binary_target} PRIVATE
+    sb_core_index sb_storage_page sb_core_memory sb_core_uuid sb_core_diagnostic_catalog)
+  add_test(NAME ${dml_binary_target} COMMAND ${dml_binary_target})
+  set_tests_properties(${dml_binary_target} PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;physical_index;not_e2e" TIMEOUT 60)
+endforeach()
+
 add_executable(sbsql_sblr_alignment_catalog_resource_seed
   ${PROJECT_SOURCE_DIR}/tests/database_lifecycle/resource_seed_conformance.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_resource_seed PRIVATE cxx_std_23)

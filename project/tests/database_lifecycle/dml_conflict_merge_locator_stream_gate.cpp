@@ -8,12 +8,15 @@
 
 #include "dml/dml_row_locator_stream.hpp"
 #include "index_key_encoding.hpp"
+#include "hot_point_lookup_cache.hpp"
 #include "uuid.hpp"
+#include "../common/single_tu_allocation_fault.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +28,7 @@ namespace idx = scratchbird::core::index;
 namespace page = scratchbird::storage::page;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
+unsigned checks = 0;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << "dml_conflict_merge_locator_stream_gate: " << message << '\n';
@@ -32,6 +36,7 @@ namespace uuid = scratchbird::core::uuid;
 }
 
 void Require(bool condition, std::string_view message) {
+  ++checks;
   if (!condition) {
     Fail(message);
   }
@@ -51,52 +56,39 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind) {
   return generated.value;
 }
 
-std::string UuidText(platform::UuidKind kind) {
-  return uuid::UuidToString(GeneratedUuid(kind).value);
+api::EngineUuid BinaryId(platform::UuidKind kind) {
+  return GeneratedUuid(kind).value;
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const api::EngineUuid& index_uuid,
                                        const std::string& key) {
-  const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
+  const platform::TypedUuid descriptor_uuid{platform::UuidKind::object, index_uuid};
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid = descriptor_uuid.value;
+  component.type_descriptor_uuid = descriptor_uuid;
   component.payload.assign(key.begin(), key.end());
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test key encoding failed");
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
-  const auto parsed =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(parsed.ok(), "index uuid parse failed");
-  auto initialized = page::InitializeIndexBtreePhysicalTree(parsed.value, 4096);
+page::IndexBtreePhysicalTree MakeTree(const api::EngineUuid& index_uuid) {
+  auto initialized = page::InitializeIndexBtreePhysicalTree(
+      {platform::UuidKind::object, index_uuid}, 4096);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& index_uuid,
+page::IndexBtreeCell Cell(const api::EngineUuid& index_uuid,
                           const std::string& key,
-                          const std::string& row_uuid,
-                          const std::string& version_uuid) {
+                          const api::EngineUuid& row_uuid,
+                          const api::EngineUuid& version_uuid) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(index_uuid, key);
-  const auto parsed_row =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           row_uuid);
-  const auto parsed_version =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
-                                           version_uuid);
-  Require(parsed_row.ok() && parsed_version.ok(), "row/version uuid parse failed");
-  cell.row_uuid = parsed_row.value;
-  cell.version_uuid = parsed_version.value;
+  cell.row_uuid = {platform::UuidKind::row, row_uuid};
+  cell.version_uuid = {platform::UuidKind::row, version_uuid};
   return cell;
 }
 
@@ -118,9 +110,11 @@ void InsertCell(page::IndexBtreePhysicalTree* tree,
   Require(inserted.ok(), "physical insert failed");
 }
 
-api::DmlTargetAccessPlanRequest BasePlanRequest(const std::string& relation_uuid) {
+api::DmlTargetAccessPlanRequest BasePlanRequest(const api::EngineUuid& relation_uuid) {
   api::DmlTargetAccessPlanRequest request;
   request.mutation_kind = "irc_052_locator_stream";
+  static const auto node = BinaryId(platform::UuidKind::database);
+  request.database_uuid = node;
   request.relation_uuid = relation_uuid;
   request.access_descriptor_present = true;
   request.mga_visibility_recheck_planned = true;
@@ -165,8 +159,8 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
                      });
 }
 
-api::DmlTargetAccessPlan RowUuidPlan(const std::string& relation_uuid,
-                                     const std::string& row_uuid) {
+api::DmlTargetAccessPlan RowUuidPlan(const api::EngineUuid& relation_uuid,
+                                     const api::EngineUuid& row_uuid) {
   auto request = BasePlanRequest(relation_uuid);
   request.predicate_kind = "row_uuid_eq";
   request.row_uuid = row_uuid;
@@ -176,8 +170,8 @@ api::DmlTargetAccessPlan RowUuidPlan(const std::string& relation_uuid,
 }
 
 api::DmlTargetAccessPlan RowUuidListPlan(
-    const std::string& relation_uuid,
-    const std::vector<std::string>& row_uuids) {
+    const api::EngineUuid& relation_uuid,
+    const std::vector<api::EngineUuid>& row_uuids) {
   auto request = BasePlanRequest(relation_uuid);
   request.predicate_kind = "row_uuid_in_list";
   request.row_uuids = row_uuids;
@@ -186,8 +180,8 @@ api::DmlTargetAccessPlan RowUuidListPlan(
   return plan;
 }
 
-api::DmlTargetAccessPlan IndexPlan(const std::string& relation_uuid,
-                                   const std::string& index_uuid,
+api::DmlTargetAccessPlan IndexPlan(const api::EngineUuid& relation_uuid,
+                                   const api::EngineUuid& index_uuid,
                                    std::string predicate_kind,
                                    bool unique) {
   auto request = BasePlanRequest(relation_uuid);
@@ -202,9 +196,9 @@ api::DmlTargetAccessPlan IndexPlan(const std::string& relation_uuid,
 }
 
 void TestExplicitRowUuidStreams() {
-  const std::string relation_uuid = UuidText(platform::UuidKind::object);
-  const std::string row1 = UuidText(platform::UuidKind::row);
-  const std::string row2 = UuidText(platform::UuidKind::row);
+  const auto relation_uuid = BinaryId(platform::UuidKind::object);
+  const auto row1 = BinaryId(platform::UuidKind::row);
+  const auto row2 = BinaryId(platform::UuidKind::row);
 
   auto singleton = BaseStreamRequest(api::DmlRowLocatorStreamConsumer::update,
                                      RowUuidPlan(relation_uuid, row1));
@@ -230,15 +224,15 @@ void TestExplicitRowUuidStreams() {
 }
 
 void TestOnConflictConsumesUniquePhysicalLocatorStream() {
-  const std::string relation_uuid = UuidText(platform::UuidKind::object);
-  const std::string index_uuid = UuidText(platform::UuidKind::object);
-  const std::string row_uuid = UuidText(platform::UuidKind::row);
+  const auto relation_uuid = BinaryId(platform::UuidKind::object);
+  const auto index_uuid = BinaryId(platform::UuidKind::object);
+  const auto row_uuid = BinaryId(platform::UuidKind::row);
   auto tree = MakeTree(index_uuid);
   InsertCell(&tree,
              Cell(index_uuid,
                   "conflict-key",
                   row_uuid,
-                  UuidText(platform::UuidKind::row)),
+                  BinaryId(platform::UuidKind::row)),
              true);
 
   auto request = BaseStreamRequest(
@@ -271,9 +265,9 @@ void TestOnConflictConsumesUniquePhysicalLocatorStream() {
 }
 
 void TestMergeRowUuidAndIndexRangeOrdinalEvidence() {
-  const std::string relation_uuid = UuidText(platform::UuidKind::object);
-  const std::string row1 = UuidText(platform::UuidKind::row);
-  const std::string row2 = UuidText(platform::UuidKind::row);
+  const auto relation_uuid = BinaryId(platform::UuidKind::object);
+  const auto row1 = BinaryId(platform::UuidKind::row);
+  const auto row2 = BinaryId(platform::UuidKind::row);
 
   auto row_request = BaseStreamRequest(
       api::DmlRowLocatorStreamConsumer::merge,
@@ -291,14 +285,14 @@ void TestMergeRowUuidAndIndexRangeOrdinalEvidence() {
                       "1:1:unmatched"),
           "MERGE unmatched row uuid ordinal evidence missing");
 
-  const std::string index_uuid = UuidText(platform::UuidKind::object);
+  const auto index_uuid = BinaryId(platform::UuidKind::object);
   auto tree = MakeTree(index_uuid);
-  const std::string range_row1 = UuidText(platform::UuidKind::row);
-  const std::string range_row2 = UuidText(platform::UuidKind::row);
+  const auto range_row1 = BinaryId(platform::UuidKind::row);
+  const auto range_row2 = BinaryId(platform::UuidKind::row);
   InsertCell(&tree,
-             Cell(index_uuid, "bravo", range_row1, UuidText(platform::UuidKind::row)));
+             Cell(index_uuid, "bravo", range_row1, BinaryId(platform::UuidKind::row)));
   InsertCell(&tree,
-             Cell(index_uuid, "charlie", range_row2, UuidText(platform::UuidKind::row)));
+             Cell(index_uuid, "charlie", range_row2, BinaryId(platform::UuidKind::row)));
 
   auto range_request = BaseStreamRequest(
       api::DmlRowLocatorStreamConsumer::merge,
@@ -324,21 +318,21 @@ void TestMergeRowUuidAndIndexRangeOrdinalEvidence() {
 }
 
 void TestUpdateDeleteFailClosedAndExactFallback() {
-  const std::string relation_uuid = UuidText(platform::UuidKind::object);
-  const std::string index_uuid = UuidText(platform::UuidKind::object);
+  const auto relation_uuid = BinaryId(platform::UuidKind::object);
+  const auto index_uuid = BinaryId(platform::UuidKind::object);
   auto tree = MakeTree(index_uuid);
-  const std::string update_row = UuidText(platform::UuidKind::row);
-  const std::string delete_row = UuidText(platform::UuidKind::row);
+  const auto update_row = BinaryId(platform::UuidKind::row);
+  const auto delete_row = BinaryId(platform::UuidKind::row);
   InsertCell(&tree,
              Cell(index_uuid,
                   "update-key",
                   update_row,
-                  UuidText(platform::UuidKind::row)));
+                  BinaryId(platform::UuidKind::row)));
   InsertCell(&tree,
              Cell(index_uuid,
                   "delete-key",
                   delete_row,
-                  UuidText(platform::UuidKind::row)));
+                  BinaryId(platform::UuidKind::row)));
 
   auto indexed_update = BaseStreamRequest(
       api::DmlRowLocatorStreamConsumer::update,
@@ -428,8 +422,8 @@ void TestUpdateDeleteFailClosedAndExactFallback() {
 }
 
 void TestIndexedPlanWithoutPhysicalTreeRefusesUnlessExplicitFallback() {
-  const std::string relation_uuid = UuidText(platform::UuidKind::object);
-  const std::string index_uuid = UuidText(platform::UuidKind::object);
+  const auto relation_uuid = BinaryId(platform::UuidKind::object);
+  const auto index_uuid = BinaryId(platform::UuidKind::object);
 
   auto indexed = BaseStreamRequest(
       api::DmlRowLocatorStreamConsumer::update,
@@ -463,6 +457,202 @@ void TestIndexedPlanWithoutPhysicalTreeRefusesUnlessExplicitFallback() {
           "explicit no-applicable-locator fallback evidence missing");
 }
 
+void TestBinaryIdentityAdmissionAndActualCacheLocator() {
+  auto request = BasePlanRequest(BinaryId(platform::UuidKind::object));
+  request.predicate_kind = "row_uuid_eq";
+  request.row_uuid = BinaryId(platform::UuidKind::row);
+  const auto refused = [](const api::DmlTargetAccessPlanRequest& bad) {
+    const auto plan = api::BuildDmlTargetAccessPlan(bad);
+    Require(!plan.ok && plan.database_uuid.is_nil() && plan.relation_uuid.is_nil() &&
+        plan.row_uuid.is_nil() && plan.index_uuid.is_nil() && plan.row_uuids.empty(),
+        "invalid identity published an executable target plan");
+  };
+  for (auto member : {&api::DmlTargetAccessPlanRequest::database_uuid,
+      &api::DmlTargetAccessPlanRequest::relation_uuid,
+      &api::DmlTargetAccessPlanRequest::row_uuid,
+      &api::DmlTargetAccessPlanRequest::index_uuid}) {
+    auto valid = request;
+    if (member == &api::DmlTargetAccessPlanRequest::index_uuid) {
+      valid.row_uuid = {}; valid.index_uuid = BinaryId(platform::UuidKind::object);
+      valid.predicate_kind = "unique_eq"; valid.index_unique = true;
+    }
+    Require(api::BuildDmlTargetAccessPlan(valid).ok, "identity matrix baseline refused");
+    for (unsigned version = 0; version < 16; ++version) if (version != 7) {
+      auto bad = valid; (bad.*member).bytes[6] = static_cast<platform::byte>(version << 4); refused(bad);
+    }
+    auto bad = valid; (bad.*member).bytes[8] = 0xc0; refused(bad);
+  }
+  auto bad = request; bad.row_uuid = {}; refused(bad);
+  bad = request; bad.row_uuids = {request.row_uuid}; refused(bad);
+  auto list = request; list.row_uuid = {}; list.predicate_kind = "row_uuid_in_list";
+  auto plan = api::BuildDmlTargetAccessPlan(list);
+  Require(plan.ok && plan.access_kind == api::DmlTargetAccessKind::row_uuid_list && plan.estimated_rows == 0,
+          "empty target list became a scan or fabricated singleton estimate");
+  auto stream = BaseStreamRequest(api::DmlRowLocatorStreamConsumer::delete_row, plan);
+  auto result = api::BuildDmlRowLocatorStream(stream);
+  Require(result.ok && result.locators.empty() && !result.table_scan_fallback,
+          "empty list stream performed a table scan");
+  auto pruned_empty = list;
+  pruned_empty.summary_prune.requested = true;
+  pruned_empty.summary_prune.summary_present = pruned_empty.summary_prune.predicate_supported = true;
+  pruned_empty.summary_prune.summary_generation = pruned_empty.summary_prune.relation_generation = 1;
+  const auto empty_summary_plan = api::BuildDmlTargetAccessPlan(pruned_empty);
+  Require(empty_summary_plan.ok && empty_summary_plan.access_kind == api::DmlTargetAccessKind::row_uuid_list &&
+          empty_summary_plan.estimated_rows == 0, "summary pruning overrode an empty target list");
+  list.row_uuids = {request.row_uuid, request.row_uuid}; refused(list);
+  list.row_uuids = {request.row_uuid, {}}; refused(list);
+  // The stream independently validates caller-supplied plan objects.
+  stream.access_plan.row_uuids = {request.row_uuid, {}};
+  result = api::BuildDmlRowLocatorStream(stream);
+  Require(!result.ok && result.locators.empty() && result.diagnostic.code == "CATALOG.INVALID_INPUT",
+          "forged plan published a partial list or unknown diagnostic");
+
+  // A requested row is not a successfully observed row.
+  request.row_uuid = BinaryId(platform::UuidKind::row);
+  for (unsigned repeat = 0; repeat < 2; ++repeat) {
+    plan = api::BuildDmlTargetAccessPlan(request);
+    Require(plan.ok && std::find(plan.evidence.begin(), plan.evidence.end(),
+        "hot_point_lookup_cache_lookup=miss") != plan.evidence.end(),
+        "planning admitted an unobserved row into the cache");
+  }
+  std::vector<std::string> evidence;
+  api::AdmitDmlHotPointLookupCacheSuccessfulRowLocator(request, BinaryId(platform::UuidKind::row), &evidence);
+  plan = api::BuildDmlTargetAccessPlan(request);
+  Require(std::find(plan.evidence.begin(), plan.evidence.end(), "hot_point_lookup_cache_lookup=miss") != plan.evidence.end(),
+          "different actual row poisoned singleton cache");
+  api::AdmitDmlHotPointLookupCacheSuccessfulRowLocator(request, request.row_uuid, &evidence);
+  plan = api::BuildDmlTargetAccessPlan(request);
+  Require(std::find(plan.evidence.begin(), plan.evidence.end(), "hot_point_lookup_cache_lookup=hit") != plan.evidence.end(),
+          "actual successful binary locator was not admitted");
+  const auto display = api::SerializeDmlTargetAccessPlanEvidence(plan);
+  Require(display.find(uuid::UuidToString(request.row_uuid)) == std::string::npos &&
+          display.find(std::string(reinterpret_cast<const char*>(request.row_uuid.bytes.data()), 16)) == std::string::npos,
+          "diagnostic labels exposed a UUID text or raw-key identity");
+
+  const auto index = BinaryId(platform::UuidKind::object);
+  const auto row = BinaryId(platform::UuidKind::row), version = BinaryId(platform::UuidKind::row);
+  auto tree = MakeTree(index); InsertCell(&tree, Cell(index, "key", row, version));
+  stream = BaseStreamRequest(api::DmlRowLocatorStreamConsumer::update,
+      IndexPlan(request.relation_uuid, index, "scalar_eq", false));
+  stream.physical_tree = &tree; stream.encoded_point_key = EncodedKey(index, "key");
+  result = api::BuildDmlRowLocatorStream(stream);
+  Require(result.ok && result.locators.size() == 1 && result.locators[0].row_uuid == row &&
+      result.locators[0].version_uuid == version && result.locators[0].index_uuid == index,
+      "physical index locator did not preserve exact raw identities");
+  stream.access_plan.index_uuid = BinaryId(platform::UuidKind::object);
+  result = api::BuildDmlRowLocatorStream(stream);
+  Require(!result.ok && result.locators.empty(), "physical tree from another index was admitted");
+  stream.access_plan.index_uuid = index;
+  Require(!tree.pages.empty() && !tree.pages.front().serialized.empty(), "physical corruption fixture missing page bytes");
+  tree.pages.front().serialized[0] ^= 1;
+  result = api::BuildDmlRowLocatorStream(stream);
+  Require(!result.ok && result.locators.empty() && result.diagnostic.native_source.has_value(),
+          "physical index corruption lost its native diagnostic or published partial locators");
+}
+
+void TestBinaryCacheKeyFramingAndDependencies() {
+  idx::HotPointLookupCacheKey key;
+  key.database_uuid = GeneratedUuid(platform::UuidKind::database);
+  key.object_uuid = GeneratedUuid(platform::UuidKind::object);
+  key.encoded_probe_key = std::string("key\0bytes", 9);
+  key.statistics_snapshot_id = "stats"; key.descriptor_set_digest = "descriptor";
+  key.index_definition_digest = "index"; key.security_policy_digest = "security";
+  key.redaction_policy_digest = "redaction"; key.access_policy_digest = "access";
+  key.collation_profile_digest = "collation";
+  key.catalog_epoch = key.index_epoch = key.statistics_epoch = key.security_epoch =
+      key.policy_epoch = key.object_epoch = key.compatibility_epoch = 1;
+  const auto bytes = idx::BuildHotPointLookupStableProbeKey(key);
+  Require(bytes.size() == 8 + 3 * 17 + 8 + 9 &&
+          std::equal(key.database_uuid.value.bytes.begin(), key.database_uuid.value.bytes.end(),
+                     reinterpret_cast<const platform::byte*>(bytes.data()) + 9),
+          "cache stable key does not carry framed binary identity");
+  std::string idx::HotPointLookupCacheKey::* const members[] = {
+    &idx::HotPointLookupCacheKey::statistics_snapshot_id, &idx::HotPointLookupCacheKey::descriptor_set_digest,
+    &idx::HotPointLookupCacheKey::index_definition_digest, &idx::HotPointLookupCacheKey::security_policy_digest,
+    &idx::HotPointLookupCacheKey::redaction_policy_digest, &idx::HotPointLookupCacheKey::access_policy_digest,
+    &idx::HotPointLookupCacheKey::collation_profile_digest};
+  const char* labels[] = {"stats_snapshot", "descriptor_set", "index_definition", "security_policy",
+                         "redaction_policy", "access_policy", "collation_profile"};
+  for (unsigned field = 0; field < 6; ++field) {
+    auto a = key, b = key;
+    a.*members[field] = std::string("x|") + labels[field + 1] + "=y";
+    a.*members[field + 1] = "z";
+    b.*members[field] = "x";
+    b.*members[field + 1] = std::string("y|") + labels[field + 1] + "=z";
+    Require(idx::BuildHotPointLookupCacheKey(a) != idx::BuildHotPointLookupCacheKey(b),
+            "cache key fields alias through embedded delimiters");
+  }
+  auto shortened = key; shortened.encoded_probe_key = "key";
+  Require(idx::BuildHotPointLookupCacheKey(shortened) != idx::BuildHotPointLookupCacheKey(key),
+          "embedded NUL truncated a cache key");
+  idx::AdaptiveHotPointLookupCache cache;
+  idx::HotPointLookupCacheEntry entry; entry.key = key;
+  idx::HotPointLookupCandidate candidate;
+  candidate.locator.table_uuid = key.object_uuid;
+  candidate.locator.row_uuid = GeneratedUuid(platform::UuidKind::row);
+  entry.candidates.push_back(candidate); entry.dependency_uuids.push_back(key.object_uuid);
+  Require(cache.Put(entry).admitted && cache.Lookup(key).cache_hit, "binary cache admission/reuse failed");
+  auto mismatched = entry; mismatched.candidates[0].locator.table_uuid = GeneratedUuid(platform::UuidKind::object);
+  Require(!cache.Put(mismatched).admitted, "foreign relation candidate entered cache");
+  mismatched = entry; mismatched.dependency_uuids[0].value.bytes[6] = 0x40;
+  Require(!cache.Put(mismatched).admitted, "non-v7 dependency entered cache");
+  mismatched = entry; mismatched.candidates[0].locator.version_uuid = GeneratedUuid(platform::UuidKind::row);
+  mismatched.candidates[0].locator.version_uuid.value.bytes[6] = 0x40;
+  Require(!cache.Put(mismatched).admitted, "non-v7 version candidate entered cache");
+  auto invalid = key; invalid.database_uuid.value.bytes[6] = 0x40;
+  Require(!cache.Lookup(invalid).cache_hit, "non-v7 cache lookup was admitted");
+  idx::HotPointLookupInvalidationEvent event;
+  event.event_kind = "catalog_alter"; event.dependency_uuid = key.object_uuid;
+  Require(cache.Invalidate(event).invalidated_count == 1, "binary dependency invalidation missed entry");
+  const auto invalidated = cache.Lookup(key);
+  Require(!invalidated.cache_hit && invalidated.entry &&
+      invalidated.entry->invalidation_dependency_uuid.value == key.object_uuid.value &&
+      invalidated.entry->invalidation_dependency_uuid.kind == key.object_uuid.kind,
+      "invalidation lost binary dependency identity");
+
+  for (const bool replace : {false, true}) {
+    auto next = entry;
+    next.candidates[0].locator.row_uuid = GeneratedUuid(platform::UuidKind::row);
+    if (!replace) next.key.encoded_probe_key = "different cache key at capacity";
+    std::size_t points = 0;
+    {
+      idx::AdaptiveHotPointLookupCache measured({1, 64, 64, 1});
+      Require(measured.Put(entry).admitted, "seed allocation-count cache");
+      allocation_attempts = 0;
+      allocations_before_failure = std::numeric_limits<std::ptrdiff_t>::max();
+      const auto inserted = measured.Put(next);
+      allocations_before_failure = -1;
+      points = allocation_attempts;
+      Require(inserted.admitted && points != 0, "measure actual cache publication allocations");
+    }
+    for (std::size_t point = 0; point < points; ++point) {
+      idx::AdaptiveHotPointLookupCache trial({1, 64, 64, 1});
+      Require(trial.Put(entry).admitted, "seed failure-atomic cache");
+      const auto before = trial.PartitionCounters(0);
+      bool threw = false;
+      allocation_attempts = 0; allocations_before_failure = static_cast<std::ptrdiff_t>(point);
+      try { (void)trial.Put(next); } catch (const std::bad_alloc&) { threw = true; }
+      allocations_before_failure = -1;
+      const auto after = trial.PartitionCounters(0);
+      Require(threw && after.puts == before.puts && after.entry_count == before.entry_count,
+              "allocation failure changed cache publication counters");
+      const auto retained = trial.Lookup(entry.key);
+      Require(retained.cache_hit && retained.entry &&
+          retained.entry->candidates[0].locator.row_uuid.value == candidate.locator.row_uuid.value,
+          "failed cache publication evicted or changed the previous locator");
+      if (!replace) Require(!trial.Lookup(next.key).cache_hit, "failed cache insertion published a locator");
+    }
+    std::cout << "cache_put replace=" << replace << " allocation_points=" << points << '\n';
+  }
+  idx::AdaptiveHotPointLookupCache at_capacity({1, 64, 64, 2});
+  auto other = entry; other.key.encoded_probe_key = "other at-capacity entry";
+  Require(at_capacity.Put(entry).admitted && at_capacity.Put(other).admitted, "seed full cache");
+  entry.candidates[0].locator.row_uuid = GeneratedUuid(platform::UuidKind::row);
+  Require(at_capacity.Put(entry).admitted && at_capacity.Lookup(other.key).cache_hit &&
+      at_capacity.PartitionCounters(0).entry_count == 2,
+      "replacement at capacity evicted an unrelated entry");
+}
+
 }  // namespace
 
 int main() {
@@ -471,5 +661,8 @@ int main() {
   TestMergeRowUuidAndIndexRangeOrdinalEvidence();
   TestUpdateDeleteFailClosedAndExactFallback();
   TestIndexedPlanWithoutPhysicalTreeRefusesUnlessExplicitFallback();
+  TestBinaryIdentityAdmissionAndActualCacheLocator();
+  TestBinaryCacheKeyFramingAndDependencies();
+  std::cout << "dml_binary_locator checks=" << checks << " failures=0\n";
   return EXIT_SUCCESS;
 }

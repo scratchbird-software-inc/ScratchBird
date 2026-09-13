@@ -42,13 +42,13 @@ struct DmlTargetSummaryPruneDescriptor {
 
 struct DmlTargetAccessPlanRequest {
   std::string mutation_kind = "dml.target_rows";
-  std::string database_uuid;
-  std::string relation_uuid;
+  EngineUuid database_uuid;
+  EngineUuid relation_uuid;
   std::string predicate_kind;
   std::string predicate_descriptor_digest;
-  std::string row_uuid;
-  std::vector<std::string> row_uuids;
-  std::string index_uuid;
+  EngineUuid row_uuid;
+  std::vector<EngineUuid> row_uuids;
+  EngineUuid index_uuid;
   std::string index_family = "btree";
   std::string security_policy_digest;
   std::string redaction_policy_digest;
@@ -84,12 +84,13 @@ struct DmlTargetAccessPlan {
   DmlTargetAccessKind access_kind = DmlTargetAccessKind::refused;
   std::string physical_access_kind;
   std::string executor_capability;
-  std::string relation_uuid;
+  EngineUuid database_uuid;
+  EngineUuid relation_uuid;
   std::string predicate_kind;
   std::string predicate_descriptor_digest;
-  std::string row_uuid;
-  std::vector<std::string> row_uuids;
-  std::string index_uuid;
+  EngineUuid row_uuid;
+  std::vector<EngineUuid> row_uuids;
+  EngineUuid index_uuid;
   std::uint64_t estimated_rows = 0;
   std::vector<std::string> diagnostics;
   std::vector<std::string> evidence;
@@ -99,7 +100,7 @@ const char* DmlTargetAccessKindName(DmlTargetAccessKind kind);
 DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& request);
 void AdmitDmlHotPointLookupCacheSuccessfulRowLocator(
     const DmlTargetAccessPlanRequest& request,
-    const std::string& actual_row_uuid,
+    const EngineUuid& actual_row_uuid,
     std::vector<std::string>* evidence);
 std::string SerializeDmlTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan);
 
