@@ -11,6 +11,7 @@
 #include "sblr/sblr_block_runtime.hpp"
 #include "internal_api/api_types.hpp"
 #include "blake3_digest.hpp"
+#include "../../src/core/common/crypto_random.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +31,10 @@ std::atomic<long> fail_after{-1};
 unsigned checks = 0, failures = 0, allocation_faults = 0;
 thread_local bool rng_armed=false;
 thread_local int rng_result=1, rng_prefix=16, rng_interceptions=0;
+thread_local bool rng_watch=false, rng_cleared=false;
+thread_local void* rng_scratch=nullptr;
+thread_local std::size_t rng_cleansed_bytes=0;
+thread_local int rng_requested=0;
 thread_local bool digest_armed=false;
 thread_local int digest_result=1, digest_interceptions=0;
 thread_local unsigned digest_length=32;
@@ -42,6 +47,11 @@ thread_local bool hmac_cleared=false;
 extern "C" void __real_OPENSSL_cleanse(void*,std::size_t);
 extern "C" void __wrap_OPENSSL_cleanse(void* bytes,std::size_t count) {
   __real_OPENSSL_cleanse(bytes,count);
+  if(bytes==rng_scratch) {
+    rng_cleansed_bytes=count;rng_cleared=true;
+    for(std::size_t i=0;i<count;++i)rng_cleared=rng_cleared&&static_cast<unsigned char*>(bytes)[i]==0;
+    rng_scratch=nullptr;
+  }
   if(bytes==hmac_scratch) {
     ++hmac_cleanses;hmac_cleared=count==EVP_MAX_MD_SIZE;
     for(std::size_t i=0;i<count;++i)hmac_cleared=hmac_cleared&&static_cast<unsigned char*>(bytes)[i]==0;
@@ -68,6 +78,8 @@ extern "C" int __wrap_EVP_Digest(const void* data,std::size_t count,unsigned cha
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   if(!rng_armed)return __real_RAND_bytes(out,count);
+  if(rng_watch)rng_scratch=out;
+  rng_requested=count;
   rng_armed=false;++rng_interceptions;
   for(int i=0;i<count&&i<rng_prefix;++i)out[i]=static_cast<unsigned char>(0xa0+i);
   return rng_result;
@@ -930,6 +942,108 @@ void CryptoHmac() {
   }
 }
 
+void CryptoRandomBytes() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto refuse=[](const f::FunctionCallResult& result,const char* code) {
+    return !result.result.ok()&&result.result.scalar_values.empty()&&!result.result.diagnostics.empty()&&result.result.diagnostics[0].diagnostic_id==code;
+  };
+  const auto arm=[](int result,int prefix) {
+    rng_armed=true;rng_result=result;rng_prefix=prefix;rng_interceptions=0;rng_requested=0;
+    rng_watch=true;rng_scratch=nullptr;rng_cleared=false;rng_cleansed_bytes=0;
+  };
+  const auto disarm=[] {rng_armed=false;rng_watch=false;};
+  // Refusal diagnostics can issue a fresh UUID and legitimately request16
+  // entropy bytes on a new clock tick. That is not random-byte result work.
+  const auto diagnostic_entropy_only=[] {return rng_interceptions==0||(rng_interceptions==1&&rng_requested==16);};
+  for(const char* name:{"sb.crypto.gen_random_bytes","sb.crypto.gen_random_bytes_n"}) {
+    const auto* entry=package.registry.Lookup(name);Check(entry!=nullptr,"random-byte function has actual registry identity");if(!entry)continue;
+    f::FunctionCallRequest request;request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"random-byte alias and base bind actual binary identities");
+    request.context.sblr_context.deterministic_random_bytes_hex=std::string(2048,'f');
+    for(unsigned length=1;length<=1024;++length) {
+      request.arguments={{"count",f::MakeUint64Value("uint32",length)}};
+      if(length%2==0){request.arguments[0].value.text_value.clear();request.arguments[0].value.encoded_value.clear();}
+      arm(1,static_cast<int>(length));
+      const auto result=f::DispatchCryptoHashFunction(request);disarm();
+      Check(result.result.ok()&&result.result.scalar_values.size()==1&&rng_interceptions==1&&rng_requested==static_cast<int>(length),"every admitted random-byte length requests actual entropy despite context override");
+      if(!result.result.scalar_values.empty()) {
+        const auto& value=result.result.scalar_values[0];bool exact=value.binary_value.size()==length;
+        for(std::size_t i=0;i<value.binary_value.size();++i)exact=exact&&value.binary_value[i]==static_cast<unsigned char>(0xa0+i);
+        Check(exact&&!value.is_null&&value.descriptor_id=="binary"&&value.payload_kind==s::SblrValuePayloadKind::binary&&value.text_value.empty()&&value.encoded_value.empty(),"random-byte publication is exact binary entropy, never the request hex override");
+      }
+      Check(rng_scratch==nullptr&&rng_cleared&&rng_cleansed_bytes==1024,"random-byte success cleanses all owned entropy scratch");
+    }
+    for(unsigned length:{1u,16u,255u,1024u})for(int result:{0,-1})for(unsigned prefix:{0u,1u,length/2,length}) {
+      request.arguments={{"count",f::MakeUint64Value("uint32",length)}};arm(result,static_cast<int>(prefix));
+      const auto failed=f::DispatchCryptoHashFunction(request);disarm();
+      Check(refuse(failed,"CRYPTO.RNG.UNAVAILABLE")&&rng_interceptions==1,"partial failed entropy produces no binary prefix or fallback");
+      Check(rng_scratch==nullptr&&rng_cleared&&rng_cleansed_bytes==length,"Core shared entropy helper clears failed provider output");
+    }
+    for(auto length:{std::uint64_t{0},std::uint64_t{1025},std::uint64_t{0xffffffff},std::uint64_t{0x100000000},~std::uint64_t{0}}) {
+      request.arguments={{"count",f::MakeUint64Value("uint32",length)}};arm(1,1024);
+      Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.RNG.INVALID_LENGTH")&&diagnostic_entropy_only(),"random-byte invalid lengths never generate result entropy or narrow uint64");disarm();
+    }
+    for(unsigned fault=0;fault<15;++fault) {
+      auto count=f::MakeUint64Value("uint32",32);
+      if(fault==0)count.descriptor_id="uint64";
+      if(fault==1)count=f::MakeInt64Value("int32",16);
+      if(fault==2)count=f::MakeTextValue("character","16");
+      if(fault==3)count.payload_kind=s::SblrValuePayloadKind::text;
+      if(fault==4)count.has_uint64_value=false;
+      if(fault==5)count.has_int64_value=true;
+      if(fault==6)count.has_real64_value=true;
+      if(fault==7)count.uuid_value=Base();
+      if(fault==8)count.binary_value={16};
+      if(fault==9)count.charset_name="UTF8";
+      if(fault==10)count.collation_name="binary";
+      if(fault==11)count.text_value="15";
+      if(fault==12)count.encoded_value="016";
+      if(fault==13)count.is_null=true;
+      if(fault==14){count=f::MakeNullValue("uint32");count.text_value="secret-count";}
+      request.arguments={{"count",count}};arm(1,16);
+      Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.RNG.INVALID_LENGTH")&&diagnostic_entropy_only(),"malformed random-byte count carrier is never parsed/coerced");disarm();
+    }
+    for(unsigned arity:{0u,2u}) {
+      request.arguments.resize(arity);arm(1,16);
+      Check(refuse(f::DispatchCryptoHashFunction(request),"CRYPTO.RNG.INVALID_LENGTH")&&diagnostic_entropy_only(),"random-byte count is mandatory for both aliases");disarm();
+    }
+    request.arguments={{"count",f::MakeNullValue("uint32")}};arm(1,16);
+    const auto null=f::DispatchCryptoHashFunction(request);disarm();
+    Check(null.result.ok()&&null.result.scalar_values.size()==1&&null.result.scalar_values[0].is_null&&null.result.scalar_values[0].descriptor_id=="binary"&&rng_interceptions==0,"random-byte strict uint32 NULL is binary NULL without entropy");
+    request.arguments={{"count",f::MakeUint64Value("uint32",32)}};
+    std::vector<std::uint8_t> previous;
+    for(unsigned i=0;i<16;++i) {
+      const auto result=f::DispatchCryptoHashFunction(request);
+      Check(result.result.ok()&&result.result.scalar_values.size()==1&&result.result.scalar_values[0].binary_value.size()==32,"real unmodified Core RNG returns requested bytes");
+      if(!result.result.scalar_values.empty()) {
+        const auto& bytes=result.result.scalar_values[0].binary_value;
+        Check(bytes!=previous&&bytes!=std::vector<std::uint8_t>(32,0xff),"real random-byte generation does not replay prior bytes or context fixture");previous=bytes;
+      }
+    }
+    for(bool failure:{false,true}) {
+      unsigned faults=0;bool completed=false;
+      for(long budget=0;budget<100;++budget) {
+        arm(failure?0:1,failure?13:32);fail_after=budget;
+        try {const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;
+          Check(failure?refuse(result,"CRYPTO.RNG.UNAVAILABLE"):(result.result.ok()&&result.result.scalar_values.size()==1&&result.result.scalar_values[0].binary_value.size()==32),"random-byte allocation sweep reaches truthful success/failure publication");completed=true;
+        }catch(const std::bad_alloc&){fail_after=-1;++faults;}
+        disarm();
+        Check(rng_scratch==nullptr&&(rng_interceptions==0||rng_cleared),"entropy scratch cleared on success and diagnostic allocation unwind");
+        Check(request.arguments[0].value.uint64_value==32,"random-byte allocation failure leaves caller count intact");
+        if(completed)break;
+      }
+      allocation_faults+=faults;Check(completed&&faults>0,"random-byte success and failure allocation positions exercised");
+    }
+  }
+  arm(1,16);
+  Check(scratchbird::core::FillCryptographicRandomBytes(nullptr,0)&&!scratchbird::core::FillCryptographicRandomBytes(nullptr,1)&&rng_interceptions==0,"Core entropy validates null extents without a provider call");disarm();
+  for(unsigned size:{1u,16u,1024u}) {
+    std::vector<unsigned char> bytes(size,0x55);arm(0,static_cast<int>(size/2));fail_after=0;
+    const bool filled=scratchbird::core::FillCryptographicRandomBytes(bytes.data(),bytes.size());fail_after=-1;disarm();
+    Check(!filled&&std::all_of(bytes.begin(),bytes.end(),[](unsigned char ch){return ch==0;}),"shared Core entropy clears entire preexisting destination after partial provider failure without allocating");
+  }
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -949,6 +1063,7 @@ int main() {
   CryptoFixedDigests();
   Blake3KnownAnswers();
   CryptoHmac();
+  CryptoRandomBytes();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

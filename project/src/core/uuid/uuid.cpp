@@ -8,6 +8,7 @@
 
 #include "uuid.hpp"
 #include "diagnostic_identity.hpp"
+#include "../common/crypto_random.hpp"
 
 #include <algorithm>
 #include <array>
@@ -103,7 +104,7 @@ std::optional<std::array<byte, 16>> RandomBytes16() {
   // Use the project's cryptographic backend, including its OS entropy and
   // fork/reseed handling. Never substitute a locally seeded PRNG. A failed
   // provider may have partially written bytes; none may escape on failure.
-  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) return std::nullopt;
+  if (!scratchbird::core::FillCryptographicRandomBytes(bytes.data(), bytes.size())) return std::nullopt;
   return bytes;
 }
 

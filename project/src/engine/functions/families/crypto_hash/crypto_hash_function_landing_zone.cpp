@@ -11,6 +11,7 @@
 #include "common/function_result_helpers.hpp"
 #include "uuid.hpp"
 #include "blake3_digest.hpp"
+#include "../../../../core/common/crypto_random.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
@@ -343,29 +344,35 @@ FunctionCallResult HmacFunction(const FunctionCallRequest& request) {
   return MakeFunctionSuccess(request,{MakeBinaryValue("binary",{out.bytes.begin(),out.bytes.begin()+out_len})});
 }
 
-FunctionCallResult RandomBytesFunction(const FunctionCallRequest& request, bool requires_length) {
-  if ((requires_length && request.arguments.size() != 1) || (!requires_length && request.arguments.size() > 1)) {
-    return RefuseFunctionInvalidInput(request, "gen_random_bytes expects an optional byte count");
+FunctionCallResult RandomBytesFunction(const FunctionCallRequest& request) {
+  const auto invalid=[&] {return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "CRYPTO.RNG.INVALID_LENGTH", "random-byte count must be one uint32 in 1..1024");};
+  if(request.arguments.size()!=1)return invalid();
+  const auto& count=request.arguments[0].value;
+  using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+  if(count.descriptor_id!="uint32"||!count.binary_value.empty()||!count.uuid_value.is_nil()||
+     !count.charset_name.empty()||!count.collation_name.empty()||count.has_int64_value||count.has_real64_value)return invalid();
+  if(count.is_null) {
+    if(count.payload_kind!=Kind::none||count.has_uint64_value||!count.text_value.empty()||!count.encoded_value.empty())return invalid();
+    return MakeFunctionSuccess(request,{MakeNullValue("binary")});
   }
-  std::uint64_t requested = requires_length ? 0 : 16;
-  if (!request.arguments.empty()) {
-    if (IsSqlNull(request.arguments[0].value) || !ParseUint64(request.arguments[0].value, &requested)) {
-      return RefuseFunctionInvalidInput(request, "gen_random_bytes byte count must be a non-null uint64");
-    }
-  }
-  if (requested > kMaxRandomBytes) return RefuseFunctionInvalidInput(request, "gen_random_bytes byte count exceeds scalar budget");
-  std::vector<std::uint8_t> bytes;
-  if (!request.context.sblr_context.deterministic_random_bytes_hex.empty()) {
-    bool ok = false;
-    bytes = HexPrefixBytes(request.context.sblr_context.deterministic_random_bytes_hex, static_cast<std::size_t>(requested), &ok);
-    if (!ok) return RefuseFunctionInvalidInput(request, "deterministic random byte override is missing requested hex bytes");
-  } else {
-    bytes.resize(static_cast<std::size_t>(requested));
-    if (!bytes.empty() && RAND_bytes(reinterpret_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size())) != 1) {
-      return DependencyUnavailable(request, "OpenSSL RAND_bytes did not provide random bytes");
-    }
-  }
-  return MakeFunctionSuccess(request, {MakeBinaryValue("binary", std::move(bytes))});
+  // Native integer bits are authoritative. The current scalar helper's decimal
+  // mirrors may be absent or exact; they are never parsed or used as a count.
+  if(count.payload_kind!=Kind::unsigned_integer||!count.has_uint64_value||
+     count.uint64_value<1||count.uint64_value>kMaxRandomBytes)return invalid();
+  const auto decimal=std::to_string(count.uint64_value);
+  if((!count.text_value.empty()&&count.text_value!=decimal)||
+     (!count.encoded_value.empty()&&count.encoded_value!=decimal))return invalid();
+  struct Scratch {
+    std::array<unsigned char,kMaxRandomBytes> bytes{};
+    ~Scratch(){OPENSSL_cleanse(bytes.data(),bytes.size());}
+  } entropy;
+  const auto size=static_cast<std::size_t>(count.uint64_value);
+  if(!scratchbird::core::FillCryptographicRandomBytes(entropy.bytes.data(),size))return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+      "CRYPTO.RNG.UNAVAILABLE", "Core cryptographic RNG did not provide random bytes");
+  return MakeFunctionSuccess(request,{MakeBinaryValue("binary",{entropy.bytes.begin(),entropy.bytes.begin()+size})});
 }
 
 FunctionCallResult RandomUuidFunction(const FunctionCallRequest& request) {
@@ -657,8 +664,7 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
     return DigestBytes(EVP_sha3_512(), bytes, 64);
   });
   if (IdIs(id, {"hmac", "hmac_value_key_algo"})) return HmacFunction(request);
-  if (IdIs(id, {"gen_random_bytes"})) return RandomBytesFunction(request, false);
-  if (IdIs(id, {"gen_random_bytes_n"})) return RandomBytesFunction(request, true);
+  if (IdIs(id, {"gen_random_bytes", "gen_random_bytes_n"})) return RandomBytesFunction(request);
   if (IdIs(id, {"gen_random_uuid"})) return RandomUuidFunction(request);
   if (IdIs(id, {"gen_salt", "gen_salt_algo"})) return GenSaltFunction(request);
   if (IdIs(id, {"scrypt"})) return ScryptFunction(request);
