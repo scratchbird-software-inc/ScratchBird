@@ -283,6 +283,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_test(NAME sbsql_sblr_alignment_checkpoint_allocation
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-allocation-only)
+  set_tests_properties(sbsql_sblr_alignment_checkpoint_allocation PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_allocation;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE

@@ -1679,6 +1679,131 @@ void CanonicalCheckpointCatalogRoots() {
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies persisted catalog and feature roots");
   }
 }
+Bytes AllocationOracle(const page::NativeAllocationMap& map) {
+  auto common=RootExample();common.header=map.header;
+  auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  std::copy_n("SBABM001",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,256);
+  const auto bitmap=(map.states.size()+1)/2,at=(384+bitmap+7)&~std::size_t(7);
+  Number(b,140,4,at+128*map.records.size());PutUuid(b,144,map.object_uuid);
+  Number(b,160,8,map.map_generation);Number(b,168,8,map.capacity_generation);
+  Number(b,176,8,map.total_pages);Number(b,184,8,map.first_page);Number(b,192,8,map.states.size());
+  PutUuid(b,200,map.creator_transaction_uuid);Number(b,216,8,map.creator_local_transaction_id);
+  Check(!map.next,"independent one-image allocation fixture");
+  Number(b,304,4,bitmap);Number(b,308,4,map.records.size());
+  for(std::size_t i=0;i<map.states.size();++i)b[384+i/2]|=static_cast<byte>(map.states[i])<<(4*(i%2));
+  for(std::size_t i=0;i<map.records.size();++i){const auto& r=map.records[i];const auto pos=at+128*i;
+    Number(b,pos,8,r.page_number);PutUuid(b,pos+8,r.allocation_uuid);PutUuid(b,pos+24,r.page_uuid);
+    PutUuid(b,pos+40,r.owner_uuid);PutUuid(b,pos+56,r.creator_transaction_uuid);
+    Number(b,pos+72,8,r.creator_local_transaction_id);Number(b,pos+80,8,r.page_generation);
+    Number(b,pos+88,8,r.reuse_horizon);Number(b,pos+96,4,r.page_type);}
+  Check(SHA256(b.data(),b.size(),b.data()+312)!=nullptr,"independent allocation image seal");return b;
+}
+void CanonicalCheckpointAllocation() {
+  using E=db::NativeCheckpointError;using S=page::NativeAllocationState;
+  for(unsigned profile=0;profile<5;++profile){Fixture fixture;disk::FileDevice device;
+    const auto path=(fixture.root/"checkpoint-allocation").string();auto zero=Example(profile);
+    zero.free_pages=zero.preallocated_pages=0;
+    auto inventory=InventoryExample(profile);inventory.inventory.next_local_transaction_id=18;
+    inventory.inventory.next_commit_sequence=2;
+    auto& original=inventory.inventory.entries.front();original.identity.local_id=mga::MakeLocalTransactionId(16);
+    original.identity.transaction_uuid.value=Id(99);
+    auto creator=original;creator.identity.local_id=mga::MakeLocalTransactionId(17);creator.identity.transaction_uuid.value=Id(98);
+    creator.state=mga::TransactionState::committed;creator.commit_sequence=1;inventory.inventory.entries.push_back(creator);
+    auto checkpoint=CheckpointExample(profile);
+    page::NativeAllocationMap map;map.header={sizes[profile],3,Id(1),Id(2),Id(70),13,103,0,Profile(profile)};
+    map.object_uuid=Id(43);map.map_generation=5;map.capacity_generation=6;map.total_pages=64;
+    map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned number:{0u,13u,14u,19u}){
+      map.states[number]=S::allocated;page::NativeAllocationRecord r;
+      r.page_number=number;r.allocation_uuid=Id(static_cast<byte>(120+number));
+      r.creator_transaction_uuid=Id(99);r.creator_local_transaction_id=16;
+      if(number==0){r.page_uuid=zero.page_uuid;r.page_generation=zero.page_generation;r.page_type=1;r.owner_uuid=Id(2);}
+      if(number==13){r.page_uuid=map.header.page_uuid;r.page_generation=map.header.page_generation;r.page_type=3;r.owner_uuid=map.object_uuid;}
+      if(number==14){r.page_uuid=inventory.header.page_uuid;r.page_generation=inventory.header.page_generation;r.page_type=0x301;r.owner_uuid=inventory.object_uuid;}
+      if(number==19){r.page_uuid=checkpoint.header.page_uuid;r.page_generation=checkpoint.header.page_generation;r.page_type=0x300;r.owner_uuid=checkpoint.object_uuid;}
+      map.records.push_back(r);
+    }
+    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own checkpoint allocation fixture");
+    const byte padding=0;Check(device.WriteAt(64*sizes[profile]-1,&padding,1).ok(),"actual checkpoint allocation extent");
+    const auto persist=[&](const auto& inv,const auto& allocation,const auto& z,auto cp,u64 oit=16,u64 oat=16,bool stale_digest=false){
+      const auto inv_bytes=InventoryOracle(inv,oit,oat,oat),map_bytes=AllocationOracle(allocation),zero_bytes=Oracle(z);
+      cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;
+      Check(SHA256(inv_bytes.data(),inv_bytes.size(),cp.roots[0].sha256.data())!=nullptr,"independent inventory binding");
+      auto& target=cp.roots[3];target.page={Id(2),13,103,Profile(profile)};target.object_uuid=Id(43);
+      const auto expected=stale_digest?AllocationOracle(map):map_bytes;
+      Check(SHA256(expected.data(),expected.size(),target.sha256.data())!=nullptr,"independent allocation head binding");
+      const auto cp_bytes=CheckpointOracle(cp);
+      for(const auto& [number,bytes]:std::vector<std::pair<u64,const Bytes*>>{{0,&zero_bytes},{13,&map_bytes},{14,&inv_bytes},{19,&cp_bytes}}){
+        const auto written=device.WriteAt(number*sizes[profile],bytes->data(),bytes->size());
+        Check(written.ok()&&written.bytes_transferred==bytes->size(),"persist exact checkpoint allocation fixture image");}
+      Check(device.Sync().ok(),"sync actual checkpoint allocation fixture");
+    };
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
+    const u64 budget=3*sizes[profile];
+    const auto read=[&](u64 limit){return db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.checkpoint_inventory.checkpoint&&
+      r.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint_inventory.inventory.publication_base&&
+      r.checkpoint_inventory.retained_image_bytes==0&&r.allocation.pages.empty()&&r.retained_image_bytes==0&&
+      r.allocation.retained_image_bytes==0&&std::all_of(r.allocation.state_counts.begin(),r.allocation.state_counts.end(),[](u64 n){return n==0;}),
+      "checkpoint allocation failure exposes no authority prefix");};
+    persist(inventory,map,zero,checkpoint);reads=0;track_reads=true;count_allocations=true;observed_allocations=0;
+    auto result=read(budget);count_allocations=false;track_reads=false;const auto allocation_count=observed_allocations;const auto read_count=reads;
+    Check(result.ok()&&result.retained_image_bytes==budget&&result.allocation.pages.size()==1&&
+      result.allocation.pages[0].bytes==AllocationOracle(map)&&result.allocation.state_counts[2]==4&&
+      result.allocation.state_counts[6]==60&&result.checkpoint_inventory.inventory.entries.size()==2&&
+      !result.checkpoint_inventory.inventory.publication_base,"actual current checkpoint allocation and active original creator binding");
+    result=read(budget-1);empty(result);Check(result.error==E::allocation_failure&&
+      result.allocation_error==page::NativeAllocationError::resource_exhausted,"aggregate allocation budget boundary");
+    for(unsigned fault=1;fault<=3;++fault){full_digest_fault=fault;result=read(budget);
+      Check(full_digest_fault==0&&result.error==E::hash_failure,"checkpoint inventory allocation digest provider failure");empty(result);}
+    for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;result=read(budget);track_reads=false;read_fault=0;empty(result);}
+    if(profile==0){bool success=false;
+      for(unsigned long n=0;n<=allocation_count;++n){allocation_budget=static_cast<long>(n);result=read(budget);allocation_budget=-1;
+        if(result.ok()){success=true;break;}empty(result);}
+      Check(success,"all measured checkpoint allocation fault positions");
+      std::cout<<"checkpoint allocation fault positions="<<allocation_count<<std::endl;
+    }
+    for(unsigned mutation=0;mutation<5;++mutation){auto altered=map;
+      if(mutation==0)altered.creator_transaction_uuid=Id(90);
+      if(mutation==1){altered.creator_transaction_uuid=Id(99);altered.creator_local_transaction_id=16;}
+      if(mutation==2)altered.records.back().creator_transaction_uuid=Id(90);
+      if(mutation==3)altered.records.back().creator_local_transaction_id=15;
+      if(mutation==4)altered.creator_local_transaction_id=18;
+      persist(inventory,altered,zero,checkpoint);result=read(budget);empty(result);
+      Check(result.error==(mutation==1?E::allocation_creator_not_committed:
+        mutation==2||mutation==3?E::allocation_record_creator_mismatch:E::allocation_creator_mismatch),"exact map/original creator refusal");
+    }
+    auto altered=map;altered.capacity_generation++;persist(inventory,altered,zero,checkpoint,16,16,true);
+    result=read(budget);empty(result);Check(result.error==E::invalid_integrity,"resealed map cannot evade checkpoint head digest");
+    for(unsigned mutation=0;mutation<3;++mutation){auto z=zero;
+      if(mutation==0)z.root_set_generation++;if(mutation==1)z.roots[8].page_generation++;
+      if(mutation==2)z.roots[2].object_uuid=Id(90);
+      persist(inventory,map,z,checkpoint);result=read(budget);empty(result);
+      Check(result.error==E::binding_mismatch,"only actual current checkpoint allocation roots can bind");
+    }
+    for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::limbo,
+        mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal,mga::TransactionState::committed}){
+      auto inv=inventory;auto& e=inv.inventory.entries.front();e.state=state;
+      if(state==mga::TransactionState::committed){e.commit_sequence=1;inv.inventory.entries[1].commit_sequence=2;inv.inventory.next_commit_sequence=3;}
+      const bool final=state==mga::TransactionState::committed||state==mga::TransactionState::rolled_back;
+      const u64 oit=final?18:16,oat=(final||state==mga::TransactionState::failed_terminal)?18:16;
+      persist(inv,map,zero,checkpoint,oit,oat);Check(read(budget).ok(),"original transaction outcome does not discard retained allocation history");
+      if(state==mga::TransactionState::committed||state==mga::TransactionState::rolled_back||state==mga::TransactionState::failed_terminal){
+        e.archived_from_state=state;e.state=mga::TransactionState::archived;
+        persist(inv,map,zero,checkpoint,18,18);result=read(budget);
+        Check(result.ok(),"archived original allocation identity preserved");
+        auto archived_map=map;archived_map.creator_transaction_uuid=Id(99);archived_map.creator_local_transaction_id=16;
+        persist(inv,archived_map,zero,checkpoint,18,18);result=read(budget);
+        if(state==mga::TransactionState::committed)Check(result.ok(),"archived committed map creator admitted");
+        else{empty(result);Check(result.error==E::allocation_creator_not_committed,"archived noncommitted map creator refused");}
+      }
+    }
+    persist(inventory,map,zero,checkpoint);
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"reopen actual checkpoint allocation filespace");
+    Check(read(budget).ok()&&device.read_only(),"current allocation reader preserves owned read-only device");
+  }
+}
+
 void CanonicalCheckpointHistory() {
   using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice first,second;
   const auto path1=(fixture.root/"history-first").string(),path2=(fixture.root/"history-second").string();
@@ -2056,6 +2181,10 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-allocation-only") {
+    try {CanonicalCheckpointAllocation();std::cout<<"checkpoint allocation checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==4&&std::string_view(argv[1])=="--checkpoint-relation-probe") {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;
     if(!first.Open((dir/"index").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((dir/"data").string(),disk::FileOpenMode::open_existing_read_only).ok()

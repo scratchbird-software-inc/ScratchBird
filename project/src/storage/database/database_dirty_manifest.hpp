@@ -15,6 +15,7 @@
 #include "filespace_page_zero.hpp"
 #include "transaction_inventory_page.hpp"
 #include "catalog_page.hpp"
+#include "native_allocation_map.hpp"
 
 #include <array>
 #include <optional>
@@ -63,7 +64,9 @@ enum class NativeCheckpointError {
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
   binding_mismatch, io_failure, encrypted_requires_crypto_authority,
   incomplete, inventory_failure, inventory_mismatch, creator_not_committed,
-  history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed
+  history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed,
+  allocation_failure, allocation_creator_mismatch, allocation_creator_not_committed,
+  allocation_record_creator_mismatch
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -111,6 +114,25 @@ struct NativeCheckpointCatalogResult {
         && !catalogs.empty() && feature_root_index < catalogs.size();
   }
 };
+
+struct NativeCheckpointAllocationResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeAllocationError allocation_error =
+      scratchbird::storage::page::NativeAllocationError::none;
+  NativeCheckpointInventoryResult checkpoint_inventory;
+  scratchbird::storage::page::NativeAllocationChainResult allocation;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept {
+    return error == NativeCheckpointError::none && checkpoint_inventory.ok() && allocation.ok();
+  }
+};
+// MGA-CURRENT-CHECKPOINT-ALLOCATION-BINDING-001. Actual current primary roots,
+// map digest and inventory creator binding; no reuse grant or publication base.
+NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
 // Exact checkpoint/inventory and catalog/feature image/creator binding.
 // Not leaf/index serving, snapshot admission, whole-root selection or a CAS base.
 NativeCheckpointCatalogResult VerifyNativeCheckpointCatalogRootsFromOpenDevices(
