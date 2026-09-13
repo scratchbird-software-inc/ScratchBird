@@ -14,6 +14,7 @@
 #include "row_version.hpp"
 #include "runtime_platform.hpp"
 #include "transaction_inventory.hpp"
+#include "transaction_snapshot.hpp"
 
 #include <string>
 #include <vector>
@@ -94,6 +95,10 @@ struct PhysicalMgaCowReadRequest {
   scratchbird::transaction::mga::VisibilitySnapshot visibility_snapshot;
   scratchbird::transaction::mga::TransactionIdentity reader_identity;
   bool use_latest_committed_snapshot = true;
+  // Borrowed engine-owned pin. When present, raw visibility fields must be
+  // default/empty and latest-committed override must be disabled. The pin,
+  // bound to reader_identity in the native inventory, supplies visibility.
+  const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr;
 };
 
 struct PhysicalMgaCowReadRow {
@@ -207,7 +212,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     u64 page_number,
     const scratchbird::transaction::mga::VisibilitySnapshot& visibility_snapshot,
     bool use_latest_committed_snapshot,
-    const scratchbird::transaction::mga::TransactionIdentity& reader_identity = {});
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity = {},
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin = nullptr);
 
 DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                                               std::string diagnostic_code,

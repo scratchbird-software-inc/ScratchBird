@@ -8,6 +8,7 @@
 
 #include "row_version.hpp"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -321,6 +322,16 @@ VisibilityResult EvaluateVisibilityImpl(const RowVersionMetadata& metadata,
   if ((snapshot.visible_through_local_transaction_id_is_boundary ||
        snapshot.visible_through_local_transaction_id != kInvalidLocalTransactionId) &&
       metadata.identity.creator_transaction.local_id.value > snapshot.visible_through_local_transaction_id) {
+    result.decision = VisibilityDecision::invisible;
+    return result;
+  }
+
+  const auto creator = metadata.identity.creator_transaction.local_id.value;
+  const auto excluded = [creator](const auto& values) {
+    return std::find(values.begin(), values.end(), creator) != values.end();
+  };
+  if (excluded(snapshot.active_excluded_local_transaction_ids) ||
+      excluded(snapshot.in_doubt_excluded_local_transaction_ids)) {
     result.decision = VisibilityDecision::invisible;
     return result;
   }

@@ -13,6 +13,7 @@
 #include "uuid.hpp"
 
 #include <string>
+#include <vector>
 
 namespace scratchbird::transaction::mga {
 
@@ -101,6 +102,10 @@ struct VisibilitySnapshot {
   bool visible_through_local_transaction_id_is_boundary = false;
   bool allow_reader_own_uncommitted = true;
   bool recovery_context = false;
+  // Immutable exclusions captured by the snapshot owner, not reconstructed
+  // from a later inventory after an excluded transaction has committed.
+  std::vector<u64> active_excluded_local_transaction_ids;
+  std::vector<u64> in_doubt_excluded_local_transaction_ids;
 };
 
 struct RowIdentityResult {

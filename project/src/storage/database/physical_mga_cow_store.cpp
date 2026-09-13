@@ -1443,7 +1443,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
   }
   return ReadPhysicalMgaCowRowsFromOpenDevice(
       device, request.relation_uuid, request.page_number,
-      request.visibility_snapshot, request.use_latest_committed_snapshot, request.reader_identity);
+      request.visibility_snapshot, request.use_latest_committed_snapshot, request.reader_identity,
+      request.snapshot_pin);
 }
 
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
@@ -1452,7 +1453,8 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     u64 page_number,
     const VisibilitySnapshot& visibility_snapshot,
     bool use_latest_committed_snapshot,
-    const scratchbird::transaction::mga::TransactionIdentity& reader_identity) {
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity,
+    const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin) {
   PhysicalMgaCowReadRequest request;
   request.database_path = device.path();
   request.relation_uuid = relation_uuid;
@@ -1460,6 +1462,7 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
   request.visibility_snapshot = visibility_snapshot;
   request.reader_identity = reader_identity;
   request.use_latest_committed_snapshot = use_latest_committed_snapshot;
+  request.snapshot_pin = snapshot_pin;
   const auto common = ValidateCommonRequest<PhysicalMgaCowReadResult>(
       request.database_path, request.relation_uuid, request.page_number);
   if (!common.ok()) {
@@ -1471,12 +1474,21 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
       reader_identity.scope != scratchbird::transaction::mga::TransactionScope::unknown;
   if ((reader_supplied &&
        (!reader_identity.local_id.valid() ||
-        reader_identity.local_id.value != visibility_snapshot.reader_transaction.value ||
+        (!snapshot_pin && reader_identity.local_id.value != visibility_snapshot.reader_transaction.value) ||
         !IsTypedEngineIdentity(reader_identity.transaction_uuid, UuidKind::transaction) ||
         reader_identity.scope != scratchbird::transaction::mga::TransactionScope::local_node)) ||
       (!reader_supplied && visibility_snapshot.reader_transaction.value != 0))
     return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
         "storage.physical_mga_cow.reader_identity_invalid");
+  if (snapshot_pin && (!reader_supplied || use_latest_committed_snapshot ||
+      visibility_snapshot.reader_transaction.value != 0 ||
+      visibility_snapshot.visible_through_local_transaction_id != 0 ||
+      visibility_snapshot.visible_through_local_transaction_id_is_boundary ||
+      !visibility_snapshot.allow_reader_own_uncommitted || visibility_snapshot.recovery_context ||
+      !visibility_snapshot.active_excluded_local_transaction_ids.empty() ||
+      !visibility_snapshot.in_doubt_excluded_local_transaction_ids.empty()))
+    return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.snapshot_pin_request_invalid");
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowReadResult>(context.status,
@@ -1498,15 +1510,34 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
           "storage.physical_mga_cow.reader_identity_mismatch");
   }
 
+  VisibilitySnapshot snapshot = request.visibility_snapshot;
+  if (snapshot_pin) {
+    const auto resolved = snapshot_pin->Resolve();
+    if (!resolved.ok())
+      return Propagate<PhysicalMgaCowReadResult>(resolved.status, resolved.diagnostic);
+    const auto& descriptor = resolved.descriptor;
+    const auto reader = LookupLocalTransaction(loaded_inventory.inventory, reader_identity.local_id);
+    if (!SameUuid(descriptor.owning_transaction_uuid, reader_identity.transaction_uuid) ||
+        descriptor.owning_transaction.value != reader_identity.local_id.value ||
+        loaded_inventory.inventory.next_local_transaction_id <
+            descriptor.publication_inventory_next_local_transaction_id ||
+        !reader.ok() || (reader.entry.state != TransactionState::active &&
+                         reader.entry.state != TransactionState::read_only_active))
+      return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.snapshot_pin_owner_mismatch");
+    snapshot.reader_transaction = descriptor.owning_transaction;
+    snapshot.visible_through_local_transaction_id = descriptor.visible_committed_high_watermark;
+    snapshot.visible_through_local_transaction_id_is_boundary = true;
+    snapshot.active_excluded_local_transaction_ids = descriptor.active_excluded_local_transaction_ids;
+    snapshot.in_doubt_excluded_local_transaction_ids = descriptor.in_doubt_excluded_local_transaction_ids;
+  } else if (request.use_latest_committed_snapshot) {
+    snapshot = LatestCommittedSnapshot(loaded_inventory.inventory);
+  }
+
   RowDataPageBody row_page;
   const auto read_page = ReadRowDataPageForRead(&device, context, request, &row_page);
   if (!read_page.ok()) {
     return read_page;
-  }
-
-  VisibilitySnapshot snapshot = request.visibility_snapshot;
-  if (request.use_latest_committed_snapshot) {
-    snapshot = LatestCommittedSnapshot(loaded_inventory.inventory);
   }
 
   PhysicalMgaCowReadResult result;

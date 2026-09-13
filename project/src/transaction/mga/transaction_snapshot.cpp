@@ -307,6 +307,17 @@ TransactionSnapshotResult CreateLocalTransactionSnapshot(const LocalTransactionI
   result.visibility_snapshot.visible_through_local_transaction_id_is_boundary = true;
   result.visibility_snapshot.allow_reader_own_uncommitted = true;
   result.visibility_snapshot.recovery_context = false;
+  for (const auto& entry : inventory.entries) {
+    if (IsActiveSnapshotExclusion(entry.state)) {
+      result.visibility_snapshot.active_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
+    } else if (IsInDoubtSnapshotExclusion(entry.state)) {
+      result.visibility_snapshot.in_doubt_excluded_local_transaction_ids.push_back(entry.identity.local_id.value);
+    }
+  }
+  std::sort(result.visibility_snapshot.active_excluded_local_transaction_ids.begin(),
+            result.visibility_snapshot.active_excluded_local_transaction_ids.end());
+  std::sort(result.visibility_snapshot.in_doubt_excluded_local_transaction_ids.begin(),
+            result.visibility_snapshot.in_doubt_excluded_local_transaction_ids.end());
   return result;
 }
 
@@ -415,19 +426,10 @@ SnapshotVectorResult PublishStatementStableSnapshotVector(
   descriptor.publication_inventory_next_local_transaction_id =
       inventory.next_local_transaction_id;
 
-  for (const auto& entry : inventory.entries) {
-    if (IsActiveSnapshotExclusion(entry.state)) {
-      descriptor.active_excluded_local_transaction_ids.push_back(
-          entry.identity.local_id.value);
-    } else if (IsInDoubtSnapshotExclusion(entry.state)) {
-      descriptor.in_doubt_excluded_local_transaction_ids.push_back(
-          entry.identity.local_id.value);
-    }
-  }
-  std::sort(descriptor.active_excluded_local_transaction_ids.begin(),
-            descriptor.active_excluded_local_transaction_ids.end());
-  std::sort(descriptor.in_doubt_excluded_local_transaction_ids.begin(),
-            descriptor.in_doubt_excluded_local_transaction_ids.end());
+  descriptor.active_excluded_local_transaction_ids =
+      established_snapshot.visibility_snapshot.active_excluded_local_transaction_ids;
+  descriptor.in_doubt_excluded_local_transaction_ids =
+      established_snapshot.visibility_snapshot.in_doubt_excluded_local_transaction_ids;
 
   constexpr u64 kGenerationAttempts = 32;
   for (u64 attempt = 0; attempt < kGenerationAttempts; ++attempt) {

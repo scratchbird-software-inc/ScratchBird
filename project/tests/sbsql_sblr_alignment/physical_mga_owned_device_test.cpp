@@ -293,6 +293,123 @@ void ReaderIdentityBeforeMaterialization() {
   f.Finish(other, false);
 }
 
+void PublishedSnapshotNativeVisibility() {
+  for (bool deleted : {false, true}) for (bool prepared : {false, true}) {
+    Fixture f;
+    const auto row_uuid = Id(UuidKind::row);
+    const auto base = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(base, row_uuid, f.first_page, "before-snapshot")).ok(), "write snapshot base");
+    f.Finish(base, true);
+    const auto writer = f.Begin();
+    auto mutation = f.Mutation(writer, row_uuid, f.first_page, "after-snapshot");
+    mutation.kind = deleted ? db::PhysicalMgaCowMutationKind::delete_row : db::PhysicalMgaCowMutationKind::update;
+    if (deleted) mutation.cells.clear();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, mutation).ok(), "write snapshot successor");
+    if (prepared) {
+      const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+      Check(inventory.ok(), "load before prepare");
+      const auto prepare = mga::PrepareLocalTransaction(inventory.inventory, writer.local_id);
+      Check(prepare.ok() && db::PersistLocalTransactionInventoryToOpenDevice(
+          &f.device, page_size, prepare.inventory).ok(), "persist prepared snapshot exclusion");
+    }
+    const auto marker = f.Begin(); f.Finish(marker, true);
+    const auto reader = f.Begin();
+    const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(inventory.ok(), "load snapshot publication inventory");
+    const auto captured = mga::CreateLocalTransactionSnapshot(inventory.inventory, reader.local_id);
+    Check(captured.ok(), "capture complete local native visibility");
+    const auto published = mga::PublishStatementStableSnapshotVector(
+        inventory.inventory, reader.local_id, 1790000000400ull);
+    Check(published.ok() && published.descriptor.visible_committed_high_watermark == marker.local_id.value,
+        "publish actual high-water-above-writer snapshot");
+    const auto& exclusions = prepared ? published.descriptor.in_doubt_excluded_local_transaction_ids
+                                     : published.descriptor.active_excluded_local_transaction_ids;
+    Check(std::find(exclusions.begin(), exclusions.end(), writer.local_id.value) != exclusions.end(),
+        "snapshot failed to capture writer exclusion");
+    auto pin = mga::RetainPublishedSnapshotVector(published.descriptor.snapshot_uuid);
+    Check(pin.valid(), "retain actual native snapshot owner");
+    const auto read = [&] {
+      auto result = db::ReadPhysicalMgaCowRowsFromOpenDevice(
+          f.device, f.relation, f.first_page, {}, false, reader, &pin);
+      Check(result.ok(), "read pinned native snapshot");
+      return result;
+    };
+    Payload(read(), "before-snapshot");
+    f.Finish(writer, true);
+    // The writer was below the captured committed high water but in flight.
+    // Re-reading today's inventory must not expose its later update/delete.
+    Payload(read(), "before-snapshot");
+    Payload(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, f.first_page,
+        captured.visibility_snapshot, false, reader), "before-snapshot");
+    if (deleted) Check(f.Read(f.first_page).visible_rows.empty(), "latest snapshot missed committed DELETE");
+    else Payload(f.Read(f.first_page), "after-snapshot");
+    const auto own_page = f.first_page + 1;
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(reader, Id(UuidKind::row), own_page, "reader-own")).ok(), "write pin owner row");
+    Payload(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation, own_page,
+        {}, false, reader, &pin), "reader-own");
+    const auto foreign = f.Begin();
+    const auto before = f.Bytes();
+    const auto no_materialization = [&](const db::PhysicalMgaCowReadResult& refused) {
+      Check(!refused.ok() && refused.rows.empty() && refused.visible_rows.empty() &&
+          refused.row_page.rows.empty() && refused.version_metadata.empty() &&
+          refused.visible_delete_marker_count == 0 && refused.wait_for_transaction_count == 0 &&
+          refused.recovery_required_count == 0 && refused.rolled_back_version_count == 0,
+          "invalid snapshot published row state");
+      Check(f.device.is_open() && f.Bytes() == before, "invalid snapshot changed node/ownership");
+    };
+    no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+        f.first_page, {}, false, foreign, &pin));
+    no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+        f.first_page, {}, false, {}, &pin));
+    no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+        f.first_page, {}, true, reader, &pin));
+    for (unsigned field = 0; field != 7; ++field) {
+      mga::VisibilitySnapshot raw;
+      if (field == 0) raw.reader_transaction = reader.local_id;
+      if (field == 1) raw.visible_through_local_transaction_id = marker.local_id.value;
+      if (field == 2) raw.visible_through_local_transaction_id_is_boundary = true;
+      if (field == 3) raw.allow_reader_own_uncommitted = false;
+      if (field == 4) raw.recovery_context = true;
+      if (field == 5) raw.active_excluded_local_transaction_ids = {writer.local_id.value};
+      if (field == 6) raw.in_doubt_excluded_local_transaction_ids = {writer.local_id.value};
+      no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+          f.first_page, raw, false, reader, &pin));
+    }
+    mga::PublishedSnapshotPin absent;
+    no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+        f.first_page, {}, false, reader, &absent));
+    f.Locked();
+    mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);
+    Check(!mga::RetainPublishedSnapshotVector(published.descriptor.snapshot_uuid).valid(),
+        "released publication issued new pin");
+    Payload(read(), "before-snapshot");
+    Check(f.device.Close().ok(), "release native owner for path pinned read");
+    db::PhysicalMgaCowReadRequest request;
+    request.database_path = f.path; request.relation_uuid = f.relation;
+    request.page_number = f.first_page; request.reader_identity = reader;
+    request.use_latest_committed_snapshot = false; request.snapshot_pin = &pin;
+    Payload(db::ReadPhysicalMgaCowRows(request), "before-snapshot");
+    Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen pinned native node");
+    Check(f.Bytes() == before, "pinned path read mutated node");
+    if (prepared) {
+      mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);
+      no_materialization(db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+          f.first_page, {}, false, reader, &pin));
+      f.Finish(reader, false);
+    } else {
+      f.Finish(reader, false);
+      const auto result = db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device, f.relation,
+          f.first_page, {}, false, reader, &pin);
+      Check(!result.ok() && result.visible_rows.empty() && result.row_page.rows.empty() &&
+          result.diagnostic.message_key == "storage.physical_mga_cow.snapshot_pin_owner_mismatch",
+          "terminal owner reused snapshot pin");
+    }
+    pin.Release(); f.Finish(foreign, false);
+  }
+}
+
 void FinalizationIdentityAndOwnership() {
   Fixture f;
   const auto committed = f.Begin(), rolled_back = f.Begin();
@@ -680,6 +797,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
