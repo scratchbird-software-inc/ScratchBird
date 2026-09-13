@@ -6,6 +6,7 @@
 #include "uuid.hpp"
 
 #include <array>
+#include <map>
 #include <set>
 
 namespace scratchbird::transaction::mga {
@@ -73,6 +74,71 @@ inline const char* ValidateLocalTransactionInventoryStructure(
       default:
         return "invalid_transaction_state";
     }
+  }
+  return "";
+}
+
+// Successor consistency only. Callers still own transition authorization,
+// retention release, recovery authority and publication/CAS synchronization.
+inline const char* ValidateLocalTransactionInventoryEvolution(
+    const LocalTransactionInventory& before, const LocalTransactionInventory& after) {
+  if (const auto* why = ValidateLocalTransactionInventoryStructure(before); *why) return why;
+  if (const auto* why = ValidateLocalTransactionInventoryStructure(after); *why) return why;
+  if (after.next_local_transaction_id < before.next_local_transaction_id ||
+      after.next_commit_sequence < before.next_commit_sequence) return "counter_regression";
+  constexpr auto state_count = static_cast<std::size_t>(TransactionState::read_only_active) + 1;
+  static const auto reachable = [] {
+    std::array<std::array<bool, state_count>, state_count> paths{};
+    for (std::size_t i = 0; i < state_count; ++i) paths[i][i] = true;
+    for (const auto& edge : BuiltinTransactionStateTransitions())
+      paths[static_cast<std::size_t>(edge.from)][static_cast<std::size_t>(edge.to)] = true;
+    for (std::size_t k = 0; k < state_count; ++k)
+      for (std::size_t i = 0; i < state_count; ++i)
+        for (std::size_t j = 0; j < state_count; ++j)
+          paths[i][j] = paths[i][j] || (paths[i][k] && paths[k][j]);
+    return paths;
+  }();
+  std::map<u64, const TransactionInventoryEntry*> old_entries;
+  std::map<scratchbird::core::platform::Uuid, u64> old_uuids;
+  for (const auto& entry : before.entries) {
+    old_entries.emplace(entry.identity.local_id.value, &entry);
+    old_uuids.emplace(entry.identity.transaction_uuid.value, entry.identity.local_id.value);
+  }
+  for (const auto& entry : after.entries) {
+    const auto found = old_entries.find(entry.identity.local_id.value);
+    if (found == old_entries.end()) {
+      if (entry.identity.local_id.value < before.next_local_transaction_id) return "local_number_reused";
+      if (old_uuids.contains(entry.identity.transaction_uuid.value)) return "transaction_uuid_reused";
+      if (HasCommittedInventoryOutcome(entry) && entry.commit_sequence < before.next_commit_sequence)
+        return "commit_sequence_reused";
+      continue;
+    }
+    const auto& old = *found->second;
+    if (old.identity.transaction_uuid.value != entry.identity.transaction_uuid.value ||
+        old.identity.scope != entry.identity.scope) return "transaction_identity_changed";
+    if (old.begin_unix_epoch_millis != entry.begin_unix_epoch_millis ||
+        old.begin_visible_through_local_transaction_id != entry.begin_visible_through_local_transaction_id ||
+        old.begin_visible_through_commit_sequence != entry.begin_visible_through_commit_sequence)
+      return "transaction_begin_changed";
+    if ((old.evidence_record_required && !entry.evidence_record_required) ||
+        (old.evidence_record_written && !entry.evidence_record_written)) return "transaction_evidence_regressed";
+    const auto old_outcome = InventoryVisibilityState(old);
+    const auto new_outcome = InventoryVisibilityState(entry);
+    if (IsTerminalTransactionState(old_outcome) &&
+        (old_outcome != new_outcome || old.final_unix_epoch_millis != entry.final_unix_epoch_millis ||
+         old.commit_sequence != entry.commit_sequence)) return "transaction_finality_changed";
+    if (!reachable[static_cast<std::size_t>(old.state)][static_cast<std::size_t>(entry.state)] ||
+        (entry.state == TransactionState::archived && old.state != TransactionState::archived &&
+         !reachable[static_cast<std::size_t>(old.state)][static_cast<std::size_t>(new_outcome)]))
+      return "transaction_state_regressed";
+    if (!HasCommittedInventoryOutcome(old) && HasCommittedInventoryOutcome(entry) &&
+        entry.commit_sequence < before.next_commit_sequence) return "commit_sequence_reused";
+    old_entries.erase(found);
+  }
+  for (const auto& [local_id, entry] : old_entries) {
+    const auto outcome = InventoryVisibilityState(*entry);
+    if (outcome != TransactionState::committed && outcome != TransactionState::rolled_back)
+      return "unresolved_transaction_removed";
   }
   return "";
 }

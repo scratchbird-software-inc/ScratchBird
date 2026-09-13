@@ -1297,6 +1297,23 @@ void CanonicalCheckpointHistory() {
     if(field==8)bad_roots[1].header.page_uuid=bad_roots[0].header.page_uuid;
     persist(bad_roots,bad_inventories);result=read();empty(result);Check(result.error==E::history_mismatch,"resealed history semantic drift refused");
   }
+  for(unsigned field=0;field<9;++field){auto changed=inventories;auto& entry=changed[2].inventory.entries[0];
+    if(field==0)entry.identity.transaction_uuid.value=Id(201);
+    if(field==1)entry.identity.scope=mga::TransactionScope::cluster_global;
+    if(field==2)++entry.begin_unix_epoch_millis;
+    if(field==3)++entry.begin_visible_through_local_transaction_id;
+    if(field==4)++entry.final_unix_epoch_millis;
+    if(field==5){entry.state=mga::TransactionState::rolled_back;entry.commit_sequence=0;}
+    if(field==6)entry.evidence_record_required=false;
+    if(field==7){entry.commit_sequence=changed[2].inventory.next_commit_sequence++;}
+    if(field==8){entry.begin_visible_through_commit_sequence=1;entry.commit_sequence=changed[2].inventory.next_commit_sequence++;}
+    persist(roots,changed);
+    // Each complete, independently resealed checkpoint/inventory pair is valid;
+    // only the actual predecessor relation exposes these inconsistent facts.
+    auto pair=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,head,16384);
+    Check(pair.ok(),"mutated history head remains independently valid field="+std::to_string(field));
+    result=read();empty(result);Check(result.error==E::inventory_mismatch,"resealed immutable inventory history refused field="+std::to_string(field));
+  }
   auto incomplete=roots;incomplete[0].completed=false;persist(incomplete,inventories);result=read();empty(result);Check(result.error==E::incomplete,"late incomplete predecessor discards newer prefix");
   images=persist(roots,inventories);auto wrong=images[2];wrong[304]^=1;CheckpointSeal(wrong);
   Check(first.WriteAt(24*sizes[0],wrong.data(),wrong.size()).ok()&&first.Sync().ok(),"persist wrong predecessor digest with valid image seals");

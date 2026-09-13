@@ -9,6 +9,7 @@
 #include "database_dirty_manifest.hpp"
 #include "hash_digest_parts.hpp"
 #include "disk_device.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -856,6 +857,8 @@ NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
           ||pair.inventory.next_commit_sequence>newer_pair.inventory.next_commit_sequence)return fail(Error::history_mismatch);
         if((older.root_set_generation==newer.root_set_generation&&older.roots!=newer.roots)
           ||(pair.inventory_generation==newer_pair.inventory_generation&&older.roots.front()!=newer.roots.front()))return fail(Error::history_mismatch);
+        if(*scratchbird::transaction::mga::ValidateLocalTransactionInventoryEvolution(pair.inventory,newer_pair.inventory))
+          return fail(Error::inventory_mismatch);
       }
       result.retained_image_bytes+=pair.retained_image_bytes;result.checkpoints.push_back(std::move(pair));
       if(page_ref(next)==page_ref(terminal)){result.error=Error::none;return result;}

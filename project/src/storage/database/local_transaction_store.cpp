@@ -745,6 +745,8 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
   if (!decode(old_count, journal.old_inventory) || !decode(new_count, journal.new_inventory)) {
     return invalid("snapshot_invalid");
   }
+  if (*scratchbird::transaction::mga::ValidateLocalTransactionInventoryEvolution(
+          journal.old_inventory, journal.new_inventory)) return invalid("snapshot_evolution_invalid");
   PublishJournalLoadResult result;
   result.store.status = StoreOkStatus();
   result.present = true;
@@ -1351,6 +1353,10 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
       inventory.next_commit_sequence < old_inventory.next_commit_sequence)
     return trace_and_return(StorePageError("CATALOG.INVALID_INPUT",
                                            "transaction_inventory_snapshot.counter_regression"));
+
+  if (const auto* reason = scratchbird::transaction::mga::ValidateLocalTransactionInventoryEvolution(old_inventory, inventory); *reason)
+    return trace_and_return(StorePageError("CATALOG.INVALID_INPUT",
+                                           "transaction_inventory_snapshot.evolution_invalid", reason));
 
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);

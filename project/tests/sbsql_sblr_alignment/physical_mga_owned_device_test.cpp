@@ -1811,6 +1811,100 @@ void NativeInventoryPageBindings() {
   Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size(),"reopened real page-bound inventory");
   Payload(f.Read(data_page,owner),"owning-filespace-row");
 }
+void InventoryEvolutionMatrix() {
+  using S=mga::TransactionState;
+  // Independent reachability oracle, including three distinct archived outcomes.
+  // Do not derive expected answers from the production transition graph.
+  constexpr std::array states{S::created,S::active,S::preparing,S::prepared,S::committing,
+    S::committed,S::rolling_back,S::rolled_back,S::limbo,S::recovering,S::failed_terminal,
+    S::archived,S::archived,S::archived,S::read_only_active};
+  constexpr std::array<std::string_view,15> admitted{
+    "0123456789ABCDE","123456789ABCD","23456789ABCD","3456789ABCD","45789ABCD",
+    "5B","67C","7C","5789ABCD","579ABCD","AD","B","C","D","456789ABCDE"};
+  const auto identity=Id(UuidKind::transaction);
+  const auto inventory=[&](unsigned state){
+    mga::LocalTransactionInventory value;value.next_local_transaction_id=2;value.next_commit_sequence=2;
+    mga::TransactionInventoryEntry entry;entry.identity.local_id=mga::MakeLocalTransactionId(1);
+    entry.identity.transaction_uuid=identity;entry.identity.scope=mga::TransactionScope::local_node;
+    entry.state=states[state];entry.begin_unix_epoch_millis=10;
+    entry.archived_from_state=state==11?S::committed:state==12?S::rolled_back:state==13?S::failed_terminal:S::none;
+    if(state==5||state==11)entry.commit_sequence=1;
+    if(state==5||state==7||state==10||(state>=11&&state<=13))entry.final_unix_epoch_millis=20;
+    value.entries.push_back(entry);return value;
+  };
+  for(unsigned from=0;from<states.size();++from) {
+    auto before=inventory(from);
+    for(unsigned to=0;to<states.size();++to) {
+      auto after=inventory(to);
+      if((to==5||to==11)&&from!=5&&from!=11){after.entries[0].commit_sequence=2;after.next_commit_sequence=3;}
+      const auto* reason=mga::ValidateLocalTransactionInventoryEvolution(before,after);
+      const bool expected=admitted[from].find("0123456789ABCDE"[to])!=std::string_view::npos;
+      Check((*reason==0)==expected,"inventory lifecycle matrix from="+std::to_string(from)+
+        " to="+std::to_string(to)+" reason="+reason);
+    }
+    auto removed=before;removed.entries.clear();
+    const bool released_outcome=from==5||from==7||from==11||from==12;
+    Check((*mga::ValidateLocalTransactionInventoryEvolution(before,removed)==0)==released_outcome,
+      "inventory removal consistency does not invent unresolved finality");
+  }
+  auto before=inventory(5);auto after=before;
+  after.entries[0].identity.local_id=mga::MakeLocalTransactionId(after.next_local_transaction_id++);
+  after.entries[0].commit_sequence=after.next_commit_sequence++;
+  Check(*mga::ValidateLocalTransactionInventoryEvolution(before,after),"removed UUID cannot be retargeted to fresh local number");
+  auto pruned=before;pruned.entries.clear();
+  Check(*mga::ValidateLocalTransactionInventoryEvolution(pruned,before),"pruned local number cannot be reused");
+  before=inventory(1);after=inventory(5);
+  Check(*mga::ValidateLocalTransactionInventoryEvolution(before,after),"new finality cannot reuse pruned commit sequence");
+  before.entries[0].rollback_only=true;after=before;after.entries[0].rollback_only=false;
+  Check(!*mga::ValidateLocalTransactionInventoryEvolution(before,after),"consistency does not freeze execution-owned rollback fence");
+}
+
+void ImmutableInventoryPublication() {
+  InventoryEvolutionMatrix();
+  Fixture f; const auto tx=f.Begin(); f.Finish(tx,true);
+  const auto journal_bytes = [&] {
+    std::ifstream in(f.path + ".sb.txn_publish", std::ios::binary);
+    Check(static_cast<bool>(in), "open immutable publication image");
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  const auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(loaded.ok(),"load committed inventory for immutable successor test");
+  for(unsigned field=0;field<12;++field) {
+    auto changed=loaded.inventory;
+    auto at=std::find_if(changed.entries.begin(),changed.entries.end(),
+      [&](const auto& e){return e.identity.local_id.value==tx.local_id.value;});
+    Check(at!=changed.entries.end(),"committed creator retained");
+    if(field==0)at->identity.transaction_uuid=Id(UuidKind::transaction);
+    if(field==1)at->identity.scope=mga::TransactionScope::cluster_global;
+    if(field==2)++at->begin_unix_epoch_millis;
+    if(field==3)++at->begin_visible_through_local_transaction_id;
+    if(field==4)++at->final_unix_epoch_millis;
+    if(field==5){at->state=mga::TransactionState::rolled_back;at->commit_sequence=0;}
+    if(field==6){at->state=mga::TransactionState::active;at->commit_sequence=0;}
+    if(field==7)at->commit_sequence=changed.next_commit_sequence++;
+    if(field==8)at->evidence_record_written=false;
+    if(field==9){
+      auto replacement=*at; changed.entries.erase(at);
+      replacement.identity.local_id=mga::MakeLocalTransactionId(changed.next_local_transaction_id++);
+      replacement.identity.transaction_uuid=Id(UuidKind::transaction);
+      changed.entries.push_back(replacement);
+    }
+    if(field==10){++at->begin_visible_through_commit_sequence;at->commit_sequence=changed.next_commit_sequence++;}
+    if(field==11)at->evidence_record_required=false;
+    const auto before=f.Bytes(); const auto journal=journal_bytes(); const auto writes=write_calls;
+    const auto refused=db::PersistLocalTransactionInventoryToOpenDevice(&f.device,page_size,changed);
+    Check(!refused.ok()&&write_calls==writes&&f.Bytes()==before&&journal_bytes()==journal,
+      "immutable transaction publication must refuse before any native write field="+std::to_string(field));
+  }
+  const auto active=f.Begin();
+  auto current=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  auto lost=current.inventory;
+  std::erase_if(lost.entries,[&](const auto& e){return e.identity.local_id.value==active.local_id.value;});
+  const auto before=f.Bytes(); const auto journal=journal_bytes(); const auto writes=write_calls;
+  Check(!db::PersistLocalTransactionInventoryToOpenDevice(&f.device,page_size,lost).ok()
+    &&write_calls==writes&&f.Bytes()==before&&journal_bytes()==journal,"unresolved transaction cannot disappear from publication");
+  f.Finish(active,false); f.Locked();
+}
 void NativeInventoryLongChain() {
   namespace page=scratchbird::storage::page;
   Fixture f;
@@ -1845,6 +1939,10 @@ void NativeInventoryLongChain() {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--inventory-evolution") {
+    try {ImmutableInventoryPublication();std::cout<<"inventory_evolution checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--inventory-long") {
     try {NativeInventoryLongChain();std::cout<<"long_inventory checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
@@ -1857,6 +1955,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { ImmutableInventoryPublication(); NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -174,8 +174,7 @@ Fixture CreateFixture(std::string_view name, u64 offset) {
 }
 
 txn::LocalTransactionInventory InventoryWithCommittedTransactions(u64 offset,
-                                                                  int count) {
-  auto inventory = txn::MakeEmptyLocalTransactionInventory();
+    int count, txn::LocalTransactionInventory inventory) {
   for (int i = 0; i < count; ++i) {
     const auto begun = txn::BeginLocalTransaction(
         inventory,
@@ -460,8 +459,8 @@ bool TestPublicationGenerations() {
 bool TestCommittedJournalRecoversNewSnapshot() {
   bool ok = true;
   auto fixture = CreateFixture("committed_new", 1000);
-  const auto old_inventory = InventoryWithCommittedTransactions(1100, 1);
-  const auto new_inventory = InventoryWithCommittedTransactions(1200, 2);
+  const auto old_inventory = InventoryWithCommittedTransactions(1100, 1, LoadInventory(fixture).inventory);
+  const auto new_inventory = InventoryWithCommittedTransactions(1200, 1, old_inventory);
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
   CorruptPrimaryInventoryRoot(fixture);
@@ -473,7 +472,7 @@ bool TestCommittedJournalRecoversNewSnapshot() {
                "committed publish journal did not recover after primary corruption") && ok;
   ok = Require(SameInventory(loaded.inventory, new_inventory),
                "committed publish journal did not recover the new snapshot") && ok;
-  const auto followup_inventory = InventoryWithCommittedTransactions(1300, 3);
+  const auto followup_inventory = InventoryWithCommittedTransactions(1300, 1, new_inventory);
   ok = PersistInventory(fixture, followup_inventory) && ok;
   const auto followup_loaded = LoadInventory(fixture);
   if (!followup_loaded.ok()) {
@@ -489,8 +488,8 @@ bool TestCommittedJournalRecoversNewSnapshot() {
 bool TestPublishingJournalRecoversOldSnapshot() {
   bool ok = true;
   auto fixture = CreateFixture("publishing_old", 2000);
-  const auto old_inventory = InventoryWithCommittedTransactions(2100, 1);
-  const auto new_inventory = InventoryWithCommittedTransactions(2200, 2);
+  const auto old_inventory = InventoryWithCommittedTransactions(2100, 1, LoadInventory(fixture).inventory);
+  const auto new_inventory = InventoryWithCommittedTransactions(2200, 1, old_inventory);
   ok = PersistInventory(fixture, old_inventory) && ok;
   WriteTextAndSync(JournalPath(fixture),
                    BuildPublishJournal(fixture, "publishing", old_inventory, new_inventory));
@@ -509,8 +508,8 @@ bool TestPublishingJournalRecoversOldSnapshot() {
 bool TestCommittedJournalRejectsStaleTail() {
   bool ok = true;
   auto fixture = CreateFixture("stale_tail", 3000);
-  const auto old_inventory = InventoryWithCommittedTransactions(3100, 1);
-  const auto new_inventory = InventoryWithCommittedTransactions(3200, 3);
+  const auto old_inventory = InventoryWithCommittedTransactions(3100, 1, LoadInventory(fixture).inventory);
+  const auto new_inventory = InventoryWithCommittedTransactions(3200, 2, old_inventory);
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
   AppendTextAndSync(JournalPath(fixture),
@@ -528,8 +527,8 @@ bool TestCommittedJournalRejectsStaleTail() {
 bool TestPartialJournalRequiresRecovery() {
   bool ok = true;
   auto fixture = CreateFixture("partial_journal", 4000);
-  const auto old_inventory = InventoryWithCommittedTransactions(4100, 1);
-  const auto new_inventory = InventoryWithCommittedTransactions(4200, 2);
+  const auto old_inventory = InventoryWithCommittedTransactions(4100, 1, LoadInventory(fixture).inventory);
+  const auto new_inventory = InventoryWithCommittedTransactions(4200, 1, old_inventory);
   ok = PersistInventory(fixture, old_inventory) && ok;
   WriteTextAndSync(JournalPath(fixture),
                    BuildPublishJournalBody(fixture, "publishing", old_inventory, new_inventory));
@@ -546,12 +545,12 @@ bool TestPartialJournalRequiresRecovery() {
 bool TestChecksumTamperFailsClosed() {
   bool ok = true;
   auto fixture = CreateFixture("checksum_tamper", 5000);
-  const auto old_inventory = InventoryWithCommittedTransactions(5100, 1);
-  const auto new_inventory = InventoryWithCommittedTransactions(5200, 2);
+  const auto old_inventory = InventoryWithCommittedTransactions(5100, 1, LoadInventory(fixture).inventory);
+  const auto new_inventory = InventoryWithCommittedTransactions(5200, 1, old_inventory);
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
   std::string journal = ReadText(JournalPath(fixture));
-  Require(journal.size() > 128, "binary publication missing");
+  if (!Require(journal.size() > 176, "binary publication missing")) return false;
   journal[112 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
   WriteTextAndSync(JournalPath(fixture), journal);
   CorruptPrimaryInventoryRoot(fixture);
@@ -564,18 +563,61 @@ bool TestChecksumTamperFailsClosed() {
   return ok;
 }
 
+bool TestInventoryEvolutionJournal() {
+  bool ok=true;
+  auto fixture=CreateFixture("immutable_evolution", 9000);
+  const auto previous=InventoryWithCommittedTransactions(9100, 1, LoadInventory(fixture).inventory);
+  const auto successor=InventoryWithCommittedTransactions(9200, 1, previous);
+  if (!PersistInventory(fixture,previous)) return false;
+  CorruptPrimaryInventoryRoot(fixture);
+  for (const auto phase : {"publishing", "committed"}) {
+    for (unsigned field=0;field<12;++field) {
+      auto old_inventory=previous, new_inventory=successor;
+      auto& entry=new_inventory.entries[0];
+      if(field==0)entry.identity.transaction_uuid=MakeUuid(UuidKind::transaction,9300);
+      if(field==1)entry.identity.scope=txn::TransactionScope::cluster_global;
+      if(field==2)++entry.begin_unix_epoch_millis;
+      if(field==3)++entry.begin_visible_through_local_transaction_id;
+      if(field==4)++entry.final_unix_epoch_millis;
+      if(field==5){entry.state=txn::TransactionState::rolled_back;entry.commit_sequence=0;}
+      if(field==6){entry.state=txn::TransactionState::active;entry.commit_sequence=0;}
+      if(field==7)entry.evidence_record_required=false;
+      if(field==8)entry.evidence_record_written=false;
+      if(field==9){entry.commit_sequence=new_inventory.next_commit_sequence++;}
+      if(field==10){++entry.begin_visible_through_commit_sequence;entry.commit_sequence=new_inventory.next_commit_sequence++;}
+      if(field==11){new_inventory.entries.erase(new_inventory.entries.begin());new_inventory.entries[0].commit_sequence=1;}
+      const auto bytes=BuildPublishJournal(fixture,phase,old_inventory,new_inventory);
+      WriteTextAndSync(JournalPath(fixture),bytes);
+      const auto before=ReadText(fixture.database_path);
+      const auto result=LoadInventory(fixture);
+      ok=Require(!result.ok()&&result.inventory.entries.empty(),
+        "resealed journal admitted changed predecessor facts field="+std::to_string(field))&&ok;
+      ok=Require(ReadText(JournalPath(fixture))==bytes&&ReadText(fixture.database_path)==before,
+        "journal evolution refusal mutated durable state")&&ok;
+    }
+    WriteTextAndSync(JournalPath(fixture),BuildPublishJournal(fixture,phase,previous,successor));
+    const auto valid=LoadInventory(fixture);
+    ok=Require(valid.ok()&&SameInventory(valid.inventory,
+        std::string_view(phase)=="publishing"?previous:successor),"valid successor journal recovery")&&ok;
+  }
+  return ok;
+}
+
 bool TestBinaryPublicationContract() {
   bool ok = true;
   auto fixture = CreateFixture("binary_contract", 7000);
-  const auto old_inventory = InventoryWithCommittedTransactions(7100, 2);
-  auto new_inventory = InventoryWithCommittedTransactions(7200, 3);
-  // Preserve flags, state/scope and arbitrary timestamp bytes, not just UUIDs.
-  new_inventory.entries[1].identity.scope = txn::TransactionScope::cluster_global;
-  new_inventory.entries[1].state = txn::TransactionState::read_only_active;
-  new_inventory.entries[1].commit_sequence = 0;
-  new_inventory.entries[1].evidence_record_required = false;
-  new_inventory.entries[1].rollback_only = true;
-  new_inventory.entries[1].begin_visible_through_local_transaction_id = 1;
+  auto old_inventory = InventoryWithCommittedTransactions(7100, 1, LoadInventory(fixture).inventory);
+  const auto read_only = txn::BeginLocalTransaction(old_inventory,
+      MakeUuid(UuidKind::transaction, 7110), kBaseMillis + 7111);
+  if (!Require(read_only.ok(), "begin mixed codec fixture")) return false;
+  old_inventory = read_only.inventory;
+  // Independent mixed-scope codec fixture, established before publication.
+  // Retained identity, begin facts and outcomes must survive each successor.
+  old_inventory.entries.back().identity.scope = txn::TransactionScope::cluster_global;
+  old_inventory.entries.back().state = txn::TransactionState::read_only_active;
+  old_inventory.entries.back().evidence_record_required = false;
+  old_inventory.entries.back().rollback_only = true;
+  auto new_inventory = InventoryWithCommittedTransactions(7200, 1, old_inventory);
   const auto archived = txn::ArchiveLocalTransaction(new_inventory, new_inventory.entries[0].identity.local_id);
   ok = Require(archived.ok(), "archive actual committed fixture transaction") && ok;
   if (!archived.ok()) return false;
@@ -711,7 +753,7 @@ bool TestBinaryPublicationContract() {
 bool TestStatementInventoryFenceIgnoresUnrelatedDatabaseGrowth() {
   bool ok = true;
   auto fixture = CreateFixture("statement_fence", 6000);
-  const auto inventory = InventoryWithCommittedTransactions(6100, 1);
+  const auto inventory = InventoryWithCommittedTransactions(6100, 1, LoadInventory(fixture).inventory);
   ok = PersistInventory(fixture, inventory) && ok;
 
   const auto acquired = database::AcquireStrongLocalTransactionInventorySnapshot(
@@ -779,6 +821,7 @@ int main() {
   ok = TestCommittedJournalRejectsStaleTail() && ok;
   ok = TestPartialJournalRequiresRecovery() && ok;
   ok = TestChecksumTamperFailsClosed() && ok;
+  ok = TestInventoryEvolutionJournal() && ok;
   ok = TestBinaryPublicationContract() && ok;
   ok = TestStatementInventoryFenceIgnoresUnrelatedDatabaseGrowth() && ok;
   if (!ok) {
