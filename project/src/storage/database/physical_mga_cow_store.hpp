@@ -99,12 +99,15 @@ struct PhysicalMgaCowMutationRequest : PhysicalMgaCowMutation {
 
 struct PhysicalMgaCowMutationBatch {
   std::vector<PhysicalMgaCowMutation> mutations;
+  // Optional explicit page sync. False never skips the mandatory node sync
+  // in native inventory publication before the batch commit fence is released.
   bool sync_after_batch = true;
   bool engine_generated_unique_insert_rows = false;
 };
 
 struct PhysicalMgaCowMutationBatchRequest {
   std::vector<PhysicalMgaCowMutationRequest> mutations;
+  // Same durability rule as the retained-device batch above.
   bool sync_after_batch = true;
   bool engine_generated_unique_insert_rows = false;
 };
@@ -169,6 +172,9 @@ struct PhysicalMgaCowMutationBatchResult {
   std::vector<std::string> evidence;
   u64 written_rows = 0;
   u64 pages_written = 0;
+  // Failed/uncertain native publication barrier. Caller must inspect durable
+  // inventory and roll back/recover this exact transaction, never commit a prefix.
+  scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
 
   bool ok() const {
     return status.ok();

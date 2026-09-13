@@ -30,7 +30,8 @@ bool reject_write = false, reject_sync = false;
 unsigned write_faults = 0, sync_faults = 0;
 unsigned write_calls = 0, sync_calls = 0;
 enum class OwnedFault { none, row_write, row_sync, after_row_write_exception,
-                        rollback_write, exception_rollback_write };
+                        rollback_write, exception_rollback_write,
+                        batch_release_write, batch_process_exit };
 OwnedFault owned_fault = OwnedFault::none;
 off_t owned_row_offset = 0;
 unsigned owned_faults = 0;
@@ -46,6 +47,8 @@ extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t count, off_t 
       errno = EIO; return -1;
     }
     const auto written = __real_pwrite(fd, bytes, count, offset);
+    if (fault == OwnedFault::batch_process_exit) ::_exit(written == static_cast<ssize_t>(count) ? 74 : 75);
+    if (fault == OwnedFault::batch_release_write) { reject_write = true; return written; }
     if (fault == OwnedFault::after_row_write_exception || fault == OwnedFault::exception_rollback_write) {
       if (fault == OwnedFault::exception_rollback_write) reject_write = true;
       throw std::bad_alloc();
@@ -739,6 +742,149 @@ void NativeCatalogMetadataVersions() {
       "rollback release did not publish the actual replacement row");
 }
 
+int CrashNativeBatch(const char* path) {
+  std::ifstream oracle(std::string(path) + ".batch-oracle", std::ios::binary);
+  std::array<platform::byte, 48> bytes{};
+  oracle.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+  if (!oracle) return 71;
+  disk::FileDevice device;
+  if (!device.Open(path, disk::FileOpenMode::open_existing).ok()) return 72;
+  TypedUuid relation{UuidKind::object, {}};
+  TypedUuid transaction{UuidKind::transaction, {}};
+  std::copy(bytes.begin(), bytes.begin() + 16, relation.value.bytes.begin());
+  std::copy(bytes.begin() + 16, bytes.begin() + 32, transaction.value.bytes.begin());
+  const auto local_id = platform::LoadLittle64(bytes.data() + 32);
+  const auto page = platform::LoadLittle64(bytes.data() + 40);
+  db::PhysicalMgaCowMutationBatch batch;
+  batch.sync_after_batch = false;
+  for (unsigned i = 0; i != 2; ++i) {
+    db::PhysicalMgaCowMutation row;
+    row.relation_uuid = relation; row.row_uuid = Id(UuidKind::row);
+    row.transaction_uuid = transaction; row.existing_local_transaction_id = mga::MakeLocalTransactionId(local_id);
+    row.use_existing_transaction = true; row.page_number = page + i;
+    types::DatatypeBinaryValue value; value.type_id = types::CanonicalTypeId::binary; value.payload = {0x42};
+    row.cells.push_back({1, std::move(value)}); batch.mutations.push_back(std::move(row));
+  }
+  owned_row_offset = static_cast<off_t>(page * page_size);
+  owned_fault = OwnedFault::batch_process_exit;
+  (void)db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(device, std::move(batch));
+  return 73;
+}
+
+void FailedNativeBatchCannotCommitPrefix() {
+  {
+    Fixture f;
+    const auto tx = f.Begin();
+    const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(inventory.ok(), "load pre-existing rollback-only owner");
+    const auto marked = mga::MarkLocalTransactionRollbackOnly(inventory.inventory, tx.local_id);
+    Check(marked.ok() && db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, marked.inventory).ok(),
+        "persist pre-existing rollback-only marker");
+    db::PhysicalMgaCowMutationBatch batch;
+    batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page, "must-not-clear"));
+    const auto before = f.Bytes(); const auto writes_before = write_calls;
+    const auto refused = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
+    Check(!refused.ok() && !refused.unresolved_mutation_transaction.valid() &&
+        before == f.Bytes() && writes_before == write_calls, "batch cleared someone else's rollback-only marker");
+    f.Finish(tx, false);
+  }
+  for (bool explicit_sync : {false, true}) for (auto fault : {OwnedFault::row_write, OwnedFault::row_sync,
+       OwnedFault::after_row_write_exception, OwnedFault::batch_release_write}) {
+  Fixture f;
+  const auto tx = f.Begin();
+  db::PhysicalMgaCowMutationBatch batch;
+  batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page, "first-prefix"));
+  batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page + 1, "second-missing"));
+  batch.sync_after_batch = explicit_sync;
+  owned_row_offset = static_cast<off_t>((f.first_page + 1) * page_size);
+  owned_fault = fault;
+  bool threw = false;
+  db::PhysicalMgaCowMutationBatchResult failed;
+  try { failed = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch); }
+  catch (const std::bad_alloc&) { threw = true; }
+  Check(owned_fault == OwnedFault::none && !reject_write && !reject_sync, "second-page batch failure not reached");
+  if (fault == OwnedFault::after_row_write_exception) Check(threw, "batch exception swallowed");
+  else Check(!threw && !failed.ok() && failed.written_rows == 0 && failed.pages_written == 0 &&
+      failed.unresolved_mutation_transaction.transaction_uuid.value == tx.transaction_uuid.value &&
+      failed.unresolved_mutation_transaction.local_id.value == tx.local_id.value,
+      "failed batch issued partial receipt or lost recovery identity");
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen after partial batch");
+  const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(inventory.ok(), "read failed batch durable inventory");
+  const auto blocked = mga::LookupLocalTransaction(inventory.inventory, tx.local_id);
+  Check(blocked.ok() && blocked.entry.rollback_only, "failed batch lost durable commit fence");
+  db::PhysicalMgaCowFinalization commit;
+  commit.transaction = tx; commit.decision = db::PhysicalMgaCowFinalizeDecision::commit;
+  commit.final_unix_epoch_millis = 1790000000300ull;
+  const auto outcome = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, commit);
+  Check(!outcome.ok(), "failed native batch committed its successful prefix");
+  Check(f.Read(f.first_page).visible_rows.empty(), "failed batch prefix became visible");
+  f.Finish(tx, false);
+  }
+  for (bool explicit_sync : {false, true}) {
+    Fixture f;
+    const auto tx = f.Begin();
+    db::PhysicalMgaCowMutationBatch batch;
+    batch.sync_after_batch = explicit_sync;
+    batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page, "complete-first"));
+    batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page + 1, "complete-second"));
+    const auto written = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
+    Check(written.ok() && written.written_rows == 2 && written.pages_written == 2 &&
+        !written.unresolved_mutation_transaction.valid(), "complete batch lacked success receipt");
+    Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen successful batch");
+    const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(inventory.ok(), "load completed batch inventory");
+    const auto active = mga::LookupLocalTransaction(inventory.inventory, tx.local_id);
+    Check(active.ok() && !active.entry.rollback_only && active.entry.state == mga::TransactionState::active,
+        "successful batch changed finality or retained commit fence");
+    f.Finish(tx, true);
+    Payload(f.Read(f.first_page), "complete-first"); Payload(f.Read(f.first_page + 1), "complete-second");
+  }
+  {
+    Fixture f;
+    const auto tx = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(tx, Id(UuidKind::row), f.first_page, "prior-statement")).ok(), "stage prior statement");
+    db::PhysicalMgaCowMutationBatch invalid;
+    invalid.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page + 1, "must-not-write"));
+    invalid.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page + 2, "bad-text"));
+    invalid.mutations.back().cells[0].value.payload = {0xff};
+    const auto before = f.Bytes(); const auto writes_before = write_calls;
+    const auto refused = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, invalid);
+    Check(!refused.ok() && !refused.unresolved_mutation_transaction.valid() &&
+        write_calls == writes_before && before == f.Bytes(), "invalid later page wrote an earlier page or transaction fence");
+    f.Finish(tx, true);
+    Payload(f.Read(f.first_page), "prior-statement");
+    Check(f.Read(f.first_page + 1).visible_rows.empty(), "preflight failure published partial batch");
+  }
+  {
+    Fixture f;
+    const auto tx = f.Begin();
+    std::array<platform::byte, 48> bytes{};
+    std::copy(f.relation.value.bytes.begin(), f.relation.value.bytes.end(), bytes.begin());
+    std::copy(tx.transaction_uuid.value.bytes.begin(), tx.transaction_uuid.value.bytes.end(), bytes.begin() + 16);
+    platform::StoreLittle64(bytes.data() + 32, tx.local_id.value);
+    platform::StoreLittle64(bytes.data() + 40, f.first_page);
+    std::ofstream oracle(f.path + ".batch-oracle", std::ios::binary);
+    oracle.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()); oracle.close();
+    Check(oracle.good() && f.device.Close().ok(), "release batch node for crash process");
+    const auto child = ::fork(); Check(child >= 0, "fork batch crash process");
+    if (child == 0) { ::execl("/proc/self/exe", "batch-crash", "--batch-crash", f.path.c_str(), nullptr); ::_exit(99); }
+    int status = 0; pid_t waited;
+    do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 74, "batch crash point not reached");
+    Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "recover node after batch process loss");
+    db::PhysicalMgaCowFinalization commit;
+    commit.transaction = tx; commit.decision = db::PhysicalMgaCowFinalizeDecision::commit;
+    commit.final_unix_epoch_millis = 1790000000300ull;
+    const auto result = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device, commit);
+    Check(!result.ok() && result.diagnostic.diagnostic_code == "SB-MGA-ROLLBACK-ONLY-COMMIT-REFUSED",
+        "fresh process committed interrupted native batch prefix");
+    Check(f.Read(f.first_page).visible_rows.empty(), "crashed batch became independently visible");
+    f.Finish(tx, false);
+  }
+}
+
 void NativeInventoryPublicationConcurrency() {
   Fixture f;
   auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
@@ -1311,6 +1457,7 @@ void Run() {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--batch-crash") return CrashNativeBatch(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--catalog-probe") return VerifyCatalogVersion(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--start-snapshot-probe") return VerifyStartSnapshot(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--finality-probe") return VerifyFinalityOracle(argv[2]);
@@ -1318,6 +1465,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -553,22 +553,24 @@ scratchbird::core::uuid::TypedUuidResult IssuePhysicalIdentity(UuidKind kind) {
       kind, static_cast<u64>(now));
 }
 
-PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
-                                              const DatabaseContextResult& context,
-                                              RowDataPageBody body,
-                                              bool sync_after_write = true) {
+struct PreparedRowDataPage {
+  PhysicalMgaCowMutationResult result;
+  u64 offset = 0;
+  std::vector<scratchbird::core::platform::byte> image;
+};
+
+PreparedRowDataPage PrepareRowDataPage(const DatabaseContextResult& context,
+                                      RowDataPageBody body) {
   body.page_generation = std::max<u64>(1, body.page_generation);
   body.compaction_generation = std::max<u64>(body.compaction_generation,
                                              body.page_generation);
-  const auto built = BuildRowDataPageBodyOwned(std::move(body), context.page_size);
+  auto built = BuildRowDataPageBodyOwned(std::move(body), context.page_size);
   if (!built.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(built.status,
-                                                   built.diagnostic);
+    return {Propagate<PhysicalMgaCowMutationResult>(built.status, built.diagnostic)};
   }
   const auto page_uuid = IssuePhysicalIdentity(UuidKind::page);
   if (!page_uuid.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(page_uuid.status,
-                                                   page_uuid.diagnostic);
+    return {Propagate<PhysicalMgaCowMutationResult>(page_uuid.status, page_uuid.diagnostic)};
   }
   ManagedPageHeaderRequest header_request;
   header_request.context = context.page_context;
@@ -578,27 +580,39 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
   header_request.page_generation = built.body.page_generation;
   const auto header = BuildManagedPageHeader(header_request);
   if (!header.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(header.status,
-                                                   header.diagnostic);
+    return {Propagate<PhysicalMgaCowMutationResult>(header.status, header.diagnostic)};
   }
   const auto page_offset = CheckedPageOffset(context.page_size,
                                              built.body.page_number);
   if (!page_offset.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(page_offset.status,
-                                                   page_offset.diagnostic);
+    return {Propagate<PhysicalMgaCowMutationResult>(page_offset.status, page_offset.diagnostic)};
   }
   // No independently published header generation before the body write.
   // A complete image is still not an atomic-sector or crash-recovery claim.
   std::vector<scratchbird::core::platform::byte> image(context.page_size);
   if (header.serialized.size() > image.size() ||
       built.serialized.size() != image.size() - header.serialized.size()) {
-    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
-        "storage.physical_mga_cow.page_image_extent_invalid");
+    return {ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.page_image_extent_invalid")};
   }
   std::copy(header.serialized.begin(), header.serialized.end(), image.begin());
   std::copy(built.serialized.begin(), built.serialized.end(),
             image.begin() + header.serialized.size());
-  const auto written = device->WriteAt(page_offset.offset, image.data(), image.size());
+  PhysicalMgaCowMutationResult result;
+  result.status = CowStoreOkStatus();
+  result.row_page = std::move(built.body);
+  result.page_uuid = page_uuid.value;
+  result.page_generation = result.row_page.page_generation;
+  return {std::move(result), page_offset.offset, std::move(image)};
+}
+
+PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
+                                              const DatabaseContextResult& context,
+                                              RowDataPageBody body,
+                                              bool sync_after_write = true) {
+  auto prepared = PrepareRowDataPage(context, std::move(body));
+  if (!prepared.result.ok()) return std::move(prepared.result);
+  const auto written = device->WriteAt(prepared.offset, prepared.image.data(), prepared.image.size());
   if (!written.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(written.status, written.diagnostic);
   }
@@ -609,12 +623,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
                                                      sync.diagnostic);
     }
   }
-  PhysicalMgaCowMutationResult result;
-  result.status = CowStoreOkStatus();
-  result.row_page = built.body;
-  result.page_uuid = page_uuid.value;
-  result.page_generation = built.body.page_generation;
-  return result;
+  return std::move(prepared.result);
 }
 
 BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
@@ -1304,17 +1313,40 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   }
   mark_phase("stage_page_mutations");
 
-  PhysicalMgaCowMutationBatchResult result;
-  result.status = CowStoreOkStatus();
+  std::vector<PreparedRowDataPage> prepared_pages;
+  prepared_pages.reserve(page_cache.size());
   for (auto& [page_number, row_page] : page_cache) {
     (void)page_number;
-    const auto written = WriteRowDataPage(&device,
-                                          context,
-                                          std::move(row_page),
-                                          false);
+    auto prepared = PrepareRowDataPage(context, std::move(row_page));
+    if (!prepared.result.ok())
+      return Propagate<PhysicalMgaCowMutationBatchResult>(prepared.result.status, prepared.result.diagnostic);
+    // Batch publication needs the complete image, not a duplicate decoded page.
+    prepared.result.row_page = {};
+    prepared_pages.push_back(std::move(prepared));
+  }
+  mark_phase("prepare_page_images");
+
+  // Persist inability to commit BEFORE the first page write. If I/O, allocation
+  // or the process fails during this batch, no surviving prefix can be committed
+  // later. Only this invocation's exact loaded base may release its marker after
+  // every image is complete. This is inventory authority, not a sidecar WAL.
+  const auto marked = scratchbird::transaction::mga::MarkLocalTransactionRollbackOnly(
+      active_inventory, active_entry.identity.local_id);
+  if (!marked.ok()) return Propagate<PhysicalMgaCowMutationBatchResult>(marked.status, marked.diagnostic);
+  const auto guarded = PersistLocalTransactionInventoryToOpenDevice(&device, context.page_size, marked.inventory);
+  const auto unresolved = [&](Status status, DiagnosticRecord diagnostic) {
+    auto failed = Propagate<PhysicalMgaCowMutationBatchResult>(status, std::move(diagnostic));
+    failed.unresolved_mutation_transaction = active_entry.identity;
+    return failed;
+  };
+  if (!guarded.ok()) return unresolved(guarded.status, guarded.diagnostic);
+
+  PhysicalMgaCowMutationBatchResult result;
+  result.status = CowStoreOkStatus();
+  for (const auto& prepared : prepared_pages) {
+    const auto written = device.WriteAt(prepared.offset, prepared.image.data(), prepared.image.size());
     if (!written.ok()) {
-      return Propagate<PhysicalMgaCowMutationBatchResult>(written.status,
-                                                          written.diagnostic);
+      return unresolved(written.status, written.diagnostic);
     }
     ++result.pages_written;
   }
@@ -1322,15 +1354,14 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   if (request.sync_after_batch) {
     const auto sync = device.Sync();
     if (!sync.ok()) {
-      return Propagate<PhysicalMgaCowMutationBatchResult>(sync.status,
-                                                          sync.diagnostic);
+      return unresolved(sync.status, sync.diagnostic);
     }
   }
   mark_phase("sync");
   result.written_rows = static_cast<u64>(request.mutations.size());
   result.evidence.push_back("physical_mga_cow.batch=true");
   result.evidence.push_back("physical_mga_cow.batch_borrowed_device=true");
-  result.evidence.push_back("physical_mga_cow.batch_inventory_loaded_once=true");
+  result.evidence.push_back("physical_mga_cow.batch_native_inventory_commit_guard=true");
   result.evidence.push_back(
       request.engine_generated_unique_insert_rows
           ? "physical_mga_cow.engine_generated_unique_insert_rows=true"
@@ -1338,10 +1369,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   result.evidence.push_back("physical_mga_cow.existing_active_transaction_verified=true");
   result.evidence.push_back(std::string("physical_mga_cow.batch_sync_after_pages=") +
                             (request.sync_after_batch ? "true" : "false"));
-  if (!request.sync_after_batch) {
-    result.evidence.push_back(
-        "physical_mga_cow.batch_sync_deferred_to_transaction_inventory_commit=true");
-  }
+  result.evidence.push_back("physical_mga_cow.batch_inventory_guard_publication_sync=true");
   result.evidence.push_back("physical_mga_cow.visibility_published_by_inventory=false");
   result.evidence.push_back("physical_mga_cow.empty_page_insert_fast_path=true");
   result.evidence.push_back("physical_mga_cow.batch_written_rows=" +
@@ -1351,6 +1379,17 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   WritePhysicalCowBatchPhaseTrace(result.written_rows,
                                   result.pages_written,
                                   phase_micros);
+  auto completed_inventory = guarded.inventory;
+  auto completed_entry = std::find_if(completed_inventory.entries.begin(), completed_inventory.entries.end(),
+      [&](const auto& entry) { return entry.identity.local_id.value == active_entry.identity.local_id.value; });
+  if (completed_entry == completed_inventory.entries.end() ||
+      !SameUuid(completed_entry->identity.transaction_uuid, active_entry.identity.transaction_uuid) ||
+      completed_entry->state != TransactionState::active || !completed_entry->rollback_only)
+    return unresolved(CowStoreErrorStatus(), MakePhysicalMgaCowDiagnostic(CowStoreErrorStatus(),
+        "CATALOG.INVALID_INPUT", "storage.physical_mga_cow.batch_guard_identity_mismatch"));
+  completed_entry->rollback_only = false;
+  const auto released = PersistLocalTransactionInventoryToOpenDevice(&device, context.page_size, completed_inventory);
+  if (!released.ok()) return unresolved(released.status, released.diagnostic);
   return result;
 }
 
