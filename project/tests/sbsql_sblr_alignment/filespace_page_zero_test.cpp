@@ -1777,7 +1777,95 @@ void CanonicalCheckpointHistory() {
   if(child==0){::execl("/proc/self/exe","checkpoint-history-probe","--checkpoint-history-probe",fixture.root.c_str(),nullptr);::_exit(125);}
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies complete retained history");
 }
+void CheckpointCatalogRelations() {
+  using E=db::NativeCheckpointCatalogRelationError;
+  const auto empty=[](const auto& r){Check(!r.ok()&&!r.checkpoint.checkpoint_inventory.checkpoint&&r.checkpoint.catalogs.empty()
+    &&r.checkpoint.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint.checkpoint_inventory.inventory.publication_base
+    &&!r.relation.index&&r.relation.catalogs.empty()&&r.relation.bindings.empty()&&r.row_creators.empty()
+    &&r.navigation_creator_entries.empty()&&!r.retained_image_bytes,"checkpoint relation failure exposes no prefix");};
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5,s=(p+2)%5;Fixture fixture;disk::FileDevice first,second,base;
+    auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
+    for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
+    const auto prepare=[&](auto& device,const char* name,const auto& zero){const auto bytes=Oracle(zero);const byte padding=0;
+      Check(device.Open((fixture.root/name).string(),disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,bytes.data(),bytes.size()).ok()
+        &&device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare checkpoint relation actual filespace");};
+    prepare(first,"index",z1);prepare(second,"data",z2);prepare(base,"primary",z3);
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const auto original=CatalogBindingImages(p);auto images=original;auto inventory=InventoryExample(s);inventory.header.filespace_uuid=Id(9);inventory.inventory.entries.clear();
+    inventory.inventory.next_local_transaction_id=18;inventory.inventory.next_commit_sequence=4;
+    for(unsigned i=0;i<3;++i){auto entry=InventoryExample().inventory.entries[0];entry.identity.local_id=mga::MakeLocalTransactionId(i==0?11:i==1?13:17);
+      entry.identity.transaction_uuid.value=Id(i==0?91:i==1?162:98);entry.state=mga::TransactionState::committed;entry.commit_sequence=i+1;inventory.inventory.entries.push_back(entry);}
+    const auto ref=[](const auto& h){return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};};
+    auto cat=RootExample(s);cat.header.filespace_uuid=Id(9);cat.header.page_number=28;cat.creator_local_transaction_id=11;
+    for(auto& target:cat.roots)target.page.filespace_uuid=Id(9);
+    cat.roots[0]={1,0x200,ref(images.nodes[0].header),images.nodes[0].dependencies.index_uuid};
+    auto feature=cat;feature.root_kind=8;feature.object_uuid=Id(43);feature.header.page_uuid=Id(89);feature.header.page_number=29;feature.roots={{6,6,ref(images.leaves[0].header),Id(101)}};
+    auto cp=CheckpointExample(s);cp.header.filespace_uuid=Id(9);
+    const auto persist=[&](bool distinct=false,u64 oit=18,u64 oat=18){
+      for(const auto& node:images.nodes){const auto b=BtreeOracle(node);auto& device=node.header.filespace_uuid==Id(2)?first:second;
+        Check(device.WriteAt(node.header.page_number*node.header.page_size_bytes,b.data(),b.size()).ok(),"persist checkpoint relation navigation");}
+      for(const auto& leaf:images.leaves){const auto b=LeafOracle(leaf);auto& device=leaf.header.filespace_uuid==Id(9)?base:second;
+        Check(device.WriteAt(leaf.header.page_number*leaf.header.page_size_bytes,b.data(),b.size()).ok(),"persist checkpoint relation rows");}
+      const auto ib=InventoryOracle(inventory,oit,oat,oat),cb=RootOracle(cat),fb=RootOracle(feature);
+      const auto bind=[&](auto& target,const auto& header,const auto& object,const auto& bytes){target.page=ref(header);target.object_uuid=object;
+        Check(SHA256(bytes.data(),bytes.size(),target.sha256.data())!=nullptr,"independently bind checkpoint target hash");};
+      bind(cp.roots[0],inventory.header,inventory.object_uuid,ib);bind(cp.roots[4],cat.header,cat.object_uuid,cb);
+      if(distinct)bind(cp.roots[8],feature.header,feature.object_uuid,fb);else bind(cp.roots[8],cat.header,cat.object_uuid,cb);
+      const auto pb=CheckpointOracle(cp);Check(base.WriteAt(14*sizes[s],ib.data(),ib.size()).ok()&&base.WriteAt(28*sizes[s],cb.data(),cb.size()).ok()
+        &&base.WriteAt(29*sizes[s],fb.data(),fb.size()).ok()&&base.WriteAt(19*sizes[s],pb.data(),pb.size()).ok()
+        &&base.Sync().ok()&&first.Sync().ok()&&second.Sync().ok(),"persist actual checkpoint inventory and catalog role");};
+    const db::NativeCatalogRelationBinding binding{Id(101),images.nodes[0].dependencies};const u64 budget=4*sizes[p]+4*sizes[q]+6*sizes[s];
+    const auto read=[&](u64 limit){return db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,binding,limit);};
+    persist();auto result=read(budget);Check(result.ok()&&result.retained_image_bytes==budget&&result.row_creators.size()==8
+      &&result.navigation_creator_entries.size()==7&&result.relation.bindings.size()==9,"checkpoint actual catalog role and every creator joined error="+std::to_string(static_cast<unsigned>(result.error))
+        +" checkpoint="+std::to_string(static_cast<unsigned>(result.checkpoint.error))+" catalog="+std::to_string(static_cast<unsigned>(result.checkpoint.catalog_error))
+        +" inventory="+std::to_string(static_cast<unsigned>(result.checkpoint.checkpoint_inventory.inventory_error))+" relation="+std::to_string(static_cast<unsigned>(result.relation.error)));
+    for(const auto& row:result.row_creators)Check(row.inventory_entry_index==1,"actual row creator entry");for(auto entry:result.navigation_creator_entries)Check(entry==2,"actual navigation creator entry");
+    result=read(budget-1);empty(result);Check(result.error==E::relation_failure&&result.relation.error==db::NativeCatalogRelationError::resource_exhausted,"combined exact budget enforced");
+    result=read(3*sizes[s]);empty(result);Check(result.error==E::resource_exhausted,"no relation allowance remains");
+    result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,1,binding,budget);Check(result.ok()&&result.checkpoint.feature_root_index==0,"shared feature role selected");
+    persist(true);result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,6,{Id(101),{}},5*sizes[s]);
+    Check(result.ok()&&result.row_creators.size()==2&&result.navigation_creator_entries.empty()&&result.retained_image_bytes==5*sizes[s],"distinct feature direct route follows stored role");
+    result=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),devices,CheckpointRef(cp),8,1,binding,budget);empty(result);Check(result.error==E::missing_relation,"absent feature role has no catalog fallback");
+    if(p==0){const auto saved=inventory.inventory.entries[1];
+      for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal,mga::TransactionState::archived}){
+        auto& entry=inventory.inventory.entries[1];entry=saved;entry.state=state;entry.commit_sequence=0;if(state==mga::TransactionState::archived)entry.archived_from_state=mga::TransactionState::rolled_back;
+        const bool active=state==mga::TransactionState::active||state==mga::TransactionState::prepared;
+        persist(false,active||state==mga::TransactionState::failed_terminal?13:18,active?13:18);result=read(budget);
+        Check(result.ok()&&result.checkpoint.checkpoint_inventory.inventory.entries[1].state==state,"retained actual outcome is not replaced by checkpoint commit");}
+      inventory.inventory.entries[1]=saved;inventory.inventory.entries[1].identity.transaction_uuid.value=Id(240);persist();result=read(budget);empty(result);Check(result.error==E::creator_mismatch,"exact binary row creator required");
+      inventory.inventory.entries[1]=saved;inventory.inventory.entries[1].identity.scope=mga::TransactionScope::cluster_global;persist();result=read(budget);empty(result);Check(result.error==E::cluster_requires_authority,"global creator requires cluster authority");inventory.inventory.entries[1]=saved;
+      images.nodes.back().creator_transaction_uuid=Id(240);persist();result=read(budget);empty(result);Check(result.error==E::creator_mismatch,"late navigation creator checked");images=original;
+      auto row=images.leaves.back().body.rows.back();row.version_uuid=Id(241);row.row_uuid.value=Id(242);row.transaction_uuid.value=Id(240);row.internal_row_ordinal=row.stable_slot_id=3;
+      auto metadata=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(metadata.ok(),"unindexed creator envelope fixture");metadata.record.record.header.row_uuid=row.row_uuid;metadata.record.creator_transaction_uuid=row.transaction_uuid;
+      const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"well-formed unindexed creator fixture");row.cells[0].value.payload=encoded.bytes;images.leaves.back().body.rows.push_back(row);
+      persist();result=read(budget);empty(result);Check(result.error==E::creator_mismatch,"unindexed later creator checked before publication");images=original;persist();
+      reads=0;track_reads=true;result=read(budget);track_reads=false;const auto count=reads;Check(result.ok(),"measure checkpoint relation reads");
+      for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;result=read(budget);track_reads=false;Check(!read_fault,"actual read fault consumed");empty(result);}
+      observed_allocations=0;count_allocations=true;result=read(budget);count_allocations=false;const auto allocations=observed_allocations;Check(result.ok(),"measure checkpoint relation allocations");bool success=false;
+      for(unsigned long n=0;n<=allocations;++n){allocation_budget=n;result=read(budget);allocation_budget=-1;if(result.ok()){success=true;break;}empty(result);}Check(success,"every checkpoint relation allocation fault");
+      for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;result=read(budget);Check(!hash_fault,"actual hash fault consumed");empty(result);}
+      const auto mutex_of=[](auto& device){auto guard=device.AcquireOperationGuard();return guard.mutex();};const std::array mutexes{mutex_of(first),mutex_of(second),mutex_of(base)};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done=false;db::NativeCheckpointCatalogRelationResult paused;
+      std::thread reader([&]{paused=read(budget);done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();bool held=tree_read_paused.load();
+      for(auto* mutex:mutexes)if(mutex->try_lock()){held=false;mutex->unlock();}resume_tree_read=true;reader.join();pause_next_tree_read=false;Check(held&&paused.ok(),"all filespace guards span checkpoint and creator join");
+    }
+    persist();Exclusive(first.path());Exclusive(second.path());Exclusive(base.path());Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close before independent process");
+    const auto child=::fork();Check(child>=0,"fork checkpoint relation reader");if(child==0){const auto profile=std::to_string(p);
+      ::execl("/proc/self/exe","checkpoint-relation-probe","--checkpoint-relation-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process follows checkpoint through relation creators");
+  }
+}
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--checkpoint-relation-probe") {
+    const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;
+    if(!first.Open((dir/"index").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((dir/"data").string(),disk::FileOpenMode::open_existing_read_only).ok()
+      ||!base.Open((dir/"primary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    auto cp=CheckpointExample(s);cp.header.filespace_uuid=Id(9);const auto expected=CatalogBindingImages(p);
+    const auto r=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
+      {Id(101),expected.nodes[0].dependencies},4*sizes[p]+4*sizes[q]+6*sizes[s]);
+    return r.ok()&&r.row_creators.size()==8&&r.navigation_creator_entries.size()==7&&r.relation.bindings.size()==9?0:3;
+  }
   if(argc==4&&std::string_view(argv[1])=="--catalog-relation-probe") {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;
     if(!first.Open((dir/"catalog-index").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((dir/"catalog-data").string(),disk::FileOpenMode::open_existing_read_only).ok()
@@ -1864,7 +1952,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CheckpointCatalogRelations(); NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

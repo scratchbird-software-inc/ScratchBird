@@ -1933,6 +1933,103 @@ NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::io_failure);}
 }
 
+NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding& binding,
+    u64 maximum_retained_image_bytes) noexcept {
+  namespace disk = scratchbird::storage::disk;
+  namespace mga = scratchbird::transaction::mga;
+  using E = NativeCheckpointCatalogRelationError;
+  const auto fail = [](E error) { NativeCheckpointCatalogRelationResult r; r.error = error; return r; };
+  try {
+    if ((catalog_selector != 2 && catalog_selector != 8) || relation_role < 1 || relation_role > 6 ||
+        !maximum_retained_image_bytes || devices.empty() ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid)) return fail(E::invalid_reference);
+    auto ordered = devices;
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.filespace_uuid < b.filespace_uuid; });
+    for (std::size_t i = 0; i < ordered.size(); ++i) {
+      const auto& fs = ordered[i];
+      if (!fs.device || !scratchbird::core::uuid::IsEngineIdentityUuid(fs.filespace_uuid) ||
+          !disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid) ||
+          (i && ordered[i-1].filespace_uuid == fs.filespace_uuid)) return fail(E::invalid_filespace);
+      for (std::size_t j = 0; j < i; ++j)
+        if (ordered[j].device == fs.device) return fail(E::invalid_filespace);
+    }
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;
+    guards.reserve(ordered.size());
+    for (const auto& fs : ordered) guards.push_back(fs.device->AcquireOperationGuard());
+
+    NativeCheckpointCatalogRelationResult result;
+    result.checkpoint = VerifyNativeCheckpointCatalogRootsFromOpenDevices(
+        database_uuid, ordered, checkpoint, maximum_retained_image_bytes);
+    if (!result.checkpoint.ok()) {
+      auto error = fail(E::checkpoint_failure);
+      error.checkpoint.error = result.checkpoint.error;
+      error.checkpoint.catalog_error = result.checkpoint.catalog_error;
+      error.checkpoint.checkpoint_inventory.error = result.checkpoint.checkpoint_inventory.error;
+      error.checkpoint.checkpoint_inventory.inventory_error = result.checkpoint.checkpoint_inventory.inventory_error;
+      return error;
+    }
+    const auto catalog_index = catalog_selector == 2 ? 0 : result.checkpoint.feature_root_index;
+    const auto& catalog = *result.checkpoint.catalogs[catalog_index].root;
+    const auto head = std::find_if(catalog.roots.begin(), catalog.roots.end(),
+        [&](const auto& candidate) { return candidate.role == relation_role; });
+    if (head == catalog.roots.end()) return fail(E::missing_relation);
+    const auto consumed = result.checkpoint.retained_image_bytes;
+    if (consumed >= maximum_retained_image_bytes) return fail(E::resource_exhausted);
+    result.relation = ReadNativeCatalogRelationImagesFromOpenDevices(
+        database_uuid, ordered, *head, binding, maximum_retained_image_bytes - consumed);
+    if (!result.relation.ok()) {
+      auto error = fail(E::relation_failure);
+      error.relation.error = result.relation.error;
+      error.relation.tree_error = result.relation.tree_error;
+      error.relation.leaf_error = result.relation.leaf_error;
+      return error;
+    }
+    const auto& entries = result.checkpoint.checkpoint_inventory.inventory.entries;
+    std::map<u64, std::size_t> entries_by_number;
+    for (std::size_t i = 0; i < entries.size(); ++i)
+      entries_by_number.emplace(entries[i].identity.local_id.value, i);
+    E creator_error = E::none;
+    const auto creator = [&](u64 number, const auto& uuid) -> std::optional<std::size_t> {
+      const auto found = entries_by_number.find(number);
+      if (found == entries_by_number.end() || entries[found->second].identity.transaction_uuid.value != uuid) {
+        creator_error = E::creator_mismatch; return {};
+      }
+      if (entries[found->second].identity.scope != mga::TransactionScope::local_node) {
+        creator_error = E::cluster_requires_authority; return {};
+      }
+      return found->second;
+    };
+    if (result.relation.index) {
+      for (const auto& image : result.relation.index->pages) {
+        const auto entry = creator(image.page->creator_local_transaction_id, image.page->creator_transaction_uuid);
+        if (!entry) return fail(creator_error);
+        result.navigation_creator_entries.push_back(*entry);
+      }
+    }
+    for (std::size_t p = 0; p < result.relation.catalogs.size(); ++p) {
+      const auto& image = result.relation.catalogs[p];
+      for (std::size_t r = 0; r < image.page->body.rows.size(); ++r) {
+        const auto& row = image.page->body.rows[r];
+        const auto& metadata = image.metadata.at(row.version_uuid);
+        if (metadata.authority_scope == scratchbird::core::catalog::CatalogAuthorityScope::cluster)
+          return fail(E::cluster_requires_authority);
+        const auto entry = creator(row.local_transaction_id, row.transaction_uuid.value);
+        if (!entry) return fail(creator_error);
+        result.row_creators.push_back({p, r, *entry});
+      }
+    }
+    result.retained_image_bytes = consumed + result.relation.retained_image_bytes;
+    result.error = E::none;
+    return result;
+  } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
+    catch (const std::length_error&) { return fail(E::resource_exhausted); }
+    catch (...) { return fail(E::io_failure); }
+}
+
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     FileDevice& device, const TypedUuid& relation_uuid, u64 page_number,
     const VisibilitySnapshot& snapshot, bool latest_committed,

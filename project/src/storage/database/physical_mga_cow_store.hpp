@@ -9,6 +9,7 @@
 #pragma once
 
 #include "native_index_btree_page.hpp"
+#include "database_dirty_manifest.hpp"
 
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
@@ -107,6 +108,34 @@ NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::page::NativeCatalogRootReference&,
     const NativeCatalogRelationBinding&,u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeCatalogCreatorBinding {
+  std::size_t catalog_page_index = 0;
+  std::size_t catalog_row_index = 0;
+  std::size_t inventory_entry_index = 0;
+};
+enum class NativeCheckpointCatalogRelationError {
+  none, invalid_reference, invalid_filespace, checkpoint_failure, relation_failure,
+  missing_relation, creator_mismatch, cluster_requires_authority,
+  resource_exhausted, io_failure
+};
+struct NativeCheckpointCatalogRelationResult {
+  NativeCheckpointCatalogRelationError error = NativeCheckpointCatalogRelationError::invalid_reference;
+  NativeCheckpointCatalogResult checkpoint;
+  NativeCatalogRelationImageResult relation;
+  std::vector<std::size_t> navigation_creator_entries;
+  std::vector<NativeCatalogCreatorBinding> row_creators;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error==NativeCheckpointCatalogRelationError::none && checkpoint.ok() && relation.ok(); }
+};
+// Actual checkpoint -> catalog/feature role -> relation images -> inventory
+// creator identity. Not snapshot, family/key, root-selection or publication authority.
+NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
+    u64 maximum_retained_image_bytes) noexcept;
 
 enum class PhysicalMgaCowFinalizeDecision : u16 {
   commit,
