@@ -11,6 +11,8 @@
 #include <cerrno>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <barrier>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -18,6 +20,7 @@
 #include <source_location>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -511,6 +514,121 @@ void TransactionStartCommitOrder() {
   }
 }
 
+void NativeInventoryPublicationConcurrency() {
+  Fixture f;
+  auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok() && loaded.inventory.publication_base.has_value(), "native load omitted publication base");
+  const auto begin_a = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
+  const auto begin_b = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
+  Check(begin_a.ok() && begin_b.ok(), "derive competing begins");
+  const auto a = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, begin_a.inventory);
+  Check(a.ok() && a.inventory.publication_base != loaded.inventory.publication_base,
+      "successful publication did not renew base");
+  const auto journal_bytes = [&] {
+    std::ifstream in(f.path + ".sb.txn_publish", std::ios::binary);
+    Check(static_cast<bool>(in), "open publication image");
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  const auto reject = [&](mga::LocalTransactionInventory replacement) {
+    const auto before = f.Bytes(); const auto journal = journal_bytes();
+    const auto writes_before = write_calls, syncs_before = sync_calls;
+    const auto result = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, std::move(replacement));
+    Check(!result.ok() && result.inventory.entries.empty() && !result.inventory.publication_base,
+        "stale publication fabricated inventory receipt");
+    Check(result.diagnostic.diagnostic_code == "SB-TXN-INVENTORY-SNAPSHOT-STALE",
+        "stale publication diagnostic");
+    Check(f.Bytes() == before && journal_bytes() == journal && write_calls == writes_before && sync_calls == syncs_before,
+        "rejected publication changed node or journal");
+  };
+  reject(begin_b.inventory);
+  auto missing = a.inventory; missing.publication_base.reset(); reject(missing);
+  auto different_node = a.inventory; different_node.publication_base->database_uuid = Id(UuidKind::database).value;
+  reject(different_node);
+  auto altered_digest = a.inventory; altered_digest.publication_base->inventory_sha256[0] ^= 1; reject(altered_digest);
+  // A pristine-looking replacement cannot reset an already initialized node.
+  reject(mga::MakeEmptyLocalTransactionInventory());
+  auto regressed = a.inventory; regressed.entries.clear(); regressed.next_commit_sequence = 1;
+  const auto before_regression = f.Bytes(); const auto journal_before_regression = journal_bytes();
+  const auto regression = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, regressed);
+  Check(!regression.ok() && regression.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT" &&
+      f.Bytes() == before_regression && journal_bytes() == journal_before_regression,
+      "matching base admitted counter regression");
+  const auto next = mga::BeginLocalTransaction(a.inventory, Id(UuidKind::transaction), 1790000000210ull);
+  const auto next_publish = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, next.inventory);
+  Check(next.ok() && next_publish.ok(), "returned publication base cannot continue mutation");
+
+  // Exact two-writer history: both replacements derive from the same actual
+  // native load; only one can publish, even though both are structurally valid.
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  std::array<mga::LocalTransactionInventory, 2> replacements;
+  for (auto& replacement : replacements) {
+    const auto begun = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000220ull);
+    Check(begun.ok(), "begin simultaneous publication"); replacement = begun.inventory;
+  }
+  std::array<db::LocalTransactionStoreResult, 2> outcomes;
+  std::barrier start(3);
+  std::array<std::thread, 2> writers;
+  for (std::size_t i = 0; i < writers.size(); ++i)
+    writers[i] = std::thread([&, i] {
+      start.arrive_and_wait();
+      outcomes[i] = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, replacements[i]);
+    });
+  start.arrive_and_wait(); for (auto& writer : writers) writer.join();
+  Check(outcomes[0].ok() != outcomes[1].ok(), "competing stale copies both published or neither published");
+  const auto winner = outcomes[0].ok() ? 0u : 1u;
+  Check(outcomes[1 - winner].diagnostic.diagnostic_code == "SB-TXN-INVENTORY-SNAPSHOT-STALE",
+      "competing writer did not get stale-base refusal");
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok() && loaded.inventory.entries.back().identity.transaction_uuid.value ==
+      replacements[winner].entries.back().identity.transaction_uuid.value, "publication winner lost after native reload");
+
+  // Full native finalizers hold the compound guard across load/transition/
+  // publish, so independent valid transactions all commit, without stale retry
+  // races or duplicate sequence allocation.
+  constexpr std::size_t count = 6;
+  std::array<mga::TransactionIdentity, count> transactions;
+  for (auto& tx : transactions) {
+    tx = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+        f.Mutation(tx, Id(UuidKind::row), f.first_page, "concurrent-finality")).ok(), "stage concurrent finality row");
+  }
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok(), "load expected initial commit order");
+  const auto first_sequence = loaded.inventory.next_commit_sequence;
+  std::array<db::PhysicalMgaCowFinalizeResult, count> finalized;
+  std::vector<std::thread> finalizers;
+  std::barrier commit_start(static_cast<std::ptrdiff_t>(count + 1));
+  for (std::size_t i = 0; i < count; ++i)
+    finalizers.emplace_back([&, i] {
+      commit_start.arrive_and_wait();
+      finalized[i] = db::FinalizePhysicalMgaCowTransactionToOpenDevice(f.device,
+          {transactions[i], db::PhysicalMgaCowFinalizeDecision::commit, 1790000000300ull});
+    });
+  commit_start.arrive_and_wait(); for (auto& finalizer : finalizers) finalizer.join();
+  std::array<bool, count> sequences{};
+  for (const auto& final : finalized) {
+    Check(final.ok() && final.transaction_entry.commit_sequence >= first_sequence &&
+        final.transaction_entry.commit_sequence < first_sequence + count, "concurrent native finalizer failed or sequence escaped");
+    const auto index = final.transaction_entry.commit_sequence - first_sequence;
+    Check(!sequences[index], "concurrent finalizers reused commit order"); sequences[index] = true;
+    Check(final.inventory.publication_base.has_value(), "finalizer dropped refreshed publication base");
+  }
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen concurrent finality");
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok() && loaded.inventory.next_commit_sequence == first_sequence + count &&
+      f.Read(f.first_page).visible_rows.size() == count, "concurrent finality not durable after reopen");
+
+  // A different node has independent compound-operation ownership.
+  Fixture other;
+  auto held = f.device.AcquireOperationGuard();
+  std::atomic<bool> other_loaded{false};
+  std::thread independent([&] {
+    other_loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&other.device, page_size).ok();
+  });
+  independent.join();
+  Check(other_loaded.load(), "separate node shared compound-operation guard");
+}
+
 void ArchiveAndRecoveryCommitOrder() {
   for (bool commit : {false, true}) {
     Fixture f;
@@ -541,6 +659,8 @@ void ArchiveAndRecoveryCommitOrder() {
         compacted.inventory.entries.size() + 1 == loaded.inventory.entries.size() &&
         !mga::LookupLocalTransaction(compacted.inventory, tx.local_id).ok() &&
         compacted.inventory.next_commit_sequence == loaded.inventory.next_commit_sequence, "compaction reset commit order");
+    Check(compacted.inventory.publication_base == loaded.inventory.publication_base,
+        "compaction dropped exact native publication base");
     const auto next = mga::BeginLocalTransaction(compacted.inventory, Id(UuidKind::transaction), 1790000000500ull);
     Check(next.ok() && next.entry.begin_visible_through_commit_sequence == loaded.inventory.next_commit_sequence - 1,
         "compacted begin guessed commit order from remaining rows");
@@ -972,6 +1092,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

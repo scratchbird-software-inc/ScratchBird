@@ -4433,11 +4433,13 @@ DatabaseLifecycleResult WriteCatalogPageBodies(FileDevice* device,
 // SB-DATABASE-TXN-INVENTORY-INTEGRATION-ANCHOR
 DatabaseLifecycleResult WriteTransactionInventoryPage(FileDevice* device,
                                                       u32 page_size,
-                                                      const LocalTransactionInventory& inventory) {
+                                                      LocalTransactionInventory& inventory) {
   const auto persisted = PersistLocalTransactionInventoryToOpenDevice(device, page_size, inventory);
   if (!persisted.ok()) {
     return PropagateDiagnostic(persisted.status, persisted.diagnostic);
   }
+
+  inventory = persisted.inventory;
 
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
@@ -4723,11 +4725,11 @@ DatabaseLifecycleResult CommitLifecycleTransaction(FileDevice* device,
   if (!committed.ok()) {
     return PropagateDiagnostic(committed.status, committed.diagnostic);
   }
-  const auto written = WriteTransactionInventoryPage(device, page_size, committed.inventory);
+  const auto written = PersistLocalTransactionInventoryToOpenDevice(device, page_size, committed.inventory);
   if (!written.ok()) {
-    return written;
+    return PropagateDiagnostic(written.status, written.diagnostic);
   }
-  *inventory = std::move(committed.inventory);
+  *inventory = written.inventory;
   const auto computed_horizons = ComputeLocalTransactionHorizons(*inventory);
   if (!computed_horizons.ok()) {
     return PropagateDiagnostic(computed_horizons.status, computed_horizons.diagnostic);

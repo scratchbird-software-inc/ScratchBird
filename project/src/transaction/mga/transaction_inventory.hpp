@@ -12,6 +12,8 @@
 #include "runtime_platform.hpp"
 #include "transaction_state.hpp"
 
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,10 +38,19 @@ struct TransactionInventoryEntry {
   bool rollback_only = false;
 };
 
+// Trusted in-process optimistic-concurrency provenance, not durable state or
+// authorization. Native loading/publication issues it; pure transforms retain it.
+struct TransactionInventoryPublicationBase {
+  scratchbird::core::platform::Uuid database_uuid;
+  std::array<scratchbird::core::platform::byte, 32> inventory_sha256{};
+  bool operator==(const TransactionInventoryPublicationBase&) const = default;
+};
+
 struct LocalTransactionInventory {
   u64 next_local_transaction_id = 1;
   u64 next_commit_sequence = 1;
   std::vector<TransactionInventoryEntry> entries;
+  std::optional<TransactionInventoryPublicationBase> publication_base;
 };
 
 inline bool HasCommittedInventoryOutcome(const TransactionInventoryEntry& entry) {

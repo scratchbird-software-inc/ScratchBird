@@ -407,6 +407,7 @@ TransactionInventoryCompactionResult CompactLocalTransactionInventory(
   result.status = InventoryOkStatus();
   result.inventory.next_local_transaction_id = request.inventory.next_local_transaction_id;
   result.inventory.next_commit_sequence = request.inventory.next_commit_sequence;
+  result.inventory.publication_base = request.inventory.publication_base;
   for (const auto& entry : request.inventory.entries) {
     const bool can_drop = request.drop_archived_entries &&
                           entry.state == TransactionState::archived &&

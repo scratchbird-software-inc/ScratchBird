@@ -452,6 +452,19 @@ std::optional<scratchbird::core::platform::Uuid> PublicationDatabaseIdentity(Fil
   return parsed.header.database_uuid;
 }
 
+std::optional<scratchbird::transaction::mga::TransactionInventoryPublicationBase>
+InventoryPublicationBase(FileDevice* device, const LocalTransactionInventory& inventory) {
+  const auto database = PublicationDatabaseIdentity(device);
+  if (!database) return {};
+  // The canonical logical digest includes every durable inventory field, but
+  // deliberately excludes the transient publication_base itself.
+  TransactionInventoryPageBody body;
+  body.inventory = inventory;
+  const auto digest = scratchbird::storage::page::ComputeTransactionInventoryPageChainDigest(body);
+  if (!scratchbird::storage::page::TransactionInventoryPageDigestPresent(digest)) return {};
+  return scratchbird::transaction::mga::TransactionInventoryPublicationBase{*database, digest};
+}
+
 bool ValidPublicationInventory(const LocalTransactionInventory& inventory) {
   if (*scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(inventory)) return false;
   if (inventory.next_local_transaction_id == 0) { return false; }
@@ -952,9 +965,8 @@ LocalTransactionStoreResult WriteInventoryPageHeader(FileDevice* device,
   return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
 }
 
-LocalTransactionStoreResult CollectExistingChainOrInitial(FileDevice* device,
+LocalTransactionStoreResult CollectExistingChain(FileDevice* device,
                                                           u32 page_size,
-                                                          const LocalTransactionInventory& replacement,
                                                           LocalTransactionInventory* existing_inventory,
                                                           std::vector<u64>* existing_chain) {
   if (existing_inventory == nullptr) {
@@ -965,13 +977,6 @@ LocalTransactionStoreResult CollectExistingChainOrInitial(FileDevice* device,
   existing_inventory->next_local_transaction_id = 1;
   existing_inventory->next_commit_sequence = 1;
   const auto loaded = LoadInventoryChain(device, page_size, existing_inventory, existing_chain);
-  if (loaded.ok()) { return loaded; }
-  if (replacement.entries.empty() && replacement.next_local_transaction_id == 1 && replacement.next_commit_sequence == 1) {
-    *existing_inventory = scratchbird::transaction::mga::MakeEmptyLocalTransactionInventory();
-    existing_chain->clear();
-    existing_chain->push_back(kTransactionInventoryPageNumber);
-    return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
-  }
   return loaded;
 }
 
@@ -1135,11 +1140,23 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::strin
 }
 
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevice* device, u32 page_size) {
+  if (device == nullptr)
+    return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.null_device_or_context");
+  const auto operation_guard = device->AcquireOperationGuard();
+  const auto issue_base = [&](LocalTransactionStoreResult result) {
+    if (result.ok()) {
+      result.inventory.publication_base = InventoryPublicationBase(device, result.inventory);
+      if (!result.inventory.publication_base)
+        return StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+                              "transaction_inventory_snapshot.identity_invalid");
+    }
+    return result;
+  };
   LocalTransactionInventory inventory;
   std::vector<u64> page_chain;
   const auto loaded = LoadInventoryChain(device, page_size, &inventory, &page_chain);
   if (!loaded.ok()) {
-    return RecoverInventoryFromPublishJournal(device, loaded);
+    return issue_base(RecoverInventoryFromPublishJournal(device, loaded));
   }
   const auto horizons = ComputeLocalTransactionHorizons(inventory);
   if (!horizons.ok()) { return StoreError(horizons.status, horizons.diagnostic); }
@@ -1150,14 +1167,13 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   // A readable page chain can still be the pre-publication generation after a
   // process crash.  The fsynced publish journal is the authority that decides
   // whether recovery exposes the old or new whole-inventory snapshot.
-  return RecoverInventoryFromPublishJournal(device, result);
+  return issue_base(RecoverInventoryFromPublishJournal(device, result));
 }
 
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
     scratchbird::transaction::mga::LocalTransactionInventory inventory) {
   InvalidateTransactionInventoryCache(path);
-  const LocalTransactionInventory cache_inventory = inventory;
   FileDevice device;
   const auto open = device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) { return StoreError(open.status, open.diagnostic); }
@@ -1170,7 +1186,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
                                                             parsed_header.header.page_size,
                                                             std::move(inventory));
   if (result.ok()) {
-    RefreshTransactionInventoryCache(path, cache_inventory, result.horizons);
+    RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
   } else {
     InvalidateTransactionInventoryCache(path);
   }
@@ -1181,6 +1197,9 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     FileDevice* device,
     u32 page_size,
     LocalTransactionInventory inventory) {
+  if (device == nullptr)
+    return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.null_device_or_context");
+  const auto operation_guard = device->AcquireOperationGuard();
   // The journal is part of inventory authority. Refuse before even publishing
   // its "publishing" image; relying on WriteAt's read-only check changes the
   // journal first and can disturb a node opened only for inspection.
@@ -1222,7 +1241,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   std::vector<u64> page_chain;
   LocalTransactionInventory old_inventory;
   const auto existing_chain =
-      CollectExistingChainOrInitial(device, page_size, inventory, &old_inventory, &page_chain);
+      CollectExistingChain(device, page_size, &old_inventory, &page_chain);
   mark_phase("collect_existing_chain");
   // Validate existing publication authority even with a readable page chain.
   // Never overwrite an unsupported/corrupt journal or use a post-crash page
@@ -1241,6 +1260,21 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
                         ? journal.journal.new_inventory
                         : journal.journal.old_inventory;
   }
+
+  const auto current_base = InventoryPublicationBase(device, old_inventory);
+  const auto next_base = InventoryPublicationBase(device, inventory);
+  if (!current_base || !next_base)
+    return trace_and_return(StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+                                           "transaction_inventory_snapshot.identity_invalid"));
+  // Initial creation has its dedicated lifecycle publisher. Zero/corrupt page
+  // bytes alone cannot prove that an existing node is eligible for bootstrap.
+  if (inventory.publication_base != current_base)
+    return trace_and_return(StorePageError("SB-TXN-INVENTORY-SNAPSHOT-STALE",
+                                           "transaction_inventory_snapshot.publication_base_mismatch"));
+  if (inventory.next_local_transaction_id < old_inventory.next_local_transaction_id ||
+      inventory.next_commit_sequence < old_inventory.next_commit_sequence)
+    return trace_and_return(StorePageError("CATALOG.INVALID_INPUT",
+                                           "transaction_inventory_snapshot.counter_regression"));
 
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);
@@ -1315,6 +1349,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   if (!publish_commit.ok()) { return trace_and_return(publish_commit); }
   LocalTransactionStoreResult result;
   result.status = StoreOkStatus();
+  inventory.publication_base = next_base;
   result.inventory = std::move(inventory);
   result.horizons = horizons.horizons;
   return trace_and_return(std::move(result));

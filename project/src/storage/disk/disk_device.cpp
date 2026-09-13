@@ -1178,6 +1178,7 @@ FileDevice::~FileDevice() {
 }
 
 IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
+  const auto operation_guard = AcquireOperationGuard();
   if (is_open()) {
     return MakeIoError("SB-STORAGE-DISK-ALREADY-OPEN",
                        "storage.disk.already_open",
@@ -1500,6 +1501,7 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
 }
 
 IoResult FileDevice::Close() {
+  const auto operation_guard = AcquireOperationGuard();
   if (!is_open()) {
     return MakeIoError("SB-STORAGE-DISK-NOT-OPEN",
                        "storage.disk.not_open");

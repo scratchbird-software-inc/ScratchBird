@@ -754,6 +754,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutation(
 
 PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     FileDevice& device, const PhysicalMgaCowMutation& request) {
+  const auto operation_guard = device.AcquireOperationGuard();
   const auto valid = ValidateMutationRequest(request, device.path());
   if (!valid.ok()) {
     return valid;
@@ -811,7 +812,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
       return Propagate<PhysicalMgaCowMutationResult>(persisted_active.status,
                                                      persisted_active.diagnostic);
     }
-    active_inventory = begin.inventory;
+    active_inventory = persisted_active.inventory;
     active_entry = begin.entry;
   }
 
@@ -1032,6 +1033,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatch(
 
 PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(
     FileDevice& device, PhysicalMgaCowMutationBatch request) {
+  const auto operation_guard = device.AcquireOperationGuard();
   const auto trace_start = PhysicalCowSteadyClock::now();
   auto trace_last = trace_start;
   std::vector<std::pair<std::string, u64>> phase_micros;
@@ -1371,6 +1373,7 @@ PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransaction(
 
 PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransactionToOpenDevice(
     FileDevice& device, const PhysicalMgaCowFinalization& request) {
+  const auto operation_guard = device.AcquireOperationGuard();
   const auto valid = ValidateFinalization(request);
   if (!valid.ok()) return valid;
   const auto context = LoadDatabaseContext(&device);
@@ -1417,7 +1420,7 @@ PhysicalMgaCowFinalizeResult FinalizePhysicalMgaCowTransactionToOpenDevice(
 
   PhysicalMgaCowFinalizeResult result;
   result.status = CowStoreOkStatus();
-  result.inventory = finalized.inventory;
+  result.inventory = persisted.inventory;
   result.transaction_entry = finalized.entry;
   result.evidence.push_back("physical_mga_cow.visibility_published_by_inventory=true");
   result.evidence.push_back(std::string("physical_mga_cow.finalize=") +
@@ -1456,6 +1459,7 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     bool use_latest_committed_snapshot,
     const scratchbird::transaction::mga::TransactionIdentity& reader_identity,
     const scratchbird::transaction::mga::PublishedSnapshotPin* snapshot_pin) {
+  const auto operation_guard = device.AcquireOperationGuard();
   PhysicalMgaCowReadRequest request;
   request.database_path = device.path();
   request.relation_uuid = relation_uuid;

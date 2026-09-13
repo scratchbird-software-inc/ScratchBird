@@ -197,7 +197,14 @@ class FileDevice {
   bool read_only() const;
   const std::string& path() const;
 
+  // Serializes compound operations on this retained device. Recursive so an
+  // owning operation can call native readers/publishers under the same guard.
+  std::unique_lock<std::recursive_mutex> AcquireOperationGuard() {
+    return std::unique_lock<std::recursive_mutex>(operation_mutex_);
+  }
+
  private:
+  std::recursive_mutex operation_mutex_;
   IoResult MakeIoError(std::string diagnostic_code,
                        std::string message_key,
                        std::string detail = {},

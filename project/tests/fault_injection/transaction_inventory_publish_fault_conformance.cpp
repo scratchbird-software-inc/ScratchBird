@@ -368,9 +368,19 @@ void CorruptPrimaryInventoryRoot(const Fixture& fixture) {
 
 bool PersistInventory(const Fixture& fixture,
                       const txn::LocalTransactionInventory& inventory) {
+  // This codec/recovery fixture installs independently constructed inventory
+  // images; obtain the exact current publication base explicitly. Native stale
+  // writers are exercised separately by the retained-device concurrency test.
+  disk::FileDevice device;
+  const auto opened = device.Open(fixture.database_path.string(), disk::FileOpenMode::open_existing);
+  if (!Require(opened.ok(), "publication fixture open failed")) return false;
+  const auto current = database::LoadLocalTransactionInventoryFromOpenDevice(&device, fixture.page_size);
+  if (!Require(current.ok(), "publication fixture base load failed")) return false;
+  auto replacement = inventory;
+  replacement.publication_base = current.inventory.publication_base;
   const auto persisted =
-      database::PersistLocalTransactionInventoryToDatabase(
-          fixture.database_path.string(), inventory);
+      database::PersistLocalTransactionInventoryToOpenDevice(
+          &device, fixture.page_size, std::move(replacement));
   if (!persisted.ok()) {
     PrintDiagnostic(persisted.diagnostic);
   }

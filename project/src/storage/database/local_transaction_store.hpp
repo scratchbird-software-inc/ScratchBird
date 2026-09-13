@@ -101,6 +101,11 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
     scratchbird::transaction::mga::LocalTransactionInventory inventory);
+// Replacement must retain the database-bound publication_base issued by native
+// loading (or the preceding successful publication). Missing/stale bases refuse
+// before writes. Initial creation uses its dedicated lifecycle publisher, never
+// this replacement API with an absent base. Use the returned
+// inventory for further changes. This provenance is not ingress authorization.
 LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     scratchbird::storage::disk::FileDevice* device,
     u32 page_size,
