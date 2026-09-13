@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 namespace scratchbird::storage::database {
@@ -23,7 +24,7 @@ void PutRef(byte* p,const disk::NativePageReference& r){PutUuid(p,r.filespace_uu
 bool Ref(const disk::NativePageReference& r){const auto* p=disk::FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);
   return V7(r.filespace_uuid)&&p&&r.page_number&&r.page_generation&&r.page_number<std::numeric_limits<u64>::max()/p->page_size_bytes;}
 NativeSystemStateResult Fail(E e){NativeSystemStateResult r;r.error=e;return r;}
-auto Digest(const std::vector<byte>& b){const std::array<byte,32> zero{};const hash::HashDigestSegment parts[]={{b.data(),seal},{zero.data(),32},{b.data()+seal+32,b.size()-seal-32}};
+auto Digest(const std::vector<byte>& b,bool clear=true){const std::array<byte,32> zero{};const hash::HashDigestSegment parts[]={{b.data(),seal},{clear?zero.data():b.data()+seal,32},{b.data()+seal+32,b.size()-seal-32}};
   return hash::ComputeSha256DigestParts(parts,3);}
 E Validate(const NativeSystemState& s){const auto& h=s.header;
   if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=8||h.flags)return E::invalid_header;
@@ -86,5 +87,44 @@ NativeSystemStateResult ReadNativeSystemStateFromOpenDevice(disk::FileDevice& de
     for(const auto* target:{&s.checkpoint,&s.predecessor})if(*target&&(**target).filespace_uuid==h.filespace_uuid&&(**target).page_number>=z.total_pages)return Fail(E::invalid_reference);
     return r;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
+}
+NativeSystemStateHistoryResult ReadNativeSystemStateHistoryFromOpenDevices(
+    const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& head,const disk::FilespaceRootReference& terminal,u64 budget) noexcept {
+  const auto fail=[](E e){NativeSystemStateHistoryResult r;r.error=e;return r;};
+  const auto valid=[](const auto& ref){return ref.kind==1&&ref.page_type==8&&V7(ref.object_uuid)&&Ref({ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid});};
+  const auto same=[](const auto& a,const auto& b){return a.kind==b.kind&&a.page_type==b.page_type&&a.object_uuid==b.object_uuid&&
+    a.filespace_uuid==b.filespace_uuid&&a.page_size_profile_uuid==b.page_size_profile_uuid&&a.page_number==b.page_number&&a.page_generation==b.page_generation;};
+  try{
+    if(!V7(database_uuid)||devices.empty()||!budget||!valid(head)||!valid(terminal)||head.object_uuid!=terminal.object_uuid)return fail(E::invalid_reference);
+    auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(ordered.size());
+    std::set<disk::FileDevice*> pointers;Uuid prior;
+    for(const auto& file:ordered){if(!V7(file.filespace_uuid)||!(prior<file.filespace_uuid)||!file.device||!pointers.insert(file.device).second||
+        !disk::FindCanonicalFilespacePageProfile(file.page_size_profile_uuid))return fail(E::invalid_filespace);
+      guards.push_back(file.device->AcquireOperationGuard());prior=file.filespace_uuid;}
+    NativeSystemStateHistoryResult result;auto next=head;
+    std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> identities;
+    while(true){const auto file=std::lower_bound(ordered.begin(),ordered.end(),next.filespace_uuid,[](const auto& a,const auto& id){return a.filespace_uuid<id;});
+      if(file==ordered.end()||file->filespace_uuid!=next.filespace_uuid||file->page_size_profile_uuid!=next.page_size_profile_uuid)return fail(E::invalid_filespace);
+      const auto* profile=disk::FindCanonicalFilespacePageProfile(next.page_size_profile_uuid);
+      if(!profile||profile->page_size_bytes>budget-result.retained_image_bytes)return fail(E::resource_exhausted);
+      if(!slots.insert({next.filespace_uuid,next.page_number}).second)return fail(E::history_mismatch);
+      auto loaded=ReadNativeSystemStateFromOpenDevice(*file->device,database_uuid,next);if(!loaded.ok())return fail(loaded.error);
+      const auto& s=*loaded.state;if(!identities.insert(s.header.page_uuid).second)return fail(E::history_mismatch);
+      if(!result.pages.empty()){const auto& newer=*result.pages.back().state;const auto digest=Digest(loaded.bytes,false);
+        if(!digest.ok())return fail(E::hash_failure);if(digest.digest!=newer.predecessor_sha256)return fail(E::invalid_integrity);
+        if(s.state_generation==std::numeric_limits<u64>::max()||newer.state_generation!=s.state_generation+1||
+            newer.restart_generation<s.restart_generation||newer.startup_counter<s.startup_counter||newer.checkpoint_generation<s.checkpoint_generation)return fail(E::history_mismatch);
+        if(newer.checkpoint_generation==s.checkpoint_generation&&(newer.checkpoint!=s.checkpoint||newer.checkpoint_object_uuid!=s.checkpoint_object_uuid))return fail(E::history_mismatch);
+        if((newer.clean_transaction_uuid!=s.clean_transaction_uuid||newer.clean_local_transaction_id!=s.clean_local_transaction_id)&&
+            (newer.lifecycle!=NativeSystemLifecycle::closed||!newer.clean_local_transaction_id))return fail(E::history_mismatch);
+      }
+      result.retained_image_bytes+=loaded.bytes.size();const auto predecessor=s.predecessor;result.pages.push_back(std::move(loaded));
+      if(same(next,terminal)){result.error=E::none;return result;}
+      if(!predecessor)return fail(E::history_mismatch);
+      next={1,8,predecessor->filespace_uuid,predecessor->page_number,predecessor->page_generation,predecessor->page_size_profile_uuid,head.object_uuid};
+    }
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::io_failure);}
 }
 }  // namespace scratchbird::storage::database

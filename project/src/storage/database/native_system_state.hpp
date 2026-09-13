@@ -45,7 +45,7 @@ struct NativeSystemState {
 enum class NativeSystemStateError {
   none, invalid_header, invalid_family, invalid_identity, invalid_state,
   invalid_reference, invalid_integrity, hash_failure, resource_exhausted,
-  invalid_filespace, binding_mismatch, io_failure
+  invalid_filespace, binding_mismatch, io_failure, history_mismatch
 };
 struct NativeSystemStateResult {
   NativeSystemStateError error=NativeSystemStateError::invalid_family;
@@ -58,4 +58,16 @@ NativeSystemStateResult DecodeNativeSystemState(const std::vector<byte>&) noexce
 // Actual caller-owned device and exact reference, not startup/recovery admission.
 NativeSystemStateResult ReadNativeSystemStateFromOpenDevice(
     disk::FileDevice&,const Uuid& database_uuid,const disk::FilespaceRootReference&) noexcept;
+struct NativeSystemStateHistoryResult {
+  NativeSystemStateError error=NativeSystemStateError::invalid_reference;
+  std::vector<NativeSystemStateResult> pages;
+  u64 retained_image_bytes=0;
+  bool ok() const noexcept {return error==NativeSystemStateError::none&&!pages.empty();}
+};
+// Supplied retained range only; no inference of sufficient retention, committed
+// transitions, observed checkpoint truth or current runtime readiness.
+NativeSystemStateHistoryResult ReadNativeSystemStateHistoryFromOpenDevices(
+    const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>&,
+    const disk::FilespaceRootReference& head,const disk::FilespaceRootReference& terminal,
+    u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::database

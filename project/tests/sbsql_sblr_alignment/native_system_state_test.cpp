@@ -99,5 +99,58 @@ void Files(){for(unsigned profile=0;profile<5;++profile){Fixture fixture;auto s=
     put(s);auto bad=ref;bad.kind=2;Empty(db::ReadNativeSystemStateFromOpenDevice(device,Id(1),bad));
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only).ok(),"read-only system-state reopen");Check(read().ok()&&device.read_only(),"native state preserves read-only ownership");
   }}
+void Histories(){for(unsigned profile=0;profile<5;++profile){const unsigned other=(profile+1)%5;Fixture fixture;d::FileDevice first,second;
+    const auto path1=(fixture.root/"history-primary").string(),path2=(fixture.root/"history-secondary").string();
+    const auto make_zero=[&](unsigned p,byte fs,byte page_id){const auto example=Example(p);d::FilespacePageZero z;auto& b=z.bootstrap;
+      b.database_uuid=Id(1);b.filespace_uuid=Id(fs);b.page_size_profile_uuid=example.header.page_size_profile_uuid;b.page_size_bytes=example.header.page_size_bytes;
+      b.checksum_profile_uuid=d::kNativeBootstrapIntegrityProfile;b.filespace_role=fs==2?1:2;b.lifecycle_state=1;
+      z.page_uuid=Id(page_id);z.creation_operation_uuid=Id(4);z.writer_identity_uuid=Id(5);z.page_generation=7;z.root_set_generation=8;z.total_pages=64;
+      constexpr unsigned types[]={0,8,5,3,769,9,10,11,5,768};for(unsigned k=1;k<=9;++k)z.roots.push_back({static_cast<u16>(k),types[k],Id(fs),10+k,100+k,b.page_size_profile_uuid,Id(40+k)});return z;};
+    const auto z1=make_zero(profile,2,3),z2=make_zero(other,7,8);
+    Check(first.Open(path1,d::FileOpenMode::create_new).ok()&&second.Open(path2,d::FileOpenMode::create_new).ok(),"own mixed-profile system-state history devices");
+    const auto prepare=[&](auto& device,const auto& z){const auto bytes=d::EncodeFilespacePageZero(z);Check(bytes.ok(),"history page-zero fixture");const byte pad=0;
+      Check(device.WriteAt(z.total_pages*z.bootstrap.page_size_bytes-1,&pad,1).ok()&&device.WriteAt(0,bytes.bytes->data(),bytes.bytes->size()).ok()&&device.Sync().ok(),"actual history headers and capacity");};prepare(first,z1);prepare(second,z2);
+    std::array<db::NativeSystemState,3> states{Example(profile),Example(other),Example(profile)};
+    states[1].header.filespace_uuid=Id(7);
+    const auto page_ref=[](const auto& s){return d::NativePageReference{s.header.filespace_uuid,s.header.page_number,s.header.page_generation,s.header.page_size_profile_uuid};};
+    const auto root_ref=[&](const auto& s){const auto p=page_ref(s);return d::FilespaceRootReference{1,8,p.filespace_uuid,p.page_number,p.page_generation,p.page_size_profile_uuid,s.object_uuid};};
+    for(unsigned i=0;i<3;++i){auto& s=states[i];s.header.page_uuid=Id(70+i);s.header.page_number=11+i;s.header.page_generation=101+i;s.state_generation=1+i;
+      s.restart_generation=i?3:2;s.startup_counter=3+i;s.checkpoint=states[0].checkpoint;
+      if(i){s.checkpoint_generation=6;s.checkpoint->page_number=20;s.checkpoint->page_generation=110;s.predecessor=page_ref(states[i-1]);}}
+    const auto persist=[&](auto values){std::array<Bytes,3> bytes;
+      for(unsigned i=0;i<3;++i){if(i)Check(SHA256(bytes[i-1].data(),bytes[i-1].size(),values[i].predecessor_sha256.data())!=nullptr,"independent predecessor complete hash");
+        bytes[i]=Oracle(values[i]);auto& device=i==1?second:first;const auto io=device.WriteAt((11+i)*values[i].header.page_size_bytes,bytes[i].data(),bytes[i].size());
+        Check(io.ok()&&io.bytes_transferred==bytes[i].size()&&device.Sync().ok(),"persist exact retained system-state image");}
+      return bytes;};
+    const auto images=persist(states);
+    const std::vector<d::NativeFilespaceDevice> devices{{Id(7),z2.bootstrap.page_size_profile_uuid,&second},{Id(2),z1.bootstrap.page_size_profile_uuid,&first}};
+    const auto head=root_ref(states[2]),terminal=root_ref(states[0]);const u64 limit=2*z1.bootstrap.page_size_bytes+z2.bootstrap.page_size_bytes;
+    const auto read=[&](u64 budget){return db::ReadNativeSystemStateHistoryFromOpenDevices(Id(1),devices,head,terminal,budget);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&r.pages.empty()&&!r.retained_image_bytes,"system-state history failure returns no prefix");};
+    reads=hash_calls=0;allocations=0;count_allocations=true;auto r=read(limit);count_allocations=false;const auto nr=reads,nh=hash_calls;const auto na=allocations;
+    Check(r.ok()&&r.pages.size()==3&&r.retained_image_bytes==limit&&r.pages[0].bytes==images[2]&&r.pages[1].bytes==images[1]&&r.pages[2].bytes==images[0],"actual immutable mixed-profile system-state history");
+    auto same=db::ReadNativeSystemStateHistoryFromOpenDevices(Id(1),devices,head,head,z1.bootstrap.page_size_bytes);
+    Check(same.ok()&&same.pages.size()==1&&same.pages[0].bytes==images[2],"exact one-image supplied history range");
+    r=read(limit-1);empty(r);Check(r.error==E::resource_exhausted,"history shared image budget");
+    for(unsigned n=1;n<=nr;++n){reads=0;fail_read=n;r=read(limit);fail_read=0;empty(r);}
+    for(unsigned n=1;n<=nh;++n){hash_calls=0;fail_hash=n;r=read(limit);fail_hash=0;empty(r);Check(r.error==E::hash_failure,"history image and predecessor hash faults");}
+    if(profile==0){for(unsigned long n=0;n<=na;++n){allocation_budget=n;r=read(limit);allocation_budget=-1;if(r.ok())Check(r.pages.size()==3&&r.retained_image_bytes==limit&&r.pages[0].bytes==images[2]&&r.pages[1].bytes==images[1]&&r.pages[2].bytes==images[0],"history allocation recovery exact images");else empty(r);if(n==na)Check(r.ok(),"history allocation sweep terminal success");}std::cout<<"system-history allocation sites="<<na<<'\n';}
+    for(unsigned mutation=0;mutation<9;++mutation){auto changed=states;auto& older=changed[1];auto& newer=changed[2];
+      switch(mutation){case 0:newer.state_generation=4;break;case 1:newer.restart_generation=2;break;case 2:newer.startup_counter=3;break;
+        case 3:newer.checkpoint_generation=5;break;case 4:newer.checkpoint->page_number=21;break;case 5:newer.checkpoint_object_uuid=Id(96);break;
+        case 6:newer.clean_transaction_uuid=Id(94);break;case 7:newer.clean_transaction_uuid={};newer.clean_local_transaction_id=0;break;
+        case 8:older.header.page_uuid=newer.header.page_uuid;break;}
+      persist(changed);r=read(limit);empty(r);Check(r.error==E::history_mismatch,"resealed inconsistent history refused");}
+    auto changed=states;changed[2].lifecycle=L::closed;changed[2].flags=5;changed[2].clean_transaction_uuid=Id(94);changed[2].clean_local_transaction_id=18;
+    changed[2].creator_transaction_uuid=Id(94);changed[2].creator_local_transaction_id=18;persist(changed);Check(read(limit).ok(),"closed transition records a new clean transaction observation");
+    persist(states);auto altered=images[1];altered[312]^=1;Seal(altered);Check(db::DecodeNativeSystemState(altered).ok(),"resealed altered predecessor remains valid alone");
+    Check(second.WriteAt(12*z2.bootstrap.page_size_bytes,altered.data(),altered.size()).ok()&&second.Sync().ok(),"persist altered actual predecessor");r=read(limit);empty(r);Check(r.error==E::invalid_integrity,"complete predecessor digest is authoritative");
+    changed=states;changed[1].predecessor=page_ref(states[2]);persist(changed);r=read(limit);empty(r);Check(r.error==E::history_mismatch,"physical history cycle refused");
+    persist(states);auto missing=terminal;missing.page_number=14;empty(db::ReadNativeSystemStateHistoryFromOpenDevices(Id(1),devices,head,missing,limit));
+    auto duplicates=devices;duplicates.push_back(devices.front());empty(db::ReadNativeSystemStateHistoryFromOpenDevices(Id(1),duplicates,head,terminal,limit));
+    auto omitted=devices;omitted.erase(omitted.begin());empty(db::ReadNativeSystemStateHistoryFromOpenDevices(Id(1),omitted,head,terminal,limit));
+    Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,d::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,d::FileOpenMode::open_existing_read_only).ok(),"read-only history reopen");
+    Check(read(limit).ok()&&first.read_only()&&second.read_only(),"reopened owned system-state history");
+  }}
 }
-int main(){try{Codecs();Files();std::cout<<"PASS system-state checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+int main(){try{Codecs();Files();Histories();std::cout<<"PASS system-state checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
