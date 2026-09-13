@@ -28,6 +28,7 @@ add_library(sb_storage_database
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp
+  native_system_state.cpp
   write_path_batching.cpp
 )
 

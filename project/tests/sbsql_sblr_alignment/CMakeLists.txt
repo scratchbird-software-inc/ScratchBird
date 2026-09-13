@@ -8148,6 +8148,13 @@ set_tests_properties(sbsql_sblr_alignment_allocation_map_evidence PROPERTIES
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_allocation_map native_allocation_map_test.cpp)
   add_executable(sbsql_sblr_alignment_native_filespace_directory native_filespace_directory_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_system_state native_system_state_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_system_state PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_system_state PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_system_state PRIVATE -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new)
+  add_test(NAME sbsql_sblr_alignment_native_system_state COMMAND sbsql_sblr_alignment_native_system_state)
+  set_tests_properties(sbsql_sblr_alignment_native_system_state PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_system_state;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_native_filespace_directory PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_filespace_directory PRIVATE sb_storage_page)
   target_link_options(sbsql_sblr_alignment_native_filespace_directory PRIVATE
