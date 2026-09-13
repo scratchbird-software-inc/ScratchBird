@@ -5,6 +5,7 @@
 #include "metadata/function_hardening.hpp"
 #include "metadata/function_parser_projection.hpp"
 #include "common/function_result_helpers.hpp"
+#include "families/crypto_hash/crypto_hash_function_landing_zone.hpp"
 #include "sblr/sblr_aggregate_window_runtime.hpp"
 #include "sblr/sblr_function_diagnostic.hpp"
 #include "sblr/sblr_block_runtime.hpp"
@@ -24,6 +25,15 @@ namespace s = scratchbird::engine::sblr;
 namespace {
 std::atomic<long> fail_after{-1};
 unsigned checks = 0, failures = 0, allocation_faults = 0;
+thread_local bool rng_armed=false;
+thread_local int rng_result=1, rng_prefix=16, rng_interceptions=0;
+}
+extern "C" int __real_RAND_bytes(unsigned char*,int);
+extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
+  if(!rng_armed)return __real_RAND_bytes(out,count);
+  rng_armed=false;++rng_interceptions;
+  for(int i=0;i<count&&i<rng_prefix;++i)out[i]=static_cast<unsigned char>(0xa0+i);
+  return rng_result;
 }
 void* operator new(std::size_t n) {
   auto remaining = fail_after.load();
@@ -526,6 +536,65 @@ void BinaryUuidValues() {
         "frame selector compares binary identity");
   Check(s::LeaveSblrErrorHandler(&stack).ok()&&stack.frames.empty(),"frame exit retains lifecycle accounting");
 }
+void CryptoUuidGeneration() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  f::FunctionCallRequest request;
+  request.context.function_uuid={{0x01,0x9d,0xff,0xbb,0xf0,0x00,0x76,0x15,0xba,0x9c,0x4d,0xa4,0x76,0x32,0x27,0x45}};
+  Check(package.registry.BindCallContext(request.context)!=nullptr&&request.context.function_id=="sb.crypto.gen_random_uuid",
+        "crypto UUID invocation binds through the actual fixed binary seed");
+  request.context.sblr_context.deterministic_uuid_text="019d0000-0000-7000-8000-000000000001";
+  rng_armed=true;rng_prefix=16;rng_result=1;rng_interceptions=0;
+  const auto generated=f::DispatchCryptoHashFunction(request);
+  Check(!rng_armed&&rng_interceptions==1,"UUID generator cannot bypass Core entropy using a text override");
+  rng_armed=false;
+  Check(generated.result.ok()&&generated.result.scalar_values.size()==1&&generated.result.rows.empty(),"Core RNG supplies one UUID result");
+  if(!generated.result.scalar_values.empty()) {
+    const auto& value=generated.result.scalar_values.front();
+    s::SblrUuid expected;
+    for(unsigned i=0;i<16;++i)expected.bytes[i]=static_cast<unsigned char>(0xa0+i);
+    expected.bytes[6]=0x46;expected.bytes[8]=0xa8;
+    Check(value.payload_kind==s::SblrValuePayloadKind::uuid_binary&&value.uuid_value==expected&&
+          value.text_value.empty()&&value.encoded_value.empty()&&value.binary_value.empty(),
+          "UUIDv4 retains provider bits except RFC version and variant, without text mirrors");
+  }
+  for(int result:{0,-1})for(int prefix=0;prefix<=16;++prefix) {
+    rng_armed=true;rng_prefix=prefix;rng_result=result;rng_interceptions=0;
+    const auto failed=f::DispatchCryptoHashFunction(request);
+    Check(!rng_armed&&rng_interceptions==1&&!failed.result.ok()&&failed.result.scalar_values.empty()&&failed.result.rows.empty(),
+          "every partial RNG failure emits no UUID or partial data");
+    rng_armed=false;
+    Check(failed.result.diagnostics.size()==1&&failed.result.diagnostics[0].diagnostic_id=="CRYPTO.RNG.UNAVAILABLE",
+          "RNG failure has its exact canonical diagnostic");
+  }
+  request.arguments.push_back({"forbidden",f::MakeInt64Value("int64",1)});
+  rng_armed=true;rng_result=1;rng_prefix=16;rng_interceptions=0;
+  const auto arity=f::DispatchCryptoHashFunction(request);
+  // Error occurrence issuance may itself use the RNG. Count only the semantic
+  // result: no UUID is returned and the failure is not replaced by RNG failure.
+  rng_armed=false;
+  Check(!arity.result.ok()&&arity.result.scalar_values.empty(),"wrong arity cannot generate UUID success");
+  request.arguments.clear();
+  auto previous=s::SblrUuid{};
+  for(unsigned i=0;i<64;++i) {
+    const auto real=f::DispatchCryptoHashFunction(request);
+    Check(real.result.ok()&&real.result.scalar_values.size()==1,"actual unmodified Core RNG executes");
+    if(real.result.scalar_values.empty())continue;
+    const auto& uuid=real.result.scalar_values[0].uuid_value;
+    Check((uuid.bytes[6]>>4)==4&&(uuid.bytes[8]&0xc0)==0x80&&uuid!=previous,"actual Core UUIDv4 shape and successive identity");
+    previous=uuid;
+  }
+  for(const char* name:{"sb.crypto.blake2b","sb.crypto.sha3_256","sb.crypto.sha3_512","sb.crypto.hmac","sb.crypto.scrypt","sb.crypto.xxhash64","sb.crypto.pgcrypto"}) {
+    const auto* entry=package.registry.Lookup(name);
+    Check(entry!=nullptr,"crypto arity fixture has an actual seed binding");
+    if(!entry)continue;
+    request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"crypto arity fixture binds through binary identity");
+    const auto invalid=f::DispatchCryptoHashFunction(request);
+    Check(!invalid.result.ok()&&invalid.result.scalar_values.empty()&&invalid.result.rows.empty(),"crypto zero-argument probe cannot return a fabricated success marker");
+    if(request.context.function_id=="sb.crypto.pgcrypto")Check(invalid.result.diagnostics.size()==1&&invalid.result.diagnostics[0].diagnostic_id=="CRYPTO.PACKAGE.NOT_CALLABLE",
+        "package marker uses its specified noncallable diagnostic");
+  }
+}
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -541,6 +610,7 @@ int main() {
   BinaryDiagnostics();
   BinaryAggregate();
   BinaryUuidValues();
+  CryptoUuidGeneration();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

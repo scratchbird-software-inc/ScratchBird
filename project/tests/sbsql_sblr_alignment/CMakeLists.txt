@@ -52,6 +52,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/engine/functions/metadata/function_parser_projection.cpp
     ../../src/engine/functions/common/function_runtime.cpp
     ../../src/engine/functions/common/function_result_helpers.cpp
+    ../../src/engine/functions/families/crypto_hash/crypto_hash_function_landing_zone.cpp
     ../../src/engine/sblr/sblr_aggregate_window_runtime.cpp
     ../../src/engine/sblr/sblr_block_runtime.cpp
     ../../src/engine/sblr/sblr_function_diagnostic.cpp
@@ -61,6 +62,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_include_directories(sbsql_sblr_alignment_function_registry_binary PRIVATE
     ../../src/engine/functions ../../src/engine ../../src/engine/executor)
   target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid Threads::Threads)
+  target_link_options(sbsql_sblr_alignment_function_registry_binary PRIVATE "-Wl,--wrap=RAND_bytes")
   add_test(NAME sbsql_sblr_alignment_function_registry_binary
     COMMAND sbsql_sblr_alignment_function_registry_binary)
   set_tests_properties(sbsql_sblr_alignment_function_registry_binary PROPERTIES

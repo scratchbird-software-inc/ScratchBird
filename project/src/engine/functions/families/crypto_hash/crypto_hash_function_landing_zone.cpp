@@ -9,6 +9,7 @@
 #include "families/crypto_hash/crypto_hash_function_landing_zone.hpp"
 
 #include "common/function_result_helpers.hpp"
+#include "uuid.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -255,14 +256,8 @@ FunctionCallResult DependencyUnavailable(const FunctionCallRequest& request, std
                                       std::move(detail));
 }
 
-FunctionCallResult TextMarker(const FunctionCallRequest& request, std::string marker) {
-  if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, marker + " expects no arguments");
-  return MakeFunctionSuccess(request, {MakeTextValue("character", std::move(marker))});
-}
-
-FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_MD* md, std::string marker) {
-  if (request.arguments.empty()) return MakeFunctionSuccess(request, {MakeTextValue("character", std::move(marker))});
-  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "digest function expects zero or one argument");
+FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_MD* md) {
+  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "digest function expects exactly one argument");
   if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
   const auto bytes = RawBytesFromValue(request.arguments[0].value);
   if (bytes.size() > kMaxCryptoInputBytes) return RefuseFunctionInvalidInput(request, "digest input exceeds crypto scalar budget");
@@ -272,7 +267,6 @@ FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_
 }
 
 FunctionCallResult HmacFunction(const FunctionCallRequest& request) {
-  if (request.arguments.empty()) return MakeFunctionSuccess(request, {MakeTextValue("character", "crypto.hmac")});
   if (request.arguments.size() != 3) return RefuseFunctionInvalidInput(request, "hmac expects value, key, and algorithm");
   if (AnyNull(request)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
   const auto data = RawBytesFromValue(request.arguments[0].value);
@@ -319,19 +313,13 @@ FunctionCallResult RandomBytesFunction(const FunctionCallRequest& request, bool 
 
 FunctionCallResult RandomUuidFunction(const FunctionCallRequest& request) {
   if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "gen_random_uuid expects no arguments");
-  if (!request.context.sblr_context.deterministic_uuid_text.empty()) {
-    return MakeFunctionSuccess(request, {MakeTextValue("uuid", request.context.sblr_context.deterministic_uuid_text)});
+  const auto generated = scratchbird::core::uuid::GenerateCompatibilityRandomV4();
+  if (!generated.ok()) {
+    return RefuseFunctionWithDiagnostic(request,
+        scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+        "CRYPTO.RNG.UNAVAILABLE", "Core cryptographic RNG did not provide UUID entropy");
   }
-  std::array<std::uint8_t, 16> bytes{};
-  if (RAND_bytes(reinterpret_cast<unsigned char*>(bytes.data()), static_cast<int>(bytes.size())) != 1) {
-    return DependencyUnavailable(request, "OpenSSL RAND_bytes did not provide uuid entropy");
-  }
-  bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x40);
-  bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
-  const auto hex = HexEncode(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
-  const std::string uuid = hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" + hex.substr(12, 4) + "-" +
-                           hex.substr(16, 4) + "-" + hex.substr(20, 12);
-  return MakeFunctionSuccess(request, {MakeTextValue("uuid", uuid)});
+  return MakeFunctionSuccess(request, {scratchbird::engine::sblr::MakeSblrUuidValue(generated.value)});
 }
 
 std::string CryptSaltChars(const std::vector<std::uint8_t>& bytes, std::size_t count) {
@@ -383,7 +371,6 @@ FunctionCallResult GenSaltFunction(const FunctionCallRequest& request) {
 }
 
 FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
-  if (request.arguments.empty()) return MakeFunctionSuccess(request, {MakeTextValue("character", "crypto.scrypt")});
   if (request.arguments.size() < 2 || request.arguments.size() > 6) {
     return RefuseFunctionInvalidInput(request, "scrypt expects password, salt, and optional N/r/p/key_length");
   }
@@ -509,8 +496,7 @@ std::uint64_t Xxh64(const std::vector<std::uint8_t>& input, std::uint64_t seed) 
 }
 
 FunctionCallResult Xxh64Function(const FunctionCallRequest& request) {
-  if (request.arguments.empty()) return MakeFunctionSuccess(request, {MakeTextValue("character", "crypto.xxhash64")});
-  if (request.arguments.size() > 2) return RefuseFunctionInvalidInput(request, "xxhash64 expects value and optional seed");
+  if (request.arguments.empty() || request.arguments.size() > 2) return RefuseFunctionInvalidInput(request, "xxhash64 expects value and optional seed");
   if (IsSqlNull(request.arguments[0].value) || (request.arguments.size() == 2 && IsSqlNull(request.arguments[1].value))) {
     return MakeFunctionSuccess(request, {MakeNullValue("uint64")});
   }
@@ -597,10 +583,12 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
   if (IdIs(id, {"crypt", "crypt_password_salt"})) {
     return DependencyUnavailable(request, "system crypt password-hash provider is not pinned for ScratchBird core; exact fail-closed behavior is implemented");
   }
-  if (IdIs(id, {"pgcrypto"})) return TextMarker(request, "pgcrypto.sbsfc057.compatibility_envelope");
-  if (IdIs(id, {"blake2b"})) return DigestFunction(request, EVP_blake2b512(), "crypto.blake2b");
-  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, EVP_sha3_256(), "crypto.sha3_256");
-  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, EVP_sha3_512(), "crypto.sha3_512");
+  if (IdIs(id, {"pgcrypto"})) return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
+      "CRYPTO.PACKAGE.NOT_CALLABLE", "pgcrypto is a package capability, not a scalar function");
+  if (IdIs(id, {"blake2b"})) return DigestFunction(request, EVP_blake2b512());
+  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, EVP_sha3_256());
+  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, EVP_sha3_512());
   if (IdIs(id, {"hmac", "hmac_value_key_algo"})) return HmacFunction(request);
   if (IdIs(id, {"gen_random_bytes"})) return RandomBytesFunction(request, false);
   if (IdIs(id, {"gen_random_bytes_n"})) return RandomBytesFunction(request, true);
