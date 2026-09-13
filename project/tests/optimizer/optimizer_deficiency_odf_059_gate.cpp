@@ -73,6 +73,7 @@ void RequireNoRuntimeDocTokens(const std::vector<std::string>& evidence) {
 
 page::RowDataRecord Row(platform::u64 local_tx, platform::u64 salt) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = NewUuid(platform::UuidKind::row, 59000 + salt);

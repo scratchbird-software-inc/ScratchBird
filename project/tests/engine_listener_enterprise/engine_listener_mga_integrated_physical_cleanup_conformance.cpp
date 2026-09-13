@@ -261,6 +261,7 @@ txn::LocalGarbageCollectionSweepResult AuthoritativeSweep(
 page::RowDataRecord PageRow(const txn::RowVersionMetadata& metadata,
                             platform::u32 stable_slot_id) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = metadata.identity.version_uuid;
   row.row_uuid = metadata.identity.row.row_uuid;
   row.transaction_uuid = metadata.identity.creator_transaction.transaction_uuid;

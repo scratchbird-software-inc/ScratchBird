@@ -335,6 +335,7 @@ page::RowDataRecord RepairRowFor(
     scratchbird::core::platform::u64 local_id,
     scratchbird::core::platform::u32 version_sequence) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = version_sequence == 1 ? fixture.version_one_uuid.value
                                           : fixture.version_two_uuid.value;
   row.row_uuid = fixture.row_uuid;

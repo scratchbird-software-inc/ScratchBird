@@ -82,6 +82,7 @@ void Codec() {
   body.relation_uuid=Typed(p::UuidKind::object,1);body.segment_id=1;
   body.segment_generation=2;body.page_number=200;body.page_generation=3;
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.row_uuid=Typed(p::UuidKind::row,2);row.version_uuid=Id(3);
   row.transaction_uuid=Typed(p::UuidKind::transaction,4);row.local_transaction_id=5;
   row.row_version=(p::u64{1}<<40)+7;row.stable_slot_id=8;
@@ -89,8 +90,9 @@ void Codec() {
   row.next_row_version=row.row_version+1;row.next_version_uuid=Id(6);
   row.cells={Cell(42)};body.rows={row};
   const auto built=page::BuildRowDataPageBody(body,8192);Good(built);
-  Check(std::string(built.serialized.begin(),built.serialized.begin()+8)=="SBROW003","wrong row-page version");
+  Check(std::string(built.serialized.begin(),built.serialized.begin()+8)=="SBROW004","wrong row-page version");
   const auto& b=built.serialized;
+  Check(p::LoadLittle64(b.data()+96+136)==1,"residency generation not at specified offset");
   Check(p::LoadLittle64(b.data()+96+40)==row.row_version,"64-bit sequence truncated");
   for(const auto [offset,id]:{std::pair<unsigned,p::Uuid>{0,row.row_uuid.value},
       {16,row.transaction_uuid.value},{72,row.version_uuid},
@@ -99,10 +101,16 @@ void Codec() {
   const auto parsed=page::ParseRowDataPageBody(b,200);Good(parsed);
   Check(parsed.body.rows.size()==1 && parsed.body.rows[0].row_version==row.row_version &&
       parsed.body.rows[0].version_uuid==row.version_uuid &&
+      parsed.body.rows[0].storage_generation==row.storage_generation &&
       parsed.body.rows[0].previous_version_uuid==row.previous_version_uuid &&
       parsed.body.rows[0].next_version_uuid==row.next_version_uuid,"native version roundtrip lost identity");
   auto locator=page::MakeDenseRowOrdinalLocator(page::MakeDenseRowOrdinalScope(parsed.body),parsed.body.rows[0],true,true);
   Check(page::ValidateDenseRowOrdinalLocator(parsed.body,locator).accepted,"exact ordinal locator refused");
+  for(p::u64 generation:{p::u64{0},p::u64{4}}) {
+    auto malformed=parsed.body;malformed.rows.front().storage_generation=generation;
+    Check(!page::ValidateDenseRowOrdinalLocator(malformed,locator).accepted,
+          "ordinal acceleration accepted invalid residency generation");
+  }
   locator.version_uuid=Id(7);
   Check(!page::ValidateDenseRowOrdinalLocator(parsed.body,locator).accepted,"ordinal locator accepted another version");
   auto refuse=[&](std::vector<p::byte> bytes,bool refresh_row=true) {
@@ -110,6 +118,20 @@ void Codec() {
     const auto result=page::ParseRowDataPageBody(bytes,200);
     Check(!result.ok() && result.body.rows.empty() && result.serialized.empty(),"malformed native page published partial rows");
   };
+  for(p::u64 generation:{p::u64{0},p::u64{4},std::numeric_limits<p::u64>::max()}) {
+    auto bytes=b;p::StoreLittle64(bytes.data()+96+136,generation);refuse(bytes);
+    auto invalid=body;invalid.rows.front().storage_generation=generation;
+    Check(!page::BuildRowDataPageBody(invalid,8192).ok(),"invalid residency generation writer accepted");
+  }
+  for(p::u64 generation:{p::u64{1},p::u64{2},p::u64{3},std::numeric_limits<p::u64>::max()}) {
+    auto edge=body;edge.page_generation=generation;edge.rows.front().storage_generation=generation;
+    const auto encoded=page::BuildRowDataPageBody(edge,8192);Good(encoded);
+    const auto decoded=page::ParseRowDataPageBody(encoded.serialized,200);Good(decoded);
+    Check(decoded.body.rows.front().storage_generation==generation,"residency generation narrowed");
+  }
+  auto newer_page=body;newer_page.page_generation=99;
+  const auto retained=page::BuildRowDataPageBody(newer_page,8192);Good(retained);
+  Check(p::LoadLittle64(retained.serialized.data()+96+136)==1,"page rewrite changed retained residency generation");
   for(unsigned offset:{0u,16u,72u,104u,120u}) {
     for(unsigned version=0;version<16;++version) if(version!=7) {
       auto bytes=b;bytes[96+offset+6]=static_cast<p::byte>(version<<4);refuse(bytes);
@@ -121,12 +143,12 @@ void Codec() {
   for(unsigned offset:{52u,60u}) {auto bytes=b;p::StoreLittle32(bytes.data()+96+offset,0);refuse(bytes);}
   for(unsigned bit=1;bit<16;++bit) {auto bytes=b;p::StoreLittle16(bytes.data()+96+48,1u<<bit);refuse(bytes);}
   for(unsigned bit=1;bit<32;++bit) {auto bytes=b;p::StoreLittle32(bytes.data()+p::LoadLittle32(b.data()+88)+12,1u<<bit);refuse(bytes);}
-  for(unsigned version:{'1','2','4'}) {auto bytes=b;bytes[7]=version;refuse(bytes,false);}
-  for(unsigned offset:{16u,88u,96u+56u,96u+136u+4u}) {
+  for(unsigned version:{'1','2','3','5'}) {auto bytes=b;bytes[7]=version;refuse(bytes,false);}
+  for(unsigned offset:{16u,88u,96u+56u,96u+144u+4u}) {
     for(p::u32 value:{0u,1u,0xffffffffu}) {auto bytes=b;p::StoreLittle32(bytes.data()+offset,value);refuse(bytes,false);}
   }
   {auto bytes=b;bytes[20]=1;refuse(bytes);}
-  {auto bytes=b;bytes[96+136+2]=1;refuse(bytes);}
+  {auto bytes=b;bytes[96+144+2]=1;refuse(bytes);}
   for(unsigned mode=0;mode<4;++mode) {
     auto bad=body;
     if(mode==0)bad.rows[0].version_uuid={};
@@ -203,6 +225,8 @@ void SaveOracle(const fs::path& root,const page::RowDataRecord& row,p::u32 expec
     out.write(reinterpret_cast<const char*>(id.bytes.data()),16);
   p::byte bytes[4];p::StoreLittle32(bytes,expected_value);
   out.write(reinterpret_cast<const char*>(bytes),sizeof(bytes));
+  p::byte generation[8];p::StoreLittle64(generation,row.storage_generation);
+  out.write(reinterpret_cast<const char*>(generation),sizeof(generation));
   out.close();Check(out.good(),"binary oracle write failed");
 }
 void Reopen(const fs::path& root) {
@@ -219,6 +243,9 @@ void Reopen(const fs::path& root) {
     Check(in.good() && expected==id,"independent reopen changed binary identity");
   }
   p::byte expected_value[4];in.read(reinterpret_cast<char*>(expected_value),sizeof(expected_value));
+  p::byte generation[8];in.read(reinterpret_cast<char*>(generation),sizeof(generation));
+  Check(in.good() && p::LoadLittle64(generation)==result.visible_rows[0].storage_generation,
+        "independent reopen changed version residency generation");
   const auto& cells=result.visible_rows[0].cells;
   Check(in.good() && cells.size()==1 && cells[0].column_ordinal==1 &&
         cells[0].value.type_id==scratchbird::core::datatypes::CanonicalTypeId::int32 &&
@@ -241,18 +268,26 @@ void Storage(const fs::path& root,const std::string& self) {
   create.resource_seed_pack_root=SB_BOOTSTRAP_SEED_PACK_ROOT;
   Good(db::CreateDatabaseFile(create));
   const auto insert=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::insert,1));Good(insert);
+  Check(insert.page_generation==1 && insert.row_version.storage_generation==1,
+        "single insert did not issue actual residency generation");
   auto read=db::ReadPhysicalMgaCowRows(ReadRequest(root));Good(read);
   Check(read.visible_rows.empty(),"uncommitted insert became visible");Finish(root,insert,true);
   SaveOracle(root,insert.row_version,1);
   const auto independent=[&] { Check(std::system((Quote(self)+" --reopen "+Quote(root.string())).c_str())==0,"independent reopen failed"); };
   independent();
   const auto update=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::update,2));Good(update);
+  Check(update.page_generation==2 && update.row_version.storage_generation==2 &&
+        update.row_page.rows.front().storage_generation==1,
+        "single update replaced earlier residency or guessed its own generation");
   Check(update.row_version.previous_version_uuid==insert.row_version.version_uuid &&
         update.row_version.version_uuid!=insert.row_version.version_uuid,"update lost predecessor identity");
   independent();Finish(root,update,true);SaveOracle(root,update.row_version,2);independent();
   const auto undone=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::update,3));Good(undone);
+  Check(undone.row_version.storage_generation==3,"rolled-back version lacked actual residency");
   Finish(root,undone,false);independent();
   const auto deleted=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::delete_row,4));Good(deleted);
+  Check(deleted.row_version.storage_generation==4 && deleted.row_page.rows.front().storage_generation==1,
+        "delete changed retained residency generation");
   Check(deleted.row_version.previous_version_uuid==update.row_version.version_uuid &&
         deleted.row_version.cells.empty(),"delete did not retain exact predecessor");
   independent();Finish(root,deleted,true);
@@ -441,6 +476,12 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto staged=page::ApplyRowDataPhysicalSweep(sweep);Good(staged);
   Check(staged.removed_row_count==1 && staged.page.rows.size()+1==sweep.page.rows.size(),
         "exact native version was not removed from staged page");
+  for(const auto& retained_row:staged.page.rows) {
+    const auto original_row=std::find_if(sweep.page.rows.begin(),sweep.page.rows.end(),
+        [&](const auto& row){return row.version_uuid==retained_row.version_uuid;});
+    Check(original_row!=sweep.page.rows.end() && original_row->storage_generation==retained_row.storage_generation,
+        "compaction replaced retained residency generation");
+  }
   Check(staged.staged_page_changed && staged.diagnostic.diagnostic_code.empty(),
         "page staging claimed a physical mutation or fabricated success diagnostic");
   Check(std::none_of(staged.page.rows.begin(),staged.page.rows.end(),[&](const auto& row){

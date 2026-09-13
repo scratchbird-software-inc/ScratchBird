@@ -172,6 +172,8 @@ RepairIdentityDecision ValidateCommonAuthority(
 
 RepairIdentityDecision ValidateInputMetadata(
     const RepairIdentityRequest& request) {
+  if (request.original_row.storage_generation == 0 || request.candidate_row.storage_generation == 0)
+    return Refused(request, "CATALOG.INVALID_INPUT", "storage.repair_identity.storage_generation_invalid");
   const auto original = mga::ValidateRowVersionMetadata(
       request.original_metadata);
   if (!original.ok()) {
@@ -226,6 +228,8 @@ RepairIdentityDecision EvaluateExactIdentity(
   }
   if (!SameTypedUuid(request.original_row.row_uuid,
                      request.candidate_row.row_uuid) ||
+      (request.action == RepairIdentityAction::page_rewrite &&
+       request.original_row.storage_generation != request.candidate_row.storage_generation) ||
       !SameTypedUuid(request.original_version_uuid,
                      request.candidate_version_uuid) ||
       !SameMetadataIdentity(request.original_metadata,

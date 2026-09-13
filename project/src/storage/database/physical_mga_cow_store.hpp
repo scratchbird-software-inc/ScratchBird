@@ -307,6 +307,7 @@ struct PhysicalMgaCowRowReceipt {
   u64 page_number = 0;
   u64 page_generation = 0;
   u64 row_version = 0;
+  u64 storage_generation = 0;
   u32 stable_slot_id = 0;
   bool deleted = false;
 };

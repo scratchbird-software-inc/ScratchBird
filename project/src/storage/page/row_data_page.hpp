@@ -45,6 +45,9 @@ struct RowDataRecord {
   u32 internal_row_ordinal = 0;
   u32 stable_slot_id = 0;
   u64 row_version = 1;
+  // Native page generation at admission of this version's current residency.
+  // Preserved when later versions change the surrounding page image.
+  u64 storage_generation = 0;
   u64 previous_row_version = 0;
   u64 next_row_version = 0;
   bool deleted = false;

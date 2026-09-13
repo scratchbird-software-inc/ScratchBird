@@ -74,6 +74,7 @@ page::RowDataRecord Row(TypedUuid row_uuid,
                         bool deleted,
                         std::string_view text) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = row_uuid;

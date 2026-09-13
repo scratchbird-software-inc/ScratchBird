@@ -154,6 +154,7 @@ bool BodiesEqual(const page::RowDataPageBody& left,
         left_row.local_transaction_id != right_row.local_transaction_id ||
         left_row.internal_row_ordinal != right_row.internal_row_ordinal ||
         left_row.row_version != right_row.row_version ||
+        left_row.storage_generation != right_row.storage_generation ||
         left_row.previous_row_version != right_row.previous_row_version ||
         left_row.next_row_version != right_row.next_row_version ||
         left_row.deleted != right_row.deleted ||

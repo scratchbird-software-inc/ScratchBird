@@ -954,6 +954,8 @@ void NativeCatalogMetadataVersions() {
     const auto actual = std::find_if(native.visible_rows.begin(), native.visible_rows.end(),
         [&](const auto& row) { return row.version_uuid == receipt.version_uuid; });
     Check(actual != native.visible_rows.end() && actual->stable_slot_id == receipt.stable_slot_id &&
+        receipt.storage_generation == receipt.page_generation && receipt.storage_generation != 0 &&
+        actual->storage_generation == receipt.storage_generation &&
         actual->row_version == receipt.row_version && actual->previous_version_uuid == receipt.previous_version_uuid,
         "receipt did not identify an actual staged row version");
     Check(combined.Read(receipt.page_number).visible_rows.empty(), "catalog batch leaked before commit");
@@ -1107,6 +1109,12 @@ void FailedNativeBatchCannotCommitPrefix() {
     Check(std::find(written.evidence.begin(), written.evidence.end(), fast_path_evidence) != written.evidence.end(),
         "batch reported a fast path that was not used");
     Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen successful batch");
+    for (const auto& receipt : written.row_receipts) {
+      const auto native_page = f.Read(receipt.page_number, tx);
+      Check(receipt.storage_generation == 1 && receipt.page_generation == 1 &&
+          native_page.row_page.rows.size() == 1 && native_page.row_page.rows.front().storage_generation == 1,
+          "ordinary or fast batch residency receipt did not survive reopen");
+    }
     const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
     Check(inventory.ok(), "load completed batch inventory");
     const auto active = mga::LookupLocalTransaction(inventory.inventory, tx.local_id);
@@ -1133,6 +1141,8 @@ void FailedNativeBatchCannotCommitPrefix() {
       const auto row = std::find_if(actual_page.row_page.rows.begin(), actual_page.row_page.rows.end(),
           [&](const auto& item) { return item.version_uuid == receipt.version_uuid; });
       Check(row != actual_page.row_page.rows.end() && row->deleted == receipt.deleted &&
+          receipt.storage_generation == receipt.page_generation && receipt.storage_generation == 2 &&
+          row->storage_generation == receipt.storage_generation &&
           row->previous_version_uuid == receipt.previous_version_uuid,
           "mixed mutation receipt does not reference actual native version");
     }

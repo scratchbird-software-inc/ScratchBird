@@ -75,6 +75,8 @@ page::RowDataPageBody RowBody() {
   body.page_generation = 3;
 
   page::RowDataRecord row;
+
+  row.storage_generation = 1;
   row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = MakeUuid(UuidKind::row, 11);
@@ -229,6 +231,13 @@ bool BodyAgreementProfiles() {
               "row agreement should identify row body kind") && ok;
   ok = Expect(row_agreement.production_admitted,
               "row body should remain production-admitted") && ok;
+  for (byte version : {byte{'1'}, byte{'2'}, byte{'3'}}) {
+    auto legacy = row.serialized;
+    legacy[7] = version;
+    const auto refused = Agreement(disk::PageType::row_data, RowBody().page_number,
+                                  100, legacy, page::PageBodyChecksumProfile::strong);
+    ok = Expect(!refused.ok(), "older row format must not gain body/header admission") && ok;
+  }
 
   const auto btree = page::BuildIndexBtreePageBody(BtreeBody(), kPageSize);
   ok = Expect(btree.ok(), "B-tree body should build") && ok;

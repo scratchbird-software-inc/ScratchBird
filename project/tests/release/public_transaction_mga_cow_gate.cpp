@@ -76,6 +76,7 @@ txn::RowVersionMetadata Version(txn::RowIdentity row,
   metadata.identity.version_sequence = sequence;
   metadata.state = state;
   metadata.creator_transaction_state = creator_state;
+  metadata.creator_commit_sequence = creator.commit_sequence;
   metadata.payload_present = payload_present;
   return metadata;
 }
@@ -456,6 +457,8 @@ bool PhysicalRowPageProof() {
   body.page_generation = 7;
 
   page::RowDataRecord live;
+
+  live.storage_generation = 1;
   live.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   live.row_uuid = MakeUuid(UuidKind::row, 81);
@@ -465,6 +468,8 @@ bool PhysicalRowPageProof() {
   body.rows.push_back(live);
 
   page::RowDataRecord deleted;
+
+  deleted.storage_generation = 1;
   deleted.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   deleted.row_uuid = MakeUuid(UuidKind::row, 83);

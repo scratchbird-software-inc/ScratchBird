@@ -894,7 +894,8 @@ db::NativeCatalogLeafPage LeafExample(unsigned p=0) {
   b.segment_id=1; b.segment_generation=2; b.compaction_generation=3;
   b.page_number=21; b.page_generation=7;
   for(unsigned i=0;i<2;++i) {
-    page::RowDataRecord row; row.row_uuid={platform::UuidKind::row,Id(static_cast<byte>(160+i))};
+    page::RowDataRecord row;
+    row.storage_generation = 1; row.row_uuid={platform::UuidKind::row,Id(static_cast<byte>(160+i))};
     row.version_uuid=Id(static_cast<byte>(170+i)); row.transaction_uuid={platform::UuidKind::transaction,Id(162)};
     row.local_transaction_id=13; row.internal_row_ordinal=i+1; row.stable_slot_id=i+1;
     catalog::CatalogMetadataVersion metadata;
@@ -927,7 +928,7 @@ void LeafSeal(Bytes& b) {
 }
 Bytes LeafOracle(const db::NativeCatalogLeafPage& leaf) {
   const auto& h=leaf.header; const auto& body=leaf.body; Bytes b(h.page_size_bytes,0);
-  const std::string_view cm="SBPGV002",rm="SBROW003",vm="SBDVAL01";
+  const std::string_view cm="SBPGV002",rm="SBROW004",vm="SBDVAL01";
   std::copy(cm.begin(),cm.end(),b.begin()); Number(b,8,4,128); Number(b,12,4,h.page_size_bytes);
   Number(b,16,4,h.page_type); Number(b,20,2,1); Number(b,22,2,1);
   PutUuid(b,24,h.database_uuid); PutUuid(b,40,h.filespace_uuid); PutUuid(b,56,h.page_uuid);
@@ -947,7 +948,8 @@ Bytes LeafOracle(const db::NativeCatalogLeafPage& leaf) {
     Number(b,at+48,2,row.deleted?1:0); Number(b,at+50,2,row.cells.size()); Number(b,at+52,4,i+1);
     Number(b,at+60,4,row.stable_slot_id); PutUuid(b,at+72,row.version_uuid);
     Number(b,at+88,8,row.previous_row_version); Number(b,at+96,8,row.next_row_version);
-    PutUuid(b,at+104,row.previous_version_uuid); PutUuid(b,at+120,row.next_version_uuid); at+=136;
+    PutUuid(b,at+104,row.previous_version_uuid); PutUuid(b,at+120,row.next_version_uuid);
+    Number(b,at+136,8,row.storage_generation); at+=144;
     for(const auto& cell:row.cells) {
       const auto& payload=cell.value.payload; const unsigned value=at+16;
       Number(b,at,2,cell.column_ordinal); Number(b,at+4,4,32+payload.size());
@@ -1098,6 +1100,13 @@ void CatalogLeaves() {
     Check(empty.ok()&&empty.bytes==LeafOracle(leaf)&&empty.metadata.empty(),"empty allocated leaf, not absent table success");
   }
   const auto leaf=LeafExample(); const auto good=LeafOracle(leaf);
+  for(platform::u64 generation:{platform::u64{0},leaf.body.page_generation+1,
+      std::numeric_limits<platform::u64>::max()}) {
+    auto bad=leaf;bad.body.rows.back().storage_generation=generation;
+    LeafReject(db::EncodeNativeCatalogLeaf(bad),Error::invalid_body);
+    // Independent oracle refreshes all row, body and page integrity fields.
+    LeafReject(db::DecodeNativeCatalogLeaf(LeafOracle(bad)),Error::invalid_body);
+  }
   for(std::size_t at=0;at<good.size();++at) {
     auto b=good; b[at]^=1; const auto r=db::DecodeNativeCatalogLeaf(b);
     Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty(),"every leaf byte corruption fails without prefix");

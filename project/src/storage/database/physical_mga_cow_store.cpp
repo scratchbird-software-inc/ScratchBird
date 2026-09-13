@@ -941,6 +941,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   }
 
   RowDataRecord new_row;
+  new_row.storage_generation = row_page.page_generation;
   new_row.version_uuid = version_uuid.value.value;
   new_row.previous_version_uuid = previous_version_uuid;
   new_row.row_uuid = request.row_uuid;
@@ -1167,6 +1168,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     receipt.creator = active_entry.identity;
     receipt.version_uuid = row.version_uuid; receipt.previous_version_uuid = row.previous_version_uuid;
     receipt.page_number = mutation.page_number; receipt.row_version = row.row_version;
+    receipt.storage_generation = row.storage_generation;
     receipt.stable_slot_id = row.stable_slot_id; receipt.deleted = row.deleted;
     row_receipts.push_back(std::move(receipt));
   };
@@ -1257,6 +1259,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
       if (!version_uuid.ok())
         return Propagate<PhysicalMgaCowMutationBatchResult>(version_uuid.status, version_uuid.diagnostic);
       RowDataRecord new_row;
+      new_row.storage_generation = row_page.page_generation;
       new_row.version_uuid = version_uuid.value.value;
       new_row.row_uuid = mutation_request.row_uuid;
       new_row.transaction_uuid = mutation_request.transaction_uuid;
@@ -1341,6 +1344,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     }
 
     RowDataRecord new_row;
+    new_row.storage_generation = row_page.page_generation;
     new_row.version_uuid = version_uuid.value.value;
     new_row.previous_version_uuid = previous_version_uuid;
     new_row.row_uuid = mutation_request.row_uuid;

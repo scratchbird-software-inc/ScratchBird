@@ -39,7 +39,7 @@ using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
 using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
-inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '3'};
+inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '4'};
 inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
@@ -55,7 +55,8 @@ inline constexpr u32 kOffsetCompactionGeneration = 80;
 inline constexpr u32 kOffsetSlotDirectoryOffset = 88;
 inline constexpr u32 kOffsetFreeSpaceBytes = 92;
 
-inline constexpr u32 kRowHeaderBytes = 136;
+inline constexpr u32 kRowHeaderBytes = 144;
+inline constexpr u32 kRowOffsetStorageGeneration = 136;
 inline constexpr u32 kRowOffsetInternalOrdinal = 52;
 inline constexpr u32 kRowOffsetRowBytes = 56;
 inline constexpr u32 kRowOffsetRowChecksum = 64;
@@ -120,7 +121,7 @@ bool ValidRowIdentity(const RowDataRecord& row) {
          IsTypedEngineIdentity(row.transaction_uuid, UuidKind::transaction) &&
          IsEngineIdentityUuid(row.version_uuid) &&
          row.version_uuid != row.row_uuid.value &&
-         row.local_transaction_id != 0 && row.row_version != 0 &&
+         row.local_transaction_id != 0 && row.row_version != 0 && row.storage_generation != 0 &&
          valid_link(row.previous_version_uuid, row.previous_row_version) &&
          valid_link(row.next_version_uuid, row.next_row_version) &&
          (row.previous_row_version == 0 || row.previous_row_version < row.row_version) &&
@@ -272,7 +273,8 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   if (row.internal_row_ordinal != locator.internal_row_ordinal) {
     return RowOrdinalRefusal(body, locator, "ordinal_slot_mismatch");
   }
-  if (!ValidRowIdentity(row) || !IsEngineIdentityUuid(locator.version_uuid) ||
+  if (!ValidRowIdentity(row) || row.storage_generation > body.page_generation ||
+      !IsEngineIdentityUuid(locator.version_uuid) ||
       row.version_uuid != locator.version_uuid) {
     return RowOrdinalRefusal(body, locator, "version_uuid_mismatch");
   }
@@ -328,6 +330,8 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
   std::set<scratchbird::core::platform::Uuid> version_ids;
   std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
   for (const RowDataRecord& row : body_with_ordinals.rows) {
+    if (row.storage_generation == 0 || row.storage_generation > body_with_ordinals.page_generation)
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.storage_generation_invalid");
     if (!ValidRowIdentity(row) ||
         !version_ids.insert(row.version_uuid).second ||
         !row_sequences.emplace(row.row_uuid.value, row.row_version).second) {
@@ -430,6 +434,8 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
               result.serialized.begin() + offset + kRowOffsetPreviousVersionUuid);
     std::copy(row.next_version_uuid.bytes.begin(), row.next_version_uuid.bytes.end(),
               result.serialized.begin() + offset + kRowOffsetNextVersionUuid);
+    StoreLittle64(result.serialized.data() + offset + kRowOffsetStorageGeneration,
+                  row.storage_generation);
     offset += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
       const std::vector<byte>& encoded = encoded_cells[cell_index++];
@@ -563,6 +569,9 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     std::copy(serialized.begin() + offset + 16, serialized.begin() + offset + 32, row.transaction_uuid.value.bytes.begin());
     row.local_transaction_id = LoadLittle64(serialized.data() + offset + 32);
     row.row_version = LoadLittle64(serialized.data() + offset + 40);
+    row.storage_generation = LoadLittle64(serialized.data() + offset + kRowOffsetStorageGeneration);
+    if (row.storage_generation == 0 || row.storage_generation > result.body.page_generation)
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.storage_generation_invalid");
     const auto row_flags = LoadLittle16(serialized.data() + offset + 48);
     if ((row_flags & ~RowFlag::deleted) != 0) {
       return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.row_flags_invalid");

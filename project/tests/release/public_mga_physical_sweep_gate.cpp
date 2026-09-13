@@ -70,6 +70,9 @@ txn::TransactionInventoryEntry InventoryEntry(u64 local_id,
   txn::TransactionInventoryEntry entry;
   entry.identity = TransactionIdentity(local_id);
   entry.state = state;
+  // This fixture commits transactions 1 and 2 in that order, then rolls back 3.
+  entry.commit_sequence = state == txn::TransactionState::committed ? local_id : 0;
+  entry.begin_visible_through_commit_sequence = local_id - 1;
   entry.begin_unix_epoch_millis = kBaseMillis + local_id;
   entry.final_unix_epoch_millis = kBaseMillis + 1000 + local_id;
   entry.begin_visible_through_local_transaction_id =
@@ -82,6 +85,7 @@ txn::TransactionInventoryEntry InventoryEntry(u64 local_id,
 txn::LocalTransactionInventory Inventory() {
   txn::LocalTransactionInventory inventory = txn::MakeEmptyLocalTransactionInventory();
   inventory.next_local_transaction_id = 4;
+  inventory.next_commit_sequence = 3;
   inventory.entries.push_back(InventoryEntry(1, txn::TransactionState::committed));
   inventory.entries.push_back(InventoryEntry(2, txn::TransactionState::committed));
   inventory.entries.push_back(InventoryEntry(3, txn::TransactionState::rolled_back));
@@ -103,6 +107,7 @@ txn::RowVersionMetadata Metadata(TypedUuid row_uuid,
   metadata.identity.version_sequence = version_sequence;
   metadata.state = row_state;
   metadata.creator_transaction_state = creator_state;
+  metadata.creator_commit_sequence = creator_state == txn::TransactionState::committed ? creator_tx : 0;
   metadata.payload_present = true;
   if (successor_tx != 0) {
     metadata.successor_transaction_local_id =
@@ -177,6 +182,7 @@ txn::LocalGarbageCollectionSweepResult AuthoritativeSweep(
 page::RowDataRecord PageRow(const txn::RowVersionMetadata& metadata,
                             scratchbird::core::platform::u32 stable_slot_id) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = metadata.identity.version_uuid;
   row.row_uuid = metadata.identity.row.row_uuid;
   row.transaction_uuid =
@@ -415,7 +421,7 @@ bool RelationIndexSweepProof() {
   ok = Expect(!refused.ok && refused.fail_closed,
               "PCR-083 relation sweep should fail closed without authority") &&
        ok;
-  ok = Expect(refused.diagnostic.detail.find("engine_mga_authority_required") !=
+  ok = Expect(refused.diagnostic.detail.find("cleanup_authority_required") !=
                   std::string::npos,
               "PCR-083 relation authority refusal should be exact") &&
        ok;

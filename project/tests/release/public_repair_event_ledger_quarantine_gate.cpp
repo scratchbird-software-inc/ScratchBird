@@ -319,6 +319,7 @@ page::RowDataPageBody RowBody(const RepairFixture& fixture) {
   body.page_number = fixture.page_number;
   body.page_generation = 9;
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
       scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = fixture.row_uuid;

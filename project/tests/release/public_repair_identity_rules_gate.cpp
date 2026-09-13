@@ -88,6 +88,7 @@ page::RowDataRecord RowFor(const Fixture& fixture,
                            u64 local_id,
                            u32 version_sequence) {
   page::RowDataRecord row;
+  row.storage_generation = 1;
   row.version_uuid = version_sequence == 1 ? fixture.old_version_uuid.value
                                           : fixture.new_version_uuid.value;
   row.row_uuid = fixture.row_uuid;
@@ -205,6 +206,15 @@ bool PageRewriteRoundTripProof(const Fixture& fixture) {
   const auto accepted = page::EvaluateRepairIdentityRule(request);
   ok = Expect(accepted.ok(),
               "page rewrite should preserve row and version identities") && ok;
+  auto changed_generation = request;
+  ++changed_generation.candidate_row.storage_generation;
+  const auto generation_refusal = page::EvaluateRepairIdentityRule(changed_generation);
+  ok = Expect(!generation_refusal.ok(),
+              "page rewrite must preserve retained residency generation") && ok;
+  changed_generation.candidate_row.storage_generation = 0;
+  const auto missing_generation = page::EvaluateRepairIdentityRule(changed_generation);
+  ok = Expect(!missing_generation.ok() && missing_generation.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT",
+              "repair must not invent missing native residency generation") && ok;
 
   auto changed_version = request;
   changed_version.candidate_version_uuid = fixture.new_version_uuid;
