@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,6 +29,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 constexpr platform::u32 kPageSize = 8192;
+std::size_t checks = 0;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -35,6 +37,7 @@ constexpr platform::u32 kPageSize = 8192;
 }
 
 void Require(bool condition, std::string_view message) {
+  ++checks;
   if (!condition) {
     Fail(message);
   }
@@ -103,6 +106,7 @@ page::AllocationMapPageBody FixtureBody() {
   body.allocation_map_page_number = 42;
   body.map_generation = 7;
   body.capacity_generation = 9;
+  body.page_size_bytes = kPageSize;
   body.filespace_start_page = 1;
   body.total_pages = 128;
   body.extents = {
@@ -204,7 +208,9 @@ void ProveBuildParseAgreementAndReopen() {
 
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() /
-      "scratchbird_allocation_map_page_conformance.sbalm";
+      ("scratchbird_allocation_map_" +
+       uuid::UuidToString(MakeUuid(platform::UuidKind::object, 6000).value) +
+       ".sbalm");
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     Require(out.good(), "failed to create persisted allocation map body");
@@ -280,14 +286,17 @@ void ProveRebuild() {
   }
   Require(rebuilt.ok(), "allocation map rebuild failed");
   Require(rebuilt.body.extents.size() == 4,
-          "allocation map rebuild did not fill free gaps");
+          "allocation map rebuild did not classify gaps");
   Require(rebuilt.body.extents[0].start_page == 1 &&
               rebuilt.body.extents[1].start_page == 3 &&
               rebuilt.body.extents[2].start_page == 10 &&
               rebuilt.body.extents[3].start_page == 12,
           "allocation map rebuild extents were not normalized");
-  Require(rebuilt.validation.counts.free_pages == 12,
-          "allocation map rebuild free count wrong");
+  Require(rebuilt.validation.counts.free_pages == 0 &&
+              rebuilt.validation.counts.quarantined_pages == 12 &&
+              rebuilt.body.extents[1].state == page::PageAllocationLifecycleState::quarantined &&
+              rebuilt.body.extents[3].state == page::PageAllocationLifecycleState::quarantined,
+          "missing allocation evidence became free capacity");
   Require(rebuilt.validation.counts.reserved_pages == 2,
           "allocation map rebuild reserved count wrong");
   Require(rebuilt.validation.counts.allocated_pages == 2,
@@ -321,6 +330,184 @@ void ProveFailClosedRefusals() {
   Require(!refused.ok(), "allocation map body matched non-allocation header");
   Require(refused.kind == page::PageBodyAgreementKind::body_family_mismatch,
           "allocation map header mismatch used wrong refusal kind");
+  for (unsigned field = 0; field != 2; ++field) {
+    auto substituted = built.body;
+    if (field == 0) substituted.database_uuid = MakeUuid(platform::UuidKind::database, 9100);
+    else substituted.filespace_uuid = MakeUuid(platform::UuidKind::filespace, 9101);
+    page::PageBodyAgreementRequest request;
+    request.header = HeaderFor(disk::PageType::allocation_map, substituted,
+                               substituted.allocation_map_page_number);
+    request.body = built.serialized;
+    Require(!page::ValidatePageBodyAgreement(request).ok(),
+            "allocation map was admitted under another physical owner");
+  }
+}
+
+void RequireEmptyFailure(const page::AllocationMapPageBodyResult& result) {
+  Require(!result.ok(), "malformed map was admitted");
+  Require(result.body.extents.empty() && result.body.database_uuid.value.is_nil() &&
+              result.body.filespace_uuid.value.is_nil() && result.body.total_pages == 0 &&
+              result.serialized.empty() && result.validation.counts.total_counted_pages == 0 &&
+              result.validation.counts.free_pages == 0,
+          "failed map admission published partial allocation authority");
+}
+
+void StoreWire64(std::vector<platform::byte>* bytes, std::size_t offset,
+                 platform::u64 value) {
+  for (unsigned i = 0; i != 8; ++i) (*bytes)[offset + i] = value >> (8 * i);
+}
+
+void Rechecksum(std::vector<platform::byte>* bytes) {
+  // Independent wire checksum: do not use the implementation's checksum helper.
+  platform::u64 count = 0;
+  for (unsigned i = 0; i != 4; ++i) count |= platform::u64((*bytes)[124 + i]) << (8 * i);
+  platform::u64 hash = 14695981039346656037ull ^ 0x414c4c4f434d4150ull;
+  for (std::size_t i = 192; i != 192 + count; ++i) {
+    hash ^= (*bytes)[i];
+    hash *= 1099511628211ull;
+  }
+  StoreWire64(bytes, 168, hash);
+}
+
+void ProveEvidenceAdmission() {
+  using Kind = platform::UuidKind;
+  using State = page::PageAllocationLifecycleState;
+  auto body = FixtureBody();
+  body.file_member_uuid = {};
+  body.extents[1].owner_object_uuid = {};
+  body.extents[1].creator_transaction_uuid = {};
+  auto built = page::BuildAllocationMapPageBody(body, kPageSize);
+  Require(built.ok(), "optional identity absence was refused");
+  auto parsed = page::ParseAllocationMapPageBody(built.serialized);
+  Require(parsed.ok() && parsed.body.file_member_uuid.kind == Kind::unknown &&
+              parsed.body.extents[1].owner_object_uuid.kind == Kind::unknown &&
+              parsed.body.extents[1].creator_transaction_uuid.kind == Kind::unknown,
+          "nil disk identities were not decoded as absence");
+  const std::vector<Kind> kinds = {Kind::unknown, Kind::object, Kind::transaction,
+                                  Kind::filespace, static_cast<Kind>(65535)};
+  // Exercise all eight states, including free and quarantined, not only allocated.
+  for (unsigned state = 0; state != 8; ++state) {
+    for (unsigned field = 0; field != 4; ++field) {
+      for (Kind kind : kinds) {
+        for (unsigned malformed = 0; malformed != 3; ++malformed) {
+          body = FixtureBody();
+          auto& extent = body.extents[1];
+          extent = Extent(2, 8, static_cast<State>(state), disk::PageType::row_data,
+                          page::PageFamily::data, 1);
+          if (state == 0) extent = {2, 8, State::free};
+          auto& id = field == 0 ? body.file_member_uuid :
+                     field == 1 ? extent.allocation_uuid :
+                     field == 2 ? extent.owner_object_uuid : extent.creator_transaction_uuid;
+          id = MakeUuid(field == 3 ? Kind::transaction : Kind::object, 7000);
+          id.kind = kind;
+          if (malformed == 0) id.value = {};
+          if (malformed == 2) id.value.bytes[6] = (id.value.bytes[6] & 15) | 0x40;
+          const bool absent = kind == Kind::unknown && malformed == 0;
+          const bool required = field == 1 && state != 0 && state != 6;
+          const bool valid = malformed == 1 &&
+              kind == (field == 3 ? Kind::transaction : Kind::object);
+          const bool allowed = (absent && !required) ||
+              (valid && (field == 0 || state != 0));
+          const auto validation = page::ValidateAllocationMapPageBody(body);
+          Require(validation.ok() == allowed, "typed UUID/state validation disagrees with oracle");
+          const auto result = page::BuildAllocationMapPageBody(body, kPageSize);
+          Require(result.ok() == allowed, "build normalized invalid identity/state");
+          if (!allowed) {
+            RequireEmptyFailure(result);
+            RequireEmptyFailure(page::RebuildAllocationMapPageBody(body, kPageSize));
+            if (field != 0) {
+              page::AllocationMapPageBodyMutation mutation;
+              mutation.extent = extent;
+              RequireEmptyFailure(page::ApplyAllocationMapPageBodyMutation(
+                  FixtureBody(), mutation, kPageSize));
+            }
+          } else {
+            Require(page::ParseAllocationMapPageBody(result.serialized).ok(),
+                    "admitted identity did not round trip");
+          }
+        }
+      }
+    }
+  }
+  built = page::BuildAllocationMapPageBody(FixtureBody(), kPageSize);
+  Require(built.ok(), "wire fixture build failed");
+  for (unsigned field = 0; field != 5; ++field) {
+    body = FixtureBody();
+    auto& extent = body.extents[2];
+    if (field == 0) extent.page_type = disk::PageType::row_data;
+    if (field == 1) extent.page_family = page::PageFamily::data;
+    if (field == 2) extent.extent_flags = 1;
+    if (field == 3) extent.page_generation = 1;
+    if (field == 4) extent.reusable_after_local_transaction_id = 1;
+    Require(!page::ValidateAllocationMapPageBody(body).ok(),
+            "free metadata was silently cleared by validation");
+    RequireEmptyFailure(page::BuildAllocationMapPageBody(body, kPageSize));
+    RequireEmptyFailure(page::RebuildAllocationMapPageBody(body, kPageSize));
+    page::AllocationMapPageBodyMutation mutation;
+    mutation.extent = extent;
+    RequireEmptyFailure(page::ApplyAllocationMapPageBodyMutation(FixtureBody(), mutation, kPageSize));
+  }
+  // Every metadata byte in a free extent must remain canonical, including UUIDs.
+  for (std::size_t offset = 20; offset != 96; ++offset) {
+    auto bytes = built.serialized;
+    bytes[192 + 2 * 96 + offset] ^= 1;
+    Rechecksum(&bytes);
+    RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  }
+  for (std::size_t offset : {std::size_t(176), std::size_t(191), built.serialized.size() - 1}) {
+    auto bytes = built.serialized;
+    bytes[offset] = 1;
+    RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  }
+  auto bytes = built.serialized;
+  bytes.pop_back();
+  RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  bytes = built.serialized;
+  bytes.push_back(0);
+  RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  bytes = built.serialized;
+  bytes[24 + 6] = (bytes[24 + 6] & 15) | 0x40;
+  RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  bytes = built.serialized;
+  bytes[192 + 5 * 96 + 48] = 1; // Malformed quarantined allocation identity.
+  Rechecksum(&bytes);
+  RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+  bytes = built.serialized;
+  bytes[192 + 5 * 96 + 24 + 3] = 0xff; // Unknown family on quarantine.
+  Rechecksum(&bytes);
+  RequireEmptyFailure(page::ParseAllocationMapPageBody(bytes));
+
+  body = FixtureBody();
+  page::AllocationMapPageBodyMutation mutation;
+  mutation.extent = {10, 6, State::free};
+  body.map_generation = std::numeric_limits<platform::u64>::max();
+  RequireEmptyFailure(page::ApplyAllocationMapPageBodyMutation(body, mutation, kPageSize));
+  body = FixtureBody();
+  body.extents.insert(body.extents.begin() + 2, {10, 0, State::free});
+  RequireEmptyFailure(page::BuildAllocationMapPageBody(body, kPageSize));
+
+  body = FixtureBody();
+  body.extents = {{10, 6, State::free}};
+  auto rebuilt = page::RebuildAllocationMapPageBody(body, kPageSize);
+  Require(rebuilt.ok() && rebuilt.validation.counts.free_pages == 6 &&
+              rebuilt.validation.counts.quarantined_pages == 122 &&
+              rebuilt.body.extents.size() == 3 &&
+              rebuilt.body.extents[0].start_page == 1 &&
+              rebuilt.body.extents[0].page_count == 9 &&
+              rebuilt.body.extents[2].start_page == 16 &&
+              rebuilt.body.extents[2].page_count == 113,
+          "explicit free evidence or leading/trailing gaps were lost");
+  Require(page::ParseAllocationMapPageBody(rebuilt.serialized).ok(),
+          "reconstructed map could not be decoded");
+  body.extents.clear();
+  rebuilt = page::RebuildAllocationMapPageBody(body, kPageSize);
+  Require(rebuilt.ok() && rebuilt.validation.counts.free_pages == 0 &&
+              rebuilt.validation.counts.quarantined_pages == 128,
+          "empty allocation evidence fabricated free capacity");
+  body.extents = {{10, 6, State::free}, {12, 3, State::free}};
+  RequireEmptyFailure(page::RebuildAllocationMapPageBody(body, kPageSize));
+  body.extents = {{128, 2, State::free}};
+  RequireEmptyFailure(page::RebuildAllocationMapPageBody(body, kPageSize));
 }
 
 }  // namespace
@@ -330,5 +517,7 @@ int main() {
   ProveMutation();
   ProveRebuild();
   ProveFailClosedRefusals();
+  ProveEvidenceAdmission();
+  std::cout << "allocation evidence checks=" << checks << " failures=0\n";
   return EXIT_SUCCESS;
 }

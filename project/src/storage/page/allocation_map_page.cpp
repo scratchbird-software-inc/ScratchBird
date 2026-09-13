@@ -95,7 +95,8 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
 }
 
 bool IsOptionalTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
-  return !uuid.valid() || IsTypedEngineIdentity(uuid, kind);
+  return (uuid.kind == UuidKind::unknown && uuid.value.is_nil()) ||
+         IsTypedEngineIdentity(uuid, kind);
 }
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
@@ -205,21 +206,8 @@ TypedUuid LoadUuidAt(const std::vector<byte>& in, u32 offset, UuidKind kind) {
   std::copy(in.begin() + static_cast<std::ptrdiff_t>(offset),
             in.begin() + static_cast<std::ptrdiff_t>(offset + uuid.value.bytes.size()),
             uuid.value.bytes.begin());
+  if (uuid.value.is_nil()) uuid.kind = UuidKind::unknown;
   return uuid;
-}
-
-AllocationMapExtent NormalizeFreeExtent(AllocationMapExtent extent) {
-  if (extent.state == PageAllocationLifecycleState::free) {
-    extent.page_type = PageType::unknown;
-    extent.page_family = PageFamily::unknown;
-    extent.extent_flags = 0;
-    extent.page_generation = 0;
-    extent.reusable_after_local_transaction_id = 0;
-    extent.allocation_uuid = TypedUuid{};
-    extent.owner_object_uuid = TypedUuid{};
-    extent.creator_transaction_uuid = TypedUuid{};
-  }
-  return extent;
 }
 
 bool SameMergeIdentity(const AllocationMapExtent& left,
@@ -239,9 +227,6 @@ bool SameMergeIdentity(const AllocationMapExtent& left,
 
 std::vector<AllocationMapExtent> MergeAdjacentExtents(
     std::vector<AllocationMapExtent> extents) {
-  for (auto& extent : extents) {
-    extent = NormalizeFreeExtent(extent);
-  }
   std::sort(extents.begin(),
             extents.end(),
             [](const AllocationMapExtent& left,
@@ -257,6 +242,7 @@ std::vector<AllocationMapExtent> MergeAdjacentExtents(
     }
     auto& last = merged.back();
     if (!AddWouldOverflow(last.start_page, last.page_count) &&
+        !AddWouldOverflow(last.page_count, extent.page_count) &&
         last.start_page + last.page_count == extent.start_page &&
         SameMergeIdentity(last, extent)) {
       last.page_count += extent.page_count;
@@ -300,8 +286,9 @@ AllocationMapPageBodyValidationResult ValidateExtentMetadata(
                            "storage.allocation_map_page.state_unknown",
                            std::to_string(static_cast<u32>(extent.state)));
   }
-  if (ExtentStateRequiresAllocationIdentity(extent.state) &&
-      !IsTypedEngineIdentity(extent.allocation_uuid, UuidKind::object)) {
+  if (!IsOptionalTypedEngineIdentity(extent.allocation_uuid, UuidKind::object) ||
+      (ExtentStateRequiresAllocationIdentity(extent.state) &&
+       !IsTypedEngineIdentity(extent.allocation_uuid, UuidKind::object))) {
     return ValidationError("SB-ALLOCATION-MAP-PAGE-ALLOCATION-UUID-INVALID",
                            "storage.allocation_map_page.allocation_uuid_invalid");
   }
@@ -313,6 +300,20 @@ AllocationMapPageBodyValidationResult ValidateExtentMetadata(
                                      UuidKind::transaction)) {
     return ValidationError("SB-ALLOCATION-MAP-PAGE-CREATOR-TX-UUID-INVALID",
                            "storage.allocation_map_page.creator_tx_uuid_invalid");
+  }
+  if (static_cast<u32>(extent.page_family) > static_cast<u32>(PageFamily::unknown)) {
+    return ValidationError("SB-ALLOCATION-MAP-PAGE-FAMILY-MISMATCH",
+                           "storage.allocation_map_page.family_mismatch");
+  }
+  if (extent.state == PageAllocationLifecycleState::free &&
+      (extent.page_type != PageType::unknown ||
+       extent.page_family != PageFamily::unknown || extent.extent_flags != 0 ||
+       extent.page_generation != 0 || extent.reusable_after_local_transaction_id != 0 ||
+       extent.allocation_uuid.valid() || extent.owner_object_uuid.valid() ||
+       extent.creator_transaction_uuid.valid())) {
+    return ValidationError("SB-ALLOCATION-MAP-PAGE-STATE-UNKNOWN",
+                           "storage.allocation_map_page.state_unknown",
+                           "free_extent_has_allocation_metadata");
   }
   if (extent.page_type != PageType::unknown) {
     const auto family = LookupPageFamily(extent.page_type);
@@ -339,7 +340,7 @@ std::vector<byte> SerializeExtentRecords(
   std::vector<byte> out(extents.size() * kAllocationMapExtentRecordBytes, 0);
   for (std::size_t index = 0; index < extents.size(); ++index) {
     const u32 base = static_cast<u32>(index * kAllocationMapExtentRecordBytes);
-    const AllocationMapExtent extent = NormalizeFreeExtent(extents[index]);
+    const AllocationMapExtent& extent = extents[index];
     StoreLittle64At(&out, base + kExtentOffsetStartPage, extent.start_page);
     StoreLittle64At(&out, base + kExtentOffsetPageCount, extent.page_count);
     StoreLittle32At(&out,
@@ -392,7 +393,7 @@ AllocationMapExtent LoadExtentRecord(const std::vector<byte>& in, u32 base) {
       LoadUuidAt(in, base + kExtentOffsetOwnerObjectUuid, UuidKind::object);
   extent.creator_transaction_uuid = LoadUuidAt(
       in, base + kExtentOffsetCreatorTransactionUuid, UuidKind::transaction);
-  return NormalizeFreeExtent(extent);
+  return extent;
 }
 
 }  // namespace
@@ -453,8 +454,7 @@ AllocationMapPageBodyValidationResult ValidateAllocationMapPageBody(
   AllocationMapPageBodyCounts counts;
   u64 expected_start = body.filespace_start_page;
   const u64 filespace_end = body.filespace_start_page + body.total_pages;
-  for (const auto& raw_extent : body.extents) {
-    const AllocationMapExtent extent = NormalizeFreeExtent(raw_extent);
+  for (const auto& extent : body.extents) {
     if (extent.page_count == 0 ||
         AddWouldOverflow(extent.start_page, extent.page_count)) {
       return ValidationError("SB-ALLOCATION-MAP-PAGE-EXTENT-RANGE-INVALID",
@@ -498,6 +498,21 @@ AllocationMapPageBodyResult BuildAllocationMapPageBody(
   }
   AllocationMapPageBody normalized = body;
   normalized.page_size_bytes = page_size;
+  for (const auto& extent : body.extents) {
+    if (extent.page_count == 0 ||
+        AddWouldOverflow(extent.start_page, extent.page_count)) {
+      return BodyError("SB-ALLOCATION-MAP-PAGE-EXTENT-RANGE-INVALID",
+                       "storage.allocation_map_page.extent_range_invalid");
+    }
+    const auto metadata = ValidateExtentMetadata(extent);
+    if (!metadata.ok()) {
+      AllocationMapPageBodyResult result;
+      result.status = metadata.status;
+      result.validation = metadata;
+      result.diagnostic = metadata.diagnostic;
+      return result;
+    }
+  }
   normalized.extents = MergeAdjacentExtents(body.extents);
   const auto validation = ValidateAllocationMapPageBody(normalized);
   if (!validation.ok()) {
@@ -621,6 +636,12 @@ AllocationMapPageBodyResult ParseAllocationMapPageBody(
     return BodyError("SB-ALLOCATION-MAP-PAGE-TYPE-MISMATCH",
                      "storage.allocation_map_page.page_type_mismatch");
   }
+  const u32 page_size = LoadLittle32At(serialized, kOffsetPageSize);
+  if (!IsSupportedDatabasePageSize(page_size) ||
+      serialized.size() != page_size - kPageHeaderSerializedBytes) {
+    return BodyError("SB-ALLOCATION-MAP-PAGE-SIZE-INVALID",
+                     "storage.allocation_map_page.page_size_invalid");
+  }
   const u32 extent_record_bytes =
       LoadLittle32At(serialized, kOffsetExtentRecordBytes);
   const u32 extent_count = LoadLittle32At(serialized, kOffsetExtentCount);
@@ -636,6 +657,15 @@ AllocationMapPageBodyResult ParseAllocationMapPageBody(
                      "storage.allocation_map_page.extent_bounds_invalid");
   }
 
+  if (!std::all_of(serialized.begin() + kOffsetChecksum + sizeof(u64),
+                   serialized.begin() + kAllocationMapPageBodyHeaderBytes,
+                   [](byte value) { return value == 0; }) ||
+      !std::all_of(serialized.begin() + extents_offset + extents_bytes,
+                   serialized.end(), [](byte value) { return value == 0; })) {
+    return BodyError("SB-ALLOCATION-MAP-PAGE-EXTENT-BOUNDS-INVALID",
+                     "storage.allocation_map_page.extent_bounds_invalid",
+                     "nonzero_reserved_or_unused_bytes");
+  }
   const std::vector<byte> extent_bytes(
       serialized.begin() + static_cast<std::ptrdiff_t>(extents_offset),
       serialized.begin() + static_cast<std::ptrdiff_t>(extents_offset + extents_bytes));
@@ -672,7 +702,6 @@ AllocationMapPageBodyResult ParseAllocationMapPageBody(
     result.status = validation.status;
     result.validation = validation;
     result.diagnostic = validation.diagnostic;
-    result.body = body;
     return result;
   }
   if (validation.counts.free_pages !=
@@ -715,7 +744,12 @@ AllocationMapPageBodyResult ApplyAllocationMapPageBodyMutation(
     result.diagnostic = validation.diagnostic;
     return result;
   }
-  AllocationMapExtent replacement = NormalizeFreeExtent(mutation.extent);
+  if (body.map_generation == std::numeric_limits<u64>::max()) {
+    return BodyError("SB-ALLOCATION-MAP-PAGE-GENERATION-INVALID",
+                     "storage.allocation_map_page.generation_invalid",
+                     "generation_exhausted");
+  }
+  const AllocationMapExtent& replacement = mutation.extent;
   if (replacement.page_count == 0 ||
       AddWouldOverflow(replacement.start_page, replacement.page_count) ||
       replacement.start_page < body.filespace_start_page ||
@@ -786,8 +820,7 @@ AllocationMapPageBodyResult RebuildAllocationMapPageBody(
   }
 
   std::vector<AllocationMapExtent> facts = sparse_body.extents;
-  for (auto& fact : facts) {
-    fact = NormalizeFreeExtent(fact);
+  for (const auto& fact : facts) {
     if (fact.page_count == 0 ||
         AddWouldOverflow(fact.start_page, fact.page_count) ||
         fact.start_page < sparse_body.filespace_start_page ||
@@ -823,7 +856,7 @@ AllocationMapPageBodyResult RebuildAllocationMapPageBody(
     if (fact.start_page > next_page) {
       complete.push_back({next_page,
                           fact.start_page - next_page,
-                          PageAllocationLifecycleState::free});
+                          PageAllocationLifecycleState::quarantined});
     }
     complete.push_back(fact);
     next_page = fact.start_page + fact.page_count;
@@ -831,7 +864,7 @@ AllocationMapPageBodyResult RebuildAllocationMapPageBody(
   if (next_page < end_page) {
     complete.push_back({next_page,
                         end_page - next_page,
-                        PageAllocationLifecycleState::free});
+                        PageAllocationLifecycleState::quarantined});
   }
 
   AllocationMapPageBody rebuilt = sparse_body;

@@ -608,6 +608,9 @@ PageBodyAgreementResult ValidatePageBodyAgreement(
                                 body_kind);
       }
       if (parsed_header.header.page_type != PageType::allocation_map ||
+          parsed.body.database_uuid.value != parsed_header.header.database_uuid ||
+          parsed.body.filespace_uuid.value != parsed_header.header.filespace_uuid ||
+          parsed.body.page_size_bytes != parsed_header.header.page_size ||
           parsed.body.allocation_map_page_number !=
               parsed_header.header.page_number) {
         return FamilyMismatch(parsed_header.header,

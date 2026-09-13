@@ -11,7 +11,8 @@
 // SB-ALLOCATION-MAP-PAGE-BODY-ANCHOR
 // Durable allocation-map page bodies record filespace capacity generations and
 // page extents. The format is little-endian and validated fail-closed before a
-// page body is admitted by the engine.
+// page body is admitted by the engine. SBALM001 is a prototype carrier, not the
+// canonical native allocation-root publication format.
 
 #include "page_allocation_lifecycle.hpp"
 #include "page_header.hpp"
