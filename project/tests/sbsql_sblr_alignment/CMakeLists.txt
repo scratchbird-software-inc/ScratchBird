@@ -7898,6 +7898,12 @@ set_tests_properties(sbsql_sblr_alignment_physical_memory_allocation_ownership P
   TIMEOUT 180)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_hierarchical_budget_publication hierarchical_budget_publication_test.cpp)
+  add_executable(sbsql_sblr_alignment_kdf_resource_governor kdf_resource_governor_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_kdf_resource_governor PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_kdf_resource_governor PRIVATE sb_core_memory Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_kdf_resource_governor COMMAND sbsql_sblr_alignment_kdf_resource_governor)
+  set_tests_properties(sbsql_sblr_alignment_kdf_resource_governor PROPERTIES
+    LABELS "sbsql_sblr_alignment;memory;binary_uuid;allocation_failure;ownership;concurrency;not_runtime_acceptance" TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_hierarchical_budget_publication PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_hierarchical_budget_publication PRIVATE sb_core_memory Threads::Threads)
   add_test(NAME sbsql_sblr_alignment_hierarchical_budget_publication COMMAND sbsql_sblr_alignment_hierarchical_budget_publication)
