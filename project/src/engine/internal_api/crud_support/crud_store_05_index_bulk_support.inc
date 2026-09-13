@@ -38,7 +38,7 @@ EngineApiDiagnostic ApplyCrudTemporaryOnCommitActions(const EngineRequestContext
 }
 
 std::optional<CrudTableRecord> FindVisibleCrudTable(const RelationReadSnapshot& state,
-                                                    const std::string& table_uuid,
+                                                    const EngineUuid& table_uuid,
                                                     std::uint64_t observer_tx) {
   std::optional<CrudTableRecord> visible;
   for (const auto& table : state.tables) {
@@ -53,7 +53,7 @@ std::optional<CrudTableRecord> FindVisibleCrudTable(const RelationReadSnapshot& 
 }
 
 std::vector<CrudRowVersionRecord> VisibleCrudRows(const RelationReadSnapshot& state,
-                                                  const std::string& table_uuid,
+                                                  const EngineUuid& table_uuid,
                                                   std::uint64_t observer_tx) {
   EngineRequestContext context;
   context.local_transaction_id = observer_tx;
@@ -62,32 +62,22 @@ std::vector<CrudRowVersionRecord> VisibleCrudRows(const RelationReadSnapshot& st
 }
 
 std::vector<CrudRowVersionRecord> VisibleCrudRowsForContext(const RelationReadSnapshot& state,
-                                                            const std::string& table_uuid,
+                                                            const EngineUuid& table_uuid,
                                                             const EngineRequestContext& context) {
-  std::map<std::string, CrudRowVersionRecord> newest_visible_by_row;
-  for (const auto& row : state.row_versions) {
-    if (row.table_uuid != table_uuid ||
-        !CrudRowVersionVisibleToContext(state, row, context)) {
-      continue;
-    }
-    const auto found = newest_visible_by_row.find(row.row_uuid);
-    if (found == newest_visible_by_row.end() ||
-        row.sequence > found->second.sequence) {
-      newest_visible_by_row[row.row_uuid] = row;
-    }
-  }
+  const auto newest_visible_by_row = BuildCrudLatestRowIdentityMap<CrudOrderedRowIdentityMap>(
+      state, table_uuid, [&](const auto& row) { return CrudRowVersionVisibleToContext(state, row, context); });
   std::vector<CrudRowVersionRecord> visible;
   visible.reserve(newest_visible_by_row.size());
   for (const auto& [row_uuid, row] : newest_visible_by_row) {
     (void)row_uuid;
-    if (!row.deleted) { visible.push_back(row); }
+    if (!row->deleted) { visible.push_back(*row); }
   }
   return visible;
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const RelationReadSnapshot& state,
-                                                       const std::string& table_uuid,
-                                                       const std::string& row_uuid,
+                                                       const EngineUuid& table_uuid,
+                                                       const EngineUuid& row_uuid,
                                                        std::uint64_t observer_tx) {
   EngineRequestContext context;
   context.local_transaction_id = observer_tx;
@@ -96,8 +86,8 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRow(const RelationReadSnapsho
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const RelationReadSnapshot& state,
-                                                                 const std::string& table_uuid,
-                                                                 const std::string& row_uuid,
+                                                                 const EngineUuid& table_uuid,
+                                                                 const EngineUuid& row_uuid,
                                                                  const EngineRequestContext& context) {
   std::optional<CrudRowVersionRecord> newest_visible;
   for (const auto& row : state.row_versions) {
@@ -118,7 +108,7 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const RelationR
 }
 
 std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const RelationReadSnapshot& state,
-                                                        const std::string& table_uuid,
+                                                        const EngineUuid& table_uuid,
                                                         std::uint64_t observer_tx) {
   std::vector<CrudIndexRecord> indexes;
   for (const auto& index : state.indexes) {
@@ -128,7 +118,7 @@ std::vector<CrudIndexRecord> VisibleCrudIndexesForTable(const RelationReadSnapsh
 }
 
 std::vector<CrudIndexRecord> VisibleCrudIndexesForTableColumn(const RelationReadSnapshot& state,
-                                                              const std::string& table_uuid,
+                                                              const EngineUuid& table_uuid,
                                                               const std::string& column_name,
                                                               std::uint64_t observer_tx) {
   std::vector<CrudIndexRecord> indexes;
@@ -450,7 +440,7 @@ bool CrudIndexEntryMatchesLogicalKey(const CrudIndexRecord& index,
 }
 
 std::vector<CrudRowVersionRecord> IndexedCrudRows(const RelationReadSnapshot& state,
-                                                  const std::string& table_uuid,
+                                                  const EngineUuid& table_uuid,
                                                   const std::string& column_name,
                                                   const std::string& key_value,
                                                   std::uint64_t observer_tx,

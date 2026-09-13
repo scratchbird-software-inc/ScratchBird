@@ -19,29 +19,29 @@
 }
 
 EngineApiDiagnostic ValidateCrudRowVersionChains(const RelationReadSnapshot& state) {
-  std::map<std::string, CrudRowVersionRecord> by_version_uuid;
+  std::map<EngineUuid, const CrudRowVersionRecord*> by_version_uuid;
   for (const auto& row : state.row_versions) {
-    if (row.version_uuid.empty()) {
+    if (row.version_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "row_version_uuid_required");
     }
     if (by_version_uuid.count(row.version_uuid) != 0) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "duplicate_row_version_uuid");
     }
-    by_version_uuid[row.version_uuid] = row;
+    by_version_uuid[row.version_uuid] = &row;
   }
   for (const auto& row : state.row_versions) {
-    if (row.previous_version_uuid.empty()) { continue; }
+    if (row.previous_version_uuid.is_nil()) { continue; }
     const auto previous = by_version_uuid.find(row.previous_version_uuid);
     if (previous == by_version_uuid.end()) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "previous_row_version_missing");
     }
-    if (previous->second.table_uuid != row.table_uuid || previous->second.row_uuid != row.row_uuid) {
+    if (previous->second->table_uuid != row.table_uuid || previous->second->row_uuid != row.row_uuid) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "previous_row_version_wrong_chain");
     }
-    if (previous->second.sequence >= row.sequence) {
+    if (previous->second->sequence >= row.sequence) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "previous_row_version_not_older");
     }
-    if (row.previous_sequence != 0 && previous->second.sequence != row.previous_sequence) {
+    if (row.previous_sequence != 0 && previous->second->sequence != row.previous_sequence) {
       return MakeInvalidRequestDiagnostic("crud.row_version_chain", "previous_row_version_sequence_mismatch");
     }
   }
@@ -222,12 +222,12 @@ std::vector<std::string> CrudIndexKeyColumns(const CrudIndexRecord& index) {
 bool TableVisibleInCurrentTemporaryScope(const CrudTableRecord& table, const EngineRequestContext& context) {
   if (!table.temporary) { return true; }
   if (table.temporary_scope == "global") { return true; }
-  const std::string session_uuid = SessionUuidOrEmpty(context);
-  return !session_uuid.empty() && table.temporary_session_uuid == session_uuid;
+  const EngineUuid session_uuid = SessionUuidOrEmpty(context);
+  return !session_uuid.is_nil() && table.temporary_session_uuid == session_uuid;
 }
 
 void FilterTemporaryObjectsForSession(const EngineRequestContext& context, CrudState* state) {
-  std::set<std::string> purged_tables;
+  std::set<EngineUuid> purged_tables;
   std::vector<CrudTableRecord> retained_tables;
   retained_tables.reserve(state->tables.size());
   for (const auto& table : state->tables) {

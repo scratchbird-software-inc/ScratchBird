@@ -83,6 +83,98 @@ void Refused(Work work,const char* code,bool allocation_sweep=false) {
   allocation_faults+=faults;
   if (allocation_sweep) Check(faults>0,"refusal allocation sweep exercised no actual allocation failure");
 }
+template<class Lookup>
+void BinaryRowSelectionMap(const api::RelationReadSnapshot& state,
+                           const api::EngineUuid& table,
+                           const std::vector<api::EngineUuid>& identities) {
+  unsigned visibility_calls=0;
+  const auto selected=api::BuildCrudLatestRowIdentityMap<Lookup>(state,table,[&](const auto& row){
+    ++visibility_calls;return row.creator_tx==1;
+  });
+  Check(selected.size()==identities.size(),"binary row identities aliased or disappeared");
+  Check(visibility_calls==identities.size()*4,"foreign relation reached visibility predicate");
+  if constexpr(std::is_same_v<Lookup,api::CrudOrderedRowIdentityMap>) {
+    std::size_t ordinal=0;
+    for(const auto& [identity,row]:selected) {
+      (void)row;
+      Check(ordinal<identities.size()&&identity==identities[ordinal],
+        "ordered lookup differs from independent 16-byte ordering");
+      ++ordinal;
+    }
+  }
+  for(std::size_t i=0;i<identities.size();++i) {
+    const auto found=selected.find(identities[i]);
+    Check(found!=selected.end()&&found->second==&state.row_versions[i*5+1],
+      "binary row lookup did not retain exact newest eligible source row");
+    Check(found!=selected.end()&&found->second->deleted==(i%2==0),
+      "tombstone selection resurrected an older row");
+  }
+  auto reversed=state;std::reverse(reversed.row_versions.begin(),reversed.row_versions.end());
+  const auto reordered=api::BuildCrudLatestRowIdentityMap<Lookup>(reversed,table,
+      [](const auto& row){return row.creator_tx==1;});
+  for(const auto& id:identities) {
+    const auto found=reordered.find(id);
+    Check(found!=reordered.end()&&found->second->sequence==3,
+      "row identity selection depended on input order");
+  }
+  api::RelationReadSnapshot small;
+  for(unsigned i=0;i<4;++i)small.row_versions.push_back(state.row_versions[i*5]);
+  unsigned faults=0;bool completed=false;
+  for(long budget=0;budget<32;++budget) {
+    Lookup destination;
+    destination.emplace(Expected(9000),&state.row_versions[0]);
+    fail_after=budget;
+    try {
+      destination=api::BuildCrudLatestRowIdentityMap<Lookup>(small,table,[](const auto&){return true;});
+      fail_after=-1;
+      Check(destination.size()==4,"completed identity map is not whole");completed=true;
+    } catch(const std::bad_alloc&) {
+      fail_after=-1;++faults;
+      Check(destination.size()==1&&destination.contains(Expected(9000)),
+        "allocation failure exposed partial identity selection");
+    }
+    if(completed)break;
+  }
+  Check(completed&&faults>0,"binary identity map allocation sweep incomplete");
+  allocation_faults+=faults;
+}
+
+void BinaryRowSelectors() {
+  using State=const api::RelationReadSnapshot&;
+  using Id=const api::EngineUuid&;
+  using Context=const api::EngineRequestContext&;
+  static_assert(std::is_same_v<decltype(&api::FindVisibleCrudTable),
+    std::optional<api::CrudTableRecord>(*)(State,Id,std::uint64_t)>);
+  static_assert(std::is_same_v<decltype(&api::FindVisibleCrudRowForContext),
+    std::optional<api::CrudRowVersionRecord>(*)(State,Id,Id,Context)>);
+  static_assert(!std::is_invocable_v<decltype(&api::VisibleCrudRows),State,const std::string&,std::uint64_t>);
+  static_assert(std::is_same_v<typename api::CrudOrderedRowIdentityMap::key_type,api::EngineUuid>);
+  static_assert(std::is_same_v<typename api::CrudHashedRowIdentityMap::key_type,api::EngineUuid>);
+  const auto base=Expected(12345),table=Expected(1),foreign=Expected(2);
+  std::vector<api::EngineUuid> identities;
+  for(unsigned at=0;at<16;++at)for(unsigned value=0;value<256;++value) {
+    auto id=base;id.bytes[at]=static_cast<p::byte>(value);
+    if(id.bytes[6]>>4==7&&id.bytes[8]>>6==2)identities.push_back(id);
+  }
+  std::sort(identities.begin(),identities.end(),[](const auto& a,const auto& b){
+    return std::memcmp(a.bytes.data(),b.bytes.data(),16)<0;
+  });
+  identities.erase(std::unique(identities.begin(),identities.end()),identities.end());
+  api::RelationReadSnapshot state;
+  for(std::size_t i=0;i<identities.size();++i) {
+    api::CrudRowVersionRecord row;row.table_uuid=table;row.row_uuid=identities[i];row.creator_tx=1;row.sequence=1;
+    state.row_versions.push_back(row);
+    row.sequence=3;row.deleted=i%2==0;state.row_versions.push_back(row);
+    row.sequence=2;row.deleted=false;state.row_versions.push_back(row);
+    row.sequence=5;row.creator_tx=2;state.row_versions.push_back(row);
+    row.sequence=9;row.creator_tx=1;row.table_uuid=foreign;state.row_versions.push_back(row);
+  }
+  const auto entropy_before=entropy_calls,clock_before=clock_calls;
+  BinaryRowSelectionMap<api::CrudOrderedRowIdentityMap>(state,table,identities);
+  BinaryRowSelectionMap<api::CrudHashedRowIdentityMap>(state,table,identities);
+  Check(entropy_calls==entropy_before&&clock_calls==clock_before,"row selection generated replacement identities");
+}
+
 void Generation() {
   static_assert(sizeof(api::EngineUuid)==16);
   static_assert(std::is_same_v<decltype(api::GenerateCrudEngineUuid("row")),api::EngineUuid>);
@@ -224,7 +316,7 @@ __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
   return result;
 }
 int main() {
-  try { Generation(); SuppliedIdentity(); PrimaryObjectBinding(); }
+  try { Generation(); SuppliedIdentity(); PrimaryObjectBinding(); BinaryRowSelectors(); }
   catch (const std::exception& error) {
     fail_after=-1;
     std::cerr<<"unexpected exception "<<error.what()<<'\n';

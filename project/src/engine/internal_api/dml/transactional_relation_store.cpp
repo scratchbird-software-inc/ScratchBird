@@ -170,44 +170,44 @@ bool MgaRowVersionVisibleToContext(const MgaRelationReadView& view,
 
 std::optional<CrudTableRecord> FindVisibleMgaTable(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t observer_tx) {
   return FindVisibleCrudTable(view, table_uuid, observer_tx);
 }
 
 std::optional<CrudRowVersionRecord> FindVisibleMgaRowForContext(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
-    const std::string& row_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid,
     const EngineRequestContext& context) {
   return FindVisibleCrudRowForContext(view, table_uuid, row_uuid, context);
 }
 
 std::vector<CrudRowVersionRecord> VisibleMgaRowsForContext(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const EngineRequestContext& context) {
   return VisibleCrudRowsForContext(view, table_uuid, context);
 }
 
 std::vector<CrudRowVersionRecord> VisibleMgaRows(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t observer_tx) {
   return VisibleCrudRows(view, table_uuid, observer_tx);
 }
 
 std::vector<CrudIndexRecord> VisibleMgaIndexesForTable(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t observer_tx) {
   return VisibleCrudIndexesForTable(view, table_uuid, observer_tx);
 }
 
 EngineApiDiagnostic ValidateMgaUniqueIndexesForRow(
     const MgaRelationReadView& view,
-    const std::string& table_uuid,
-    const std::string& row_uuid,
+    const EngineUuid& table_uuid,
+    const EngineUuid& row_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     const EngineRequestContext& context) {
   return ValidateCrudUniqueIndexesForRow(view, table_uuid, row_uuid, values,

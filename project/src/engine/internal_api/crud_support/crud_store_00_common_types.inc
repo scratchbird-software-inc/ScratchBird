@@ -123,7 +123,7 @@ std::uint64_t VisibilityHighWaterForContext(const RelationReadSnapshot& state, c
 bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
                                             const CrudRowVersionRecord& row,
                                             const EngineRequestContext& context) {
-  if (!row.temporary_session_uuid.empty() &&
+  if (!row.temporary_session_uuid.is_nil() &&
       row.temporary_session_uuid != context.session_uuid) {
     return false;
   }
@@ -142,7 +142,7 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
   return visible_through == 0 || row.creator_tx <= visible_through;
 }
 
-std::string SessionUuidOrEmpty(const EngineRequestContext& context) {
+EngineUuid SessionUuidOrEmpty(const EngineRequestContext& context) {
   return context.session_uuid;
 }
 

@@ -14,7 +14,7 @@
 }
 
 std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const RelationReadSnapshot& state,
-                                                              const std::string& table_uuid,
+                                                              const EngineUuid& table_uuid,
                                                               const EnginePredicateEnvelope& predicate,
                                                               std::uint64_t observer_tx,
                                                               std::uint64_t limit,
@@ -26,7 +26,7 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicate(const RelationRead
 }
 
 std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const RelationReadSnapshot& state,
-                                                                        const std::string& table_uuid,
+                                                                        const EngineUuid& table_uuid,
                                                                         const EnginePredicateEnvelope& predicate,
                                                                         const EngineRequestContext& context,
                                                                         std::uint64_t limit,
@@ -43,18 +43,8 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
       predicate.predicate_kind == "vector_approx_nearest";
   std::size_t candidate_count = 0;
   if (!vector_ordered) {
-    std::unordered_map<std::string, const CrudRowVersionRecord*> newest_visible_by_uuid;
-    for (const auto& row : state.row_versions) {
-      if (row.table_uuid != table_uuid ||
-          !CrudRowVersionVisibleToContext(state, row, context)) {
-        continue;
-      }
-      const auto found = newest_visible_by_uuid.find(row.row_uuid);
-      if (found == newest_visible_by_uuid.end() ||
-          row.sequence > found->second->sequence) {
-        newest_visible_by_uuid[row.row_uuid] = &row;
-      }
-    }
+    const auto newest_visible_by_uuid = BuildCrudLatestRowIdentityMap<CrudHashedRowIdentityMap>(
+        state, table_uuid, [&](const auto& row) { return CrudRowVersionVisibleToContext(state, row, context); });
     std::unordered_set<std::string> in_list_key_values;
     bool use_in_list_key_values = false;
     if (predicate.predicate_kind == "column_in_list" &&
@@ -85,7 +75,7 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
           CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
       return in_list_key_values.find(value) != in_list_key_values.end();
     };
-    std::set<std::string> seen_row_uuids;
+    std::set<EngineUuid> seen_row_uuids;
     std::vector<CrudRowVersionRecord> rows;
     for (const auto& entry : state.index_entries) {
       if (entry.index_uuid != selected->index_uuid ||
@@ -109,7 +99,7 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Re
     return rows;
   }
 
-  std::map<std::string, double> candidate_scores;
+  std::map<EngineUuid, double> candidate_scores;
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != selected->index_uuid || entry.table_uuid != table_uuid || !TxVisible(state, entry.creator_tx, observer_tx)) {
       continue;
@@ -225,8 +215,8 @@ std::string MakeCrudIndexEntryEventV2(std::uint64_t creator_tx,
 }
 
 EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& state,
-                                                    const std::string& table_uuid,
-                                                    const std::string& row_uuid,
+                                                    const EngineUuid& table_uuid,
+                                                    const EngineUuid& row_uuid,
                                                     const std::vector<std::pair<std::string, std::string>>& values,
                                                     const EngineRequestContext& context) {
   const std::uint64_t observer_tx = context.local_transaction_id;
@@ -251,8 +241,8 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& 
 
 EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& context,
                                                    const CrudIndexRecord& index,
-                                                   const std::string& row_uuid,
-                                                   const std::string& version_uuid,
+                                                   const EngineUuid& row_uuid,
+                                                   const EngineUuid& version_uuid,
                                                    const std::vector<std::pair<std::string, std::string>>& values) {
   (void)context;
   (void)index;
@@ -264,9 +254,9 @@ EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& c
 
 EngineApiDiagnostic AppendCrudIndexEntriesForRow(const EngineRequestContext& context,
                                                  const RelationReadSnapshot& state,
-                                                 const std::string& table_uuid,
-                                                 const std::string& row_uuid,
-                                                 const std::string& version_uuid,
+                                                 const EngineUuid& table_uuid,
+                                                 const EngineUuid& row_uuid,
+                                                 const EngineUuid& version_uuid,
                                                  const std::vector<std::pair<std::string, std::string>>& values) {
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, context.local_transaction_id)) {
     const auto appended = AppendCrudIndexEntriesForIndex(context, index, row_uuid, version_uuid, values);
