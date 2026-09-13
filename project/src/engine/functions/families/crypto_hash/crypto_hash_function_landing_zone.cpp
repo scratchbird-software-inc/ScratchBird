@@ -13,6 +13,7 @@
 #include "blake3_digest.hpp"
 
 #include <openssl/evp.h>
+#include <openssl/crypto.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 
@@ -208,15 +209,27 @@ bool DearmorText(const std::string& text, std::vector<std::uint8_t>* out) {
   return Base64Decode(encoded, out);
 }
 
-const EVP_MD* DigestForAlgorithm(std::string algorithm) {
-  algorithm = LowerAscii(std::move(algorithm));
-  std::replace(algorithm.begin(), algorithm.end(), '-', '_');
-  if (algorithm == "sha256") return EVP_sha256();
-  if (algorithm == "sha512") return EVP_sha512();
-  if (algorithm == "sha3_256" || algorithm == "sha3_256()") return EVP_sha3_256();
-  if (algorithm == "sha3_512" || algorithm == "sha3_512()") return EVP_sha3_512();
-  if (algorithm == "blake2b" || algorithm == "blake2b512") return EVP_blake2b512();
-  return nullptr;
+struct HmacProfile {
+  const EVP_MD* digest;
+  unsigned output_bytes;
+};
+
+std::optional<HmacProfile> HmacAlgorithm(std::string_view algorithm) {
+  const auto matches=[&](std::string_view token) {
+    if(algorithm.size()!=token.size())return false;
+    for(std::size_t i=0;i<token.size();++i) {
+      const auto ch=static_cast<unsigned char>(algorithm[i]);
+      const auto folded=ch>='A'&&ch<='Z'?ch+('a'-'A'):ch;
+      if(folded!=static_cast<unsigned char>(token[i]))return false;
+    }
+    return true;
+  };
+  if(matches("sha256"))return HmacProfile{EVP_sha256(),32};
+  if(matches("sha512"))return HmacProfile{EVP_sha512(),64};
+  if(matches("sha3_256")||matches("sha3-256"))return HmacProfile{EVP_sha3_256(),32};
+  if(matches("sha3_512")||matches("sha3-512"))return HmacProfile{EVP_sha3_512(),64};
+  if(matches("blake2b")||matches("blake2b512"))return HmacProfile{EVP_blake2b512(),64};
+  return std::nullopt;
 }
 
 std::optional<std::vector<std::uint8_t>> DigestBytes(
@@ -284,23 +297,50 @@ FunctionCallResult DigestFunction(const FunctionCallRequest& request, DigestProv
 }
 
 FunctionCallResult HmacFunction(const FunctionCallRequest& request) {
-  if (request.arguments.size() != 3) return RefuseFunctionInvalidInput(request, "hmac expects value, key, and algorithm");
-  if (AnyNull(request)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-  const auto data = RawBytesFromValue(request.arguments[0].value);
-  const auto key = RawBytesFromValue(request.arguments[1].value);
-  if (data.size() > kMaxCryptoInputBytes || key.size() > kMaxCryptoInputBytes) {
-    return RefuseFunctionInvalidInput(request, "hmac input exceeds crypto scalar budget");
-  }
-  const auto* md = DigestForAlgorithm(ValueAsText(request.arguments[2].value));
-  if (!md) return RefuseFunctionInvalidInput(request, "unsupported hmac algorithm");
-  std::array<unsigned char, EVP_MAX_MD_SIZE> out{};
-  unsigned int out_len = 0;
-  if (HMAC(md, BytesPtr(key), static_cast<int>(key.size()), BytesPtr(data), data.size(), out.data(), &out_len) == nullptr) {
-    return DependencyUnavailable(request, "OpenSSL HMAC provider did not produce a digest");
-  }
-  return MakeFunctionSuccess(
-      request,
-      {MakeTextValue("character", HexEncode(std::vector<std::uint8_t>(out.begin(), out.begin() + out_len)))});
+  const auto invalid=[&] {return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "CRYPTO.HMAC.INVALID_INPUT", "HMAC requires matching typed value/key carriers and a text algorithm");};
+  if(request.arguments.size()!=3)return invalid();
+  const auto& data=request.arguments[0].value;
+  const auto& key=request.arguments[1].value;
+  const auto& algorithm=request.arguments[2].value;
+  const auto valid=[](const scratchbird::engine::sblr::SblrValue& value) {
+    using Kind=scratchbird::engine::sblr::SblrValuePayloadKind;
+    const bool binary=value.descriptor_id=="binary";
+    if(!binary&&value.descriptor_id!="character")return false;
+    if(value.has_int64_value||value.has_uint64_value||value.has_real64_value||!value.uuid_value.is_nil())return false;
+    if(binary&&(!value.charset_name.empty()||!value.collation_name.empty()))return false;
+    if(value.is_null)return value.payload_kind==Kind::none&&value.binary_value.empty()&&value.text_value.empty()&&value.encoded_value.empty();
+    if(binary)return value.payload_kind==Kind::binary&&value.text_value.empty()&&value.encoded_value.empty();
+    // Text is already descriptor-encoded by its owning admission boundary. Do
+    // not transcode, prefer a display mirror, normalize, or silently use UTF8.
+    return value.payload_kind==Kind::text&&value.binary_value.empty()&&
+           (value.encoded_value.empty()||value.encoded_value==value.text_value);
+  };
+  if(!valid(data)||!valid(key)||!valid(algorithm)||data.descriptor_id!=key.descriptor_id||
+     algorithm.descriptor_id!="character")return invalid();
+  if(data.is_null||key.is_null||algorithm.is_null)return MakeFunctionSuccess(request,{MakeNullValue("binary")});
+  const bool binary=data.descriptor_id=="binary";
+  const auto data_size=binary?data.binary_value.size():data.text_value.size();
+  const auto key_size=binary?key.binary_value.size():key.text_value.size();
+  if(data_size>kMaxCryptoInputBytes||key_size>kMaxCryptoInputBytes||key_size>static_cast<std::size_t>(std::numeric_limits<int>::max()))return invalid();
+  const auto profile=HmacAlgorithm(algorithm.text_value);
+  if(!profile)return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "CRYPTO.HMAC.UNSUPPORTED_ALGORITHM", "HMAC algorithm is not a registered Core profile");
+  const unsigned char empty=0;
+  const auto* data_bytes=data_size==0?&empty:(binary?data.binary_value.data():reinterpret_cast<const unsigned char*>(data.text_value.data()));
+  const auto* key_bytes=key_size==0?&empty:(binary?key.binary_value.data():reinterpret_cast<const unsigned char*>(key.text_value.data()));
+  struct Scratch {
+    std::array<unsigned char,EVP_MAX_MD_SIZE> bytes{};
+    ~Scratch(){OPENSSL_cleanse(bytes.data(),bytes.size());}
+  } out;
+  unsigned out_len=0;
+  if(!profile->digest||HMAC(profile->digest,key_bytes,static_cast<int>(key_size),data_bytes,data_size,out.bytes.data(),&out_len)!=out.bytes.data()||
+     out_len!=profile->output_bytes||out_len>out.bytes.size())return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+      "CRYPTO.PROFILE.UNAVAILABLE", "Core HMAC provider did not produce its exact output size");
+  return MakeFunctionSuccess(request,{MakeBinaryValue("binary",{out.bytes.begin(),out.bytes.begin()+out_len})});
 }
 
 FunctionCallResult RandomBytesFunction(const FunctionCallRequest& request, bool requires_length) {

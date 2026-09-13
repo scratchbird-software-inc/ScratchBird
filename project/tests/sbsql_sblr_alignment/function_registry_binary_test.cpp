@@ -21,6 +21,7 @@
 #include <thread>
 #include <type_traits>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 namespace f = scratchbird::engine::functions;
 namespace s = scratchbird::engine::sblr;
@@ -32,6 +33,29 @@ thread_local int rng_result=1, rng_prefix=16, rng_interceptions=0;
 thread_local bool digest_armed=false;
 thread_local int digest_result=1, digest_interceptions=0;
 thread_local unsigned digest_length=32;
+thread_local bool hmac_armed=false, hmac_watch=false;
+thread_local int hmac_return=1, hmac_interceptions=0;
+thread_local unsigned hmac_length=32, hmac_cleanses=0;
+thread_local void* hmac_scratch=nullptr;
+thread_local bool hmac_cleared=false;
+}
+extern "C" void __real_OPENSSL_cleanse(void*,std::size_t);
+extern "C" void __wrap_OPENSSL_cleanse(void* bytes,std::size_t count) {
+  __real_OPENSSL_cleanse(bytes,count);
+  if(bytes==hmac_scratch) {
+    ++hmac_cleanses;hmac_cleared=count==EVP_MAX_MD_SIZE;
+    for(std::size_t i=0;i<count;++i)hmac_cleared=hmac_cleared&&static_cast<unsigned char*>(bytes)[i]==0;
+    hmac_scratch=nullptr;
+  }
+}
+extern "C" unsigned char* __real_HMAC(const EVP_MD*,const void*,int,const unsigned char*,std::size_t,unsigned char*,unsigned int*);
+extern "C" unsigned char* __wrap_HMAC(const EVP_MD* md,const void* key,int key_length,const unsigned char* data,std::size_t size,unsigned char* out,unsigned int* length) {
+  if(hmac_watch)hmac_scratch=out;
+  if(!hmac_armed)return __real_HMAC(md,key,key_length,data,size,out,length);
+  hmac_armed=false;++hmac_interceptions;
+  for(unsigned i=0;i<hmac_length&&i<EVP_MAX_MD_SIZE;++i)out[i]=static_cast<unsigned char>(0xb0+i);
+  *length=hmac_length;
+  return hmac_return==0?nullptr:(hmac_return==1?out:out+1);
 }
 extern "C" int __real_EVP_Digest(const void*,std::size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_Digest(const void* data,std::size_t count,unsigned char* out,unsigned int* length,const EVP_MD* type,ENGINE* impl) {
@@ -779,6 +803,133 @@ void Blake3KnownAnswers() {
     Check(mismatches==0,"concurrent BLAKE3 calls have no shared mutable digest state");
   }
 }
+void CryptoHmac() {
+  struct Profile {const char* name;const EVP_MD*(*digest)();std::size_t block;const char* known;};
+  // SHA2 fixed values: RFC4231 case1. SHA3/BLAKE2b: independent inner/outer
+  // digest composition, also checked below without invoking an HMAC provider.
+  const Profile profiles[]{
+    {"sha256",EVP_sha256,64,"b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"},
+    {"sha512",EVP_sha512,128,"87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854"},
+    {"sha3_256",EVP_sha3_256,136,"ba85192310dffa96e2a3a40e69774351140bb7185e1202cdcc917589f95e16bb"},
+    {"sha3_512",EVP_sha3_512,72,"eb3fbd4b2eaab8f5c504bd3a41465aacec15770a7cabac531e482f860b5ec7ba47ccb2c6f2afce8f88d22b6dc61380f23a668fd3888bb80537c0a0b86407689e"},
+    {"blake2b",EVP_blake2b512,128,"358a6a184924894fc34bee5680eedf57d84a37bb38832f288e3b27dc63a98cc8c91e76da476b508bc6b2d408a248857452906e4a20b48c6b4b55d2df0fe1dd24"}
+  };
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto refusal=[](const f::FunctionCallResult& result,const char* code) {
+    return !result.result.ok()&&result.result.scalar_values.empty()&&!result.result.diagnostics.empty()&&
+           result.result.diagnostics[0].diagnostic_id==code;
+  };
+  const auto output=[](const f::FunctionCallResult& result,const std::vector<std::uint8_t>& bytes) {
+    if(!result.result.ok()||result.result.scalar_values.size()!=1)return false;
+    const auto& value=result.result.scalar_values[0];
+    return !value.is_null&&value.descriptor_id=="binary"&&value.payload_kind==s::SblrValuePayloadKind::binary&&
+           value.binary_value==bytes&&value.text_value.empty()&&value.encoded_value.empty();
+  };
+  for(const char* function:{"sb.crypto.hmac","sb.crypto.hmac_value_key_algo"}) {
+    const auto* entry=package.registry.Lookup(function);Check(entry!=nullptr,"HMAC identity exists");if(!entry)continue;
+    f::FunctionCallRequest request;request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"HMAC alias and base bind their actual binary identities");
+    for(const auto& profile:profiles) {
+      const std::vector<std::uint8_t> data{'H','i',' ','T','h','e','r','e'}, key(20,0x0b);
+      std::vector<std::uint8_t> expected;
+      const std::string_view hex=profile.known;
+      auto nibble=[](char c){return c<='9'?c-'0':c-'a'+10;};
+      for(std::size_t i=0;i<hex.size();i+=2)expected.push_back(static_cast<std::uint8_t>(nibble(hex[i])*16+nibble(hex[i+1])));
+      request.arguments={{"value",f::MakeBinaryValue("binary",data)},{"key",f::MakeBinaryValue("binary",key)},
+                         {"algorithm",f::MakeTextValue("character",profile.name)}};
+      hmac_watch=true;hmac_cleanses=0;hmac_cleared=false;
+      Check(output(f::DispatchCryptoHashFunction(request),expected),"HMAC actual provider publishes fixed binary known answer");
+      Check(hmac_cleanses==1&&hmac_cleared,"successful HMAC clears provider scratch");hmac_watch=false;
+      const auto original=request.arguments;
+      for(unsigned null_index=0;null_index<3;++null_index) {
+        request.arguments=original;request.arguments[null_index].value=f::MakeNullValue(null_index==2?"character":"binary");
+        hmac_armed=true;hmac_interceptions=0;
+        const auto result=f::DispatchCryptoHashFunction(request);hmac_armed=false;
+        Check(result.result.ok()&&result.result.scalar_values.size()==1&&result.result.scalar_values[0].is_null&&
+              result.result.scalar_values[0].descriptor_id=="binary"&&hmac_interceptions==0,"HMAC strict typed NULL does not invoke provider");
+      }
+      request.arguments=original;
+      for(unsigned length:{0u,1u,31u,32u,33u,63u,64u,65u,~0u}) {
+        if(length==expected.size())continue;
+        hmac_watch=true;hmac_cleanses=0;hmac_cleared=false;hmac_armed=true;hmac_length=length;hmac_return=1;
+        Check(refusal(f::DispatchCryptoHashFunction(request),"CRYPTO.PROFILE.UNAVAILABLE"),"HMAC never trusts short, long or oversized provider lengths");
+        Check(hmac_cleanses==1&&hmac_cleared,"HMAC wrong-length refusal clears scratch");hmac_armed=false;hmac_watch=false;
+      }
+      for(int result:{0,2}) {
+        hmac_watch=true;hmac_cleanses=0;hmac_cleared=false;hmac_armed=true;hmac_length=13;hmac_return=result;
+        Check(refusal(f::DispatchCryptoHashFunction(request),"CRYPTO.PROFILE.UNAVAILABLE"),"HMAC partial failure or foreign result pointer never publishes bytes");
+        Check(hmac_cleanses==1&&hmac_cleared,"HMAC failed provider clears scratch");hmac_armed=false;hmac_watch=false;
+      }
+      for(unsigned slot=0;slot<3;++slot)for(unsigned fault=0;fault<10;++fault) {
+        request.arguments=original;auto& bad=request.arguments[slot].value;
+        if(fault==0)bad.descriptor_id="int64";
+        if(fault==1)bad.payload_kind=s::SblrValuePayloadKind::uuid_binary;
+        if(fault==2)bad.has_int64_value=true;
+        if(fault==3)bad.has_uint64_value=true;
+        if(fault==4)bad.has_real64_value=true;
+        if(fault==5)bad.uuid_value=Base();
+        if(fault==6)bad.is_null=true;
+        if(fault==7)bad.encoded_value="secret-conflicting-mirror";
+        if(fault==8){if(slot==2)bad.binary_value={1};else bad.charset_name="UTF8";}
+        if(fault==9){if(slot==2)bad.descriptor_id="binary";else bad=f::MakeTextValue("character","secret-key");}
+        hmac_armed=true;hmac_interceptions=0;
+        const auto result=f::DispatchCryptoHashFunction(request);hmac_armed=false;
+        Check(refusal(result,"CRYPTO.HMAC.INVALID_INPUT")&&hmac_interceptions==0,"invalid HMAC representations never reach provider");
+        if(!result.result.diagnostics.empty())Check(result.result.diagnostics[0].detail.find("secret")==std::string::npos,"HMAC diagnostics do not disclose input or key");
+      }
+      request.arguments=original;
+      for(const auto& token:std::vector<std::string>{"", "sha3_256()", "sha256 ", " sha256", "sha-256", "sha1", "md5", "blake3",std::string("sha256\0",7),"SHA\xc4\xb0"}) {
+        request.arguments[2].value=f::MakeTextValue("character",token);hmac_armed=true;hmac_interceptions=0;
+        Check(refusal(f::DispatchCryptoHashFunction(request),"CRYPTO.HMAC.UNSUPPORTED_ALGORITHM")&&hmac_interceptions==0,"HMAC algorithm tokens use exact ASCII profile vocabulary");hmac_armed=false;
+      }
+      for(const auto& token:std::vector<std::string>{profile.name,std::string(profile.name)=="sha3_256"?"ShA3-256":std::string(profile.name)=="sha3_512"?"SHA3-512":std::string(profile.name)=="blake2b"?"BLAKE2B512":std::string(profile.name)=="sha256"?"SHA256":"SHA512"}) {
+        request.arguments[2].value=f::MakeTextValue("character",token);
+        Check(output(f::DispatchCryptoHashFunction(request),expected),"HMAC profile aliases and ASCII case preserve exact digest");
+      }
+      // Independent construction over the raw digest API, never HMAC(). Covers
+      // empty keys/data and key hashing on both sides of each block boundary.
+      const auto raw_hash=[&](const std::vector<std::uint8_t>& bytes) {
+        std::vector<std::uint8_t> result(EVP_MAX_MD_SIZE);unsigned count=0;
+        Check(EVP_Digest(bytes.data(),bytes.size(),result.data(),&count,profile.digest(),nullptr)==1,"independent HMAC construction digest succeeds");
+        result.resize(count);return result;
+      };
+      for(std::size_t length:{std::size_t{0},std::size_t{1},profile.block-1,profile.block,profile.block+1,std::size_t{8193}}) {
+        std::vector<std::uint8_t> input(length), material(length);
+        for(std::size_t i=0;i<length;++i){input[i]=static_cast<std::uint8_t>(i*17);material[i]=static_cast<std::uint8_t>(i*31);}
+        auto padded=material.size()>profile.block?raw_hash(material):material;padded.resize(profile.block);
+        std::vector<std::uint8_t> inner(profile.block),outer(profile.block);
+        for(std::size_t i=0;i<profile.block;++i){inner[i]=padded[i]^0x36;outer[i]=padded[i]^0x5c;}
+        inner.insert(inner.end(),input.begin(),input.end());const auto inner_digest=raw_hash(inner);
+        outer.insert(outer.end(),inner_digest.begin(),inner_digest.end());const auto wanted=raw_hash(outer);
+        for(bool text:{false,true}) {
+          auto value=text?f::MakeTextValue("character",std::string(input.begin(),input.end())):f::MakeBinaryValue("binary",input);
+          auto secret=text?f::MakeTextValue("character",std::string(material.begin(),material.end())):f::MakeBinaryValue("binary",material);
+          if(text){value.charset_name="ISO8859_1";secret.charset_name="ISO8859_1";value.collation_name="does_not_transform_hmac_bytes";}
+          request.arguments={{"value",value},{"key",secret},{"algorithm",f::MakeTextValue("character",profile.name)}};
+          Check(output(f::DispatchCryptoHashFunction(request),wanted),"binary and descriptor-encoded text HMAC use every byte including NUL and high bytes");
+        }
+      }
+      request.arguments=original;
+      bool completed=false;unsigned faults=0;
+      for(long budget=0;budget<100;++budget) {
+        hmac_watch=true;hmac_cleanses=0;hmac_cleared=false;fail_after=budget;
+        try {const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;
+          Check(output(result,expected),"HMAC allocation sweep reaches known answer");completed=true;
+        }catch(const std::bad_alloc&){fail_after=-1;++faults;}
+        hmac_watch=false;
+        Check(hmac_scratch==nullptr&&(hmac_cleanses==0||hmac_cleared),"HMAC allocation failure cannot leave uncleared provider scratch");
+        Check(request.arguments[1].value.binary_value==key,"HMAC allocation failure preserves caller key");
+        if(completed)break;
+      }
+      allocation_faults+=faults;Check(completed&&faults>0,"HMAC allocation faults exercised through publication");
+      for(std::size_t arity:{std::size_t{0},std::size_t{1},std::size_t{2},std::size_t{4}}) {
+        request.arguments=original;request.arguments.resize(arity);
+        Check(refusal(f::DispatchCryptoHashFunction(request),"CRYPTO.HMAC.INVALID_INPUT"),"HMAC enforces exactly three arguments");
+      }
+    }
+  }
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -797,6 +948,7 @@ int main() {
   CryptoUuidGeneration();
   CryptoFixedDigests();
   Blake3KnownAnswers();
+  CryptoHmac();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

@@ -63,7 +63,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/engine/functions ../../src/engine ../../src/engine/executor)
   target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid sb_core_hash Threads::Threads)
   target_link_options(sbsql_sblr_alignment_function_registry_binary PRIVATE
-    "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest")
+    "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=HMAC" "-Wl,--wrap=OPENSSL_cleanse")
   add_test(NAME sbsql_sblr_alignment_function_registry_binary
     COMMAND sbsql_sblr_alignment_function_registry_binary)
   set_tests_properties(sbsql_sblr_alignment_function_registry_binary PROPERTIES
