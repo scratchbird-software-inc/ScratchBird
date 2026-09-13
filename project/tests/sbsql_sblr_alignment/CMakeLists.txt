@@ -283,6 +283,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_test(NAME sbsql_sblr_alignment_checkpoint_directory
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-directory-only)
+  set_tests_properties(sbsql_sblr_alignment_checkpoint_directory PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_filespace_directory;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_policy_roots
     COMMAND sbsql_sblr_alignment_filespace_page_zero --policy-roots-only)
   set_tests_properties(sbsql_sblr_alignment_policy_roots PROPERTIES

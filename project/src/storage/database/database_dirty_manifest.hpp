@@ -16,6 +16,7 @@
 #include "transaction_inventory_page.hpp"
 #include "catalog_page.hpp"
 #include "native_allocation_map.hpp"
+#include "native_filespace_directory.hpp"
 
 #include <array>
 #include <optional>
@@ -66,7 +67,8 @@ enum class NativeCheckpointError {
   incomplete, inventory_failure, inventory_mismatch, creator_not_committed,
   history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed,
   allocation_failure, allocation_creator_mismatch, allocation_creator_not_committed,
-  allocation_record_creator_mismatch, policy_relation_mismatch
+  allocation_record_creator_mismatch, policy_relation_mismatch, directory_failure,
+  directory_creator_mismatch, directory_creator_not_committed
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -126,6 +128,25 @@ struct NativeCheckpointAllocationResult {
     return error == NativeCheckpointError::none && checkpoint_inventory.ok() && allocation.ok();
   }
 };
+
+struct NativeCheckpointDirectoryResult {
+  NativeCheckpointError error = NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeDirectoryError directory_error =
+      scratchbird::storage::page::NativeDirectoryError::none;
+  NativeCheckpointInventoryResult checkpoint_inventory;
+  scratchbird::storage::page::NativeFilespaceDirectoryChainResult directory;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept {
+    return error == NativeCheckpointError::none && checkpoint_inventory.ok() && directory.ok();
+  }
+};
+// Current root selection and committed directory creator, not whole-root
+// publication, attachment, historical epoch admission or a CAS base.
+NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
 
 struct NativeCheckpointPolicyRootsResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;

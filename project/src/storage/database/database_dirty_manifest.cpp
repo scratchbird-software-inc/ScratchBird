@@ -1015,6 +1015,66 @@ NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpen
    catch(...){return fail(Error::io_failure);}
 }
 
+NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept {
+  using namespace native_checkpoint;
+  namespace mga=scratchbird::transaction::mga;
+  namespace page=scratchbird::storage::page;
+  const auto fail=[](Error error){NativeCheckpointDirectoryResult r;r.error=error;return r;};
+  try {
+    if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
+    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
+    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,maximum_retained_image_bytes);
+    if(!pair.ok()){auto failure=fail(pair.error);failure.checkpoint_inventory.error=pair.error;
+      failure.checkpoint_inventory.inventory_error=pair.inventory_error;return failure;}
+    const auto fs=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),checkpoint.filespace_uuid,
+      [](const auto& file,const auto& id){return file.filespace_uuid<id;});
+    if(fs==locked.ordered.end()||fs->filespace_uuid!=checkpoint.filespace_uuid||
+        fs->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
+    const disk::FilespaceBootstrapBinding binding{database_uuid,fs->filespace_uuid,fs->page_size_profile_uuid};
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*fs->device,&binding);
+    if(!zero.ok()){
+      if(zero.error==disk::FilespacePageZeroError::resource_exhausted)return fail(Error::resource_exhausted);
+      if(zero.error==disk::FilespacePageZeroError::hash_provider_failure)return fail(Error::hash_failure);
+      if(zero.error==disk::FilespacePageZeroError::io_failure)return fail(Error::io_failure);
+      return fail(Error::invalid_filespace);
+    }
+    const auto& z=*zero.record;
+    const auto same=[](const auto& a,const auto& b){return a.kind==b.kind&&a.page_type==b.page_type&&
+      a.filespace_uuid==b.filespace_uuid&&a.page_number==b.page_number&&a.page_generation==b.page_generation&&
+      a.page_size_profile_uuid==b.page_size_profile_uuid&&a.object_uuid==b.object_uuid;};
+    const auto current=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==9;});
+    if(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation)
+      return fail(Error::binding_mismatch);
+    const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==3;});
+    const auto actual=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==5;});
+    if(target==pair.checkpoint->roots.end()||actual==z.roots.end())return fail(Error::invalid_roots);
+    const disk::FilespaceRootReference expected{5,target->page_type,target->page.filespace_uuid,target->page.page_number,
+      target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
+    if(!same(*actual,expected))return fail(Error::binding_mismatch);
+    auto directory=page::ReadNativeFilespaceDirectoryFromOpenDevices(database_uuid,locked.ordered,expected,
+      maximum_retained_image_bytes-pair.retained_image_bytes);
+    if(!directory.ok()){auto failure=fail(Error::directory_failure);failure.directory_error=directory.error;return failure;}
+    const auto digest=hash::ComputeSha256Digest(directory.pages.front().bytes);
+    if(!digest.ok())return fail(Error::hash_failure);
+    if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
+    const auto& root=*directory.pages.front().directory;
+    const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(root.creator_local_transaction_id));
+    if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid||
+        (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
+      return fail(Error::directory_creator_mismatch);
+    if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::directory_creator_not_committed);
+    NativeCheckpointDirectoryResult result;result.error=Error::none;
+    result.retained_image_bytes=pair.retained_image_bytes+directory.retained_image_bytes;
+    result.checkpoint_inventory=std::move(pair);result.directory=std::move(directory);return result;
+  }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
+   catch(const std::length_error&){return fail(Error::resource_exhausted);}
+   catch(...){return fail(Error::io_failure);}
+}
+
 NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,

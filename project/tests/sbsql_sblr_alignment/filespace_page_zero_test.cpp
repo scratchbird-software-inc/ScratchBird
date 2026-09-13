@@ -1931,6 +1931,88 @@ void CanonicalPolicyRoots() {
   }
 }
 
+Bytes DirectoryOracle(const page::NativeFilespaceDirectory& value) {
+  auto common=RootExample();common.header=value.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  const auto ref=[&](std::size_t at,const disk::NativePageReference& r){PutUuid(b,at,r.filespace_uuid);Number(b,at+16,8,r.page_number);Number(b,at+24,8,r.page_generation);PutUuid(b,at+32,r.page_size_profile_uuid);};
+  std::copy_n("SBFDIR01",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,256);Number(b,140,4,384+192*value.records.size());
+  PutUuid(b,144,value.object_uuid);Number(b,160,8,value.directory_generation);PutUuid(b,168,value.creator_transaction_uuid);Number(b,184,8,value.creator_local_transaction_id);
+  Number(b,192,8,value.total_records);Number(b,200,8,value.first_record);Number(b,208,4,value.records.size());if(value.next)ref(216,*value.next);
+  std::copy(value.next_sha256.begin(),value.next_sha256.end(),b.begin()+264);
+  for(std::size_t i=0;i<value.records.size();++i){const auto at=384+i*192;const auto& r=value.records[i];const auto& a=r.bootstrap;
+    PutUuid(b,at,a.filespace_uuid);PutUuid(b,at+16,a.page_size_profile_uuid);PutUuid(b,at+32,a.checksum_profile_uuid);PutUuid(b,at+48,a.encryption_profile_uuid);
+    PutUuid(b,at+64,r.locator_uuid);PutUuid(b,at+80,r.page_zero_uuid);Number(b,at+96,8,r.page_zero_generation);Number(b,at+104,8,r.root_set_generation);
+    Number(b,at+112,8,r.total_pages);Number(b,at+120,8,r.verification_epoch);Number(b,at+128,2,a.filespace_role);Number(b,at+130,2,a.lifecycle_state);
+    Number(b,at+132,4,a.flags);Number(b,at+136,4,a.page_size_bytes);Number(b,at+140,4,a.durable_format_generation);if(r.operation)ref(at+144,*r.operation);
+  }
+  const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+296);return b;
+}
+
+void CanonicalCheckpointDirectory() {
+  using E=db::NativeCheckpointError;
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
+    const auto path1=(fixture.root/"checkpoint-directory-primary").string(),path2=(fixture.root/"checkpoint-directory-secondary").string();
+    auto z1=Example(p),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own actual checkpoint directory filespaces");
+    const byte pad=0;Check(first.WriteAt(z1.total_pages*sizes[p]-1,&pad,1).ok()&&second.WriteAt(z2.total_pages*sizes[q]-1,&pad,1).ok(),"actual checkpoint directory capacities");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=3;
+    auto& initial=inv.inventory.entries.front();initial.identity.local_id=mga::MakeLocalTransactionId(11);initial.identity.transaction_uuid.value=Id(91);
+    initial.state=mga::TransactionState::committed;initial.commit_sequence=1;
+    auto active=initial;active.identity.local_id=mga::MakeLocalTransactionId(16);active.identity.transaction_uuid.value=Id(99);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto creator=initial;creator.identity.local_id=mga::MakeLocalTransactionId(17);creator.identity.transaction_uuid.value=Id(98);creator.commit_sequence=2;
+    inv.inventory.entries.push_back(active);inv.inventory.entries.push_back(creator);
+    const auto checkpoint=CheckpointExample(p);
+    const auto record=[](const auto& zero,const Uuid& locator){return page::NativeFilespaceDirectoryRecord{zero.bootstrap,locator,zero.page_uuid,zero.page_generation,zero.root_set_generation,zero.total_pages,0,{}};};
+    page::NativeFilespaceDirectory head;
+    head.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};head.object_uuid=Id(45);head.directory_generation=5;
+    head.creator_transaction_uuid=Id(91);head.creator_local_transaction_id=11;head.total_records=2;head.records={record(z1,Id(120))};
+    auto tail=head;tail.header={sizes[q],9,Id(1),Id(7),Id(81),15,105,0,Profile(q)};tail.first_record=1;tail.records={record(z2,Id(121))};
+    head.next=disk::NativePageReference{Id(7),15,105,Profile(q)};head.next_sha256=WholeRootHash(DirectoryOracle(tail));
+    const auto put=[&](auto& device,u64 number,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(number*size,bytes.data(),bytes.size());
+      Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist independent checkpoint directory fixture");};
+    const auto persist=[&](const auto& inventory,const auto& primary,auto h,auto t,bool stale=false){
+      h.records[0]=record(primary,Id(120));h.next_sha256=WholeRootHash(DirectoryOracle(t));
+      auto cp=checkpoint;const auto ib=InventoryOracle(inventory,16,16,16),hb=DirectoryOracle(h);
+      cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
+      auto& target=cp.roots[2];target.page={Id(2),15,105,Profile(p)};target.object_uuid=Id(45);target.sha256=WholeRootHash(stale?DirectoryOracle(head):hb);
+      put(first,0,sizes[p],Oracle(primary));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);
+      put(first,15,sizes[p],hb);put(second,15,sizes[q],DirectoryOracle(t));put(first,19,sizes[p],CheckpointOracle(cp));
+    };
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 limit=3*sizes[p]+sizes[q];const auto read=[&](u64 budget){return db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.directory.pages.empty()&&!r.directory.retained_image_bytes&&
+      !r.checkpoint_inventory.checkpoint&&r.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint_inventory.inventory.publication_base&&
+      !r.checkpoint_inventory.retained_image_bytes,"checkpoint directory failure exposes no authority prefix");};
+    persist(inv,z1,head,tail);reads=0;observed_allocations=0;count_allocations=true;track_reads=true;auto result=read(limit);track_reads=false;count_allocations=false;
+    const auto nr=reads;const auto na=observed_allocations;
+    Check(result.ok()&&result.retained_image_bytes==limit&&result.directory.pages.size()==2&&result.directory.pages[0].bytes==DirectoryOracle(head)&&
+      result.directory.pages[1].bytes==DirectoryOracle(tail)&&!result.checkpoint_inventory.inventory.publication_base,"actual current checkpoint directory inventory binding");
+    result=read(limit-1);empty(result);Check(result.error==E::directory_failure&&result.directory_error==page::NativeDirectoryError::resource_exhausted,"shared budget charges final directory image");
+    for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;result=read(limit);track_reads=false;read_fault=0;empty(result);}
+    for(unsigned fault=1;fault<=3;++fault){full_digest_fault=fault;result=read(limit);Check(full_digest_fault==0&&result.error==E::hash_failure,"checkpoint inventory directory complete hash provider failure");empty(result);}
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;result=read(limit);Check(hash_fault==0,"checkpoint directory part hash fault consumed");empty(result);}
+    if(p==0){for(unsigned long n=0;n<=na;++n){allocation_budget=n;result=read(limit);allocation_budget=-1;
+        if(result.ok())Check(result.directory.pages[0].bytes==DirectoryOracle(head)&&result.directory.pages[1].bytes==DirectoryOracle(tail),"allocation sweep exact directory authority");else empty(result);
+        if(n==na)Check(result.ok(),"measured checkpoint directory allocation sweep completed");}
+      std::cout<<"checkpoint directory allocation sites="<<na<<std::endl;}
+    for(unsigned change=0;change<3;++change){auto z=z1;if(change==0)z.root_set_generation++;if(change==1)z.roots[8].object_uuid=Id(199);if(change==2)z.roots[4].object_uuid=Id(199);
+      persist(inv,z,head,tail);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"current primary checkpoint and directory roots exact");}
+    for(unsigned change=0;change<3;++change){auto h=head,t=tail;if(change==0)h.creator_transaction_uuid=t.creator_transaction_uuid=Id(199);
+      if(change==1)h.creator_local_transaction_id=t.creator_local_transaction_id=10;
+      if(change==2){h.creator_transaction_uuid=t.creator_transaction_uuid=Id(99);h.creator_local_transaction_id=t.creator_local_transaction_id=16;}
+      persist(inv,z1,h,t);result=read(limit);empty(result);Check(result.error==(change==2?E::directory_creator_not_committed:E::directory_creator_mismatch),"actual directory creator identity and committed outcome required");}
+    for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}){
+      auto changed=inv;auto& e=changed.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;if(origin!=mga::TransactionState::committed)e.commit_sequence=0;
+      persist(changed,z1,head,tail);result=read(limit);if(origin==mga::TransactionState::committed)Check(result.ok(),"archived committed directory creator admitted");
+      else{empty(result);Check(result.error==E::directory_creator_not_committed,"archived noncommit cannot authorize directory");}}
+    auto changed=inv;changed.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;
+    persist(changed,z1,head,tail);result=read(limit);empty(result);Check(result.error==E::directory_creator_mismatch,"cluster creator cannot certify standalone directory");
+    auto h=head,t=tail;h.directory_generation++;t.directory_generation++;persist(inv,z1,h,t,true);result=read(limit);empty(result);Check(result.error==E::invalid_integrity,"resealed directory still binds exact checkpoint digest");
+    persist(inv,z1,head,tail);Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&
+      second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"checkpoint directory owned read-only reopen");
+    Check(read(limit).ok()&&first.read_only()&&second.read_only(),"reopened current directory and inventory verified");
+  }
+}
+
 void CanonicalCheckpointHistory() {
   using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice first,second;
   const auto path1=(fixture.root/"history-first").string(),path2=(fixture.root/"history-second").string();
@@ -2308,6 +2390,10 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-directory-only") {
+    try { CanonicalCheckpointDirectory();std::cout<<"checkpoint directory checks="<<checks<<" failures=0\n";return 0; }
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--policy-roots-only") {
     try{CanonicalPolicyRoots();std::cout<<"policy-root checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
