@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
+#include <map>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -36,8 +39,7 @@ using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::IsEngineIdentityUuid;
 using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
-inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '2'};
-inline constexpr byte kRowDataV1Magic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '1'};
+inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '3'};
 inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
@@ -53,14 +55,16 @@ inline constexpr u32 kOffsetCompactionGeneration = 80;
 inline constexpr u32 kOffsetSlotDirectoryOffset = 88;
 inline constexpr u32 kOffsetFreeSpaceBytes = 92;
 
-inline constexpr u32 kRowHeaderV1Bytes = 72;
-inline constexpr u32 kRowHeaderBytes = 88;
-inline constexpr u32 kRowOffsetInternalOrdinal = 48;
-inline constexpr u32 kRowOffsetRowBytes = 52;
-inline constexpr u32 kRowOffsetRowChecksum = 56;
-inline constexpr u32 kRowOffsetStableSlotId = 64;
-inline constexpr u32 kRowOffsetPreviousRowVersion = 72;
-inline constexpr u32 kRowOffsetNextRowVersion = 80;
+inline constexpr u32 kRowHeaderBytes = 136;
+inline constexpr u32 kRowOffsetInternalOrdinal = 52;
+inline constexpr u32 kRowOffsetRowBytes = 56;
+inline constexpr u32 kRowOffsetRowChecksum = 64;
+inline constexpr u32 kRowOffsetStableSlotId = 60;
+inline constexpr u32 kRowOffsetPreviousRowVersion = 88;
+inline constexpr u32 kRowOffsetNextRowVersion = 96;
+inline constexpr u32 kRowOffsetVersionUuid = 72;
+inline constexpr u32 kRowOffsetPreviousVersionUuid = 104;
+inline constexpr u32 kRowOffsetNextVersionUuid = 120;
 inline constexpr u32 kCellHeaderBytes = 16;
 inline constexpr u32 kSlotEntryBytes = 24;
 inline constexpr u32 kSlotOffsetStableSlotId = 0;
@@ -106,8 +110,46 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
   return uuid.kind == kind && uuid.valid() && IsEngineIdentityUuid(uuid.value);
 }
 
+bool ValidRowIdentity(const RowDataRecord& row) {
+  const auto valid_link = [&](const auto& id, u64 sequence) {
+    return sequence == 0 ? id.is_nil()
+                        : IsEngineIdentityUuid(id) && id != row.version_uuid &&
+                          id != row.row_uuid.value;
+  };
+  return IsTypedEngineIdentity(row.row_uuid, UuidKind::row) &&
+         IsTypedEngineIdentity(row.transaction_uuid, UuidKind::transaction) &&
+         IsEngineIdentityUuid(row.version_uuid) &&
+         row.version_uuid != row.row_uuid.value &&
+         row.local_transaction_id != 0 && row.row_version != 0 &&
+         valid_link(row.previous_version_uuid, row.previous_row_version) &&
+         valid_link(row.next_version_uuid, row.next_row_version) &&
+         (row.previous_row_version == 0 || row.previous_row_version < row.row_version) &&
+         (row.next_row_version == 0 || row.next_row_version > row.row_version);
+}
+
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
+}
+
+bool PreviousLinksMatchPage(const RowDataPageBody& body) {
+  using Uuid = scratchbird::core::platform::Uuid;
+  std::map<Uuid, const RowDataRecord*> by_version;
+  std::map<std::pair<Uuid, u64>, Uuid> by_sequence;
+  for (const auto& row : body.rows) {
+    by_version.emplace(row.version_uuid, &row);
+    by_sequence.emplace(std::make_pair(row.row_uuid.value, row.row_version), row.version_uuid);
+  }
+  for (const auto& row : body.rows) {
+    if (row.previous_row_version == 0) continue;
+    const auto version = by_version.find(row.previous_version_uuid);
+    if (version != by_version.end() &&
+        (version->second->row_uuid.value != row.row_uuid.value ||
+         version->second->row_version != row.previous_row_version)) return false;
+    const auto sequence = by_sequence.find({row.row_uuid.value, row.previous_row_version});
+    if (sequence != by_sequence.end() && sequence->second != row.previous_version_uuid) return false;
+  }
+  // Next-version links remain repairable hints and are not traversal authority.
+  return true;
 }
 
 bool HasRowDataMagicPrefix(const std::vector<byte>& serialized) {
@@ -178,6 +220,7 @@ DenseRowOrdinalLocator MakeDenseRowOrdinalLocator(
   locator.scope = scope;
   locator.internal_row_ordinal = row.internal_row_ordinal;
   locator.row_uuid = row.row_uuid;
+  locator.version_uuid = row.version_uuid;
   locator.transaction_uuid = row.transaction_uuid;
   locator.local_transaction_id = row.local_transaction_id;
   locator.durable_mga_inventory_authority_available =
@@ -229,6 +272,10 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   if (row.internal_row_ordinal != locator.internal_row_ordinal) {
     return RowOrdinalRefusal(body, locator, "ordinal_slot_mismatch");
   }
+  if (!ValidRowIdentity(row) || !IsEngineIdentityUuid(locator.version_uuid) ||
+      row.version_uuid != locator.version_uuid) {
+    return RowOrdinalRefusal(body, locator, "version_uuid_mismatch");
+  }
   if (!SameTypedUuid(row.row_uuid, locator.row_uuid)) {
     return RowOrdinalRefusal(body, locator, "row_uuid_mismatch");
   }
@@ -277,10 +324,13 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
   }
 
   std::vector<std::vector<byte>> encoded_cells;
-  u32 body_bytes = kRowDataPageBodyHeaderBytes;
+  u64 body_bytes = kRowDataPageBodyHeaderBytes;
+  std::set<scratchbird::core::platform::Uuid> version_ids;
+  std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
   for (const RowDataRecord& row : body_with_ordinals.rows) {
-    if (!IsTypedEngineIdentity(row.row_uuid, UuidKind::row) ||
-        !IsTypedEngineIdentity(row.transaction_uuid, UuidKind::transaction)) {
+    if (!ValidRowIdentity(row) ||
+        !version_ids.insert(row.version_uuid).second ||
+        !row_sequences.emplace(row.row_uuid.value, row.row_version).second) {
       return RowPageError("SB-ROW-DATA-PAGE-UUID-MUST-BE-V7",
                           "storage.row_data_page.uuid_must_be_v7");
     }
@@ -294,6 +344,9 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
                           "storage.row_data_page.next_lineage_invalid",
                           std::to_string(row.row_version));
     }
+    if (row.cells.size() > std::numeric_limits<u16>::max()) {
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_count_invalid");
+    }
     body_bytes += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
       const auto encoded = EncodeDatatypeBinaryValue(cell.value);
@@ -303,12 +356,23 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
         result.diagnostic = encoded.diagnostic;
         return result;
       }
-      body_bytes += kCellHeaderBytes + static_cast<u32>(encoded.encoded.size());
+      if (encoded.encoded.size() > page_size || body_bytes > page_size ||
+          kCellHeaderBytes + encoded.encoded.size() > page_size - body_bytes) {
+        return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
+                            "storage.row_data_page.body_too_large");
+      }
+      body_bytes += kCellHeaderBytes + encoded.encoded.size();
       encoded_cells.push_back(encoded.encoded);
     }
   }
-  const u32 slot_directory_offset = body_bytes;
-  body_bytes += static_cast<u32>(body_with_ordinals.rows.size()) * kSlotEntryBytes;
+  if (body_bytes > page_size) {
+    return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE", "storage.row_data_page.body_too_large");
+  }
+  const u32 slot_directory_offset = static_cast<u32>(body_bytes);
+  if (!PreviousLinksMatchPage(body_with_ordinals)) {
+    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
+  }
+  body_bytes += static_cast<u64>(body_with_ordinals.rows.size()) * kSlotEntryBytes;
   if (body_bytes > page_size - kPageHeaderSerializedBytes) {
     return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
                         "storage.row_data_page.body_too_large",
@@ -348,9 +412,9 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
     std::copy(row.row_uuid.value.bytes.begin(), row.row_uuid.value.bytes.end(), result.serialized.begin() + offset);
     std::copy(row.transaction_uuid.value.bytes.begin(), row.transaction_uuid.value.bytes.end(), result.serialized.begin() + offset + 16);
     StoreLittle64(result.serialized.data() + offset + 32, row.local_transaction_id);
-    StoreLittle32(result.serialized.data() + offset + 40, row.row_version);
-    StoreLittle16(result.serialized.data() + offset + 44, row.deleted ? RowFlag::deleted : 0);
-    StoreLittle16(result.serialized.data() + offset + 46, static_cast<u16>(row.cells.size()));
+    StoreLittle64(result.serialized.data() + offset + 40, row.row_version);
+    StoreLittle16(result.serialized.data() + offset + 48, row.deleted ? RowFlag::deleted : 0);
+    StoreLittle16(result.serialized.data() + offset + 50, static_cast<u16>(row.cells.size()));
     StoreLittle32(result.serialized.data() + offset + kRowOffsetInternalOrdinal,
                   row.internal_row_ordinal);
     StoreLittle64(result.serialized.data() + offset + kRowOffsetRowChecksum, 0);
@@ -360,6 +424,12 @@ RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size)
                   row.previous_row_version);
     StoreLittle64(result.serialized.data() + offset + kRowOffsetNextRowVersion,
                   row.next_row_version);
+    std::copy(row.version_uuid.bytes.begin(), row.version_uuid.bytes.end(),
+              result.serialized.begin() + offset + kRowOffsetVersionUuid);
+    std::copy(row.previous_version_uuid.bytes.begin(), row.previous_version_uuid.bytes.end(),
+              result.serialized.begin() + offset + kRowOffsetPreviousVersionUuid);
+    std::copy(row.next_version_uuid.bytes.begin(), row.next_version_uuid.bytes.end(),
+              result.serialized.begin() + offset + kRowOffsetNextVersionUuid);
     offset += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
       const std::vector<byte>& encoded = encoded_cells[cell_index++];
@@ -418,11 +488,7 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
                         "storage.row_data_page.body_short",
                         std::to_string(page_number));
   }
-  const bool row_data_v2 =
-      std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) == 0;
-  const bool row_data_v1 =
-      std::memcmp(serialized.data() + kOffsetMagic, kRowDataV1Magic, sizeof(kRowDataV1Magic)) == 0;
-  if (!row_data_v2 && !row_data_v1) {
+  if (std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0) {
     if (HasRowDataMagicPrefix(serialized)) {
       return RowPageError("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
                           "storage.row_data_page.format_unsupported");
@@ -430,14 +496,16 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     return RowPageError("SB-ROW-DATA-PAGE-MAGIC-INVALID",
                         "storage.row_data_page.magic_invalid");
   }
-  const u32 row_header_bytes = row_data_v2 ? kRowHeaderBytes : kRowHeaderV1Bytes;
+  const u32 row_header_bytes = kRowHeaderBytes;
   const u32 header_bytes = LoadLittle32(serialized.data() + kOffsetHeaderBytes);
   const u32 row_count = LoadLittle32(serialized.data() + kOffsetRowCount);
   const u32 body_bytes = LoadLittle32(serialized.data() + kOffsetBodyBytes);
   const u32 slot_directory_offset =
       LoadLittle32(serialized.data() + kOffsetSlotDirectoryOffset);
   const u32 free_space_bytes = LoadLittle32(serialized.data() + kOffsetFreeSpaceBytes);
-  if (header_bytes != kRowDataPageBodyHeaderBytes || body_bytes > serialized.size()) {
+  if (header_bytes != kRowDataPageBodyHeaderBytes || body_bytes > serialized.size() ||
+      serialized.size() > std::numeric_limits<u32>::max() ||
+      LoadLittle32(serialized.data() + 20) != 0) {
     return RowPageError("SB-ROW-DATA-PAGE-BODY-SIZE-INVALID",
                         "storage.row_data_page.body_size_invalid");
   }
@@ -471,11 +539,18 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
   result.body.free_space_bytes = free_space_bytes;
   result.serialized = serialized;
 
+  if (!IsTypedEngineIdentity(result.body.relation_uuid, UuidKind::object) ||
+      result.body.segment_id == 0 || result.body.segment_generation == 0 ||
+      result.body.page_generation == 0 || result.body.compaction_generation == 0) {
+    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.identity_scope_invalid");
+  }
+  std::set<scratchbird::core::platform::Uuid> version_ids;
+  std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
   u32 offset = kRowDataPageBodyHeaderBytes;
   std::vector<RowDataSlot> expected_slots;
   expected_slots.reserve(row_count);
   for (u32 row_index = 0; row_index < row_count; ++row_index) {
-    if (offset + row_header_bytes > body_bytes) {
+    if (offset > slot_directory_offset || row_header_bytes > slot_directory_offset - offset) {
       return RowPageError("SB-ROW-DATA-PAGE-ROW-SHORT",
                           "storage.row_data_page.row_short",
                           std::to_string(row_index));
@@ -487,19 +562,31 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     row.transaction_uuid.kind = UuidKind::transaction;
     std::copy(serialized.begin() + offset + 16, serialized.begin() + offset + 32, row.transaction_uuid.value.bytes.begin());
     row.local_transaction_id = LoadLittle64(serialized.data() + offset + 32);
-    row.row_version = LoadLittle32(serialized.data() + offset + 40);
-    row.deleted = (LoadLittle16(serialized.data() + offset + 44) & RowFlag::deleted) != 0;
-    const u16 cell_count = LoadLittle16(serialized.data() + offset + 46);
+    row.row_version = LoadLittle64(serialized.data() + offset + 40);
+    const auto row_flags = LoadLittle16(serialized.data() + offset + 48);
+    if ((row_flags & ~RowFlag::deleted) != 0) {
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.row_flags_invalid");
+    }
+    row.deleted = (row_flags & RowFlag::deleted) != 0;
+    const u16 cell_count = LoadLittle16(serialized.data() + offset + 50);
     row.internal_row_ordinal = LoadLittle32(serialized.data() + offset + kRowOffsetInternalOrdinal);
     const u32 row_bytes = LoadLittle32(serialized.data() + offset + kRowOffsetRowBytes);
     const u64 row_checksum = LoadLittle64(serialized.data() + offset + kRowOffsetRowChecksum);
     row.stable_slot_id = LoadLittle32(serialized.data() + offset + kRowOffsetStableSlotId);
-    if (row_data_v2) {
-      row.previous_row_version =
-          LoadLittle64(serialized.data() + offset + kRowOffsetPreviousRowVersion);
-      row.next_row_version =
-          LoadLittle64(serialized.data() + offset + kRowOffsetNextRowVersion);
+    row.previous_row_version =
+        LoadLittle64(serialized.data() + offset + kRowOffsetPreviousRowVersion);
+    row.next_row_version =
+        LoadLittle64(serialized.data() + offset + kRowOffsetNextRowVersion);
+    std::copy_n(serialized.begin() + offset + kRowOffsetVersionUuid, 16, row.version_uuid.bytes.begin());
+    std::copy_n(serialized.begin() + offset + kRowOffsetPreviousVersionUuid, 16, row.previous_version_uuid.bytes.begin());
+    std::copy_n(serialized.begin() + offset + kRowOffsetNextVersionUuid, 16, row.next_version_uuid.bytes.begin());
+    if (!ValidRowIdentity(row) || row.internal_row_ordinal != row_index + 1 ||
+        row.stable_slot_id == 0 || !version_ids.insert(row.version_uuid).second ||
+        !row_sequences.emplace(row.row_uuid.value, row.row_version).second ||
+        row_bytes < row_header_bytes || row_bytes > slot_directory_offset - row_start) {
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.row_identity_or_extent_invalid");
     }
+    const u32 row_end = row_start + row_bytes;
     if (row.previous_row_version != 0 && row.previous_row_version >= row.row_version) {
       return RowPageError("SB-ROW-DATA-PAGE-LINEAGE-INVALID",
                           "storage.row_data_page.previous_lineage_invalid",
@@ -513,17 +600,20 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     offset += row_header_bytes;
 
     for (u16 cell_index = 0; cell_index < cell_count; ++cell_index) {
-      if (offset + kCellHeaderBytes > body_bytes) {
+      if (offset > row_end || kCellHeaderBytes > row_end - offset) {
         return RowPageError("SB-ROW-DATA-PAGE-CELL-SHORT",
                             "storage.row_data_page.cell_short",
                             std::to_string(cell_index));
       }
       RowDataCell cell;
       cell.column_ordinal = LoadLittle16(serialized.data() + offset);
+      if (LoadLittle16(serialized.data() + offset + 2) != 0) {
+        return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_reserved_invalid");
+      }
       const u32 payload_bytes = LoadLittle32(serialized.data() + offset + 4);
       const u64 payload_checksum = LoadLittle64(serialized.data() + offset + 8);
       offset += kCellHeaderBytes;
-      if (offset + payload_bytes > body_bytes) {
+      if (payload_bytes > row_end - offset) {
         return RowPageError("SB-ROW-DATA-PAGE-CELL-PAYLOAD-SHORT",
                             "storage.row_data_page.cell_payload_short",
                             std::to_string(cell_index));
@@ -578,7 +668,11 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     slot.stable_slot_id = LoadLittle32(serialized.data() + offset + kSlotOffsetStableSlotId);
     slot.row_offset = LoadLittle32(serialized.data() + offset + kSlotOffsetRowOffset);
     slot.row_bytes = LoadLittle32(serialized.data() + offset + kSlotOffsetRowBytes);
-    slot.deleted = (LoadLittle32(serialized.data() + offset + kSlotOffsetFlags) & RowFlag::deleted) != 0;
+    const u32 slot_flags = LoadLittle32(serialized.data() + offset + kSlotOffsetFlags);
+    if ((slot_flags & ~static_cast<u32>(RowFlag::deleted)) != 0) {
+      return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.slot_flags_invalid");
+    }
+    slot.deleted = (slot_flags & RowFlag::deleted) != 0;
     slot.row_checksum = LoadLittle64(serialized.data() + offset + kSlotOffsetRowChecksum);
     if (slot.stable_slot_id != expected.stable_slot_id ||
         slot.row_offset != expected.row_offset ||
@@ -591,6 +685,9 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
     }
     result.body.slots.push_back(slot);
     offset += kSlotEntryBytes;
+  }
+  if (!PreviousLinksMatchPage(result.body)) {
+    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
   }
   return result;
 }

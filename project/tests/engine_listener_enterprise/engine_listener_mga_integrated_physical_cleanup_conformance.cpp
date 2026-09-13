@@ -259,6 +259,8 @@ txn::LocalGarbageCollectionSweepResult AuthoritativeSweep(
 page::RowDataRecord PageRow(const txn::RowVersionMetadata& metadata,
                             platform::u32 stable_slot_id) {
   page::RowDataRecord row;
+  row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = metadata.identity.row.row_uuid;
   row.transaction_uuid = metadata.identity.creator_transaction.transaction_uuid;
   row.local_transaction_id = metadata.identity.creator_transaction.local_id.value;

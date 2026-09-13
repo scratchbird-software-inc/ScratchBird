@@ -24,6 +24,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -377,12 +378,26 @@ RowVersionMetadata MetadataForRow(const RowDataRecord& row,
   metadata.identity.row.row_uuid = row.row_uuid;
   metadata.identity.creator_transaction = entry.identity;
   metadata.identity.version_sequence = row.row_version;
+  metadata.chain.previous_version_uuid = {UuidKind::row, row.previous_version_uuid};
+  metadata.chain.next_version_uuid = {UuidKind::row, row.next_version_uuid};
   metadata.chain.previous_version_sequence = row.previous_row_version;
   metadata.chain.next_version_sequence = row.next_row_version;
   metadata.state = RowStateForEntry(row, entry.state);
   metadata.creator_transaction_state = entry.state;
   metadata.payload_present = !row.cells.empty();
   return metadata;
+}
+
+std::optional<DiagnosticRecord> ValidateRowCreators(
+    const RowDataPageBody& body, const LocalTransactionInventory& inventory) {
+  for (const auto& row : body.rows) {
+    const auto creator = LookupLocalTransaction(inventory, MakeLocalTransactionId(row.local_transaction_id));
+    if (!creator.ok()) return creator.diagnostic;
+    if (!SameUuid(creator.entry.identity.transaction_uuid, row.transaction_uuid))
+      return MakePhysicalMgaCowDiagnostic(CowStoreErrorStatus(), "CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.creator_identity_mismatch");
+  }
+  return std::nullopt;
 }
 
 PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
@@ -465,6 +480,15 @@ PhysicalMgaCowMutationResult ReadRowDataPage(FileDevice* device,
         "storage.physical_mga_cow.relation_mismatch",
         std::to_string(request.page_number));
   }
+  const auto outer = ParsePageHeader(header.serialized);
+  if (!outer.ok()) return Propagate<PhysicalMgaCowMutationResult>(outer.status, outer.diagnostic);
+  if (outer.header.database_uuid != context.page_context.database_uuid.value ||
+      outer.header.filespace_uuid != context.page_context.filespace_uuid.value ||
+      outer.header.page_number != request.page_number ||
+      outer.header.page_generation != parsed.body.page_generation) {
+    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.page_identity_mismatch");
+  }
   *body = parsed.body;
   PhysicalMgaCowMutationResult result;
   result.status = CowStoreOkStatus();
@@ -502,6 +526,15 @@ PhysicalMgaCowReadResult ReadRowDataPageForRead(FileDevice* device,
   return PhysicalMgaCowReadResult{CowStoreOkStatus(), {}, *body, {}, {}, 0, 0, 0, 0, {}, {}};
 }
 
+scratchbird::core::uuid::TypedUuidResult IssuePhysicalIdentity(UuidKind kind) {
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  // The generator rejects out-of-range time and reports entropy failures.
+  // Accepted database/cluster clock policy remains the owning admission layer.
+  return scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      kind, static_cast<u64>(now));
+}
+
 PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
                                               const DatabaseContextResult& context,
                                               RowDataPageBody body,
@@ -514,10 +547,7 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
     return Propagate<PhysicalMgaCowMutationResult>(built.status,
                                                    built.diagnostic);
   }
-  const auto page_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
-      UuidKind::page,
-      1770000000000ull + built.body.page_number +
-          built.body.page_generation);
+  const auto page_uuid = IssuePhysicalIdentity(UuidKind::page);
   if (!page_uuid.ok()) {
     return Propagate<PhysicalMgaCowMutationResult>(page_uuid.status,
                                                    page_uuid.diagnostic);
@@ -615,6 +645,13 @@ BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
       }
       return selection;
     }
+    if (!SameUuid(entry.entry.identity.transaction_uuid, candidate.second.transaction_uuid)) {
+      if (blocked != nullptr) *blocked = true;
+      if (diagnostic != nullptr) *diagnostic = MakePhysicalMgaCowDiagnostic(
+          CowStoreErrorStatus(), "CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.creator_identity_mismatch");
+      return selection;
+    }
     if (entry.entry.identity.local_id.value != writer.identity.local_id.value &&
         (entry.entry.state == TransactionState::active ||
         entry.entry.state == TransactionState::preparing ||
@@ -661,11 +698,11 @@ BaseRowSelection SelectBaseRow(const RowDataPageBody& body,
 }
 
 u32 NextStableSlotId(const RowDataPageBody& body) {
-  u32 next = 1;
+  u32 largest = 0;
   for (const RowDataRecord& row : body.rows) {
-    next = std::max<u32>(next, row.stable_slot_id + 1);
+    largest = std::max(largest, row.stable_slot_id);
   }
-  return next;
+  return largest == std::numeric_limits<u32>::max() ? 0 : largest + 1;
 }
 
 }  // namespace
@@ -765,7 +802,12 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   if (!read_page.ok()) {
     return read_page;
   }
+  if (!row_page.rows.empty() && row_page.page_generation == std::numeric_limits<u64>::max())
+    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.page_generation_exhausted");
   row_page.page_generation += row_page.rows.empty() ? 0 : 1;
+  if (const auto failure = ValidateRowCreators(row_page, active_inventory))
+    return Propagate<PhysicalMgaCowMutationResult>(failure->status, *failure);
 
   bool blocked = false;
   DiagnosticRecord blocked_diagnostic;
@@ -794,8 +836,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   }
 
   const u64 new_sequence = base.max_row_version + 1;
-  if (new_sequence == 0 ||
-      new_sequence > std::numeric_limits<u32>::max()) {
+  if (new_sequence == 0) {
     return ErrorResult<PhysicalMgaCowMutationResult>(
         "SB-PHYSICAL-MGA-COW-VERSION-SEQUENCE-INVALID",
         "storage.physical_mga_cow.version_sequence_invalid");
@@ -814,18 +855,28 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
                                                    planned.diagnostic);
   }
 
+  const auto version_uuid = IssuePhysicalIdentity(UuidKind::row);
+  if (!version_uuid.ok())
+    return Propagate<PhysicalMgaCowMutationResult>(version_uuid.status, version_uuid.diagnostic);
+  scratchbird::core::platform::Uuid previous_version_uuid;
   if (base.found) {
+    previous_version_uuid = base.row.version_uuid;
+    row_page.rows[base.index].next_version_uuid = version_uuid.value.value;
     row_page.rows[base.index].next_row_version = new_sequence;
   } else if (base.max_row_version != 0) {
     for (RowDataRecord& row : row_page.rows) {
       if (SameUuid(row.row_uuid, request.row_uuid) &&
           row.row_version == base.max_row_version) {
+        previous_version_uuid = row.version_uuid;
+        row.next_version_uuid = version_uuid.value.value;
         row.next_row_version = new_sequence;
       }
     }
   }
 
   RowDataRecord new_row;
+  new_row.version_uuid = version_uuid.value.value;
+  new_row.previous_version_uuid = previous_version_uuid;
   new_row.row_uuid = request.row_uuid;
   new_row.transaction_uuid = request.transaction_uuid;
   new_row.local_transaction_id = active_entry.identity.local_id.value;
@@ -833,7 +884,10 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
                                       : (request.stable_slot_id == 0
                                              ? NextStableSlotId(row_page)
                                              : request.stable_slot_id);
-  new_row.row_version = static_cast<u32>(new_sequence);
+  new_row.row_version = new_sequence;
+  if (new_row.stable_slot_id == 0)
+    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.slot_identity_exhausted");
   new_row.previous_row_version = base.found ? base.row.row_version
                                             : base.max_row_version;
   new_row.next_row_version = 0;
@@ -1033,6 +1087,11 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
         }
       }
       if (!loaded_page.rows.empty()) {
+        if (loaded_page.page_generation == std::numeric_limits<u64>::max())
+          return ErrorResult<PhysicalMgaCowMutationBatchResult>("CATALOG.INVALID_INPUT",
+              "storage.physical_mga_cow.page_generation_exhausted");
+        if (const auto failure = ValidateRowCreators(loaded_page, loaded_inventory.inventory))
+          return Propagate<PhysicalMgaCowMutationBatchResult>(failure->status, *failure);
         ++loaded_page.page_generation;
       }
       page_empty_on_load.emplace(mutation_request.page_number,
@@ -1064,7 +1123,11 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
         }
       }
 
+      const auto version_uuid = IssuePhysicalIdentity(UuidKind::row);
+      if (!version_uuid.ok())
+        return Propagate<PhysicalMgaCowMutationBatchResult>(version_uuid.status, version_uuid.diagnostic);
       RowDataRecord new_row;
+      new_row.version_uuid = version_uuid.value.value;
       new_row.row_uuid = mutation_request.row_uuid;
       new_row.transaction_uuid = mutation_request.transaction_uuid;
       new_row.local_transaction_id = active_entry.identity.local_id.value;
@@ -1107,8 +1170,7 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     }
 
     const u64 new_sequence = base.max_row_version + 1;
-    if (new_sequence == 0 ||
-        new_sequence > std::numeric_limits<u32>::max()) {
+    if (new_sequence == 0) {
       return ErrorResult<PhysicalMgaCowMutationBatchResult>(
           "SB-PHYSICAL-MGA-COW-VERSION-SEQUENCE-INVALID",
           "storage.physical_mga_cow.version_sequence_invalid");
@@ -1128,18 +1190,28 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
           planned.diagnostic);
     }
 
+    const auto version_uuid = IssuePhysicalIdentity(UuidKind::row);
+    if (!version_uuid.ok())
+      return Propagate<PhysicalMgaCowMutationBatchResult>(version_uuid.status, version_uuid.diagnostic);
+    scratchbird::core::platform::Uuid previous_version_uuid;
     if (base.found) {
+      previous_version_uuid = base.row.version_uuid;
+      row_page.rows[base.index].next_version_uuid = version_uuid.value.value;
       row_page.rows[base.index].next_row_version = new_sequence;
     } else if (base.max_row_version != 0) {
       for (RowDataRecord& row : row_page.rows) {
         if (SameUuid(row.row_uuid, mutation_request.row_uuid) &&
             row.row_version == base.max_row_version) {
+          previous_version_uuid = row.version_uuid;
+          row.next_version_uuid = version_uuid.value.value;
           row.next_row_version = new_sequence;
         }
       }
     }
 
     RowDataRecord new_row;
+    new_row.version_uuid = version_uuid.value.value;
+    new_row.previous_version_uuid = previous_version_uuid;
     new_row.row_uuid = mutation_request.row_uuid;
     new_row.transaction_uuid = mutation_request.transaction_uuid;
     new_row.local_transaction_id = active_entry.identity.local_id.value;
@@ -1148,7 +1220,10 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
                                  : (mutation_request.stable_slot_id == 0
                                         ? NextStableSlotId(row_page)
                                         : mutation_request.stable_slot_id);
-    new_row.row_version = static_cast<u32>(new_sequence);
+    new_row.row_version = new_sequence;
+    if (new_row.stable_slot_id == 0)
+      return ErrorResult<PhysicalMgaCowMutationBatchResult>("CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.slot_identity_exhausted");
     new_row.previous_row_version = base.found ? base.row.row_version
                                               : base.max_row_version;
     new_row.next_row_version = 0;
@@ -1345,6 +1420,13 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
   std::map<std::array<scratchbird::core::platform::byte, 16>,
            std::vector<RowDataRecord>> by_row;
   for (const RowDataRecord& row : row_page.rows) {
+    const auto creator = LookupLocalTransaction(loaded_inventory.inventory,
+        MakeLocalTransactionId(row.local_transaction_id));
+    if (!creator.ok())
+      return Propagate<PhysicalMgaCowReadResult>(creator.status, creator.diagnostic);
+    if (!SameUuid(creator.entry.identity.transaction_uuid, row.transaction_uuid))
+      return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.creator_identity_mismatch");
     by_row[row.row_uuid.value.bytes].push_back(row);
   }
   for (auto& entry : by_row) {

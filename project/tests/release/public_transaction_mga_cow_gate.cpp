@@ -453,6 +453,8 @@ bool PhysicalRowPageProof() {
   body.page_generation = 7;
 
   page::RowDataRecord live;
+  live.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   live.row_uuid = MakeUuid(UuidKind::row, 81);
   live.transaction_uuid = MakeUuid(UuidKind::transaction, 82);
   live.local_transaction_id = 1;
@@ -460,6 +462,8 @@ bool PhysicalRowPageProof() {
   body.rows.push_back(live);
 
   page::RowDataRecord deleted;
+  deleted.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   deleted.row_uuid = MakeUuid(UuidKind::row, 83);
   deleted.transaction_uuid = MakeUuid(UuidKind::transaction, 84);
   deleted.local_transaction_id = 2;

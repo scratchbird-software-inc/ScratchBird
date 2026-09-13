@@ -187,7 +187,9 @@ RepairIdentityDecision ValidateInputMetadata(
                    candidate.diagnostic.diagnostic_code);
   }
   if (!IsTypedEngineIdentity(request.original_version_uuid, UuidKind::row) ||
-      !IsTypedEngineIdentity(request.candidate_version_uuid, UuidKind::row)) {
+      !IsTypedEngineIdentity(request.candidate_version_uuid, UuidKind::row) ||
+      request.original_row.version_uuid != request.original_version_uuid.value ||
+      request.candidate_row.version_uuid != request.candidate_version_uuid.value) {
     return Refused(request,
                    "SB-REPAIR-IDENTITY-VERSION-UUID-INVALID",
                    "storage.repair_identity.version_uuid_invalid");

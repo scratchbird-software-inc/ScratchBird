@@ -72,6 +72,8 @@ page::RowDataPageBody BuildRowPage() {
   body.page_generation = 289;
   for (platform::u32 i = 0; i < 5; ++i) {
     page::RowDataRecord row;
+    row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
     row.row_uuid =
         StableUuid(platform::UuidKind::row,
                    static_cast<platform::byte>(0x30 + i));

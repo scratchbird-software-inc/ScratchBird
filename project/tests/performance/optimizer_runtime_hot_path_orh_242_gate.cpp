@@ -122,6 +122,8 @@ page::RowDataPageBody RowPageBody() {
   body.next_page_number = 0;
   for (platform::u32 i = 0; i < 8; ++i) {
     page::RowDataRecord row;
+    row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+        scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
     row.row_uuid = TypedV7(platform::UuidKind::row,
                            1724200100000ull + i,
                            static_cast<platform::byte>(0x20 + i));

@@ -36,6 +36,8 @@ using scratchbird::storage::disk::PageClassification;
 using scratchbird::storage::disk::PageTypeName;
 using scratchbird::storage::disk::ParsePageHeader;
 
+inline constexpr std::array<byte, 8> kRowMagicV3 = {
+    'S', 'B', 'R', 'O', 'W', '0', '0', '3'};
 inline constexpr std::array<byte, 8> kRowMagicV2 = {
     'S', 'B', 'R', 'O', 'W', '0', '0', '2'};
 inline constexpr std::array<byte, 8> kRowMagicV1 = {
@@ -131,7 +133,7 @@ PageBodyChecksumResult HashFailure(const core_hash::HashDigestResult& failure) {
 }
 
 PageBodyKind DetectMagicBodyKind(const std::vector<byte>& body) {
-  if (StartsWith(body, kRowMagicV2) || StartsWith(body, kRowMagicV1)) {
+  if (StartsWith(body, kRowMagicV3) || StartsWith(body, kRowMagicV2) || StartsWith(body, kRowMagicV1)) {
     return PageBodyKind::row_data;
   }
   if (StartsWith(body, kBtreeMagic)) {

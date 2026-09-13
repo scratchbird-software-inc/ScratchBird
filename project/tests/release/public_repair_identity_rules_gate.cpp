@@ -86,6 +86,8 @@ page::RowDataRecord RowFor(const Fixture& fixture,
                            u64 local_id,
                            u32 version_sequence) {
   page::RowDataRecord row;
+  row.version_uuid = version_sequence == 1 ? fixture.old_version_uuid.value
+                                          : fixture.new_version_uuid.value;
   row.row_uuid = fixture.row_uuid;
   row.transaction_uuid = transaction_uuid;
   row.local_transaction_id = local_id;
@@ -204,6 +206,11 @@ bool PageRewriteRoundTripProof(const Fixture& fixture) {
 
   auto changed_version = request;
   changed_version.candidate_version_uuid = fixture.new_version_uuid;
+  const auto detached = page::EvaluateRepairIdentityRule(changed_version);
+  ok = Expect(!detached.ok() && detached.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-IDENTITY-VERSION-UUID-INVALID",
+              "repair evidence must bind the version UUID in the native row") && ok;
+  changed_version.candidate_row.version_uuid = fixture.new_version_uuid.value;
   const auto refused = page::EvaluateRepairIdentityRule(changed_version);
   ok = Expect(!refused.ok(),
               "page rewrite changing version UUID should fail closed") && ok;

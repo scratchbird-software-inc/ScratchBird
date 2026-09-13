@@ -74,6 +74,8 @@ page::RowDataRecord Row(TypedUuid row_uuid,
                         bool deleted,
                         std::string_view text) {
   page::RowDataRecord row;
+  row.version_uuid = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::row, 1770000000000ull).value.value;
   row.row_uuid = row_uuid;
   row.transaction_uuid = transaction_uuid;
   row.local_transaction_id = local_transaction_id;
@@ -238,7 +240,7 @@ bool CorruptionFailsClosed() {
   }
 
   std::vector<byte> row_corrupt = built.serialized;
-  row_corrupt[parsed.body.slots[0].row_offset + kRowVersionOffset] ^= 0x01u;
+  row_corrupt[parsed.body.slots[0].row_offset + kRowVersionOffset + 1] ^= 0x01u;
   RefreshBodyChecksum(&row_corrupt);
   const auto row_refused =
       page::ParseRowDataPageBody(row_corrupt, FixtureBody().page_number);

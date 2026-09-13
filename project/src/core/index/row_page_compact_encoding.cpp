@@ -145,12 +145,17 @@ bool BodiesEqual(const page::RowDataPageBody& left,
     const auto& left_row = left.rows[row_index];
     const auto& right_row = right.rows[row_index];
     if (left_row.row_uuid.kind != right_row.row_uuid.kind ||
+        left_row.version_uuid != right_row.version_uuid ||
+        left_row.previous_version_uuid != right_row.previous_version_uuid ||
+        left_row.next_version_uuid != right_row.next_version_uuid ||
         left_row.row_uuid.value != right_row.row_uuid.value ||
         left_row.transaction_uuid.kind != right_row.transaction_uuid.kind ||
         left_row.transaction_uuid.value != right_row.transaction_uuid.value ||
         left_row.local_transaction_id != right_row.local_transaction_id ||
         left_row.internal_row_ordinal != right_row.internal_row_ordinal ||
         left_row.row_version != right_row.row_version ||
+        left_row.previous_row_version != right_row.previous_row_version ||
+        left_row.next_row_version != right_row.next_row_version ||
         left_row.deleted != right_row.deleted ||
         left_row.cells.size() != right_row.cells.size()) {
       return false;

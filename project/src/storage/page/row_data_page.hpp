@@ -36,11 +36,15 @@ struct RowDataCell {
 
 struct RowDataRecord {
   TypedUuid row_uuid;
+  // Issued by the physical mutation owner, never derived from the row/sequence.
+  scratchbird::core::platform::Uuid version_uuid;
+  scratchbird::core::platform::Uuid previous_version_uuid;
+  scratchbird::core::platform::Uuid next_version_uuid;
   TypedUuid transaction_uuid;
   u64 local_transaction_id = 0;
   u32 internal_row_ordinal = 0;
   u32 stable_slot_id = 0;
-  u32 row_version = 1;
+  u64 row_version = 1;
   u64 previous_row_version = 0;
   u64 next_row_version = 0;
   bool deleted = false;
@@ -81,6 +85,7 @@ struct DenseRowOrdinalLocator {
   DenseRowOrdinalScope scope;
   u32 internal_row_ordinal = 0;
   TypedUuid row_uuid;
+  scratchbird::core::platform::Uuid version_uuid;
   TypedUuid transaction_uuid;
   u64 local_transaction_id = 0;
   bool durable_mga_inventory_authority_available = false;
