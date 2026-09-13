@@ -6,6 +6,7 @@
 #include "physical_mga_cow_store.hpp"
 #include "uuid.hpp"
 #include <cerrno>
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <source_location>
@@ -18,11 +19,30 @@ namespace {
 bool reject_write = false, reject_sync = false;
 unsigned write_faults = 0, sync_faults = 0;
 unsigned write_calls = 0, sync_calls = 0;
+enum class OwnedFault { none, row_write, row_sync, after_row_write_exception,
+                        rollback_write, exception_rollback_write };
+OwnedFault owned_fault = OwnedFault::none;
+off_t owned_row_offset = 0;
+unsigned owned_faults = 0;
 }
 extern "C" ssize_t __real_pwrite(int, const void*, size_t, off_t);
 extern "C" int __real_fsync(int);
 extern "C" ssize_t __wrap_pwrite(int fd, const void* bytes, size_t count, off_t offset) {
   ++write_calls;
+  if (owned_fault != OwnedFault::none && offset == owned_row_offset) {
+    const auto fault = owned_fault; owned_fault = OwnedFault::none; ++owned_faults;
+    if (fault == OwnedFault::row_write || fault == OwnedFault::rollback_write) {
+      if (fault == OwnedFault::rollback_write) reject_write = true;
+      errno = EIO; return -1;
+    }
+    const auto written = __real_pwrite(fd, bytes, count, offset);
+    if (fault == OwnedFault::after_row_write_exception || fault == OwnedFault::exception_rollback_write) {
+      if (fault == OwnedFault::exception_rollback_write) reject_write = true;
+      throw std::bad_alloc();
+    }
+    reject_sync = true;
+    return written;
+  }
   if (reject_write) { reject_write = false; ++write_faults; errno = EIO; return -1; }
   return __real_pwrite(fd, bytes, count, offset);
 }
@@ -113,12 +133,15 @@ struct Fixture {
     cell.payload.assign(value.begin(), value.end()); mutation.cells.push_back({1, std::move(cell)});
     return mutation;
   }
-  db::PhysicalMgaCowReadResult Read(u64 page, mga::TransactionIdentity reader = {}, u64 boundary = 0) {
+  db::PhysicalMgaCowReadResult Read(u64 page, mga::TransactionIdentity reader = {}, u64 boundary = 0,
+                                  std::source_location at = std::source_location::current()) {
     mga::VisibilitySnapshot snapshot;
     snapshot.reader_transaction = reader.local_id;
     snapshot.visible_through_local_transaction_id = boundary;
     snapshot.visible_through_local_transaction_id_is_boundary = true;
     auto result = db::ReadPhysicalMgaCowRowsFromOpenDevice(device, relation, page, snapshot, !reader.local_id.valid() && boundary == 0);
+    if (!result.ok()) std::cerr << "read_line=" << at.line() << " page=" << page << ' ' << result.diagnostic.diagnostic_code
+                                << ':' << result.diagnostic.message_key << '\n';
     Check(result.ok(), "read actual owned row page");
     return result;
   }
@@ -144,6 +167,73 @@ void Payload(const db::PhysicalMgaCowReadResult& read, std::string_view expected
   Check(read.visible_rows.size() == 1 && read.visible_rows[0].cells.size() == 1, "exact visible row count");
   const auto& bytes = read.visible_rows[0].cells[0].value.payload;
   Check(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()) == expected, "persisted payload mismatch");
+}
+void OwnedMutationFailureFinality() {
+  for (auto fault : {OwnedFault::row_write, OwnedFault::row_sync,
+                    OwnedFault::after_row_write_exception, OwnedFault::rollback_write,
+                    OwnedFault::exception_rollback_write}) {
+    const bool rollback_fails = fault == OwnedFault::rollback_write || fault == OwnedFault::exception_rollback_write;
+    Fixture f;
+    const auto row = Id(UuidKind::row);
+    const auto initial = f.Begin();
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
+        f.device, f.Mutation(initial, row, f.first_page, "before")).ok(), "initial failure fixture row");
+    f.Finish(initial, true);
+    const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(inventory.ok(), "inventory before owned mutation failure");
+    auto mutation = f.Mutation({}, row, f.first_page, "after");
+    mutation.transaction_uuid = Id(UuidKind::transaction);
+    mutation.kind = db::PhysicalMgaCowMutationKind::update;
+    mutation.use_existing_transaction = false;
+    mutation.begin_unix_epoch_millis = 1790000000200ull;
+    owned_row_offset = static_cast<off_t>(f.first_page * page_size);
+    owned_fault = fault;
+    const auto previous_faults = owned_faults;
+    bool allocation_thrown = false;
+    db::PhysicalMgaCowMutationResult failed;
+    try {
+      failed = db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, mutation);
+    } catch (const std::bad_alloc&) { allocation_thrown = true; }
+    Check(owned_fault == OwnedFault::none && owned_faults == previous_faults + 1,
+          "owned mutation did not reach selected actual page IO boundary");
+    Check(!reject_write && !reject_sync, "owned mutation left a fault unexercised");
+    Check(allocation_thrown == (fault == OwnedFault::after_row_write_exception),
+          "native mutation lost the injected allocation exception");
+    if (!allocation_thrown) {
+      Check(!failed.ok() && failed.row_page.rows.empty() && failed.page_uuid.value.is_nil(),
+            "IO failure fabricated a page publication result");
+      const bool rolled = std::find(failed.evidence.begin(), failed.evidence.end(),
+          "physical_mga_cow.failed_owned_transaction_rolled_back=true") != failed.evidence.end();
+      Check(rolled == !rollback_fails, "rollback receipt disagrees with actual IO");
+      if (rollback_fails) {
+        Check(failed.unresolved_owned_transaction.transaction_uuid.value == mutation.transaction_uuid.value &&
+              failed.unresolved_owned_transaction.local_id.value == inventory.inventory.next_local_transaction_id,
+              "failed rollback stranded a transaction without its exact recovery identity");
+        Check(std::any_of(failed.diagnostic.arguments.begin(), failed.diagnostic.arguments.end(),
+            [&](const auto& argument) { return fault == OwnedFault::exception_rollback_write
+                ? argument.key == "mutation_exception" && argument.value == "propagation_interrupted_by_rollback_failure"
+                : argument.key == "mutation_failure_code" && !argument.value.empty(); }),
+            "rollback failure lost original mutation diagnostic");
+      } else {
+        Check(!failed.unresolved_owned_transaction.local_id.valid(),
+              "confirmed rollback reported an unresolved transaction");
+      }
+    }
+    auto actual = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+    Check(actual.ok(), "reload durable inventory after owned mutation failure");
+    const auto entry = mga::LookupLocalTransaction(actual.inventory,
+        mga::MakeLocalTransactionId(inventory.inventory.next_local_transaction_id));
+    Check(entry.ok() && entry.entry.identity.transaction_uuid.value == mutation.transaction_uuid.value,
+          "owned failure reassigned transaction number or UUID");
+    Check(entry.entry.state == (rollback_fails ? mga::TransactionState::active : mga::TransactionState::rolled_back),
+          "owned failure has incorrect durable finality");
+    Payload(f.Read(f.first_page), "before");
+    f.Locked();
+    if (rollback_fails) f.Finish(entry.entry.identity, false);
+    Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(),
+          "reopen after owned mutation IO failure");
+    Payload(f.Read(f.first_page), "before");
+  }
 }
 void TransactionStateRefusals() {
   Fixture f;
@@ -355,6 +445,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

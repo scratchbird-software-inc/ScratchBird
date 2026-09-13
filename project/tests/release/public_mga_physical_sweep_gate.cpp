@@ -314,7 +314,7 @@ bool PhysicalPageSweepProof() {
   request.max_reclaim_rows = 8;
   const auto reclaimed = page::ApplyRowDataPhysicalSweep(request);
   ok = Expect(reclaimed.ok(), "PCR-083 row page physical sweep should apply") && ok;
-  ok = Expect(reclaimed.physical_storage_mutated,
+  ok = Expect(reclaimed.staged_page_changed,
               "PCR-083 row page physical sweep should mutate page body") &&
        ok;
   ok = Expect(reclaimed.removed_row_count == 2,

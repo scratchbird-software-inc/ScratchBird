@@ -101,7 +101,7 @@ MgaIntegratedPhysicalCleanupResult ApplyMgaIntegratedPhysicalCleanup(
         true);
     return result;
   }
-  result.row_page_mutated = result.row_page_sweep.physical_storage_mutated;
+  result.row_page_mutated = result.row_page_sweep.staged_page_changed;
 
   MgaRelationPhysicalSweepRequest relation_request;
   relation_request.state = request.relation_state;

@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Prior1379 registrations plus five admitted PREPARED failures and one UUID
-  // timestamp-bound refusal. Check exact Core import, not a minimum row count.
-  Check(catalog.size==1385 && catalog.data!=nullptr,"complete Core code inventory missing");
+  // Includes the retained-device read-only publication fence. Check the exact
+  // admitted Core import, not a minimum row count.
+  Check(catalog.size==1386 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -67,6 +67,12 @@ int main() {
          "not_specified","continue_or_fail_by_policy","AUDIT_TRIGGER");
   Sample("DIAG.REDACTION_POLICY_INVALID",S::security,true,"false","deny_access","DIAG");
   Sample("STORAGE.PAGE_CHECKSUM_FAILED",S::corruption,true,"false","repair_required","STORAGE");
+  Sample("STORAGE.READ_ONLY_DEVICE",S::error,true,
+         "retry_only_with_authorized_writable_device",
+         "reject_without_any_publication_or_page_mutation","STORAGE");
+  const auto* read_only=d::FindCanonicalDiagnosticCode("STORAGE.READ_ONLY_DEVICE");
+  Check(read_only && read_only->sqlstate=="25006" && read_only->numeric_binding=="not_applicable",
+        "read-only device refusal lost canonical SQLSTATE or invented numeric binding");
   Sample("ACID.PARTIAL_OUTCOME_DETECTED",S::critical,true,"false","not_specified","ACID");
   Sample("MANAGER.NO_SPIN_REQUIRED",S::fatal,true,"false","not_specified","MANAGER");
   Sample("SBSQL.METADATA.CATALOG_SQL_FORBIDDEN",S::internal,true,
@@ -106,8 +112,8 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x85,0x19,0x79,0x75,0x8d,0x5f,0xc1,0x21,0xf8,0x5f,0x81,0xac,0x83,0x5d,0xc2,0x2a,
-    0x83,0xf3,0x8e,0x94,0x93,0x70,0xb0,0x3c,0xac,0x46,0x88,0x68,0x61,0xbe,0xc1,0xc6};
+    0x0a,0x53,0xc2,0x85,0x6a,0x8b,0x9d,0x86,0x90,0xe2,0xde,0xd4,0xff,0x93,0xf7,0xa4,
+    0x9f,0xf5,0x14,0xb8,0x70,0xe2,0xd4,0x08,0xe1,0x48,0x3f,0xa6,0x3f,0xcb,0xb3,0x41};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

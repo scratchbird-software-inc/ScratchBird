@@ -1156,6 +1156,13 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     FileDevice* device,
     u32 page_size,
     LocalTransactionInventory inventory) {
+  // The journal is part of inventory authority. Refuse before even publishing
+  // its "publishing" image; relying on WriteAt's read-only check changes the
+  // journal first and can disturb a node opened only for inspection.
+  if (device != nullptr && device->read_only()) {
+    return StorePageError("STORAGE.READ_ONLY_DEVICE",
+                          "storage.transaction_inventory.read_only_device");
+  }
   const auto trace_start = LocalTransactionStoreSteadyClock::now();
   auto phase_start = trace_start;
   std::map<std::string, u64> trace_phases;

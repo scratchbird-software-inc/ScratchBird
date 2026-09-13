@@ -113,6 +113,10 @@ struct PhysicalMgaCowMutationResult {
   TypedUuid page_uuid;
   u64 page_generation = 0;
 
+  // Present only if rollback of a helper-owned transaction cannot be confirmed.
+  // Exact recovery identity, not a transaction-state or publication receipt.
+  scratchbird::transaction::mga::TransactionIdentity unresolved_owned_transaction;
+
   bool ok() const {
     return status.ok();
   }

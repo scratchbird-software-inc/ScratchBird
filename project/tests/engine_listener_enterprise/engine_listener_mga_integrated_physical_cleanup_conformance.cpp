@@ -745,7 +745,7 @@ void ProveMissingAuthorityFailsClosed() {
               "authoritative_mga_cleanup_sweep_required") !=
               std::string::npos,
           "ELER-024 non-authoritative refusal was not stable");
-  Require(!refused.row_page_sweep.physical_storage_mutated &&
+  Require(!refused.row_page_sweep.staged_page_changed &&
               !refused.relation_sweep.physical_state_mutated &&
               !refused.secondary_index_cleaned &&
               !refused.overflow_cleaned &&

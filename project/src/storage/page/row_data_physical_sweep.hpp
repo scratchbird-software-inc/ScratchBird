@@ -35,7 +35,9 @@ struct RowDataPhysicalSweepResult {
   u64 reclaimed_slot_count = 0;
   u32 free_space_before = 0;
   u32 free_space_after = 0;
-  bool physical_storage_mutated = false;
+  // This helper constructs an image; it never owns or writes a database device.
+  // The durable cleanup owner must supply a separate publication receipt.
+  bool staged_page_changed = false;
   std::vector<std::string> reclaim_evidence_ids;
 
   bool ok() const {

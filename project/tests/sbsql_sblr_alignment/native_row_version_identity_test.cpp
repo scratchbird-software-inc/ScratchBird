@@ -5,6 +5,7 @@
 #include "row_data_physical_sweep.hpp"
 #include "repair_history_inspection.hpp"
 #include "page_header.hpp"
+#include "disk_device.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
@@ -170,6 +171,29 @@ void Finish(const fs::path& root,const db::PhysicalMgaCowMutationResult& mutatio
   finish.decision=commit?db::PhysicalMgaCowFinalizeDecision::commit:db::PhysicalMgaCowFinalizeDecision::rollback;
   finish.final_unix_epoch_millis=Now();Good(db::FinalizePhysicalMgaCowTransaction(finish));
 }
+void CheckInventoryState(const fs::path& root,p::u64 transaction_number,
+                         mga::TransactionState expected) {
+  const auto inventory=db::LoadLocalTransactionInventoryFromDatabase((root/"native.sbdb").string());Good(inventory);
+  const auto id=Id(transaction_number);
+  const auto found=std::find_if(inventory.inventory.entries.begin(),inventory.inventory.entries.end(),
+      [&](const auto& entry){return entry.identity.transaction_uuid.value==id;});
+  Check(found!=inventory.inventory.entries.end(),"failed mutation lost transaction identity");
+  Check(found->identity.local_id.valid() && found->state==expected,
+        "durable transaction state disagrees with mutation ownership");
+}
+std::string Quote(const std::string& text);
+void CheckOwnedFailure(const fs::path& root,const db::PhysicalMgaCowMutationResult& result,
+                       p::u64 transaction_number,const std::string& self) {
+  Check(!result.ok() && result.row_page.rows.empty() && result.row_version.version_uuid.is_nil() &&
+        result.page_uuid.value.is_nil() && result.page_generation==0,
+        "failed mutation returned partial row or publication identity");
+  Check(std::count(result.evidence.begin(),result.evidence.end(),
+        "physical_mga_cow.failed_owned_transaction_rolled_back=true")==1,
+        "failed helper-owned mutation omitted rollback evidence");
+  CheckInventoryState(root,transaction_number,mga::TransactionState::rolled_back);
+  Check(std::system((Quote(self)+" --rolled-back "+Quote(root.string())+" "+
+        std::to_string(transaction_number)).c_str())==0,"independent process did not observe rollback");
+}
 void SaveOracle(const fs::path& root,const page::RowDataRecord& row,p::u32 expected_value) {
   std::ofstream out(root/"expected.bin",std::ios::binary|std::ios::trunc);
   for(const auto& id:{row.row_uuid.value,row.version_uuid,row.previous_version_uuid})
@@ -256,6 +280,7 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto corrupt_write=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::insert,8));
   Check(!corrupt_write.ok() && corrupt_write.diagnostic.message_key==
         "storage.physical_mga_cow.creator_identity_mismatch","writer accepted corrupt predecessor inventory identity");
+  CheckOwnedFailure(root,corrupt_write,108,self);
   write_body(original);
   disk::SerializedPageHeader original_header;
   {
@@ -290,6 +315,7 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto generation_refused=db::WritePhysicalMgaCowUnpublishedMutation(Mutation(root,db::PhysicalMgaCowMutationKind::insert,9));
   Check(!generation_refused.ok() && generation_refused.diagnostic.message_key==
         "storage.physical_mga_cow.page_generation_exhausted","page generation overflow reused an old generation");
+  CheckOwnedFailure(root,generation_refused,109,self);
   write_header(original_header);write_body(original);
   auto exhausted_slot=original;p::StoreLittle32(exhausted_slot.data()+96+60,std::numeric_limits<p::u32>::max());
   p::StoreLittle32(exhausted_slot.data()+p::LoadLittle32(exhausted_slot.data()+88),std::numeric_limits<p::u32>::max());
@@ -299,6 +325,7 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto slot_refused=db::WritePhysicalMgaCowUnpublishedMutation(new_record);
   Check(!slot_refused.ok() && slot_refused.diagnostic.message_key==
         "storage.physical_mga_cow.slot_identity_exhausted","slot identity overflow reused an occupied identifier");
+  CheckOwnedFailure(root,slot_refused,111,self);
   write_body(original);
   // Actual batch path under an inventory-owned transaction, not fabricated proof flags.
   const auto inventory=db::LoadLocalTransactionInventoryFromDatabase(create.path);Good(inventory);
@@ -325,6 +352,49 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto duplicate_result=db::WritePhysicalMgaCowUnpublishedMutationBatch(duplicate_batch);
   Check(!duplicate_result.ok() && duplicate_result.written_rows==0,
         "batch uniqueness declaration bypassed native version identity validation");
+  CheckInventoryState(root,110,mga::TransactionState::active);
+  const auto caller_failure=db::WritePhysicalMgaCowUnpublishedMutation(batch.mutations[0]);
+  Check(!caller_failure.ok() && caller_failure.diagnostic.message_key==
+        "storage.physical_mga_cow.duplicate_visible_row","duplicate caller-owned row was accepted");
+  Check(caller_failure.evidence.empty(),"helper claimed rollback of caller-owned transaction");
+  CheckInventoryState(root,110,mga::TransactionState::active);
+  Check(std::system((Quote(self)+" --active "+Quote(root.string())+" 110").c_str())==0,
+        "independent process did not retain caller-owned active transaction");
+  const auto after_failure=db::ReadPhysicalMgaCowRows(own);Good(after_failure);
+  Check(after_failure.visible_rows.size()==8,"caller-owned failure lost prior statement rows");
+  for(std::size_t i=0;i<8;++i)
+    Check(after_failure.visible_rows[i].version_uuid==rows.visible_rows[i].version_uuid &&
+          after_failure.visible_rows[i].cells[0].value.payload==rows.visible_rows[i].cells[0].value.payload,
+          "failed duplicate mutation changed an existing version or payload");
+  {
+    const auto before=db::LoadLocalTransactionInventoryFromDatabase(create.path);Good(before);
+    const auto journal_bytes=[&] {
+      std::ifstream in(create.path+".sb.txn_publish",std::ios::binary);
+      Check(in.good(),"inventory publication oracle cannot open journal");
+      return std::string(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());
+    };
+    const auto publication_before=journal_bytes();
+    disk::FileDevice read_only;Good(read_only.Open(create.path,disk::FileOpenMode::open_existing_read_only));
+    auto request=Mutation(root,db::PhysicalMgaCowMutationKind::insert,12);
+    request.page_number=RowPage+3;request.row_uuid=Typed(p::UuidKind::row,512);
+    const auto refused=db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(read_only,request);
+    Check(!refused.ok() && refused.diagnostic.diagnostic_code=="STORAGE.READ_ONLY_DEVICE" &&
+          refused.diagnostic.message_key=="storage.transaction_inventory.read_only_device",
+          "read-only device accepted mutation or lost the device refusal diagnostic");
+    Check(journal_bytes()==publication_before,"read-only mutation changed publication authority");
+    Check(std::count(refused.evidence.begin(),refused.evidence.end(),
+          "physical_mga_cow.failed_owned_transaction_not_published=true")==1,
+          "read-only pre-publication failure invented rollback authority");
+    const auto after=db::LoadLocalTransactionInventoryFromOpenDevice(&read_only,8192);Good(after);
+    Check(after.inventory.entries.size()==before.inventory.entries.size() &&
+          after.inventory.next_local_transaction_id==before.inventory.next_local_transaction_id,
+          "read-only failure published or consumed transaction identity");
+    const auto proposed=mga::BeginLocalTransaction(before.inventory,request.transaction_uuid,Now());Good(proposed);
+    const auto direct=db::PersistLocalTransactionInventoryToOpenDevice(&read_only,8192,proposed.inventory);
+    Check(!direct.ok() && direct.diagnostic.diagnostic_code=="STORAGE.READ_ONLY_DEVICE" &&
+          direct.inventory.entries.empty() && journal_bytes()==publication_before,
+          "direct inventory persistence bypassed the read-only publication fence");
+  }
   // Real native owner metadata and durable inventory feed the actual MGA
   // decision and page-image sweep. This does not claim durable cleanup writes.
   const auto cleanup_source=db::ReadPhysicalMgaCowRows(ReadRequest(root));Good(cleanup_source);
@@ -367,12 +437,14 @@ void Storage(const fs::path& root,const std::string& self) {
   const auto staged=page::ApplyRowDataPhysicalSweep(sweep);Good(staged);
   Check(staged.removed_row_count==1 && staged.page.rows.size()+1==sweep.page.rows.size(),
         "exact native version was not removed from staged page");
+  Check(staged.staged_page_changed && staged.diagnostic.diagnostic_code.empty(),
+        "page staging claimed a physical mutation or fabricated success diagnostic");
   Check(std::none_of(staged.page.rows.begin(),staged.page.rows.end(),[&](const auto& row){
         return row.version_uuid==undone.row_version.version_uuid;}),"wrong version survived staged cleanup");
   const auto refuses=[&](const page::RowDataPhysicalSweepRequest& bad) {
     const auto failed=page::ApplyRowDataPhysicalSweep(bad);
     Check(!failed.ok() && failed.page.rows.empty() && failed.serialized.empty() &&
-          failed.removed_row_count==0 && !failed.physical_storage_mutated,
+          failed.removed_row_count==0 && !failed.staged_page_changed,
           "invalid reclaim evidence published partial cleanup");
   };
   for(unsigned mode=0;mode<6;++mode) {
@@ -395,7 +467,7 @@ void Storage(const fs::path& root,const std::string& self) {
   auto noop=sweep;noop.sweep.cleanup.reclaim_evidence_records.clear();noop.sweep.cleanup.reclaimed_row_version_count=0;
   const auto no_change=page::ApplyRowDataPhysicalSweep(noop);Good(no_change);
   const auto original_page=page::BuildRowDataPageBody(noop.page,8192);Good(original_page);
-  Check(!no_change.physical_storage_mutated && no_change.serialized==original_page.serialized,
+  Check(!no_change.staged_page_changed && no_change.serialized==original_page.serialized,
         "empty cleanup changed the page generation or bytes");
   auto identity=cleanup.workset.row_versions.front().identity;
   for(unsigned version=0;version<16;++version)if(version!=7) {
@@ -404,6 +476,29 @@ void Storage(const fs::path& root,const std::string& self) {
   }
   identity.version_uuid=identity.row.row_uuid.value;
   Check(!mga::ValidateRowVersionIdentity(identity).ok(),"metadata substituted logical row for version identity");
+  db::PhysicalMgaCowFinalizeRequest abort_batch;
+  abort_batch.database_path=create.path;abort_batch.local_transaction_id=started.entry.identity.local_id;
+  abort_batch.decision=db::PhysicalMgaCowFinalizeDecision::rollback;abort_batch.final_unix_epoch_millis=Now();
+  Good(db::FinalizePhysicalMgaCowTransaction(abort_batch));
+  auto batch_read=ReadRequest(root);batch_read.page_number=RowPage+1;
+  const auto batch_cleanup_source=db::ReadPhysicalMgaCowRows(batch_read);Good(batch_cleanup_source);
+  Check(batch_cleanup_source.visible_rows.empty() && batch_cleanup_source.version_metadata.size()==8,
+        "batch rollback lost native cleanup metadata or leaked rows");
+  cleanup.workset.inventory=batch_cleanup_source.inventory;
+  cleanup.workset.row_versions=batch_cleanup_source.version_metadata;
+  const auto batch_decision=mga::RunLocalGarbageCollectionSweep(cleanup);Good(batch_decision);
+  Check(batch_decision.cleanup.reclaimed_row_version_count==8 &&
+        batch_decision.cleanup.reclaim_evidence_records.size()==8,"batch versions were not independently reclaimable");
+  std::set<std::string> display_labels;
+  for(const auto& evidence:batch_decision.cleanup.reclaim_evidence_records)
+    display_labels.insert(evidence.stable_evidence_id);
+  Check(display_labels.size()==1,"fixture no longer exercises colliding cleanup display labels");
+  sweep.page=batch_cleanup_source.row_page;sweep.sweep=batch_decision;
+  const auto batch_staged=page::ApplyRowDataPhysicalSweep(sweep);Good(batch_staged);
+  Check(batch_staged.staged_page_changed && batch_staged.removed_row_count==8 && batch_staged.page.rows.empty(),
+        "display-label collision prevented exact binary version reclamation");
+  const auto still_durable=db::ReadPhysicalMgaCowRows(batch_read);Good(still_durable);
+  Check(still_durable.row_page.rows.size()==8,"page staging unexpectedly mutated durable storage");
   std::cout<<"PASS native insert/update/rollback/delete/batch and independent-process reopen checks="<<checks<<'\n';
 }
 int main(int argc,char** argv) {
@@ -412,6 +507,10 @@ int main(int argc,char** argv) {
     auto policy=memory::DefaultLocalEngineMemoryPolicy();policy.policy_name="native_row_version_identity";
     Good(memory::ConfigureDefaultMemoryManagerForFixture(policy,"native_row_version_identity"));
     if(argc==3 && std::string_view(argv[1])=="--reopen") { Reopen(argv[2]);return 0; }
+    if(argc==4 && (std::string_view(argv[1])=="--rolled-back" || std::string_view(argv[1])=="--active")) {
+      CheckInventoryState(argv[2],std::stoull(argv[3]),std::string_view(argv[1])=="--active"?
+          mga::TransactionState::active:mga::TransactionState::rolled_back);return 0;
+    }
     Codec();
     if(argc==2 && std::string_view(argv[1])=="--codec")return 0;
     const auto unique=uuid::IssueRuntimeIdentityV7();Check(unique.has_value(),"fixture identity failed");

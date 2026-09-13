@@ -571,26 +571,20 @@ PhysicalMgaCowMutationResult WriteRowDataPage(FileDevice* device,
     return Propagate<PhysicalMgaCowMutationResult>(page_offset.status,
                                                    page_offset.diagnostic);
   }
-  const auto write_header = device->WriteAt(page_offset.offset,
-                                            header.serialized.data(),
-                                            header.serialized.size());
-  if (!write_header.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(write_header.status,
-                                                   write_header.diagnostic);
+  // No independently published header generation before the body write.
+  // A complete image is still not an atomic-sector or crash-recovery claim.
+  std::vector<scratchbird::core::platform::byte> image(context.page_size);
+  if (header.serialized.size() > image.size() ||
+      built.serialized.size() != image.size() - header.serialized.size()) {
+    return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.page_image_extent_invalid");
   }
-  const auto body_offset = CheckedPageBodyOffset(context.page_size,
-                                                 built.body.page_number,
-                                                 kPageHeaderSerializedBytes);
-  if (!body_offset.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(body_offset.status,
-                                                   body_offset.diagnostic);
-  }
-  const auto write_body = device->WriteAt(body_offset.offset,
-                                          built.serialized.data(),
-                                          built.serialized.size());
-  if (!write_body.ok()) {
-    return Propagate<PhysicalMgaCowMutationResult>(write_body.status,
-                                                   write_body.diagnostic);
+  std::copy(header.serialized.begin(), header.serialized.end(), image.begin());
+  std::copy(built.serialized.begin(), built.serialized.end(),
+            image.begin() + header.serialized.size());
+  const auto written = device->WriteAt(page_offset.offset, image.data(), image.size());
+  if (!written.ok()) {
+    return Propagate<PhysicalMgaCowMutationResult>(written.status, written.diagnostic);
   }
   if (sync_after_write) {
     const auto sync = device->Sync();
@@ -760,6 +754,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   }
 
   LocalTransactionId owned_transaction;
+  scratchbird::transaction::mga::TransactionIdentity owned_identity;
   const auto perform = [&]() -> PhysicalMgaCowMutationResult {
   LocalTransactionInventory active_inventory = loaded_inventory.inventory;
   TransactionInventoryEntry active_entry;
@@ -790,6 +785,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
       return Propagate<PhysicalMgaCowMutationResult>(begin.status, begin.diagnostic);
     }
     owned_transaction = begin.entry.identity.local_id;
+    owned_identity = begin.entry.identity;
     const auto persisted_active =
         PersistLocalTransactionInventoryToOpenDevice(&device,
                                                      context.page_size,
@@ -966,6 +962,7 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
     };
     auto compensation = compensate();
     if (!compensation.ok()) {
+      compensation.unresolved_owned_transaction = owned_identity;
       compensation.diagnostic.arguments.push_back({"mutation_failure_code", operation.diagnostic.diagnostic_code});
       compensation.diagnostic.arguments.push_back({"mutation_failure_key", operation.diagnostic.message_key});
       if (pending_exception)

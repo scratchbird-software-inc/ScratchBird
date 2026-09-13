@@ -188,12 +188,7 @@ RowDataPhysicalSweepResult ApplyRowDataPhysicalSweep(
   result.page = rebuilt.body;
   result.serialized = rebuilt.serialized;
   result.free_space_after = rebuilt.body.free_space_bytes;
-  result.physical_storage_mutated = result.removed_row_count != 0;
-  result.diagnostic = MakeSweepDiagnostic(
-      result.status,
-      "SB-ROW-DATA-PHYSICAL-SWEEP-APPLIED",
-      "storage.row_data_page.physical_sweep_applied",
-      std::to_string(result.removed_row_count));
+  result.staged_page_changed = result.removed_row_count != 0;
   return result;
 }
 
