@@ -19,6 +19,7 @@
 #include <new>
 #include <thread>
 #include <type_traits>
+#include <openssl/evp.h>
 
 namespace f = scratchbird::engine::functions;
 namespace s = scratchbird::engine::sblr;
@@ -27,6 +28,17 @@ std::atomic<long> fail_after{-1};
 unsigned checks = 0, failures = 0, allocation_faults = 0;
 thread_local bool rng_armed=false;
 thread_local int rng_result=1, rng_prefix=16, rng_interceptions=0;
+thread_local bool digest_armed=false;
+thread_local int digest_result=1, digest_interceptions=0;
+thread_local unsigned digest_length=32;
+}
+extern "C" int __real_EVP_Digest(const void*,std::size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
+extern "C" int __wrap_EVP_Digest(const void* data,std::size_t count,unsigned char* out,unsigned int* length,const EVP_MD* type,ENGINE* impl) {
+  if(!digest_armed)return __real_EVP_Digest(data,count,out,length,type,impl);
+  digest_armed=false;++digest_interceptions;
+  for(unsigned i=0;i<digest_length&&i<EVP_MAX_MD_SIZE;++i)out[i]=static_cast<unsigned char>(0xc0+i);
+  *length=digest_length;
+  return digest_result;
 }
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
@@ -595,6 +607,92 @@ void CryptoUuidGeneration() {
         "package marker uses its specified noncallable diagnostic");
   }
 }
+void CryptoFixedDigests() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  struct Known {const char* name;const char* hex;};
+  const Known cases[]{
+    {"sb.crypto.blake2b","ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"},
+    {"sb.crypto.sha3_256","3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"},
+    {"sb.crypto.sha3_512","b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0"}
+  };
+  for(const auto& known:cases) {
+    f::FunctionCallRequest request;
+    const auto* entry=package.registry.Lookup(known.name);
+    Check(entry!=nullptr,"fixed digest has a registered identity");if(!entry)continue;
+    request.context.function_uuid=entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context)!=nullptr,"fixed digest binds exact binary identity");
+    const auto input=f::MakeBinaryValue("binary",{'a','b','c'});
+    request.arguments={{"value",input}};
+    const auto actual=f::DispatchCryptoHashFunction(request);
+    std::vector<std::uint8_t> expected;
+    const std::string_view hex=known.hex;
+    auto nibble=[](char c){return c<='9'?c-'0':c-'a'+10;};
+    for(std::size_t i=0;i<hex.size();i+=2)expected.push_back(static_cast<std::uint8_t>(nibble(hex[i])*16+nibble(hex[i+1])));
+    Check(actual.result.ok()&&actual.result.scalar_values.size()==1,"fixed digest actual provider succeeds");
+    if(!actual.result.scalar_values.empty()) {
+      const auto& value=actual.result.scalar_values[0];
+      Check(value.descriptor_id=="binary"&&value.payload_kind==s::SblrValuePayloadKind::binary&&value.binary_value==expected&&
+            value.text_value.empty()&&value.encoded_value.empty()&&!value.is_null,"fixed known answer is binary digest, never hex text");
+    }
+    request.arguments[0].value=f::MakeBinaryValue("binary",{});
+    const auto empty=f::DispatchCryptoHashFunction(request);
+    Check(empty.result.ok()&&empty.result.scalar_values.size()==1&&!empty.result.scalar_values[0].is_null&&
+          empty.result.scalar_values[0].binary_value.size()==expected.size()&&empty.result.scalar_values[0].binary_value!=expected,
+          "empty byte sequence is hashed, not treated as SQL NULL or constant abc result");
+    request.arguments[0].value=f::MakeNullValue("binary");
+    digest_armed=true;digest_interceptions=0;
+    const auto null=f::DispatchCryptoHashFunction(request);digest_armed=false;
+    Check(null.result.ok()&&null.result.scalar_values.size()==1&&null.result.scalar_values[0].is_null&&
+          null.result.scalar_values[0].descriptor_id=="binary"&&digest_interceptions==0,"strict typed NULL avoids provider evaluation");
+    for(unsigned fault=0;fault<13;++fault) {
+      auto bad=input;
+      if(fault==0)bad.descriptor_id="character";
+      if(fault==1)bad.payload_kind=s::SblrValuePayloadKind::text;
+      if(fault==2)bad.text_value="hidden";
+      if(fault==3)bad.encoded_value="hidden";
+      if(fault==4)bad.charset_name="UTF8";
+      if(fault==5)bad.collation_name="unicode";
+      if(fault==6)bad.has_int64_value=true;
+      if(fault==7)bad.has_uint64_value=true;
+      if(fault==8)bad.has_real64_value=true;
+      if(fault==9)bad.uuid_value=Base();
+      if(fault==10)bad.is_null=true;
+      if(fault==11){bad=f::MakeNullValue("binary");bad.binary_value={1};}
+      if(fault==12)bad.binary_value.resize(1048577);
+      request.arguments[0].value=std::move(bad);
+      digest_armed=true;digest_interceptions=0;
+      const auto invalid=f::DispatchCryptoHashFunction(request);digest_armed=false;
+      Check(!invalid.result.ok()&&invalid.result.scalar_values.empty()&&digest_interceptions==0&&
+            invalid.result.diagnostics[0].diagnostic_id=="CRYPTO.HASH.INVALID_INPUT","malformed digest input never invokes provider or produces output");
+    }
+    request.arguments[0].value=input;
+    for(unsigned length:{0u,1u,31u,32u,33u,63u,64u,65u,~0u}) {
+      if(length==expected.size())continue;
+      digest_length=length;digest_result=1;digest_armed=true;digest_interceptions=0;
+      const auto invalid=f::DispatchCryptoHashFunction(request);digest_armed=false;
+      Check(!invalid.result.ok()&&invalid.result.scalar_values.empty()&&digest_interceptions==1&&
+            invalid.result.diagnostics[0].diagnostic_id=="CRYPTO.PROFILE.UNAVAILABLE","wrong provider output length cannot publish a partial or oversized digest");
+    }
+    for(int result:{0,-1}) {
+      digest_length=13;digest_result=result;digest_armed=true;digest_interceptions=0;
+      const auto invalid=f::DispatchCryptoHashFunction(request);digest_armed=false;
+      Check(!invalid.result.ok()&&invalid.result.scalar_values.empty()&&digest_interceptions==1&&
+            invalid.result.diagnostics[0].diagnostic_id=="CRYPTO.PROFILE.UNAVAILABLE","partial provider failure never publishes digest bytes");
+    }
+    bool completed=false;unsigned faults=0;
+    for(long budget=0;budget<100;++budget) {
+      fail_after=budget;
+      try {
+        const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;
+        Check(result.result.ok()&&result.result.scalar_values.size()==1&&result.result.scalar_values[0].binary_value==expected,
+              "digest allocation sweep reaches complete known-answer result");completed=true;break;
+      }catch(const std::bad_alloc&){fail_after=-1;++faults;}
+      Check(request.arguments[0].value.binary_value==input.binary_value,"digest allocation failures preserve input payload");
+    }
+    allocation_faults+=faults;
+    Check(completed&&faults>0,"digest allocation sweep reaches successful publication");
+  }
+}
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -611,6 +709,7 @@ int main() {
   BinaryAggregate();
   BinaryUuidValues();
   CryptoUuidGeneration();
+  CryptoFixedDigests();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

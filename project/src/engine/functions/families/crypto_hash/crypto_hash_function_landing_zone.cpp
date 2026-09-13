@@ -218,12 +218,14 @@ const EVP_MD* DigestForAlgorithm(std::string algorithm) {
   return nullptr;
 }
 
-std::optional<std::string> DigestHex(const EVP_MD* md, const std::vector<std::uint8_t>& bytes) {
+std::optional<std::vector<std::uint8_t>> DigestBytes(
+    const EVP_MD* md, const std::vector<std::uint8_t>& bytes, std::size_t expected_size) {
   if (!md) return std::nullopt;
   std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
   unsigned int digest_len = 0;
   if (EVP_Digest(BytesPtr(bytes), bytes.size(), digest.data(), &digest_len, md, nullptr) != 1) return std::nullopt;
-  return HexEncode(std::vector<std::uint8_t>(digest.begin(), digest.begin() + digest_len));
+  if (digest_len != expected_size || digest_len > digest.size()) return std::nullopt;
+  return std::vector<std::uint8_t>(digest.begin(), digest.begin() + digest_len);
 }
 
 bool ParseUint64(const scratchbird::engine::sblr::SblrValue& value, std::uint64_t* out) {
@@ -256,14 +258,28 @@ FunctionCallResult DependencyUnavailable(const FunctionCallRequest& request, std
                                       std::move(detail));
 }
 
-FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_MD* md) {
-  if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "digest function expects exactly one argument");
-  if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("character")});
-  const auto bytes = RawBytesFromValue(request.arguments[0].value);
-  if (bytes.size() > kMaxCryptoInputBytes) return RefuseFunctionInvalidInput(request, "digest input exceeds crypto scalar budget");
-  const auto digest = DigestHex(md, bytes);
-  if (!digest) return DependencyUnavailable(request, "OpenSSL EVP digest provider did not accept requested algorithm");
-  return MakeFunctionSuccess(request, {MakeTextValue("character", *digest)});
+FunctionCallResult DigestFunction(const FunctionCallRequest& request, const EVP_MD* md,
+                                  std::size_t expected_size) {
+  const auto invalid=[&] { return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "CRYPTO.HASH.INVALID_INPUT", "fixed digest requires one canonical binary value"); };
+  if (request.arguments.size() != 1) return invalid();
+  const auto& value=request.arguments[0].value;
+  if (value.descriptor_id != "binary" || !value.text_value.empty() ||
+      !value.encoded_value.empty() || !value.charset_name.empty() || !value.collation_name.empty() ||
+      value.has_int64_value || value.has_uint64_value || value.has_real64_value ||
+      !value.uuid_value.is_nil()) return invalid();
+  if (value.is_null) {
+    if (value.payload_kind != scratchbird::engine::sblr::SblrValuePayloadKind::none || !value.binary_value.empty()) return invalid();
+    return MakeFunctionSuccess(request, {MakeNullValue("binary")});
+  }
+  if (value.payload_kind != scratchbird::engine::sblr::SblrValuePayloadKind::binary ||
+      value.binary_value.size() > kMaxCryptoInputBytes) return invalid();
+  auto digest = DigestBytes(md, value.binary_value, expected_size);
+  if (!digest) return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
+      "CRYPTO.PROFILE.UNAVAILABLE", "Core fixed digest provider did not produce its exact output size");
+  return MakeFunctionSuccess(request, {MakeBinaryValue("binary", std::move(*digest))});
 }
 
 FunctionCallResult HmacFunction(const FunctionCallRequest& request) {
@@ -586,9 +602,9 @@ FunctionCallResult DispatchCryptoHashFunction(const FunctionCallRequest& request
   if (IdIs(id, {"pgcrypto"})) return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
       "CRYPTO.PACKAGE.NOT_CALLABLE", "pgcrypto is a package capability, not a scalar function");
-  if (IdIs(id, {"blake2b"})) return DigestFunction(request, EVP_blake2b512());
-  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, EVP_sha3_256());
-  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, EVP_sha3_512());
+  if (IdIs(id, {"blake2b"})) return DigestFunction(request, EVP_blake2b512(), 64);
+  if (IdIs(id, {"sha3_256"})) return DigestFunction(request, EVP_sha3_256(), 32);
+  if (IdIs(id, {"sha3_512"})) return DigestFunction(request, EVP_sha3_512(), 64);
   if (IdIs(id, {"hmac", "hmac_value_key_algo"})) return HmacFunction(request);
   if (IdIs(id, {"gen_random_bytes"})) return RandomBytesFunction(request, false);
   if (IdIs(id, {"gen_random_bytes_n"})) return RandomBytesFunction(request, true);
