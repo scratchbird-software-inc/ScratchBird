@@ -12,6 +12,7 @@
 #include "runtime_platform.hpp"
 
 #include <array>
+#include <iosfwd>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,10 @@ struct HashDigestResult {
 
 HashDigestResult ComputeSha256Digest(const std::vector<byte>& payload);
 HashDigestResult ComputeSha256Digest(const byte* payload, std::size_t payload_size);
+// Consume exactly expected_bytes from the current stream position, then require
+// EOF. Bounded scratch memory; no partial digest on I/O/backend failure. Caller
+// owns stream lifetime and stable extent/identity; this does not lock a file.
+HashDigestResult ComputeSha256Stream(std::istream& input, u64 expected_bytes);
 HashDigestResult ComputeHmacSha256Digest(const std::vector<byte>& key,
                                          const std::vector<byte>& payload);
 HashDigestResult ComputeHmacSha256Digest(const byte* key,

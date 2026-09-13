@@ -7,6 +7,13 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <sstream>
+#include <stdexcept>
+#include <fstream>
+#include <cstdio>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 #ifdef SB_SEGMENTED_HASH_BACKEND_FAULTS
 #include <openssl/evp.h>
 namespace backend_fault {
@@ -77,6 +84,194 @@ namespace {
 unsigned checks = 0, failures = 0;
 void Check(bool good, const char* why) {
   ++checks; if (!good) { ++failures; std::cerr << "FAIL " << why << '\n'; }
+}
+void TimingSafeEqualityCases() {
+  for (const std::size_t left : {0u, 1u, 31u, 32u, 255u, 256u, 257u, 511u, 512u, 1024u}) {
+    for (const std::size_t right : {0u, 1u, 31u, 32u, 255u, 256u, 257u, 511u, 512u, 1024u}) {
+      const std::string a(left, '\0'), b(right, '\0');
+      const std::vector<byte> av(left, 0), bv(right, 0);
+      Check(core_hash::ConstantTimeEqual(a, b) == (left == right), "text-view equality truncated length difference");
+      Check(core_hash::ConstantTimeEqual(av, bv) == (left == right), "binary equality truncated length difference");
+    }
+  }
+  const std::string value(513, '\0');
+  const std::vector<byte> binary(513, 0);
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    auto changed = value; changed[i] = static_cast<char>(0xff);
+    auto changed_binary = binary; changed_binary[i] = 0xff;
+    Check(!core_hash::ConstantTimeEqual(value, changed) && !core_hash::ConstantTimeEqual(changed, value),
+        "text-view equality omitted a content byte");
+    Check(!core_hash::ConstantTimeEqual(binary, changed_binary) && !core_hash::ConstantTimeEqual(changed_binary, binary),
+        "binary equality omitted a content byte");
+  }
+}
+void RawDigestExtentCases() {
+  const byte one = 1;
+  const auto zero_output = [](const core_hash::HashDigestResult& result) {
+    return !result.ok() && result.digest_bytes == 0 &&
+        std::all_of(result.digest.begin(), result.digest.end(), [](byte b) { return b == 0; });
+  };
+  Check(zero_output(core_hash::ComputeSha256Digest(nullptr, 1)), "raw SHA256 accessed missing payload");
+  Check(zero_output(core_hash::ComputeHmacSha256Digest(&one, 1, nullptr, 1)), "HMAC accessed missing payload");
+  if (std::numeric_limits<std::size_t>::max() > std::numeric_limits<std::uint64_t>::max() / 8) {
+    const auto excessive = static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max() / 8 + 1);
+    Check(zero_output(core_hash::ComputeSha256Digest(&one, excessive)), "raw SHA256 admitted bit length overflow");
+    Check(zero_output(core_hash::ComputeHmacSha256Digest(&one, 1, &one, excessive)), "HMAC admitted bit length overflow");
+    Check(zero_output(core_hash::ComputeHmacSha256Digest(&one, excessive, nullptr, 0)), "HMAC admitted oversized key digest extent");
+    Check(zero_output(core_hash::ComputeHmacSha256Digest(&one, 1, &one, excessive - 64)), "HMAC omitted inner pad from bit length bound");
+  }
+  const std::vector<byte> key(20, 0x0b);
+  const auto hmac = core_hash::ComputeHmacSha256Digest(key, Bytes("Hi There"));
+  Check(hmac.ok() && core_hash::HexLower(hmac.digest) ==
+      "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+      "independent RFC4231 HMAC vector drifted");
+  const auto large_key = core_hash::ComputeHmacSha256Digest(std::vector<byte>(131, 0xaa),
+      Bytes("Test Using Larger Than Block-Size Key - Hash Key First"));
+  Check(large_key.ok() && core_hash::HexLower(large_key.digest) ==
+      "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+      "independent RFC4231 large-key prehash vector drifted");
+}
+class FailingHashStream final : public std::stringbuf {
+ public:
+  FailingHashStream(const std::string& bytes, unsigned read, bool end)
+      : std::stringbuf(bytes), fail_read(read), fail_end(end) {}
+  unsigned read_calls = 0;
+ private:
+  unsigned fail_read;
+  bool fail_end;
+  std::streamsize xsgetn(char* output, std::streamsize size) override {
+    if (++read_calls == fail_read) throw std::runtime_error("injected read failure");
+    return std::stringbuf::xsgetn(output, size);
+  }
+  int_type underflow() override {
+    if (fail_end) throw std::runtime_error("injected EOF probe failure");
+    return std::stringbuf::underflow();
+  }
+};
+void DigestStreamCases() {
+  const auto refused = [](const core_hash::HashDigestResult& result) {
+    return !result.ok() && result.digest_bytes == 0 &&
+        result.diagnostic.diagnostic_code == "SB-CORE-HASH-SHA256-FAILED" &&
+        std::all_of(result.digest.begin(), result.digest.end(), [](byte b) { return b == 0; });
+  };
+  for (const auto& [message, expected] : std::vector<std::pair<std::string, std::string>>{
+       {"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+       {"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+       {std::string(1000000, 'a'), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"}}) {
+    for (bool exceptions : {false, true}) {
+      std::istringstream input(message);
+      if (exceptions) input.exceptions(std::ios::badbit | std::ios::failbit | std::ios::eofbit);
+      const auto mask = input.exceptions();
+      hash_alloc::watch = true; hash_alloc::reject_at = 1024;
+      bool escaped = false; core_hash::HashDigestResult result;
+      try { result = core_hash::ComputeSha256Stream(input, message.size()); } catch (...) { escaped = true; }
+      hash_alloc::watch = false; hash_alloc::reject_at = 0;
+      Check(!escaped && result.ok() && result.digest_bytes == 32 && core_hash::HexLower(result.digest) == expected &&
+          input.eof() && input.exceptions() == mask, "stream standard vector, bounded allocation or exception-mask contract");
+    }
+  }
+  for (const std::size_t size : {1u, 63u, 64u, 65u, 4096u, 8193u, 65535u, 65536u, 65537u, 196609u}) {
+    std::string bytes(size, '\0');
+    for (std::size_t i = 0; i < size; ++i) bytes[i] = static_cast<char>((i * 17) & 255);
+    const auto expected = core_hash::ComputeSha256Digest(reinterpret_cast<const byte*>(bytes.data()), bytes.size());
+    std::istringstream input(bytes);
+    const auto actual = core_hash::ComputeSha256Stream(input, size);
+    Check(expected.ok() && actual.ok() && expected.digest == actual.digest, "stream buffer boundary differs from independent one-shot path");
+    bytes[size / 2] ^= 1;
+    std::istringstream changed(bytes);
+    const auto middle = core_hash::ComputeSha256Stream(changed, size);
+    Check(middle.ok() && middle.digest != expected.digest, "middle-byte mutation escaped full artifact digest");
+    for (bool exceptions : {false, true}) {
+      for (const auto extent : {size - 1, size + 1}) {
+        std::istringstream wrong(bytes);
+        if (exceptions) wrong.exceptions(std::ios::badbit | std::ios::failbit | std::ios::eofbit);
+        Check(refused(core_hash::ComputeSha256Stream(wrong, extent)), "short or trailing stream admitted partial digest");
+      }
+    }
+  }
+  const std::string long_input(196609, 'x');
+  for (unsigned read = 0; read <= 4; ++read) {
+    for (bool exceptions : {false, true}) {
+      FailingHashStream buffer(long_input, read, read == 0);
+      std::istream input(&buffer);
+      if (exceptions) input.exceptions(std::ios::badbit | std::ios::failbit | std::ios::eofbit);
+      Check(refused(core_hash::ComputeSha256Stream(input, long_input.size())), "stream read/EOF failure exposed partial digest");
+    }
+  }
+  FailingHashStream unused("abc", 1, false);
+  std::istream excessive(&unused);
+  Check(refused(core_hash::ComputeSha256Stream(excessive, std::numeric_limits<std::uint64_t>::max() / 8 + 1)) &&
+      unused.read_calls == 0, "excessive SHA256 extent read untrusted input");
+  std::istringstream bad("abc"); bad.setstate(std::ios::badbit);
+  Check(refused(core_hash::ComputeSha256Stream(bad, 3)), "preexisting stream failure admitted digest");
+  std::istringstream offset("skipabc"); offset.seekg(4);
+  Check(core_hash::HexLower(core_hash::ComputeSha256Stream(offset, 3).digest) ==
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "stream primitive rewound caller position");
+#ifdef SB_SEGMENTED_HASH_BACKEND_FAULTS
+  for (const auto point : {backend_fault::Point::create, backend_fault::Point::initialize,
+                          backend_fault::Point::update, backend_fault::Point::finalize}) {
+    for (unsigned target = 1; target <= (point == backend_fault::Point::update ? 4u : 1u); ++target) {
+      std::istringstream input(long_input);
+      backend_fault::point = point; backend_fault::update_target = target; backend_fault::update_calls = 0;
+      const auto result = core_hash::ComputeSha256Stream(input, long_input.size());
+      backend_fault::point = backend_fault::Point::none;
+      Check(refused(result) && backend_fault::active_contexts == 0, "stream backend failure leaked output/context");
+      std::istringstream retry("abc");
+      Check(core_hash::ComputeSha256Stream(retry, 3).ok(), "stream backend failure poisoned retry");
+    }
+  }
+#endif
+}
+void ActualFileDigestCases() {
+#ifdef __linux__
+  char path[] = "/tmp/sb-full-artifact-hash.XXXXXX";
+  const int fd = ::mkstemp(path);
+  Check(fd >= 0, "create exclusive full artifact digest fixture");
+  if (fd < 0) return;
+  ::close(fd);
+  struct Cleanup {
+    const char* path;
+    ~Cleanup() { Check(std::remove(path) == 0, "remove generated full artifact fixture"); }
+  } cleanup{path};
+  const std::string bytes(262145, 'x');
+  {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), bytes.size()); output.close();
+    Check(!output.fail(), "write actual full artifact digest fixture");
+  }
+  const auto expected = core_hash::ComputeSha256Digest(reinterpret_cast<const byte*>(bytes.data()), bytes.size());
+  {
+    std::ifstream input(path, std::ios::binary);
+    const auto actual = core_hash::ComputeSha256Stream(input, bytes.size());
+    Check(expected.ok() && actual.ok() && expected.digest == actual.digest, "reopened physical artifact digest mismatch");
+  }
+  {
+    std::fstream mutation(path, std::ios::binary | std::ios::in | std::ios::out);
+    mutation.seekp(131072); mutation.put('y'); mutation.close();
+    Check(!mutation.fail(), "mutate physical artifact middle byte");
+  }
+  {
+    std::ifstream input(path, std::ios::binary);
+    const auto actual = core_hash::ComputeSha256Stream(input, bytes.size());
+    Check(actual.ok() && expected.digest != actual.digest, "physical middle corruption escaped full digest");
+  }
+  {
+    std::ofstream append(path, std::ios::binary | std::ios::app);
+    append.put('z'); append.close();
+    Check(!append.fail(), "extend physical artifact fixture");
+    std::ifstream input(path, std::ios::binary);
+    const auto actual = core_hash::ComputeSha256Stream(input, bytes.size());
+    Check(!actual.ok() && actual.digest_bytes == 0, "physical artifact extension passed captured extent");
+  }
+  {
+    std::ofstream truncate(path, std::ios::binary | std::ios::trunc);
+    truncate.put('x'); truncate.close();
+    Check(!truncate.fail(), "truncate physical artifact fixture");
+    std::ifstream input(path, std::ios::binary);
+    const auto actual = core_hash::ComputeSha256Stream(input, bytes.size());
+    Check(!actual.ok() && actual.digest_bytes == 0, "physical artifact truncation passed captured extent");
+  }
+#endif
 }
 void DigestVectorsAndBoundaries() {
   const auto empty = core_hash::ComputeSha256DigestParts(nullptr, 0);
@@ -201,6 +396,10 @@ void BackendFailureOwnership() {
 }
 }
 int main() {
+  TimingSafeEqualityCases();
+  RawDigestExtentCases();
+  DigestStreamCases();
+  ActualFileDigestCases();
   Check(ExistingTypedResultFixtureMain() == 0,
         "independent descriptor and batch evidence fixture");
   DigestVectorsAndBoundaries(); ActualCodecHashCopies(); BackendFailureOwnership();

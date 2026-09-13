@@ -64,27 +64,10 @@ std::string ReadFile(const std::filesystem::path& path) {
 
 std::string ArtifactPostcondition(const std::filesystem::path& path,
                                   std::uint64_t size) {
-  constexpr std::size_t kProbeBytes = 4096;
   std::ifstream input(path, std::ios::binary);
   if (!input) return {};
-  const auto head_size = static_cast<std::size_t>(
-      std::min<std::uint64_t>(size, kProbeBytes));
-  std::string material = "SBMGA_ARTIFACT_FENCE_V1\t" + std::to_string(size) + "\t";
-  std::string probe(head_size, '\0');
-  input.read(probe.data(), static_cast<std::streamsize>(probe.size()));
-  if (static_cast<std::size_t>(input.gcount()) != probe.size()) return {};
-  material.append(probe);
-  if (size > kProbeBytes) {
-    const auto tail_size = static_cast<std::size_t>(
-        std::min<std::uint64_t>(size - kProbeBytes, kProbeBytes));
-    probe.assign(tail_size, '\0');
-    input.clear();
-    input.seekg(static_cast<std::streamoff>(size - tail_size), std::ios::beg);
-    input.read(probe.data(), static_cast<std::streamsize>(probe.size()));
-    if (static_cast<std::size_t>(input.gcount()) != probe.size()) return {};
-    material.append(probe);
-  }
-  return Sha256(material);
+  const auto digest = core_hash::ComputeSha256Stream(input, size);
+  return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
 }
 
 std::string EncodeField(std::string_view value) {
