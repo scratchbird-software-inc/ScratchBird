@@ -36,7 +36,7 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
       uuid::GenerateEngineIdentityV7(kind, kBaseMillis + offset);
   api::EngineUuid out;
   if (generated.ok()) {
-    out.canonical = uuid::UuidToString(generated.value.value);
+    out = generated.value.value;
   }
   return out;
 }
@@ -140,17 +140,15 @@ api::EngineAuthorizeRequest AuthorizeRequest(api::EngineRequestContext context,
 
 api::EngineUuid GroupUuid(u64 index) {
   api::EngineUuid out;
-  const std::string suffix = std::to_string(1000 + index);
-  out.canonical =
-      "019f0320-0000-7000-8000-" + std::string(12 - suffix.size(), '0') + suffix;
+  out.bytes = {0x01, 0x9f, 0x03, 0x20, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 0};
+  for (unsigned i = 0; i < 6; ++i) out.bytes[15 - i] = static_cast<std::uint8_t>((1000 + index) >> (8 * i));
   return out;
 }
 
 api::EngineUuid GrantUuid(u64 index) {
   api::EngineUuid out;
-  const std::string suffix = std::to_string(2000 + index);
-  out.canonical =
-      "019f0320-0000-7000-8000-" + std::string(12 - suffix.size(), '0') + suffix;
+  out.bytes = {0x01, 0x9f, 0x03, 0x20, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 0};
+  for (unsigned i = 0; i < 6; ++i) out.bytes[15 - i] = static_cast<std::uint8_t>((2000 + index) >> (8 * i));
   return out;
 }
 
@@ -158,7 +156,7 @@ bool HasSubject(const api::EngineMaterializedAuthorizationContext& context,
                 const api::EngineUuid& subject_uuid,
                 std::string_view subject_kind) {
   for (const auto& subject : context.effective_subjects) {
-    if (subject.subject_uuid.canonical == subject_uuid.canonical &&
+    if (subject.subject_uuid == subject_uuid &&
         subject.subject_kind == subject_kind) {
       return true;
     }
@@ -244,7 +242,7 @@ api::DurableAuthorizationMaterializeRequest MaterializeRequest(
     api::EngineUuid principal = {}) {
   api::DurableAuthorizationMaterializeRequest request;
   request.principal_uuid =
-      principal.canonical.empty() ? ids.principal : std::move(principal);
+      principal.is_nil() ? ids.principal : std::move(principal);
   request.observed_security_epoch = 11;
   request.observed_policy_epoch = 12;
   request.observed_catalog_generation_id = 13;
@@ -257,7 +255,7 @@ void ProductionTraceTagsAreNotAuthorization() {
   context.trace_tags = {"right:SELECT", "group:ROOT", "role:ROLE_SECURITY_ADMIN"};
   Require(!api::SecurityTraceAuthorizationFallbackAllowed(context),
           "production context allowed trace authorization fallback");
-  Require(!api::SecurityContextHasRight(context, "SELECT", ids.table.canonical),
+  Require(!api::SecurityContextHasRight(context, "SELECT", ids.table),
           "production trace right authorized SELECT without materialized context");
   Require(!api::SecurityContextHasRight(context, "SEC_GRANT_ADMIN"),
           "production trace role authorized admin right without materialized context");
@@ -277,7 +275,7 @@ void ExplicitBootstrapAndFixtureFallbackAreFenced() {
                           "right:SELECT"};
   Require(!api::SecurityTraceAuthorizationFallbackAllowed(bootstrap),
           "bootstrap/name tags enabled production trace fallback");
-  Require(!api::SecurityContextHasRight(bootstrap, "SELECT", ids.table.canonical),
+  Require(!api::SecurityContextHasRight(bootstrap, "SELECT", ids.table),
           "bootstrap/name tags authorized helper route");
 
   auto embedded_without_fixture = BaseContext(ids);
@@ -287,15 +285,15 @@ void ExplicitBootstrapAndFixtureFallbackAreFenced() {
           "embedded context allowed trace fallback without fixture marker");
   Require(!api::SecurityContextHasRight(embedded_without_fixture,
                                         "SELECT",
-                                        ids.table.canonical),
+                                        ids.table),
           "embedded trace right authorized without fixture marker");
 
   auto fixture = embedded_without_fixture;
   fixture.trace_tags.push_back("security.fixture_trace_authority");
-  Require(api::SecurityTraceAuthorizationFallbackAllowed(fixture),
-          "fixture trace fallback marker was not honored");
-  Require(api::SecurityContextHasRight(fixture, "SELECT", ids.table.canonical),
-          "fixture trace right did not authorize helper route");
+  Require(!api::SecurityTraceAuthorizationFallbackAllowed(fixture),
+          "fixture trace marker was treated as authorization");
+  Require(!api::SecurityContextHasRight(fixture, "SELECT", ids.table),
+          "fixture trace right authorized helper route");
 }
 
 void MaterializedContextIsAuthority() {
@@ -304,9 +302,9 @@ void MaterializedContextIsAuthority() {
   context.authorization_context = MaterializedContext(ids);
   context.trace_tags = {"deny:SELECT", "security_context:expired"};
 
-  Require(api::SecurityContextHasRight(context, "SELECT", ids.table.canonical),
+  Require(api::SecurityContextHasRight(context, "SELECT", ids.table),
           "materialized grant did not authorize helper route");
-  Require(!api::SecurityContextHasRight(context, "SELECT", ids.other_table.canonical),
+  Require(!api::SecurityContextHasRight(context, "SELECT", ids.other_table),
           "target-specific materialized grant authorized another object");
 
   const auto select =
@@ -330,7 +328,7 @@ void MaterializedContextIsAuthority() {
   auto stale = BaseContext(ids);
   stale.security_epoch = 12;
   stale.authorization_context = MaterializedContext(ids);
-  Require(!api::SecurityContextHasRight(stale, "SELECT", ids.table.canonical),
+  Require(!api::SecurityContextHasRight(stale, "SELECT", ids.table),
           "stale request epoch authorized through materialized context");
   const auto stale_authorize =
       api::EngineAuthorize(AuthorizeRequest(stale, ids.table, "SELECT"));
@@ -364,17 +362,17 @@ void RecursiveGroupAuthorizationDepthAndVariationsAreEngineOwned() {
 
   auto context = BaseContext(ids);
   context.authorization_context = materialized.context;
-  Require(api::SecurityContextHasRight(context, "SELECT", ids.table.canonical),
+  Require(api::SecurityContextHasRight(context, "SELECT", ids.table),
           "top-group SELECT grant did not authorize through recursive groups");
-  Require(api::SecurityContextHasRight(context, "UPDATE", ids.table.canonical),
+  Require(api::SecurityContextHasRight(context, "UPDATE", ids.table),
           "role grant inherited through group chain did not authorize");
   Require(api::SecurityContextHasRight(context,
                                        "DELETE",
-                                       ids.other_table.canonical),
+                                       ids.other_table),
           "direct principal grant did not authorize");
   Require(!api::SecurityContextHasRight(context,
                                         "SELECT",
-                                        ids.other_table.canonical),
+                                        ids.other_table),
           "target-specific recursive grant authorized the wrong object");
 
   const auto select =

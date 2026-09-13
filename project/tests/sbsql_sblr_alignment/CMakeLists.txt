@@ -10,6 +10,24 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_security_binary_authorization
+    security_binary_authorization_test.cpp
+    ../../src/engine/internal_api/security/security_model.cpp
+    ../../src/engine/internal_api/api_unsupported.cpp)
+  target_compile_features(sbsql_sblr_alignment_security_binary_authorization PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_security_binary_authorization PRIVATE
+    ../../src/engine/internal_api)
+  target_compile_options(sbsql_sblr_alignment_security_binary_authorization PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_security_binary_authorization PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_security_binary_authorization PRIVATE sb_core_uuid sb_core_diagnostic_catalog)
+  add_test(NAME sbsql_sblr_alignment_security_binary_authorization
+    COMMAND sbsql_sblr_alignment_security_binary_authorization)
+  set_tests_properties(sbsql_sblr_alignment_security_binary_authorization PROPERTIES
+    LABELS "sbsql_sblr_alignment;security;production_sources;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
+endif()
+
 add_executable(sbsql_sblr_alignment_real128_typed_expression real128_typed_expression_test.cpp)
 target_compile_features(sbsql_sblr_alignment_real128_typed_expression PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_real128_typed_expression PRIVATE

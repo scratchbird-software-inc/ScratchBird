@@ -2066,10 +2066,12 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
 }
 
 bool HasDomainRight(const EngineRequestContext& context,
-                    const std::string& domain_uuid,
+                    const EngineDescriptor& domain_descriptor,
                     const std::string& right) {
   return context.security_context_present &&
-         SecurityContextHasRight(context, right, domain_uuid);
+         domain_descriptor.descriptor_kind == "domain" &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(domain_descriptor.descriptor_uuid) &&
+         SecurityContextHasRight(context, right, domain_descriptor.descriptor_uuid);
 }
 
 bool TryParseBoolOption(const std::string& value, bool* out) {
@@ -3404,7 +3406,7 @@ EngineInvokeDomainMethodResult EngineInvokeDomainMethod(const EngineInvokeDomain
         MakeInvalidRequestDiagnostic("query.invoke_domain_method", "domain_method_not_declared"));
   }
   const std::string required_right = MethodBindingField(binding, "require_right");
-  if (!required_right.empty() && !HasDomainRight(request.context, domain_uuid, required_right)) {
+  if (!required_right.empty() && !HasDomainRight(request.context, descriptor, required_right)) {
     return ApiFailure<EngineInvokeDomainMethodResult>(
         request.context,
         "query.invoke_domain_method",

@@ -384,6 +384,10 @@ struct EngineMaterializedAuthorizationContext {
   std::vector<EngineMaterializedAuthorizationGrant> grants;
   std::vector<EngineMaterializedAuthorizationPolicy> policies;
   std::vector<std::string> evidence_tags;
+  // Actual immutable bootstrap role resolved by the catalog materializer.
+  // This is a role authority marker, never a synthetic durable grant UUID.
+  // Operation-specific receipt and membership proofs remain required.
+  EngineUuid engine_owned_bootstrap_role_uuid;
 };
 
 // Engine-owned observation of the policy gate for one admitted statement.

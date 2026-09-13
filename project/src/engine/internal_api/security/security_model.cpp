@@ -34,14 +34,11 @@ std::vector<std::string> Split(const std::string& value, char delimiter) {
 }
 
 bool UuidPresent(const EngineUuid& uuid) {
-  return !uuid.is_nil();
+  return scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
 }
 
 bool CanonicalNonzeroUuid(const EngineUuid& uuid) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(uuid);
-  return parsed.ok() && !parsed.value.is_nil() &&
-         scratchbird::core::uuid::UuidToString(parsed.value) ==
-             uuid;
+  return UuidPresent(uuid);
 }
 
 bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
@@ -49,15 +46,28 @@ bool NonzeroSha256(const std::array<std::uint8_t, 32>& value) {
                      [](std::uint8_t byte) { return byte != 0; });
 }
 
+template <typename Policy>
+bool NativeRowPolicyAuthorityValid(const Policy& policy) {
+  return policy.policy_kind != "row_policy" ||
+      (policy.source_policy_generation != 0 &&
+       (policy.update_policy_phase == 1 || policy.update_policy_phase == 2) &&
+       CanonicalNonzeroUuid(policy.effective_policy_uuid) &&
+       policy.effective_policy_generation != 0 &&
+       CanonicalNonzeroUuid(policy.effective_expression_uuid) &&
+       policy.effective_expression_generation != 0 &&
+       NonzeroSha256(policy.effective_expression_evidence_sha256));
+}
+
 bool UuidEquals(const EngineUuid& lhs, const EngineUuid& rhs) {
   return lhs == rhs;
 }
 
-std::string SubjectKey(const EngineUuid& uuid, const std::string& kind) {
-  return kind + ":" + uuid;
+using AuthorizationSubjectKey = std::pair<EngineUuid, std::string>;
+AuthorizationSubjectKey SubjectKey(const EngineUuid& uuid, const std::string& kind) {
+  return {uuid, kind};
 }
 
-bool TargetMatches(const EngineUuid& candidate, const std::string& target_uuid) {
+bool TargetMatches(const EngineUuid& candidate, const EngineUuid& target_uuid) {
   return candidate.is_nil() || candidate == target_uuid;
 }
 
@@ -80,25 +90,29 @@ bool HasEffectiveSubject(const EngineMaterializedAuthorizationContext& context,
 bool HasPrincipal(const DurableAuthorizationState& state,
                   const EngineUuid& principal_uuid,
                   DurableAuthorizationPrincipalRecord* principal) {
+  bool found = false;
   for (const auto& candidate : state.principals) {
     if (UuidEquals(candidate.principal_uuid, principal_uuid)) {
+      if (found) return false;
       if (principal != nullptr) { *principal = candidate; }
-      return true;
+      found = true;
     }
   }
-  return false;
+  return found;
 }
 
 bool HasRole(const DurableAuthorizationState& state,
              const EngineUuid& role_uuid,
              DurableAuthorizationRoleRecord* role_record) {
+  bool found = false;
   for (const auto& role : state.roles) {
     if (UuidEquals(role.role_uuid, role_uuid)) {
+      if (found) return false;
       if (role_record != nullptr) { *role_record = role; }
-      return true;
+      found = true;
     }
   }
-  return false;
+  return found;
 }
 
 bool HasActiveRole(const DurableAuthorizationState& state, const EngineUuid& role_uuid) {
@@ -109,13 +123,15 @@ bool HasActiveRole(const DurableAuthorizationState& state, const EngineUuid& rol
 bool HasGroup(const DurableAuthorizationState& state,
               const EngineUuid& group_uuid,
               DurableAuthorizationGroupRecord* group_record) {
+  bool found = false;
   for (const auto& group : state.groups) {
     if (UuidEquals(group.group_uuid, group_uuid)) {
+      if (found) return false;
       if (group_record != nullptr) { *group_record = group; }
-      return true;
+      found = true;
     }
   }
-  return false;
+  return found;
 }
 
 bool HasActiveGroup(const DurableAuthorizationState& state, const EngineUuid& group_uuid) {
@@ -135,8 +151,8 @@ bool SubjectRecordActive(const DurableAuthorizationState& state,
   return false;
 }
 
-std::set<std::string> KnownRights() {
-  return {
+const std::set<std::string>& KnownRights() {
+  static const std::set<std::string> rights{
       "CONNECT", "VISIBLE", "DISCOVER", "LIST_CHILD", "READ_DIAGNOSTIC_DETAIL", "SELECT", "INSERT", "UPDATE", "DELETE", "EXECUTE",
       "CREATE", "ALTER", "DROP", "CATALOG_MUTATE", "USAGE", "TYPE_DDL",
       "DOMAIN_USE", "DOMAIN_CAST", "DOMAIN_METHOD", "DOMAIN_POLICY_ADMIN",
@@ -159,6 +175,7 @@ std::set<std::string> KnownRights() {
       "EVENT_ADMIN", "EVENT_CREATE", "EVENT_ALTER", "EVENT_DROP", "EVENT_SUBSCRIBE", "EVENT_PUBLISH",
       "EVENT_DELIVERY_READ", "EVENT_DELIVERY_ACK",
       "MANAGER_ADMISSION_ADMIN"};
+  return rights;
 }
 
 }  // namespace
@@ -203,8 +220,9 @@ bool SecurityContextHasTag(const EngineRequestContext& context, const std::strin
 
 // SEARCH_KEY: SB_ENGINE_SECURITY_MATERIALIZED_AUTHORIZATION_BOUNDARY
 bool SecurityTraceAuthorizationFallbackAllowed(const EngineRequestContext& context) {
-  return context.trust_mode == EngineTrustMode::embedded_in_process &&
-         SecurityContextHasTag(context, "security.fixture_trace_authority");
+  // Trace and fixture strings are evidence, never authorization authority.
+  (void)context;
+  return false;
 }
 
 bool IsKnownSecurityRight(const std::string& right) {
@@ -225,6 +243,12 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     result.diagnostics.push_back(MakeSecurityDiagnostic(
         "SECURITY.AUTHENTICATION.REQUEST_INVALID",
         "principal_uuid_required"));
+    return result;
+  }
+  if (!state.engine_owned_sysarch_role_uuid.is_nil() &&
+      !UuidPresent(state.engine_owned_sysarch_role_uuid)) {
+    result.diagnostics.push_back(MakeSecurityDiagnostic(
+        "SECURITY.AUTHORIZATION.SUBJECT_INVALID", "bootstrap_role_identity_invalid"));
     return result;
   }
   if (state.security_context_generation == 0 || state.security_epoch == 0 ||
@@ -272,8 +296,8 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
   context.policy_epoch = state.policy_epoch;
   context.catalog_generation_id = state.catalog_generation_id;
 
-  std::set<std::string> resolved;
-  std::set<std::string> visiting;
+  std::set<AuthorizationSubjectKey> resolved;
+  std::set<AuthorizationSubjectKey> visiting;
   std::vector<EngineAuthorizationSubject> subjects;
 
   auto resolve_subject = [&](auto&& self,
@@ -288,7 +312,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (!SubjectRecordActive(state, subject_uuid, subject_kind)) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.AUTHORIZATION.SUBJECT_MISSING",
-          subject_kind + ":" + subject_uuid));
+          "subject_missing_or_inactive:" + subject_kind));
       return false;
     }
     if (subject_kind == "role") {
@@ -297,7 +321,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
           role.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "role_epoch_mismatch:" + subject_uuid));
+            "role_epoch_mismatch"));
         return false;
       }
     }
@@ -307,15 +331,15 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
           group.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "group_epoch_mismatch:" + subject_uuid));
+            "group_epoch_mismatch"));
         return false;
       }
     }
-    const std::string key = SubjectKey(subject_uuid, subject_kind);
+    const auto key = SubjectKey(subject_uuid, subject_kind);
     if (visiting.count(key) != 0) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.AUTHORIZATION.MEMBERSHIP_CYCLE",
-          key));
+          "membership_cycle"));
       return false;
     }
     if (resolved.count(key) != 0) { return true; }
@@ -329,7 +353,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
       if (edge.security_epoch != 0 && edge.security_epoch != state.security_epoch) {
         result.diagnostics.push_back(MakeSecurityDiagnostic(
             "SECURITY.CONTEXT.EXPIRED",
-            "membership_epoch_mismatch:" + edge.parent_uuid));
+            "membership_epoch_mismatch"));
         return false;
       }
       if (!self(self, edge.parent_uuid, edge.parent_kind)) { return false; }
@@ -354,16 +378,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
         !UuidEquals(subject.subject_uuid, state.engine_owned_sysarch_role_uuid)) {
       continue;
     }
-    for (const auto& right : KnownRights()) {
-      EngineMaterializedAuthorizationGrant grant;
-      grant.grant_uuid =
-          "engine-owned-sysarch-grant:" + right;
-      grant.subject_uuid = subject.subject_uuid;
-      grant.subject_kind = "role";
-      grant.right = right;
-      grant.security_epoch = state.security_epoch;
-      context.grants.push_back(std::move(grant));
-    }
+    context.engine_owned_bootstrap_role_uuid = subject.subject_uuid;
     context.evidence_tags.push_back("engine_owned_sysarch_bundle");
   }
 
@@ -371,6 +386,12 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (!grant.active) { continue; }
     if (!HasEffectiveSubject(context, grant.subject_uuid, grant.subject_kind)) {
       continue;
+    }
+    if (!UuidPresent(grant.grant_uuid) || !UuidPresent(grant.subject_uuid) ||
+        (!grant.target_uuid.is_nil() && !UuidPresent(grant.target_uuid))) {
+      result.diagnostics.push_back(MakeSecurityDiagnostic(
+          "SECURITY.AUTHORIZATION.SUBJECT_INVALID", "grant_identity_invalid"));
+      return result;
     }
     if (!IsKnownSecurityRight(grant.right)) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
@@ -381,7 +402,7 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (grant.security_epoch == 0 || grant.security_epoch != state.security_epoch) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
-          "grant_epoch_mismatch:" + grant.grant_uuid));
+          "grant_epoch_mismatch"));
       return result;
     }
     context.grants.push_back({grant.grant_uuid,
@@ -398,6 +419,12 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (!HasEffectiveSubject(context, policy.subject_uuid, policy.subject_kind)) {
       continue;
     }
+    if (!UuidPresent(policy.policy_uuid) || !UuidPresent(policy.subject_uuid) ||
+        (!policy.target_uuid.is_nil() && !UuidPresent(policy.target_uuid))) {
+      result.diagnostics.push_back(MakeSecurityDiagnostic(
+          "SECURITY.AUTHORIZATION.SUBJECT_INVALID", "policy_identity_invalid"));
+      return result;
+    }
     if (!policy.right.empty() && !IsKnownSecurityRight(policy.right)) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.RIGHT.UNKNOWN",
@@ -407,22 +434,13 @@ DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
     if (policy.policy_epoch == 0 || policy.policy_epoch != state.policy_epoch) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
-          "policy_epoch_mismatch:" + policy.policy_uuid));
+          "policy_epoch_mismatch"));
       return result;
     }
-    if (policy.policy_kind == "row_policy" &&
-        (policy.source_policy_generation == 0 ||
-         (policy.update_policy_phase != 1 &&
-          policy.update_policy_phase != 2) ||
-         !CanonicalNonzeroUuid(policy.effective_policy_uuid) ||
-         policy.effective_policy_generation == 0 ||
-         !CanonicalNonzeroUuid(policy.effective_expression_uuid) ||
-         policy.effective_expression_generation == 0 ||
-         !NonzeroSha256(policy.effective_expression_evidence_sha256))) {
+    if (!NativeRowPolicyAuthorityValid(policy)) {
       result.diagnostics.push_back(MakeSecurityDiagnostic(
           "SECURITY.CONTEXT.EXPIRED",
-          "row_policy_native_authority_missing:" +
-              policy.policy_uuid));
+          "row_policy_native_authority_missing"));
       return result;
     }
     EngineMaterializedAuthorizationPolicy materialized;
@@ -466,8 +484,16 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     const EngineRequestContext& request_context,
     const EngineMaterializedAuthorizationContext& authorization_context,
     const std::string& right,
-    const std::string& target_uuid) {
+    const EngineUuid& target_uuid) {
   MaterializedAuthorizationDecision decision;
+  const auto refuse_context = [&]() {
+    decision.diagnostics.push_back(MakeSecurityDiagnostic(
+        "SECURITY.CONTEXT.EXPIRED", "materialized_authority_identity_or_epoch_invalid"));
+    return decision;
+  };
+  if (!request_context.security_context_present ||
+      (!target_uuid.is_nil() && !UuidPresent(target_uuid)))
+    return refuse_context();
   if (right.empty() || !IsKnownSecurityRight(right)) {
     decision.diagnostics.push_back(MakeSecurityDiagnostic(
         "SECURITY.AUTHORIZATION.DENIED",
@@ -490,6 +516,8 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     return decision;
   }
   if (authorization_context.security_epoch == 0 ||
+      !UuidPresent(authorization_context.authority_uuid) ||
+      authorization_context.security_context_generation == 0 ||
       authorization_context.policy_epoch == 0 ||
       authorization_context.catalog_generation_id == 0 ||
       (request_context.security_epoch != 0 &&
@@ -500,6 +528,35 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
         "SECURITY.CONTEXT.EXPIRED",
         right));
     return decision;
+  }
+
+  for (const auto& subject : authorization_context.effective_subjects) {
+    if (!UuidPresent(subject.subject_uuid) ||
+        (subject.subject_kind != "principal" && subject.subject_kind != "role" &&
+         subject.subject_kind != "group")) return refuse_context();
+  }
+  if (!HasEffectiveSubject(authorization_context, authorization_context.principal_uuid, "principal"))
+    return refuse_context();
+  const auto bootstrap_role = authorization_context.engine_owned_bootstrap_role_uuid;
+  if (!bootstrap_role.is_nil() && (!UuidPresent(bootstrap_role) ||
+      !HasEffectiveSubject(authorization_context, bootstrap_role, "role")))
+    return refuse_context();
+  for (const auto& grant : authorization_context.grants) {
+    if (!UuidPresent(grant.grant_uuid) || !UuidPresent(grant.subject_uuid) ||
+        (!grant.target_uuid.is_nil() && !UuidPresent(grant.target_uuid)) ||
+        !IsKnownSecurityRight(grant.right) ||
+        grant.security_epoch != authorization_context.security_epoch ||
+        !HasEffectiveSubject(authorization_context, grant.subject_uuid, grant.subject_kind))
+      return refuse_context();
+  }
+  for (const auto& policy : authorization_context.policies) {
+    if (!UuidPresent(policy.policy_uuid) || !UuidPresent(policy.subject_uuid) ||
+        (!policy.target_uuid.is_nil() && !UuidPresent(policy.target_uuid)) ||
+        (!policy.right.empty() && !IsKnownSecurityRight(policy.right)) ||
+        policy.policy_epoch != authorization_context.policy_epoch ||
+        !NativeRowPolicyAuthorityValid(policy) ||
+        !HasEffectiveSubject(authorization_context, policy.subject_uuid, policy.subject_kind))
+      return refuse_context();
   }
 
   for (const auto& grant : authorization_context.grants) {
@@ -514,7 +571,9 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     }
   }
 
-  bool allowed = false;
+  bool allowed = UuidPresent(authorization_context.engine_owned_bootstrap_role_uuid) &&
+      HasEffectiveSubject(authorization_context,
+                          authorization_context.engine_owned_bootstrap_role_uuid, "role");
   for (const auto& grant : authorization_context.grants) {
     if (!grant.deny && grant.right == right && TargetMatches(grant.target_uuid, target_uuid) &&
         HasEffectiveSubject(authorization_context, grant.subject_uuid, grant.subject_kind)) {
@@ -548,7 +607,7 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     if (policy.requires_runtime_recheck) {
       decision.policy_recheck_required = true;
       decision.policy_recheck_reasons.push_back(
-          policy.policy_kind.empty() ? policy.policy_uuid : policy.policy_kind);
+          policy.policy_kind.empty() ? "policy_runtime_recheck" : policy.policy_kind);
     }
   }
 
@@ -559,7 +618,7 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
 
 bool SecurityContextHasRight(const EngineRequestContext& context,
                              const std::string& right,
-                             const std::string& target_uuid) {
+                             const EngineUuid& target_uuid) {
   if (!context.security_context_present) { return false; }
   if (context.authorization_context.present) {
     return EvaluateMaterializedAuthorization(context,
@@ -567,11 +626,6 @@ bool SecurityContextHasRight(const EngineRequestContext& context,
                                              right,
                                              target_uuid).authorized;
   }
-  if (!SecurityTraceAuthorizationFallbackAllowed(context)) { return false; }
-  if (SecurityContextHasTag(context, "deny:" + right)) { return false; }
-  if (!target_uuid.empty() && SecurityContextHasTag(context, "deny:" + right + ":" + target_uuid)) { return false; }
-  if (SecurityContextHasTag(context, "right:" + right)) { return true; }
-  if (!target_uuid.empty() && SecurityContextHasTag(context, "right:" + right + ":" + target_uuid)) { return true; }
   return false;
 }
 
@@ -698,9 +752,14 @@ ConnectionSecurityContextRecord ConnectionSecurityContextFromRequest(const Engin
   record.disclosure_policy = SecurityOptionValue(request, "disclosure_policy:");
   if (record.disclosure_policy.empty()) { record.disclosure_policy = "hidden_as_missing"; }
   record.audit_policy_ref = SecurityOptionValue(request, "audit_policy_ref:");
+  if (request.context.authorization_context.present) {
+    for (const auto& subject : request.context.authorization_context.effective_subjects) {
+      if (!UuidPresent(subject.subject_uuid)) continue;
+      if (subject.subject_kind == "role") record.active_roles.push_back(subject.subject_uuid);
+      if (subject.subject_kind == "group") record.effective_groups.push_back(subject.subject_uuid);
+    }
+  }
   for (const auto& tag : request.context.trace_tags) {
-    if (StartsWith(tag, "role_uuid:")) { record.active_roles.push_back({tag.substr(10)}); }
-    if (StartsWith(tag, "group_uuid:")) { record.effective_groups.push_back({tag.substr(11)}); }
     if (StartsWith(tag, "external_evidence:")) { record.external_provider_evidence.push_back(tag.substr(18)); }
   }
   return record;

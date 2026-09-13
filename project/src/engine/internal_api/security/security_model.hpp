@@ -179,7 +179,7 @@ bool SecurityContextHasTag(const EngineRequestContext& context, const std::strin
 bool SecurityTraceAuthorizationFallbackAllowed(const EngineRequestContext& context);
 bool SecurityContextHasRight(const EngineRequestContext& context,
                              const std::string& right,
-                             const std::string& target_uuid = {});
+                             const EngineUuid& target_uuid = {});
 bool SecurityContextHasAnyAdmin(const EngineRequestContext& context,
                                 const std::vector<std::string>& rights);
 bool IsKnownSecurityRight(const std::string& right);
@@ -195,7 +195,7 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     const EngineRequestContext& request_context,
     const EngineMaterializedAuthorizationContext& authorization_context,
     const std::string& right,
-    const std::string& target_uuid);
+    const EngineUuid& target_uuid);
 void AddSecurityEvidence(EngineApiResult* result, std::string kind, std::string id);
 void AddSecurityRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);
 EngineApiDiagnostic AppendSecurityEvidenceEvent(const EngineRequestContext& context,
