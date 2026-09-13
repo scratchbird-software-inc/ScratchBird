@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "native_index_btree_page.hpp"
+
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
 #include "catalog_record_codec.hpp"
@@ -49,7 +51,8 @@ struct NativeCatalogLeafPage {
 enum class NativeCatalogLeafError {
   none, invalid_header, invalid_body, invalid_metadata, invalid_integrity,
   hash_failure, resource_exhausted, invalid_filespace, binding_mismatch,
-  io_failure, encrypted_requires_crypto_authority
+  io_failure, encrypted_requires_crypto_authority, cluster_requires_authority,
+  header_policy_requires_authority
 };
 struct NativeCatalogLeafResult {
   NativeCatalogLeafError error = NativeCatalogLeafError::invalid_body;
@@ -68,6 +71,42 @@ NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
     scratchbird::storage::disk::FileDevice&,
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::storage::page::NativeCatalogRootReference&) noexcept;
+
+struct NativeCatalogRelationBinding {
+  scratchbird::core::platform::Uuid relation_uuid;
+  std::optional<scratchbird::storage::page::NativeBtreeDependencies> index_dependencies;
+};
+struct NativeCatalogIndexEntryLocation {
+  std::size_t page_index = 0;
+  std::size_t cell_index = 0;
+};
+struct NativeCatalogRowImageBinding {
+  std::optional<NativeCatalogIndexEntryLocation> index_entry;
+  std::size_t catalog_page_index = 0;
+  std::size_t catalog_row_index = 0;
+};
+enum class NativeCatalogRelationError {
+  none, invalid_reference, invalid_filespace, tree_failure, leaf_failure,
+  binding_mismatch, invalid_locator, duplicate_identity, resource_exhausted,
+  hash_failure, io_failure
+};
+struct NativeCatalogRelationImageResult {
+  NativeCatalogRelationError error = NativeCatalogRelationError::invalid_reference;
+  scratchbird::storage::page::NativeBtreeError tree_error = scratchbird::storage::page::NativeBtreeError::none;
+  NativeCatalogLeafError leaf_error = NativeCatalogLeafError::none;
+  std::optional<scratchbird::storage::page::NativeBtreeTreeResult> index;
+  std::vector<NativeCatalogLeafResult> catalogs;
+  std::vector<NativeCatalogRowImageBinding> bindings;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error==NativeCatalogRelationError::none; }
+};
+// NATIVE-CATALOG-RELATION-IMAGE-BINDING-001. Native image/row identity join only,
+// not typed key, dependency-map, family, MGA visibility or publication authority.
+NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::page::NativeCatalogRootReference&,
+    const NativeCatalogRelationBinding&,u64 maximum_retained_image_bytes) noexcept;
 
 enum class PhysicalMgaCowFinalizeDecision : u16 {
   commit,

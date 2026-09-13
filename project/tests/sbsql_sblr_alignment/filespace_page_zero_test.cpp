@@ -968,6 +968,116 @@ Bytes LeafOracle(const db::NativeCatalogLeafPage& leaf) {
   Number(b,144,4,at-128); Number(b,220,4,b.size()-32-at);
   Number(b,160,8,BodyFnv(b.data()+128,b.size()-160)); LeafSeal(b); return b;
 }
+struct CatalogBindingFixtureImages {
+  std::vector<page::NativeBtreePage> nodes;
+  std::vector<db::NativeCatalogLeafPage> leaves;
+};
+CatalogBindingFixtureImages CatalogBindingImages(unsigned p) {
+  const auto q=(p+1)%5,s=(p+2)%5;CatalogBindingFixtureImages images;images.nodes=BtreeTreeExample(p);
+  // Fixture row/version identities are disjoint from each other and page,
+  // object and transaction identities, just as separately issued UUIDs are.
+  const auto key_identity=[](auto& key){key.row_uuid.bytes[14]=0x41;key.version_uuid.bytes[14]=0x42;};
+  for(auto& node:images.nodes){if(node.low_fence)key_identity(*node.low_fence);if(node.high_fence)key_identity(*node.high_fence);
+    for(auto& cell:node.cells)key_identity(cell.key);}
+  for(unsigned j=0;j<4;++j){auto leaf=LeafExample(j==3?q:s);auto& h=leaf.header;
+    h.filespace_uuid=j==3?Id(7):Id(9);h.page_number=53+j;h.page_generation=3;h.page_uuid=Id(static_cast<byte>(150+j));
+    leaf.body.page_number=h.page_number;leaf.body.page_generation=h.page_generation;
+    for(unsigned i=0;i<2;++i){auto& row=leaf.body.rows[i];auto& cell=images.nodes[3+j].cells[i];
+      row.row_uuid.value=cell.key.row_uuid;row.version_uuid=cell.key.version_uuid;
+      auto metadata=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(metadata.ok(),"existing common metadata fixture decoded");
+      metadata.record.record.header.row_uuid=row.row_uuid;metadata.record.record.header.object_uuid.value=Id(static_cast<byte>(180+2*j+i));
+      const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"bound common metadata fixture produced");row.cells[0].value.payload=encoded.bytes;
+      cell.base_page=disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
+    images.leaves.push_back(std::move(leaf));}
+  auto extra=images.nodes[3].cells[0];extra.key.encoded_key={12};images.nodes[3].cells.insert(images.nodes[3].cells.begin()+1,extra);
+  return images;
+}
+void NativeCatalogRelationBindings() {
+  using E=db::NativeCatalogRelationError;using LE=db::NativeCatalogLeafError;
+  const auto empty=[&](const auto& r){Check(!r.ok()&&!r.index&&r.catalogs.empty()&&r.bindings.empty()&&r.retained_image_bytes==0,"catalog join refusal exposes no tree pages metadata bindings or counters");};
+  for(unsigned p=0;p<5;++p){const auto q=(p+1)%5,s=(p+2)%5;Fixture fixture;disk::FileDevice first,second,base;
+    const auto path1=(fixture.root/"catalog-index").string(),path2=(fixture.root/"catalog-data").string(),path3=(fixture.root/"catalog-primary").string();
+    auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
+    for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
+    const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
+      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()
+        &&device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare real catalog relation filespace");};
+    prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
+    const auto original=CatalogBindingImages(p);auto images=original;
+    const auto reference=[](const auto& h){return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};};
+    const auto persist=[&]{for(const auto& n:images.nodes){const auto b=BtreeOracle(n);auto& device=n.header.filespace_uuid==Id(2)?first:second;
+      Check(device.WriteAt(n.header.page_number*n.header.page_size_bytes,b.data(),b.size()).ok(),"persist catalog navigation image");}
+      for(const auto& leaf:images.leaves){const auto b=LeafOracle(leaf);auto& device=leaf.header.filespace_uuid==Id(9)?base:second;
+        Check(device.WriteAt(leaf.header.page_number*leaf.header.page_size_bytes,b.data(),b.size()).ok(),"persist actual native catalog leaf");}
+      Check(first.Sync().ok()&&second.Sync().ok()&&base.Sync().ok(),"sync native catalog index and base images");};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const page::NativeCatalogRootReference indexed{1,0x200,reference(original.nodes[0].header),original.nodes[0].dependencies.index_uuid};
+    const db::NativeCatalogRelationBinding binding{Id(101),original.nodes[0].dependencies};
+    const page::NativeCatalogRootReference direct{1,6,reference(original.leaves[0].header),Id(101)};
+    const u64 budget=4*sizes[p]+4*sizes[q]+3*sizes[s];
+    const auto read=[&](u64 allowance){return db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,indexed,binding,allowance);};
+    persist();auto result=read(budget);Check(result.ok()&&result.index&&result.index->pages.size()==7&&result.catalogs.size()==4&&result.bindings.size()==9
+      &&result.retained_image_bytes==budget,"actual catalog tree to row/version join with distinct-image budget");
+    for(const auto& b:result.bindings){Check(b.index_entry.has_value(),"indexed binding retains its source entry");
+      const auto& cell=result.index->pages[b.index_entry->page_index].page->cells[b.index_entry->cell_index];
+      const auto& leaf=result.catalogs[b.catalog_page_index];const auto& row=leaf.page->body.rows[b.catalog_row_index];
+      Check(row.row_uuid.value==cell.key.row_uuid&&row.version_uuid==cell.key.version_uuid
+        &&leaf.metadata.at(row.version_uuid).record.header.row_uuid.value==row.row_uuid.value,"bindings refer to actual native rows and validated metadata");}
+    Check(result.bindings[0].catalog_page_index==result.bindings[1].catalog_page_index&&result.bindings[0].catalog_row_index==result.bindings[1].catalog_row_index,
+      "multiple keys retain separate bindings without duplicate base images");
+    const auto deleted=result.bindings[2].index_entry;Check(deleted&&result.index->pages[deleted->page_index].page->cells[deleted->cell_index].deleted,
+      "deleted index entry remains bound for owning MGA interpretation");
+    result=read(budget-1);empty(result);Check(result.error==E::resource_exhausted,"one-byte-short last base image refuses whole join");
+    result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,direct,{Id(101),{}},sizes[s]);
+    Check(result.ok()&&!result.index&&result.catalogs.size()==1&&result.bindings.size()==2&&result.retained_image_bytes==sizes[s]
+      &&!result.bindings[0].index_entry,"direct leaf route enumerates actual retained rows");
+    result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,direct,{Id(101),{}},sizes[s]-1);empty(result);Check(result.error==E::resource_exhausted,"direct leaf exact budget boundary");
+    if(p==0){
+      for(unsigned fault=0;fault<9;++fault){images=original;E expected=E::invalid_locator;
+        if(fault==0){images.nodes[6].cells[1].key.row_uuid=Id(240);expected=E::binding_mismatch;}
+        if(fault==1)images.nodes[6].cells[1].key.version_uuid=Id(241);
+        if(fault==2)images.nodes[6].cells[1].base_page=images.nodes[3].cells[0].base_page;
+        if(fault==3)images.nodes[6].cells[1].base_page.reset();
+        if(fault==4){++images.nodes[3].cells[1].base_page->page_generation;expected=E::binding_mismatch;}
+        if(fault==5){images.leaves[3].header.page_uuid=images.leaves[0].header.page_uuid;expected=E::duplicate_identity;}
+        if(fault==6){images.leaves[3].body.rows[0].version_uuid=images.leaves[0].body.rows[1].version_uuid;expected=E::duplicate_identity;}
+        if(fault==7)images.nodes[3].cells[0].base_page=reference(images.nodes[0].header);
+        if(fault==8){auto row=images.leaves[3].body.rows[0];row.row_uuid.value=Id(240);row.version_uuid=Id(241);row.internal_row_ordinal=3;row.stable_slot_id=3;
+          images.leaves[3].body.rows.push_back(row);expected=E::leaf_failure;}
+        persist();result=read(budget);empty(result);Check(result.error==expected,"exact catalog binding fault="+std::to_string(fault)+" actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));
+        if(fault==8)Check(result.leaf_error==LE::invalid_metadata,"unindexed malformed retained row is not skipped");}
+      images=original;persist();
+      auto wrong=binding;wrong.relation_uuid=Id(240);result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,indexed,wrong,budget);empty(result);
+      Check(result.error==E::leaf_failure&&result.leaf_error==LE::binding_mismatch,"actual relation owner binding required");
+      auto bad_head=indexed;bad_head.object_uuid=Id(240);result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,bad_head,binding,budget);empty(result);Check(result.error==E::binding_mismatch,"head index UUID must match exact dependency tuple");
+      result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,direct,binding,budget);empty(result);Check(result.error==E::binding_mismatch,"direct head cannot inherit an unrelated index dependency tuple");
+      for(u64 flags:{1u,2u,4u,8u}){images=original;images.leaves[3].header.flags=flags;persist();result=read(budget);empty(result);
+        Check(result.error==E::leaf_failure&&result.leaf_error==(flags==1?LE::encrypted_requires_crypto_authority:flags==2?LE::cluster_requires_authority:LE::header_policy_requires_authority),"late base image retains truthful crypto cluster header policy failure");}
+      images=original;persist();auto corrupt=LeafOracle(images.leaves[3]);corrupt.back()^=1;
+      Check(second.WriteAt(56*sizes[q],corrupt.data(),corrupt.size()).ok(),"corrupt actual final catalog leaf digest");result=read(budget);empty(result);Check(result.error==E::leaf_failure&&result.leaf_error==LE::invalid_integrity,"late corrupt catalog page exposes no earlier metadata");persist();
+      const auto mutex_of=[](auto& device){auto guard=device.AcquireOperationGuard();return guard.mutex();};const std::array mutexes{mutex_of(first),mutex_of(second),mutex_of(base)};
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done{false};db::NativeCatalogRelationImageResult paused_result;
+      std::thread reader([&]{paused_result=read(budget);done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();
+      bool all_held=tree_read_paused.load();for(auto* mutex:mutexes)if(mutex->try_lock()){all_held=false;mutex->unlock();}resume_tree_read=true;reader.join();pause_next_tree_read=false;
+      Check(all_held&&paused_result.ok(),"all catalog join filespace guards held before the first physical read");
+      reads=0;track_reads=true;result=read(budget);track_reads=false;const auto read_count=reads;Check(result.ok(),"measure complete catalog join reads");
+      for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;result=read(budget);track_reads=false;Check(read_fault==0,"each actual catalog join read fault consumed");empty(result);}
+      observed_allocations=0;count_allocations=true;result=read(budget);count_allocations=false;const auto allocations=observed_allocations;Check(result.ok(),"measure catalog join allocations");bool success=false;
+      for(unsigned long allowance=0;allowance<=allocations;++allowance){allocation_budget=allowance;result=read(budget);allocation_budget=-1;if(result.ok()){success=true;break;}
+        empty(result);Check(result.error==E::resource_exhausted||(result.error==E::tree_failure&&result.tree_error==page::NativeBtreeError::resource_exhausted)
+          ||(result.error==E::leaf_failure&&result.leaf_error==LE::resource_exhausted),"catalog join allocation refusal classified");}Check(success,"every catalog join allocation fault position");
+      for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;result=read(budget);Check(hash_fault==0,"catalog join digest backend fault consumed");empty(result);Check(result.error==E::hash_failure,"catalog join digest failure preserved");}
+      images.leaves[0].body.rows.clear();persist();result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),devices,direct,{Id(101),{}},sizes[s]);
+      Check(result.ok()&&result.catalogs.size()==1&&result.bindings.empty(),"empty allocated direct catalog leaf, not invented existence");
+      images=original;images.nodes[0].tree_level=0;images.nodes[0].first_child.reset();images.nodes[0].cells.clear();persist();result=read(sizes[p]);
+      Check(result.ok()&&result.index&&result.index->pages.size()==1&&result.catalogs.empty()&&result.bindings.empty(),"empty allocated catalog index is represented without invented base rows");images=original;persist();
+    }
+    Exclusive(path1);Exclusive(path2);Exclusive(path3);Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close catalog join files before independent process");
+    const auto child=::fork();Check(child>=0,"fork actual catalog relation reader");if(child==0){const auto profile=std::to_string(p);
+      ::execl("/proc/self/exe","catalog-relation-probe","--catalog-relation-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds persisted index entries to catalog rows");
+  }
+}
 void LeafReject(const db::NativeCatalogLeafResult& r,db::NativeCatalogLeafError error,
                 std::source_location at=std::source_location::current()) {
   Check(!r.ok()&&!r.page&&r.metadata.empty()&&r.bytes.empty()&&r.error==error,"leaf rejects without partial page/metadata actual="+
@@ -1668,6 +1778,17 @@ void CanonicalCheckpointHistory() {
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies complete retained history");
 }
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--catalog-relation-probe") {
+    const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;
+    if(!first.Open((dir/"catalog-index").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((dir/"catalog-data").string(),disk::FileOpenMode::open_existing_read_only).ok()
+      ||!base.Open((dir/"catalog-primary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    const auto expected=CatalogBindingImages(p);const auto& h=expected.nodes[0].header;
+    const auto result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},
+      {1,0x200,{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected.nodes[0].dependencies.index_uuid},
+      {Id(101),expected.nodes[0].dependencies},4*sizes[p]+4*sizes[q]+3*sizes[s]);
+    if(!result.ok()||!result.index||result.bindings.size()!=9||result.catalogs.size()!=4)return 3;
+    for(unsigned i=0;i<4;++i)if(result.catalogs[i].bytes!=LeafOracle(expected.leaves[i]))return 4;return 0;
+  }
   if(argc==4&&(std::string_view(argv[1])=="--native-btree-tree-probe"||std::string_view(argv[1])=="--native-btree-deep-probe")) {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];
     disk::FileDevice first,second,base;if(!first.Open((dir/"tree-first").string(),disk::FileOpenMode::open_existing_read_only).ok()
@@ -1743,7 +1864,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

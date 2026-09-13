@@ -1852,12 +1852,85 @@ NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
     const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&expected);
     if (!header.ok()) return LeafFailure(LeafError::binding_mismatch);
     if (header.header->flags & 1u) return LeafFailure(LeafError::encrypted_requires_crypto_authority);
+    if (header.header->flags & 2u) return LeafFailure(LeafError::cluster_requires_authority);
+    if (header.header->flags & 12u) return LeafFailure(LeafError::header_policy_requires_authority);
     auto result=DecodeNativeCatalogLeaf(bytes); if (!result.ok()) return result;
     if (result.page->body.relation_uuid.value!=ref.object_uuid) return LeafFailure(LeafError::binding_mismatch);
     return result;
   } catch (const std::bad_alloc&) { return LeafFailure(LeafError::resource_exhausted); }
     catch (const std::length_error&) { return LeafFailure(LeafError::resource_exhausted); }
     catch (...) { return LeafFailure(LeafError::io_failure); }
+}
+
+NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::page::NativeCatalogRootReference& head,
+    const NativeCatalogRelationBinding& binding,u64 maximum_retained_image_bytes) noexcept {
+  namespace disk=scratchbird::storage::disk;namespace page=scratchbird::storage::page;
+  using Uuid=scratchbird::core::platform::Uuid;using E=NativeCatalogRelationError;
+  const auto fail=[](E e){NativeCatalogRelationImageResult r;r.error=e;return r;};
+  const auto v7=[](const auto& id){return scratchbird::core::uuid::IsEngineIdentityUuid(id);};
+  try {
+    if(!v7(database_uuid)||!v7(binding.relation_uuid)||!v7(head.object_uuid)||head.role<1||head.role>6
+      ||!v7(head.page.filespace_uuid)||!head.page.page_number||!head.page.page_generation
+      ||!disk::FindCanonicalFilespacePageProfile(head.page.page_size_profile_uuid)||devices.empty()||!maximum_retained_image_bytes
+      ||(head.page_type!=6&&head.page_type!=0x200))return fail(E::invalid_reference);
+    if(head.page_type==6?(binding.index_dependencies.has_value()||head.object_uuid!=binding.relation_uuid):
+        (!binding.index_dependencies||binding.index_dependencies->index_uuid!=head.object_uuid))return fail(E::binding_mismatch);
+    auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    for(std::size_t i=0;i<ordered.size();++i){const auto& fs=ordered[i];
+      if(!v7(fs.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)||!fs.device
+        ||(i&&fs.filespace_uuid==ordered[i-1].filespace_uuid))return fail(E::invalid_filespace);
+      for(std::size_t j=0;j<i;++j)if(fs.device==ordered[j].device)return fail(E::invalid_filespace);}
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(ordered.size());
+    for(const auto& fs:ordered)guards.push_back(fs.device->AcquireOperationGuard());
+    for(const auto& fs:ordered){const disk::FilespaceBootstrapBinding expected{database_uuid,fs.filespace_uuid,fs.page_size_profile_uuid};
+      const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*fs.device,&expected);
+      if(!zero.ok()){
+        if(zero.error==disk::FilespacePageZeroError::resource_exhausted)return fail(E::resource_exhausted);
+        if(zero.error==disk::FilespacePageZeroError::hash_provider_failure)return fail(E::hash_failure);
+        if(zero.error==disk::FilespacePageZeroError::io_failure)return fail(E::io_failure);
+        return fail(E::invalid_filespace);}}
+    NativeCatalogRelationImageResult result;
+    std::set<std::pair<Uuid,u64>> navigation_slots;std::set<Uuid> page_ids;
+    if(head.page_type==0x200){auto tree=page::ReadNativeBtreeTreeFromOpenDevices(database_uuid,ordered,head.page,*binding.index_dependencies,maximum_retained_image_bytes);
+      if(!tree.ok()){auto error=fail(E::tree_failure);error.tree_error=tree.error;return error;}
+      for(const auto& node:tree.pages){const auto& h=node.page->header;navigation_slots.emplace(h.filespace_uuid,h.page_number);page_ids.insert(h.page_uuid);}
+      result.retained_image_bytes=tree.retained_image_bytes;result.index=std::move(tree);}
+    std::map<std::pair<Uuid,u64>,std::size_t> catalog_slots;
+    std::map<Uuid,std::pair<std::size_t,std::size_t>> versions;
+    E failure=E::none;NativeCatalogLeafError leaf_error=NativeCatalogLeafError::none;
+    const auto load=[&](const disk::NativePageReference& ref)->std::optional<std::size_t>{
+      const auto slot=std::pair{ref.filespace_uuid,ref.page_number};
+      if(navigation_slots.contains(slot)){failure=E::invalid_locator;return {};}
+      const auto prior=catalog_slots.find(slot);
+      if(prior!=catalog_slots.end()){const auto& h=result.catalogs[prior->second].page->header;
+        if(h.page_generation!=ref.page_generation||h.page_size_profile_uuid!=ref.page_size_profile_uuid){failure=E::binding_mismatch;return {};}
+        return prior->second;}
+      const auto fs=std::lower_bound(ordered.begin(),ordered.end(),ref.filespace_uuid,[](const auto& a,const auto& id){return a.filespace_uuid<id;});
+      if(fs==ordered.end()||fs->filespace_uuid!=ref.filespace_uuid||fs->page_size_profile_uuid!=ref.page_size_profile_uuid){failure=E::invalid_filespace;return {};}
+      const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
+      if(!profile||profile->page_size_bytes>maximum_retained_image_bytes-result.retained_image_bytes){failure=E::resource_exhausted;return {};}
+      auto leaf=ReadNativeCatalogLeafFromOpenDevice(*fs->device,database_uuid,{head.role,6,ref,binding.relation_uuid});
+      if(!leaf.ok()){failure=E::leaf_failure;leaf_error=leaf.error;return {};}
+      if(!page_ids.insert(leaf.page->header.page_uuid).second){failure=E::duplicate_identity;return {};}
+      const auto index=result.catalogs.size();
+      for(std::size_t i=0;i<leaf.page->body.rows.size();++i)if(!versions.emplace(leaf.page->body.rows[i].version_uuid,std::pair{index,i}).second){failure=E::duplicate_identity;return {};}
+      catalog_slots.emplace(slot,index);result.retained_image_bytes+=leaf.bytes.size();result.catalogs.push_back(std::move(leaf));return index;};
+    const auto load_error=[&]{auto error=fail(failure);error.leaf_error=leaf_error;return error;};
+    if(!result.index){const auto leaf=load(head.page);if(!leaf)return load_error();
+      for(std::size_t i=0;i<result.catalogs[*leaf].page->body.rows.size();++i)result.bindings.push_back({{},*leaf,i});}
+    else for(const auto node_index:result.index->leaves){const auto& node=*result.index->pages[node_index].page;
+      for(std::size_t i=0;i<node.cells.size();++i){const auto& cell=node.cells[i];
+        if(!cell.base_page)return fail(E::invalid_locator);const auto leaf=load(*cell.base_page);if(!leaf)return load_error();
+        const auto found=versions.find(cell.key.version_uuid);
+        if(found==versions.end()||found->second.first!=*leaf)return fail(E::invalid_locator);
+        const auto row_index=found->second.second;const auto& row=result.catalogs[*leaf].page->body.rows[row_index];
+        if(row.row_uuid.value!=cell.key.row_uuid)return fail(E::binding_mismatch);
+        result.bindings.push_back({NativeCatalogIndexEntryLocation{node_index,i},*leaf,row_index});}}
+    result.error=E::none;return result;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::io_failure);}
 }
 
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
