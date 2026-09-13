@@ -212,8 +212,7 @@ const TransactionInventoryEntry* FindTransactionEntry(
 }
 
 bool EntryQueryableForAudit(const TransactionInventoryEntry& entry) {
-  return entry.state == TransactionState::committed ||
-         entry.state == TransactionState::archived;
+  return scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry);
 }
 
 TransactionLocationResolution ResolveTransactionLocation(

@@ -36110,8 +36110,7 @@ sb_engine_status_t CreatePreparedMetadataBinding(
           scratchbird::transaction::mga::MakeLocalTransactionId(
               pinned_object->creator_tx));
   if (!creator.ok() ||
-      (creator.entry.state != TransactionState::committed &&
-       creator.entry.state != TransactionState::archived)) {
+      !scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry)) {
     return fail_result(
         SB_ENGINE_STATUS_CONFLICT,
         out_result,

@@ -52,6 +52,9 @@ if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
   add_executable(sbsql_sblr_alignment_snapshot_retention
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_sblr_alignment/snapshot_retention_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_snapshot_retention PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_snapshot_retention PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../engine/internal_api)
   target_link_libraries(sbsql_sblr_alignment_snapshot_retention PRIVATE sb_transaction_mga Threads::Threads)
   add_test(NAME sbsql_sblr_alignment_snapshot_retention
     COMMAND sbsql_sblr_alignment_snapshot_retention)

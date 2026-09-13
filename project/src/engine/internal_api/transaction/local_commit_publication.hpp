@@ -76,6 +76,28 @@ struct LocalCommitPublicationRecoveryResult {
   std::vector<LocalCommitPublicationArtifact> artifacts;
 };
 
+// Classifies an admitted native entry, not a manifest's claimed finality. A
+// failed or malformed outcome requires review; neither is rollback evidence.
+inline LocalCommitPublicationRecoveryClass ClassifyLocalCommitPublicationInventoryOutcome(
+    const scratchbird::transaction::mga::TransactionInventoryEntry& entry) {
+  using scratchbird::transaction::mga::TransactionState;
+  switch (scratchbird::transaction::mga::InventoryVisibilityState(entry)) {
+    case TransactionState::committed:
+      return LocalCommitPublicationRecoveryClass::committed_by_inventory;
+    case TransactionState::rolled_back:
+      return LocalCommitPublicationRecoveryClass::abandoned_by_rollback;
+    case TransactionState::created:
+    case TransactionState::active:
+    case TransactionState::read_only_active:
+    case TransactionState::preparing:
+    case TransactionState::committing:
+    case TransactionState::rolling_back:
+      return LocalCommitPublicationRecoveryClass::retryable_unpublished;
+    default:
+      return LocalCommitPublicationRecoveryClass::in_doubt;
+  }
+}
+
 const char* LocalCommitPublicationRecoveryClassName(
     LocalCommitPublicationRecoveryClass recovery_class);
 

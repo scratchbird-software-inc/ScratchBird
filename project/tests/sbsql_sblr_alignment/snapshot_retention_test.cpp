@@ -3,6 +3,7 @@
 #include "transaction_snapshot.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "transaction_evidence.hpp"
+#include "transaction/local_commit_publication.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
 #include "transaction_cleanup.hpp"
 #include "uuid.hpp"
@@ -170,6 +171,33 @@ static void ArchivedRecoveryCases() {
         "archive repair bypassed WAL or restore context refusals");
   std::cout << "archived_recovery origin_cases=131072 misplaced_cases=65536\n";
 }
+static void PublicationOutcomeCases() {
+  namespace api = scratchbird::engine::internal_api;
+  using Decision = api::LocalCommitPublicationRecoveryClass;
+  mga::TransactionInventoryEntry entry;
+  for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+    const auto state = static_cast<mga::TransactionState>(encoded);
+    Decision expected = Decision::in_doubt;
+    if (state == mga::TransactionState::committed) expected = Decision::committed_by_inventory;
+    else if (state == mga::TransactionState::rolled_back) expected = Decision::abandoned_by_rollback;
+    else if (state == mga::TransactionState::created || state == mga::TransactionState::active ||
+             state == mga::TransactionState::read_only_active || state == mga::TransactionState::preparing ||
+             state == mga::TransactionState::committing || state == mga::TransactionState::rolling_back)
+      expected = Decision::retryable_unpublished;
+    entry.state = state; entry.archived_from_state = mga::TransactionState::none;
+    Check(api::ClassifyLocalCommitPublicationInventoryOutcome(entry) == expected,
+        "publication ordinary/unknown outcome classification drifted");
+    entry.state = mga::TransactionState::archived; entry.archived_from_state = state;
+    const auto archived_expected = state == mga::TransactionState::committed ? Decision::committed_by_inventory :
+        state == mga::TransactionState::rolled_back ? Decision::abandoned_by_rollback : Decision::in_doubt;
+    Check(api::ClassifyLocalCommitPublicationInventoryOutcome(entry) == archived_expected,
+        "publication archive invented commit/rollback from nonfinal or failed origin");
+    entry.state = state; entry.archived_from_state = mga::TransactionState::failed_terminal;
+    Check(api::ClassifyLocalCommitPublicationInventoryOutcome(entry) == Decision::in_doubt,
+        "publication misplaced/failed archive origin authorized mutation");
+  }
+  std::cout << "publication_outcome encoded_cases=196608\n";
+}
 static void ArchivedCreatorProjectionCases() {
   Fixture fixture;
   mga::RowVersionMetadata row;
@@ -230,6 +258,7 @@ static void ArchivedCreatorProjectionCases() {
   }
 }
 int main() try {
+  PublicationOutcomeCases();
   ArchivedRecoveryCases();
   ArchivedCreatorProjectionCases();
   Fixture f;

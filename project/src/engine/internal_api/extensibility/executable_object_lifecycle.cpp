@@ -393,8 +393,7 @@ bool EventVisible(
       using scratchbird::transaction::mga::TransactionState;
       if (creator_tx == context.local_transaction_id &&
           entry.identity.transaction_uuid.valid() &&
-          scratchbird::core::uuid::UuidToString(
-              entry.identity.transaction_uuid.value) ==
+          entry.identity.transaction_uuid.value ==
               context.transaction_uuid) {
         return entry.state == TransactionState::active ||
                entry.state == TransactionState::read_only_active ||
@@ -410,8 +409,7 @@ bool EventVisible(
                    .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids))) {
         return false;
       }
-      if (entry.state != TransactionState::committed &&
-          entry.state != TransactionState::archived) {
+      if (!scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry)) {
         return false;
       }
       const std::uint64_t visible_through =

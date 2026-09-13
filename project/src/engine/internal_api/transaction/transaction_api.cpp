@@ -248,8 +248,7 @@ std::string NormalizedIsolation(std::string level) {
 std::uint64_t MaxCommittedLocalTransactionId(const scratchbird::transaction::mga::LocalTransactionInventory& inventory) {
   std::uint64_t max_committed = 0;
   for (const auto& entry : inventory.entries) {
-    if ((entry.state == scratchbird::transaction::mga::TransactionState::committed ||
-         entry.state == scratchbird::transaction::mga::TransactionState::archived) &&
+    if (scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry) &&
         entry.identity.local_id.valid()) {
       max_committed = std::max(max_committed, entry.identity.local_id.value);
     }

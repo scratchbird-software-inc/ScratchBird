@@ -1837,8 +1837,7 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
         transaction_inventory.inventory,
         MakeLocalTransactionId(durable->creator_tx));
     if (!effective_transaction.ok() ||
-        (effective_transaction.entry.state != TransactionState::committed &&
-         effective_transaction.entry.state != TransactionState::archived) ||
+        !scratchbird::transaction::mga::HasCommittedInventoryOutcome(effective_transaction.entry) ||
         effective_transaction.entry.identity.local_id.value == 0) {
       return PrincipalDiagnostic(
           kSecurityPrincipalDiagnosticPolicyStale,

@@ -261,7 +261,7 @@ bool MgaCreatorVisible(const scratchbird::transaction::mga::LocalTransactionInve
   for (const auto& entry : inventory.entries) {
     if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
     using scratchbird::transaction::mga::TransactionState;
-    if (entry.state == TransactionState::committed || entry.state == TransactionState::archived) {
+    if (scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry)) {
       return true;
     }
     return creator_tx == observer_tx &&

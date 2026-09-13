@@ -157,7 +157,7 @@ void RecordArchiveRestoreRefusalMetric(const std::string& archive_class, const E
 std::uint64_t MaxCommittedTransaction(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, tx_state] : state.transactions) {
-    if (tx_state == "committed" || tx_state == "archived") {
+    if (tx_state == "committed") {
       max_committed = std::max(max_committed, tx);
     }
   }

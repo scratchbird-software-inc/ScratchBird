@@ -34,7 +34,6 @@ using scratchbird::storage::disk::SyncFilesystemPath;
 using scratchbird::storage::disk::SyncParentDirectoryPath;
 using scratchbird::transaction::mga::LookupLocalTransaction;
 using scratchbird::transaction::mga::MakeLocalTransactionId;
-using scratchbird::transaction::mga::TransactionState;
 
 constexpr std::string_view kManifestMagic = "SBMGA_LOCAL_COMMIT_PUBLICATION_V1";
 
@@ -673,25 +672,19 @@ LocalCommitPublicationRecoveryResult ClassifyLocalCommitPublicationForRecovery(
     result.stable_reason = "manifest has no matching durable transaction inventory entry";
     return result;
   }
-  switch (transaction.entry.state) {
-    case TransactionState::committed:
-    case TransactionState::archived:
-      result.recovery_class = LocalCommitPublicationRecoveryClass::committed_by_inventory;
+  result.recovery_class = ClassifyLocalCommitPublicationInventoryOutcome(transaction.entry);
+  switch (result.recovery_class) {
+    case LocalCommitPublicationRecoveryClass::committed_by_inventory:
       result.stable_reason = "inventory finality commits every manifested artifact";
       break;
-    case TransactionState::rolled_back:
-    case TransactionState::failed_terminal:
-      result.recovery_class = LocalCommitPublicationRecoveryClass::abandoned_by_rollback;
+    case LocalCommitPublicationRecoveryClass::abandoned_by_rollback:
       result.stable_reason = "inventory finality abandons every manifested artifact";
       break;
-    case TransactionState::prepared:
-    case TransactionState::limbo:
-      result.recovery_class = LocalCommitPublicationRecoveryClass::in_doubt;
-      result.stable_reason = "inventory requires prepared or in-doubt resolution";
+    case LocalCommitPublicationRecoveryClass::retryable_unpublished:
+      result.stable_reason = "transaction remains open and the publication barrier may be retried";
       break;
     default:
-      result.recovery_class = LocalCommitPublicationRecoveryClass::retryable_unpublished;
-      result.stable_reason = "transaction remains open and the publication barrier may be retried";
+      result.stable_reason = "inventory requires prepared, failed or ambiguous outcome review";
       break;
   }
   result.ok = true;

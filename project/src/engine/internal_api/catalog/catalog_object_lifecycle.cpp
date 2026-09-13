@@ -259,7 +259,7 @@ bool TransactionStatusVisible(const EngineRequestContext& context,
       (it->second == "active" || it->second == "preparing" || it->second == "prepared")) {
     return true;
   }
-  if (it->second != "committed" && it->second != "archived") { return false; }
+  if (it->second != "committed") { return false; }
   if (context.snapshot_visible_through_local_transaction_id != 0) {
     return creator_tx <= context.snapshot_visible_through_local_transaction_id;
   }
@@ -274,11 +274,6 @@ bool EventVisible(const EngineRequestContext& context,
   if (crud_state != nullptr && !crud_state->transactions.empty()) {
     return TransactionStatusVisible(context, crud_state->transactions, creator_tx);
   }
-  if (context.local_transaction_id != 0 && creator_tx == context.local_transaction_id) { return true; }
-  if (context.snapshot_visible_through_local_transaction_id != 0) {
-    return creator_tx <= context.snapshot_visible_through_local_transaction_id;
-  }
-  if (context.local_transaction_id != 0) { return creator_tx <= context.local_transaction_id; }
   return false;
 }
 
@@ -756,12 +751,17 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
   }
   // Readability is checked even for cache hits. Never cache an open/read failure
   // as an empty catalog: restoring access must reconstruct the real objects.
+  const auto crud_state = LoadCrudState(context);
+  if (options.enforce_visibility && !crud_state.ok) {
+    result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
+                                         "catalog_transaction_inventory_unavailable");
+    return result;
+  }
   const std::string load_cache_key =
       CatalogLifecycleLoadCacheKey(context, options);
   if (auto cached = LookupCatalogLifecycleLoadCache(load_cache_key)) {
     return *cached;
   }
-  const auto crud_state = LoadCrudState(context);
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
 
   std::map<std::string, EngineCatalogObjectRecord> objects;
@@ -1360,8 +1360,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
     if (creator_tx == context.local_transaction_id) {
       const bool exact_transaction =
           found.entry.identity.transaction_uuid.valid() &&
-          scratchbird::core::uuid::UuidToString(
-              found.entry.identity.transaction_uuid.value) ==
+          found.entry.identity.transaction_uuid.value ==
               context.transaction_uuid;
       return exact_transaction &&
              (found.entry.state == TransactionState::active ||
@@ -1369,8 +1368,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
               found.entry.state == TransactionState::preparing ||
               found.entry.state == TransactionState::prepared);
     }
-    if (found.entry.state != TransactionState::committed &&
-        found.entry.state != TransactionState::archived) {
+    if (!scratchbird::transaction::mga::HasCommittedInventoryOutcome(found.entry)) {
       return false;
     }
     if (context.snapshot_visible_through_local_transaction_id != 0) {
