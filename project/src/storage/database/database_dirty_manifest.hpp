@@ -17,6 +17,7 @@
 #include "catalog_page.hpp"
 #include "native_allocation_map.hpp"
 #include "native_filespace_directory.hpp"
+#include "native_system_state.hpp"
 
 #include <array>
 #include <optional>
@@ -68,7 +69,9 @@ enum class NativeCheckpointError {
   history_mismatch, catalog_failure, catalog_creator_mismatch, catalog_creator_not_committed,
   allocation_failure, allocation_creator_mismatch, allocation_creator_not_committed,
   allocation_record_creator_mismatch, policy_relation_mismatch, directory_failure,
-  directory_creator_mismatch, directory_creator_not_committed
+  directory_creator_mismatch, directory_creator_not_committed, system_state_failure,
+  system_state_creator_mismatch, system_state_creator_not_committed,
+  system_state_clean_mismatch, system_state_clean_not_committed, system_state_observation_mismatch
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -195,6 +198,22 @@ NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& head,
     const scratchbird::storage::disk::FilespaceRootReference& terminal,
+    u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeCheckpointSystemStateResult {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  NativeSystemStateError system_error=NativeSystemStateError::none;
+  NativeCheckpointHistoryResult checkpoints;
+  NativeSystemStateResult system_state;
+  u64 retained_image_bytes=0;
+  bool ok() const noexcept {return error==NativeCheckpointError::none&&checkpoints.ok()&&system_state.ok();}
+};
+// Actual current root/creator/observation binding, NOT proof of shutdown,
+// quiescence, operation completion, whole-root selection or a publication base.
+NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
     u64 maximum_retained_image_bytes) noexcept;
 
 inline constexpr u32 kDirtyObjectManifestFormatVersion = 1;

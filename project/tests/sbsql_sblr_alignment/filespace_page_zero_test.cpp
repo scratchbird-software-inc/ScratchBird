@@ -32,6 +32,8 @@ unsigned long observed_allocations=0;
 bool count_allocations=false;
 unsigned hash_fault=0,reads=0,read_fault=0;
 unsigned full_digest_fault=0;
+unsigned observed_full_digests=0;
+bool count_full_digests=false;
 std::size_t observed_read_bytes=0;
 bool track_reads=false;
 std::atomic<bool> pause_next_tree_read{false},tree_read_paused{false},resume_tree_read{false};
@@ -52,6 +54,7 @@ void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_Digest(const void* b,size_t n,unsigned char* out,unsigned int* count,const EVP_MD* md,ENGINE* e) {
+  if(count_full_digests) ++observed_full_digests;
   if(full_digest_fault && --full_digest_fault==0) return 0;
   return __real_EVP_Digest(b,n,out,count,md,e);
 }
@@ -2013,6 +2016,102 @@ void CanonicalCheckpointDirectory() {
   }
 }
 
+Bytes SystemStateOracle(const db::NativeSystemState& s) {
+  auto common=RootExample();common.header=s.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  const auto ref=[&](std::size_t at,const disk::NativePageReference& r){PutUuid(b,at,r.filespace_uuid);Number(b,at+16,8,r.page_number);Number(b,at+24,8,r.page_generation);PutUuid(b,at+32,r.page_size_profile_uuid);};
+  std::copy_n("SBSYS001",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,384);Number(b,140,4,512);PutUuid(b,144,s.object_uuid);
+  Number(b,160,8,s.state_generation);Number(b,168,8,s.restart_generation);Number(b,176,8,s.startup_counter);PutUuid(b,184,s.creator_transaction_uuid);Number(b,200,8,s.creator_local_transaction_id);
+  Number(b,208,2,static_cast<disk::u16>(s.lifecycle));Number(b,210,2,static_cast<disk::u16>(s.recovery));Number(b,212,4,s.flags);Number(b,216,8,s.checkpoint_generation);
+  if(s.checkpoint)ref(224,*s.checkpoint);PutUuid(b,272,s.checkpoint_object_uuid);PutUuid(b,288,s.clean_transaction_uuid);Number(b,304,8,s.clean_local_transaction_id);PutUuid(b,312,s.transition_operation_uuid);
+  if(s.predecessor)ref(328,*s.predecessor);std::copy(s.predecessor_sha256.begin(),s.predecessor_sha256.end(),b.begin()+376);
+  const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+408);return b;
+}
+void CanonicalCheckpointSystemState() {
+  using E=db::NativeCheckpointError;
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
+    const auto path1=(fixture.root/"checkpoint-system-primary").string(),path2=(fixture.root/"checkpoint-system-shadow").string();
+    auto z1=Example(p),z2=Example(q,2);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& r:z2.roots)r.filespace_uuid=Id(7);
+    z1.roots[0].filespace_uuid=Id(7);z1.roots[0].page_size_profile_uuid=Profile(q);
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own actual checkpoint system-state devices");
+    const byte pad=0;Check(first.WriteAt(z1.total_pages*sizes[p]-1,&pad,1).ok()&&second.WriteAt(z2.total_pages*sizes[q]-1,&pad,1).ok(),"actual system-state filespace capacities");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=4;
+    auto& original=inv.inventory.entries.front();original.identity.local_id=mga::MakeLocalTransactionId(11);original.identity.transaction_uuid.value=Id(91);original.state=mga::TransactionState::committed;original.commit_sequence=1;
+    auto clean=original;clean.identity.local_id=mga::MakeLocalTransactionId(12);clean.identity.transaction_uuid.value=Id(92);clean.commit_sequence=2;
+    auto active=original;active.identity.local_id=mga::MakeLocalTransactionId(16);active.identity.transaction_uuid.value=Id(99);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto writer=original;writer.identity.local_id=mga::MakeLocalTransactionId(17);writer.identity.transaction_uuid.value=Id(98);writer.commit_sequence=3;
+    inv.inventory.entries.push_back(clean);inv.inventory.entries.push_back(active);inv.inventory.entries.push_back(writer);
+    const auto checkpoint=CheckpointExample(p);
+    db::NativeSystemState state;state.header={sizes[q],8,Id(1),Id(7),Id(80),11,101,0,Profile(q)};state.object_uuid=Id(41);state.state_generation=1;state.restart_generation=1;state.startup_counter=2;
+    state.creator_transaction_uuid=Id(91);state.creator_local_transaction_id=11;state.lifecycle=db::NativeSystemLifecycle::opening;
+    state.checkpoint_generation=1;state.checkpoint=disk::NativePageReference{Id(2),19,109,Profile(p)};state.checkpoint_object_uuid=Id(49);
+    state.clean_transaction_uuid=Id(92);state.clean_local_transaction_id=12;state.transition_operation_uuid=Id(93);
+    const auto put=[&](auto& device,u64 number,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist independent current system-state fixture");};
+    const auto persist=[&](const auto& inventory,const auto& primary,const auto& s,bool older=false,bool stale=false,bool clean_checkpoint=false){auto cp=checkpoint;
+      const auto ib=InventoryOracle(inventory,16,16,16),sb=SystemStateOracle(s);
+      cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
+      cp.roots[7].page={Id(7),11,101,Profile(q)};cp.roots[7].object_uuid=Id(41);cp.roots[7].sha256=WholeRootHash(stale?SystemStateOracle(state):sb);
+      if(clean_checkpoint)cp.flags|=1;
+      if(older){auto old=cp;old.header.page_number=20;old.header.page_generation=110;old.header.page_uuid=Id(95);old.root_set_generation=7;
+        const auto bytes=CheckpointOracle(old);put(first,20,sizes[p],bytes);
+        auto unrelated=old;unrelated.header.page_number=21;unrelated.header.page_generation=111;unrelated.header.page_uuid=Id(94);put(first,21,sizes[p],CheckpointOracle(unrelated));
+        cp.checkpoint_generation=2;cp.predecessor=disk::NativePageReference{Id(2),20,110,Profile(p)};cp.predecessor_sha256=WholeRootHash(bytes);}
+      put(first,0,sizes[p],Oracle(primary));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(second,11,sizes[q],sb);put(first,19,sizes[p],CheckpointOracle(cp));
+    };
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 limit=2*sizes[p]+sizes[q],history_limit=4*sizes[p]+sizes[q];
+    const auto read=[&](u64 budget){return db::VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.checkpoints.checkpoints.empty()&&!r.checkpoints.retained_image_bytes&&!r.system_state.state&&r.system_state.bytes.empty(),"checkpoint system-state failure returns no authority prefix");};
+    persist(inv,z1,state);reads=observed_full_digests=0;observed_allocations=0;track_reads=count_allocations=count_full_digests=true;auto result=read(limit);track_reads=count_allocations=count_full_digests=false;
+    const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    Check(result.ok()&&result.retained_image_bytes==limit&&result.checkpoints.checkpoints.size()==1&&result.system_state.bytes==SystemStateOracle(state)&&
+      !result.checkpoints.checkpoints[0].inventory.publication_base,"actual current observed checkpoint and committed system-state fields");
+    result=read(limit-1);empty(result);Check(result.error==E::resource_exhausted,"system-state shared image budget");
+    for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;result=read(limit);track_reads=false;read_fault=0;empty(result);}
+    const auto hash_failure=[&](const auto& r){return r.error==E::hash_failure||
+      (r.error==E::inventory_failure&&r.checkpoints.inventory_error==page::NativeInventoryError::hash_failure)||
+      (r.error==E::system_state_failure&&r.system_error==db::NativeSystemStateError::hash_failure);};
+    for(unsigned n=1;n<=nf;++n){full_digest_fault=n;result=read(limit);Check(!full_digest_fault&&hash_failure(result),"current system-state complete hash provider failure");empty(result);}
+    full_digest_fault=nf+1;result=read(limit);Check(full_digest_fault==1&&result.ok(),"current system-state full digest sweep terminal success");full_digest_fault=0;
+    for(unsigned n=1;n<=5;++n){hash_fault=n;result=read(limit);Check(!hash_fault,"system-state part hash failure consumed");empty(result);}
+    if(p==0){for(unsigned long n=0;n<=na;++n){allocation_budget=n;result=read(limit);allocation_budget=-1;
+        if(result.ok())Check(result.retained_image_bytes==limit&&result.checkpoints.checkpoints.size()==1&&result.system_state.bytes==SystemStateOracle(state),"system-state allocation recovery exact current binding");else empty(result);if(n==na)Check(result.ok(),"current system-state allocation sweep completed");}
+      std::cout<<"checkpoint system-state allocation sites="<<na<<std::endl;}
+    for(unsigned n=0;n<3;++n){auto zero=z1;if(n==0)zero.root_set_generation++;if(n==1)zero.roots[8].object_uuid=Id(200);if(n==2)zero.roots[0].object_uuid=Id(200);
+      persist(inv,zero,state);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"current checkpoint and system root selection exact");}
+    for(unsigned n=0;n<4;++n){auto s=state;if(n==0)s.creator_transaction_uuid=Id(200);if(n==1)s.clean_transaction_uuid=Id(200);
+      if(n==2){s.creator_transaction_uuid=Id(99);s.creator_local_transaction_id=16;}if(n==3){s.clean_transaction_uuid=Id(99);s.clean_local_transaction_id=16;}
+      persist(inv,z1,s);result=read(limit);empty(result);const E errors[]={E::system_state_creator_mismatch,E::system_state_clean_mismatch,E::system_state_creator_not_committed,E::system_state_clean_not_committed};Check(result.error==errors[n],"distinct current and historical clean creator causes");}
+    for(unsigned index:{0u,1u})for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}){
+      auto changed=inv;auto& e=changed.inventory.entries[index];e.state=mga::TransactionState::archived;e.archived_from_state=origin;if(origin!=mga::TransactionState::committed)e.commit_sequence=0;
+      persist(changed,z1,state);result=read(limit);if(origin==mga::TransactionState::committed)Check(result.ok(),"archived committed system-state creator admitted");else{empty(result);Check(result.error==(index?E::system_state_clean_not_committed:E::system_state_creator_not_committed),"archived noncommit cannot certify system state");}}
+    auto changed=inv;changed.inventory.entries[1].identity.scope=mga::TransactionScope::cluster_global;persist(changed,z1,state);result=read(limit);empty(result);Check(result.error==E::system_state_clean_mismatch,"global historical clean creator cannot certify standalone state");
+    auto s=state;s.flags|=db::NativeSystemFlag::cluster;persist(inv,z1,s);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"cluster observation matches checkpoint and bootstrap");
+    s=state;s.lifecycle=db::NativeSystemLifecycle::closed;s.flags=5;persist(inv,z1,s);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"clean state cannot borrow nonclean checkpoint marker");
+    persist(inv,z1,s,false,false,true);Check(read(limit).ok(),"matching clean observations retain committed identities but do not certify shutdown");
+    s=state;s.startup_counter++;persist(inv,z1,s,false,true);result=read(limit);empty(result);Check(result.error==E::invalid_integrity,"resealed system state still binds complete checkpoint digest");
+    s=state;s.checkpoint_generation++;persist(inv,z1,s);result=read(limit);empty(result);Check(result.error==E::system_state_observation_mismatch,"selected checkpoint observation generation exact");
+    s=state;s.checkpoint_generation=0;s.checkpoint.reset();s.checkpoint_object_uuid={};persist(inv,z1,s);Check(read(limit).ok(),"pre-checkpoint nonclean observation retains current pair");
+    s=state;s.checkpoint=disk::NativePageReference{Id(2),20,110,Profile(p)};persist(inv,z1,s,true);
+    reads=observed_full_digests=0;observed_allocations=0;track_reads=count_allocations=count_full_digests=true;result=read(history_limit);track_reads=count_allocations=count_full_digests=false;
+    const auto history_reads=reads,history_digests=observed_full_digests;const auto history_allocations=observed_allocations;
+    Check(result.ok()&&result.retained_image_bytes==history_limit&&result.checkpoints.checkpoints.size()==2&&
+      result.checkpoints.checkpoints.front().checkpoint->checkpoint_generation==2&&result.checkpoints.checkpoints.back().checkpoint->checkpoint_generation==1&&result.system_state.bytes==SystemStateOracle(s),"actual current-to-observed checkpoint ancestry");
+    result=read(history_limit-1);empty(result);
+    for(unsigned n=1;n<=history_reads;++n){reads=0;read_fault=n;track_reads=true;result=read(history_limit);track_reads=false;read_fault=0;empty(result);}
+    for(unsigned n=1;n<=history_digests;++n){full_digest_fault=n;result=read(history_limit);empty(result);
+      Check(!full_digest_fault&&hash_failure(result),
+        "observed checkpoint history hash failure cause="+std::to_string(static_cast<unsigned>(result.error))+" inventory="+std::to_string(static_cast<unsigned>(result.checkpoints.inventory_error))+" system="+std::to_string(static_cast<unsigned>(result.system_error))+" site="+std::to_string(n));}
+    full_digest_fault=history_digests+1;result=read(history_limit);Check(full_digest_fault==1&&result.ok(),"observed checkpoint digest sweep terminal success");full_digest_fault=0;
+    if(p==0)std::cout<<"checkpoint system full digest sites="<<nf<<" observed-history="<<history_digests<<std::endl;
+    if(p==0){for(unsigned long n=0;n<=history_allocations;++n){allocation_budget=n;result=read(history_limit);allocation_budget=-1;
+        if(result.ok())Check(result.retained_image_bytes==history_limit&&result.checkpoints.checkpoints.size()==2&&result.system_state.bytes==SystemStateOracle(s),"history allocation recovery retains exact complete binding");else empty(result);
+        if(n==history_allocations)Check(result.ok(),"observed checkpoint allocation sweep completed");}std::cout<<"checkpoint system observed-history allocation sites="<<history_allocations<<std::endl;}
+    s.checkpoint=disk::NativePageReference{Id(2),21,111,Profile(p)};persist(inv,z1,s,true);result=read(history_limit);empty(result);Check(result.error==E::history_mismatch,"unrelated valid older checkpoint is not observed ancestry");
+    persist(inv,z1,state);Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"read-only system checkpoint reopen");
+    Check(read(limit).ok()&&first.read_only()&&second.read_only(),"reopened current system-state binding");
+  }
+}
+
 void CanonicalCheckpointHistory() {
   using E=db::NativeCheckpointError;Fixture fixture;disk::FileDevice first,second;
   const auto path1=(fixture.root/"history-first").string(),path2=(fixture.root/"history-second").string();
@@ -2390,6 +2489,10 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-system-only") {
+    try { CanonicalCheckpointSystemState();std::cout<<"checkpoint system-state checks="<<checks<<" failures=0\n";return 0; }
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--checkpoint-directory-only") {
     try { CanonicalCheckpointDirectory();std::cout<<"checkpoint directory checks="<<checks<<" failures=0\n";return 0; }
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
