@@ -8133,6 +8133,18 @@ set_tests_properties(sbsql_sblr_alignment_allocation_map_evidence PROPERTIES
   LABELS "sbsql_sblr_alignment;allocation_map;binary_UUID;reconstruction;not_SQL_E2E"
   TIMEOUT 120)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_native_allocation_map native_allocation_map_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_allocation_map PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_allocation_map PRIVATE sb_storage_page)
+  target_link_options(sbsql_sblr_alignment_native_allocation_map PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new)
+  add_test(NAME sbsql_sblr_alignment_native_allocation_map COMMAND sbsql_sblr_alignment_native_allocation_map)
+  set_tests_properties(sbsql_sblr_alignment_native_allocation_map PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_allocation;binary_UUID;retained_chain;not_SQL_E2E"
+    TIMEOUT 120)
+endif()
+
 add_executable(sbsql_sblr_alignment_query_public_descriptor
   query_public_descriptor_test.cpp)
 target_compile_features(sbsql_sblr_alignment_query_public_descriptor PRIVATE cxx_std_23)

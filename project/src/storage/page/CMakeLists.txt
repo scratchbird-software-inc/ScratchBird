@@ -35,6 +35,7 @@ endif()
 add_library(sb_storage_page
   async_page_io.cpp
   allocation_map_page.cpp
+  native_allocation_map.cpp
   buffer_prefetch_readahead.cpp
   catalog_page.cpp
   cluster_transaction_page.cpp
