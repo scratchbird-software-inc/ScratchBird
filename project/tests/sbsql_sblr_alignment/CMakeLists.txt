@@ -22,6 +22,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
     TIMEOUT 60)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_function_registry_binary
+    function_registry_binary_test.cpp
+    ../../src/engine/functions/registry/function_registry.cpp
+    ../../src/engine/functions/registry/function_seed_registry.cpp
+    ../../src/engine/functions/metadata/function_hardening.cpp
+    ../../src/engine/functions/metadata/function_optimizer_metadata.cpp
+    ../../src/engine/functions/metadata/function_parser_projection.cpp
+    ../../src/engine/functions/common/function_runtime.cpp
+    ../../src/engine/sblr/sblr_runtime.cpp)
+  target_compile_features(sbsql_sblr_alignment_function_registry_binary PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_function_registry_binary PRIVATE
+    ../../src/engine/functions ../../src/engine)
+  target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid Threads::Threads)
+  add_test(NAME sbsql_sblr_alignment_function_registry_binary
+    COMMAND sbsql_sblr_alignment_function_registry_binary)
+  set_tests_properties(sbsql_sblr_alignment_function_registry_binary PROPERTIES
+    LABELS "sbsql_sblr_alignment;binary_uuid;allocation_failure;component_regression;not_runtime_acceptance"
+    TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_binary_collation
     ../sbsql_parser_worker/qow_qry_008_collation.cpp)
   target_compile_features(sbsql_sblr_alignment_binary_collation PRIVATE cxx_std_20)

@@ -20,12 +20,16 @@ bool FunctionRegistry::Register(FunctionRegistryEntry entry, std::string* error)
     if (error) *error = "function_id is required";
     return false;
   }
-  if (entry.function_uuid.empty()) {
-    if (error) *error = "function_uuid is required for " + entry.function_id;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(entry.function_uuid)) {
+    if (error) *error = "function_uuid must be a binary system UUIDv7 for " + entry.function_id;
     return false;
   }
-  if (function_id_by_uuid_.contains(entry.function_uuid)) {
+  if (entries_by_uuid_.contains(entry.function_uuid)) {
     if (error) *error = "duplicate function_uuid";
+    return false;
+  }
+  if (uuid_by_function_id_.contains(entry.function_id)) {
+    if (error) *error = "duplicate function_id";
     return false;
   }
   if (entry.semantic_version.empty()) entry.semantic_version = "function_semantics_v1";
@@ -34,37 +38,43 @@ bool FunctionRegistry::Register(FunctionRegistryEntry entry, std::string* error)
   entry.refusal_diagnostic = RefusalDiagnosticForState(entry.implementation_state);
   const auto function_id = entry.function_id;
   const auto function_uuid = entry.function_uuid;
-  const auto [_, inserted] = entries_.emplace(function_id, std::move(entry));
-  if (!inserted && error) *error = "duplicate function_id";
+  const auto [position, inserted] = entries_by_uuid_.emplace(function_uuid, std::move(entry));
+  if (!inserted && error) *error = "duplicate function_uuid";
   if (inserted) {
-    function_id_by_uuid_.emplace(function_uuid, function_id);
+    try {
+      uuid_by_function_id_.emplace(function_id, function_uuid);
+    } catch (...) {
+      // Both lookup routes publish together; a failed secondary allocation
+      // must not leave a partially registered function behind.
+      entries_by_uuid_.erase(position);
+      throw;
+    }
   }
   return inserted;
 }
 
 const FunctionRegistryEntry* FunctionRegistry::Lookup(std::string_view function_id) const {
-  const auto it = entries_.find(std::string(function_id));
-  return it == entries_.end() ? nullptr : &it->second;
+  const auto it = uuid_by_function_id_.find(std::string(function_id));
+  return it == uuid_by_function_id_.end() ? nullptr : LookupByUuid(it->second);
 }
 
 const FunctionRegistryEntry* FunctionRegistry::LookupByUuid(
-    const std::string_view function_uuid) const {
-  const auto by_uuid = function_id_by_uuid_.find(std::string(function_uuid));
-  if (by_uuid == function_id_by_uuid_.end()) return nullptr;
-  return Lookup(by_uuid->second);
+    const FunctionUuid& function_uuid) const {
+  const auto entry = entries_by_uuid_.find(function_uuid);
+  return entry == entries_by_uuid_.end() ? nullptr : &entry->second;
 }
 
 std::vector<FunctionRegistryEntry> FunctionRegistry::Entries() const {
   std::vector<FunctionRegistryEntry> out;
-  out.reserve(entries_.size());
-  for (const auto& [_, entry] : entries_) out.push_back(entry);
+  out.reserve(entries_by_uuid_.size());
+  for (const auto& [_, entry] : entries_by_uuid_) out.push_back(entry);
   return out;
 }
 
 FunctionRegistry MakeEmptyFunctionRegistry() { return FunctionRegistry{}; }
 
 FunctionRegistryEntry MakeRefusalOnlyFunction(std::string function_id,
-                                              std::string function_uuid,
+                                              FunctionUuid function_uuid,
                                               std::string family,
                                               std::string short_name,
                                               FunctionImplementationState state) {
@@ -107,7 +117,8 @@ std::vector<std::string> ValidateFunctionRegistryForClosure(const FunctionRegist
   std::vector<std::string> errors;
   for (const auto& entry : registry.Entries()) {
     if (entry.function_id.empty()) errors.push_back("function_id is required");
-    if (entry.function_uuid.empty()) errors.push_back(entry.function_id + ": function_uuid is required");
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(entry.function_uuid))
+      errors.push_back(entry.function_id + ": binary system UUIDv7 is required");
     if (entry.family.empty()) errors.push_back(entry.function_id + ": family is required");
     if (entry.short_name.empty()) errors.push_back(entry.function_id + ": short_name is required");
     if (entry.owner_source.empty()) errors.push_back(entry.function_id + ": owner_source is required");

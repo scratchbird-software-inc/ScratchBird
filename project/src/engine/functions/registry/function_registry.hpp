@@ -9,7 +9,9 @@
 #pragma once
 
 #include "common/function_runtime.hpp"
+#include "uuid.hpp"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,9 +20,12 @@
 
 namespace scratchbird::engine::functions {
 
+using FunctionUuid = scratchbird::core::platform::Uuid;
+static_assert(sizeof(FunctionUuid) == 16);
+
 struct FunctionRegistryEntry {
   std::string function_id;
-  std::string function_uuid;
+  FunctionUuid function_uuid;
   std::string family;
   std::string short_name;
   FunctionImplementationState implementation_state = FunctionImplementationState::refuse_until_classified;
@@ -44,21 +49,25 @@ struct FunctionRegistryEntry {
 
 class FunctionRegistry {
  public:
+  // Registration is builder-owned, before publication to readers. A rejected
+  // registration or allocation exception preserves both lookup routes; after
+  // publication, concurrent immutable lookups borrow stable entry addresses.
   bool Register(FunctionRegistryEntry entry, std::string* error = nullptr);
   [[nodiscard]] const FunctionRegistryEntry* Lookup(std::string_view function_id) const;
   [[nodiscard]] const FunctionRegistryEntry* LookupByUuid(
-      std::string_view function_uuid) const;
+      const FunctionUuid& function_uuid) const;
   [[nodiscard]] std::vector<FunctionRegistryEntry> Entries() const;
-  [[nodiscard]] bool empty() const { return entries_.empty(); }
+  [[nodiscard]] bool empty() const { return entries_by_uuid_.empty(); }
 
  private:
-  std::unordered_map<std::string, FunctionRegistryEntry> entries_;
-  std::unordered_map<std::string, std::string> function_id_by_uuid_;
+  std::map<FunctionUuid, FunctionRegistryEntry> entries_by_uuid_;
+  // Internal symbol projection only; executable lookup uses the binary key.
+  std::unordered_map<std::string, FunctionUuid> uuid_by_function_id_;
 };
 
 FunctionRegistry MakeEmptyFunctionRegistry();
 FunctionRegistryEntry MakeRefusalOnlyFunction(std::string function_id,
-                                              std::string function_uuid,
+                                              FunctionUuid function_uuid,
                                               std::string family,
                                               std::string short_name,
                                               FunctionImplementationState state);

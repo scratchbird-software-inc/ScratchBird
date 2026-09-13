@@ -100,7 +100,7 @@ FunctionCatalogExportRow BuildFunctionCatalogExportRow(const FunctionRegistryEnt
                                                        bool metadata_visible) {
   FunctionCatalogExportRow row;
   row.function_id = entry.function_id;
-  row.function_uuid = metadata_visible ? entry.function_uuid : "";
+  row.function_uuid = metadata_visible ? entry.function_uuid : FunctionUuid{};
   row.short_name = entry.short_name;
   row.family = entry.family;
   row.implementation_state = ToString(entry.implementation_state);

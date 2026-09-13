@@ -33,7 +33,7 @@ struct FunctionParserProjectionRow {
   std::string parser_profile;
   std::string alias_name;
   std::string canonical_function_id;
-  std::string function_uuid;
+  FunctionUuid function_uuid;
   FunctionAliasSource alias_source = FunctionAliasSource::sb_native;
   std::string source_package;
   std::string projection_state;

@@ -552,6 +552,18 @@ def generate_surface_registries(surface_rows: list[dict[str, str]]) -> None:
 
 def parse_function_seed_defs() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     text = FUNCTION_SEED_REGISTRY.read_text(encoding="utf-8", errors="replace")
+    # Authoring-tool projection only. Production seeds contain binary UUID
+    # constants; human-readable registry output is not engine identity storage.
+    def display_binary_uuid(match: re.Match[str]) -> str:
+        octets = [part.strip() for part in match.group(1).split(",")]
+        if len(octets) != 16 or any(not re.fullmatch(r"0x[0-9a-fA-F]{2}", part) for part in octets):
+            raise ValueError("function seed UUID must contain exactly sixteen bytes")
+        encoded = "".join(part[2:].lower() for part in octets)
+        if encoded[12] != "7" or encoded[16] not in "89ab":
+            raise ValueError("function seed identity must be UUIDv7")
+        return f'"{encoded[:8]}-{encoded[8:12]}-{encoded[12:16]}-{encoded[16:20]}-{encoded[20:]}"'
+
+    text, binary_uuid_count = re.subn(r"FunctionUuid\{\{([^{}]+)\}\}", display_binary_uuid, text)
     seed_pattern = re.compile(
         r'\{\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*'
         r'FunctionImplementationState::([A-Za-z0-9_]+),\s*FunctionPackageState::([A-Za-z0-9_]+)\s*\}',
@@ -588,6 +600,13 @@ def parse_function_seed_defs() -> tuple[list[dict[str, str]], list[dict[str, str
         }
         for match in name_pattern.finditer(text)
     ]
+    if not seeds or not names or binary_uuid_count != len(seeds) + len(names):
+        raise ValueError("incomplete binary function seed source")
+    functions = {row["function_id"]: row["function_uuid"] for row in seeds}
+    if len(functions) != len(seeds) or len(set(functions.values())) != len(seeds):
+        raise ValueError("duplicate function seed identity or symbol")
+    if any(functions.get(row["canonical_function_id"]) != row["function_uuid"] for row in names):
+        raise ValueError("name seed does not bind to its canonical binary function identity")
     return seeds, names
 
 

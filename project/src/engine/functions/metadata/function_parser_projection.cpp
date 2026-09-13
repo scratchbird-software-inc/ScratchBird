@@ -88,7 +88,7 @@ FunctionParserProjectionRow BuildRow(const FunctionRegistry& registry,
   row.parser_may_submit_sblr = entry != nullptr;
   row.parser_has_authority = false;
   row.metadata_redacted = !request.metadata_visible;
-  row.function_uuid = request.metadata_visible && entry != nullptr ? entry->function_uuid : "";
+  row.function_uuid = request.metadata_visible && entry != nullptr ? entry->function_uuid : FunctionUuid{};
   row.result_descriptor_rule = request.metadata_visible && entry != nullptr
                                    ? entry->optimizer_metadata.descriptor_rule
                                    : "redacted";

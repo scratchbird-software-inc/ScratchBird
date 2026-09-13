@@ -16,7 +16,7 @@
 namespace scratchbird::engine::functions {
 
 struct FunctionNameSeedRow {
-  std::string function_uuid;
+  FunctionUuid function_uuid;
   std::string language;
   std::string canonical_name;
   std::string localized_name;

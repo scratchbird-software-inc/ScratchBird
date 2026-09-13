@@ -29,7 +29,7 @@ struct FunctionHardeningReport {
 
 struct FunctionCatalogExportRow {
   std::string function_id;
-  std::string function_uuid;
+  FunctionUuid function_uuid;
   std::string short_name;
   std::string family;
   std::string implementation_state;
