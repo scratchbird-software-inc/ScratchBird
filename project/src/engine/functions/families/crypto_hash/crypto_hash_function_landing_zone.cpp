@@ -9,6 +9,7 @@
 #include "families/crypto_hash/crypto_hash_function_landing_zone.hpp"
 
 #include "common/function_result_helpers.hpp"
+#include "internal_api/api_types.hpp"
 #include "uuid.hpp"
 #include "blake3_digest.hpp"
 #include "../../../../core/common/crypto_random.hpp"
@@ -460,7 +461,19 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
       if((!value.text_value.empty()&&value.text_value!=decimal)||(!value.encoded_value.empty()&&value.encoded_value!=decimal))return invalid();
     }
   }
-  if(AnyNull(request))return MakeFunctionSuccess(request,{MakeNullValue("binary")});
+  const auto cancelled=[&] {
+    const auto* owner=request.context.engine_request_context;
+    return owner&&owner->query_cancellation_requested&&owner->query_cancellation_requested();
+  };
+  const auto cancel_result=[&] {return RefuseFunctionWithDiagnostic(request,
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      "PROCESS.CANCELLED", "scrypt execution was cancelled");};
+  if(cancelled())return cancel_result();
+  if(AnyNull(request)) {
+    auto result=MakeFunctionSuccess(request,{MakeNullValue("binary")});
+    if(cancelled())return cancel_result();
+    return result;
+  }
   const auto& password=request.arguments[0].value.text_value;
   const auto& salt=request.arguments[1].value.binary_value;
   const auto n=request.arguments[2].value.uint64_value;
@@ -479,7 +492,21 @@ FunctionCallResult ScryptFunction(const FunctionCallRequest& request) {
                     n,r,p,kScryptMaxMemory,key.bytes.data(),key.bytes.size())!=1)return RefuseFunctionWithDiagnostic(request,
       scratchbird::engine::sblr::SblrStatusCode::dependency_unavailable,
       "CRYPTO.PROFILE.UNAVAILABLE", "Core scrypt provider did not produce a derived key");
-  return MakeFunctionSuccess(request,{MakeBinaryValue("binary",key.bytes)});
+  // Prepare metadata and the single result slot before copying key material.
+  // Avoid allocating initializer-list copies of secret values: every populated
+  // but unpublished key allocation must have a cleanup owner through the fence.
+  auto result=MakeFunctionSuccess(request,{});
+  result.result.scalar_values.resize(1);
+  result.result.scalar_values[0]=MakeBinaryValue("binary",{});
+  struct PendingKey {
+    std::vector<std::uint8_t>& bytes;
+    bool committed=false;
+    ~PendingKey(){if(!committed&&!bytes.empty())OPENSSL_cleanse(bytes.data(),bytes.size());}
+  } pending{result.result.scalar_values[0].binary_value};
+  pending.bytes=key.bytes;
+  if(cancelled())return cancel_result();
+  pending.committed=true;
+  return result;
 }
 
 std::uint64_t Read32LE(const std::uint8_t* p) {

@@ -48,6 +48,27 @@ thread_local int scrypt_return=1,scrypt_interceptions=0;
 thread_local std::size_t scrypt_prefix=0,scrypt_scratch_size=0,scrypt_cleanses=0;
 thread_local void* scrypt_scratch=nullptr;
 thread_local std::array<std::uint64_t,4> scrypt_parameters{};
+struct SecretAllocation {void* address=nullptr;std::size_t size=0;};
+thread_local std::array<SecretAllocation,128> secret_allocations{};
+thread_local bool secret_deallocation_watch=false,secret_tracking_overflow=false;
+thread_local unsigned uncleared_secret_frees=0;
+void ObserveSecretAllocation(void* address,std::size_t size) noexcept {
+  if(!secret_deallocation_watch||size!=64)return;
+  for(auto& slot:secret_allocations)if(!slot.address){slot={address,size};return;}
+  secret_tracking_overflow=true;
+}
+void ReleaseObservedAllocation(void* address) noexcept {
+  if(!secret_deallocation_watch){std::free(address);return;}
+  for(auto& slot:secret_allocations)if(slot.address==address&&address) {
+    if(secret_deallocation_watch) {
+      bool secret=true;
+      for(std::size_t i=0;i<slot.size;++i)secret=secret&&static_cast<unsigned char*>(address)[i]==static_cast<unsigned char>(0xb0+i);
+      if(secret)++uncleared_secret_frees;
+    }
+    slot={};break;
+  }
+  std::free(address);
+}
 }
 extern "C" int __real_EVP_PBE_scrypt(const char*,std::size_t,const unsigned char*,std::size_t,std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t,unsigned char*,std::size_t);
 extern "C" int __wrap_EVP_PBE_scrypt(const char* password,std::size_t password_size,const unsigned char* salt,std::size_t salt_size,std::uint64_t n,std::uint64_t r,std::uint64_t p,std::uint64_t maxmem,unsigned char* out,std::size_t size) {
@@ -109,14 +130,14 @@ void* operator new(std::size_t n) {
     if (!remaining) throw std::bad_alloc();
     --fail_after;
   }
-  if (auto* p = std::malloc(n ? n : 1)) return p;
+  if (auto* p = std::malloc(n ? n : 1)) {ObserveSecretAllocation(p,n);return p;}
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p) noexcept { ReleaseObservedAllocation(p); }
+void operator delete[](void* p) noexcept { ReleaseObservedAllocation(p); }
+void operator delete(void* p, std::size_t) noexcept { ReleaseObservedAllocation(p); }
+void operator delete[](void* p, std::size_t) noexcept { ReleaseObservedAllocation(p); }
 
 namespace {
 void Check(bool ok, const char* why) {
@@ -1180,6 +1201,64 @@ void CryptoScrypt() {
   }
 }
 
+void ScryptCancellation() {
+  const auto package=f::BuildStandardFunctionSeedPackage();
+  const auto* entry=package.registry.Lookup("sb.crypto.scrypt");Check(entry!=nullptr,"KDF cancellation uses actual scrypt seed");if(!entry)return;
+  f::FunctionCallRequest request;request.context.function_uuid=entry->function_uuid;
+  Check(package.registry.BindCallContext(request.context)!=nullptr,"KDF cancellation retains binary function binding");
+  scratchbird::engine::internal_api::EngineRequestContext owner;
+  request.context.engine_request_context=&owner;
+  request.arguments={{"password",f::MakeTextValue("character","")},{"salt",f::MakeBinaryValue("binary",{})},
+    {"n",f::MakeUint64Value("uint64",16)},{"r",f::MakeUint64Value("uint32",1)},{"p",f::MakeUint64Value("uint32",1)},{"output_bytes",f::MakeUint64Value("uint16",64)}};
+  const auto valid=request.arguments;
+  const auto arm=[] {
+    scrypt_armed=true;scrypt_watch=true;scrypt_return=1;scrypt_prefix=64;scrypt_interceptions=0;
+    scrypt_scratch=nullptr;scrypt_cleanses=0;scrypt_cleared=false;
+    secret_allocations={};secret_tracking_overflow=false;uncleared_secret_frees=0;secret_deallocation_watch=true;
+  };
+  const auto finish=[] {
+    scrypt_armed=false;scrypt_watch=false;secret_deallocation_watch=false;
+    Check(!secret_tracking_overflow&&uncleared_secret_frees==0,"no unpublished complete derived key is freed without erasure");
+    Check(scrypt_scratch==nullptr&&(scrypt_interceptions==0||scrypt_cleared),"KDF cancellation/exception clears provider key scratch");
+  };
+  const auto cancelled=[](const f::FunctionCallResult& result) {
+    return !result.result.ok()&&result.result.scalar_values.empty()&&!result.result.diagnostics.empty()&&result.result.diagnostics[0].diagnostic_id=="PROCESS.CANCELLED";
+  };
+  for(unsigned at:{1u,2u})for(bool null_value:{false,true}) {
+    request.arguments=valid;if(null_value)request.arguments[0].value=f::MakeNullValue("character");
+    unsigned polls=0;owner.query_cancellation_requested=[&]{return ++polls==at;};arm();
+    {const auto result=f::DispatchCryptoHashFunction(request);
+      Check(cancelled(result)&&polls==at,"KDF pre-work and final-publication fences honor owning engine cancellation, including NULL");}
+    Check(scrypt_interceptions==((at==2&&!null_value)?1:0),"pre-work/NULL cancellation performs no KDF computation");finish();
+  }
+  struct ProbeFailure {};
+  for(unsigned at:{1u,2u}) {
+    request.arguments=valid;unsigned polls=0;
+    owner.query_cancellation_requested=[&]{if(++polls==at)throw ProbeFailure{};return false;};arm();bool threw=false;
+    try {const auto result=f::DispatchCryptoHashFunction(request);(void)result;}catch(const ProbeFailure&){threw=true;}
+    Check(threw&&polls==at,"KDF never treats a throwing cancellation probe as permission to publish");finish();
+  }
+  // Real provider and an uncancelled engine request still compute the RFC KAT.
+  request.arguments=valid;unsigned polls=0;owner.query_cancellation_requested=[&]{++polls;return false;};
+  const auto normal=f::DispatchCryptoHashFunction(request);
+  Check(normal.result.ok()&&normal.result.scalar_values.size()==1&&normal.result.scalar_values[0].binary_value.size()==64&&polls==2,
+        "uncancelled KDF evaluates real provider and both fences");
+  // Late cancellation while each allocation point is failed must clear the
+  // provider key and every completed unpublished result copy, even if the
+  // cancellation diagnostic itself cannot be allocated.
+  request.arguments=valid;bool completed=false;unsigned faults=0;
+  for(long budget=0;budget<150;++budget) {
+    unsigned current_polls=0;owner.query_cancellation_requested=[&]{return ++current_polls==2;};arm();fail_after=budget;
+    try {const auto result=f::DispatchCryptoHashFunction(request);fail_after=-1;
+      Check(cancelled(result),"KDF allocation sweep reaches cancellation without scalar publication");completed=true;
+    }catch(const std::bad_alloc&){fail_after=-1;++faults;}
+    finish();
+    if(completed)break;
+  }
+  allocation_faults+=faults;Check(completed&&faults>0,"KDF late-cancellation allocation failures exercised through diagnostic publication");
+  request.context.engine_request_context=nullptr;
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -1201,6 +1280,7 @@ int main() {
   CryptoHmac();
   CryptoRandomBytes();
   CryptoScrypt();
+  ScryptCancellation();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }
