@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+
+#include <stdexcept>
 #include "sblr_function_diagnostic.hpp"
 #include "relational_descriptor_codec.hpp"
 #include "relational_identity_codec.hpp"
@@ -8271,6 +8273,14 @@ api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
     return out;
   }
   out.setState(api::EngineValueState::value);
+  if (value.payload_kind == SblrValuePayloadKind::uuid_binary) {
+    if (!CopySblrUuidPayload(value, &out.binary_value)) {
+      throw std::invalid_argument("conflicting SBLR UUID payload representations");
+    }
+    // Formatting is a parser/driver render operation, not engine identity.
+    out.encoded_value.clear();
+    return out;
+  }
   if (value.payload_kind == SblrValuePayloadKind::binary) {
     out.binary_value = value.binary_value;
     out.encoded_value = HexEncodeBytes(value.binary_value);

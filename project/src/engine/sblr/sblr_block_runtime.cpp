@@ -18,7 +18,9 @@ std::string DiagnosticFieldValue(const SblrRuntimeDiagnostic& diagnostic, std::s
   const auto it = std::find_if(diagnostic.fields.begin(), diagnostic.fields.end(), [key](const SblrDiagnosticField& field) {
     return field.key == key;
   });
-  return it == diagnostic.fields.end() ? std::string() : it->value;
+  if (it == diagnostic.fields.end()) return {};
+  const auto* text = std::get_if<std::string>(&it->value);
+  return text != nullptr ? *text : std::string{};
 }
 
 bool PatternMatches(std::string_view pattern, std::string_view value) {
@@ -31,19 +33,9 @@ bool PatternMatches(std::string_view pattern, std::string_view value) {
   return false;
 }
 
-SblrValue HandlerUuidValue(std::string handler_uuid) {
-  SblrValue value;
-  value.descriptor_id = "uuid";
-  value.payload_kind = SblrValuePayloadKind::uuid_text;
-  value.is_null = false;
-  value.text_value = std::move(handler_uuid);
-  value.encoded_value = value.text_value;
-  return value;
-}
-
-SblrResult HandlerSelectionResult(std::string_view operation_id, std::string handler_uuid) {
+SblrResult HandlerSelectionResult(std::string_view operation_id, const SblrUuid& handler_uuid) {
   SblrResult out = MakeSblrSuccess(std::string(operation_id));
-  out.scalar_values.push_back(HandlerUuidValue(std::move(handler_uuid)));
+  out.scalar_values.push_back(MakeSblrUuidValue(handler_uuid));
   return out;
 }
 
@@ -105,7 +97,7 @@ SblrResult SelectSblrErrorHandler(std::string_view operation_id,
 
 SblrResult UnwindSblrFramesForErrorHandler(std::string_view operation_id,
                                            SblrFrameStack* stack,
-                                           std::string_view handler_uuid,
+                                           const SblrUuid& handler_uuid,
                                            const SblrExecutionContext& context) {
   if (stack == nullptr) {
     return MakeSblrFailure(SblrStatusCode::execution_failed,

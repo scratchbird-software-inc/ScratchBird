@@ -51,6 +51,7 @@ enum class SblrValuePayloadKind {
   text,
   binary,
   uuid_text,
+  uuid_binary,
   temporal_text,
   descriptor_payload,
 };
@@ -80,6 +81,10 @@ struct SblrValue {
   std::string charset_name;
   std::string collation_name;
   std::vector<std::uint8_t> binary_value;
+  // Native UUID value bytes. UUID payloads never use text_value, encoded_value
+  // or binary_value as a second identity authority. Descriptor binding still
+  // controls user UUID version/render policy and system UUIDv7 admission.
+  SblrUuid uuid_value;
   SblrValuePayloadKind payload_kind = SblrValuePayloadKind::none;
   std::int64_t int64_value = 0;
   std::uint64_t uint64_value = 0;
@@ -93,6 +98,12 @@ struct SblrValue {
 struct SblrResultRow {
   std::vector<SblrValue> values;
 };
+
+SblrValue MakeSblrUuidValue(const SblrUuid& uuid);
+// Payload transfer only, not descriptor/catalog/identity-policy admission.
+// Conflicting legacy representations fail without changing the destination.
+bool CopySblrUuidPayload(const SblrValue& value,
+                         std::vector<std::uint8_t>* destination);
 
 struct SblrResult {
   SblrStatusCode status = SblrStatusCode::ok;

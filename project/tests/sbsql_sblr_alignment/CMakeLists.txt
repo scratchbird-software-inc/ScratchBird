@@ -53,6 +53,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/engine/functions/common/function_runtime.cpp
     ../../src/engine/functions/common/function_result_helpers.cpp
     ../../src/engine/sblr/sblr_aggregate_window_runtime.cpp
+    ../../src/engine/sblr/sblr_block_runtime.cpp
     ../../src/engine/sblr/sblr_function_diagnostic.cpp
     ../../src/engine/executor/canonical_aggregate_registry.cpp
     ../../src/engine/sblr/sblr_runtime.cpp)

@@ -7,6 +7,7 @@
 #include "common/function_result_helpers.hpp"
 #include "sblr/sblr_aggregate_window_runtime.hpp"
 #include "sblr/sblr_function_diagnostic.hpp"
+#include "sblr/sblr_block_runtime.hpp"
 #include "internal_api/api_types.hpp"
 
 #include <algorithm>
@@ -472,6 +473,59 @@ void BinaryAggregate() {
   Check(completed && faults >= 2, "aggregate initializer allocation sweep did not reach completion");
 }
 }
+void BinaryUuidValues() {
+  static_assert(sizeof(decltype(s::SblrValue::uuid_value))==16);
+  static_assert(std::is_same_v<decltype(s::SblrErrorHandlerFrame::handler_uuid),s::SblrUuid>);
+  for(unsigned version=1;version<=7;++version) {
+    auto uuid=Base();uuid.bytes[6]=static_cast<unsigned char>((version<<4)|(uuid.bytes[6]&15));
+    const auto value=s::MakeSblrUuidValue(uuid);
+    Check(!value.is_null&&value.payload_kind==s::SblrValuePayloadKind::uuid_binary&&value.uuid_value==uuid,
+          "UUID carrier must preserve admitted user UUID versions without rewriting identity");
+    Check(value.text_value.empty()&&value.encoded_value.empty()&&value.binary_value.empty(),"UUID has one fixed binary identity payload");
+    std::vector<std::uint8_t> output{99,88};
+    Check(s::CopySblrUuidPayload(value,&output)&&output.size()==16&&std::equal(output.begin(),output.end(),uuid.bytes.begin()),
+          "UUID response payload is exactly the original sixteen bytes");
+    for(unsigned fault=0;fault<11;++fault) {
+      auto bad=value;
+      if(fault==0)bad.text_value="019d0000-0000-7000-8000-000000000001";
+      if(fault==1)bad.encoded_value="hidden UUID override";
+      if(fault==2)bad.binary_value={1};
+      if(fault==3)bad.has_int64_value=true;
+      if(fault==4)bad.has_uint64_value=true;
+      if(fault==5)bad.has_real64_value=true;
+      if(fault==6)bad.is_null=true;
+      if(fault==7)bad.payload_kind=s::SblrValuePayloadKind::uuid_text;
+      if(fault==8)bad.descriptor_id="text";
+      if(fault==9)bad.charset_name="UTF8";
+      if(fault==10)bad.collation_name="unicode";
+      const auto original=output;
+      Check(!s::CopySblrUuidPayload(bad,&output)&&output==original,"conflicting UUID representation must not publish any output");
+    }
+    Check(!s::CopySblrUuidPayload(value,nullptr),"UUID copy needs output destination");
+    const auto original=output;
+    fail_after=0;bool threw=false;
+    try {(void)s::CopySblrUuidPayload(value,&output);}catch(const std::bad_alloc&){threw=true;}
+    fail_after=-1;
+    if(threw)++allocation_faults;
+    Check(threw&&output==original,"UUID output allocation failure preserves destination");
+  }
+  const auto nil=s::MakeSblrUuidValue({});
+  Check(!nil.is_null&&nil.uuid_value.is_nil(),"nil UUID bits are distinct from SQL null; descriptor policy owns admission");
+  s::SblrExecutionContext context;
+  s::SblrErrorHandlerFrame handler;handler.handler_uuid=Base();handler.match_code="P0001";
+  auto failure=s::RaiseSblrError("test",context,"TEST.ERROR","test source","P0001");
+  auto selected=s::SelectSblrErrorHandler("test",{handler},failure,context);
+  Check(selected.ok()&&selected.scalar_values.size()==1&&selected.scalar_values[0].uuid_value==handler.handler_uuid&&
+        selected.scalar_values[0].payload_kind==s::SblrValuePayloadKind::uuid_binary,"handler selection carries binary frame UUID");
+  for(auto& field:failure.diagnostics[0].fields)if(field.key=="sqlstate")field.value=Base();
+  Check(!s::SblrErrorHandlerMatches(handler,failure),"binary diagnostic field cannot masquerade as SQLSTATE text");
+  s::SblrFrameStack stack;
+  Check(s::EnterSblrErrorHandler(&stack,handler).ok()&&stack.frames.size()==1&&stack.frames[0].frame_uuid==handler.handler_uuid,
+        "handler entry retains exact binary frame");
+  Check(s::UnwindSblrFramesForErrorHandler("test",&stack,handler.handler_uuid,context).ok()&&stack.frames.size()==1,
+        "frame selector compares binary identity");
+  Check(s::LeaveSblrErrorHandler(&stack).ok()&&stack.frames.empty(),"frame exit retains lifecycle accounting");
+}
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -486,6 +540,7 @@ int main() {
   CallBinding();
   BinaryDiagnostics();
   BinaryAggregate();
+  BinaryUuidValues();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

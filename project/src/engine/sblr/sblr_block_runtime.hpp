@@ -17,7 +17,7 @@
 namespace scratchbird::engine::sblr {
 
 struct SblrErrorHandlerFrame {
-  std::string handler_uuid;
+  SblrUuid handler_uuid;
   std::string match_code;
   bool when_any = false;
 };
@@ -36,7 +36,7 @@ SblrResult SelectSblrErrorHandler(std::string_view operation_id,
                                   const SblrExecutionContext& context);
 SblrResult UnwindSblrFramesForErrorHandler(std::string_view operation_id,
                                            SblrFrameStack* stack,
-                                           std::string_view handler_uuid,
+                                           const SblrUuid& handler_uuid,
                                            const SblrExecutionContext& context);
 SblrResult RefuseUnhandledSblrError(const SblrExecutionContext& context, std::string detail);
 

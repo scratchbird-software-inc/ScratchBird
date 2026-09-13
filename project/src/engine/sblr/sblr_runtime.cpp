@@ -13,6 +13,29 @@
 #include <utility>
 
 namespace scratchbird::engine::sblr {
+SblrValue MakeSblrUuidValue(const SblrUuid& uuid) {
+  SblrValue result;
+  result.descriptor_id = "uuid";
+  result.payload_kind = SblrValuePayloadKind::uuid_binary;
+  result.uuid_value = uuid;
+  result.is_null = false;
+  return result;
+}
+
+bool CopySblrUuidPayload(const SblrValue& value,
+                         std::vector<std::uint8_t>* destination) {
+  if (destination == nullptr || value.is_null ||
+      value.payload_kind != SblrValuePayloadKind::uuid_binary ||
+      value.descriptor_id != "uuid" || !value.charset_name.empty() ||
+      !value.collation_name.empty() ||
+      !value.text_value.empty() || !value.encoded_value.empty() ||
+      !value.binary_value.empty() || value.has_int64_value ||
+      value.has_uint64_value || value.has_real64_value) return false;
+  std::vector<std::uint8_t> bytes(value.uuid_value.bytes.begin(), value.uuid_value.bytes.end());
+  destination->swap(bytes);
+  return true;
+}
+
 
 SblrRuntimeDiagnostic MakeSblrDiagnostic(std::string diagnostic_id,
                                          std::string message_key,
