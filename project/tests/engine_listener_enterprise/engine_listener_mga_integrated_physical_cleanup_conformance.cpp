@@ -450,7 +450,7 @@ page::OverflowValueRecord WriteOverflowBlobPages(
 
 txn::CurrentRowMapRebuildRequest CurrentRowMapRequest(const Fixture& fixture) {
   txn::CurrentRowMapRebuildRequest request;
-  request.relation_uuid = uuid::UuidToString(fixture.relation_uuid.value);
+  request.relation_uuid = fixture.relation_uuid.value;
   request.relation_epoch = 1;
   request.catalog_epoch = 1;
   request.security_epoch = 1;
@@ -461,8 +461,8 @@ txn::CurrentRowMapRebuildRequest CurrentRowMapRequest(const Fixture& fixture) {
   request.durable_mga_inventory_proof = true;
   request.map_self_authoritative = false;
   txn::CurrentRowAuthoritativeBaseRow row;
-  row.row_uuid = uuid::UuidToString(fixture.current_row_uuid.value);
-  row.version_uuid = uuid::UuidToString(fixture.current_version_uuid.value);
+  row.row_uuid = fixture.current_row_uuid.value;
+  row.version_uuid = fixture.current_version_uuid.value;
   row.row_generation = 2;
   row.visible_through_local_transaction_id = txn::MakeLocalTransactionId(2);
   row.visible = true;

@@ -174,8 +174,8 @@ mga::PageFinalityMapEntry ExtentEntry(const std::string& relation_uuid) {
 }
 
 mga::CurrentRowMapObservedFacts CurrentRowFacts(
-    const std::string& relation_uuid,
-    const std::string& row_uuid) {
+    const platform::Uuid& relation_uuid,
+    const platform::Uuid& row_uuid) {
   mga::CurrentRowMapObservedFacts facts;
   facts.relation_uuid = relation_uuid;
   facts.row_uuid = row_uuid;
@@ -196,12 +196,12 @@ mga::CurrentRowMapObservedFacts CurrentRowFacts(
 }
 
 void TestCurrentRowMapRebuildAndAdvisoryLookup() {
-  const std::string relation_uuid =
-      UuidText(platform::UuidKind::object, 1702400100000ull, 0x31);
-  const std::string row_uuid =
-      UuidText(platform::UuidKind::row, 1702400101000ull, 0x32);
-  const std::string version_uuid =
-      UuidText(platform::UuidKind::row, 1702400102000ull, 0x33);
+  const auto relation_uuid =
+      GeneratedUuid(platform::UuidKind::object, 1702400100000ull, 0x31).value;
+  const auto row_uuid =
+      GeneratedUuid(platform::UuidKind::row, 1702400101000ull, 0x32).value;
+  const auto version_uuid =
+      GeneratedUuid(platform::UuidKind::row, 1702400102000ull, 0x33).value;
 
   mga::CurrentRowMapRebuildRequest rebuild;
   rebuild.relation_uuid = relation_uuid;
@@ -240,9 +240,7 @@ void TestCurrentRowMapRebuildAndAdvisoryLookup() {
   Require(!decision.map_is_visibility_authority &&
               !decision.map_is_transaction_finality_authority,
           "current-row map became visibility/finality authority");
-  Require(HasEvidence(decision.evidence,
-                      "current_version_uuid",
-                      version_uuid),
+  Require(decision.row_uuid == row_uuid && decision.current_version_uuid == version_uuid,
           "current-row version evidence mismatch");
 
   auto stale_facts = facts;

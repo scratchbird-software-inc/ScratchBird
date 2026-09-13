@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "uuid.hpp"
+#include "current_row_map.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../../src/engine/internal_api/api_types.hpp"
 #include "../../src/wire/parser_server_ipc/public_resolution_cache_key.hpp"
@@ -44,6 +45,140 @@ static_assert(!std::is_assignable_v<EngineUuid&, std::string>);
 
 void Require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
+}
+
+void CurrentRowBinaryIdentityContract() {
+  namespace mga = scratchbird::transaction::mga;
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapEntry::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapEntry::row_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapEntry::current_version_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapObservedFacts::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapObservedFacts::row_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowAuthoritativeBaseRow::row_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowAuthoritativeBaseRow::version_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapRebuildRequest::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapDecision::row_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(mga::CurrentRowMapDecision::current_version_uuid), Uuid>);
+  const auto id = [](std::uint64_t value) {
+    Uuid out{{1,2,3,4,5,6,0x70,0,0x80,0,0,0,0,0,0,0}};
+    for (unsigned i=0; i<7; ++i) out.bytes[15-i]=static_cast<unsigned char>(value>>(8*i));
+    return out;
+  };
+  unsigned checks=0;
+  const auto check=[&](bool ok,const char* detail){++checks;Require(ok,detail);};
+  mga::CurrentRowMapRebuildRequest request;
+  request.relation_uuid=id(1);
+  request.relation_epoch=2;request.catalog_epoch=3;request.security_epoch=4;
+  request.redaction_epoch=5;request.map_generation=6;request.invalidation_generation=7;
+  request.authoritative_base_rows_proof=true;request.durable_mga_inventory_proof=true;
+  for (unsigned i=0;i<512;++i)
+    request.base_rows.push_back({id(2+i*2),id(3+i*2),8,{9},false,true});
+  auto rebuilt=mga::RebuildCurrentRowMapFromAuthoritativeBaseRows(request);
+  check(rebuilt.ok && rebuilt.rebuilt_entry_count==512 && rebuilt.map.entries.size()==512,
+        "binary current-row map did not rebuild actual input entries");
+  mga::CurrentRowMapObservedFacts facts;
+  facts.relation_uuid=request.relation_uuid;
+  facts.relation_epoch=2;facts.catalog_epoch=3;facts.security_epoch=4;
+  facts.redaction_epoch=5;facts.map_generation=6;facts.invalidation_generation=7;
+  facts.reader_visible_through_local_transaction_id={10};
+  facts.oldest_active_local_transaction_id={11};
+  facts.durable_mga_inventory_proof=true;facts.transaction_horizon_authoritative=true;
+  facts.normal_mga_visibility_authority_available=true;facts.security_recheck_planned=true;
+  for (const auto& row:request.base_rows) {
+    facts.row_uuid=row.row_uuid;
+    const auto before=rebuilt.map.counters;
+    const auto d=mga::LookupCurrentRowMap(&rebuilt.map,facts);
+    check(d.accepted && d.row_uuid==row.row_uuid && d.current_version_uuid==row.version_uuid &&
+          d.normal_mga_recheck_required && d.security_recheck_required &&
+          !d.map_is_visibility_authority && !d.map_is_transaction_finality_authority,
+          "binary current-row candidate changed identities or became authority");
+    check(rebuilt.map.counters.probes==before.probes+1 &&
+          rebuilt.map.counters.accepted==before.accepted+1 &&
+          rebuilt.map.counters.refused==before.refused,
+          "current-row lookup double-counted probe or accepted outcome");
+    check(std::none_of(d.evidence.begin(),d.evidence.end(),[](const auto& field) {
+            return field.name=="row_uuid" || field.name=="current_version_uuid";
+          }),"current-row identity escaped through string evidence");
+  }
+  request.base_rows.resize(1);facts.row_uuid=request.base_rows.front().row_uuid;
+  const auto refuse_rebuild=[&](const mga::CurrentRowMapRebuildRequest& bad,const char* reason) {
+    const auto result=mga::RebuildCurrentRowMapFromAuthoritativeBaseRows(bad);
+    check(!result.ok && result.diagnostic_code=="CATALOG.INVALID_INPUT" &&
+          result.refusal_reason==reason && result.map.entries.empty() &&
+          result.rebuilt_entry_count==0 && result.counters.refused==1,
+          "invalid current-row rebuild published a partial map or wrong outcome");
+  };
+  const auto refuse_entry=[&](const mga::CurrentRowMapEntry& entry,
+                              const mga::CurrentRowMapObservedFacts& observed) {
+    const auto before=rebuilt.map.counters;
+    const auto d=mga::EvaluateCurrentRowMapEntry(&rebuilt.map,entry,observed);
+    check(!d.accepted && d.row_uuid.is_nil() && d.current_version_uuid.is_nil() &&
+          d.normal_mga_recheck_required && d.security_recheck_required,
+          "invalid current-row candidate published identity evidence");
+    check(rebuilt.map.counters.probes==before.probes+1 &&
+          rebuilt.map.counters.refused==before.refused+1 &&
+          rebuilt.map.counters.accepted==before.accepted,
+          "direct current-row refusal was not counted exactly once");
+  };
+  const auto entry=rebuilt.map.entries.front();
+  for (unsigned field=0;field<5;++field) {
+    for (unsigned version=0;version<16;++version) {
+      if (version==7) continue;
+      auto bad_entry=entry;auto bad_facts=facts;
+      Uuid* slots[]={&bad_entry.relation_uuid,&bad_entry.row_uuid,&bad_entry.current_version_uuid,
+                     &bad_facts.relation_uuid,&bad_facts.row_uuid};
+      slots[field]->bytes[6]=static_cast<unsigned char>(version<<4);
+      refuse_entry(bad_entry,bad_facts);
+    }
+    auto bad_entry=entry;auto bad_facts=facts;
+    Uuid* slots[]={&bad_entry.relation_uuid,&bad_entry.row_uuid,&bad_entry.current_version_uuid,
+                   &bad_facts.relation_uuid,&bad_facts.row_uuid};
+    *slots[field]={};refuse_entry(bad_entry,bad_facts);
+    *slots[field]=id(2);slots[field]->bytes[8]=0xc0;refuse_entry(bad_entry,bad_facts);
+  }
+  for(unsigned field=0;field<3;++field) for(unsigned version=0;version<16;++version) {
+    if(version==7)continue;
+    auto bad=request;
+    Uuid* slots[]={&bad.relation_uuid,&bad.base_rows[0].row_uuid,&bad.base_rows[0].version_uuid};
+    slots[field]->bytes[6]=static_cast<unsigned char>(version<<4);
+    refuse_rebuild(bad,field==0 ? "current_row_rebuild_identity_or_epoch_missing" :
+                                "current_row_rebuild_base_row_invalid");
+  }
+  auto bad=request;bad.base_rows.push_back(request.base_rows.front());
+  refuse_rebuild(bad,"current_row_rebuild_duplicate_identity");
+  bad.base_rows.back().row_uuid=id(9000);
+  refuse_rebuild(bad,"current_row_rebuild_duplicate_identity");
+  bad=request;bad.base_rows.push_back(request.base_rows.front());
+  bad.base_rows.back().version_uuid={};
+  refuse_rebuild(bad,"current_row_rebuild_base_row_invalid");
+  bad.base_rows.back().deleted=true;
+  refuse_rebuild(bad,"current_row_rebuild_base_row_invalid");
+  bad.base_rows.back().deleted=false;bad.base_rows.back().visible=false;
+  refuse_rebuild(bad,"current_row_rebuild_base_row_invalid");
+  bad=request;bad.base_rows.front().row_generation=0;
+  refuse_rebuild(bad,"current_row_rebuild_base_row_invalid");
+  bad=request;bad.base_rows.front().visible_through_local_transaction_id={};
+  refuse_rebuild(bad,"current_row_rebuild_base_row_invalid");
+  bad=request;bad.base_rows.front().deleted=true;
+  auto empty=mga::RebuildCurrentRowMapFromAuthoritativeBaseRows(bad);
+  check(empty.ok && empty.map.entries.empty(),"valid deleted row was not omitted");
+  bad.base_rows.front().deleted=false;bad.base_rows.front().visible=false;
+  empty=mga::RebuildCurrentRowMapFromAuthoritativeBaseRows(bad);
+  check(empty.ok && empty.map.entries.empty(),"valid invisible row was not omitted");
+  auto duplicate=mga::RebuildCurrentRowMapFromAuthoritativeBaseRows(request).map;
+  duplicate.entries.push_back(duplicate.entries.front());
+  const auto ambiguous=mga::LookupCurrentRowMap(&duplicate,facts);
+  check(!ambiguous.accepted && ambiguous.refusal_reason=="current_row_map_duplicate_identity" &&
+        ambiguous.row_uuid.is_nil() && ambiguous.current_version_uuid.is_nil() &&
+        duplicate.counters.probes==1 && duplicate.counters.refused==1 && duplicate.counters.accepted==0,
+        "duplicate current-row key selected first match or double-counted failure");
+  auto stale=facts;stale.map_generation++;
+  const auto before=rebuilt.map.counters;
+  const auto d=mga::LookupCurrentRowMap(&rebuilt.map,stale);
+  check(!d.accepted && rebuilt.map.counters.probes==before.probes+1 &&
+        rebuilt.map.counters.refused==before.refused+1,
+        "stale-map wrapper double-counted refusal");
+  std::cout << "PASS binary current-row advisory identity checks=" << checks << '\n';
 }
 
 void TypedDescriptorBinaryIdentityContract() {
@@ -689,6 +824,7 @@ int main(int argc, char** argv) {
       Require(uuid::EngineIdentityPathComponent(changed).has_value() == (variant == 2),
               "invalid system variant gained an owner path");
     }
+    CurrentRowBinaryIdentityContract();
     CanonicalSortBinaryIdentityContract();
     TypedDescriptorBinaryIdentityContract();
     AggregateRegistryBinaryIdentityContract();

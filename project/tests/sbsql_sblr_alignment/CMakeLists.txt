@@ -619,7 +619,7 @@ target_sources(sbsql_sblr_alignment_uuid_binary_key PRIVATE
   ../../src/engine/executor/canonical_aggregate_registry.cpp)
 target_compile_features(sbsql_sblr_alignment_uuid_binary_key PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_uuid_binary_key PRIVATE
-  sb_core_uuid sb_core_datatypes sb_engine_typed_scalar_descriptor_contract)
+  sb_core_uuid sb_core_datatypes sb_engine_typed_scalar_descriptor_contract sb_transaction_mga)
 add_test(NAME sbsql_sblr_alignment_uuid_binary_key COMMAND sbsql_sblr_alignment_uuid_binary_key)
 set_tests_properties(sbsql_sblr_alignment_uuid_binary_key PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;CSC-TEST-005831;contract;component_regression;binary_uuid"

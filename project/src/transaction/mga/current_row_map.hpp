@@ -15,6 +15,8 @@
 
 namespace scratchbird::transaction::mga {
 
+using scratchbird::core::platform::Uuid;
+
 enum class CurrentRowMapStatus : u16 {
   current,
   missing,
@@ -37,9 +39,9 @@ enum class CurrentRowMapProvenance : u16 {
 struct CurrentRowMapEntry {
   CurrentRowMapStatus status = CurrentRowMapStatus::missing;
   CurrentRowMapProvenance provenance = CurrentRowMapProvenance::unknown;
-  std::string relation_uuid;
-  std::string row_uuid;
-  std::string current_version_uuid;
+  Uuid relation_uuid;
+  Uuid row_uuid;
+  Uuid current_version_uuid;
   u64 row_generation = 0;
   u64 relation_epoch = 0;
   u64 catalog_epoch = 0;
@@ -54,8 +56,8 @@ struct CurrentRowMapEntry {
 };
 
 struct CurrentRowMapObservedFacts {
-  std::string relation_uuid;
-  std::string row_uuid;
+  Uuid relation_uuid;
+  Uuid row_uuid;
   u64 relation_epoch = 0;
   u64 catalog_epoch = 0;
   u64 security_epoch = 0;
@@ -95,6 +97,9 @@ struct CurrentRowMapDecision {
   bool map_is_visibility_authority = false;
   bool map_is_transaction_finality_authority = false;
   bool durable_mga_inventory_remains_authority = true;
+  // Candidate identities, never formatted string evidence or authority receipts.
+  Uuid row_uuid;
+  Uuid current_version_uuid;
   std::string evidence_name = "mga_current_row_map.refused";
   std::string refusal_reason = "not_evaluated";
   CurrentRowMapCounters counters;
@@ -109,8 +114,8 @@ struct CurrentRowMap {
 };
 
 struct CurrentRowAuthoritativeBaseRow {
-  std::string row_uuid;
-  std::string version_uuid;
+  Uuid row_uuid;
+  Uuid version_uuid;
   u64 row_generation = 0;
   LocalTransactionId visible_through_local_transaction_id;
   bool deleted = false;
@@ -118,7 +123,7 @@ struct CurrentRowAuthoritativeBaseRow {
 };
 
 struct CurrentRowMapRebuildRequest {
-  std::string relation_uuid;
+  Uuid relation_uuid;
   u64 relation_epoch = 0;
   u64 catalog_epoch = 0;
   u64 security_epoch = 0;
@@ -135,7 +140,7 @@ struct CurrentRowMapRebuildResult {
   bool ok = false;
   CurrentRowMap map;
   u64 rebuilt_entry_count = 0;
-  std::string diagnostic_code = "ORH_VISIBILITY_ACCELERATOR_REBUILD_REFUSED";
+  std::string diagnostic_code = "CATALOG.INVALID_INPUT";
   std::string refusal_reason = "not_evaluated";
   std::vector<CurrentRowMapEvidenceField> evidence;
   CurrentRowMapCounters counters;

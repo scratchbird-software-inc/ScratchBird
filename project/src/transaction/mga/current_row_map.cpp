@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "current_row_map.hpp"
+#include "uuid.hpp"
+
+#include <set>
 
 #include <utility>
 
@@ -76,6 +79,8 @@ CurrentRowMapDecision StartDecision(const CurrentRowMapEntry& entry,
 CurrentRowMapRebuildResult RebuildRefused(CurrentRowMapRebuildResult result,
                                           std::string reason) {
   result.ok = false;
+  result.map.entries.clear();
+  result.rebuilt_entry_count = 0;
   result.refusal_reason = std::move(reason);
   ++result.counters.refused;
   AddEvidence(&result, "diagnostic", result.diagnostic_code);
@@ -123,8 +128,7 @@ CurrentRowMap MakeCurrentRowMap(u64 map_generation,
   return map;
 }
 
-CurrentRowMapDecision EvaluateCurrentRowMapEntry(
-    CurrentRowMap* map,
+static CurrentRowMapDecision EvaluateCurrentRowMapEntryImpl(
     const CurrentRowMapEntry& entry,
     const CurrentRowMapObservedFacts& observed) {
   auto decision = StartDecision(entry, observed);
@@ -164,9 +168,11 @@ CurrentRowMapDecision EvaluateCurrentRowMapEntry(
     return Refuse(std::move(decision),
                   "current_row_map_external_provenance_refused");
   }
-  if (entry.relation_uuid.empty() || observed.relation_uuid.empty() ||
-      entry.row_uuid.empty() || observed.row_uuid.empty() ||
-      entry.current_version_uuid.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(entry.relation_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(observed.relation_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(entry.row_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(observed.row_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(entry.current_version_uuid) ||
       entry.relation_uuid != observed.relation_uuid ||
       entry.row_uuid != observed.row_uuid) {
     ++decision.counters.epoch_refusals;
@@ -218,15 +224,21 @@ CurrentRowMapDecision EvaluateCurrentRowMapEntry(
   decision.evidence_name = "mga_current_row_map.current_visible.accepted";
   decision.refusal_reason = "none";
   ++decision.counters.accepted;
-  AddEvidence(&decision, "row_uuid", entry.row_uuid);
-  AddEvidence(&decision, "current_version_uuid", entry.current_version_uuid);
+  decision.row_uuid = entry.row_uuid;
+  decision.current_version_uuid = entry.current_version_uuid;
   AddEvidence(&decision, "visible_through_local_transaction_id",
               std::to_string(entry.visible_through_local_transaction_id.value));
   AddEvidence(&decision, "normal_mga_recheck", "required");
   AddEvidence(&decision, "security_recheck", "required");
-  if (map != nullptr) {
-    MergeCounters(&map->counters, decision.counters);
-  }
+  return decision;
+}
+
+CurrentRowMapDecision EvaluateCurrentRowMapEntry(
+    CurrentRowMap* map,
+    const CurrentRowMapEntry& entry,
+    const CurrentRowMapObservedFacts& observed) {
+  auto decision = EvaluateCurrentRowMapEntryImpl(entry, observed);
+  if (map != nullptr) MergeCounters(&map->counters, decision.counters);
   return decision;
 }
 
@@ -237,45 +249,29 @@ CurrentRowMapDecision LookupCurrentRowMap(
   missing.status = CurrentRowMapStatus::missing;
   missing.relation_uuid = observed.relation_uuid;
   missing.row_uuid = observed.row_uuid;
-  if (map == nullptr || map->entries.empty()) {
-    auto decision = EvaluateCurrentRowMapEntry(map, missing, observed);
-    if (map != nullptr) {
-      MergeCounters(&map->counters, decision.counters);
-    }
-    return decision;
-  }
+  if (map == nullptr || map->entries.empty())
+    return EvaluateCurrentRowMapEntry(map, missing, observed);
   if (map->map_generation != observed.map_generation ||
       map->invalidation_generation != observed.invalidation_generation) {
     missing.status = CurrentRowMapStatus::stale;
     missing.map_generation = map->map_generation;
     missing.invalidation_generation = map->invalidation_generation;
-    auto decision = EvaluateCurrentRowMapEntry(map, missing, observed);
-    if (map != nullptr) {
-      MergeCounters(&map->counters, decision.counters);
-    }
-    return decision;
+    return EvaluateCurrentRowMapEntry(map, missing, observed);
   }
-  CurrentRowMapDecision last_refusal;
-  bool saw_refusal = false;
+  const CurrentRowMapEntry* matched = nullptr;
   for (const auto& entry : map->entries) {
     if (entry.relation_uuid != observed.relation_uuid ||
-        entry.row_uuid != observed.row_uuid) {
-      continue;
-    }
-    auto decision = EvaluateCurrentRowMapEntry(map, entry, observed);
-    if (decision.accepted) {
+        entry.row_uuid != observed.row_uuid) continue;
+    if (matched != nullptr) {
+      auto decision = StartDecision(entry, observed);
+      ++decision.counters.stale_refusals;
+      decision = Refuse(std::move(decision), "current_row_map_duplicate_identity");
+      MergeCounters(&map->counters, decision.counters);
       return decision;
     }
-    MergeCounters(&map->counters, decision.counters);
-    last_refusal = decision;
-    saw_refusal = true;
+    matched = &entry;
   }
-  if (saw_refusal) {
-    return last_refusal;
-  }
-  auto decision = EvaluateCurrentRowMapEntry(map, missing, observed);
-  MergeCounters(&map->counters, decision.counters);
-  return decision;
+  return EvaluateCurrentRowMapEntry(map, matched ? *matched : missing, observed);
 }
 
 CurrentRowMapRebuildResult RebuildCurrentRowMapFromAuthoritativeBaseRows(
@@ -297,7 +293,7 @@ CurrentRowMapRebuildResult RebuildCurrentRowMapFromAuthoritativeBaseRows(
     return RebuildRefused(std::move(result),
                           "authoritative_base_rows_and_mga_inventory_required");
   }
-  if (request.relation_uuid.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid) ||
       request.relation_epoch == 0 ||
       request.catalog_epoch == 0 ||
       request.security_epoch == 0 ||
@@ -309,12 +305,23 @@ CurrentRowMapRebuildResult RebuildCurrentRowMapFromAuthoritativeBaseRows(
                           "current_row_rebuild_identity_or_epoch_missing");
   }
 
+  std::set<Uuid> rows;
+  std::set<Uuid> versions;
   for (const auto& row : request.base_rows) {
-    if (row.deleted || !row.visible || row.row_uuid.empty() ||
-        row.version_uuid.empty() || row.row_generation == 0 ||
-        !row.visible_through_local_transaction_id.valid()) {
-      continue;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid) ||
+        row.row_generation == 0 || !row.visible_through_local_transaction_id.valid()) {
+      ++result.counters.epoch_refusals;
+      return RebuildRefused(std::move(result), "current_row_rebuild_base_row_invalid");
     }
+    if (row.deleted || !row.visible) continue;
+    if (!rows.insert(row.row_uuid).second || !versions.insert(row.version_uuid).second) {
+      ++result.counters.stale_refusals;
+      return RebuildRefused(std::move(result), "current_row_rebuild_duplicate_identity");
+    }
+  }
+  for (const auto& row : request.base_rows) {
+    if (row.deleted || !row.visible) continue;
     CurrentRowMapEntry entry;
     entry.status = CurrentRowMapStatus::current;
     entry.provenance = CurrentRowMapProvenance::engine_authoritative_base_rows;
