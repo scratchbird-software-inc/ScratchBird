@@ -159,4 +159,74 @@ NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(disk::FileDevice& device
     return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
 }
+NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(const Uuid& db,
+    const std::vector<disk::NativeFilespaceDevice>& devices,const disk::NativePageReference& root,
+    const NativeBtreeDependencies& dependencies,u64 maximum_retained_image_bytes) noexcept {
+  const auto fail=[](E e){NativeBtreeTreeResult r;r.error=e;return r;};
+  try {
+    if(!V7(db)||!ValidRef(root)||devices.empty()||!maximum_retained_image_bytes)return fail(E::invalid_reference);
+    if(!ValidDependencies(dependencies))return fail(E::invalid_dependencies);
+    auto ordered=devices;std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    for(std::size_t i=0;i<ordered.size();++i){const auto& fs=ordered[i];
+      if(!V7(fs.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid)||!fs.device
+        ||(i&&fs.filespace_uuid==ordered[i-1].filespace_uuid))return fail(E::invalid_filespace);
+      for(std::size_t j=0;j<i;++j)if(fs.device==ordered[j].device)return fail(E::invalid_filespace);}
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(ordered.size());
+    for(const auto& fs:ordered)guards.push_back(fs.device->AcquireOperationGuard());
+    std::vector<disk::FilespacePageZero> zeros;zeros.reserve(ordered.size());
+    for(const auto& fs:ordered){const disk::FilespaceBootstrapBinding binding{db,fs.filespace_uuid,fs.page_size_profile_uuid};
+      auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*fs.device,&binding);
+      if(!zero.ok()){
+        if(zero.error==disk::FilespacePageZeroError::resource_exhausted)return fail(E::resource_exhausted);
+        if(zero.error==disk::FilespacePageZeroError::hash_provider_failure)return fail(E::hash_failure);
+        if(zero.error==disk::FilespacePageZeroError::io_failure)return fail(E::io_failure);
+        return fail(E::invalid_filespace);}
+      zeros.push_back(std::move(*zero.record));}
+    const auto filespace=[&](const auto& ref)->std::size_t{
+      const auto fs=std::lower_bound(ordered.begin(),ordered.end(),ref.filespace_uuid,[](const auto& a,const auto& id){return a.filespace_uuid<id;});
+      if(fs==ordered.end()||fs->filespace_uuid!=ref.filespace_uuid||fs->page_size_profile_uuid!=ref.page_size_profile_uuid)return ordered.size();
+      const auto i=static_cast<std::size_t>(fs-ordered.begin());return ref.page_number<zeros[i].total_pages?i:ordered.size();};
+    struct Pending {
+      disk::NativePageReference ref;
+      std::optional<std::size_t> parent;
+      u16 level=0;
+      std::optional<NativeBtreeKey> low,high;
+    };
+    std::vector<Pending> pending{{root,{},0,{},{}}};NativeBtreeTreeResult result;
+    std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;std::map<u16,std::size_t> last_by_level;
+    while(!pending.empty()){
+      auto next=std::move(pending.back());pending.pop_back();const auto fs=filespace(next.ref);
+      if(fs==ordered.size())return fail(E::invalid_filespace);
+      if(!slots.emplace(next.ref.filespace_uuid,next.ref.page_number).second)return fail(E::tree_reference_mismatch);
+      const auto page_size=zeros[fs].bootstrap.page_size_bytes;
+      if(page_size>maximum_retained_image_bytes-result.retained_image_bytes)return fail(E::resource_exhausted);
+      const u32 type=!next.parent?0x200:next.level?0x201:0x202;
+      auto loaded=ReadNativeBtreePageFromOpenDevice(*ordered[fs].device,db,next.ref,type,dependencies);
+      if(!loaded.ok())return fail(loaded.error);const auto& page=*loaded.page;
+      if(!page_ids.insert(page.header.page_uuid).second)return fail(E::tree_reference_mismatch);
+      if(next.parent){
+        if(page.parent!=std::optional{Self(*result.pages[*next.parent].page)})return fail(E::tree_reference_mismatch);
+        if(page.tree_level!=next.level)return fail(E::tree_level_mismatch);}
+      if(page.low_fence!=next.low||page.high_fence!=next.high)return fail(E::tree_fence_mismatch);
+      const auto previous=last_by_level.find(page.tree_level);
+      if(previous==last_by_level.end()){if(page.left)return fail(E::tree_sibling_mismatch);}
+      else {const auto& prior=*result.pages[previous->second].page;
+        if(prior.right!=std::optional{next.ref}||page.left!=std::optional{Self(prior)})return fail(E::tree_sibling_mismatch);
+        if(!page.low_fence||!prior.high_fence||page.low_fence!=prior.high_fence)return fail(E::tree_fence_mismatch);}
+      for(const auto& cell:page.cells)if(cell.base_page&&filespace(*cell.base_page)==ordered.size())return fail(E::invalid_filespace);
+      const auto index=result.pages.size();last_by_level[page.tree_level]=index;
+      result.retained_image_bytes+=loaded.bytes.size();result.pages.push_back(std::move(loaded));
+      // Borrow only after insertion; later vector growth must not invalidate a
+      // parent reference used while preparing the reverse-order DFS work list.
+      const auto& current=*result.pages.back().page;
+      if(!current.tree_level){result.leaves.push_back(index);continue;}
+      const auto child_level=static_cast<u16>(current.tree_level-1);
+      for(std::size_t i=current.cells.size();i>0;--i){const auto& cell=current.cells[i-1];
+        pending.push_back({*cell.child,index,child_level,cell.key,i==current.cells.size()?current.high_fence:std::optional{current.cells[i].key}});}
+      pending.push_back({*current.first_child,index,child_level,current.low_fence,current.cells.front().key});
+    }
+    for(const auto& [level,index]:last_by_level)if(result.pages[index].page->right)return fail(E::tree_sibling_mismatch);
+    result.error=E::none;return result;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::io_failure);}
+}
 } // namespace scratchbird::storage::page

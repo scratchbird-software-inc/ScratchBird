@@ -53,7 +53,8 @@ enum class NativeBtreeError {
   none, invalid_header, invalid_family, invalid_dependencies, invalid_reference,
   invalid_order, invalid_fence, invalid_integrity, hash_failure, resource_exhausted,
   invalid_filespace, binding_mismatch, io_failure, encrypted_requires_crypto_authority,
-  cluster_requires_authority, header_policy_requires_authority
+  cluster_requires_authority, header_policy_requires_authority,
+  tree_reference_mismatch, tree_level_mismatch, tree_fence_mismatch, tree_sibling_mismatch
 };
 struct NativeBtreePageResult {
   NativeBtreeError error = NativeBtreeError::invalid_family;
@@ -69,4 +70,18 @@ NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>&) noexcept;
 NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(
   disk::FileDevice&,const Uuid& database_uuid,const disk::NativePageReference&,
   u32 page_type,const NativeBtreeDependencies&) noexcept;
+struct NativeBtreeTreeResult {
+  NativeBtreeError error = NativeBtreeError::invalid_reference;
+  // Preorder images; leaf indexes select them in verified navigation order.
+  std::vector<NativeBtreePageResult> pages;
+  std::vector<std::size_t> leaves;
+  u64 retained_image_bytes = 0;
+  bool ok() const noexcept { return error==NativeBtreeError::none&&!pages.empty()&&!leaves.empty(); }
+};
+// NATIVE-BTREE-RETAINED-TREE-001. Complete navigation-tree verification only;
+// not a dependency-map, base-row/MGA, serving-generation or publication receipt.
+NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(
+  const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>&,
+  const disk::NativePageReference& root,const NativeBtreeDependencies&,
+  u64 maximum_retained_image_bytes) noexcept;
 } // namespace scratchbird::storage::page
