@@ -771,7 +771,7 @@ bool AppendOnlyUpdateCandidateRefs(
     std::vector<const CrudRowVersionRecord*>* rows) {
   if (rows == nullptr) { return false; }
   rows->clear();
-  std::unordered_set<std::string> seen_row_uuids;
+  std::unordered_set<EngineUuid, EngineUuidHash> seen_row_uuids;
   std::size_t target_row_count = 0;
   for (const auto& row : state.row_versions) {
     if (row.table_uuid != table_uuid) { continue; }
@@ -796,21 +796,6 @@ bool AppendOnlyUpdateCandidateRefs(
     }
   }
   return true;
-}
-
-std::vector<std::string> RowUuidListFromPredicate(
-    const EnginePredicateEnvelope& predicate) {
-  std::vector<std::string> row_uuids;
-  if (predicate.predicate_kind != "row_uuid_in_list") {
-    return row_uuids;
-  }
-  row_uuids.reserve(predicate.bound_values.size());
-  for (const auto& bound : predicate.bound_values) {
-    if (!bound.encoded_value.empty()) {
-      row_uuids.push_back(bound.encoded_value);
-    }
-  }
-  return row_uuids;
 }
 
 std::string PredicateDigest(const EnginePredicateEnvelope& predicate) {
@@ -1231,18 +1216,18 @@ std::optional<CrudRowVersionRecord> FindVisibleRowUuidCandidate(
 
 std::vector<CrudRowVersionRecord> FindVisibleRowUuidCandidates(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
-    const std::vector<std::string>& row_uuids,
+    const EngineUuid& table_uuid,
+    const std::vector<EngineUuid>& row_uuids,
     const EngineRequestContext& context) {
   std::vector<CrudRowVersionRecord> rows;
   if (row_uuids.empty()) {
     return rows;
   }
 
-  std::unordered_set<std::string> requested;
+  std::unordered_set<EngineUuid, EngineUuidHash> requested;
   requested.reserve(row_uuids.size());
   for (const auto& row_uuid : row_uuids) {
-    if (!row_uuid.empty()) {
+    if (!row_uuid.is_nil()) {
       requested.insert(row_uuid);
     }
   }
@@ -1250,7 +1235,7 @@ std::vector<CrudRowVersionRecord> FindVisibleRowUuidCandidates(
     return rows;
   }
 
-  std::unordered_map<std::string, CrudRowVersionRecord> newest_visible_by_uuid;
+  std::unordered_map<EngineUuid, CrudRowVersionRecord, EngineUuidHash> newest_visible_by_uuid;
   newest_visible_by_uuid.reserve(requested.size());
   for (const auto& row : state.row_versions) {
     if (row.table_uuid != table_uuid ||
@@ -1294,6 +1279,8 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
   plan_request.relation_uuid = table.table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = request.update_predicate.predicate_kind;
+  plan_request.row_uuid = request.update_predicate.row_uuid;
+  plan_request.row_uuids = request.update_predicate.row_uuids;
   plan_request.predicate_descriptor_digest = PredicateDigest(request.update_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
@@ -1364,17 +1351,14 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
     plan_request.predicate_kind = "all_visible_rows";
     return plan_request;
   }
-  if (request.update_predicate.predicate_kind == "row_uuid_match" &&
-      !request.update_predicate.canonical_predicate_envelope.empty()) {
+  if (request.update_predicate.predicate_kind == "row_uuid_match") {
     plan_request.predicate_kind = "row_uuid_match";
-    plan_request.row_uuid = request.update_predicate.canonical_predicate_envelope;
+    plan_request.row_uuid = request.update_predicate.row_uuid;
     plan_request.estimated_rows = 1;
     return plan_request;
   }
-  auto row_uuid_list = RowUuidListFromPredicate(request.update_predicate);
-  if (!row_uuid_list.empty()) {
+  if (request.update_predicate.predicate_kind == "row_uuid_in_list") {
     plan_request.predicate_kind = "row_uuid_in_list";
-    plan_request.row_uuids = std::move(row_uuid_list);
     plan_request.estimated_rows =
         static_cast<std::uint64_t>(plan_request.row_uuids.size());
     return plan_request;
@@ -1792,6 +1776,8 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
   plan_request.relation_uuid = table.table_uuid;
   plan_request.relation_present = true;
   plan_request.predicate_kind = request.delete_predicate.predicate_kind;
+  plan_request.row_uuid = request.delete_predicate.row_uuid;
+  plan_request.row_uuids = request.delete_predicate.row_uuids;
   plan_request.predicate_descriptor_digest = PredicateDigest(request.delete_predicate);
   plan_request.access_descriptor_present = true;
   plan_request.security_policy_digest =
@@ -1862,17 +1848,14 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
     plan_request.predicate_kind = "all_visible_rows";
     return plan_request;
   }
-  if (request.delete_predicate.predicate_kind == "row_uuid_match" &&
-      !request.delete_predicate.canonical_predicate_envelope.empty()) {
+  if (request.delete_predicate.predicate_kind == "row_uuid_match") {
     plan_request.predicate_kind = "row_uuid_match";
-    plan_request.row_uuid = request.delete_predicate.canonical_predicate_envelope;
+    plan_request.row_uuid = request.delete_predicate.row_uuid;
     plan_request.estimated_rows = 1;
     return plan_request;
   }
-  auto row_uuid_list = RowUuidListFromPredicate(request.delete_predicate);
-  if (!row_uuid_list.empty()) {
+  if (request.delete_predicate.predicate_kind == "row_uuid_in_list") {
     plan_request.predicate_kind = "row_uuid_in_list";
-    plan_request.row_uuids = std::move(row_uuid_list);
     plan_request.estimated_rows =
         static_cast<std::uint64_t>(plan_request.row_uuids.size());
     return plan_request;
@@ -6994,6 +6977,10 @@ EngineDmlUpdateRowsExecuteResultV1 ExecuteDmlUpdateRowsDescriptorV1(
 // SEARCH_KEY: SB_PID004_OPTIMIZED_UPDATE_DELETE_EXECUTOR_BEHAVIOR
 
 EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest& request) {
+  for (const auto* predicate : {&request.update_predicate, &request.predicate})
+    if (const auto* error = DmlRowIdentityPredicateError(*predicate))
+      return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context,
+          "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", error));
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "local_transaction_id_required"));
   }
@@ -7896,6 +7883,10 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
 }
 
 EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest& request) {
+  for (const auto* predicate : {&request.delete_predicate, &request.predicate})
+    if (const auto* error = DmlRowIdentityPredicateError(*predicate))
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context,
+          "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", error));
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", MakeInvalidRequestDiagnostic("dml.delete_rows", "local_transaction_id_required"));
   }

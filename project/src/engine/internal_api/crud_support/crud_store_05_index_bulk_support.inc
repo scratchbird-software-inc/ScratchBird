@@ -244,13 +244,8 @@ bool CrudSqlLikePatternMatches(std::string_view value, std::string_view pattern)
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate) {
   if (predicate.predicate_kind.empty()) { return true; }
   if (predicate.predicate_kind == "always_false") { return false; }
-  if (predicate.predicate_kind == "row_uuid_match") { return row.row_uuid == predicate.canonical_predicate_envelope; }
-  if (predicate.predicate_kind == "row_uuid_in_list") {
-    for (const auto& bound : predicate.bound_values) {
-      if (row.row_uuid == bound.encoded_value) { return true; }
-    }
-    return false;
-  }
+  if (predicate.predicate_kind == "row_uuid_match" || predicate.predicate_kind == "row_uuid_in_list")
+    return DmlRowIdentityPredicateMatches(predicate, row.row_uuid);
   if (predicate.predicate_kind == "column_equals") {
     if (predicate.bound_values.empty()) { return false; }
     const std::string value =

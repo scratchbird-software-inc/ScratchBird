@@ -126,9 +126,9 @@ EnginePredicateEnvelope MergePredicateForRow(const EngineMergeRowsRequest& reque
                                              const EngineRowValue& row) {
   EnginePredicateEnvelope predicate = !request.match_predicate.predicate_kind.empty() ? request.match_predicate
                                                                                      : request.predicate;
-  if (predicate.predicate_kind == "row_uuid_match" && predicate.canonical_predicate_envelope.empty() &&
+  if (predicate.predicate_kind == "row_uuid_match" && predicate.row_uuid.is_nil() &&
       !row.requested_row_uuid.is_nil()) {
-    predicate.canonical_predicate_envelope = row.requested_row_uuid;
+    predicate.row_uuid = row.requested_row_uuid;
   }
   if (predicate.predicate_kind == "column_equals" && predicate.bound_values.empty() &&
       !predicate.canonical_predicate_envelope.empty()) {
@@ -255,10 +255,9 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
           ? request.context.snapshot_visible_through_local_transaction_id
           : request.context.local_transaction_id;
 
-  if (predicate.predicate_kind == "row_uuid_match" &&
-      !predicate.canonical_predicate_envelope.empty()) {
+  if (predicate.predicate_kind == "row_uuid_match") {
     plan_request.predicate_kind = "row_uuid_match";
-    plan_request.row_uuid = predicate.canonical_predicate_envelope;
+    plan_request.row_uuid = predicate.row_uuid;
     plan_request.estimated_rows = 1;
     return plan_request;
   }
@@ -600,23 +599,10 @@ void RecordMergeMetric(const char* action, double value) {
       "engine_merge");
 }
 
-EngineTypedValue RowUuidSetValue(const std::string& row_uuid) {
-  EngineTypedValue value;
-  value.descriptor.descriptor_kind = "scalar";
-  value.descriptor.canonical_type_name = "row_uuid";
-  value.descriptor.encoded_descriptor = "type=row_uuid";
-  value.encoded_value = row_uuid;
-  return value;
-}
-
-EnginePredicateEnvelope RowUuidSetPredicate(const std::vector<std::string>& row_uuids) {
+EnginePredicateEnvelope RowUuidSetPredicate(const std::vector<EngineUuid>& row_uuids) {
   EnginePredicateEnvelope predicate;
   predicate.predicate_kind = "row_uuid_in_list";
-  predicate.canonical_predicate_envelope = "row_uuid";
-  predicate.bound_values.reserve(row_uuids.size());
-  for (const auto& row_uuid : row_uuids) {
-    predicate.bound_values.push_back(RowUuidSetValue(row_uuid));
-  }
+  predicate.row_uuids = row_uuids;
   return predicate;
 }
 
@@ -648,7 +634,7 @@ void AppendMergeUpdateOptions(const EngineMergeRowsRequest& request,
 using MergeReturningRowsByOrdinal = std::map<std::size_t, EngineRowValue>;
 
 void AddRowsByUuid(const EngineResultShape& shape,
-                   std::unordered_map<std::string, EngineRowValue>* rows_by_uuid) {
+                   std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash>* rows_by_uuid) {
   for (const auto& row : shape.rows) {
     if (!row.requested_row_uuid.is_nil()) {
       (*rows_by_uuid)[row.requested_row_uuid] = row;
@@ -663,7 +649,7 @@ void AppendEvidence(std::vector<EngineEvidenceReference>* target,
 
 struct MergeActionBatchMember {
   std::size_t source_ordinal = 0;
-  std::string matched_row_uuid;
+  EngineUuid matched_row_uuid;
   EngineRowValue source_row;
 };
 
@@ -884,6 +870,9 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   for (std::size_t source_ordinal = 0; source_ordinal < source_rows.size(); ++source_ordinal) {
     const EngineRowValue& source_row = source_rows[source_ordinal];
     EnginePredicateEnvelope predicate = MergePredicateForRow(request, source_row);
+    if (const auto* error = DmlRowIdentityPredicateError(predicate))
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context,
+          "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", error));
     if (predicate.predicate_kind.empty()) {
       return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "match_predicate_required"));
     }
@@ -1022,7 +1011,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   for (const auto& [digest, batch] : update_batches_by_digest) {
     (void)digest;
     if (batch.members.empty()) { continue; }
-    std::vector<std::string> row_uuids;
+    std::vector<EngineUuid> row_uuids;
     row_uuids.reserve(batch.members.size());
     for (const auto& member : batch.members) {
       row_uuids.push_back(member.matched_row_uuid);
@@ -1040,7 +1029,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     ++update_batch_count;
     result.updated_count += updated.updated_count;
     result.merged_count += updated.updated_count;
-    std::unordered_map<std::string, EngineRowValue> rows_by_uuid;
+    std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> rows_by_uuid;
     AddRowsByUuid(updated.result_shape, &rows_by_uuid);
     for (const auto& member : batch.members) {
       const auto found = rows_by_uuid.find(member.matched_row_uuid);
@@ -1104,7 +1093,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   }
 
   if (!delete_batch.members.empty()) {
-    std::vector<std::string> row_uuids;
+    std::vector<EngineUuid> row_uuids;
     row_uuids.reserve(delete_batch.members.size());
     for (const auto& member : delete_batch.members) {
       row_uuids.push_back(member.matched_row_uuid);
@@ -1118,7 +1107,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       return MergeFailureFromDelete(request, deleted);
     }
     result.merged_count += deleted.deleted_count;
-    std::unordered_map<std::string, EngineRowValue> rows_by_uuid;
+    std::unordered_map<EngineUuid, EngineRowValue, EngineUuidHash> rows_by_uuid;
     AddRowsByUuid(deleted.result_shape, &rows_by_uuid);
     for (const auto& member : delete_batch.members) {
       const auto found = rows_by_uuid.find(member.matched_row_uuid);

@@ -275,6 +275,11 @@ struct EnginePredicateEnvelope {
   std::string predicate_kind;
   std::string canonical_predicate_envelope;
   std::vector<EngineTypedValue> bound_values;
+  // System row selection is identity, not a text envelope or user UUID value.
+  // Exactly one carrier is admitted according to predicate_kind; an empty
+  // row_uuid_in_list is a valid zero-target predicate.
+  EngineUuid row_uuid;
+  std::vector<EngineUuid> row_uuids;
 };
 
 struct EngineProjectionEnvelope {

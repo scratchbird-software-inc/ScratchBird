@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by crud_store.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "crud_support/crud_store.hpp"
+#include "dml/dml_target_access_plan.hpp"
 
 #include "local_transaction_store.hpp"
 #include "metric_producer.hpp"

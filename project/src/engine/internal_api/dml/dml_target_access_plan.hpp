@@ -97,6 +97,13 @@ struct DmlTargetAccessPlan {
 };
 
 const char* DmlTargetAccessKindName(DmlTargetAccessKind kind);
+// nullptr means structurally valid. This does not establish visibility,
+// authorization, descriptor binding or transaction authority.
+const char* DmlRowIdentityPredicateError(const EnginePredicateEnvelope& predicate);
+bool DmlRowIdentityPredicateMatches(const EnginePredicateEnvelope& predicate,
+                                    const EngineUuid& row_uuid);
+// Opaque binary point key, shared by serializable reads and writes.
+std::string DmlRowIdentityPointKey(const EngineUuid& row_uuid);
 DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& request);
 void AdmitDmlHotPointLookupCacheSuccessfulRowLocator(
     const DmlTargetAccessPlanRequest& request,

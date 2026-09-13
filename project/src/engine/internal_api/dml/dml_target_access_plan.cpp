@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -126,8 +127,9 @@ const char* InvalidTargetIdentity(const DmlTargetAccessPlanRequest& request) {
   if ((request.predicate_kind == "row_uuid_eq" || request.predicate_kind == "row_uuid_match") &&
       request.row_uuid.is_nil())
     return "missing singleton row identity";
-  if (request.predicate_kind == "row_uuid_in_list" && !request.row_uuid.is_nil())
-    return "singleton identity supplied for row list";
+  if (request.predicate_kind == "row_uuid_in_list" &&
+      (!request.row_uuid.is_nil() || !request.index_uuid.is_nil()))
+    return "singleton or index identity supplied for row list";
   return nullptr;
 }
 
@@ -417,6 +419,43 @@ const char* DmlTargetAccessKindName(DmlTargetAccessKind kind) {
     case DmlTargetAccessKind::table_scan: return "table_scan";
   }
   return "refused";
+}
+
+const char* DmlRowIdentityPredicateError(const EnginePredicateEnvelope& predicate) {
+  const bool singleton = predicate.predicate_kind == "row_uuid_match";
+  const bool list = predicate.predicate_kind == "row_uuid_in_list";
+  if (!singleton && !list)
+    return predicate.row_uuid.is_nil() && predicate.row_uuids.empty()
+        ? nullptr : "row identities require a row identity predicate";
+  if (!predicate.canonical_predicate_envelope.empty() || !predicate.bound_values.empty())
+    return "row identity predicates reject text envelopes and scalar bound values";
+  if (singleton)
+    return uuid::IsEngineIdentityUuid(predicate.row_uuid) && predicate.row_uuids.empty()
+        ? nullptr : "row singleton requires exactly one binary UUIDv7";
+  if (!predicate.row_uuid.is_nil()) return "row list rejects singleton identity";
+  std::set<EngineUuid> seen;
+  for (const auto& row : predicate.row_uuids)
+    if (!uuid::IsEngineIdentityUuid(row) || !seen.insert(row).second)
+      return "row list contains invalid or duplicate binary UUIDv7";
+  return nullptr;
+}
+
+bool DmlRowIdentityPredicateMatches(const EnginePredicateEnvelope& predicate,
+                                    const EngineUuid& row_uuid) {
+  if (!uuid::IsEngineIdentityUuid(row_uuid) || DmlRowIdentityPredicateError(predicate))
+    return false;
+  if (predicate.predicate_kind == "row_uuid_match") return predicate.row_uuid == row_uuid;
+  return predicate.predicate_kind == "row_uuid_in_list" &&
+      std::find(predicate.row_uuids.begin(), predicate.row_uuids.end(), row_uuid) !=
+          predicate.row_uuids.end();
+}
+
+std::string DmlRowIdentityPointKey(const EngineUuid& row_uuid) {
+  if (!uuid::IsEngineIdentityUuid(row_uuid))
+    throw std::invalid_argument("row point key requires binary UUIDv7");
+  std::string key = "row_uuid:";
+  key.append(reinterpret_cast<const char*>(row_uuid.bytes.data()), row_uuid.bytes.size());
+  return key;
 }
 
 DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& request) {

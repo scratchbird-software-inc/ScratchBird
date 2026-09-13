@@ -9,6 +9,7 @@
 #include "dml/dml_row_locator_stream.hpp"
 #include "index_key_encoding.hpp"
 #include "hot_point_lookup_cache.hpp"
+#include "isolation.hpp"
 #include "uuid.hpp"
 #include "../common/single_tu_allocation_fault.hpp"
 
@@ -17,6 +18,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -653,6 +655,90 @@ void TestBinaryCacheKeyFramingAndDependencies() {
       "replacement at capacity evicted an unrelated entry");
 }
 
+void TestBinaryRowPredicates() {
+  const auto first = GeneratedUuid(platform::UuidKind::row).value;
+  const auto second = GeneratedUuid(platform::UuidKind::row).value;
+  api::EnginePredicateEnvelope predicate;
+  predicate.predicate_kind = "row_uuid_match";
+  Require(api::DmlRowIdentityPredicateError(predicate), "nil singleton admitted");
+  predicate.row_uuid = first;
+  Require(!api::DmlRowIdentityPredicateError(predicate), "binary singleton refused");
+  Require(api::DmlRowIdentityPredicateMatches(predicate, first) &&
+      !api::DmlRowIdentityPredicateMatches(predicate, second), "singleton identity mismatch");
+  const auto key = api::DmlRowIdentityPointKey(first);
+  Require(key.size() == 25 && key.substr(0, 9) == "row_uuid:" &&
+      std::equal(first.bytes.begin(), first.bytes.end(),
+          reinterpret_cast<const std::uint8_t*>(key.data() + 9)), "point key changed raw UUID bytes");
+  Require(key != api::DmlRowIdentityPointKey(second), "distinct row point keys collided");
+  namespace mga = scratchbird::transaction::mga;
+  mga::SerializableAccessRecord read;
+  read.local_id = mga::MakeLocalTransactionId(1);
+  read.transaction_state = mga::TransactionState::active;
+  read.kind = mga::SerializableAccessKind::point_read;
+  read.range = mga::MakeSerializablePointRange(GeneratedUuid(platform::UuidKind::object), key);
+  read.sequence = 1;
+  read.durable_inventory_authoritative = true;
+  auto write = read;
+  write.local_id = mga::MakeLocalTransactionId(2);
+  write.kind = mga::SerializableAccessKind::update;
+  write.sequence = 2;
+  auto conflict = mga::EvaluateSerializableWriteConflict({read}, write);
+  Require(!conflict.ok() && conflict.conflict == mga::SerializableConflictKind::read_write,
+      "same binary row read/write conflict was missed");
+  write.range = mga::MakeSerializablePointRange(read.range.relation_uuid,
+                                                api::DmlRowIdentityPointKey(second));
+  Require(mga::EvaluateSerializableWriteConflict({read}, write).ok(),
+      "different binary rows produced a spurious point conflict");
+  predicate.canonical_predicate_envelope = uuid::UuidToString(first);
+  Require(api::DmlRowIdentityPredicateError(predicate) &&
+      !api::DmlRowIdentityPredicateMatches(predicate, first), "redundant text identity admitted");
+  predicate.canonical_predicate_envelope.clear();
+  predicate.bound_values.emplace_back();
+  predicate.bound_values.back().binary_value.assign(first.bytes.begin(), first.bytes.end());
+  Require(api::DmlRowIdentityPredicateError(predicate), "scalar carrier admitted as system identity");
+  predicate.bound_values.clear();
+  predicate.row_uuids.push_back(second);
+  Require(api::DmlRowIdentityPredicateError(predicate), "mixed singleton/list admitted");
+  predicate.row_uuids.clear();
+  for (unsigned version = 0; version != 16; ++version) {
+    if (version == 7) continue;
+    auto invalid = first;
+    invalid.bytes[6] = (invalid.bytes[6] & 0x0f) | (version << 4);
+    predicate.row_uuid = invalid;
+    Require(api::DmlRowIdentityPredicateError(predicate) &&
+        !api::DmlRowIdentityPredicateMatches(predicate, invalid), "non-v7 system row admitted");
+    bool threw = false;
+    try { (void)api::DmlRowIdentityPointKey(invalid); }
+    catch (const std::invalid_argument&) { threw = true; }
+    Require(threw, "non-v7 point key admitted");
+  }
+  predicate.row_uuid = first;
+  predicate.row_uuid.bytes[8] &= 0x3f;
+  Require(api::DmlRowIdentityPredicateError(predicate), "non-RFC row variant admitted");
+  predicate.row_uuid = {};
+  predicate.predicate_kind = "row_uuid_in_list";
+  Require(!api::DmlRowIdentityPredicateError(predicate) &&
+      !api::DmlRowIdentityPredicateMatches(predicate, first), "empty list is not zero targets");
+  predicate.row_uuids = {first, second};
+  Require(!api::DmlRowIdentityPredicateError(predicate) &&
+      api::DmlRowIdentityPredicateMatches(predicate, first) &&
+      api::DmlRowIdentityPredicateMatches(predicate, second), "binary list identity mismatch");
+  for (const auto& invalid : {api::EngineUuid{}, first}) {
+    predicate.row_uuids.push_back(invalid);
+    Require(api::DmlRowIdentityPredicateError(predicate) &&
+        !api::DmlRowIdentityPredicateMatches(predicate, first), "invalid suffix allowed a partial match");
+    predicate.row_uuids.pop_back();
+  }
+  predicate.predicate_kind = "column_equals";
+  Require(api::DmlRowIdentityPredicateError(predicate), "non-row predicate ignored row identities");
+  predicate.row_uuids.clear();
+  predicate.bound_values.emplace_back();
+  auto user_uuid = first;
+  user_uuid.bytes[6] = (user_uuid.bytes[6] & 0x0f) | 0x40;
+  predicate.bound_values[0].binary_value.assign(user_uuid.bytes.begin(), user_uuid.bytes.end());
+  Require(!api::DmlRowIdentityPredicateError(predicate), "user UUIDv4 incorrectly subjected to system policy");
+}
+
 }  // namespace
 
 int main() {
@@ -663,6 +749,7 @@ int main() {
   TestIndexedPlanWithoutPhysicalTreeRefusesUnlessExplicitFallback();
   TestBinaryIdentityAdmissionAndActualCacheLocator();
   TestBinaryCacheKeyFramingAndDependencies();
+  TestBinaryRowPredicates();
   std::cout << "dml_binary_locator checks=" << checks << " failures=0\n";
   return EXIT_SUCCESS;
 }

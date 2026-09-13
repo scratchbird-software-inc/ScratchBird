@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/select_api.hpp"
+#include "dml/dml_target_access_plan.hpp"
 
 #include "crud_support/crud_store.hpp"
 #include "catalog/global_aggregate_view.hpp"
@@ -645,7 +646,7 @@ std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
   visible.reserve(static_cast<std::size_t>(
       std::min<EngineApiU64>(limit, static_cast<EngineApiU64>(state.row_versions.size()))));
 
-  std::unordered_set<std::string> resolved_row_uuids;
+  std::unordered_set<EngineUuid, EngineUuidHash> resolved_row_uuids;
   resolved_row_uuids.reserve(visible.capacity());
   for (auto it = state.row_versions.rbegin(); it != state.row_versions.rend(); ++it) {
     const auto& row = *it;
@@ -670,6 +671,10 @@ std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_SELECT_API_STUBS
 
 EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) {
+  for (const auto* predicate : {&request.select_predicate, &request.predicate})
+    if (const auto* error = DmlRowIdentityPredicateError(*predicate))
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context,
+          "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", error));
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
   }
@@ -1043,10 +1048,7 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     std::vector<CrudRowVersionRecord> filtered;
     for (const auto& row : load_rows()) {
       const bool matches = predicate.predicate_kind.empty() ||
-                           (predicate.predicate_kind == "row_uuid_match"
-                                ? row.row_uuid ==
-                                      predicate.canonical_predicate_envelope
-                                : CrudRowMatchesPredicate(row, predicate));
+                           CrudRowMatchesPredicate(row, predicate);
       if (matches) filtered.push_back(row);
     }
     rows = std::move(filtered);
@@ -1055,10 +1057,10 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       row_scan_predicate =
           predicate.predicate_kind + ":global_aggregate_single_visible_scan";
     }
-  } else if (predicate.predicate_kind == "row_uuid_match" && !predicate.canonical_predicate_envelope.empty()) {
+  } else if (predicate.predicate_kind == "row_uuid_match" || predicate.predicate_kind == "row_uuid_in_list") {
     std::vector<CrudRowVersionRecord> filtered;
     for (const auto& row : load_rows()) {
-      if (row.row_uuid == predicate.canonical_predicate_envelope) { filtered.push_back(row); }
+      if (DmlRowIdentityPredicateMatches(predicate, row.row_uuid)) { filtered.push_back(row); }
     }
     rows = std::move(filtered);
     rows_ready = true;

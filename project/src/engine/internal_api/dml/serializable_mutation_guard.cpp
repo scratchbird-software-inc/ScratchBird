@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/serializable_mutation_guard.hpp"
+#include "dml/dml_target_access_plan.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 
 #include "api_diagnostics.hpp"
@@ -255,10 +256,6 @@ std::string RowFieldKey(std::string_view column, std::string_view encoded_value)
   return "column:" + std::string(column) + ":" + std::string(encoded_value);
 }
 
-std::string RowUuidKey(std::string_view row_uuid) {
-  return "row_uuid:" + std::string(row_uuid);
-}
-
 std::string PredicateDigest(const EnginePredicateEnvelope& predicate) {
   std::string digest = predicate.predicate_kind + ":" +
                        predicate.canonical_predicate_envelope + ":" +
@@ -282,24 +279,16 @@ std::vector<mga::SerializableKeyRange> RangesForPredicate(
     TypedUuid relation_uuid,
     const EnginePredicateEnvelope& predicate) {
   std::vector<mga::SerializableKeyRange> ranges;
-  if (predicate.predicate_kind == "row_uuid_match" &&
-      !predicate.canonical_predicate_envelope.empty()) {
+  if (predicate.predicate_kind == "row_uuid_match") {
     ranges.push_back(mga::MakeSerializablePointRange(
         relation_uuid,
-        RowUuidKey(predicate.canonical_predicate_envelope)));
+        DmlRowIdentityPointKey(predicate.row_uuid)));
     return ranges;
   }
   if (predicate.predicate_kind == "row_uuid_in_list") {
-    for (const auto& value : predicate.bound_values) {
-      if (!value.encoded_value.empty()) {
-        ranges.push_back(mga::MakeSerializablePointRange(
-            relation_uuid,
-            RowUuidKey(value.encoded_value)));
-      }
-    }
-    if (!ranges.empty()) {
-      return ranges;
-    }
+    for (const auto& row : predicate.row_uuids)
+      ranges.push_back(mga::MakeSerializablePointRange(relation_uuid, DmlRowIdentityPointKey(row)));
+    return ranges;
   }
   if (predicate.predicate_kind == "column_equals" &&
       !predicate.canonical_predicate_envelope.empty() &&
@@ -362,7 +351,7 @@ std::vector<mga::SerializableKeyRange> RangesForRows(
     if (!row.requested_row_uuid.is_nil()) {
       ranges.push_back(mga::MakeSerializablePointRange(
           relation_uuid,
-          RowUuidKey(row.requested_row_uuid)));
+          DmlRowIdentityPointKey(row.requested_row_uuid)));
     }
     for (const auto& [column, value] : row.fields) {
       if (column.empty()) {
@@ -814,6 +803,9 @@ SerializableDmlAdmissionResult RecordSerializableSelectRead(
     std::string relation_uuid,
     const EnginePredicateEnvelope& predicate,
     std::span<const std::string> option_envelopes) {
+  if (const auto* error = DmlRowIdentityPredicateError(predicate))
+    return Refuse(operation_id, "CATALOG.INVALID_INPUT",
+                  "dml.row_identity_predicate.invalid", error);
   const TypedUuid relation = ParseRelationUuid(relation_uuid);
   auto result = RecordReadOrWrite(
       context,
@@ -885,6 +877,9 @@ SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {
+  if (const auto* error = DmlRowIdentityPredicateError(predicate))
+    return Refuse(operation_id, "CATALOG.INVALID_INPUT",
+                  "dml.row_identity_predicate.invalid", error);
   const TypedUuid relation = ParseRelationUuid(relation_uuid);
   auto result = CheckWriteOnly(
       context,
@@ -906,6 +901,9 @@ SerializableDmlAdmissionResult RecordSerializablePredicateMutation(
     const EnginePredicateEnvelope& predicate,
     bool delete_row,
     std::span<const std::string> option_envelopes) {
+  if (const auto* error = DmlRowIdentityPredicateError(predicate))
+    return Refuse(operation_id, "CATALOG.INVALID_INPUT",
+                  "dml.row_identity_predicate.invalid", error);
   const TypedUuid relation = ParseRelationUuid(relation_uuid);
   auto result = RecordReadOrWrite(
       context,
