@@ -293,15 +293,16 @@ page::RowDataPageBody RowPageBody(const Fixture& fixture) {
 }
 
 api::CrudRowVersionRecord CrudRow(const txn::RowVersionMetadata& metadata,
-                                  const std::string& table_uuid,
-                                  const std::string& version_uuid) {
+                                  const api::EngineUuid& table_uuid) {
   api::CrudRowVersionRecord row;
   row.creator_tx = metadata.identity.creator_transaction.local_id.value;
+  row.creator_transaction_uuid = metadata.identity.creator_transaction.transaction_uuid.value;
   row.event_sequence = metadata.identity.version_sequence;
   row.sequence = metadata.identity.version_sequence;
   row.table_uuid = table_uuid;
-  row.row_uuid = uuid::UuidToString(metadata.identity.row.row_uuid.value);
-  row.version_uuid = version_uuid;
+  row.row_uuid = metadata.identity.row.row_uuid.value;
+  row.version_uuid = metadata.identity.version_uuid;
+  row.previous_version_uuid = metadata.chain.previous_version_uuid.value;
   row.deleted = metadata.state == txn::RowVersionState::delete_marker ||
                 metadata.state == txn::RowVersionState::rolled_back;
   row.values = {{"id", std::to_string(metadata.identity.version_sequence)}};
@@ -309,7 +310,7 @@ api::CrudRowVersionRecord CrudRow(const txn::RowVersionMetadata& metadata,
 }
 
 api::CrudIndexEntryRecord IndexEntry(const api::CrudRowVersionRecord& row,
-                                     const std::string& index_uuid) {
+                                     const api::EngineUuid& index_uuid) {
   api::CrudIndexEntryRecord entry;
   entry.creator_tx = row.creator_tx;
   entry.event_sequence = row.event_sequence;
@@ -328,14 +329,14 @@ api::CrudIndexEntryRecord IndexEntry(const api::CrudRowVersionRecord& row,
 
 api::MgaRelationStoreState RelationState(const Fixture& fixture) {
   api::MgaRelationStoreState state;
-  const std::string table_uuid = uuid::UuidToString(fixture.relation_uuid.value);
-  const std::string index_uuid = uuid::UuidToString(fixture.index_uuid.value);
+  const auto table_uuid = fixture.relation_uuid.value;
+  const auto index_uuid = fixture.index_uuid.value;
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[0], table_uuid, "version-old"));
+      CrudRow(fixture.row_versions[0], table_uuid));
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[1], table_uuid, "version-current"));
+      CrudRow(fixture.row_versions[1], table_uuid));
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[2], table_uuid, "version-rolled-back"));
+      CrudRow(fixture.row_versions[2], table_uuid));
   for (const auto& row : state.row_versions) {
     state.index_entries.push_back(IndexEntry(row, index_uuid));
   }
@@ -620,7 +621,7 @@ api::MgaIntegratedPhysicalCleanupRequest IntegratedRequest(
 }
 
 bool HasVersion(const std::vector<api::CrudRowVersionRecord>& rows,
-                std::string_view version_uuid) {
+                const api::EngineUuid& version_uuid) {
   for (const auto& row : rows) {
     if (row.version_uuid == version_uuid) {
       return true;
@@ -676,9 +677,9 @@ void ProveIntegratedCleanup() {
               result.relation_sweep.removed_row_version_count == 2 &&
               result.relation_sweep.removed_index_entry_count == 2,
           "ELER-024 relation row/index state was not pruned");
-  Require(HasVersion(result.relation_sweep.state.row_versions, "version-current"),
+  Require(HasVersion(result.relation_sweep.state.row_versions, fixture.row_versions[1].identity.version_uuid),
           "ELER-024 current relation version was not retained");
-  Require(!HasVersion(result.relation_sweep.state.row_versions, "version-old"),
+  Require(!HasVersion(result.relation_sweep.state.row_versions, fixture.row_versions[0].identity.version_uuid),
           "ELER-024 old relation version was not reclaimed");
   Require(result.secondary_index_cleaned &&
               result.secondary_index_cleanup.validation_before_ok &&
@@ -746,7 +747,7 @@ void ProveMissingAuthorityFailsClosed() {
               std::string::npos,
           "ELER-024 non-authoritative refusal was not stable");
   Require(!refused.row_page_sweep.staged_page_changed &&
-              !refused.relation_sweep.physical_state_mutated &&
+              !refused.relation_sweep.staged_state_changed &&
               !refused.secondary_index_cleaned &&
               !refused.overflow_cleaned &&
               !refused.overflow_pages_reclaimed &&

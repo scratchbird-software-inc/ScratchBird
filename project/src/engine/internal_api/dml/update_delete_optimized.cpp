@@ -2364,11 +2364,12 @@ mga::RowVersionState RowVersionStateForCreator(
   }
 }
 
-scratchbird::core::platform::TypedUuid ParseHotProofUuid(
+scratchbird::core::platform::TypedUuid BindHotProofUuid(
     scratchbird::core::platform::UuidKind kind,
-    const std::string& text) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, text);
-  return parsed.ok() ? parsed.value : scratchbird::core::platform::TypedUuid{};
+    const EngineUuid& identity) {
+  return uuid::IsEngineIdentityUuid(identity)
+      ? scratchbird::core::platform::TypedUuid{kind, identity}
+      : scratchbird::core::platform::TypedUuid{};
 }
 
 struct HotProofTransactionLookup {
@@ -2474,30 +2475,36 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     return result;
   }
 
+  if (old_row.creator_transaction_uuid != old_creator.entry.identity.transaction_uuid.value ||
+      new_row.creator_transaction_uuid != new_creator.entry.identity.transaction_uuid.value ||
+      new_row.creator_tx != new_creator.entry.identity.local_id.value ||
+      request.context.transaction_uuid != new_creator.entry.identity.transaction_uuid.value) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "mga.hot_plus.creator_identity_mismatch", {}, true);
+    return result;
+  }
+
   const auto old_row_uuid =
-      ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+      BindHotProofUuid(scratchbird::core::platform::UuidKind::row,
                         old_row.row_uuid);
   const auto old_version_uuid =
-      ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+      BindHotProofUuid(scratchbird::core::platform::UuidKind::row,
                         old_row.version_uuid);
   const auto new_row_uuid =
       new_row.row_uuid == old_row.row_uuid
           ? old_row_uuid
-          : ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+          : BindHotProofUuid(scratchbird::core::platform::UuidKind::row,
                               new_row.row_uuid);
   const auto new_previous_version_uuid =
       new_row.previous_version_uuid == old_row.version_uuid
           ? old_version_uuid
-          : ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+          : BindHotProofUuid(scratchbird::core::platform::UuidKind::row,
                               new_row.previous_version_uuid);
   const auto old_previous_version_uuid =
-      old_row.previous_version_uuid.empty()
+      old_row.previous_version_uuid.is_nil()
           ? scratchbird::core::platform::TypedUuid{}
-          : ParseHotProofUuid(scratchbird::core::platform::UuidKind::row,
+          : BindHotProofUuid(scratchbird::core::platform::UuidKind::row,
                               old_row.previous_version_uuid);
-
-  const std::uint64_t proof_new_sequence =
-      old_row.sequence == 0 ? 1 : old_row.sequence + 1;
 
   mga::HotStableRowHeadProofInput input;
   input.old_visible_version = MakeHotProofRowMetadata(
@@ -2512,9 +2519,9 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
   input.new_version = MakeHotProofRowMetadata(
       new_row,
       new_creator.entry,
-      proof_new_sequence,
-      mga::RowVersionState::uncommitted,
-      mga::TransactionState::active,
+      new_row.sequence,
+      RowVersionStateForCreator(new_creator.entry, new_row.deleted),
+      RowVersionStateToCreatorState(new_creator.entry),
       new_row_uuid,
       new_previous_version_uuid,
       new_row.previous_sequence);

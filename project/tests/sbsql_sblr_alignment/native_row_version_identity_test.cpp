@@ -7,10 +7,12 @@
 #include "page_header.hpp"
 #include "disk_device.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "database_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
+#include "../common/single_tu_allocation_fault.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -28,6 +30,7 @@ namespace disk = scratchbird::storage::disk;
 namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 namespace memory = scratchbird::core::memory;
+namespace api = scratchbird::engine::internal_api;
 namespace fs = std::filesystem;
 unsigned checks = 0;
 void Check(bool ok, const char* detail) { ++checks; if (!ok) throw std::runtime_error(detail); }
@@ -499,6 +502,107 @@ void Storage(const fs::path& root,const std::string& self) {
         "display-label collision prevented exact binary version reclamation");
   const auto still_durable=db::ReadPhysicalMgaCowRows(batch_read);Good(still_durable);
   Check(still_durable.row_page.rows.size()==8,"page staging unexpectedly mutated durable storage");
+
+  // Feed actual native versions and their matching inventory projection into
+  // the engine's production snapshot cleanup, not string or mock identities.
+  api::MgaRelationPhysicalSweepRequest relation_cleanup;
+  relation_cleanup.relation_uuid=batch_cleanup_source.row_page.relation_uuid.value;
+  relation_cleanup.engine_mga_authoritative=true;relation_cleanup.cleanup_horizon_authoritative=true;
+  relation_cleanup.authoritative_cleanup_horizon_local_transaction_id=
+      batch_decision.cleanup.authoritative_cleanup_horizon_local_transaction_id;
+  relation_cleanup.max_row_versions_to_scan=16;relation_cleanup.max_index_entries_to_scan=32;
+  relation_cleanup.reclaim_evidence_records=batch_decision.cleanup.reclaim_evidence_records;
+  for(const auto& native:batch_cleanup_source.row_page.rows) {
+    api::CrudRowVersionRecord row;
+    row.table_uuid=relation_cleanup.relation_uuid;row.row_uuid=native.row_uuid.value;
+    row.version_uuid=native.version_uuid;row.creator_tx=native.local_transaction_id;
+    row.creator_transaction_uuid=native.transaction_uuid.value;row.sequence=native.row_version;
+    row.previous_version_uuid=native.previous_version_uuid;row.previous_sequence=native.previous_row_version;
+    row.deleted=native.deleted;relation_cleanup.state.row_versions.push_back(row);
+    api::CrudIndexEntryRecord index;
+    index.index_uuid=Id(701);index.table_uuid=row.table_uuid;index.row_uuid=row.row_uuid;
+    index.version_uuid=row.version_uuid;index.key_value="fixture index projection";
+    relation_cleanup.state.index_entries.push_back(index);
+  }
+  auto projected=api::ApplyMgaRelationPhysicalSweepToState(relation_cleanup);
+  Check(projected.ok && !projected.diagnostic.error && projected.staged_state_changed &&
+        projected.removed_row_version_count==8 && projected.removed_index_entry_count==8 &&
+        projected.state.row_versions.empty() && projected.state.index_entries.empty() && projected.evidence.empty(),
+        "binary engine projection did not remove all exact versions and index targets");
+  const auto reject_projection=[&](const api::MgaRelationPhysicalSweepRequest& request) {
+    const auto result=api::ApplyMgaRelationPhysicalSweepToState(request);
+    Check(!result.ok && result.fail_closed && !result.staged_state_changed && result.diagnostic.error &&
+          result.diagnostic.code=="CATALOG.INVALID_INPUT" && result.state.row_versions.empty() &&
+          result.state.index_entries.empty() && result.evidence.empty() &&
+          result.scanned_row_version_count==0 && result.removed_row_version_count==0 &&
+          result.retained_row_version_count==0 && result.scanned_index_entry_count==0 &&
+          result.removed_index_entry_count==0 && result.retained_index_entry_count==0,
+          "invalid binary projection produced partial cleanup or fake authority");
+  };
+  for(unsigned mode=0;mode<14;++mode) {
+    auto bad=relation_cleanup;
+    auto& row=bad.state.row_versions.back();auto& entry=bad.state.index_entries.back();
+    auto& evidence=bad.reclaim_evidence_records.back();
+    switch(mode) {
+      case 0: bad.relation_uuid=Id(800);break;
+      case 1: row.version_uuid={};break;
+      case 2: row.creator_transaction_uuid=Id(801);break;
+      case 3: ++row.creator_tx;break;
+      case 4: ++row.sequence;break;
+      case 5: row.table_uuid=Id(802);break;
+      case 6: row.row_uuid=Id(803);break;
+      case 7: ++evidence.authoritative_cleanup_horizon_local_transaction_id;break;
+      case 8: bad.reclaim_evidence_records.push_back(evidence);break;
+      case 9: evidence.row_version_identity.version_uuid=Id(804);break;
+      case 10: entry.table_uuid=Id(805);break;
+      case 11: entry.row_uuid=Id(806);break;
+      case 12: entry.version_uuid=Id(807);break;
+      case 13: bad.state.row_versions.push_back(row);break;
+    }
+    reject_projection(bad);
+  }
+  for(auto member:{&api::CrudRowVersionRecord::table_uuid,&api::CrudRowVersionRecord::row_uuid,
+                   &api::CrudRowVersionRecord::version_uuid,&api::CrudRowVersionRecord::creator_transaction_uuid}) {
+    for(unsigned version=0;version<16;++version)if(version!=7) {
+      auto bad=relation_cleanup;(bad.state.row_versions.back().*member).bytes[6]=static_cast<p::byte>(version<<4);
+      reject_projection(bad);
+    }
+    auto bad=relation_cleanup;(bad.state.row_versions.back().*member).bytes[8]=0;reject_projection(bad);
+  }
+  for(auto member:{&api::CrudIndexEntryRecord::index_uuid,&api::CrudIndexEntryRecord::table_uuid,
+                   &api::CrudIndexEntryRecord::row_uuid,&api::CrudIndexEntryRecord::version_uuid}) {
+    auto bad=relation_cleanup;(bad.state.index_entries.back().*member)={};reject_projection(bad);
+    bad=relation_cleanup;(bad.state.index_entries.back().*member).bytes[6]=0x40;reject_projection(bad);
+  }
+  // Distinct live projections are retained; a same-label decision cannot
+  // certify their reclamation. Empty evidence is an unchanged projection.
+  auto partial=relation_cleanup;partial.reclaim_evidence_records.pop_back();
+  const auto retained=api::ApplyMgaRelationPhysicalSweepToState(partial);
+  Check(retained.ok && retained.removed_row_version_count==7 && retained.removed_index_entry_count==7 &&
+        retained.state.row_versions.size()==1 && retained.state.index_entries.size()==1 &&
+        retained.state.row_versions[0].version_uuid==relation_cleanup.state.row_versions.back().version_uuid,
+        "projection lost the unmatched version or its index entry");
+  auto empty=relation_cleanup;empty.reclaim_evidence_records.clear();
+  const auto unchanged=api::ApplyMgaRelationPhysicalSweepToState(empty);
+  Check(unchanged.ok && !unchanged.staged_state_changed && unchanged.state.row_versions.size()==8 &&
+        unchanged.state.index_entries.size()==8,"empty cleanup changed the native projection");
+  allocation_attempts=0;allocations_before_failure=std::numeric_limits<std::ptrdiff_t>::max();
+  const auto measured=api::ApplyMgaRelationPhysicalSweepToState(relation_cleanup);
+  allocations_before_failure=-1;const auto allocation_count=allocation_attempts;
+  Check(measured.ok && allocation_count>0,"projection allocation coverage did not execute");
+  for(std::size_t failure=0;failure<allocation_count;++failure) {
+    bool threw=false;allocations_before_failure=static_cast<std::ptrdiff_t>(failure);
+    try { (void)api::ApplyMgaRelationPhysicalSweepToState(relation_cleanup); }
+    catch(const std::bad_alloc&) { threw=true; }
+    allocations_before_failure=-1;
+    Check(threw,"projection allocation failure returned fabricated success");
+    Check(relation_cleanup.state.row_versions.size()==8 && relation_cleanup.state.index_entries.size()==8 &&
+          relation_cleanup.state.row_versions.back().version_uuid==batch_cleanup_source.row_page.rows.back().version_uuid,
+          "projection allocation failure changed its native input snapshot");
+  }
+  std::cout<<"relation_cleanup allocation_points="<<allocation_count<<'\n';
+  const auto after_projection=db::ReadPhysicalMgaCowRows(batch_read);Good(after_projection);
+  Check(after_projection.row_page.rows.size()==8,"engine snapshot staging changed durable native rows");
   std::cout<<"PASS native insert/update/rollback/delete/batch and independent-process reopen checks="<<checks<<'\n';
 }
 int main(int argc,char** argv) {

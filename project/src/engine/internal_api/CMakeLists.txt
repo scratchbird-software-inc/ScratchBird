@@ -496,6 +496,7 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_relation_descriptor.cpp
   mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
+  mga_relation_store/mga_relation_state_sweep.cpp
   mga_relation_store/mga_relation_metadata_store.cpp
   mga_relation_store/mga_relation_metadata_writer.cpp
   mga_relation_store/mga_relation_statistics.cpp

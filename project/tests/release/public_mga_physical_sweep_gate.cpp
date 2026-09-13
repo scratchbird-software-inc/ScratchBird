@@ -207,15 +207,16 @@ page::RowDataPageBody PageBody(const Fixture& fixture) {
 }
 
 api::CrudRowVersionRecord CrudRow(const txn::RowVersionMetadata& metadata,
-                                  const std::string& table_uuid,
-                                  const std::string& version_uuid) {
+                                  const api::EngineUuid& table_uuid) {
   api::CrudRowVersionRecord row;
   row.creator_tx = metadata.identity.creator_transaction.local_id.value;
+  row.creator_transaction_uuid = metadata.identity.creator_transaction.transaction_uuid.value;
   row.event_sequence = metadata.identity.version_sequence;
   row.sequence = metadata.identity.version_sequence;
   row.table_uuid = table_uuid;
-  row.row_uuid = uuid::UuidToString(metadata.identity.row.row_uuid.value);
-  row.version_uuid = version_uuid;
+  row.row_uuid = metadata.identity.row.row_uuid.value;
+  row.version_uuid = metadata.identity.version_uuid;
+  row.previous_version_uuid = metadata.chain.previous_version_uuid.value;
   row.previous_sequence = metadata.chain.previous_version_sequence;
   row.deleted = metadata.state == txn::RowVersionState::delete_marker ||
                 metadata.state == txn::RowVersionState::rolled_back;
@@ -224,7 +225,7 @@ api::CrudRowVersionRecord CrudRow(const txn::RowVersionMetadata& metadata,
 }
 
 api::CrudIndexEntryRecord IndexEntry(const api::CrudRowVersionRecord& row,
-                                     const std::string& index_uuid) {
+                                     const api::EngineUuid& index_uuid) {
   api::CrudIndexEntryRecord entry;
   entry.creator_tx = row.creator_tx;
   entry.event_sequence = row.event_sequence;
@@ -243,14 +244,14 @@ api::CrudIndexEntryRecord IndexEntry(const api::CrudRowVersionRecord& row,
 
 api::MgaRelationStoreState RelationState(const Fixture& fixture) {
   api::MgaRelationStoreState state;
-  const std::string table_uuid = uuid::UuidToString(fixture.relation_uuid.value);
-  const std::string index_uuid = uuid::UuidToString(MakeUuid(UuidKind::object, 20).value);
+  const auto table_uuid = fixture.relation_uuid.value;
+  const auto index_uuid = MakeUuid(UuidKind::object, 20).value;
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[0], table_uuid, "version-old"));
+      CrudRow(fixture.row_versions[0], table_uuid));
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[1], table_uuid, "version-current"));
+      CrudRow(fixture.row_versions[1], table_uuid));
   state.row_versions.push_back(
-      CrudRow(fixture.row_versions[2], table_uuid, "version-rolled-back"));
+      CrudRow(fixture.row_versions[2], table_uuid));
   for (const auto& row : state.row_versions) {
     state.index_entries.push_back(IndexEntry(row, index_uuid));
   }
@@ -260,7 +261,7 @@ api::MgaRelationStoreState RelationState(const Fixture& fixture) {
 }
 
 bool HasVersion(const std::vector<api::CrudRowVersionRecord>& rows,
-                std::string_view version_uuid) {
+                const api::EngineUuid& version_uuid) {
   for (const auto& row : rows) {
     if (row.version_uuid == version_uuid) {
       return true;
@@ -270,7 +271,7 @@ bool HasVersion(const std::vector<api::CrudRowVersionRecord>& rows,
 }
 
 bool HasIndexVersion(const std::vector<api::CrudIndexEntryRecord>& entries,
-                     std::string_view version_uuid) {
+                     const api::EngineUuid& version_uuid) {
   for (const auto& entry : entries) {
     if (entry.version_uuid == version_uuid) {
       return true;
@@ -365,6 +366,7 @@ bool RelationIndexSweepProof() {
               << sweep.diagnostic.remediation_hint << '\n';
   }
   api::MgaRelationPhysicalSweepRequest request;
+  request.relation_uuid = fixture.relation_uuid.value;
   request.state = RelationState(fixture);
   request.reclaim_evidence_records = sweep.cleanup.reclaim_evidence_records;
   request.engine_mga_authoritative = true;
@@ -376,7 +378,7 @@ bool RelationIndexSweepProof() {
   request.max_index_entries_to_scan = 8;
   const auto result = api::ApplyMgaRelationPhysicalSweepToState(request);
   ok = Expect(result.ok, "PCR-083 relation physical sweep should apply") && ok;
-  ok = Expect(result.physical_state_mutated,
+  ok = Expect(result.staged_state_changed,
               "PCR-083 relation physical sweep should mutate state") &&
        ok;
   ok = Expect(result.removed_row_version_count == 2,
@@ -388,22 +390,22 @@ bool RelationIndexSweepProof() {
   ok = Expect(result.retained_row_version_count == 1,
               "PCR-083 relation sweep should retain current row version") &&
        ok;
-  ok = Expect(HasVersion(result.state.row_versions, "version-current"),
+  ok = Expect(HasVersion(result.state.row_versions, fixture.row_versions[1].identity.version_uuid),
               "PCR-083 relation sweep should retain current version") &&
        ok;
-  ok = Expect(!HasVersion(result.state.row_versions, "version-old"),
+  ok = Expect(!HasVersion(result.state.row_versions, fixture.row_versions[0].identity.version_uuid),
               "PCR-083 relation sweep should remove obsolete version") &&
        ok;
-  ok = Expect(!HasVersion(result.state.row_versions, "version-rolled-back"),
+  ok = Expect(!HasVersion(result.state.row_versions, fixture.row_versions[2].identity.version_uuid),
               "PCR-083 relation sweep should remove rolled-back version") &&
        ok;
-  ok = Expect(HasIndexVersion(result.state.index_entries, "version-current"),
+  ok = Expect(HasIndexVersion(result.state.index_entries, fixture.row_versions[1].identity.version_uuid),
               "PCR-083 relation sweep should retain current index entry") &&
        ok;
-  ok = Expect(!HasIndexVersion(result.state.index_entries, "version-old"),
+  ok = Expect(!HasIndexVersion(result.state.index_entries, fixture.row_versions[0].identity.version_uuid),
               "PCR-083 relation sweep should remove obsolete index entry") &&
        ok;
-  ok = Expect(!HasIndexVersion(result.state.index_entries, "version-rolled-back"),
+  ok = Expect(!HasIndexVersion(result.state.index_entries, fixture.row_versions[2].identity.version_uuid),
               "PCR-083 relation sweep should remove rolled-back index entry") &&
        ok;
 

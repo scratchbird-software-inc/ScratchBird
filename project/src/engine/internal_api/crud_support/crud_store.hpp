@@ -60,25 +60,26 @@ inline constexpr const char* kCrudIndexFamilyPolicyBlocked = "policy_blocked";
 struct CrudTableRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   // Migration/display cache only. SQL object name authority is SBNAME1 name registry.
   std::string default_name;
   std::vector<std::pair<std::string, std::string>> columns;
   bool temporary = false;
   std::string temporary_scope;
-  std::string temporary_session_uuid;
+  EngineUuid temporary_session_uuid;
   std::string on_commit_action;
 };
 
 struct CrudRowVersionRecord {
   std::uint64_t creator_tx = 0;
+  EngineUuid creator_transaction_uuid;
   std::uint64_t event_sequence = 0;
   std::uint64_t sequence = 0;
-  std::string table_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
-  std::string temporary_session_uuid;
-  std::string previous_version_uuid;
+  EngineUuid table_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
+  EngineUuid temporary_session_uuid;
+  EngineUuid previous_version_uuid;
   std::uint64_t previous_sequence = 0;
   bool deleted = false;
   std::vector<std::pair<std::string, std::string>> values;
@@ -87,8 +88,8 @@ struct CrudRowVersionRecord {
 struct CrudIndexRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::string column_name;
   std::string family;
   std::string profile;
@@ -108,21 +109,21 @@ struct CrudIndexEntryRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
   std::uint64_t sequence = 0;
-  std::string index_uuid;
-  std::string table_uuid;
+  EngineUuid index_uuid;
+  EngineUuid table_uuid;
   std::string column_name;
   std::string family;
   std::string entry_kind;
   std::string key_value;
   std::string payload_value;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
 };
 
 struct CrudLargeValueChunkRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string overflow_uuid;
+  EngineUuid overflow_uuid;
   std::uint64_t ordinal = 0;
   std::string payload_fragment;
   std::uint64_t checksum = 0;
@@ -131,10 +132,10 @@ struct CrudLargeValueChunkRecord {
 struct CrudLargeValueRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string overflow_uuid;
-  std::string table_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid overflow_uuid;
+  EngineUuid table_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::string field_name;
   std::uint64_t total_bytes = 0;
   std::string content_hash;
@@ -149,8 +150,8 @@ struct CrudLargeValueRecord {
 struct CrudSealedRelationDescriptorSnapshot {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string relation_uuid;
-  std::string relation_descriptor_uuid;
+  EngineUuid relation_uuid;
+  EngineUuid relation_descriptor_uuid;
   std::uint64_t relation_descriptor_generation = 0;
   std::uint64_t descriptor_field_count = 0;
   std::uint64_t descriptor_field_bytes = 0;

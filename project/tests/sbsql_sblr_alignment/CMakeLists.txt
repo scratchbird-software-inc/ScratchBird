@@ -457,10 +457,15 @@ endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 add_executable(sbsql_sblr_alignment_native_row_version_identity native_row_version_identity_test.cpp)
+target_sources(sbsql_sblr_alignment_native_row_version_identity PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api/mga_relation_store/mga_relation_state_sweep.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api/api_unsupported.cpp)
+target_include_directories(sbsql_sblr_alignment_native_row_version_identity PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api ${CMAKE_SOURCE_DIR}/src)
 target_compile_features(sbsql_sblr_alignment_native_row_version_identity PRIVATE cxx_std_23)
 target_compile_definitions(sbsql_sblr_alignment_native_row_version_identity PRIVATE
   SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
-target_link_libraries(sbsql_sblr_alignment_native_row_version_identity PRIVATE sb_storage_database)
+target_link_libraries(sbsql_sblr_alignment_native_row_version_identity PRIVATE sb_storage_database sb_core_diagnostic_catalog)
 add_test(NAME sbsql_sblr_alignment_native_row_version_identity
   COMMAND sbsql_sblr_alignment_native_row_version_identity)
 set_tests_properties(sbsql_sblr_alignment_native_row_version_identity PROPERTIES

@@ -796,6 +796,7 @@ struct MgaSecondaryIndexGarbageCleanupResult {
 };
 
 struct MgaRelationPhysicalSweepRequest {
+  EngineUuid relation_uuid;
   MgaRelationStoreState state;
   std::vector<scratchbird::transaction::mga::LocalCleanupReclaimEvidenceRecord>
       reclaim_evidence_records;
@@ -808,7 +809,8 @@ struct MgaRelationPhysicalSweepRequest {
 
 struct MgaRelationPhysicalSweepResult {
   bool ok = false;
-  bool physical_state_mutated = false;
+  // A derived snapshot only. No page/index publication is performed here.
+  bool staged_state_changed = false;
   bool fail_closed = false;
   EngineApiDiagnostic diagnostic;
   MgaRelationStoreState state;
