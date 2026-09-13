@@ -448,6 +448,41 @@ void CommitValidationAndPublication() {
   idx::UniqueIndexCommitPublicationRequest publication;
   publication.transaction_uuid = tx1;
   publication.local_transaction_id = 401;
+  publication.durable_commit_proof = Proof(tx1, 401, mga::TransactionState::archived, "archive-without-origin", true);
+  const auto ambiguous_archive = idx::PublishUniqueIndexCommit(&ledger, publication);
+  Require(!ambiguous_archive.ok() && !ambiguous_archive.commit_publication_marked &&
+      ledger.reservations.front().state == idx::UniqueIndexReservationRecordState::commit_validated,
+      "bare archived state authorized committed index publication");
+  for (unsigned origin = 0; origin <= 14; ++origin) {
+    auto candidate = ledger;
+    auto archived_publication = publication;
+    archived_publication.durable_commit_proof.archived_from_state = static_cast<mga::TransactionState>(origin);
+    const auto marked = idx::PublishUniqueIndexCommit(&candidate, archived_publication);
+    const bool committed_origin = origin == static_cast<unsigned>(mga::TransactionState::committed);
+    Require(marked.ok() == committed_origin && marked.commit_publication_marked == committed_origin &&
+        candidate.reservations.front().state == (committed_origin ?
+            idx::UniqueIndexReservationRecordState::committed_published : idx::UniqueIndexReservationRecordState::commit_validated),
+        "archived origin did not control committed reservation publication");
+    candidate = ledger;
+    idx::UniqueIndexRollbackCleanupRequest cleanup;
+    cleanup.transaction_uuid = tx1; cleanup.local_transaction_id = 401;
+    cleanup.rollback_proof = archived_publication.durable_commit_proof;
+    cleanup.rollback_proof.durable_commit_evidence = false;
+    cleanup.rollback_proof.durable_rollback_evidence = true;
+    const auto cleaned = idx::CleanupUniqueIndexReservationsForRollback(&candidate, cleanup);
+    const bool rollback_origin = origin == static_cast<unsigned>(mga::TransactionState::rolled_back);
+    Require(cleaned.ok() == rollback_origin && candidate.reservations.empty() == rollback_origin,
+        "archived origin did not control rollback reservation cleanup");
+  }
+  {
+    auto candidate = ledger;
+    auto invalid = publication;
+    invalid.durable_commit_proof.state = mga::TransactionState::committed;
+    invalid.durable_commit_proof.archived_from_state = mga::TransactionState::committed;
+    Require(!idx::PublishUniqueIndexCommit(&candidate, invalid).ok() &&
+        candidate.reservations.front().state == idx::UniqueIndexReservationRecordState::commit_validated,
+        "nonarchived proof accepted an archived origin");
+  }
   publication.durable_commit_proof =
       Proof(tx1, 401, mga::TransactionState::committed, "tx1-commit", true);
   const auto published = idx::PublishUniqueIndexCommit(&ledger, publication);

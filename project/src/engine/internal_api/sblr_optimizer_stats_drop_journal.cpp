@@ -12,7 +12,6 @@
 #include "transaction/mga/transaction_inventory.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
@@ -46,7 +45,6 @@ constexpr std::string_view kRecordDomain =
     "ScratchBird.SblrOptimizerStatsDropJournalRecord.V1";
 
 std::mutex g_process_journal_mutex;
-std::atomic<std::uint64_t> g_uuid_ordinal{1};
 
 struct JournalRecord {
   drop::SblrOptimizerStatsDropUuidV1 database_uuid{};
@@ -131,17 +129,10 @@ drop::SblrOptimizerStatsDropSha256V1 Hash(
   return Hash(bytes.data(), bytes.size());
 }
 
-std::string UuidText(const drop::SblrOptimizerStatsDropUuidV1& value) {
-  scratchbird::core::platform::Uuid uuid;
-  uuid.bytes = value;
-  return scratchbird::core::uuid::UuidToString(uuid);
-}
-
-drop::SblrOptimizerStatsDropUuidV1 UuidBytes(std::string_view value) {
-  drop::SblrOptimizerStatsDropUuidV1 bytes{};
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(value));
-  if (parsed.ok()) bytes = parsed.value.bytes;
-  return bytes;
+bool SystemUuid(const drop::SblrOptimizerStatsDropUuidV1& bytes) {
+  scratchbird::core::platform::Uuid value;
+  value.bytes = bytes;
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 drop::SblrOptimizerStatsDropUuidV1 NewUuid() {
@@ -149,13 +140,9 @@ drop::SblrOptimizerStatsDropUuidV1 NewUuid() {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
           .count());
-  for (std::uint64_t attempt = 0; attempt < 32; ++attempt) {
-    const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
-        scratchbird::core::platform::UuidKind::object,
-        now + g_uuid_ordinal.fetch_add(1, std::memory_order_relaxed));
-    if (generated.ok()) return generated.value.value.bytes;
-  }
-  return {};
+  const auto generated = scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, now);
+  return generated.ok() ? generated.value.value.bytes : drop::SblrOptimizerStatsDropUuidV1{};
 }
 
 std::string JournalPath(const EngineRequestContext& context) {
@@ -166,21 +153,21 @@ bool ContextValid(const EngineRequestContext& context) {
   return context.security_context_present &&
          context.statement_metadata_snapshot_engine_owned &&
          context.statement_transaction_inventory_snapshot != nullptr &&
-         !context.database_path.empty() && !context.database_uuid.is_nil() &&
-         !context.transaction_uuid.is_nil() &&
+         !context.database_path.empty() && scratchbird::core::uuid::IsEngineIdentityUuid(context.database_uuid) &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid) &&
          context.local_transaction_id != 0;
 }
 
 std::vector<std::uint8_t> EncodeRecord(const JournalRecord& record) {
-  if (!NonZero(record.database_uuid) || !NonZero(record.effect_uuid) ||
+  if (!SystemUuid(record.database_uuid) || !SystemUuid(record.effect_uuid) ||
       !NonZero(record.descriptor_sha256) ||
       record.prior_statistics_epoch == 0 ||
       record.prior_statistics_epoch == std::numeric_limits<std::uint64_t>::max() ||
       record.statistics_epoch != record.prior_statistics_epoch + 1 ||
       record.record_generation == 0 ||
-      !NonZero(record.durable_publication_uuid) ||
+      !SystemUuid(record.durable_publication_uuid) ||
       record.durable_publication_uuid == record.effect_uuid ||
-      !NonZero(record.owning_transaction_uuid) ||
+      !SystemUuid(record.owning_transaction_uuid) ||
       record.owning_local_transaction_id == 0 ||
       record.canonical_result_bytes.size() !=
           drop::kSblrOptimizerStatsDropResultBytes) {
@@ -327,18 +314,16 @@ TransactionVisibility RecordVisibility(
     return TransactionVisibility::invalid;
   }
   using State = mga::TransactionState;
-  if (found.entry.state == State::committed ||
-      found.entry.state == State::archived) {
+  if (mga::HasCommittedInventoryOutcome(found.entry)) {
     return TransactionVisibility::visible;
   }
-  if (found.entry.state == State::rolled_back ||
-      found.entry.state == State::failed_terminal) {
+  const auto outcome = mga::InventoryVisibilityState(found.entry);
+  if (outcome == State::rolled_back || outcome == State::failed_terminal) {
     return TransactionVisibility::invisible_terminal;
   }
   const bool own = record.owning_local_transaction_id ==
                        context.local_transaction_id &&
-                   UuidText(record.owning_transaction_uuid) ==
-                       context.transaction_uuid;
+                   record.owning_transaction_uuid == context.transaction_uuid.bytes;
   if (own && (found.entry.state == State::active ||
               found.entry.state == State::preparing ||
               found.entry.state == State::prepared ||
@@ -478,8 +463,8 @@ SblrOptimizerStatsEpochSnapshotV1 InspectSblrOptimizerStatsEpochV1(
         "statement_inventory_authority_required");
     return result;
   }
-  const auto database_uuid = UuidBytes(context.database_uuid);
-  if (!NonZero(database_uuid)) {
+  const auto database_uuid = context.database_uuid.bytes;
+  if (!SystemUuid(database_uuid)) {
     SblrOptimizerStatsEpochSnapshotV1 result;
     result.diagnostic = Diagnostic(
         "MGA.AUTHORITY_MISMATCH", "sblr.optimizer_stats_drop.inspect_invalid",
@@ -537,10 +522,10 @@ SblrOptimizerStatsDropPublicationV1 PublishSblrOptimizerStatsDropV1(
         "canonical_descriptor_and_statement_authority_required");
     return result;
   }
-  const auto database_uuid = UuidBytes(context.database_uuid);
-  if (!NonZero(database_uuid) ||
+  const auto database_uuid = context.database_uuid.bytes;
+  if (!SystemUuid(database_uuid) ||
       descriptor.owning_transaction_uuid !=
-          UuidBytes(context.transaction_uuid) ||
+          context.transaction_uuid.bytes ||
       descriptor.owning_local_transaction_id != context.local_transaction_id ||
       descriptor.inventory_generation !=
           context.statement_transaction_inventory_snapshot->inventory
@@ -718,7 +703,7 @@ SblrOptimizerStatsDropPublicationV1 PublishSblrOptimizerStatsDropV1(
       drop::EncodeSblrOptimizerStatsDropResultV1(publication);
   record.result_sha256 = Hash(record.canonical_result_bytes);
   const auto encoded = EncodeRecord(record);
-  if (!NonZero(record.durable_publication_uuid) ||
+  if (!SystemUuid(record.durable_publication_uuid) ||
       record.canonical_result_bytes.empty() || encoded.empty() ||
       !AppendAll(fd, encoded, bytes.size())) {
     (void)::flock(fd, LOCK_UN);

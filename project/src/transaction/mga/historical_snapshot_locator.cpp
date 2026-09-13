@@ -65,11 +65,6 @@ const TransactionInventoryEntry* FindEntry(const LocalTransactionInventory& inve
   return nullptr;
 }
 
-bool TargetStateQueryable(TransactionState state) {
-  return state == TransactionState::committed ||
-         state == TransactionState::archived;
-}
-
 HistoricalAuditLocationClass InferredLocationClass(TransactionState state) {
   return state == TransactionState::archived
       ? HistoricalAuditLocationClass::local_archive
@@ -170,7 +165,7 @@ HistoricalAuditSnapshotResult CreateHistoricalAuditSnapshot(
     return refused;
   }
 
-  if (!TargetStateQueryable(target->state)) {
+  if (!HasCommittedInventoryOutcome(*target)) {
     auto refused = Refuse(location_class,
                           "SB-MGA-HISTORICAL-SNAPSHOT-TARGET-NOT-QUERYABLE",
                           "transaction.historical_snapshot.target_not_queryable",

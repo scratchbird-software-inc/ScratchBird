@@ -397,6 +397,26 @@ bool FailClosedProofs(const SeededInventory& seeded) {
   return ok;
 }
 
+bool ArchivedRollbackCannotBecomeHistoricalCommit(const Fixture& fixture, const SeededInventory& seeded) {
+  const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+  if (!Expect(loaded.ok(), "load native inventory for archived rollback")) return false;
+  const auto begun = txn::BeginLocalTransaction(loaded.inventory, MakeUuid(UuidKind::transaction, 4200), kBaseMillis + 4200);
+  if (!Expect(begun.ok(), "begin archived rollback")) return false;
+  const auto rolled = txn::RollbackLocalTransaction(begun.inventory, begun.entry.identity.local_id, kBaseMillis + 4210);
+  if (!Expect(rolled.ok(), "rollback historical target")) return false;
+  const auto archived = txn::ArchiveLocalTransaction(rolled.inventory, rolled.entry.identity.local_id);
+  if (!Expect(archived.ok(), "archive rolled-back target") ||
+      !PersistInventory(fixture, archived.inventory, "persist archived rollback")) return false;
+  const auto reopened = db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
+  if (!Expect(reopened.ok(), "reopen archived rollback")) return false;
+  auto request = RequestFor(seeded, archived.entry, txn::HistoricalAuditLocationClass::local_archive);
+  request.inventory = reopened.inventory;
+  const auto refused = txn::CreateHistoricalAuditSnapshot(request);
+  return Expect(!refused.ok() && !refused.queryable &&
+      refused.diagnostic.diagnostic_code == "SB-MGA-HISTORICAL-SNAPSHOT-TARGET-NOT-QUERYABLE",
+      "archived rollback became a queryable historical commit");
+}
+
 bool DurableReloadProof(const Fixture& fixture, const SeededInventory& seeded) {
   const auto loaded =
       db::LoadLocalTransactionInventoryFromDatabase(fixture.database_path.string());
@@ -429,5 +449,6 @@ int main(int argc, char** argv) {
   ok = LocalHotHistoricalVisibilityProof(seeded) && ok;
   ok = FailClosedProofs(seeded) && ok;
   ok = DurableReloadProof(fixture, seeded) && ok;
+  ok = ArchivedRollbackCannotBecomeHistoricalCommit(fixture, seeded) && ok;
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

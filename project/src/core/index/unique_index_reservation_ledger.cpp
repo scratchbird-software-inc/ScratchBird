@@ -106,13 +106,19 @@ bool IsActiveOrUnresolved(TransactionState state) {
          state == TransactionState::recovering;
 }
 
-bool IsCommittedState(TransactionState state) {
-  return state == TransactionState::committed ||
-         state == TransactionState::archived;
+TransactionState ProvenOutcome(const UniqueIndexReservationTransactionProof& proof) {
+  if (proof.state != TransactionState::archived)
+    return proof.archived_from_state == TransactionState::none ? proof.state : TransactionState::none;
+  switch (proof.archived_from_state) {
+    case TransactionState::committed:
+    case TransactionState::rolled_back:
+    case TransactionState::failed_terminal: return proof.archived_from_state;
+    default: return TransactionState::none;
+  }
 }
 
-bool IsRollbackState(TransactionState state) {
-  return state == TransactionState::rolled_back;
+bool IsCommittedState(const UniqueIndexReservationTransactionProof& proof) {
+  return ProvenOutcome(proof) == TransactionState::committed;
 }
 
 const UniqueIndexReservationTransactionProof* FindProof(
@@ -132,6 +138,7 @@ const UniqueIndexReservationTransactionProof* FindProof(
 
 bool ProofHasMGAAuthority(const UniqueIndexReservationTransactionProof& proof) {
   return proof.engine_mga_authority &&
+         ProvenOutcome(proof) != TransactionState::none &&
          proof.durable_transaction_inventory_authoritative &&
          !proof.evidence_token.empty();
 }
@@ -151,12 +158,12 @@ bool ActiveProofValidForCommitValidation(
 }
 
 bool DurableCommitProofValid(const UniqueIndexReservationTransactionProof& proof) {
-  return ProofHasMGAAuthority(proof) && IsCommittedState(proof.state) &&
+  return ProofHasMGAAuthority(proof) && IsCommittedState(proof) &&
          proof.durable_commit_evidence;
 }
 
 bool DurableRollbackProofValid(const UniqueIndexReservationTransactionProof& proof) {
-  return ProofHasMGAAuthority(proof) && IsRollbackState(proof.state) &&
+  return ProofHasMGAAuthority(proof) && ProvenOutcome(proof) == TransactionState::rolled_back &&
          proof.durable_rollback_evidence;
 }
 
@@ -691,7 +698,7 @@ UniqueIndexReservationResult ReserveUniqueIndexKey(
                                   false));
       return result;
     }
-    if (IsCommittedState(proof->state)) {
+    if (IsCommittedState(*proof)) {
       auto result = Refuse(
           "INDEX.UNIQUE_RESERVATION.COMMITTED_CONFLICT_REFUSED",
           "core.index.unique_reservation.committed_conflict_refused",
@@ -989,7 +996,7 @@ UniqueIndexReservationResult ValidateUniqueIndexCommitBatch(
                                     false));
         return result;
       }
-      if (IsCommittedState(proof->state)) {
+      if (IsCommittedState(*proof)) {
         auto result = Refuse(
             "INDEX.UNIQUE_RESERVATION.COMMIT_COMMITTED_CONFLICT_REFUSED",
             "core.index.unique_reservation.commit_committed_conflict_refused",

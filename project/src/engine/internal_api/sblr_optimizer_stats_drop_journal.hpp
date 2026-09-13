@@ -30,7 +30,7 @@ struct SblrOptimizerStatsDropPublicationV1 {
 };
 
 // Reads and validates the complete durable statistics epoch chain. Visibility
-// is MGA-owned: committed/archived records and the caller's own active record
+// is MGA-owned: committed outcomes (including committed archives) and the caller's own active record
 // participate; rolled-back records remain history but do not advance epoch.
 SblrOptimizerStatsEpochSnapshotV1 InspectSblrOptimizerStatsEpochV1(
     const EngineRequestContext& context);

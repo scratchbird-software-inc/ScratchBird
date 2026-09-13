@@ -35,7 +35,7 @@ bool CrudCreatorVisible(const RelationReadSnapshot& state, std::uint64_t creator
   if (creator_tx == 0) { return true; }
   const auto it = state.transactions.find(creator_tx);
   if (it == state.transactions.end()) { return false; }
-  if (it->second == "committed" || it->second == "archived") { return true; }
+  if (it->second == "committed") { return true; }
   return creator_tx == observer_tx && (it->second == "active" || it->second == "prepared");
 }
 

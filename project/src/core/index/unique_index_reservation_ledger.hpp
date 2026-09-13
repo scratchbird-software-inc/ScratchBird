@@ -76,6 +76,8 @@ struct UniqueIndexReservationTransactionProof {
   bool durable_commit_evidence = false;
   bool durable_rollback_evidence = false;
   std::string evidence_token;
+  // Exact native inventory origin, required only for archived state.
+  TransactionState archived_from_state = TransactionState::none;
 };
 
 struct UniqueIndexReservationRequest {

@@ -107,8 +107,7 @@ bool MgaCreatorVisible(
              entry.state == TransactionState::preparing ||
              entry.state == TransactionState::prepared;
     }
-    if (entry.state != TransactionState::committed &&
-        entry.state != TransactionState::archived) {
+    if (!scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry)) {
       return false;
     }
 

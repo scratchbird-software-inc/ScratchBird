@@ -57,7 +57,7 @@ std::string ResolvedFamily(const CrudIndexRecord& index) {
 }
 
 bool CommittedState(std::string_view state) {
-  return state == "committed" || state == "archived";
+  return state == "committed";
 }
 
 bool RolledBackState(std::string_view state) {

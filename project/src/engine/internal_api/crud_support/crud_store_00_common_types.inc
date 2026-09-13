@@ -104,7 +104,7 @@ bool TxVisible(const RelationReadSnapshot& state, std::uint64_t creator_tx, std:
 std::uint64_t MaxCommittedCrudTransactionId(const RelationReadSnapshot& state) {
   std::uint64_t max_committed = 0;
   for (const auto& [tx, status] : state.transactions) {
-    if (status == "committed" || status == "archived") { max_committed = std::max(max_committed, tx); }
+    if (status == "committed") { max_committed = std::max(max_committed, tx); }
   }
   return max_committed;
 }
@@ -137,7 +137,7 @@ bool CrudRowVersionVisibleToContextInternal(const RelationReadSnapshot& state,
   }
   const auto it = state.transactions.find(row.creator_tx);
   if (it == state.transactions.end()) { return false; }
-  if (it->second != "committed" && it->second != "archived") { return false; }
+  if (it->second != "committed") { return false; }
   const std::uint64_t visible_through = VisibilityHighWaterForContext(state, context);
   return visible_through == 0 || row.creator_tx <= visible_through;
 }
@@ -192,9 +192,12 @@ EngineApiDiagnostic OverlayCrudTransactionAuthority(const EngineRequestContext& 
                                               "mga.transaction_inventory.load_failed");
   }
 
+  state->transactions.clear();
+  state->max_transaction_id = loaded.inventory.next_local_transaction_id - 1;
   for (const auto& entry : loaded.inventory.entries) {
     if (!entry.identity.local_id.valid()) { continue; }
-    state->transactions[entry.identity.local_id.value] = CrudTransactionStateName(entry.state);
+    state->transactions[entry.identity.local_id.value] = CrudTransactionStateName(
+        entry.state == TransactionState::archived ? entry.archived_from_state : entry.state);
     state->max_transaction_id = std::max(state->max_transaction_id, entry.identity.local_id.value);
   }
 

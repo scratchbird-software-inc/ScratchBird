@@ -150,6 +150,33 @@ void BehaviorReadFailures(const fs::path& path) {
   probe(bad, false, nullptr, true);
   Require(fs::remove(bad.database_path), "invalid database fixture cleanup failed");
   probe(context, true, nullptr); // A prior failed lookup cannot poison a valid empty read.
+  // Exercise the current legacy consumer against actual durable archive origins.
+  // This fixture does not admit SBAPI1 as the required native catalog format.
+  for (const bool commit : {false, true}) {
+    const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+    Require(loaded.ok(), "load native archive visibility fixture");
+    const auto id = uuid::GenerateEngineIdentityV7(UuidKind::transaction, Now());
+    Require(id.ok(), "archive visibility transaction UUID");
+    const auto begun = mga::BeginLocalTransaction(loaded.inventory, id.value, Now());
+    Require(begun.ok(), "begin native archive visibility fixture");
+    const auto finalized = commit ? mga::CommitLocalTransaction(begun.inventory, begun.entry.identity.local_id, Now()) :
+        mga::RollbackLocalTransaction(begun.inventory, begun.entry.identity.local_id, Now());
+    Require(finalized.ok(), "finalize native archive visibility fixture");
+    const auto archived = mga::ArchiveLocalTransaction(finalized.inventory, begun.entry.identity.local_id);
+    Require(archived.ok(), "archive native visibility fixture");
+    const auto persisted = db::PersistLocalTransactionInventoryToDatabase(path.string(), archived.inventory);
+    Require(persisted.ok(), "persist native archive visibility fixture");
+    {
+      std::ofstream out(journal, std::ios::binary);
+      out << "SBAPI1\tRECORD\t" << begun.entry.identity.local_id.value
+          << "\top\tlegacy-fixture\tobject\t\t\tactive\t0\n";
+      out.close(); Require(out.good(), "write isolated legacy visibility fixture");
+    }
+    const auto visible = engine::LoadApiBehaviorState(context);
+    check(visible.ok && visible.state.records.size() == (commit ? 1u : 0u),
+        "archived terminal origin lost in engine metadata visibility");
+    Require(fs::remove(journal), "remove isolated legacy visibility fixture");
+  }
   std::cout << "PASS behavior storage read failure propagation checks=" << checks << '\n';
 }
 void ResourceAdmission(const fs::path& path) {
