@@ -41,6 +41,7 @@ add_library(sb_storage_page
   damaged_page_quarantine.cpp
   hot_cold_row_split.cpp
   index_btree_page.cpp
+  native_index_btree_page.cpp
   index_hash_page.cpp
   index_page_family.cpp
   index_specialized_pages.cpp

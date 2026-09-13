@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_page_zero.hpp"
 #include "catalog_page.hpp"
+#include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
@@ -349,6 +350,108 @@ Bytes RootOracle(const page::NativeCatalogRoot& r) {
     PutUuid(b,at+56,ref.object_uuid);
   }
   RootSeal(b); return b;
+}
+page::NativeBtreePage BtreeExample(unsigned p=0,unsigned type=0x200,bool branch=false) {
+  page::NativeBtreePage r;r.header={sizes[p],type,Id(1),Id(2),Id(90),12,102,0,Profile(p)};
+  r.dependencies={Id(42),3,8,Id(43),Id(44),Id(45),{}};r.dependencies.dependency_map_sha256.fill(19);
+  r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;r.maintenance_state=1;r.tree_level=branch?1:0;
+  const auto ref=[&](u64 n){return disk::NativePageReference{Id(2),n,7,Profile(p)};};
+  if(type!=0x200){r.parent=ref(9);r.left=ref(10);r.right=ref(11);
+    r.low_fence=page::NativeBtreeKey{{0},Id(60),Id(61)};r.high_fence=page::NativeBtreeKey{{255,1},Id(60),Id(61)};}
+  if(branch)r.first_child=ref(20);
+  for(unsigned i=0;i<3;++i){page::NativeBtreeCell c;c.key={{static_cast<byte>(i==2?255:0)},Id(static_cast<byte>(70+i)),Id(static_cast<byte>(80+i))};
+    if(i==1)c.key.encoded_key.push_back(0);if(branch)c.child=ref(21+i);
+    else{c.deleted=i==0;c.base_page=disk::NativePageReference{Id(7),50+i,4,Profile((p+1)%5)};}r.cells.push_back(c);}
+  return r;
+}
+void BtreeSeal(Bytes& b) {std::fill(b.begin()+512,b.begin()+544,0);std::array<byte,32> digest{};
+  Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent full native B-tree hash");std::copy(digest.begin(),digest.end(),b.begin()+512);}
+Bytes BtreeOracle(const page::NativeBtreePage& r) {
+  auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  const std::string_view magic="SBBTP001";std::copy(magic.begin(),magic.end(),b.begin()+128);Number(b,136,2,1);Number(b,138,2,512);
+  const auto& d=r.dependencies;PutUuid(b,144,d.index_uuid);Number(b,160,8,d.descriptor_generation);Number(b,168,8,d.storage_generation);
+  PutUuid(b,176,d.key_profile_uuid);PutUuid(b,192,d.visibility_profile_uuid);PutUuid(b,208,d.dependency_map_uuid);
+  std::copy(d.dependency_map_sha256.begin(),d.dependency_map_sha256.end(),b.begin()+224);PutUuid(b,256,r.creator_transaction_uuid);
+  Number(b,272,8,r.creator_local_transaction_id);Number(b,280,2,r.maintenance_state);Number(b,282,2,r.tree_level);
+  const auto ref=[&](std::size_t at,const auto& p){if(!p)return;PutUuid(b,at,p->filespace_uuid);Number(b,at+16,8,p->page_number);Number(b,at+24,8,p->page_generation);PutUuid(b,at+32,p->page_size_profile_uuid);};
+  ref(288,r.parent);ref(336,r.left);ref(384,r.right);ref(432,r.first_child);
+  Number(b,496,4,r.cells.size());Number(b,500,4,std::count_if(r.cells.begin(),r.cells.end(),[](const auto& c){return c.deleted;}));Number(b,504,4,640);
+  std::size_t at=640+4*r.cells.size();const auto fence=[&](const auto& k,std::size_t slot){if(!k)return;Number(b,slot,4,at);Number(b,slot+4,4,40+k->encoded_key.size());
+    Number(b,at,4,k->encoded_key.size());PutUuid(b,at+8,k->row_uuid);PutUuid(b,at+24,k->version_uuid);std::copy(k->encoded_key.begin(),k->encoded_key.end(),b.begin()+at+40);at+=40+k->encoded_key.size();};
+  fence(r.low_fence,480);fence(r.high_fence,488);
+  for(unsigned i=0;i<r.cells.size();++i){const auto& c=r.cells[i];Number(b,640+4*i,4,at);Number(b,at,4,144+c.key.encoded_key.size());Number(b,at+4,4,c.key.encoded_key.size());Number(b,at+8,4,c.deleted?1:0);
+    PutUuid(b,at+16,c.key.row_uuid);PutUuid(b,at+32,c.key.version_uuid);ref(at+48,c.child);ref(at+96,c.base_page);std::copy(c.key.encoded_key.begin(),c.key.encoded_key.end(),b.begin()+at+144);at+=144+c.key.encoded_key.size();}
+  Number(b,140,4,at);BtreeSeal(b);return b;
+}
+void NativeBtreePages() {
+  using E=page::NativeBtreeError;
+  const auto empty=[&](const auto& r){Check(!r.ok()&&!r.page&&r.bytes.empty(),"native B-tree refusal returns no image or authority prefix");};
+  for(unsigned p=0;p<5;++p)for(unsigned variant=0;variant<4;++variant){const bool branch=variant%2;
+    const auto r=BtreeExample(p,variant<2?0x200:variant==2?0x202:0x201,branch);
+    const auto bytes=BtreeOracle(r),encoded=page::EncodeNativeBtreePage(r).bytes;
+    Check(bytes==encoded,"all profiles and roles independently packed B-tree image");const auto decoded=page::DecodeNativeBtreePage(bytes);
+    Check(decoded.ok()&&BtreeOracle(*decoded.page)==bytes,"decode independent B-tree frame without prototype body");}
+  const auto good=BtreeExample();const auto bytes=BtreeOracle(good);
+  for(std::size_t at=0;at<bytes.size();++at){auto bad=bytes;bad[at]^=1;empty(page::DecodeNativeBtreePage(bad));}
+  for(unsigned which=0;which<22;++which){auto r=BtreeExample(0,0x201,true);
+    if(which==0)r.dependencies.index_uuid={};if(which==1)r.dependencies.descriptor_generation=0;if(which==2)r.dependencies.storage_generation=0;
+    if(which==3)r.dependencies.key_profile_uuid={};if(which==4)r.dependencies.visibility_profile_uuid={};if(which==5)r.dependencies.dependency_map_uuid={};
+    if(which==6)r.dependencies.dependency_map_sha256.fill(0);if(which==7)r.creator_transaction_uuid={};if(which==8)r.creator_local_transaction_id=0;
+    if(which==9)r.maintenance_state=10;if(which==10)r.tree_level=0;if(which==11)r.parent.reset();if(which==12)r.low_fence.reset();
+    if(which==13)r.first_child.reset();if(which==14)r.cells[1].child=r.first_child;if(which==15)r.cells[1].child->page_size_profile_uuid=Profile(1);
+    if(which==16)r.cells[1].child->page_number=r.header.page_number;if(which==17)r.cells[1].key.row_uuid={};if(which==18)r.cells[1].key=r.cells[0].key;
+    if(which==19)r.high_fence=r.cells.back().key;if(which==20)r.cells[1].deleted=true;if(which==21)r.cells[1].base_page=r.parent;
+    empty(page::EncodeNativeBtreePage(r));empty(page::DecodeNativeBtreePage(BtreeOracle(r)));}
+  for(auto offset:{128u,136u,138u,140u,284u,504u,508u,544u,639u,640u,644u,656u,660u,664u,8191u}){
+    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);empty(page::DecodeNativeBtreePage(bad));}
+  for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);empty(page::DecodeNativeBtreePage(bad));}
+  {auto r=good;r.cells.clear();Check(page::EncodeNativeBtreePage(r).ok()&&page::DecodeNativeBtreePage(BtreeOracle(r)).ok(),"empty allocated root leaf is representable");}
+  {auto r=good;r.cells.resize(1);r.cells[0].key.encoded_key.resize(sizes[0],0);const auto e=page::EncodeNativeBtreePage(r);empty(e);Check(e.error==E::resource_exhausted,"oversized inline key cannot be truncated");}
+  // Tie-breaking is binary, including bytes after the first machine word.
+  {auto a=good.cells[0].key,b=a;b.row_uuid.bytes[15]^=1;Check(page::CompareNativeBtreeKeys(a,b)!=0,"full row UUID participates in tuple order");
+    b=a;b.version_uuid.bytes[15]^=1;Check(page::CompareNativeBtreeKeys(a,b)!=0,"full native version UUID participates in tuple order");}
+  for(unsigned mode=0;mode<2;++mode)for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;
+    const auto result=mode?page::DecodeNativeBtreePage(bytes):page::EncodeNativeBtreePage(good);
+    Check(hash_fault==0,"B-tree family digest backend fault consumed");empty(result);Check(result.error==E::hash_failure,"B-tree family digest error preserved");}
+  observed_allocations=0;count_allocations=true;auto encoded=page::EncodeNativeBtreePage(good);count_allocations=false;
+  const auto allocation_count=observed_allocations;Check(encoded.ok(),"measure B-tree encoder allocations");bool encoder_success=false;
+  for(unsigned long budget=0;budget<=allocation_count;++budget){allocation_budget=budget;encoded=page::EncodeNativeBtreePage(good);allocation_budget=-1;
+    if(encoded.ok()){encoder_success=true;break;}empty(encoded);Check(encoded.error==E::resource_exhausted,"B-tree encoder allocation refusal classified");}
+  Check(encoder_success,"every B-tree encoder allocation fault position");
+  for(unsigned p=0;p<5;++p){Fixture fixture;disk::FileDevice device;const auto path=(fixture.root/"native-btree").string();const auto r=BtreeExample(p);
+    const auto z=Example(p,p%2?5:6);const auto zero=Oracle(z),image=BtreeOracle(r);const byte padding=0;
+    Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,zero.data(),zero.size()).ok()
+      &&device.WriteAt(z.total_pages*sizes[p]-1,&padding,1).ok()&&device.WriteAt(12*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"persist native B-tree in actual index/data filespace");
+    const disk::NativePageReference ref{Id(2),12,102,Profile(p)};
+    const auto read=[&]{return page::ReadNativeBtreePageFromOpenDevice(device,Id(1),ref,0x200,r.dependencies);};
+    auto result=read();Check(result.ok()&&result.bytes==image,"retained-device exact B-tree image/dependency binding");
+    for(unsigned which=0;which<7;++which){auto d=r.dependencies;if(which==0)d.index_uuid=Id(200);if(which==1)++d.descriptor_generation;if(which==2)++d.storage_generation;
+      if(which==3)d.key_profile_uuid=Id(200);if(which==4)d.visibility_profile_uuid=Id(200);if(which==5)d.dependency_map_uuid=Id(200);if(which==6)d.dependency_map_sha256[31]^=1;
+      result=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),ref,0x200,d);empty(result);Check(result.error==E::binding_mismatch,"every exact descriptor dependency binding enforced");}
+    auto wrong=ref;++wrong.page_generation;result=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),wrong,0x200,r.dependencies);empty(result);Check(result.error==E::binding_mismatch,"exact page generation required");
+    result=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),ref,0x202,r.dependencies);empty(result);Check(result.error==E::binding_mismatch,"exact page role required");
+    for(u64 flags:{1u,2u,4u,8u}){auto flagged=r;flagged.header.flags=flags;const auto flag_image=BtreeOracle(flagged);
+      if(flags!=1)Check(page::EncodeNativeBtreePage(flagged).ok()&&page::DecodeNativeBtreePage(flag_image).ok(),"non-encrypted flag image inspection is not serving authority");
+      Check(device.WriteAt(12*sizes[p],flag_image.data(),flag_image.size()).ok(),"persist actual flagged B-tree image");
+      result=read();empty(result);Check(result.error==(flags==1?E::encrypted_requires_crypto_authority:flags==2?E::cluster_requires_authority:E::header_policy_requires_authority),"truthful crypto cluster or header policy requirement");}
+    {auto foreign=r;foreign.header.database_uuid=Id(201);foreign.header.flags=2;const auto foreign_image=BtreeOracle(foreign);
+      Check(device.WriteAt(12*sizes[p],foreign_image.data(),foreign_image.size()).ok(),"persist foreign cluster-flagged image");
+      result=read();empty(result);Check(result.error==E::binding_mismatch,"exact node identity precedes cluster policy classification");}
+    Check(device.WriteAt(12*sizes[p],image.data(),image.size()).ok(),"restore ordinary B-tree image");
+    for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;result=read();Check(hash_fault==0,"native B-tree hash provider fault consumed");empty(result);}
+    reads=0;track_reads=true;result=read();track_reads=false;const auto count=reads;Check(result.ok(),"measure B-tree actual reads");
+    for(unsigned fault=1;fault<=count;++fault){reads=0;read_fault=fault;track_reads=true;result=read();track_reads=false;Check(read_fault==0,"native B-tree read fault consumed");empty(result);}
+    observed_allocations=0;count_allocations=true;result=read();count_allocations=false;const auto allocations=observed_allocations;Check(result.ok(),"measure B-tree reader allocations");
+    bool success=false;for(unsigned long budget=0;budget<=allocations;++budget){allocation_budget=budget;result=read();allocation_budget=-1;
+      if(result.ok()){success=true;break;}empty(result);Check(result.error==E::resource_exhausted,"native B-tree allocation refusal classified");}Check(success,"every B-tree reader allocation fault position");
+    for(unsigned role:{1u,10u,14u}){const auto bad_zero=Oracle(Example(p,role));
+      Check(disk::DecodeFilespacePageZero(bad_zero.data(),bad_zero.size()).ok(),"nonserving role has valid canonical page zero");
+      Check(device.WriteAt(0,bad_zero.data(),bad_zero.size()).ok(),"write nonserving filespace role");result=read();empty(result);Check(result.error==E::invalid_filespace,"primary archive and import candidates not B-tree serving filespaces");}
+    Check(device.WriteAt(0,zero.data(),zero.size()).ok()&&device.Sync().ok(),"restore owned B-tree filespace");Exclusive(path);
+    Check(device.Close().ok(),"close B-tree before independent reopen");const auto child=::fork();Check(child>=0,"fork B-tree persisted reader");
+    if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","native-btree-probe","--native-btree-probe",path.c_str(),profile.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual canonical B-tree image");
+  }
 }
 void RootReject(const Bytes& b,RootError expected,std::source_location at=std::source_location::current()) {
   const auto r=page::DecodeNativeCatalogRoot(b);
@@ -1442,6 +1545,12 @@ void CanonicalCheckpointHistory() {
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies complete retained history");
 }
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--native-btree-probe") {
+    const auto p=static_cast<unsigned>(std::stoul(argv[3]));const auto expected=BtreeExample(p);disk::FileDevice device;
+    if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    const auto result=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),{Id(2),12,102,Profile(p)},0x200,expected.dependencies);
+    return result.ok()&&result.bytes==BtreeOracle(expected)?0:3;
+  }
   if(argc==4&&std::string_view(argv[1])=="--checkpoint-catalog-probe") {
     const std::filesystem::path path=argv[2];const unsigned p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5;
     disk::FileDevice first,second;
@@ -1498,7 +1607,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
