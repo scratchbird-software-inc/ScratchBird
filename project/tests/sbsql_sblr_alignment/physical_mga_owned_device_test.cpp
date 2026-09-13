@@ -740,6 +740,106 @@ void NativeCatalogMetadataVersions() {
   Check(committed_rows.ok() && committed_rows.rows.size() == 1 &&
       committed_rows.rows[0].metadata.record.header.row_uuid.value == retry.record.header.row_uuid.value,
       "rollback release did not publish the actual replacement row");
+
+  Fixture combined;
+  const auto batch_tx = combined.Begin();
+  std::vector<db::NativeCatalogVersionMutation> mutations;
+  for (unsigned i = 0; i != 3; ++i) {
+    auto value = metadata;
+    value.record.header.row_uuid = Id(UuidKind::row); value.record.header.object_uuid = Id(UuidKind::object);
+    value.creator_transaction_uuid = batch_tx.transaction_uuid; value.creator_local_transaction_id = batch_tx.local_id.value;
+    value.trace_search_key = "NATIVE-CATALOG-BATCH-" + std::to_string(i);
+    mutations.push_back({combined.relation, combined.first_page + i / 2, batch_tx, value, {}});
+  }
+  for (unsigned fault = 0; fault != 4; ++fault) {
+    auto invalid = mutations;
+    if (fault == 0) invalid.back().metadata.definition_version = 0;
+    if (fault == 1) invalid.back().metadata.record.header.row_uuid = invalid.front().metadata.record.header.row_uuid;
+    if (fault == 2) invalid.back().metadata.record.header.object_uuid = invalid.front().metadata.record.header.object_uuid;
+    if (fault == 3) invalid.back().transaction.local_id.value += 1;
+    const auto before = combined.Bytes(); const auto before_writes = write_calls;
+    const auto refused = db::WriteNativeCatalogVersionsToOpenDevice(combined.device, invalid);
+    Check(!refused.ok() && refused.row_receipts.empty() && combined.Bytes() == before && write_calls == before_writes,
+        "invalid catalog batch wrote earlier metadata or issued receipts");
+  }
+  const auto batch = db::WriteNativeCatalogVersionsToOpenDevice(combined.device, mutations);
+  Check(batch.ok() && batch.row_receipts.size() == 3 && batch.written_rows == 3 && batch.pages_written == 2,
+      "catalog batch omitted actual native receipts");
+  for (std::size_t i = 0; i != mutations.size(); ++i) {
+    const auto& receipt = batch.row_receipts[i]; const auto& request = mutations[i];
+    Check(receipt.row_uuid.value == request.metadata.record.header.row_uuid.value &&
+        receipt.relation_uuid.value == request.relation_uuid.value && receipt.page_number == request.page_number &&
+        receipt.creator.transaction_uuid.value == batch_tx.transaction_uuid.value &&
+        receipt.creator.local_id.value == batch_tx.local_id.value &&
+        receipt.creator.scope == batch_tx.scope && !receipt.version_uuid.is_nil() &&
+        receipt.previous_version_uuid.is_nil() && receipt.row_version == 1 && !receipt.deleted,
+        "catalog receipt changed identity/order or invented a predecessor");
+    disk::SerializedPageHeader header{};
+    Check(combined.device.ReadAt(receipt.page_number * page_size, header.data(), header.size()).ok(), "read receipt page header");
+    const auto physical = disk::ParsePageHeader(header);
+    Check(physical.ok() && physical.header.database_uuid == receipt.database_uuid.value &&
+        physical.header.filespace_uuid == receipt.filespace_uuid.value &&
+        physical.header.page_uuid == receipt.page_uuid.value && physical.header.page_generation == receipt.page_generation,
+        "receipt did not identify the actual written page image");
+    const auto native = combined.Read(receipt.page_number, batch_tx);
+    const auto actual = std::find_if(native.visible_rows.begin(), native.visible_rows.end(),
+        [&](const auto& row) { return row.version_uuid == receipt.version_uuid; });
+    Check(actual != native.visible_rows.end() && actual->stable_slot_id == receipt.stable_slot_id &&
+        actual->row_version == receipt.row_version && actual->previous_version_uuid == receipt.previous_version_uuid,
+        "receipt did not identify an actual staged row version");
+    Check(combined.Read(receipt.page_number).visible_rows.empty(), "catalog batch leaked before commit");
+  }
+  combined.Finish(batch_tx, true);
+  const auto replace_batch_tx = combined.Begin();
+  for (std::size_t i = 0; i != mutations.size(); ++i) {
+    auto& request = mutations[i]; request.transaction = replace_batch_tx;
+    request.metadata.creator_transaction_uuid = replace_batch_tx.transaction_uuid;
+    request.metadata.creator_local_transaction_id = replace_batch_tx.local_id.value;
+    request.metadata.definition_version = 2;
+    request.expected_version_uuid = batch.row_receipts[i].version_uuid;
+  }
+  {
+    auto stale = mutations; stale.back().expected_version_uuid = batch.row_receipts.front().version_uuid;
+    const auto before = combined.Bytes(); const auto before_writes = write_calls;
+    const auto refused = db::WriteNativeCatalogVersionsToOpenDevice(combined.device, stale);
+    Check(!refused.ok() && refused.row_receipts.empty() && before == combined.Bytes() && before_writes == write_calls,
+        "stale later catalog precondition staged earlier successors");
+  }
+  const auto successors = db::WriteNativeCatalogVersionsToOpenDevice(combined.device, mutations);
+  Check(successors.ok() && successors.row_receipts.size() == 3, "stage complete catalog successor set");
+  for (std::size_t i = 0; i != mutations.size(); ++i)
+    Check(successors.row_receipts[i].previous_version_uuid == batch.row_receipts[i].version_uuid &&
+        successors.row_receipts[i].row_version == 2, "batch successor receipt lost native chain");
+  combined.Finish(replace_batch_tx, false);
+  const auto failed_tx = combined.Begin();
+  for (auto& request : mutations) {
+    request.transaction = failed_tx; request.metadata.creator_transaction_uuid = failed_tx.transaction_uuid;
+    request.metadata.creator_local_transaction_id = failed_tx.local_id.value;
+  }
+  owned_row_offset = static_cast<off_t>((combined.first_page + 1) * page_size);
+  owned_fault = OwnedFault::row_write;
+  const auto failed_batch = db::WriteNativeCatalogVersionsToOpenDevice(combined.device, mutations);
+  Check(!failed_batch.ok() && owned_fault == OwnedFault::none && failed_batch.row_receipts.empty() &&
+      failed_batch.unresolved_mutation_transaction.transaction_uuid.value == failed_tx.transaction_uuid.value,
+      "catalog batch failure lost native exclusion or issued partial receipts");
+  db::PhysicalMgaCowFinalization commit_failed;
+  commit_failed.transaction = failed_tx; commit_failed.decision = db::PhysicalMgaCowFinalizeDecision::commit;
+  commit_failed.final_unix_epoch_millis = 1790000000300ull;
+  Check(!db::FinalizePhysicalMgaCowTransactionToOpenDevice(combined.device, commit_failed).ok(), "partial catalog batch remained committable");
+  combined.Finish(failed_tx, false);
+  Check(combined.device.Close().ok() && combined.device.Open(combined.path, disk::FileOpenMode::open_existing).ok(),
+      "reopen catalog batch rollback");
+  unsigned retained_count = 0;
+  for (unsigned page = 0; page != 2; ++page) {
+    const auto visible = db::ReadNativeCatalogVersionsFromOpenDevice(combined.device, combined.relation,
+        combined.first_page + page, {}, true);
+    Check(visible.ok(), "read catalog batch committed baseline");
+    for (const auto& row : visible.rows) {
+      ++retained_count;
+      Check(row.metadata.definition_version == 1 && !row.provisional, "failed catalog batch changed committed metadata");
+    }
+  }
+  Check(retained_count == 3, "catalog batch rollback lost committed members");
 }
 
 int CrashNativeBatch(const char* path) {
@@ -804,7 +904,7 @@ void FailedNativeBatchCannotCommitPrefix() {
   catch (const std::bad_alloc&) { threw = true; }
   Check(owned_fault == OwnedFault::none && !reject_write && !reject_sync, "second-page batch failure not reached");
   if (fault == OwnedFault::after_row_write_exception) Check(threw, "batch exception swallowed");
-  else Check(!threw && !failed.ok() && failed.written_rows == 0 && failed.pages_written == 0 &&
+  else Check(!threw && !failed.ok() && failed.written_rows == 0 && failed.pages_written == 0 && failed.row_receipts.empty() &&
       failed.unresolved_mutation_transaction.transaction_uuid.value == tx.transaction_uuid.value &&
       failed.unresolved_mutation_transaction.local_id.value == tx.local_id.value,
       "failed batch issued partial receipt or lost recovery identity");
@@ -828,9 +928,15 @@ void FailedNativeBatchCannotCommitPrefix() {
     batch.sync_after_batch = explicit_sync;
     batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page, "complete-first"));
     batch.mutations.push_back(f.Mutation(tx, Id(UuidKind::row), f.first_page + 1, "complete-second"));
+    if (explicit_sync) {
+      batch.mutations[0].stable_slot_id = 1; batch.mutations[1].stable_slot_id = 2;
+    }
     const auto written = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
     Check(written.ok() && written.written_rows == 2 && written.pages_written == 2 &&
         !written.unresolved_mutation_transaction.valid(), "complete batch lacked success receipt");
+    const auto fast_path_evidence = std::string("physical_mga_cow.empty_page_insert_fast_path=") + (explicit_sync ? "true" : "false");
+    Check(std::find(written.evidence.begin(), written.evidence.end(), fast_path_evidence) != written.evidence.end(),
+        "batch reported a fast path that was not used");
     Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen successful batch");
     const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
     Check(inventory.ok(), "load completed batch inventory");
@@ -839,6 +945,29 @@ void FailedNativeBatchCannotCommitPrefix() {
         "successful batch changed finality or retained commit fence");
     f.Finish(tx, true);
     Payload(f.Read(f.first_page), "complete-first"); Payload(f.Read(f.first_page + 1), "complete-second");
+    const auto update_tx = f.Begin();
+    for (auto& mutation : batch.mutations) {
+      mutation.transaction_uuid = update_tx.transaction_uuid;
+      mutation.existing_local_transaction_id = update_tx.local_id;
+      mutation.kind = db::PhysicalMgaCowMutationKind::update;
+    }
+    batch.mutations.front().kind = db::PhysicalMgaCowMutationKind::delete_row;
+    batch.mutations.front().cells.clear();
+    const auto changed = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
+    Check(changed.ok() && changed.row_receipts.size() == 2, "mixed update/delete receipt set missing");
+    for (std::size_t i = 0; i != changed.row_receipts.size(); ++i) {
+      const auto& receipt = changed.row_receipts[i];
+      Check(receipt.deleted == (i == 0) && receipt.previous_version_uuid == written.row_receipts[i].version_uuid &&
+          receipt.row_version == 2 && receipt.stable_slot_id == written.row_receipts[i].stable_slot_id,
+          "mixed mutation receipt lost deletion/slot/version identity");
+      const auto actual_page = f.Read(receipt.page_number, update_tx);
+      const auto row = std::find_if(actual_page.row_page.rows.begin(), actual_page.row_page.rows.end(),
+          [&](const auto& item) { return item.version_uuid == receipt.version_uuid; });
+      Check(row != actual_page.row_page.rows.end() && row->deleted == receipt.deleted &&
+          row->previous_version_uuid == receipt.previous_version_uuid,
+          "mixed mutation receipt does not reference actual native version");
+    }
+    f.Finish(update_tx, false);
   }
   {
     Fixture f;

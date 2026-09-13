@@ -166,12 +166,32 @@ struct PhysicalMgaCowMutationResult {
   }
 };
 
+// Exact staged native version location, issued only after batch publication.
+// This is not transaction commit, catalog authorization or a user SQL receipt.
+struct PhysicalMgaCowRowReceipt {
+  TypedUuid database_uuid;
+  TypedUuid filespace_uuid;
+  TypedUuid relation_uuid;
+  TypedUuid row_uuid;
+  TypedUuid page_uuid;
+  scratchbird::transaction::mga::TransactionIdentity creator;
+  scratchbird::core::platform::Uuid version_uuid;
+  scratchbird::core::platform::Uuid previous_version_uuid;
+  u64 page_number = 0;
+  u64 page_generation = 0;
+  u64 row_version = 0;
+  u32 stable_slot_id = 0;
+  bool deleted = false;
+};
+
 struct PhysicalMgaCowMutationBatchResult {
   Status status;
   DiagnosticRecord diagnostic;
   std::vector<std::string> evidence;
   u64 written_rows = 0;
   u64 pages_written = 0;
+  // Same order as input mutations. Failed batches return no row receipts.
+  std::vector<PhysicalMgaCowRowReceipt> row_receipts;
   // Failed/uncertain native publication barrier. Caller must inspect durable
   // inventory and roll back/recover this exact transaction, never commit a prefix.
   scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
@@ -259,6 +279,11 @@ DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
 
 PhysicalMgaCowMutationResult WriteNativeCatalogVersionToOpenDevice(
     scratchbird::storage::disk::FileDevice& device, const NativeCatalogVersionMutation& mutation);
+// One complete successor per row in a single existing transaction. Owning
+// catalog operations still validate family semantics and global placement/indexes.
+PhysicalMgaCowMutationBatchResult WriteNativeCatalogVersionsToOpenDevice(
+    scratchbird::storage::disk::FileDevice& device,
+    const std::vector<NativeCatalogVersionMutation>& mutations);
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     scratchbird::storage::disk::FileDevice& device, const TypedUuid& relation_uuid,
     u64 page_number, const scratchbird::transaction::mga::VisibilitySnapshot& snapshot,
