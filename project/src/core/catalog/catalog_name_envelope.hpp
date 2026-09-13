@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "catalog_name_record_codec.hpp"
+#include "catalog_record_codec.hpp"
 
 namespace scratchbird::core::catalog {
 // CATALOG_NAME_RESIDENT_ENVELOPE_V1. This locator references the owning full
@@ -21,6 +22,10 @@ struct CatalogNameVersionBinding {
   u64 catalog_generation = 0;
 };
 using CatalogNamePayload = std::variant<CatalogNameVector, CatalogNameEntry>;
+// Structural family/common binding. Referenced objects, profiles and policy
+// must still be resolved by the owning catalog transaction.
+bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload&, const CatalogMetadataVersion&);
+bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayload&, const CatalogNamePayload&);
 struct CatalogNameEnvelope {
   CatalogNameVersionBinding binding;
   CatalogNamePayload payload;

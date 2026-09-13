@@ -14,6 +14,7 @@
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_name_envelope.hpp"
 #include "catalog_page.hpp"
 #include "row_data_page.hpp"
 #include "row_version.hpp"
@@ -153,12 +154,16 @@ struct NativeCatalogVersionMutation {
   scratchbird::core::catalog::CatalogMetadataVersion metadata;
   // Nil means create; replacement requires the exact observed native version.
   scratchbird::core::platform::Uuid expected_version_uuid;
+  // Kind5 supplies a typed definition and an empty metadata payload. The
+  // physical owner supplies the actual resident envelope at version allocation.
+  std::optional<scratchbird::core::catalog::CatalogNamePayload> name_payload;
 };
 
 struct NativeCatalogVersionRow {
   scratchbird::core::catalog::CatalogMetadataVersion metadata;
   scratchbird::core::platform::Uuid version_uuid;
   scratchbird::core::platform::Uuid previous_version_uuid;
+  std::optional<scratchbird::core::catalog::CatalogNamePayload> name_payload;
   bool provisional = false;
   scratchbird::core::catalog::CatalogObjectLifecycle effective_lifecycle = scratchbird::core::catalog::CatalogObjectLifecycle::creating;
   scratchbird::core::catalog::CatalogObjectStatus effective_status = scratchbird::core::catalog::CatalogObjectStatus::proposed;
@@ -204,6 +209,10 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
 
 // Path-free mutation fields for an already-owned node device. A storage
 // operation cannot select or open a second node through this payload.
+struct NativeCatalogNameMaterialization {
+  scratchbird::core::catalog::CatalogMetadataVersion metadata;
+  scratchbird::core::catalog::CatalogNamePayload payload;
+};
 struct PhysicalMgaCowMutation {
   TypedUuid relation_uuid;
   TypedUuid row_uuid;
@@ -218,6 +227,7 @@ struct PhysicalMgaCowMutation {
   // Exact reverse-chain link installed only when this request creates a new
   // row-data page. Zero identifies the tail of the chain.
   u64 predecessor_page_number = 0;
+  std::optional<NativeCatalogNameMaterialization> catalog_name;
 };
 
 struct PhysicalMgaCowMutationRequest : PhysicalMgaCowMutation {

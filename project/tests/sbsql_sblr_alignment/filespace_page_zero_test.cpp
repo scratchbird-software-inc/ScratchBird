@@ -1948,6 +1948,49 @@ void CheckpointCatalogRelations() {
       selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"cross-page schema origin replacement refused");
       selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page schema origin replacement refused");
       images=history_images;
+      // Names bind the actual resident context on both filespaces and retain
+      // original creation across independently stored version predecessors.
+      const auto as_name=[&](unsigned leaf_index,const auto& origin,bool wrong_residency=false) {
+        auto& leaf=images.leaves[leaf_index];auto& row=leaf.body.rows[0];
+        rewrite(row,[&](auto& metadata) {
+          catalog::CatalogNameEntry entry;entry.name_entry_uuid=metadata.record.header.object_uuid;
+          entry.name_vector_uuid={platform::UuidKind::object,Id(246)};entry.object_uuid={platform::UuidKind::object,Id(245)};
+          entry.object_class="schema";entry.scope_uuid={platform::UuidKind::object,Id(164)};
+          entry.parent_schema_uuid=metadata.owning_schema_uuid;entry.language_tag="en";
+          entry.dialect_profile_uuid={platform::UuidKind::object,Id(247)};entry.identifier_profile_uuid={platform::UuidKind::object,Id(248)};
+          entry.raw_name_text=entry.display_name=row.row_version==1?"original":"replacement";
+          entry.normalized_lookup_key={0,0xfe,static_cast<byte>(row.row_version)};entry.exact_lookup_key={0xff,0};
+          entry.catalog_generation_id=metadata.catalog_generation;entry.created_transaction_uuid=origin;
+          entry.security_policy_uuid={platform::UuidKind::object,Id(249)};entry.resource_epoch=1;
+          entry.name_resolution_epoch=row.row_version;entry.lifecycle_state=catalog::CatalogNameLifecycle::active;
+          metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
+          metadata.record.header.parent_uuid=entry.name_vector_uuid;metadata.default_name_uuid=entry.name_entry_uuid;
+          metadata.name_vector_uuid=entry.name_vector_uuid;metadata.security_policy_uuid=entry.security_policy_uuid;
+          metadata.resource_epoch=entry.resource_epoch;metadata.object_subtype="name_entry";
+          catalog::CatalogNameVersionBinding b;
+          b.database_uuid={platform::UuidKind::database,leaf.header.database_uuid};b.filespace_uuid={platform::UuidKind::filespace,leaf.header.filespace_uuid};
+          b.row_uuid=row.row_uuid;b.version_uuid={platform::UuidKind::row,row.version_uuid};b.catalog_object_uuid=entry.name_entry_uuid;
+          b.creating_transaction_uuid=row.transaction_uuid;b.page_id=leaf.body.page_number;b.slot_id=row.stable_slot_id;
+          b.storage_generation=row.storage_generation+(wrong_residency?1:0);b.version_sequence=row.row_version;
+          b.creating_transaction_number=row.local_transaction_id;b.catalog_generation=metadata.catalog_generation;
+          const auto encoded=catalog::EncodeCatalogNameEnvelope({b,entry});Check(encoded.ok(),"complete cross-page name fixture");
+          metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        });
+      };
+      as_name(0,old.transaction_uuid);as_name(3,old.transaction_uuid);persist(false,19,19);
+      selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
+      for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.name_payload &&
+        std::get<catalog::CatalogNameEntry>(*row.name_payload).display_name=="replacement","pinned successor name not materialized");
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);
+      for(const auto& row:selected.rows)if(row.version_uuid==old.version_uuid)Check(row.name_payload &&
+        std::get<catalog::CatalogNameEntry>(*row.name_payload).display_name=="original","pinned historical name not preserved");
+      as_name(3,writer.identity.transaction_uuid);persist(false,19,19);loaded=read(budget);
+      Check(loaded.ok(),"cross-page forged name origin must remain individually valid");
+      selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"cross-page name origin replacement admitted");
+      selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page name origin replacement admitted");
+      as_name(3,old.transaction_uuid,true);persist(false,19,19);loaded=read(budget);empty(loaded);
+      selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::source_failure,"name envelope trusted its own invented residency");
+      images=history_images;
       // An unindexed row on another page still reserves its object identity.
       // Outcome comes from native inventory, not visibility or lifecycle text.
       const auto duplicate_inventory=inventory;

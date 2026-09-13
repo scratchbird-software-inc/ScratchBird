@@ -317,6 +317,50 @@ Result ValidateCommonRequest(const std::string& path,
   return result;
 }
 
+scratchbird::core::catalog::CatalogNameVersionBinding NativeNameBinding(
+    const TypedUuid& database_uuid, const TypedUuid& filespace_uuid, u64 page_number,
+    const RowDataRecord& row, const scratchbird::core::catalog::CatalogMetadataVersion& metadata) {
+  scratchbird::core::catalog::CatalogNameVersionBinding binding;
+  binding.database_uuid=database_uuid; binding.filespace_uuid=filespace_uuid;
+  binding.row_uuid=row.row_uuid; binding.version_uuid={UuidKind::row,row.version_uuid};
+  binding.catalog_object_uuid=metadata.record.header.object_uuid;
+  binding.creating_transaction_uuid=row.transaction_uuid;
+  binding.page_id=page_number; binding.slot_id=row.stable_slot_id;
+  binding.storage_generation=row.storage_generation; binding.version_sequence=row.row_version;
+  binding.creating_transaction_number=row.local_transaction_id;
+  binding.catalog_generation=metadata.catalog_generation;
+  return binding;
+}
+
+scratchbird::core::catalog::CatalogNameEnvelopeDecodeResult DecodeNativeName(
+    const TypedUuid& database_uuid, const TypedUuid& filespace_uuid, u64 page_number,
+    const RowDataRecord& row, const scratchbird::core::catalog::CatalogMetadataVersion& metadata) {
+  namespace catalog=scratchbird::core::catalog;
+  auto result=catalog::DecodeCatalogNameEnvelope(
+      std::vector<scratchbird::core::platform::byte>(metadata.record.payload.begin(),metadata.record.payload.end()),
+      NativeNameBinding(database_uuid,filespace_uuid,page_number,row,metadata));
+  if (result.ok() && !catalog::CatalogNamePayloadMatchesMetadata(result.record->payload,metadata))
+    return {catalog::CatalogNameEnvelopeError::binding_mismatch,{}};
+  return result;
+}
+
+PhysicalMgaCowMutationResult MaterializeNativeName(const PhysicalMgaCowMutation& request,
+    const DatabaseContextResult& context, RowDataRecord& row) {
+  if (!request.catalog_name) { PhysicalMgaCowMutationResult result; result.status=CowStoreOkStatus(); return result; }
+  namespace catalog=scratchbird::core::catalog;
+  auto metadata=request.catalog_name->metadata;
+  const auto name=catalog::EncodeCatalogNameEnvelope({NativeNameBinding(context.page_context.database_uuid,
+      context.page_context.filespace_uuid,request.page_number,row,metadata),request.catalog_name->payload});
+  if (!name.ok()) return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_name.resident_binding_invalid");
+  metadata.record.payload.assign(name.bytes.begin(),name.bytes.end());
+  const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata);
+  if (!encoded.ok()) return Propagate<PhysicalMgaCowMutationResult>(encoded.status,encoded.diagnostic);
+  scratchbird::core::datatypes::DatatypeBinaryValue cell;
+  cell.type_id=scratchbird::core::datatypes::CanonicalTypeId::binary; cell.payload=encoded.bytes;
+  row.cells={{1,std::move(cell)}};
+  PhysicalMgaCowMutationResult result; result.status=CowStoreOkStatus(); return result;
+}
+
 PhysicalMgaCowMutationResult ValidateMutationRequest(
     const PhysicalMgaCowMutation& request, const std::string& database_path) {
   auto common =
@@ -352,10 +396,22 @@ PhysicalMgaCowMutationResult ValidateMutationRequest(
   }
   if ((request.kind == PhysicalMgaCowMutationKind::insert ||
        request.kind == PhysicalMgaCowMutationKind::update) &&
-      request.cells.empty()) {
+      request.cells.empty() && !request.catalog_name) {
     return ErrorResult<PhysicalMgaCowMutationResult>(
         "SB-PHYSICAL-MGA-COW-PAYLOAD-REQUIRED",
         "storage.physical_mga_cow.payload_required");
+  }
+  if (request.catalog_name) {
+    const auto& name=*request.catalog_name;
+    if (!request.cells.empty() || !name.metadata.record.payload.empty() ||
+        request.kind == PhysicalMgaCowMutationKind::delete_row || !request.use_existing_transaction ||
+        !SameUuid(name.metadata.record.header.row_uuid,request.row_uuid) ||
+        !SameUuid(name.metadata.creator_transaction_uuid,request.transaction_uuid) ||
+        name.metadata.creator_local_transaction_id != request.existing_local_transaction_id.value ||
+        name.metadata.authority_scope == scratchbird::core::catalog::CatalogAuthorityScope::cluster ||
+        !scratchbird::core::catalog::CatalogNamePayloadMatchesMetadata(name.payload,name.metadata) ||
+        !scratchbird::core::catalog::EncodeCatalogMetadataVersion(name.metadata).ok())
+      return ErrorResult<PhysicalMgaCowMutationResult>("CATALOG.INVALID_INPUT", "catalog.native_name.mutation_binding_invalid");
   }
   return common;
 }
@@ -962,6 +1018,10 @@ PhysicalMgaCowMutationResult WritePhysicalMgaCowUnpublishedMutationToOpenDevice(
   if (!new_row.deleted) {
     new_row.cells = request.cells;
   }
+  if (request.catalog_name) {
+    const auto materialized=MaterializeNativeName(request,context,new_row);
+    if (!materialized.ok()) return materialized;
+  }
   row_page.rows.push_back(new_row);
 
   const auto written = WriteRowDataPage(&device, context, row_page);
@@ -1270,6 +1330,10 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
       new_row.next_row_version = 0;
       new_row.deleted = false;
       new_row.cells = std::move(mutation_request.cells);
+      if (mutation_request.catalog_name) {
+        const auto materialized=MaterializeNativeName(mutation_request,context,new_row);
+        if (!materialized.ok()) return Propagate<PhysicalMgaCowMutationBatchResult>(materialized.status,materialized.diagnostic);
+      }
       retain_receipt(mutation_request, new_row);
       row_page.rows.push_back(std::move(new_row));
       continue;
@@ -1366,6 +1430,10 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
         mutation_request.kind == PhysicalMgaCowMutationKind::delete_row;
     if (!new_row.deleted) {
       new_row.cells = std::move(mutation_request.cells);
+    }
+    if (mutation_request.catalog_name) {
+      const auto materialized=MaterializeNativeName(mutation_request,context,new_row);
+      if (!materialized.ok()) return Propagate<PhysicalMgaCowMutationBatchResult>(materialized.status,materialized.diagnostic);
     }
     retain_receipt(mutation_request, new_row);
     row_page.rows.push_back(std::move(new_row));
@@ -1752,9 +1820,11 @@ struct DecodedNativeCatalogRows {
   DiagnosticRecord diagnostic;
   std::map<scratchbird::core::platform::Uuid,
       scratchbird::core::catalog::CatalogMetadataVersion> metadata;
+  std::map<scratchbird::core::platform::Uuid,scratchbird::core::catalog::CatalogNamePayload> names;
   bool ok() const { return status.ok(); }
 };
-DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body) {
+DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
+    const TypedUuid& database_uuid, const TypedUuid& filespace_uuid) {
   namespace catalog = scratchbird::core::catalog;
   DecodedNativeCatalogRows decoded;
   for (const auto& row : body.rows) {
@@ -1770,12 +1840,24 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body) {
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
     if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.version_duplicate");
+    if (value.record.record.header.kind == catalog::CatalogRecordKind::localized_name) {
+      auto name=DecodeNativeName(database_uuid,filespace_uuid,body.page_number,row,value.record);
+      if (!name.ok()) return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_name.resident_binding_invalid");
+      decoded.names.emplace(row.version_uuid,std::move(name.record->payload));
+    }
   }
   for (const auto& row : body.rows) {
     const auto prior=decoded.metadata.find(row.previous_version_uuid);
     if (prior!=decoded.metadata.end() && !catalog::CatalogSchemaDefinitionPreservesOrigin(
         prior->second,decoded.metadata.at(row.version_uuid)))
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.schema_origin_changed");
+    if (prior!=decoded.metadata.end()) {
+      const auto before=decoded.names.find(row.previous_version_uuid),after=decoded.names.find(row.version_uuid);
+      if ((before!=decoded.names.end() || after!=decoded.names.end()) &&
+          (before==decoded.names.end() || after==decoded.names.end() ||
+           !catalog::CatalogNamePayloadPreservesIdentity(before->second,after->second)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_name.origin_changed");
+    }
   }
   decoded.status=CowStoreOkStatus(); return decoded;
 }
@@ -1806,7 +1888,8 @@ NativeCatalogLeafResult EncodeNativeCatalogLeaf(const NativeCatalogLeafPage& pag
     if (!ValidLeafBinding(page.header,page.body)) return LeafFailure(LeafError::invalid_body);
     auto body=BuildRowDataPageBody(page.body,page.header.page_size_bytes-32);
     if (!body.ok()) return LeafFailure(LeafError::invalid_body);
-    auto decoded=DecodeNativeCatalogRows(body.body);
+    auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,page.header.database_uuid},
+        {UuidKind::filespace,page.header.filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
     std::vector<scratchbird::core::platform::byte> bytes(page.header.page_size_bytes,0);
     std::copy(header.bytes->begin(),header.bytes->end(),bytes.begin());
@@ -1833,7 +1916,8 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
     // requires the exact canonical body, including its zero unused region.
     const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
     if (!canonical.ok() || canonical.serialized!=body_bytes) return LeafFailure(LeafError::invalid_body);
-    auto decoded=DecodeNativeCatalogRows(body.body);
+    auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,header.header->database_uuid},
+        {UuidKind::filespace,header.header->filespace_uuid});
     if (!decoded.ok()) return LeafFailure(LeafMetadataError(decoded));
     return {LeafError::none,NativeCatalogLeafPage{*header.header,std::move(body.body)},std::move(decoded.metadata),bytes};
   } catch (const std::bad_alloc&) { return LeafFailure(LeafError::resource_exhausted); }
@@ -2113,6 +2197,11 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
     const auto metadata_at=[&](std::size_t index)->const catalog::CatalogMetadataVersion& {
       return result.source.relation.catalogs[sources[index].catalog_page_index].metadata.at(row_at(index).version_uuid);
     };
+    const auto name_at=[&](std::size_t index) {
+      const auto& leaf=*result.source.relation.catalogs[sources[index].catalog_page_index].page;
+      return DecodeNativeName({UuidKind::database,leaf.header.database_uuid},
+          {UuidKind::filespace,leaf.header.filespace_uuid},leaf.body.page_number,row_at(index),metadata_at(index));
+    };
     std::map<Uuid,std::map<u64,std::size_t,std::greater<u64>>> by_row;
     std::map<Uuid,std::size_t> by_version;
     std::map<Uuid,Uuid> object_reservations;
@@ -2143,6 +2232,12 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
       if (previous!=by_version.end()) {
         const auto& before=metadata_at(previous->second);
         const auto& after=metadata_at(i);
+        if (after.record.header.kind == catalog::CatalogRecordKind::localized_name) {
+          const auto old_name=name_at(previous->second),new_name=name_at(i);
+          if (!old_name.ok() || !new_name.ok() ||
+              !catalog::CatalogNamePayloadPreservesIdentity(old_name.record->payload,new_name.record->payload))
+            return fail(E::invalid_chain);
+        }
         if (!catalog::CatalogSchemaDefinitionPreservesOrigin(before,after) ||
             before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
             after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
@@ -2177,6 +2272,10 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
         NativeCatalogVersionRow selected;
         selected.metadata=metadata_at(index); selected.version_uuid=row.version_uuid;
         selected.previous_version_uuid=row.previous_version_uuid;
+        if (selected.metadata.record.header.kind == catalog::CatalogRecordKind::localized_name) {
+          auto name=name_at(index); if (!name.ok()) return fail(E::invalid_chain);
+          selected.name_payload=std::move(name.record->payload);
+        }
         selected.provisional=!mga::HasCommittedInventoryOutcome(creator);
         selected.effective_lifecycle=selected.metadata.lifecycle;
         selected.effective_status=selected.metadata.status;
@@ -2209,7 +2308,10 @@ NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
   const auto native = ReadPhysicalMgaCowRowsFromOpenDevice(device, relation_uuid,
       page_number, snapshot, latest_committed, reader_identity, snapshot_pin);
   if (!native.ok()) return Propagate<NativeCatalogVersionReadResult>(native.status, native.diagnostic);
-  const auto catalog_rows=DecodeNativeCatalogRows(native.row_page);
+  const auto context=LoadDatabaseContext(&device);
+  if (!context.ok()) return Propagate<NativeCatalogVersionReadResult>(context.status,context.diagnostic);
+  const auto catalog_rows=DecodeNativeCatalogRows(native.row_page,context.page_context.database_uuid,
+      context.page_context.filespace_uuid);
   if (!catalog_rows.ok()) return Propagate<NativeCatalogVersionReadResult>(catalog_rows.status,catalog_rows.diagnostic);
   const auto& decoded=catalog_rows.metadata;
   if (native.recovery_required_count != 0)
@@ -2231,6 +2333,8 @@ NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     NativeCatalogVersionRow visible;
     visible.metadata = found->second;
     visible.version_uuid = row.version_uuid; visible.previous_version_uuid = row.previous_version_uuid;
+    if (const auto name=catalog_rows.names.find(row.version_uuid); name!=catalog_rows.names.end())
+      visible.name_payload=name->second;
     visible.provisional = !scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry);
     visible.effective_lifecycle = visible.metadata.lifecycle;
     visible.effective_status = visible.metadata.status;
@@ -2258,6 +2362,11 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
   const auto guard = device.AcquireOperationGuard();
   const auto encoded = catalog::EncodeCatalogMetadataVersion(request.metadata);
   if (!encoded.ok()) return Propagate<PreparedNativeCatalogMutation>(encoded.status, encoded.diagnostic);
+  const bool is_name=request.metadata.record.header.kind == catalog::CatalogRecordKind::localized_name;
+  if (is_name != request.name_payload.has_value() || (is_name &&
+      (!request.metadata.record.payload.empty() ||
+       !catalog::CatalogNamePayloadMatchesMetadata(*request.name_payload,request.metadata))))
+    return ErrorResult<PreparedNativeCatalogMutation>("CATALOG.INVALID_INPUT", "catalog.native_name.definition_required");
   if (!request.transaction.valid() || request.transaction.scope != scratchbird::transaction::mga::TransactionScope::local_node ||
       request.metadata.authority_scope == catalog::CatalogAuthorityScope::cluster ||
       !SameUuid(request.transaction.transaction_uuid, request.metadata.creator_transaction_uuid) ||
@@ -2303,6 +2412,8 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
         previous->metadata.record.header.kind != request.metadata.record.header.kind ||
         previous->metadata.record.header.deleted ||
         !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,request.metadata) ||
+        (is_name && (!previous->name_payload ||
+         !catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))) ||
         previous->metadata.definition_version == std::numeric_limits<u64>::max() ||
         request.metadata.definition_version != previous->metadata.definition_version + 1 ||
         request.metadata.schema_epoch < previous->metadata.schema_epoch ||
@@ -2323,6 +2434,10 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
   scratchbird::core::datatypes::DatatypeBinaryValue cell;
   cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary; cell.payload = encoded.bytes;
   mutation.cells.push_back({1, std::move(cell)});
+  if (is_name) {
+    mutation.cells.clear();
+    mutation.catalog_name=NativeCatalogNameMaterialization{request.metadata,*request.name_payload};
+  }
   PreparedNativeCatalogMutation prepared;
   prepared.status = CowStoreOkStatus(); prepared.mutation = std::move(mutation);
   return prepared;

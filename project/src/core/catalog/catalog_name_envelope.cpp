@@ -55,7 +55,7 @@ bool PayloadMatches(const CatalogNameEnvelope& record) {
   if (const auto* e = std::get_if<CatalogNameEntry>(&record.payload))
     return SameIdentity(b.catalog_object_uuid,e->name_entry_uuid) &&
         b.catalog_generation == e->catalog_generation_id &&
-        SameIdentity(b.creating_transaction_uuid,e->created_transaction_uuid);
+        (b.version_sequence != 1 || SameIdentity(b.creating_transaction_uuid,e->created_transaction_uuid));
   return false;
 }
 void Put(std::vector<byte>& out,std::size_t offset,u64 value,unsigned width) {
@@ -79,6 +79,58 @@ CatalogNameVersionBinding ReadBinding(const std::vector<byte>& bytes) {
   return b;
 }
 }  // namespace
+bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayload& payload, const CatalogMetadataVersion& m) {
+  if (m.record.header.kind != CatalogRecordKind::localized_name) return false;
+  const auto optional_matches=[](const auto& value,const TypedUuid& common) {
+    return value ? SameIdentity(*value,common) : common.kind == UuidKind::unknown && common.value.is_nil();
+  };
+  if (const auto* v=std::get_if<CatalogNameVector>(&payload)) {
+    return EncodeCatalogNameVector(*v).ok() && m.object_subtype == "name_vector" &&
+        SameIdentity(v->name_vector_uuid,m.record.header.object_uuid) &&
+        SameIdentity(v->object_uuid,m.record.header.parent_uuid) &&
+        SameIdentity(v->name_vector_uuid,m.name_vector_uuid) &&
+        SameIdentity(v->default_name_entry_uuid,m.default_name_uuid) &&
+        optional_matches(v->owning_schema_uuid,m.owning_schema_uuid) &&
+        SameIdentity(v->security_policy_uuid,m.security_policy_uuid) &&
+        v->catalog_generation_id == m.catalog_generation &&
+        v->name_vector_uuid.value != v->object_uuid.value &&
+        v->name_vector_uuid.value != v->default_name_entry_uuid.value &&
+        v->object_uuid.value != v->default_name_entry_uuid.value &&
+        (!m.record.header.deleted || v->lifecycle_state == CatalogNameLifecycle::dropped);
+  }
+  if (const auto* e=std::get_if<CatalogNameEntry>(&payload)) {
+    return EncodeCatalogNameEntry(*e).ok() && m.object_subtype == "name_entry" &&
+        SameIdentity(e->name_entry_uuid,m.record.header.object_uuid) &&
+        SameIdentity(e->name_vector_uuid,m.record.header.parent_uuid) &&
+        SameIdentity(e->name_vector_uuid,m.name_vector_uuid) &&
+        SameIdentity(e->name_entry_uuid,m.default_name_uuid) &&
+        optional_matches(e->parent_schema_uuid,m.owning_schema_uuid) &&
+        optional_matches(e->dropped_transaction_uuid,m.retired_transaction_uuid) &&
+        SameIdentity(e->security_policy_uuid,m.security_policy_uuid) &&
+        e->catalog_generation_id == m.catalog_generation && e->resource_epoch == m.resource_epoch &&
+        (m.definition_version != 1 || SameIdentity(e->created_transaction_uuid,m.creator_transaction_uuid)) &&
+        e->name_entry_uuid.value != e->name_vector_uuid.value &&
+        e->name_entry_uuid.value != e->object_uuid.value &&
+        e->name_vector_uuid.value != e->object_uuid.value &&
+        (!m.record.header.deleted || e->lifecycle_state == CatalogNameLifecycle::dropped);
+  }
+  return false;
+}
+bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayload& before,const CatalogNamePayload& after) {
+  if (const auto* a=std::get_if<CatalogNameVector>(&before)) {
+    const auto* b=std::get_if<CatalogNameVector>(&after);
+    return b && SameIdentity(a->name_vector_uuid,b->name_vector_uuid) &&
+        SameIdentity(a->object_uuid,b->object_uuid) && a->object_class == b->object_class;
+  }
+  if (const auto* a=std::get_if<CatalogNameEntry>(&before)) {
+    const auto* b=std::get_if<CatalogNameEntry>(&after);
+    return b && SameIdentity(a->name_entry_uuid,b->name_entry_uuid) &&
+        SameIdentity(a->name_vector_uuid,b->name_vector_uuid) && SameIdentity(a->object_uuid,b->object_uuid) &&
+        a->object_class == b->object_class && SameIdentity(a->created_transaction_uuid,b->created_transaction_uuid) &&
+        b->name_resolution_epoch >= a->name_resolution_epoch;
+  }
+  return false;
+}
 CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvelope& record) {
   const auto error = Validate(record.binding);
   if (error != Error::none) return {error,{}};

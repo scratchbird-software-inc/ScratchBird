@@ -175,11 +175,19 @@ void BindingAndPayload() {
     changed=r;std::visit([](auto& p){p.object_class.clear();},changed.payload);
     Refused(c::EncodeCatalogNameEnvelope(changed));
   }
-  r=Fixture(true);auto changed=r;
+  r=Fixture(true);r.binding.version_sequence=1;auto changed=r;
   std::get<c::CatalogNameEntry>(changed.payload).created_transaction_uuid.value.bytes[15]++;
   Refused(c::EncodeCatalogNameEnvelope(changed));
   auto payload=c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(changed.payload));
   Refused(c::DecodeCatalogNameEnvelope(Repack(r,payload.bytes),r.binding));
+  auto successor=r;successor.binding.version_sequence=2;
+  successor.binding.creating_transaction_uuid.value.bytes[15]++;
+  const auto successor_bytes=c::EncodeCatalogNameEnvelope(successor);
+  Check(successor_bytes.ok(),"name successor must preserve original creation under another writer");
+  const auto successor_record=c::DecodeCatalogNameEnvelope(successor_bytes.bytes,successor.binding);
+  Check(successor_record.ok() && std::get<c::CatalogNameEntry>(successor_record.record->payload).created_transaction_uuid.value ==
+      std::get<c::CatalogNameEntry>(r.payload).created_transaction_uuid.value,
+      "name successor envelope rewrote original entry creation");
   auto bad=golden;bad[16]=2;Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
   bad=golden;bad[176+16]=2;Refused(c::DecodeCatalogNameEnvelope(bad,base.binding));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff67\n";

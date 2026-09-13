@@ -546,6 +546,151 @@ int VerifyCatalogVersion(const char* path) {
   return actual.ok() && actual.bytes == expected ? 0 : 34;
 }
 
+void NativeCatalogNames() {
+  namespace c=scratchbird::core::catalog;
+  Fixture f; const auto created=f.Begin();
+  c::CatalogNameVector vector;
+  vector.name_vector_uuid=Id(UuidKind::object);vector.object_uuid=Id(UuidKind::object);
+  vector.object_class="schema";vector.default_language_tag="en";vector.owning_schema_uuid=Id(UuidKind::schema);
+  vector.default_name_entry_uuid=Id(UuidKind::object);vector.name_collision_policy_uuid=Id(UuidKind::object);
+  vector.catalog_generation_id=1;vector.security_policy_uuid=Id(UuidKind::object);
+  vector.lifecycle_state=c::CatalogNameLifecycle::active;
+  c::CatalogNameEntry entry;
+  entry.name_entry_uuid=vector.default_name_entry_uuid;entry.name_vector_uuid=vector.name_vector_uuid;
+  entry.object_uuid=vector.object_uuid;entry.object_class=vector.object_class;entry.scope_uuid=Id(UuidKind::object);
+  entry.language_tag="en";entry.parent_schema_uuid=vector.owning_schema_uuid;
+  entry.dialect_profile_uuid=Id(UuidKind::object);entry.identifier_profile_uuid=Id(UuidKind::object);
+  entry.raw_name_text=entry.display_name="Native name";entry.normalized_lookup_key={0,0xff,42};entry.exact_lookup_key={0xfe,0,41};
+  entry.default_for_language=entry.default_for_object=true;
+  entry.catalog_generation_id=entry.resource_epoch=entry.name_resolution_epoch=1;
+  entry.created_transaction_uuid=created.transaction_uuid;entry.security_policy_uuid=vector.security_policy_uuid;
+  entry.lifecycle_state=c::CatalogNameLifecycle::active;
+  const auto metadata=[&](bool is_entry) {
+    c::CatalogMetadataVersion m;
+    m.record.header.kind=c::CatalogRecordKind::localized_name;m.record.header.row_uuid=Id(UuidKind::row);
+    m.record.header.object_uuid=is_entry?entry.name_entry_uuid:vector.name_vector_uuid;
+    m.record.header.parent_uuid=is_entry?vector.name_vector_uuid:vector.object_uuid;
+    m.name_vector_uuid=vector.name_vector_uuid;m.default_name_uuid=entry.name_entry_uuid;
+    m.owning_schema_uuid=*vector.owning_schema_uuid;
+    m.security_policy_uuid=vector.security_policy_uuid;m.owner_uuid=Id(UuidKind::principal);m.audit_uuid=Id(UuidKind::object);
+    m.creator_transaction_uuid=created.transaction_uuid;m.creator_local_transaction_id=created.local_id.value;
+    m.definition_version=m.schema_epoch=m.security_epoch=m.resource_epoch=m.catalog_generation=1;
+    m.dependency_generation=m.invalidation_generation=1;
+    m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
+    m.trace_search_key="NATIVE-NAME-PUBLICATION-TEST";m.object_subtype=is_entry?"name_entry":"name_vector";
+    m.retention_class="catalog_history";return m;
+  };
+  db::NativeCatalogVersionMutation v{f.relation,f.first_page,created,metadata(false),{},vector};
+  db::NativeCatalogVersionMutation e{f.relation,f.first_page+1,created,metadata(true),{},entry};
+  for(unsigned mode=0;mode<11;++mode) {
+    auto bad=e;
+    if(mode==0)bad.name_payload.reset();
+    if(mode==1)bad.metadata.record.payload="caller supplied envelope";
+    if(mode==2)bad.metadata.record.header.object_uuid=vector.name_vector_uuid;
+    if(mode==3)bad.metadata.security_policy_uuid=Id(UuidKind::object);
+    if(mode==4)++bad.metadata.resource_epoch;
+    if(mode==5)std::get<c::CatalogNameEntry>(*bad.name_payload).created_transaction_uuid=Id(UuidKind::transaction);
+    if(mode==6)std::get<c::CatalogNameEntry>(*bad.name_payload).name_entry_uuid=entry.object_uuid;
+    if(mode==7)bad.metadata.record.header.kind=c::CatalogRecordKind::sql_object;
+    if(mode==8)bad.metadata.name_vector_uuid=Id(UuidKind::object);
+    if(mode==9)bad.metadata.owning_schema_uuid={};
+    if(mode==10)bad.metadata.owning_schema_uuid.kind=UuidKind::object;
+    const auto bytes=f.Bytes();const auto count=write_calls;
+    const auto refused=db::WriteNativeCatalogVersionsToOpenDevice(f.device,{v,bad});
+    Check(!refused.ok() && refused.row_receipts.empty() && count==write_calls && bytes==f.Bytes(),
+          "invalid later name definition published batch prefix");
+  }
+  const auto staged=db::WriteNativeCatalogVersionsToOpenDevice(f.device,{v,e});
+  Check(staged.ok() && staged.row_receipts.size()==2,"native vector/entry batch did not publish actual versions");
+  for(const auto& receipt:staged.row_receipts) {
+    const auto physical=f.Read(receipt.page_number,created);
+    Check(physical.visible_rows.size()==1 && physical.visible_rows.front().version_uuid==receipt.version_uuid,
+          "name receipt did not identify actual native row");
+    const auto common=c::DecodeCatalogMetadataVersion(physical.visible_rows.front().cells.front().value.payload);
+    Check(common.ok() && common.record.record.payload.size()>176 && common.record.record.payload.substr(0,4)=="SBCR",
+          "name row lacks complete resident envelope");
+    const auto* bytes=reinterpret_cast<const platform::byte*>(common.record.record.payload.data());
+    Check(platform::LoadLittle64(bytes+120)==receipt.page_number && platform::LoadLittle32(bytes+128)==receipt.stable_slot_id &&
+        platform::LoadLittle64(bytes+136)==receipt.storage_generation && platform::LoadLittle64(bytes+144)==receipt.row_version &&
+        std::equal(receipt.version_uuid.bytes.begin(),receipt.version_uuid.bytes.end(),bytes+72),
+        "name envelope guessed actual version or residency");
+  }
+  const auto read=[&] {return db::ReadNativeCatalogVersionsFromOpenDevice(f.device,f.relation,e.page_number,{},true);};
+  auto visible=read();Check(visible.ok() && visible.rows.empty(),"uncommitted name leaked");f.Finish(created,true);
+  const auto visible_vector=db::ReadNativeCatalogVersionsFromOpenDevice(f.device,f.relation,v.page_number,{},true);
+  Check(visible_vector.ok() && visible_vector.rows.size()==1 && visible_vector.rows.front().name_payload &&
+      c::EncodeCatalogNameVector(std::get<c::CatalogNameVector>(*visible_vector.rows.front().name_payload)).bytes==
+      c::EncodeCatalogNameVector(vector).bytes,"native name vector lost expected typed definition");
+  const auto expect=[&](const c::CatalogNameEntry& value) {
+    const auto rows=read();Check(rows.ok() && rows.rows.size()==1 && rows.rows.front().name_payload,
+        "native name omitted typed publication");
+    Check(c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(*rows.rows.front().name_payload)).bytes==
+        c::EncodeCatalogNameEntry(value).bytes,"native name changed complete expected payload");
+  };
+  expect(entry);const auto reader=f.Begin(true);
+  mga::VisibilitySnapshot old;old.reader_transaction=reader.local_id;old.visible_through_local_transaction_id=created.local_id.value;
+  old.visible_through_local_transaction_id_is_boundary=true;
+  auto renamed=entry;renamed.raw_name_text=renamed.display_name="Renamed";renamed.normalized_lookup_key={0xfa,1,2};
+  ++renamed.catalog_generation_id;++renamed.name_resolution_epoch;
+  e.name_payload=renamed;e.expected_version_uuid=staged.row_receipts[1].version_uuid;
+  ++e.metadata.definition_version;++e.metadata.catalog_generation;
+  const auto set_tx=[&](auto tx) {e.transaction=tx;e.metadata.creator_transaction_uuid=tx.transaction_uuid;e.metadata.creator_local_transaction_id=tx.local_id.value;};
+  const auto aborted=f.Begin();set_tx(aborted);
+  auto bad=e;std::get<c::CatalogNameEntry>(*bad.name_payload).created_transaction_uuid=aborted.transaction_uuid;
+  const auto before=f.Bytes();const auto writes=write_calls;
+  Check(!db::WriteNativeCatalogVersionToOpenDevice(f.device,bad).ok() && writes==write_calls && before==f.Bytes(),
+        "name replacement rewrote original entry creator");
+  Check(db::WriteNativeCatalogVersionToOpenDevice(f.device,e).ok(),"name replacement could not stage under new writer");
+  f.Finish(aborted,false);expect(entry);
+  const auto rename_tx=f.Begin();set_tx(rename_tx);
+  const auto replacement=db::WriteNativeCatalogVersionToOpenDevice(f.device,e);
+  Check(replacement.ok(),"name replacement after rollback failed");f.Finish(rename_tx,true);expect(renamed);
+  const auto drop_tx=f.Begin();set_tx(drop_tx);e.expected_version_uuid=replacement.row_version.version_uuid;
+  auto dropped=renamed;dropped.dropped_transaction_uuid=drop_tx.transaction_uuid;
+  dropped.lifecycle_state=c::CatalogNameLifecycle::dropped;++dropped.catalog_generation_id;
+  e.name_payload=dropped;++e.metadata.definition_version;++e.metadata.catalog_generation;e.metadata.record.header.deleted=true;
+  e.metadata.retired_transaction_uuid=drop_tx.transaction_uuid;e.metadata.lifecycle=c::CatalogObjectLifecycle::dropped;
+  e.metadata.status=c::CatalogObjectStatus::retired;
+  const auto retirement=db::WriteNativeCatalogVersionToOpenDevice(f.device,e);
+  Check(retirement.ok() && !retirement.row_version.deleted,"name retirement discarded original creator or payload");f.Finish(drop_tx,true);
+  Check(f.device.Close().ok() && f.device.Open(f.path,disk::FileOpenMode::open_existing).ok(),"native names reopen failed");expect(dropped);
+  const auto prior=db::ReadNativeCatalogVersionsFromOpenDevice(f.device,f.relation,e.page_number,old,false,reader);
+  Check(prior.ok() && prior.rows.size()==1 && prior.rows.front().name_payload &&
+      c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(*prior.rows.front().name_payload)).bytes==c::EncodeCatalogNameEntry(entry).bytes,
+      "retirement changed older reader's exact name");f.Finish(reader,false);
+  disk::SerializedPageHeader header_bytes{};
+  Check(f.device.ReadAt(e.page_number*page_size,header_bytes.data(),header_bytes.size()).ok(),"read native name page identity");
+  const auto header=disk::ParsePageHeader(header_bytes);Check(header.ok(),"validate native name page identity");
+  c::CatalogNameVersionBinding binding;
+  binding.database_uuid={UuidKind::database,header.header.database_uuid};binding.filespace_uuid={UuidKind::filespace,header.header.filespace_uuid};
+  binding.row_uuid=e.metadata.record.header.row_uuid;binding.version_uuid={UuidKind::row,retirement.row_version.version_uuid};
+  binding.catalog_object_uuid=entry.name_entry_uuid;binding.creating_transaction_uuid=drop_tx.transaction_uuid;
+  binding.page_id=e.page_number;binding.slot_id=1;binding.storage_generation=4;binding.version_sequence=4;
+  binding.creating_transaction_number=drop_tx.local_id.value;binding.catalog_generation=dropped.catalog_generation_id;
+  const auto expected_name=c::EncodeCatalogNameEnvelope({binding,dropped});Check(expected_name.ok(),"encode expected name retirement");
+  auto expected_metadata=e.metadata;expected_metadata.record.payload.assign(expected_name.bytes.begin(),expected_name.bytes.end());
+  const auto expected=c::EncodeCatalogMetadataVersion(expected_metadata);Check(expected.ok(),"encode expected complete native name metadata");
+  std::array<platform::byte,24> prefix{};platform::StoreLittle64(prefix.data(),e.page_number);
+  std::copy(f.relation.value.bytes.begin(),f.relation.value.bytes.end(),prefix.begin()+8);
+  std::ofstream oracle(f.path+".catalog-oracle",std::ios::binary);
+  oracle.write(reinterpret_cast<const char*>(prefix.data()),prefix.size());oracle.write(reinterpret_cast<const char*>(expected.bytes.data()),expected.bytes.size());
+  oracle.close();Check(oracle.good() && f.device.Close().ok(),"release node for independent native name reader");
+  const auto child=::fork();Check(child>=0,"fork independent native name reader");
+  if(child==0){::execl("/proc/self/exe","name-probe","--catalog-probe",f.path.c_str(),nullptr);::_exit(99);}
+  int status=0;Check(::waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0,
+      "fresh executable did not observe exact intended name retirement");
+  Check(f.device.Open(f.path,disk::FileOpenMode::open_existing).ok(),"reclaim node after independent name read");
+  const auto corrupt_tx=f.Begin();set_tx(corrupt_tx);
+  auto forged=dropped;forged.created_transaction_uuid=corrupt_tx.transaction_uuid;forged.dropped_transaction_uuid=corrupt_tx.transaction_uuid;
+  ++forged.catalog_generation_id;++e.metadata.catalog_generation;++e.metadata.definition_version;e.metadata.retired_transaction_uuid=corrupt_tx.transaction_uuid;
+  auto raw=f.Mutation(corrupt_tx,e.metadata.record.header.row_uuid,e.page_number,"");raw.cells.clear();
+  raw.kind=db::PhysicalMgaCowMutationKind::update;raw.catalog_name=db::NativeCatalogNameMaterialization{e.metadata,forged};
+  Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,raw).ok(),"actual individually valid forged name version could not stage");
+  const auto refuse=[&] {const auto bytes=f.Bytes();const auto count=write_calls;const auto rows=read();
+    Check(!rows.ok() && rows.rows.empty() && count==write_calls && bytes==f.Bytes(),"hidden or rolled-back name history forgery became success");};
+  refuse();f.Finish(corrupt_tx,false);refuse();
+}
+
 void NativeCatalogMetadataVersions() {
   namespace catalog = scratchbird::core::catalog;
   Fixture f;
@@ -2124,6 +2269,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { ImmutableInventoryPublication(); NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { NativeCatalogNames(); ImmutableInventoryPublication(); NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
