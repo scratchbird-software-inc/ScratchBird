@@ -1918,6 +1918,37 @@ void CheckpointCatalogRelations() {
       selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,false,true);
       for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.effective_lifecycle==catalog::CatalogObjectLifecycle::altering,"own successor is provisional altering");
       owned.transaction_uuid=writer.identity.transaction_uuid;owned.local_transaction_id=15;rewrite(owned,[](auto&){});const auto history_images=images;
+      // An unindexed row on another page still reserves its object identity.
+      // Outcome comes from native inventory, not visibility or lifecycle text.
+      const auto duplicate_inventory=inventory;
+      for(const auto [state,origin]:std::vector<std::pair<mga::TransactionState,mga::TransactionState>>{
+          {mga::TransactionState::active,mga::TransactionState::none},
+          {mga::TransactionState::prepared,mga::TransactionState::none},
+          {mga::TransactionState::committed,mga::TransactionState::none},
+          {mga::TransactionState::rolled_back,mga::TransactionState::none},
+          {mga::TransactionState::failed_terminal,mga::TransactionState::none},
+          {mga::TransactionState::archived,mga::TransactionState::committed},
+          {mga::TransactionState::archived,mga::TransactionState::rolled_back},
+          {mga::TransactionState::archived,mga::TransactionState::failed_terminal}}) {
+        images=history_images;inventory=duplicate_inventory;
+        auto& competing=images.leaves[3].body.rows.back();
+        competing.transaction_uuid=writer.identity.transaction_uuid;competing.local_transaction_id=15;
+        rewrite(competing,[&](auto& metadata){metadata.record.header.object_uuid.value=Id(180);});
+        auto& creator=inventory.inventory.entries[2];creator.state=state;creator.archived_from_state=origin;
+        const auto outcome=state==mga::TransactionState::archived?origin:state;
+        creator.commit_sequence=outcome==mga::TransactionState::committed?4:0;
+        const bool pending=outcome==mga::TransactionState::active||outcome==mga::TransactionState::prepared;
+        persist(false,pending||state==mga::TransactionState::failed_terminal?15:19,pending?15:19);
+        loaded=read(budget);Check(loaded.ok(),"duplicate fixture has valid physical images and native inventory state="
+          +std::to_string(static_cast<unsigned>(state))+" origin="+std::to_string(static_cast<unsigned>(origin))
+          +" checkpoint="+std::to_string(static_cast<unsigned>(loaded.checkpoint.error))
+          +" inventory="+std::to_string(static_cast<unsigned>(loaded.checkpoint.checkpoint_inventory.inventory_error)));
+        selected=pinned(history_pin.pin,reader.identity);
+        const bool released=outcome==mga::TransactionState::rolled_back||outcome==mga::TransactionState::failed_terminal;
+        if(released)expected(selected,old.version_uuid);
+        else {no_rows(selected);Check(selected.error==PE::duplicate_identity,"hidden cross-row object UUID collision cannot publish catalog rows");}
+      }
+      inventory=duplicate_inventory;images=history_images;
       for(unsigned fault=0;fault<6;++fault){images=history_images;auto& bad=images.leaves[3].body.rows[0];
         if(fault==0){bad.row_version=1;bad.previous_row_version=0;bad.previous_version_uuid={};}
         if(fault==1)rewrite(bad,[](auto& metadata){metadata.record.header.object_uuid.value=Id(245);});
@@ -1937,6 +1968,7 @@ void CheckpointCatalogRelations() {
       reads=0;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;const auto read_count=reads;expected(selected,old.version_uuid);
       for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;Check(!read_fault,"pinned physical read fault consumed");no_rows(selected);}
       observed_allocations=0;count_allocations=true;selected=pinned(history_pin.pin,reader.identity);count_allocations=false;const auto allocations=observed_allocations;expected(selected,old.version_uuid);bool success=false;
+      std::cout<<"catalog_pinned_allocation_fault_sites="<<allocations<<std::endl;
       for(unsigned long n=0;n<=allocations;++n){allocation_budget=n;selected=pinned(history_pin.pin,reader.identity);allocation_budget=-1;if(selected.ok()){success=true;break;}no_rows(selected);}Check(success,"all pinned selection allocation failures are atomic");
       tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done=false;db::NativePinnedCatalogReadResult revoked;
       std::thread reading([&]{revoked=pinned(history_pin.pin,reader.identity);done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();const bool paused=tree_read_paused.load();
@@ -2050,7 +2082,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { CheckpointCatalogRelations(); NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+  try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

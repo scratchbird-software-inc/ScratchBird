@@ -86,6 +86,17 @@ Status CowStoreOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::storage_page};
 }
 
+bool ReserveRetainedCatalogObject(
+    std::map<scratchbird::core::platform::Uuid,scratchbird::core::platform::Uuid>& reservations,
+    const scratchbird::core::catalog::CatalogMetadataVersion& metadata,
+    const TransactionInventoryEntry& creator) {
+  const auto outcome=scratchbird::transaction::mga::InventoryVisibilityState(creator);
+  if (outcome==TransactionState::rolled_back || outcome==TransactionState::failed_terminal) return true;
+  const auto& header=metadata.record.header;
+  const auto [reservation,inserted]=reservations.emplace(header.object_uuid.value,header.row_uuid.value);
+  return inserted || reservation->second==header.row_uuid.value;
+}
+
 using PhysicalCowSteadyClock = std::chrono::steady_clock;
 
 u64 PhysicalCowElapsedMicros(PhysicalCowSteadyClock::time_point start,
@@ -2093,6 +2104,7 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
     };
     std::map<Uuid,std::map<u64,std::size_t,std::greater<u64>>> by_row;
     std::map<Uuid,std::size_t> by_version;
+    std::map<Uuid,Uuid> object_reservations;
     for (std::size_t i=0;i<sources.size();++i) {
       const auto& row=row_at(i); auto& versions=by_row[row.row_uuid.value];
       if (!versions.empty()) {
@@ -2105,6 +2117,11 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
         return fail(E::invalid_chain);
       const auto validated=ValidateRowVersionMetadata(MetadataForRow(row,inventory.entries[sources[i].inventory_entry_index]));
       if (!validated.ok()) { auto r=fail(E::visibility_failure); r.diagnostic=validated.diagnostic; return r; }
+      // Visibility and index membership cannot release a catalog identity.
+      // All retained versions participate, except creators proven to have
+      // rolled back or failed terminally, including their archived outcomes.
+      if (!ReserveRetainedCatalogObject(object_reservations,metadata_at(i),
+          inventory.entries[sources[i].inventory_entry_index])) return fail(E::duplicate_identity);
     }
     for (std::size_t i=0;i<sources.size();++i) {
       const auto& row=row_at(i);
@@ -2185,6 +2202,13 @@ NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
   const auto& decoded=catalog_rows.metadata;
   if (native.recovery_required_count != 0)
     return ErrorResult<NativeCatalogVersionReadResult>("SB-ROW-VISIBILITY-REQUIRES-RECOVERY", "catalog.native_version.recovery_required");
+  std::map<scratchbird::core::platform::Uuid,scratchbird::core::platform::Uuid> object_reservations;
+  for (const auto& row : native.row_page.rows) {
+    const auto creator=LookupLocalTransaction(native.inventory,MakeLocalTransactionId(row.local_transaction_id));
+    if (!creator.ok()) return Propagate<NativeCatalogVersionReadResult>(creator.status,creator.diagnostic);
+    if (!ReserveRetainedCatalogObject(object_reservations,decoded.at(row.version_uuid),creator.entry))
+      return ErrorResult<NativeCatalogVersionReadResult>("CATALOG.INVALID_INPUT", "catalog.native_version.object_row_collision");
+  }
   NativeCatalogVersionReadResult result;
   for (const auto& row : native.visible_rows) {
     const auto found = decoded.find(row.version_uuid);

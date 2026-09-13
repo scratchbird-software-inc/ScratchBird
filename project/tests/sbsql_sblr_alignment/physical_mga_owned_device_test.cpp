@@ -721,6 +721,46 @@ void NativeCatalogMetadataVersions() {
     }
   }
   Fixture conflicts;
+  // Exercise the native read boundary with real physical effects that bypass
+  // catalog writer admission. A hidden competing row cannot turn a committed
+  // identity into an apparently unambiguous catalog object.
+  for (const bool committed_duplicate : {false, true}) {
+    Fixture duplicate;
+    const auto original_tx = duplicate.Begin();
+    auto original_metadata = metadata;
+    original_metadata.creator_transaction_uuid = original_tx.transaction_uuid;
+    original_metadata.creator_local_transaction_id = original_tx.local_id.value;
+    Check(db::WriteNativeCatalogVersionToOpenDevice(duplicate.device,
+        {duplicate.relation, duplicate.first_page, original_tx, original_metadata, {}}).ok(),
+        "stage original catalog identity for competing-reader test");
+    duplicate.Finish(original_tx, true);
+    const auto competing_tx = duplicate.Begin();
+    auto competing_metadata = original_metadata;
+    competing_metadata.record.header.row_uuid = Id(UuidKind::row);
+    competing_metadata.creator_transaction_uuid = competing_tx.transaction_uuid;
+    competing_metadata.creator_local_transaction_id = competing_tx.local_id.value;
+    const auto encoded = catalog::EncodeCatalogMetadataVersion(competing_metadata);
+    Check(encoded.ok(), "encode structurally valid competing object identity");
+    auto mutation = duplicate.Mutation(competing_tx, competing_metadata.record.header.row_uuid, duplicate.first_page, "");
+    mutation.cells[0].value.type_id = types::CanonicalTypeId::binary;
+    mutation.cells[0].value.payload = encoded.bytes;
+    Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(duplicate.device, mutation).ok(),
+        "stage actual competing physical catalog row");
+    if (committed_duplicate) duplicate.Finish(competing_tx, true);
+    const auto before = duplicate.Bytes(); const auto before_writes = write_calls;
+    const auto ambiguous = db::ReadNativeCatalogVersionsFromOpenDevice(duplicate.device,
+        duplicate.relation, duplicate.first_page, {}, true);
+    Check(!ambiguous.ok() && ambiguous.rows.empty() && duplicate.Bytes() == before && write_calls == before_writes,
+        "native page reader admitted competing catalog object UUID");
+    if (!committed_duplicate) {
+      duplicate.Finish(competing_tx, false);
+      const auto released = db::ReadNativeCatalogVersionsFromOpenDevice(duplicate.device,
+          duplicate.relation, duplicate.first_page, {}, true);
+      Check(released.ok() && released.rows.size() == 1 &&
+          released.rows[0].metadata.record.header.row_uuid.value == original_metadata.record.header.row_uuid.value,
+          "rollback must release competing identity without discarding original object");
+    }
+  }
   const auto pending = conflicts.Begin();
   auto reserved = metadata;
   reserved.creator_transaction_uuid = pending.transaction_uuid;

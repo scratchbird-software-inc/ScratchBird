@@ -176,7 +176,7 @@ struct NativeCatalogVersionReadResult {
 enum class NativePinnedCatalogReadError {
   none, invalid_reader, invalid_filespace, snapshot_failure, reader_mismatch,
   source_failure, invalid_chain, missing_version, visibility_failure,
-  requires_recovery, resource_exhausted, io_failure
+  requires_recovery, resource_exhausted, io_failure, duplicate_identity
 };
 struct NativeCatalogVisibilityObservation {
   std::size_t retained_row_index = 0;
