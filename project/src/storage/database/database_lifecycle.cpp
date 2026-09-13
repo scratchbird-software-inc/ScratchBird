@@ -4525,11 +4525,8 @@ InitialTransactionInventoryPublishResult PublishInitialTransactionInventoryPage(
   }
   TransactionInventoryPageBody body;
   body.page_number = kTransactionInventoryPageNumber;
-  body.inventory_generation = std::max<u64>(
-      1,
-      evidence.inventory.next_local_transaction_id == 0
-          ? 1
-          : evidence.inventory.next_local_transaction_id - 1);
+  // Initial publication authority is independent of bootstrap transaction count.
+  body.inventory_generation = 1;
   body.inventory = evidence.inventory;
   body.horizons = evidence.horizons;
   const auto built = BuildTransactionInventoryPageBody(

@@ -1021,6 +1021,30 @@ void NativeInventoryPublicationConcurrency() {
   Fixture f;
   auto loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
   Check(loaded.ok() && loaded.inventory.publication_base.has_value(), "native load omitted publication base");
+  const auto equal_state = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, loaded.inventory);
+  Check(equal_state.ok() && equal_state.inventory.publication_base != loaded.inventory.publication_base,
+      "equal-state publication reused previous publication authority");
+  Check(equal_state.inventory.publication_base->generation == loaded.inventory.publication_base->generation + 1,
+      "equal-state publication did not advance exactly one generation");
+  const auto stale_equal = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, loaded.inventory);
+  Check(!stale_equal.ok() && stale_equal.diagnostic.diagnostic_code == "SB-TXN-INVENTORY-SNAPSHOT-STALE",
+      "equal-state publication left old writer authorized");
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  const auto interrupted_base = loaded.inventory.publication_base;
+  const auto failures_before = write_faults;
+  reject_write = true;
+  const auto interrupted = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, loaded.inventory);
+  Check(!interrupted.ok() && !reject_write && write_faults == failures_before + 1,
+      "native inventory page-write fault did not fire after publishing carrier");
+  Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(),
+      "reopen actual interrupted inventory publication");
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok() && loaded.inventory.publication_base == interrupted_base,
+      "actual failed attempt did not recover exact prior publication base");
+  const auto retry = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, loaded.inventory);
+  Check(retry.ok() && retry.inventory.publication_base->generation == interrupted_base->generation + 2,
+      "native retry reused failed attempt generation");
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
   const auto begin_a = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
   const auto begin_b = mga::BeginLocalTransaction(loaded.inventory, Id(UuidKind::transaction), 1790000000200ull);
   Check(begin_a.ok() && begin_b.ok(), "derive competing begins");
@@ -1098,6 +1122,8 @@ void NativeInventoryPublicationConcurrency() {
   loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
   Check(loaded.ok(), "load expected initial commit order");
   const auto first_sequence = loaded.inventory.next_commit_sequence;
+  const auto first_generation = loaded.inventory.publication_base->generation;
+  const auto next_transaction = loaded.inventory.next_local_transaction_id;
   std::array<db::PhysicalMgaCowFinalizeResult, count> finalized;
   std::vector<std::thread> finalizers;
   std::barrier commit_start(static_cast<std::ptrdiff_t>(count + 1));
@@ -1120,6 +1146,9 @@ void NativeInventoryPublicationConcurrency() {
   loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
   Check(loaded.ok() && loaded.inventory.next_commit_sequence == first_sequence + count &&
       f.Read(f.first_page).visible_rows.size() == count, "concurrent finality not durable after reopen");
+  Check(loaded.inventory.next_local_transaction_id == next_transaction &&
+      loaded.inventory.publication_base->generation == first_generation + count,
+      "commits without transaction allocation did not each publish a fresh generation");
 
   // A different node has independent compound-operation ownership.
   Fixture other;
@@ -1627,6 +1656,8 @@ void NativeInventoryPageBindings() {
   Check(f.device.Sync().ok(),"sync inventory chain");
   auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
   Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size(),"valid real chain accepted without journal");
+  Check(loaded.inventory.publication_base && loaded.inventory.publication_base->generation == 7,
+      "page-only authority lost actual body publication generation");
   mga::VisibilitySnapshot own_snapshot;own_snapshot.reader_transaction=owner.local_id;
   const auto read_own=[&] {return db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device,f.relation,data_page,own_snapshot,false,owner);};
   for(unsigned mode=0;mode<7;++mode) {
@@ -1688,6 +1719,20 @@ void NativeInventoryPageBindings() {
   Check(!read_own().ok(),"recovered state bypassed physical startup/header binding");
   std::filesystem::rename(journal,retained);
   Check(f.device.WriteAt(db::kSystemStatePageNumber*page_size,startup_bytes.data(),startup_bytes.size()).ok(),"restore own startup header");
+  // With no carrier, generation exhaustion is owned by the validated chain.
+  for (auto& body : bodies) {
+    body.inventory_generation = ~u64{0};
+    const auto encoded = page::BuildTransactionInventoryPageBody(body, page_size);
+    Check(encoded.ok() && f.device.WriteAt(body.page_number*page_size+128,
+        encoded.serialized.data(), encoded.serialized.size()).ok(), "install exhausted native chain");
+  }
+  loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
+  Check(loaded.ok() && loaded.inventory.publication_base->generation == ~u64{0}, "load exhausted page-only authority");
+  const auto exhaustion_writes = write_calls; const auto exhaustion_bytes = f.Bytes();
+  const auto exhausted = db::PersistLocalTransactionInventoryToOpenDevice(&f.device, page_size, loaded.inventory);
+  Check(!exhausted.ok() && exhausted.diagnostic.diagnostic_code == "SB-TXN-INVENTORY-PAGE-GENERATION-INVALID" &&
+      write_calls == exhaustion_writes && f.Bytes() == exhaustion_bytes && !std::filesystem::exists(journal),
+      "page-only generation exhaustion changed durable authority");
   f.Locked();Check(f.device.Close().ok()&&f.device.Open(f.path,disk::FileOpenMode::open_existing_read_only).ok(),"readonly inventory chain reopen");
   loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
   Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size(),"reopened real page-bound inventory");

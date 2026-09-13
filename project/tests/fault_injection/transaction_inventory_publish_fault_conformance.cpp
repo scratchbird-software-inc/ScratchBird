@@ -198,12 +198,6 @@ txn::LocalTransactionInventory InventoryWithCommittedTransactions(u64 offset,
   return inventory;
 }
 
-u64 PublishGeneration(const txn::LocalTransactionInventory& inventory) {
-  return std::max<u64>(1, inventory.next_local_transaction_id == 0
-                              ? 1
-                              : inventory.next_local_transaction_id - 1);
-}
-
 bool SameInventory(const txn::LocalTransactionInventory& lhs,
                    const txn::LocalTransactionInventory& rhs) {
   if (lhs.next_local_transaction_id != rhs.next_local_transaction_id ||
@@ -235,7 +229,7 @@ bool SameInventory(const txn::LocalTransactionInventory& lhs,
 }
 
 // Independent byte oracle: deliberately uses explicit shifts, not production
-// encoder helpers. Offsets come from Core TRANSACTION_INVENTORY_BINARY_PUBLICATION_V4.
+// encoder helpers. Offsets come from Core TRANSACTION_INVENTORY_BINARY_PUBLICATION_V5.
 void Put(std::string& bytes, std::size_t offset, u64 value, std::size_t count) {
   for (std::size_t i = 0; i < count; ++i)
     bytes[offset + i] = static_cast<char>((value >> (8 * i)) & 255);
@@ -251,13 +245,14 @@ std::string WithDigest(std::string body) {
 
 std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view phase,
                                     const txn::LocalTransactionInventory& old_inventory,
-                                    const txn::LocalTransactionInventory& new_inventory) {
-  std::string bytes(96 + (old_inventory.entries.size() + new_inventory.entries.size()) * 72, '\0');
-  bytes.replace(0, 8, "SBTXP004");
-  Put(bytes, 8, 4, 2);
-  Put(bytes, 10, 96, 2);
+                                    const txn::LocalTransactionInventory& new_inventory,
+                                    u64 old_generation = 17, u64 new_generation = 23) {
+  std::string bytes(112 + (old_inventory.entries.size() + new_inventory.entries.size()) * 72, '\0');
+  bytes.replace(0, 8, "SBTXP005");
+  Put(bytes, 8, 5, 2);
+  Put(bytes, 10, 112, 2);
   Put(bytes, 12, phase == "publishing" ? 1 : 2, 4);
-  Put(bytes, 16, PublishGeneration(new_inventory), 8);
+  Put(bytes, 16, new_generation, 8);
   Put(bytes, 24, bytes.size() + 32, 8);
   Put(bytes, 32, old_inventory.next_local_transaction_id, 8);
   Put(bytes, 40, new_inventory.next_local_transaction_id, 8);
@@ -266,7 +261,8 @@ std::string BuildPublishJournalBody(const Fixture& fixture, std::string_view pha
   bytes.replace(64, 16, reinterpret_cast<const char*>(fixture.database_uuid.value.bytes.data()), 16);
   Put(bytes, 80, old_inventory.next_commit_sequence, 8);
   Put(bytes, 88, new_inventory.next_commit_sequence, 8);
-  std::size_t offset = 96;
+  Put(bytes, 96, old_generation, 8);
+  std::size_t offset = 112;
   for (const auto* inventory : {&old_inventory, &new_inventory}) {
     for (const auto& entry : inventory->entries) {
       Put(bytes, offset, entry.identity.local_id.value, 8);
@@ -400,6 +396,67 @@ database::LocalTransactionStoreResult LoadInventory(const Fixture& fixture) {
   return database::LoadLocalTransactionInventoryFromOpenDevice(&device, fixture.page_size);
 }
 
+bool TestPublicationGenerations() {
+  bool ok = true;
+  auto fixture = CreateFixture("publication_generations", 8500);
+  auto selected = LoadInventory(fixture);
+  ok = Require(selected.ok() && selected.inventory.publication_base &&
+      selected.inventory.publication_base->generation == 1,
+      "initial native publication generation is not one") && ok;
+  if (!ok) return false;
+  const auto inventory = selected.inventory;
+  // Independent generations deliberately differ from all transaction counters.
+  // Readable pages are stale; the complete carrier must control both state and base.
+  for (const auto phase : {"publishing", "committed"}) {
+    WriteTextAndSync(JournalPath(fixture), WithDigest(
+        BuildPublishJournalBody(fixture, phase, inventory, inventory, 17, 23)));
+    selected = LoadInventory(fixture);
+    const u64 expected = std::string_view(phase) == "publishing" ? 17 : 23;
+    ok = Require(selected.ok() && SameInventory(selected.inventory, inventory) &&
+        selected.inventory.publication_base && selected.inventory.publication_base->generation == expected,
+        "recovery did not select exact old/new generation") && ok;
+    if (!selected.ok()) return false;
+    disk::FileDevice device;
+    ok = Require(device.Open(fixture.database_path.string(), disk::FileOpenMode::open_existing).ok(),
+        "open generation retry fixture") && ok;
+    const auto next = database::PersistLocalTransactionInventoryToOpenDevice(
+        &device, fixture.page_size, selected.inventory);
+    ok = Require(next.ok() && next.inventory.publication_base &&
+        next.inventory.publication_base->generation == 24,
+        "publication reused interrupted generation or derived it from transaction counter") && ok;
+  }
+  selected = LoadInventory(fixture);
+  ok = Require(selected.ok() && selected.inventory.publication_base &&
+      selected.inventory.publication_base->generation == 24,
+      "fresh native reopen lost publication generation") && ok;
+  {
+    disk::FileDevice device;
+    if (!Require(device.Open(fixture.database_path.string(), disk::FileOpenMode::open_existing_read_only).ok(),
+        "read-only generation reopen")) return false;
+    const auto readonly = database::LoadLocalTransactionInventoryFromOpenDevice(&device, fixture.page_size);
+    ok = Require(readonly.ok() && readonly.inventory.publication_base == selected.inventory.publication_base,
+        "read-only reopen changed publication provenance") && ok;
+  }
+  // Exhaustion in either selected state or an uncommitted attempt must refuse
+  // before replacing the carrier or changing any database byte.
+  for (const auto phase : {"publishing", "committed"}) {
+    const auto carrier = WithDigest(BuildPublishJournalBody(fixture, phase, inventory, inventory, 17, ~u64{0}));
+    WriteTextAndSync(JournalPath(fixture), carrier);
+    selected = LoadInventory(fixture);
+    if (!Require(selected.ok(), "valid exhausted carrier failed recovery")) return false;
+    const auto before = ReadText(fixture.database_path);
+    disk::FileDevice device;
+    if (!Require(device.Open(fixture.database_path.string(), disk::FileOpenMode::open_existing).ok(),
+        "open exhausted fixture")) return false;
+    const auto refused = database::PersistLocalTransactionInventoryToOpenDevice(
+        &device, fixture.page_size, selected.inventory);
+    ok = Require(!refused.ok() && refused.diagnostic.diagnostic_code == "SB-TXN-INVENTORY-PAGE-GENERATION-INVALID" &&
+        ReadText(JournalPath(fixture)) == carrier && ReadText(fixture.database_path) == before,
+        "exhausted publication wrapped, succeeded or wrote state") && ok;
+  }
+  return ok;
+}
+
 bool TestCommittedJournalRecoversNewSnapshot() {
   bool ok = true;
   auto fixture = CreateFixture("committed_new", 1000);
@@ -495,7 +552,7 @@ bool TestChecksumTamperFailsClosed() {
   ok = PersistInventory(fixture, new_inventory) && ok;
   std::string journal = ReadText(JournalPath(fixture));
   Require(journal.size() > 128, "binary publication missing");
-  journal[96 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
+  journal[112 + 32] ^= 1; // Timestamp byte: structurally valid but unauthenticated.
   WriteTextAndSync(JournalPath(fixture), journal);
   CorruptPrimaryInventoryRoot(fixture);
   const auto loaded = LoadInventory(fixture);
@@ -532,7 +589,8 @@ bool TestBinaryPublicationContract() {
   new_inventory = archived_abort.inventory;
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
-  const auto golden = BuildPublishJournal(fixture, "committed", old_inventory, new_inventory);
+  // Creation publishes1, then these two actual replacements publish2 and3.
+  const auto golden = WithDigest(BuildPublishJournalBody(fixture, "committed", old_inventory, new_inventory, 2, 3));
   const auto actual = ReadText(JournalPath(fixture));
   ok = Require(actual == golden, "live writer differs from independent binary byte oracle") && ok;
   for (const auto& entry : new_inventory.entries)
@@ -565,15 +623,21 @@ bool TestBinaryPublicationContract() {
 
   // An unsupported journal must be refused before writing even when the
   // primary page chain is intact; no automatic prototype conversion.
-  const std::string legacy = "SBTXPUB002\n" + std::string(150, 'x');
-  WriteTextAndSync(JournalPath(fixture), legacy);
-  const auto legacy_read = LoadInventory(fixture);
-  const auto legacy_write = database::PersistLocalTransactionInventoryToDatabase(
-      fixture.database_path.string(), new_inventory);
-  ok = Require(!legacy_read.ok() && !legacy_write.ok() &&
-               ReadText(JournalPath(fixture)) == legacy &&
-               ReadText(fixture.database_path) == before,
-               "legacy journal silently converted or used as authority") && ok;
+  auto retired_body = golden.substr(0, 96) + golden.substr(112, golden.size() - 112 - 32);
+  retired_body.replace(0, 8, "SBTXP004");
+  Put(retired_body, 8, 4, 2); Put(retired_body, 10, 96, 2);
+  Put(retired_body, 16, new_inventory.next_local_transaction_id - 1, 8);
+  Put(retired_body, 24, retired_body.size() + 32, 8);
+  for (const auto& legacy : {std::string("SBTXPUB002\n") + std::string(150, 'x'), WithDigest(retired_body)}) {
+    WriteTextAndSync(JournalPath(fixture), legacy);
+    const auto legacy_read = LoadInventory(fixture);
+    const auto legacy_write = database::PersistLocalTransactionInventoryToDatabase(
+        fixture.database_path.string(), new_inventory);
+    ok = Require(!legacy_read.ok() && !legacy_write.ok() &&
+                 ReadText(JournalPath(fixture)) == legacy &&
+                 ReadText(fixture.database_path) == before,
+                 "legacy journal silently converted or used as authority") && ok;
+  }
   WriteTextAndSync(JournalPath(fixture), golden);
   CorruptPrimaryInventoryRoot(fixture);
   const auto refused = [&](const std::string& bytes) {
@@ -593,7 +657,10 @@ bool TestBinaryPublicationContract() {
   };
   mutate(8, 2, 2); mutate(8, 3, 2); mutate(10, 80, 2);
   mutate(12, 0, 4); mutate(12, 3, 4);
-  mutate(16, 0, 8); mutate(16, 999, 8);
+  mutate(16, 0, 8); mutate(16, 2, 8);
+  mutate(96, 0, 8); mutate(96, 3, 8);
+  for (std::size_t reserved = 104; reserved < 112; ++reserved) mutate(reserved, 1, 1);
+  mutate(8, 4, 2);
   mutate(24, 0, 8); mutate(24, ~u64{0}, 8);
   mutate(32, 0, 8); mutate(40, 0, 8);
   mutate(48, ~u64{0}, 8); mutate(56, ~u64{0}, 8);
@@ -601,7 +668,7 @@ bool TestBinaryPublicationContract() {
   // Every persisted UUID slot rejects all other version/variant combinations,
   // including the database binding and the unselected old snapshot.
   std::vector<std::size_t> uuid_offsets{64};
-  for (std::size_t row = 96; row < golden.size() - 32; row += 72)
+  for (std::size_t row = 112; row < golden.size() - 32; row += 72)
     uuid_offsets.push_back(row + 8);
   for (const auto offset : uuid_offsets) {
     for (unsigned version = 0; version < 16; ++version)
@@ -613,7 +680,7 @@ bool TestBinaryPublicationContract() {
         refused(WithDigest(body));
       }
   }
-  for (std::size_t row = 96; row < golden.size() - 32; row += 72) {
+  for (std::size_t row = 112; row < golden.size() - 32; row += 72) {
     mutate(row, 0, 8);
     mutate(row + 24, 2, 2);
     mutate(row + 26, 0, 2); mutate(row + 26, 14, 2);
@@ -621,10 +688,10 @@ bool TestBinaryPublicationContract() {
     mutate(row + 56, ~u64{0}, 8);
     mutate(row + 64, ~u64{0}, 8);
   }
-  mutate(96 + 72, 1, 8); // Duplicate local number in old snapshot.
+  mutate(112 + 72, 1, 8); // Duplicate local number in old snapshot.
   {
     auto body = golden.substr(0, golden.size() - 32);
-    body.replace(96 + 72 + 8, 16, body.substr(96 + 8, 16));
+    body.replace(112 + 72 + 8, 16, body.substr(112 + 8, 16));
     refused(WithDigest(body)); // Duplicate UUID with different local number.
   }
   {
@@ -707,6 +774,7 @@ int main() {
     return EXIT_FAILURE;
   }
   ok = TestCommittedJournalRecoversNewSnapshot() && ok;
+  ok = TestPublicationGenerations() && ok;
   ok = TestPublishingJournalRecoversOldSnapshot() && ok;
   ok = TestCommittedJournalRejectsStaleTail() && ok;
   ok = TestPartialJournalRequiresRecovery() && ok;

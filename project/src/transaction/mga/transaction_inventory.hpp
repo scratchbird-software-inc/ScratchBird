@@ -43,6 +43,7 @@ struct TransactionInventoryEntry {
 struct TransactionInventoryPublicationBase {
   scratchbird::core::platform::Uuid database_uuid;
   std::array<scratchbird::core::platform::byte, 32> inventory_sha256{};
+  u64 generation = 0;
   bool operator==(const TransactionInventoryPublicationBase&) const = default;
 };
 

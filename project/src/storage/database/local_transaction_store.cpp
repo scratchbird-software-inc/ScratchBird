@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -429,8 +430,8 @@ bool ReplacePublishJournalAtomically(const std::filesystem::path& temp_path,
 #endif
 }
 
-// TRANSACTION_INVENTORY_BINARY_PUBLICATION_V4: exact Core durable-format carrier.
-constexpr std::size_t kPublishHeaderBytes = 96;
+// TRANSACTION_INVENTORY_BINARY_PUBLICATION_V5: exact Core durable-format carrier.
+constexpr std::size_t kPublishHeaderBytes = 112;
 constexpr std::size_t kPublishEntryBytes = 72;
 constexpr std::size_t kPublishDigestBytes = 32;
 constexpr std::size_t kPublishMaxBytes = 64 * 1024 * 1024;
@@ -453,16 +454,17 @@ std::optional<scratchbird::core::platform::Uuid> PublicationDatabaseIdentity(Fil
 }
 
 std::optional<scratchbird::transaction::mga::TransactionInventoryPublicationBase>
-InventoryPublicationBase(FileDevice* device, const LocalTransactionInventory& inventory) {
+InventoryPublicationBase(FileDevice* device, const LocalTransactionInventory& inventory, u64 generation) {
   const auto database = PublicationDatabaseIdentity(device);
-  if (!database) return {};
+  if (!database || generation == 0) return {};
   // The canonical logical digest includes every durable inventory field, but
   // deliberately excludes the transient publication_base itself.
   TransactionInventoryPageBody body;
   body.inventory = inventory;
+  body.inventory_generation = generation;
   const auto digest = scratchbird::storage::page::ComputeTransactionInventoryPageChainDigest(body);
   if (!scratchbird::storage::page::TransactionInventoryPageDigestPresent(digest)) return {};
-  return scratchbird::transaction::mga::TransactionInventoryPublicationBase{*database, digest};
+  return scratchbird::transaction::mga::TransactionInventoryPublicationBase{*database, digest, generation};
 }
 
 bool ValidPublicationInventory(const LocalTransactionInventory& inventory) {
@@ -496,7 +498,8 @@ std::string BuildPublishJournal(FileDevice* device,
       old_inventory.entries.size() > capacity ||
       new_inventory.entries.size() > capacity - old_inventory.entries.size() ||
       !ValidPublicationInventory(old_inventory) || !ValidPublicationInventory(new_inventory) ||
-      generation != std::max<u64>(1, new_inventory.next_local_transaction_id - 1)) {
+      !old_inventory.publication_base || old_inventory.publication_base->generation == 0 ||
+      generation <= old_inventory.publication_base->generation) {
     return {};
   }
   const auto database = PublicationDatabaseIdentity(device);
@@ -504,8 +507,8 @@ std::string BuildPublishJournal(FileDevice* device,
   const auto count = old_inventory.entries.size() + new_inventory.entries.size();
   std::string bytes(kPublishHeaderBytes + count * kPublishEntryBytes + kPublishDigestBytes, '\0');
   auto* out = reinterpret_cast<byte*>(bytes.data());
-  std::memcpy(out, "SBTXP004", 8);
-  StoreLittle16(out + 8, 4);
+  std::memcpy(out, "SBTXP005", 8);
+  StoreLittle16(out + 8, 5);
   StoreLittle16(out + 10, kPublishHeaderBytes);
   StoreLittle32(out + 12, phase == "publishing" ? 1 : 2);
   StoreLittle64(out + 16, generation);
@@ -517,6 +520,7 @@ std::string BuildPublishJournal(FileDevice* device,
   std::copy(database->bytes.begin(), database->bytes.end(), out + 64);
   StoreLittle64(out + 80, old_inventory.next_commit_sequence);
   StoreLittle64(out + 88, new_inventory.next_commit_sequence);
+  StoreLittle64(out + 96, old_inventory.publication_base->generation);
   std::size_t offset = kPublishHeaderBytes;
   for (const auto* inventory : {&old_inventory, &new_inventory}) {
     for (const auto& entry : inventory->entries) {
@@ -618,6 +622,7 @@ LocalTransactionStoreResult PersistPublishJournal(FileDevice* device,
 struct PublishJournal {
   std::string phase;
   u64 generation = 0;
+  u64 old_generation = 0;
   LocalTransactionInventory old_inventory;
   LocalTransactionInventory new_inventory;
 };
@@ -662,7 +667,7 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
   }
   if (content.size() > kPublishMaxBytes) { return invalid("size_limit"); }
   const auto* bytes = reinterpret_cast<const byte*>(content.data());
-  if (std::memcmp(bytes, "SBTXP004", 8) != 0 || LoadLittle16(bytes + 8) != 4 ||
+  if (std::memcmp(bytes, "SBTXP005", 8) != 0 || LoadLittle16(bytes + 8) != 5 ||
       LoadLittle16(bytes + 10) != kPublishHeaderBytes) { return invalid("unsupported_format"); }
   const auto total = LoadLittle64(bytes + 24);
   if (total > content.size()) {
@@ -698,14 +703,15 @@ PublishJournalLoadResult ParsePublishJournal(FileDevice* device, const std::stri
   if (phase != 1 && phase != 2) { return invalid("phase_invalid"); }
   journal.phase = phase == 1 ? "publishing" : "committed";
   journal.generation = LoadLittle64(bytes + 16);
+  journal.old_generation = LoadLittle64(bytes + 96);
   journal.old_inventory.next_local_transaction_id = LoadLittle64(bytes + 32);
   journal.new_inventory.next_local_transaction_id = LoadLittle64(bytes + 40);
   journal.old_inventory.next_commit_sequence = LoadLittle64(bytes + 80);
   journal.new_inventory.next_commit_sequence = LoadLittle64(bytes + 88);
-  if (journal.new_inventory.next_local_transaction_id == 0 ||
-      journal.generation != std::max<u64>(1, journal.new_inventory.next_local_transaction_id - 1)) {
+  if (journal.old_generation == 0 || journal.generation <= journal.old_generation) {
     return invalid("generation_invalid");
   }
+  if (LoadLittle64(bytes + 104) != 0) return invalid("reserved_nonzero");
   std::size_t offset = kPublishHeaderBytes;
   const auto decode = [&](u64 count, LocalTransactionInventory& inventory) {
     inventory.entries.reserve(static_cast<std::size_t>(count));
@@ -784,9 +790,13 @@ PublishJournalLoadResult LoadPublishJournal(FileDevice* device) {
 }
 
 LocalTransactionStoreResult ResultFromRecoveredInventory(
-    LocalTransactionInventory inventory) {
+    FileDevice* device, LocalTransactionInventory inventory, u64 generation) {
   const auto horizons = ComputeLocalTransactionHorizons(inventory);
   if (!horizons.ok()) { return StoreError(horizons.status, horizons.diagnostic); }
+  inventory.publication_base = InventoryPublicationBase(device, inventory, generation);
+  if (!inventory.publication_base)
+    return StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+                          "transaction_inventory_snapshot.identity_invalid");
   LocalTransactionStoreResult result;
   result.status = StoreOkStatus();
   result.inventory = std::move(inventory);
@@ -805,10 +815,10 @@ LocalTransactionStoreResult RecoverInventoryFromPublishJournal(
     return journal.store;
   }
   if (journal.journal.phase == "committed") {
-    return ResultFromRecoveredInventory(journal.journal.new_inventory);
+    return ResultFromRecoveredInventory(device, journal.journal.new_inventory, journal.journal.generation);
   }
   if (journal.journal.phase == "publishing") {
-    return ResultFromRecoveredInventory(journal.journal.old_inventory);
+    return ResultFromRecoveredInventory(device, journal.journal.old_inventory, journal.journal.old_generation);
   }
   return StorePageError("SB-TXN-INVENTORY-PUBLISH-RECOVERY-REQUIRED",
                         "transaction_inventory_publish_journal.recovery_required");
@@ -991,6 +1001,10 @@ LocalTransactionStoreResult LoadInventoryChain(FileDevice* device,
   inventory->next_commit_sequence = next_commit_sequence;
   if (const auto reason = scratchbird::transaction::mga::ValidateLocalTransactionInventoryStructure(*inventory); *reason)
     return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.inventory_invalid", reason);
+  inventory->publication_base = InventoryPublicationBase(device, *inventory, chain_generation);
+  if (!inventory->publication_base)
+    return StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+                          "transaction_inventory_snapshot.identity_invalid");
   return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
 }
 
@@ -1204,20 +1218,11 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   if (!expected_database.ok()) return StoreError(expected_database.status,expected_database.diagnostic);
   if (expected_database.header.page_size!=page_size)
     return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.request_page_size_mismatch");
-  const auto issue_base = [&](LocalTransactionStoreResult result) {
-    if (result.ok()) {
-      result.inventory.publication_base = InventoryPublicationBase(device, result.inventory);
-      if (!result.inventory.publication_base)
-        return StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
-                              "transaction_inventory_snapshot.identity_invalid");
-    }
-    return result;
-  };
   LocalTransactionInventory inventory;
   std::vector<u64> page_chain;
   const auto loaded = LoadInventoryChain(device, page_size, &inventory, &page_chain);
   if (!loaded.ok()) {
-    return issue_base(RecoverInventoryFromPublishJournal(device, loaded));
+    return RecoverInventoryFromPublishJournal(device, loaded);
   }
   const auto horizons = ComputeLocalTransactionHorizons(inventory);
   if (!horizons.ok()) { return StoreError(horizons.status, horizons.diagnostic); }
@@ -1228,7 +1233,7 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   // A readable page chain can still be the pre-publication generation after a
   // process crash.  The fsynced publish journal is the authority that decides
   // whether recovery exposes the old or new whole-inventory snapshot.
-  return issue_base(RecoverInventoryFromPublishJournal(device, result));
+  return RecoverInventoryFromPublishJournal(device, result);
 }
 
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
@@ -1320,11 +1325,12 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     old_inventory = journal.journal.phase == "committed"
                         ? journal.journal.new_inventory
                         : journal.journal.old_inventory;
+    old_inventory.publication_base = InventoryPublicationBase(device, old_inventory,
+        journal.journal.phase == "committed" ? journal.journal.generation : journal.journal.old_generation);
   }
 
-  const auto current_base = InventoryPublicationBase(device, old_inventory);
-  const auto next_base = InventoryPublicationBase(device, inventory);
-  if (!current_base || !next_base)
+  const auto current_base = old_inventory.publication_base;
+  if (!current_base)
     return trace_and_return(StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
                                            "transaction_inventory_snapshot.identity_invalid"));
   // Initial creation has its dedicated lifecycle publisher. Zero/corrupt page
@@ -1332,6 +1338,15 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   if (inventory.publication_base != current_base)
     return trace_and_return(StorePageError("SB-TXN-INVENTORY-SNAPSHOT-STALE",
                                            "transaction_inventory_snapshot.publication_base_mismatch"));
+  const u64 watermark = journal.present ? journal.journal.generation : current_base->generation;
+  if (watermark == std::numeric_limits<u64>::max())
+    return trace_and_return(StorePageError("SB-TXN-INVENTORY-PAGE-GENERATION-INVALID",
+                                           "transaction_inventory_snapshot.generation_exhausted"));
+  const u64 inventory_generation = watermark + 1;
+  const auto next_base = InventoryPublicationBase(device, inventory, inventory_generation);
+  if (!next_base)
+    return trace_and_return(StorePageError("SB-TXN-INVENTORY-SNAPSHOT-IDENTITY-INVALID",
+                                           "transaction_inventory_snapshot.identity_invalid"));
   if (inventory.next_local_transaction_id < old_inventory.next_local_transaction_id ||
       inventory.next_commit_sequence < old_inventory.next_commit_sequence)
     return trace_and_return(StorePageError("CATALOG.INVALID_INPUT",
@@ -1339,10 +1354,6 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
 
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);
-  const u64 inventory_generation =
-      std::max<u64>(1, inventory.next_local_transaction_id == 0
-      ? 1
-                           : inventory.next_local_transaction_id - 1);
   u64 append_page = NextAppendPageNumber(device, page_size);
   while (page_chain.size() < required_pages) {
     while (std::find(page_chain.begin(), page_chain.end(), append_page) != page_chain.end()) {
