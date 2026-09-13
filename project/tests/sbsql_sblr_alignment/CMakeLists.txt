@@ -30,10 +30,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ../../src/engine/functions/metadata/function_optimizer_metadata.cpp
     ../../src/engine/functions/metadata/function_parser_projection.cpp
     ../../src/engine/functions/common/function_runtime.cpp
+    ../../src/engine/functions/common/function_result_helpers.cpp
+    ../../src/engine/sblr/sblr_aggregate_window_runtime.cpp
+    ../../src/engine/sblr/sblr_function_diagnostic.cpp
+    ../../src/engine/executor/canonical_aggregate_registry.cpp
     ../../src/engine/sblr/sblr_runtime.cpp)
   target_compile_features(sbsql_sblr_alignment_function_registry_binary PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_function_registry_binary PRIVATE
-    ../../src/engine/functions ../../src/engine)
+    ../../src/engine/functions ../../src/engine ../../src/engine/executor)
   target_link_libraries(sbsql_sblr_alignment_function_registry_binary PRIVATE sb_core_uuid Threads::Threads)
   add_test(NAME sbsql_sblr_alignment_function_registry_binary
     COMMAND sbsql_sblr_alignment_function_registry_binary)

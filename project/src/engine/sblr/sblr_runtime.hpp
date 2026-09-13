@@ -8,14 +8,20 @@
 
 #pragma once
 
+#include "../../core/platform/runtime_platform.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
+
+using SblrUuid = scratchbird::core::platform::Uuid;
+static_assert(sizeof(SblrUuid) == 16);
 
 enum class SblrStatusCode {
   ok,
@@ -51,10 +57,15 @@ enum class SblrValuePayloadKind {
 
 struct SblrDiagnosticField {
   std::string key;
-  std::string value;
+  // Private canonical runtime metadata. UUID parameters retain their binary
+  // type; presentation adapters may not flatten them into public text fields.
+  std::variant<std::string, SblrUuid> value;
 };
 
 struct SblrRuntimeDiagnostic {
+  // Issued once by MakeSblrDiagnostic. Default nil means no emitted record;
+  // copies and trusted bridges retain the source occurrence unchanged.
+  SblrUuid occurrence_uuid;
   std::string diagnostic_id;
   std::string message_key;
   std::string detail;
@@ -103,7 +114,7 @@ struct SblrSessionConfigEntry {
 
 struct SblrSessionAdvisoryLockEntry {
   std::int64_t key = 0;
-  std::string owner_session_uuid;
+  SblrUuid owner_session_uuid;
   std::uint64_t acquisition_count = 0;
 };
 
@@ -128,20 +139,20 @@ struct SblrSessionRuntimeState {
 
 struct SblrExecutionContext {
   std::string database_path;
-  std::string cluster_uuid;
-  std::string node_uuid;
-  std::string database_uuid;
-  std::string transaction_uuid;
+  SblrUuid cluster_uuid;
+  SblrUuid node_uuid;
+  SblrUuid database_uuid;
+  SblrUuid transaction_uuid;
   std::uint64_t local_transaction_id = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
   std::string transaction_isolation_level = "read_committed";
-  std::string statement_uuid;
-  std::string user_uuid;
-  std::string current_role_uuid;
-  std::string current_group_uuid_set;
-  std::string current_schema_uuid;
-  std::string session_uuid;
-  std::string attachment_uuid;
+  SblrUuid statement_uuid;
+  SblrUuid user_uuid;
+  SblrUuid current_role_uuid;
+  std::vector<SblrUuid> current_group_uuid_set;
+  SblrUuid current_schema_uuid;
+  SblrUuid session_uuid;
+  SblrUuid attachment_uuid;
   std::string statement_timestamp;
   std::string transaction_timestamp;
   std::string current_timestamp;
@@ -151,12 +162,12 @@ struct SblrExecutionContext {
   std::string deterministic_uuid_text;
   std::string current_sqlstate;
   std::string current_diagnostic_id;
-  std::string current_diagnostic_uuid;
+  SblrUuid current_diagnostic_uuid;
   std::string last_identity_value;
-  std::string parser_profile_uuid;
-  std::string client_protocol_uuid;
+  SblrUuid parser_profile_uuid;
+  SblrUuid client_protocol_uuid;
   std::string application_name;
-  std::string security_snapshot_uuid;
+  SblrUuid security_snapshot_uuid;
   std::vector<std::string> active_savepoint_names;
   SblrRuntimeDiagnostic savepoint_authority_diagnostic;
   std::shared_ptr<SblrSessionRuntimeState> session_runtime_state =
@@ -174,9 +185,9 @@ struct SblrExecutionContext {
 };
 
 struct SblrFrame {
-  std::string frame_uuid;
-  std::string routine_object_uuid;
-  std::string package_object_uuid;
+  SblrUuid frame_uuid;
+  SblrUuid routine_object_uuid;
+  SblrUuid package_object_uuid;
   std::size_t depth = 0;
   bool rollback_region_open = false;
 };

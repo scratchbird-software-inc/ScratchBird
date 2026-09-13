@@ -71,6 +71,19 @@ std::vector<FunctionRegistryEntry> FunctionRegistry::Entries() const {
   return out;
 }
 
+const FunctionRegistryEntry* FunctionRegistry::BindCallContext(FunctionCallContext& context) const {
+  const auto* entry = LookupByUuid(context.function_uuid);
+  if (entry == nullptr) return nullptr;
+  auto symbol = entry->function_id;
+  auto package = entry->family;
+  // Complete all fallible copies before publishing either metadata field.
+  context.function_id.swap(symbol);
+  context.package_name.swap(package);
+  context.implementation_state = entry->implementation_state;
+  context.package_state = entry->package_state;
+  return entry;
+}
+
 FunctionRegistry MakeEmptyFunctionRegistry() { return FunctionRegistry{}; }
 
 FunctionRegistryEntry MakeRefusalOnlyFunction(std::string function_id,

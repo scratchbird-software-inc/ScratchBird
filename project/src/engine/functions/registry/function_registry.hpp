@@ -20,7 +20,6 @@
 
 namespace scratchbird::engine::functions {
 
-using FunctionUuid = scratchbird::core::platform::Uuid;
 static_assert(sizeof(FunctionUuid) == 16);
 
 struct FunctionRegistryEntry {
@@ -56,6 +55,9 @@ class FunctionRegistry {
   [[nodiscard]] const FunctionRegistryEntry* Lookup(std::string_view function_id) const;
   [[nodiscard]] const FunctionRegistryEntry* LookupByUuid(
       const FunctionUuid& function_uuid) const;
+  // Binds only the supplied binary identity. Copies engine-owned dispatch
+  // metadata atomically; failure never grants gates or changes the context.
+  [[nodiscard]] const FunctionRegistryEntry* BindCallContext(FunctionCallContext& context) const;
   [[nodiscard]] std::vector<FunctionRegistryEntry> Entries() const;
   [[nodiscard]] bool empty() const { return entries_by_uuid_.empty(); }
 

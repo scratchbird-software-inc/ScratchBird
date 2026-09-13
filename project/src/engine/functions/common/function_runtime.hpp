@@ -20,6 +20,8 @@ struct EngineRequestContext;
 
 namespace scratchbird::engine::functions {
 
+using FunctionUuid = scratchbird::engine::sblr::SblrUuid;
+
 enum class FunctionImplementationState {
   implement_now,
   implemented_behavior,
@@ -126,7 +128,7 @@ struct FunctionCallContext {
   const scratchbird::engine::internal_api::EngineRequestContext*
       engine_request_context = nullptr;
   std::string function_id;
-  std::string function_uuid;
+  FunctionUuid function_uuid;
   std::string package_name;
   FunctionImplementationState implementation_state = FunctionImplementationState::refuse_until_classified;
   FunctionPackageState package_state = FunctionPackageState::future_or_refusal;

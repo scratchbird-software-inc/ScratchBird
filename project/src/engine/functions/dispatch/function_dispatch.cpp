@@ -35,18 +35,13 @@ namespace scratchbird::engine::functions {
 
 FunctionCallResult DispatchFunctionCall(const FunctionRegistry& registry,
                                         FunctionCallRequest request) {
-  const auto* entry = registry.Lookup(request.context.function_id);
+  const auto* entry = registry.BindCallContext(request.context);
   if (!entry) {
     return RefuseFunctionWithDiagnostic(request,
                                         scratchbird::engine::sblr::SblrStatusCode::unsupported_feature,
                                         "SB_DIAG_FUNCTION_NOT_REGISTERED",
-                                        "function_id is not present in the active function registry");
+                                        "binary function UUID is not present in the active function registry");
   }
-
-  request.context.function_uuid = entry->function_uuid;
-  request.context.package_name = entry->family;
-  request.context.implementation_state = entry->implementation_state;
-  request.context.package_state = entry->package_state;
 
   for (const auto decision : {EvaluateFunctionPackageGate(*entry, request.context),
                              EvaluateFunctionDependencyGate(*entry, request.context),

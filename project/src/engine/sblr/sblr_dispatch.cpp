@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "sblr_function_diagnostic.hpp"
 #include "relational_descriptor_codec.hpp"
 #include "relational_identity_codec.hpp"
 #include "canonical_query_result_metadata.hpp"
@@ -8328,26 +8329,6 @@ SblrExecutionContext SblrExecutionContextFromEngineContext(
   return out;
 }
 
-api::EngineApiDiagnostic FunctionDiagnosticToApi(const SblrRuntimeDiagnostic& diagnostic) {
-  api::EngineApiDiagnostic out;
-  out.code = diagnostic.diagnostic_id.empty() ? "SB_DIAG_FUNCTION_EXECUTION_FAILED"
-                                             : diagnostic.diagnostic_id;
-  out.message_key = diagnostic.message_key.empty() ? "engine.function.execution_failed"
-                                                   : diagnostic.message_key;
-  out.detail = diagnostic.detail;
-  out.error = diagnostic.severity != SblrDiagnosticSeverity::info;
-  // Only explicitly public, bounded function-diagnostic fields cross the
-  // neutral engine API. Runtime identity/security fields remain private.
-  // Conversion presentation adapters consume this structured field and must
-  // never parse `detail` prose to recover an input value.
-  for (const auto& field : diagnostic.fields) {
-    if (field.key == "conversion_input_text") {
-      out.fields.push_back({field.key, field.value});
-    }
-  }
-  return out;
-}
-
 api::EngineApiResult DispatchExecuteTransactionBlock(
     const SblrDispatchRequest& request) {
   auto typed = TypedExecuteTransactionBlockRequest(request);
@@ -8702,13 +8683,14 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     api::EngineProjectionOperatorRequest failure_request;
     failure_request.context = context;
     failure_request.expression = expression;
-    if (expression.function_id.empty()) {
+    if (expression.function_uuid.is_nil()) {
       return ProjectionOperatorFailure(failure_request,
                                        "SB_DIAG_OPERATOR_INVALID_INPUT",
-                                       "nested function projection requires a function id");
+                                       "nested function projection requires a binary function UUID");
     }
     api::EngineProjectionFunctionRequest function_request;
     function_request.context = context;
+    function_request.function_uuid = expression.function_uuid;
     function_request.function_id = expression.function_id;
     std::vector<api::EngineEvidenceReference> argument_evidence;
     for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
@@ -9404,13 +9386,12 @@ api::EngineProjectionFunctionResult EvaluateUserFunctionDescriptor(
 
 api::EngineProjectionFunctionResult EvaluateUserFunction(
     const api::EngineProjectionFunctionRequest& request) {
-  static constexpr std::string_view kPrefix = "sbsql.user_function:";
-  if (!StartsWith(request.function_id, kPrefix)) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.function_uuid)) {
     return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ID_INVALID",
-                               "user function id is not UUID-bound",
+                               "user function requires a binary system UUIDv7",
                                request.function_id);
   }
-  const std::string object_uuid = request.function_id.substr(kPrefix.size());
+  const auto& object_uuid = request.function_uuid;
 
   api::EngineInvokeExecutableObjectRequest invocation;
   invocation.context = request.context;
@@ -9543,6 +9524,11 @@ bool EnrichCanonicalFunctionResultDescriptor(
 
 api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     const api::EngineProjectionFunctionRequest& request) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.function_uuid)) {
+    return UserFunctionFailure("SB_DIAG_USER_FUNCTION_ID_INVALID",
+                               "function execution requires a binary system UUIDv7",
+                               request.function_id);
+  }
   for (const auto& argument : request.arguments) {
     if (!ProjectionArgumentEncodingValid(argument)) {
       api::EngineProjectionFunctionResult out;
@@ -9556,12 +9542,13 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
       return out;
     }
   }
-  if (StartsWith(request.function_id, "sbsql.user_function:")) {
+  const auto& package = StandardFunctionSeedPackage();
+  if (package.registry.LookupByUuid(request.function_uuid) == nullptr) {
     return EvaluateUserFunction(request);
   }
 
-  const auto& package = StandardFunctionSeedPackage();
   functions::FunctionCallRequest function_request;
+  function_request.context.function_uuid = request.function_uuid;
   function_request.context.function_id = request.function_id;
   function_request.context.engine_request_context = &request.context;
   function_request.context.security_allowed = request.context.security_context_present;
@@ -9650,7 +9637,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
     const api::EngineRequestContext& context) {
   CanonicalRelationalExpressionRuntimeServices services;
   services.function_evaluator =
-      [context](const std::string_view function_uuid,
+      [context](const api::EngineUuid& function_uuid,
                 const std::vector<api::EngineTypedValue>& arguments,
                 api::EngineTypedValue* value,
                 std::string* diagnostic_id,
@@ -9666,10 +9653,11 @@ BuildCanonicalRelationalExpressionRuntimeServices(
         const auto* entry = package.registry.LookupByUuid(function_uuid);
         api::EngineProjectionFunctionRequest request;
         request.context = context;
+        request.function_uuid = function_uuid;
         request.function_id =
             entry != nullptr
                 ? entry->function_id
-                : "sbsql.user_function:" + std::string(function_uuid);
+                : "sblr.user_function";
         request.arguments.reserve(arguments.size());
         for (std::size_t index = 0; index < arguments.size(); ++index) {
           const auto& argument_value = arguments[index];

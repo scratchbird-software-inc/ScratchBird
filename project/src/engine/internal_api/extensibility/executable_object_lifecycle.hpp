@@ -100,7 +100,7 @@ inline constexpr const char* kRoutineDeleteColumnRangeCountDescriptorV1 =
 struct EngineExecutableObjectRecord {
   std::uint64_t creator_tx = 0;
   std::uint64_t event_sequence = 0;
-  std::string object_uuid;
+  EngineUuid object_uuid;
   std::string object_kind;
   std::string schema_uuid;
   std::string owner_principal_uuid;

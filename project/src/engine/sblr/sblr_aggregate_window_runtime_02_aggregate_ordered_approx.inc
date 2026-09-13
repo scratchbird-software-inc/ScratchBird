@@ -485,12 +485,12 @@ std::string_view ResolveSblrCanonicalAggregateBuiltinId(
   return entry == nullptr ? std::string_view{} : entry->builtin_id;
 }
 
-std::string_view ResolveSblrCanonicalAggregateFunctionUuid(
+SblrUuid ResolveSblrCanonicalAggregateFunctionUuid(
     const std::string_view function_id) {
   const auto* entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           CanonicalAggregateFunctionForSblrAlias(function_id));
-  return entry == nullptr ? std::string_view{} : entry->function_uuid;
+  return entry == nullptr ? SblrUuid{} : entry->function_uuid;
 }
 
 SblrWindowFunctionKind ResolveSblrWindowFunctionKind(std::string_view function_id) {
@@ -566,7 +566,7 @@ bool IsSblrWindowFunctionSupported(std::string_view function_id) {
 }
 
 SblrResult InitializeSblrAggregateState(std::string_view function_id,
-                                        std::string function_uuid,
+                                        SblrUuid function_uuid,
                                         std::string result_descriptor_id,
                                         const SblrExecutionContext& context,
                                         SblrAggregateWindowState* state) {
@@ -576,11 +576,8 @@ SblrResult InitializeSblrAggregateState(std::string_view function_id,
                                                 "aggregate state pointer is required");
     return MakeSblrFailure(SblrStatusCode::execution_failed, std::string(function_id), std::move(diagnostic));
   }
-  const auto canonical_function =
-      CanonicalAggregateFunctionForSblrAlias(function_id);
   const auto* registry_entry =
-      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
-          canonical_function);
+      scratchbird::engine::executor::LookupCanonicalAggregateByUuidV1(function_uuid);
   const auto kind = registry_entry == nullptr
                         ? SblrAggregateFunctionKind::unknown
                         : SblrAggregateKindForCanonicalFunction(
@@ -597,31 +594,36 @@ SblrResult InitializeSblrAggregateState(std::string_view function_id,
                                                 &diagnostic_state,
                                                 "aggregate function id is not supported by the aggregate ABI"));
   }
-  if (function_uuid != registry_entry->function_uuid) {
-    SblrAggregateWindowState diagnostic_state;
-    diagnostic_state.function_id = std::string(function_id);
-    diagnostic_state.function_uuid = std::move(function_uuid);
-    return AggregateFailure(
-        SblrStatusCode::execution_failed,
-        std::string(function_id),
-        AggregateDiagnostic(
-            "SB_DIAG_AGGREGATE_REGISTRY_IDENTITY_MISMATCH",
-            context,
-            &diagnostic_state,
-            "aggregate alias, canonical builtin id, and function UUID do not "
-            "resolve to one global aggregate registry row"));
-  }
-  *state = SblrAggregateWindowState{};
-  state->function_id = registry_entry->builtin_id;
-  state->function_uuid = registry_entry->function_uuid;
-  state->result_descriptor_id = std::move(result_descriptor_id);
-  state->aggregate_kind = kind;
-  state->initialized = true;
-  state->inverse_supported = false;
-  state->recompute_required = true;
-  state->memory_bytes = EstimateStateBytes(*state);
-  return MakeSblrSuccess(AggregateOperationId(*state));
+  SblrAggregateWindowState next;
+  next.function_id = registry_entry->builtin_id;
+  next.function_uuid = registry_entry->function_uuid;
+  next.result_descriptor_id = std::move(result_descriptor_id);
+  next.aggregate_kind = kind;
+  next.initialized = true;
+  next.inverse_supported = false;
+  next.recompute_required = true;
+  next.memory_bytes = EstimateStateBytes(next);
+  auto success = MakeSblrSuccess(AggregateOperationId(next));
+  static_assert(std::is_nothrow_move_assignable_v<SblrAggregateWindowState>);
+  *state = std::move(next);
+  return success;
 }
+
+namespace {
+bool AggregateStateIdentityMatches(const SblrAggregateWindowState& state) {
+  const auto* entry = scratchbird::engine::executor::LookupCanonicalAggregateByUuidV1(state.function_uuid);
+  return entry != nullptr && entry->executable &&
+         entry->builtin_id == state.function_id &&
+         SblrAggregateKindForCanonicalFunction(entry->function) == state.aggregate_kind &&
+         state.aggregate_kind != SblrAggregateFunctionKind::unknown;
+}
+SblrResult AggregateStateIdentityFailure(const SblrAggregateWindowState& state,
+                                        const SblrExecutionContext& context) {
+  return AggregateFailure(SblrStatusCode::execution_failed, AggregateOperationId(state),
+      AggregateDiagnostic("SB_DIAG_AGGREGATE_REGISTRY_IDENTITY_MISMATCH", context, &state,
+                          "aggregate state does not match its binary canonical function binding"));
+}
+}  // namespace
 
 SblrResult UpdateSblrAggregateState(SblrAggregateWindowState* state,
                                     const SblrAggregateUpdateRequest& request) {
@@ -639,6 +641,7 @@ SblrResult UpdateSblrAggregateState(SblrAggregateWindowState* state,
                                                 state,
                                                 "aggregate state cannot be updated after finalize"));
   }
+  if (!AggregateStateIdentityMatches(*state)) return AggregateStateIdentityFailure(*state, request.context);
   state->input_count += 1;
   const SblrValue null_value = NullValue({});
   const SblrValue& value = request.values.empty() ? null_value : request.values.front();

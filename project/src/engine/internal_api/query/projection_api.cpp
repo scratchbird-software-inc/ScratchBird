@@ -658,7 +658,7 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
                                                              "function_projection_evaluator_required"));
       return out;
     }
-    if (expression.function_id.empty()) {
+    if (expression.function_uuid.is_nil()) {
       EngineProjectionFunctionResult out;
       out.ok = false;
       out.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
@@ -668,6 +668,7 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
 
     EngineProjectionFunctionRequest function_request;
     function_request.context = request.context;
+    function_request.function_uuid = expression.function_uuid;
     function_request.function_id = expression.function_id;
     std::vector<EngineEvidenceReference> argument_evidence;
     for (std::size_t arg_index = 0; arg_index < expression.arguments.size(); ++arg_index) {

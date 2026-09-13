@@ -57,8 +57,8 @@ enum class SblrAggregateFunctionKind {
 };
 
 struct SblrAggregateWindowState {
-  std::string state_uuid;
-  std::string function_uuid;
+  SblrUuid state_uuid;
+  SblrUuid function_uuid;
   std::string function_id;
   std::string result_descriptor_id;
   SblrAggregateFunctionKind aggregate_kind = SblrAggregateFunctionKind::unknown;
@@ -149,7 +149,7 @@ struct SblrWindowRow {
 struct LegacySblrWindowFunctionRequest {
   SblrExecutionContext context;
   std::string function_id;
-  std::string function_uuid;
+  SblrUuid function_uuid;
   std::vector<SblrWindowRow> rows;
   std::size_t current_row_index = 0;
   std::size_t frame_start_index = 0;
@@ -160,7 +160,7 @@ struct LegacySblrWindowFunctionRequest {
   SblrValue default_value;
   bool default_value_present = false;
   std::string aggregate_function_id;
-  std::string aggregate_function_uuid;
+  SblrUuid aggregate_function_uuid;
   std::string aggregate_result_descriptor_id;
   SblrAggregateOptions aggregate_options;
 };
@@ -169,12 +169,12 @@ SblrAggregateFunctionKind ResolveSblrAggregateFunctionKind(std::string_view func
 bool IsSblrAggregateFunctionSupported(std::string_view function_id);
 std::string_view ResolveSblrCanonicalAggregateBuiltinId(
     std::string_view function_id);
-std::string_view ResolveSblrCanonicalAggregateFunctionUuid(
+SblrUuid ResolveSblrCanonicalAggregateFunctionUuid(
     std::string_view function_id);
 SblrWindowFunctionKind ResolveSblrWindowFunctionKind(std::string_view function_id);
 bool IsSblrWindowFunctionSupported(std::string_view function_id);
 SblrResult InitializeSblrAggregateState(std::string_view function_id,
-                                        std::string function_uuid,
+                                        SblrUuid function_uuid,
                                         std::string result_descriptor_id,
                                         const SblrExecutionContext& context,
                                         SblrAggregateWindowState* state);

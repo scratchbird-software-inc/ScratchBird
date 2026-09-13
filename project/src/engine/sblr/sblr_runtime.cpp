@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_runtime.hpp"
+#include "../../core/uuid/diagnostic_identity.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include <utility>
 
@@ -21,6 +23,7 @@ SblrRuntimeDiagnostic MakeSblrDiagnostic(std::string diagnostic_id,
   diagnostic.message_key = std::move(message_key);
   diagnostic.detail = std::move(detail);
   diagnostic.severity = severity;
+  diagnostic.occurrence_uuid.bytes = scratchbird::core::uuid::NewDiagnosticOccurrenceUuid();
   return diagnostic;
 }
 
@@ -58,19 +61,28 @@ SblrResult MakeSblrFailure(SblrStatusCode status,
 
 bool ValidateDiagnosticCompleteness(const SblrRuntimeDiagnostic& diagnostic,
                                     std::vector<std::string>* missing_fields) {
-  const auto before = missing_fields ? missing_fields->size() : 0;
-  if (diagnostic.diagnostic_id.empty() && missing_fields) missing_fields->push_back("diagnostic_id");
-  if (diagnostic.message_key.empty() && missing_fields) missing_fields->push_back("message_key");
-  auto has_field = [&](std::string_view key) {
+  bool valid = true;
+  auto invalid = [&](std::string_view key) {
+    valid = false;
+    if (missing_fields) missing_fields->emplace_back(key);
+  };
+  if (diagnostic.diagnostic_id.empty()) invalid("diagnostic_id");
+  if (diagnostic.message_key.empty()) invalid("message_key");
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(diagnostic.occurrence_uuid)) invalid("occurrence_uuid");
+  auto has_unique_identity = [&](std::string_view key) {
+    const SblrDiagnosticField* found = nullptr;
     for (const auto& field : diagnostic.fields) {
-      if (field.key == key) return true;
+      if (field.key != key) continue;
+      if (found != nullptr) return false;
+      found = &field;
     }
-    return false;
+    // Nil is an explicit absent context, not a textual identity substitute.
+    return found != nullptr && std::holds_alternative<SblrUuid>(found->value);
   };
   for (std::string_view key : {"database_uuid", "statement_uuid", "user_uuid", "security_snapshot_uuid"}) {
-    if (!has_field(key) && missing_fields) missing_fields->push_back(std::string(key));
+    if (!has_unique_identity(key)) invalid(key);
   }
-  return !missing_fields || missing_fields->size() == before;
+  return valid;
 }
 
 bool PushSblrFrame(SblrFrameStack* stack, SblrFrame frame, SblrResult* failure) {

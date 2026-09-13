@@ -32,6 +32,7 @@ struct EngineProjectionExpression {
   std::string encoded_value;
   bool is_null = false;
   std::string function_id;
+  EngineUuid function_uuid;
   std::string operator_id;
   std::string canonical_operator_id;
   std::string special_form_id;
@@ -51,6 +52,8 @@ EngineBindProjectionResult EngineBindProjection(
 
 struct EngineProjectionFunctionRequest {
   EngineRequestContext context;
+  EngineUuid function_uuid;
+  // Metadata only; dispatch authority is function_uuid.
   std::string function_id;
   std::vector<EngineProjectionFunctionArgument> arguments;
 };

@@ -20,6 +20,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -191,8 +192,7 @@ int CompareValues(const SblrValue& left, const SblrValue& right) {
 }
 
 std::uint64_t EstimateStateBytes(const SblrAggregateWindowState& state) {
-  std::uint64_t bytes = static_cast<std::uint64_t>(sizeof(SblrAggregateWindowState) + state.state_uuid.size() +
-                                                   state.function_uuid.size() + state.function_id.size() +
+  std::uint64_t bytes = static_cast<std::uint64_t>(sizeof(SblrAggregateWindowState) + state.function_id.size() +
                                                    state.result_descriptor_id.size() + state.min_value.text_value.size() +
                                                    state.min_value.encoded_value.size() + state.min_value.binary_value.size() +
                                                    state.max_value.text_value.size() + state.max_value.encoded_value.size() +

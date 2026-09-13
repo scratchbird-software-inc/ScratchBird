@@ -119,13 +119,16 @@ SblrResult MergeSblrAggregateState(SblrAggregateWindowState* target,
                                                 "aggregate merge requires initialized source and target states");
     return MakeSblrFailure(SblrStatusCode::execution_failed, "sblr.aggregate.merge", std::move(diagnostic));
   }
-  if (target->aggregate_kind != source.aggregate_kind || target->function_id != source.function_id) {
+  if (!AggregateStateIdentityMatches(*target)) return AggregateStateIdentityFailure(*target, context);
+  if (!AggregateStateIdentityMatches(source)) return AggregateStateIdentityFailure(source, context);
+  if (target->function_uuid != source.function_uuid ||
+      target->result_descriptor_id != source.result_descriptor_id) {
     return AggregateFailure(SblrStatusCode::execution_failed,
                             AggregateOperationId(*target),
                             AggregateDiagnostic("SB_DIAG_AGGREGATE_MERGE_KIND_MISMATCH",
                                                 context,
                                                 target,
-                                                "aggregate merge source and target must use the same function"));
+                                                "aggregate merge source and target must use the same binary function and result descriptor"));
   }
   const bool target_was_empty = target->input_count == 0 && target->non_null_count == 0;
   target->input_count += source.input_count;
@@ -287,6 +290,7 @@ SblrResult FinalizeSblrAggregateState(const SblrAggregateWindowState& state,
                                                 "aggregate state must be initialized before finalize");
     return MakeSblrFailure(SblrStatusCode::execution_failed, AggregateOperationId(state), std::move(diagnostic));
   }
+  if (!AggregateStateIdentityMatches(state)) return AggregateStateIdentityFailure(state, request.context);
   switch (state.aggregate_kind) {
     case SblrAggregateFunctionKind::count:
       return ScalarResult(state, Int64Value(static_cast<std::int64_t>(state.non_null_count)));

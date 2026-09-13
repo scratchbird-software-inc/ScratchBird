@@ -4,6 +4,10 @@
 #include "registry/function_seed_registry.hpp"
 #include "metadata/function_hardening.hpp"
 #include "metadata/function_parser_projection.hpp"
+#include "common/function_result_helpers.hpp"
+#include "sblr/sblr_aggregate_window_runtime.hpp"
+#include "sblr/sblr_function_diagnostic.hpp"
+#include "internal_api/api_types.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +19,7 @@
 #include <type_traits>
 
 namespace f = scratchbird::engine::functions;
+namespace s = scratchbird::engine::sblr;
 namespace {
 std::atomic<long> fail_after{-1};
 unsigned checks = 0, failures = 0, allocation_faults = 0;
@@ -225,6 +230,247 @@ void ProductionSeeds() {
             << package.catalog_registry.Entries().size() << " catalog seeds, "
             << package.name_rows.size() << " name seeds\n";
 }
+void CallBinding() {
+  f::FunctionRegistry registry;
+  auto entry = Entry(Base(), "engine-owned-canonical-symbol-with-long-name");
+  entry.family = "engine-owned-package-with-long-name";
+  Check(registry.Register(entry), "binding fixture registration failed");
+  f::FunctionCallContext input;
+  input.function_uuid = Base();
+  input.function_id = "untrusted-symbol-must-not-select-a-function";
+  input.package_name = "untrusted-package-must-not-select-a-handler";
+  input.sblr_context.session_uuid = Base();
+  input.implementation_state = f::FunctionImplementationState::policy_blocked;
+  input.package_state = f::FunctionPackageState::optional;
+  input.security_allowed = false;
+  input.policy_allowed = false;
+  input.dependency_available = false;
+  bool completed = false;
+  unsigned faults = 0;
+  for (long fault = 0; fault < 32; ++fault) {
+    auto context = input;
+    bool threw = false;
+    const f::FunctionRegistryEntry* selected = nullptr;
+    fail_after = fault;
+    try { selected = registry.BindCallContext(context); }
+    catch (const std::bad_alloc&) { threw = true; }
+    fail_after = -1;
+    Check(context.function_uuid == Base() && context.sblr_context.session_uuid == Base(), "binding changed binary request identity");
+    Check(!context.security_allowed && !context.policy_allowed && !context.dependency_available, "binding granted execution gates");
+    if (threw) {
+      ++faults;
+      Check(context.function_id == input.function_id && context.package_name == input.package_name &&
+            context.implementation_state == input.implementation_state && context.package_state == input.package_state,
+            "binding allocation failure partially replaced authority metadata");
+    } else {
+      Check(selected == registry.LookupByUuid(Base()) && context.function_id == entry.function_id &&
+            context.package_name == entry.family && context.implementation_state == entry.implementation_state &&
+            context.package_state == entry.package_state, "binary UUID did not select canonical dispatch metadata");
+      completed = true;
+      break;
+    }
+  }
+  allocation_faults += faults;
+  Check(completed && faults == 2, "binding did not exercise both metadata allocations");
+  auto absent = input;
+  absent.function_id = entry.function_id;
+  absent.function_uuid = {};
+  fail_after = 0;
+  bool rejected = false;
+  try { rejected = registry.BindCallContext(absent) == nullptr; }
+  catch (const std::bad_alloc&) {}
+  fail_after = -1;
+  Check(rejected && absent.function_uuid.is_nil() && absent.package_name == input.package_name,
+        "text symbol substituted for missing binary UUID or allocated on missing lookup");
+  absent.function_uuid = Base();
+  ++absent.function_uuid.bytes[0];
+  Check(!registry.BindCallContext(absent), "text symbol overrode unknown binary UUID");
+}
+void BinaryDiagnostics() {
+  s::SblrExecutionContext context;
+  std::vector<std::pair<const char*, s::SblrUuid*>> fields = {
+      {"cluster_uuid", &context.cluster_uuid}, {"node_uuid", &context.node_uuid},
+      {"database_uuid", &context.database_uuid}, {"transaction_uuid", &context.transaction_uuid},
+      {"statement_uuid", &context.statement_uuid}, {"user_uuid", &context.user_uuid},
+      {"parser_profile_uuid", &context.parser_profile_uuid}, {"security_snapshot_uuid", &context.security_snapshot_uuid}};
+  unsigned ordinal = 0;
+  for (auto [name, id] : fields) { (void)name; *id = Base(); id->bytes[15] = static_cast<unsigned char>(ordinal++); }
+  auto diagnostic = s::MakeSblrRefusalDiagnostic("SB_DIAG_FUNCTION_INVALID_INPUT", context, "invalid input");
+  Check(scratchbird::core::uuid::IsEngineIdentityUuid(diagnostic.occurrence_uuid), "diagnostic emission did not issue a binary v7 occurrence");
+  auto copied = diagnostic;
+  Check(copied.occurrence_uuid == diagnostic.occurrence_uuid, "diagnostic copy replaced source occurrence");
+  auto second = s::MakeSblrRefusalDiagnostic("SB_DIAG_FUNCTION_INVALID_INPUT", context, "same code and context");
+  Check(second.occurrence_uuid != diagnostic.occurrence_uuid, "distinct diagnostic emissions reused an occurrence");
+  for (const auto& [name, id] : fields) {
+    unsigned matches = 0;
+    for (const auto& field : diagnostic.fields) if (field.key == name) {
+      ++matches;
+      const auto* value = std::get_if<s::SblrUuid>(&field.value);
+      Check(value && *value == *id, "diagnostic lost or rendered a binary context identity");
+    }
+    Check(matches == 1, "diagnostic context identity missing or duplicated");
+  }
+  Check(s::ValidateDiagnosticCompleteness(diagnostic, nullptr), "typed diagnostic rejected without detail sink");
+  std::vector<std::string> missing{"retained caller detail"};
+  Check(s::ValidateDiagnosticCompleteness(diagnostic, &missing) && missing.size() == 1,
+        "valid diagnostic damaged caller detail list");
+  for (const char* key : {"database_uuid", "statement_uuid", "user_uuid", "security_snapshot_uuid"}) {
+    for (unsigned mode = 0; mode < 3; ++mode) {
+      auto broken = diagnostic;
+      const auto where = std::find_if(broken.fields.begin(), broken.fields.end(), [&](const auto& field) { return field.key == key; });
+      if (mode == 0) broken.fields.erase(where);
+      else if (mode == 1) where->value = std::string("019f1122-3344-7566-8788-99aabbccddee");
+      else broken.fields.push_back(*where);
+      Check(!s::ValidateDiagnosticCompleteness(broken, nullptr), "missing/textual/duplicate identity falsely validated without detail sink");
+      std::vector<std::string> details;
+      Check(!s::ValidateDiagnosticCompleteness(broken, &details) && details.size() == 1 && details.front() == key,
+            "diagnostic identity failure not reported consistently");
+    }
+  }
+  auto no_context = s::MakeSblrRefusalDiagnostic("SB_DIAG_FUNCTION_INVALID_INPUT", {}, "before context");
+  Check(s::ValidateDiagnosticCompleteness(no_context, nullptr), "explicit binary nil context rejected");
+  Check(!s::ValidateDiagnosticCompleteness({}, nullptr), "empty diagnostic falsely validated without detail sink");
+  auto no_code = diagnostic;
+  no_code.diagnostic_id.clear();
+  Check(!s::ValidateDiagnosticCompleteness(no_code, nullptr), "missing diagnostic code validated");
+  no_code = diagnostic;
+  no_code.message_key.clear();
+  Check(!s::ValidateDiagnosticCompleteness(no_code, nullptr), "missing message key validated");
+  no_code = diagnostic;
+  no_code.occurrence_uuid = {};
+  Check(!s::ValidateDiagnosticCompleteness(no_code, nullptr), "missing diagnostic occurrence validated");
+  no_code.occurrence_uuid = Base();
+  no_code.occurrence_uuid.bytes[6] = 0x45;
+  Check(!s::ValidateDiagnosticCompleteness(no_code, nullptr), "non-v7 diagnostic occurrence validated");
+  fail_after = 0;
+  bool no_allocation = false;
+  try { no_allocation = s::ValidateDiagnosticCompleteness(diagnostic, nullptr); }
+  catch (const std::bad_alloc&) {}
+  fail_after = -1;
+  Check(no_allocation, "sink-free completeness validation allocated");
+  f::FunctionCallRequest request;
+  request.context.sblr_context = context;
+  request.context.function_uuid = Base();
+  request.context.function_id = "function-under-test";
+  const auto result = f::RefuseFunctionConversionInput(request, "bad-number", "invalid conversion");
+  Check(!result.result.ok() && result.result.diagnostics.size() == 1, "conversion refusal not preserved");
+  if (!result.result.diagnostics.empty()) {
+    bool saw_function = false, saw_input = false;
+    for (const auto& field : result.result.diagnostics.front().fields) {
+      if (field.key == "function_uuid") {
+        const auto* value = std::get_if<s::SblrUuid>(&field.value);
+        saw_function = value && *value == Base();
+      }
+      if (field.key == "conversion_input_text") {
+        const auto* value = std::get_if<std::string>(&field.value);
+        saw_input = value && *value == "bad-number";
+      }
+    }
+    Check(saw_function && saw_input, "binary identity and public conversion text lost their distinct types");
+    const auto& source = result.result.diagnostics.front();
+    const auto projected = s::FunctionDiagnosticToApi(source);
+    Check(projected.occurrence_uuid == source.occurrence_uuid.bytes && projected.code == source.diagnostic_id &&
+          projected.fields.size() == 1 && projected.fields.front().key == "conversion_input_text" &&
+          projected.fields.front().value == "bad-number", "actual API bridge replaced source occurrence or lost safe conversion field");
+    for (unsigned malformed = 0; malformed < 6; ++malformed) {
+      auto changed = source;
+      auto parameter = std::find_if(changed.fields.begin(), changed.fields.end(), [](const auto& field) { return field.key == "conversion_input_text"; });
+      if (malformed == 0) changed.diagnostic_id = "SB_DIAG_EXECUTE_FUNCTION_REFUSED";
+      if (malformed == 1) parameter->value = Base();
+      if (malformed == 2) parameter->value = std::string(1025, 'x');
+      if (malformed == 3) parameter->value = std::string("hidden\0payload", 14);
+      if (malformed == 4) changed.fields.push_back(*parameter);
+      if (malformed == 5) parameter->value = std::string{};
+      const auto filtered = s::FunctionDiagnosticToApi(changed);
+      Check(filtered.fields.empty() && filtered.occurrence_uuid == changed.occurrence_uuid.bytes && filtered.error,
+            "API bridge disclosed undeclared/malformed/ambiguous private parameter or changed occurrence");
+    }
+  }
+  s::SblrFrameStack stack;
+  s::SblrFrame frame;
+  frame.frame_uuid = Base();
+  frame.routine_object_uuid = context.user_uuid;
+  frame.package_object_uuid = context.database_uuid;
+  Check(s::PushSblrFrame(&stack, frame, nullptr) && stack.frames.back().frame_uuid == Base() &&
+        stack.frames.back().routine_object_uuid == context.user_uuid, "frame stack lost binary identities");
+  Check(s::PopSblrFrame(&stack, nullptr) && stack.frames.empty(), "binary frame lifecycle did not finish");
+}
+void BinaryAggregate() {
+  constexpr s::SblrUuid sum_uuid{{0x01,0x9d,0xe5,0xfc,0x24,0x00,0x72,0xe4,0x85,0x49,0x82,0xb2,0xee,0xf5,0xa7,0x77}};
+  s::SblrExecutionContext context;
+  context.database_uuid = Base();
+  s::SblrAggregateWindowState state;
+  auto initialize = s::InitializeSblrAggregateState("untrusted-label-not-authority", sum_uuid, "int64", context, &state);
+  Check(initialize.ok() && state.function_uuid == sum_uuid && state.function_id == "sb.aggregate.sum",
+        "aggregate initializer did not bind through binary UUID");
+  for (auto number : {2, 3}) {
+    s::SblrAggregateUpdateRequest update;
+    update.context = context;
+    update.values.push_back(f::MakeInt64Value("int64", number));
+    Check(s::UpdateSblrAggregateState(&state, update).ok(), "binary-bound aggregate update failed");
+  }
+  s::SblrAggregateFinalizeRequest finalize;
+  finalize.context = context;
+  auto result = s::FinalizeSblrAggregateState(state, finalize);
+  Check(result.ok() && result.scalar_values.size() == 1 && result.scalar_values.front().descriptor_id == "int64" &&
+        result.scalar_values.front().payload_kind == s::SblrValuePayloadKind::high_precision_numeric_text &&
+        result.scalar_values.front().encoded_value == "5", "binary-bound sum did not execute and publish five");
+  const auto original = state;
+  auto invalid_uuid = sum_uuid;
+  ++invalid_uuid.bytes[0];
+  Check(!s::InitializeSblrAggregateState("sb.aggregate.sum", invalid_uuid, "int64", context, &state).ok() &&
+        state.function_uuid == original.function_uuid && state.numeric_sum == original.numeric_sum && state.input_count == original.input_count,
+        "text aggregate name rescued unknown UUID or failure changed old state");
+  s::SblrAggregateUpdateRequest update;
+  update.context = context;
+  update.values.push_back(f::MakeInt64Value("int64", 7));
+  for (unsigned corruption = 0; corruption < 3; ++corruption) {
+    auto bad = original;
+    if (corruption == 0) bad.function_uuid = invalid_uuid;
+    if (corruption == 1) bad.function_id = "sb.aggregate.avg";
+    if (corruption == 2) bad.aggregate_kind = s::SblrAggregateFunctionKind::avg;
+    Check(!s::UpdateSblrAggregateState(&bad, update).ok() && bad.numeric_sum == original.numeric_sum && bad.input_count == original.input_count,
+          "aggregate update used a cross-bound state");
+    Check(!s::FinalizeSblrAggregateState(bad, finalize).ok(), "aggregate finalize published a cross-bound state");
+    auto target = original;
+    Check(!s::MergeSblrAggregateState(&target, bad, context).ok() && target.numeric_sum == original.numeric_sum &&
+          target.input_count == original.input_count, "aggregate merge consumed a cross-bound source");
+    Check(!s::MergeSblrAggregateState(&bad, original, context).ok(), "aggregate merge accepted a cross-bound target");
+  }
+  auto different_descriptor = original;
+  different_descriptor.result_descriptor_id = "real64";
+  Check(!s::MergeSblrAggregateState(&state, different_descriptor, context).ok() && state.numeric_sum == 5,
+        "aggregate merge mixed incompatible result representations");
+  auto source = original;
+  Check(s::MergeSblrAggregateState(&state, source, context).ok(), "matching binary aggregate states did not merge");
+  result = s::FinalizeSblrAggregateState(state, finalize);
+  Check(result.ok() && result.scalar_values.size() == 1 && result.scalar_values.front().descriptor_id == "int64" &&
+        result.scalar_values.front().encoded_value == "10",
+        "binary aggregate merge did not publish ten");
+  unsigned faults = 0;
+  bool completed = false;
+  for (long fault = 0; fault < 32; ++fault) {
+    auto target = original;
+    bool threw = false, ok = false;
+    fail_after = fault;
+    try { ok = s::InitializeSblrAggregateState("ignored-symbol", sum_uuid, "int64", context, &target).ok(); }
+    catch (const std::bad_alloc&) { threw = true; }
+    fail_after = -1;
+    if (threw) {
+      ++faults;
+      Check(target.function_uuid == original.function_uuid && target.function_id == original.function_id &&
+            target.numeric_sum == original.numeric_sum && target.input_count == original.input_count && target.initialized,
+            "aggregate reinitialization allocation failure destroyed old state");
+    } else {
+      Check(ok && target.function_uuid == sum_uuid && target.numeric_sum == 0 && target.input_count == 0,
+            "aggregate reinitialization did not publish complete new state");
+      completed = true;
+      break;
+    }
+  }
+  allocation_faults += faults;
+  Check(completed && faults >= 2, "aggregate initializer allocation sweep did not reach completion");
+}
 }
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
@@ -237,6 +483,9 @@ int main() {
   AllBytes();
   PublicationFailures();
   ProductionSeeds();
+  CallBinding();
+  BinaryDiagnostics();
+  BinaryAggregate();
   std::cout << checks << " checks, " << allocation_faults << " allocation faults, " << failures << " failures\n";
   return failures ? 1 : 0;
 }

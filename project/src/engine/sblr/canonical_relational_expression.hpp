@@ -144,7 +144,7 @@ struct CanonicalRelationalExpressionRuntimeServices {
                      std::string* refusal_detail)>
       descriptor_type_resolver;
   std::function<bool(
-      std::string_view function_uuid,
+      const internal_api::EngineUuid& function_uuid,
       const std::vector<internal_api::EngineTypedValue>& arguments,
       internal_api::EngineTypedValue* value,
       std::string* diagnostic_id,
